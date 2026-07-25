@@ -137,7 +137,9 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       localCurrent == null
         ? await readableCandidate(await options.local.readLastKnownGood())
         : { candidate: null };
-    const localReadable = localCurrent ?? lastKnownGoodResult.candidate;
+    const persistedLocalReadable = localCurrent ?? lastKnownGoodResult.candidate;
+    const retained = await retainActiveCandidate(persistedLocalReadable, state.active);
+    const localReadable = retained.candidate;
     const remoteCandidateResult = await readableCandidate(remoteResult);
     const remoteReadable = remoteCandidateResult.candidate;
     const localValidationFailures = [
@@ -148,10 +150,13 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       ...localValidationFailures,
       remoteCandidateResult.validationFailure,
     ].filter((failure): failure is CandidateValidationFailure => failure != null);
-    const localPending =
+    const persistedLocalPending =
       localCurrent != null && localResult.status === 'ok' && localResult.info.pendingRemote === true
         ? localCurrent
         : null;
+    const localPending =
+      persistedLocalPending ??
+      (retained.activeContributed && localReadable != null ? localReadable : null);
 
     if (remoteReadable != null) {
       return reconcileReadableRemote(
@@ -631,6 +636,44 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       rollbackPersistenceFailure = undefined;
     }
     return candidateResult;
+  }
+
+  async function retainActiveCandidate(
+    persisted: VaultSyncCandidate | null,
+    active: VaultSyncCandidate | null,
+  ): Promise<{ candidate: VaultSyncCandidate | null; activeContributed: boolean }> {
+    if (active == null) return { candidate: persisted, activeContributed: false };
+    if (persisted == null) return { candidate: active, activeContributed: true };
+    if (sameWrite(persisted, active)) {
+      return { candidate: persisted, activeContributed: false };
+    }
+
+    const merged = mergeVaultDocuments({
+      left: persisted.document,
+      leftVersion: persisted.header.vaultVersion,
+      right: active.document,
+      rightVersion: active.header.vaultVersion,
+      deviceId: options.deviceId,
+      mergedAt: now(),
+    });
+    if (!merged.divergent) {
+      if (persisted.header.vaultVersion > active.header.vaultVersion) {
+        return { candidate: persisted, activeContributed: false };
+      }
+      if (active.header.vaultVersion > persisted.header.vaultVersion) {
+        return { candidate: active, activeContributed: true };
+      }
+      return { candidate: selectHighest(persisted, active), activeContributed: false };
+    }
+
+    return {
+      candidate: await encryptCandidate(
+        merged.document,
+        merged.vaultVersion,
+        newestHeader(persisted, active),
+      ),
+      activeContributed: true,
+    };
   }
 
   async function readableCandidate(result: DataHomeReadResult): Promise<ReadableCandidateResult> {

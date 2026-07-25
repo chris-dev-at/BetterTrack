@@ -380,6 +380,66 @@ describe('versioned encrypted local cache', () => {
       );
     }
   });
+
+  it('reads an intact last-known-good tuple independently of malformed current metadata', async () => {
+    const current = await encrypted(document([entity(ENTITY_B, 2, DEVICE_B)]), 2);
+    const rollbackDocument = document([entity(ENTITY_A, 1, DEVICE_A)]);
+    const rollback = await encrypted(rollbackDocument, 1);
+    const malformed = {
+      recordVersion: 1,
+      envelope: toArrayBuffer(current),
+      version: 2,
+      updatedAt: '2026-07-25T10:02:00.000Z',
+      lastKnownGood: toArrayBuffer(rollback),
+      lastKnownGoodVersion: 1,
+      lastKnownGoodUpdatedAt: '2026-07-25T10:01:00.000Z',
+      pendingRemote: 'malformed',
+    } as unknown as LocalVaultRecord;
+    const storage: LocalDataHomeStorage = {
+      async read() {
+        return cloneRecord(malformed);
+      },
+      async compareAndSwap() {
+        throw new Error('A corrupt current record must not be mutated.');
+      },
+    };
+    const local = createLocalDataHome({ scope: 'valid-rollback-corrupt-current', storage });
+
+    await expect(local.read()).resolves.toMatchObject({
+      status: 'corrupt',
+      envelope: current,
+      version: 2,
+      reason: 'invalid-response',
+    });
+    await expect(local.readLastKnownGood()).resolves.toMatchObject({
+      status: 'ok',
+      envelope: rollback,
+      info: { version: 1, pendingRemote: false },
+    });
+
+    const quarantine = createMemoryVaultQuarantineStore();
+    const engine = createVaultSyncEngine({
+      local,
+      primary: offlineRemote(),
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      quarantine,
+    });
+    await expect(engine.start()).resolves.toMatchObject({
+      status: 'pending-offline',
+      active: { document: rollbackDocument, header: { vaultVersion: 1 } },
+      pending: null,
+    });
+    await expect(quarantine.list()).resolves.toEqual([
+      expect.objectContaining({
+        medium: 'local',
+        status: 'corrupt',
+        envelope: current,
+        version: 2,
+      }),
+    ]);
+  });
 });
 
 describe('CAS-aware vault synchronization', () => {
@@ -790,6 +850,95 @@ describe('CAS-aware vault synchronization', () => {
     await expect(local.readLastKnownGood()).resolves.toMatchObject({
       status: 'ok',
       info: { version: 1 },
+    });
+  });
+
+  it('retains an active mutation when reconnect sees only an older rollback and remote', async () => {
+    const v1Document = document([entity(ENTITY_A, 1, DEVICE_A)]);
+    const v1 = await encrypted(v1Document, 1);
+    const storage = memoryLocalStorage();
+    const baseLocal = createLocalDataHome({ scope: 'active-reconnect-fallback', storage });
+    await seedLocal(baseLocal, v1, false);
+    let promotionCalls = 0;
+    const local: LocalDataHome = {
+      ...baseLocal,
+      async markLastKnownGood(envelope, options) {
+        promotionCalls += 1;
+        if (promotionCalls === 2) {
+          return {
+            status: 'transport-failure',
+            medium: 'local',
+            failure: { message: 'rollback write interrupted' },
+          };
+        }
+        return baseLocal.markLastKnownGood(envelope, options);
+      },
+    };
+    const remote = memoryRemote(v1, 1);
+    let rejectRemoteWrites = false;
+    const primary: DataHome = {
+      ...remote,
+      async write(envelope, options) {
+        if (rejectRemoteWrites) {
+          return {
+            status: 'transport-failure',
+            medium: 'server',
+            failure: { message: 'remote temporarily unavailable' },
+          };
+        }
+        return remote.write(envelope, options);
+      },
+    };
+    const engine = createVaultSyncEngine({
+      local,
+      primary,
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      now: () => '2026-07-25T10:10:00.000Z',
+      quarantine: createMemoryVaultQuarantineStore(),
+    });
+    await expect(engine.start()).resolves.toMatchObject({ status: 'synced' });
+
+    rejectRemoteWrites = true;
+    await expect(
+      engine.mutate(({ document: value }) => ({
+        ...value,
+        entities: {
+          ...value.entities,
+          transaction: [...(value.entities.transaction ?? []), entity(ENTITY_B, 1, DEVICE_A)],
+        },
+      })),
+    ).resolves.toMatchObject({
+      status: 'pending-offline',
+      active: { header: { vaultVersion: 2 } },
+      pending: { header: { vaultVersion: 2 } },
+    });
+
+    const corruptCurrent = new Uint8Array(storage.peek()!.envelope.slice(0));
+    corruptCurrent[corruptCurrent.length - 1] = corruptCurrent[corruptCurrent.length - 1]! ^ 1;
+    storage.replace(corruptCurrent, 2, true);
+    rejectRemoteWrites = false;
+
+    await expect(engine.reconnect()).resolves.toMatchObject({
+      status: 'synced',
+      active: { header: { vaultVersion: 3 } },
+      pending: null,
+    });
+    expect(engine.state.active?.document.entities.transaction?.map((row) => row.id).sort()).toEqual(
+      [ENTITY_A, ENTITY_B],
+    );
+    const remoteResult = await remote.read();
+    if (remoteResult.status !== 'ok') throw new Error('Expected a readable reconciled remote.');
+    await expect(decryptVaultDocument(remoteResult.envelope, KEY)).resolves.toMatchObject({
+      document: {
+        entities: {
+          transaction: [
+            expect.objectContaining({ id: ENTITY_A }),
+            expect.objectContaining({ id: ENTITY_B }),
+          ],
+        },
+      },
     });
   });
 

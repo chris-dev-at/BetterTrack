@@ -209,8 +209,8 @@ export function createLocalDataHome(options: LocalDataHomeOptions): LocalDataHom
 
       const rollback = lastKnownGoodTuple(untrusted);
       if (rollback.status === 'corrupt') return rollback.result;
-      if (!isRecord(untrusted)) return malformedRecord(untrusted);
       if (rollback.status === 'absent') {
+        if (!isRecord(untrusted)) return malformedRecord(untrusted);
         return { status: 'absent', medium: 'local' };
       }
       const envelope = new Uint8Array(rollback.envelope.slice(0));
