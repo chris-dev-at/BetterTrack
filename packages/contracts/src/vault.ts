@@ -36,6 +36,9 @@ export const VAULT_CONTENT_CIPHER = 'A256GCM';
 export const VAULT_KDF_ALG = 'argon2id';
 /** Default server-enforced ciphertext size cap: 16 MiB (`§2`, env-tunable). */
 export const VAULT_MAX_BYTES_DEFAULT = 16 * 1024 * 1024;
+/** Default and hard per-request bounds for blind server-history enumeration. */
+export const VAULT_HISTORY_PAGE_DEFAULT = 10;
+export const VAULT_HISTORY_PAGE_MAX = 10;
 
 // ── Privacy mode + media set ─────────────────────────────────────────────────
 
@@ -74,6 +77,44 @@ export type VaultMediaSet = z.infer<typeof vaultMediaSetSchema>;
 
 /** The monotonic CAS token (`vaultVersion`). The first stored blob is 1. */
 export const vaultVersionSchema = z.number().int().min(1);
+
+/**
+ * Public metadata for one retained server-history blob. This is deliberately
+ * strict: no cleartext-derived counts, entity names, hashes or payload fields
+ * may cross the blind-store boundary.
+ */
+export const vaultHistoryMetadataSchema = z
+  .object({
+    version: vaultVersionSchema,
+    createdAt: z.string().datetime(),
+    sizeBytes: z.number().int().positive(),
+    medium: z.literal('server'),
+  })
+  .strict();
+export type VaultHistoryMetadata = z.infer<typeof vaultHistoryMetadataSchema>;
+
+/** Keyset pagination for `GET /vault/history`, newest version first. */
+export const vaultHistoryListQuerySchema = z
+  .object({
+    cursor: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+    limit: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+  })
+  .strict();
+export type VaultHistoryListQuery = z.infer<typeof vaultHistoryListQuerySchema>;
+
+export const vaultHistoryListResponseSchema = z
+  .object({
+    items: z.array(vaultHistoryMetadataSchema),
+    nextCursor: vaultVersionSchema.nullable(),
+  })
+  .strict();
+export type VaultHistoryListResponse = z.infer<typeof vaultHistoryListResponseSchema>;
+
+/** Route params for the opaque `GET /vault/history/:version` blob read. */
+export const vaultHistoryVersionParamSchema = z
+  .object({ version: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER) })
+  .strict();
+export type VaultHistoryVersionParam = z.infer<typeof vaultHistoryVersionParamSchema>;
 
 /** Argon2id parameters that wrap the vault key (cleartext, no portfolio data). */
 export const vaultKdfParamsSchema = z.object({
@@ -235,6 +276,7 @@ export type VaultMetadata = z.infer<typeof vaultMetadataSchema>;
  */
 export const VAULT_ERROR_CODES = {
   notFound: 'VAULT_NOT_FOUND',
+  modeRequired: 'VAULT_PARANOID_MODE_REQUIRED',
   preconditionRequired: 'VAULT_PRECONDITION_REQUIRED',
   preconditionFailed: 'VAULT_PRECONDITION_FAILED',
   tooLarge: 'VAULT_TOO_LARGE',
@@ -244,6 +286,10 @@ export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[keyof typeof VAULT_ERROR
 
 /** The opaque `application/octet-stream` content type the vault blob rides on. */
 export const VAULT_CONTENT_TYPE = 'application/octet-stream';
+/** Safe metadata headers accompanying one raw historical ciphertext response. */
+export const VAULT_HISTORY_CREATED_AT_HEADER = 'X-BetterTrack-Vault-Created-At';
+export const VAULT_HISTORY_MEDIUM_HEADER = 'X-BetterTrack-Vault-Medium';
+export const VAULT_HISTORY_SIZE_BYTES_HEADER = 'X-BetterTrack-Vault-Size-Bytes';
 
 /** Format a strong ETag over a vault version (`ETag: "<version>"`). */
 export function vaultEtag(version: number): string {

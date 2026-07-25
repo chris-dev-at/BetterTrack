@@ -9,11 +9,15 @@ import {
   VAULT_CONTENT_CIPHER,
   VAULT_DOCUMENT_VERSION,
   VAULT_FORMAT_VERSION,
+  VAULT_HISTORY_PAGE_MAX,
   VAULT_MAGIC,
   vaultDocumentV1Schema,
   vaultEnvelopeHeaderSchema,
   vaultEtag,
   VaultEnvelopeError,
+  vaultHistoryListQuerySchema,
+  vaultHistoryListResponseSchema,
+  vaultHistoryMetadataSchema,
   vaultMediaSetSchema,
   vaultServerHeaderSchema,
 } from './vault';
@@ -63,6 +67,41 @@ describe('media set', () => {
     expect(vaultMediaSetSchema.safeParse([]).success).toBe(false);
     expect(vaultMediaSetSchema.safeParse(['icloud']).success).toBe(false);
     expect(vaultMediaSetSchema.safeParse(['server', 'server']).success).toBe(false);
+  });
+});
+
+describe('blind vault history', () => {
+  const metadata = {
+    version: 7,
+    createdAt: '2026-07-24T10:00:00.000Z',
+    sizeBytes: 4096,
+    medium: 'server' as const,
+  };
+
+  it('accepts only non-sensitive metadata and rejects cleartext-derived fields', () => {
+    expect(vaultHistoryMetadataSchema.parse(metadata)).toEqual(metadata);
+    for (const leaked of [
+      { decryptedRowCount: 12 },
+      { entityNames: ['portfolio'] },
+      { documentHash: 'cleartext-derived' },
+      { plaintext: { balance: 42 } },
+    ]) {
+      expect(vaultHistoryMetadataSchema.safeParse({ ...metadata, ...leaked }).success).toBe(false);
+    }
+
+    expect(
+      vaultHistoryListResponseSchema.safeParse({
+        items: [metadata],
+        nextCursor: null,
+        portfolioNames: ['Main'],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('leaves oversized page requests valid so the server can clamp them', () => {
+    expect(vaultHistoryListQuerySchema.parse({ limit: VAULT_HISTORY_PAGE_MAX * 100 })).toEqual({
+      limit: VAULT_HISTORY_PAGE_MAX * 100,
+    });
   });
 });
 

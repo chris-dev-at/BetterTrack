@@ -1,5 +1,7 @@
 import { and, desc, eq, lt, lte } from 'drizzle-orm';
 
+import { VAULT_HISTORY_PAGE_DEFAULT, VAULT_HISTORY_PAGE_MAX } from '@bettertrack/contracts';
+
 import type { Database } from '../db';
 import {
   paranoidVaultHistory,
@@ -56,10 +58,38 @@ export type ParanoidVaultCasResult =
   | { status: 'ok'; version: number; updatedAt: Date }
   | { status: 'precondition_failed'; currentVersion: number | null };
 
+export interface ParanoidVaultHistoryListInput {
+  /** Return versions strictly older than this keyset cursor. */
+  cursor?: number;
+  /** Requested page size; clamped authoritatively by the repository. */
+  limit?: number;
+}
+
+export interface ParanoidVaultHistoryMetadataRow {
+  version: number;
+  sizeBytes: number;
+  createdAt: Date;
+}
+
+export interface ParanoidVaultHistoryPage {
+  items: ParanoidVaultHistoryMetadataRow[];
+  nextCursor: number | null;
+}
+
 export interface ParanoidVaultRepository {
   getCurrent(userId: string): Promise<ParanoidVaultRow | null>;
-  listHistory(userId: string): Promise<ParanoidVaultHistoryRow[]>;
+  listHistory(
+    userId: string,
+    input?: ParanoidVaultHistoryListInput,
+  ): Promise<ParanoidVaultHistoryPage>;
+  getHistory(userId: string, version: number): Promise<ParanoidVaultHistoryRow | null>;
   compareAndSwap(input: ParanoidVaultCasInput): Promise<ParanoidVaultCasResult>;
+}
+
+function historyPageSize(requested: number | undefined): number {
+  if (requested === undefined) return VAULT_HISTORY_PAGE_DEFAULT;
+  if (!Number.isSafeInteger(requested) || requested < 1) return VAULT_HISTORY_PAGE_DEFAULT;
+  return Math.min(requested, VAULT_HISTORY_PAGE_MAX);
 }
 
 export function createParanoidVaultRepository(db: Database): ParanoidVaultRepository {
@@ -69,12 +99,42 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
       return row ?? null;
     },
 
-    async listHistory(userId) {
-      return db
+    async listHistory(userId, input = {}) {
+      const limit = historyPageSize(input.limit);
+      const rows = await db
+        .select({
+          version: paranoidVaultHistory.version,
+          sizeBytes: paranoidVaultHistory.sizeBytes,
+          createdAt: paranoidVaultHistory.createdAt,
+        })
+        .from(paranoidVaultHistory)
+        .where(
+          input.cursor === undefined
+            ? eq(paranoidVaultHistory.userId, userId)
+            : and(
+                eq(paranoidVaultHistory.userId, userId),
+                lt(paranoidVaultHistory.version, input.cursor),
+              ),
+        )
+        .orderBy(desc(paranoidVaultHistory.version))
+        .limit(limit + 1);
+      const hasMore = rows.length > limit;
+      const items = rows.slice(0, limit);
+      return {
+        items,
+        nextCursor: hasMore ? (items.at(-1)?.version ?? null) : null,
+      };
+    },
+
+    async getHistory(userId, version) {
+      const [row] = await db
         .select()
         .from(paranoidVaultHistory)
-        .where(eq(paranoidVaultHistory.userId, userId))
-        .orderBy(desc(paranoidVaultHistory.version));
+        .where(
+          and(eq(paranoidVaultHistory.userId, userId), eq(paranoidVaultHistory.version, version)),
+        )
+        .limit(1);
+      return row ?? null;
     },
 
     async compareAndSwap(input) {

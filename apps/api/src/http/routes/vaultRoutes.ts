@@ -1,16 +1,25 @@
-import express, { Router } from 'express';
+import express, { Router, type RequestHandler } from 'express';
 
 import {
   parseVaultEtag,
   VAULT_CONTENT_TYPE,
   VAULT_ERROR_CODES,
+  VAULT_HISTORY_CREATED_AT_HEADER,
+  VAULT_HISTORY_MEDIUM_HEADER,
+  VAULT_HISTORY_SIZE_BYTES_HEADER,
   vaultEtag,
+  vaultHistoryListResponseSchema,
+  vaultHistoryListQuerySchema,
+  vaultHistoryVersionParamSchema,
+  type VaultHistoryListQuery,
+  type VaultHistoryVersionParam,
 } from '@bettertrack/contracts';
 
-import { ApiError, notFound } from '../../errors';
+import { ApiError, forbidden, notFound } from '../../errors';
 
 import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
+import { validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
 
 /**
@@ -60,10 +69,56 @@ const payloadTooLarge = (): ApiError =>
 const malformed = (message: string): ApiError =>
   new ApiError(400, VAULT_ERROR_CODES.malformed, message);
 
+const requireParanoidHistory: RequestHandler = (req, _res, next) => {
+  if (req.authUser?.privacyMode !== 'paranoid') {
+    next(
+      forbidden(
+        'Vault history is available only while paranoid mode is active.',
+        VAULT_ERROR_CODES.modeRequired,
+      ),
+    );
+    return;
+  }
+  next();
+};
+
 export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
   router.use(requireUser);
+
+  // Blind retained-history surface. The account mode comes from the user row
+  // freshly resolved for this request; no user id is accepted from the client.
+  router.use('/history', requireParanoidHistory);
+
+  // GET /vault/history?cursor=&limit= — newest-first metadata only. The
+  // repository clamps every page independently of the requested limit.
+  router.get('/history', validateQuery(vaultHistoryListQuerySchema), async (req, res) => {
+    const query = req.valid?.query as VaultHistoryListQuery;
+    const page = await ctx.paranoidVault.listHistory(req.authUser!.id, query);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json(vaultHistoryListResponseSchema.parse(page));
+  });
+
+  // GET /vault/history/:version — one byte-identical opaque historical
+  // envelope. Safe metadata rides headers; the body is never parsed or logged.
+  router.get(
+    '/history/:version',
+    validateParams(vaultHistoryVersionParamSchema),
+    async (req, res) => {
+      const { version } = req.valid?.params as VaultHistoryVersionParam;
+      const row = await ctx.paranoidVault.getHistory(req.authUser!.id, version);
+      if (!row) throw notFound('No retained vault version found.', VAULT_ERROR_CODES.notFound);
+
+      res.setHeader('ETag', vaultEtag(row.version));
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Content-Type', VAULT_CONTENT_TYPE);
+      res.setHeader(VAULT_HISTORY_CREATED_AT_HEADER, row.createdAt.toISOString());
+      res.setHeader(VAULT_HISTORY_SIZE_BYTES_HEADER, String(row.sizeBytes));
+      res.setHeader(VAULT_HISTORY_MEDIUM_HEADER, 'server');
+      res.status(200).send(row.blob);
+    },
+  );
 
   // GET /vault — the current opaque blob + version ETag (or 404 / 304).
   router.get('/', async (req, res) => {

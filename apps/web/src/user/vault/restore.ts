@@ -1,8 +1,23 @@
-import type { VaultDocumentV1 } from '@bettertrack/contracts';
+import {
+  parseVaultEtag,
+  VAULT_HISTORY_CREATED_AT_HEADER,
+  VAULT_HISTORY_MEDIUM_HEADER,
+  VAULT_HISTORY_PAGE_MAX,
+  VAULT_HISTORY_SIZE_BYTES_HEADER,
+  vaultHistoryListResponseSchema,
+  vaultHistoryMetadataSchema,
+  type VaultDocumentV1,
+  type VaultHistoryMetadata,
+} from '@bettertrack/contracts';
 
+import { apiBaseUrl } from '../../lib/runtimeConfig';
 import { decryptVaultDocument, type VaultKeyMaterial } from './crypto';
 import type { DataHome, DataHomeMedium, DataHomeTransportFailure } from './dataHome';
+import { inspectVaultEnvelope } from './envelope';
 import type { QuarantinedVaultCandidate, VaultQuarantineStore } from './quarantine';
+
+const VAULT_HISTORY_PATH = '/vault/history';
+const SERVER_HISTORY_SOURCE = 'server-history';
 
 export type RestoreCandidateStatus = 'available' | 'corrupt' | 'unreadable' | 'unsupported';
 
@@ -233,15 +248,219 @@ export function createCurrentServerRestoreCandidateSource(
   };
 }
 
-/** The only two candidate sources shipped by this issue. */
+export interface ServerHistoryRestoreCandidateSourceOptions {
+  url?: string;
+  fetch?: typeof fetch;
+}
+
+type ServerHistoryCandidateRead =
+  | { status: 'ok'; candidate: RestoreCandidate }
+  | { status: 'transport-failure'; failure: DataHomeTransportFailure };
+
+/**
+ * Blind retained server history. The list response carries safe metadata only;
+ * each candidate body remains opaque bytes until the picker validates and
+ * decrypts the selected envelope.
+ */
+export function createServerHistoryRestoreCandidateSource(
+  options: ServerHistoryRestoreCandidateSourceOptions = {},
+): RestoreCandidateSource {
+  const url = options.url ?? `${apiBaseUrl()}${VAULT_HISTORY_PATH}`;
+  const request = options.fetch ?? globalThis.fetch;
+
+  return {
+    id: SERVER_HISTORY_SOURCE,
+    medium: 'server',
+    async list() {
+      let response: Response;
+      try {
+        const separator = url.includes('?') ? '&' : '?';
+        response = await request(`${url}${separator}limit=${VAULT_HISTORY_PAGE_MAX}`, {
+          credentials: 'include',
+        });
+      } catch (cause) {
+        return historyTransportFailure('GET vault history failed.', cause);
+      }
+
+      if (response.status === 404) {
+        return { status: 'absent', source: SERVER_HISTORY_SOURCE, medium: 'server' };
+      }
+      if (!response.ok) {
+        return historyTransportFailure('GET vault history failed.', undefined, response.status);
+      }
+
+      let metadata: VaultHistoryMetadata[];
+      try {
+        metadata = vaultHistoryListResponseSchema.parse(await response.json()).items;
+      } catch (cause) {
+        return {
+          status: 'corrupt',
+          source: SERVER_HISTORY_SOURCE,
+          medium: 'server',
+          reason:
+            cause instanceof Error
+              ? `Vault history metadata is invalid: ${cause.message}`
+              : 'Vault history metadata is invalid.',
+        };
+      }
+
+      const candidates: RestoreCandidate[] = [];
+      for (const item of metadata) {
+        const loaded = await readServerHistoryCandidate(url, item, request);
+        if (loaded.status === 'transport-failure') {
+          return {
+            status: 'transport-failure',
+            source: SERVER_HISTORY_SOURCE,
+            medium: 'server',
+            failure: loaded.failure,
+          };
+        }
+        candidates.push(loaded.candidate);
+      }
+      return {
+        status: 'ok',
+        source: SERVER_HISTORY_SOURCE,
+        medium: 'server',
+        candidates,
+      };
+    },
+  };
+}
+
+/**
+ * Assemble the two existing sources plus the history source when its transport
+ * is available. Keeping the third argument optional preserves existing callers
+ * while the restore surface is integrated incrementally.
+ */
 export function createRestoreCandidateSources(
   quarantine: VaultQuarantineStore,
   server: DataHome,
-): readonly [RestoreCandidateSource, RestoreCandidateSource] {
-  return [
+  history?: RestoreCandidateSource,
+): readonly RestoreCandidateSource[] {
+  const sources: RestoreCandidateSource[] = [
     createQuarantinedRestoreCandidateSource(quarantine),
     createCurrentServerRestoreCandidateSource(server),
   ];
+  if (history) sources.push(history);
+  return sources;
+}
+
+async function readServerHistoryCandidate(
+  baseUrl: string,
+  metadata: VaultHistoryMetadata,
+  request: typeof fetch,
+): Promise<ServerHistoryCandidateRead> {
+  let response: Response;
+  try {
+    response = await request(`${baseUrl.replace(/\/$/, '')}/${metadata.version}`, {
+      credentials: 'include',
+    });
+  } catch (cause) {
+    return {
+      status: 'transport-failure',
+      failure: { message: 'GET historical vault blob failed.', cause },
+    };
+  }
+  if (!response.ok) {
+    return {
+      status: 'transport-failure',
+      failure: {
+        message: 'GET historical vault blob failed.',
+        httpStatus: response.status,
+      },
+    };
+  }
+
+  let envelope: Uint8Array;
+  try {
+    envelope = new Uint8Array(await response.arrayBuffer());
+  } catch (cause) {
+    return {
+      status: 'transport-failure',
+      failure: { message: 'Could not read historical vault bytes.', cause },
+    };
+  }
+
+  const external = vaultHistoryMetadataSchema.safeParse({
+    version: parseVaultEtag(response.headers.get('ETag')),
+    createdAt: response.headers.get(VAULT_HISTORY_CREATED_AT_HEADER),
+    sizeBytes: Number(response.headers.get(VAULT_HISTORY_SIZE_BYTES_HEADER)),
+    medium: response.headers.get(VAULT_HISTORY_MEDIUM_HEADER),
+  });
+  const baseCandidate = {
+    id: `server-history-${metadata.version}`,
+    source: SERVER_HISTORY_SOURCE,
+    medium: 'server' as const,
+    envelope,
+    version: metadata.version,
+    updatedAt: metadata.createdAt,
+  };
+  if (
+    !external.success ||
+    external.data.version !== metadata.version ||
+    external.data.createdAt !== metadata.createdAt ||
+    external.data.sizeBytes !== metadata.sizeBytes ||
+    envelope.byteLength !== metadata.sizeBytes
+  ) {
+    return {
+      status: 'ok',
+      candidate: {
+        ...baseCandidate,
+        status: 'corrupt',
+        reason: 'Historical vault response metadata does not match its list entry.',
+      },
+    };
+  }
+
+  try {
+    const inspected = inspectVaultEnvelope(envelope);
+    if (inspected.status === 'update-required') {
+      return {
+        status: 'ok',
+        candidate: {
+          ...baseCandidate,
+          status: 'unsupported',
+          reason: 'The historical vault was written by a newer app version.',
+        },
+      };
+    }
+    if (inspected.envelope.header.vaultVersion !== metadata.version) {
+      return {
+        status: 'ok',
+        candidate: {
+          ...baseCandidate,
+          status: 'corrupt',
+          reason: 'Historical vault envelope version does not match its metadata.',
+        },
+      };
+    }
+    return { status: 'ok', candidate: { ...baseCandidate, status: 'available' } };
+  } catch (cause) {
+    return {
+      status: 'ok',
+      candidate: {
+        ...baseCandidate,
+        status: 'corrupt',
+        reason:
+          cause instanceof Error
+            ? `Historical vault envelope is invalid: ${cause.message}`
+            : 'Historical vault envelope is invalid.',
+      },
+    };
+  }
+}
+
+function historyTransportFailure(
+  message: string,
+  cause?: unknown,
+  httpStatus?: number,
+): Extract<RestoreCandidateSourceResult, { status: 'transport-failure' }> {
+  return {
+    status: 'transport-failure',
+    source: SERVER_HISTORY_SOURCE,
+    medium: 'server',
+    failure: { message, cause, httpStatus },
+  };
 }
 
 function toRestoreCandidate(candidate: QuarantinedVaultCandidate): RestoreCandidate {

@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   decodeVaultEnvelope as decodeContractEnvelope,
   encodeVaultEnvelope as encodeContractEnvelope,
+  VAULT_HISTORY_CREATED_AT_HEADER,
+  VAULT_HISTORY_MEDIUM_HEADER,
+  VAULT_HISTORY_SIZE_BYTES_HEADER,
   type VaultDocumentV1,
   type VaultEntity,
   type VaultEnvelopeHeader,
@@ -32,6 +35,7 @@ import {
   createQuarantinedRestoreCandidateSource,
   createRestoreCandidateSources,
   createRestorePicker,
+  createServerHistoryRestoreCandidateSource,
   type RestoreCandidate,
 } from './restore';
 import { createServerBlobDataHome } from './serverBlobDataHome';
@@ -1325,6 +1329,89 @@ describe('restore candidate seam', () => {
     await expect(
       createQuarantinedRestoreCandidateSource(createMemoryVaultQuarantineStore()).list(),
     ).resolves.toMatchObject({ status: 'ok', candidates: [] });
+  });
+
+  it('adds blind server history and restores a selected version only through a new CAS', async () => {
+    const historical = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 2);
+    const current = await encrypted(document([entity(ENTITY_B, 3, DEVICE_B)]), 3);
+    const archivedAt = '2026-07-25T10:05:00.000Z';
+    const urls: string[] = [];
+    const history = createServerHistoryRestoreCandidateSource({
+      url: 'https://api.bt.test/api/v1/vault/history',
+      fetch: async (input) => {
+        const url = String(input);
+        urls.push(url);
+        if (url.includes('?')) {
+          return new Response(
+            JSON.stringify({
+              items: [
+                {
+                  version: 2,
+                  createdAt: archivedAt,
+                  sizeBytes: historical.byteLength,
+                  medium: 'server',
+                },
+              ],
+              nextCursor: null,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response(historical, {
+          status: 200,
+          headers: {
+            ETag: '"2"',
+            [VAULT_HISTORY_CREATED_AT_HEADER]: archivedAt,
+            [VAULT_HISTORY_SIZE_BYTES_HEADER]: String(historical.byteLength),
+            [VAULT_HISTORY_MEDIUM_HEADER]: 'server',
+          },
+        });
+      },
+    });
+    const quarantine = createMemoryVaultQuarantineStore();
+    const destination = memoryRemote(current, 3);
+    const sources = createRestoreCandidateSources(quarantine, destination, history);
+    expect(sources.map((source) => source.id)).toEqual([
+      'quarantined-local',
+      'current-server',
+      'server-history',
+    ]);
+
+    const picker = createRestorePicker(sources, destination);
+    const listed = await picker.listCandidates();
+    const candidate = listed.candidates.find((item) => item.source === 'server-history');
+    if (!candidate) throw new Error('Expected a retained server-history candidate.');
+    expect(candidate).toMatchObject({
+      id: 'server-history-2',
+      version: 2,
+      updatedAt: archivedAt,
+      status: 'available',
+    });
+    expect(urls).toEqual([
+      'https://api.bt.test/api/v1/vault/history?limit=10',
+      'https://api.bt.test/api/v1/vault/history/2',
+    ]);
+
+    let activatedVersion: number | null = null;
+    await expect(
+      picker.restore(candidate, {
+        vaultKey: KEY,
+        activeVersion: 3,
+        encrypt: (value, version) => encrypted(value, version),
+        activate: (_value, _envelope, version) => {
+          activatedVersion = version;
+        },
+      }),
+    ).resolves.toEqual({ status: 'restored', version: 4 });
+    expect(destination.expectedVersions).toEqual([3]);
+    expect(activatedVersion).toBe(4);
+
+    const restored = await destination.read();
+    expect(restored).toMatchObject({ status: 'ok', info: { version: 4 } });
+    if (restored.status !== 'ok') throw new Error('Expected restored remote bytes.');
+    await expect(decryptVaultDocument(restored.envelope, KEY)).resolves.toMatchObject({
+      document: { entities: { transaction: [expect.objectContaining({ id: ENTITY_A })] } },
+    });
   });
 
   it('leaves activation unchanged on cancel, wrong key, invalid status and lost CAS', async () => {

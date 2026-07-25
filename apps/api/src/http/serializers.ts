@@ -67,6 +67,7 @@ export function toAuthUser(row: UserRow): AuthUser {
     locale: row.locale,
     profileIcon: coerceProfileIcon(row.profileIcon),
     discreetMode: row.discreetMode,
+    privacyMode: row.privacyMode,
     lastLoginAt: row.lastLoginAt,
     createdAt: row.createdAt,
   };

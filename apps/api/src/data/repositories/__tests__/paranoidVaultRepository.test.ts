@@ -51,7 +51,7 @@ describe('paranoid vault repository CAS', () => {
     expect(row?.version).toBe(1);
     expect(row?.sizeBytes).toBe(bytes.length);
     expect(row?.blob.equals(bytes)).toBe(true);
-    expect(await repo.listHistory(userId)).toHaveLength(0);
+    expect((await repo.listHistory(userId)).items).toHaveLength(0);
   });
 
   it('refuses a second create when a vault already exists', async () => {
@@ -106,8 +106,8 @@ describe('paranoid vault repository CAS', () => {
     expect(row?.blob.equals(blob('cipher-2'))).toBe(true);
 
     const history = await repo.listHistory(userId);
-    expect(history.map((h) => h.version)).toEqual([1]);
-    expect(history[0]?.blob.equals(blob('cipher-1'))).toBe(true);
+    expect(history.items.map((h) => h.version)).toEqual([1]);
+    expect((await repo.getHistory(userId, 1))?.blob.equals(blob('cipher-1'))).toBe(true);
   });
 
   it('rejects a stale precondition and never overwrites newer ciphertext', async () => {
@@ -174,8 +174,54 @@ describe('paranoid vault repository CAS', () => {
     }
     // Archived versions were 1..4; the count bound keeps the newest 2.
     const history = await repo.listHistory(userId);
-    expect(history.map((h) => h.version)).toEqual([4, 3]);
+    expect(history.items.map((h) => h.version)).toEqual([4, 3]);
     expect((await repo.getCurrent(userId))?.version).toBe(5);
+  });
+
+  it('caps and keyset-paginates metadata reads, then owner-scopes one blob read', async () => {
+    const retention = { maxVersions: 100, maxAgeMs: 3650 * DAY_MS };
+    await repo.compareAndSwap({
+      userId,
+      expectedVersion: null,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 2,
+      blob: blob('v1'),
+      retention,
+      now: T0,
+    });
+    for (let version = 2; version <= 14; version += 1) {
+      const bytes = blob(`v${version}`);
+      await repo.compareAndSwap({
+        userId,
+        expectedVersion: version - 1,
+        version,
+        formatVersion: 1,
+        sizeBytes: bytes.length,
+        blob: bytes,
+        retention,
+        now: T0,
+      });
+    }
+
+    const first = await repo.listHistory(userId, { limit: 1000 });
+    expect(first.items.map((row) => row.version)).toEqual([13, 12, 11, 10, 9, 8, 7, 6, 5, 4]);
+    expect(first.nextCursor).toBe(4);
+    expect(first.items[0]).toEqual({
+      version: 13,
+      sizeBytes: 3,
+      createdAt: T0,
+    });
+    expect(first.items[0]).not.toHaveProperty('blob');
+    expect(first.items[0]).not.toHaveProperty('formatVersion');
+
+    const second = await repo.listHistory(userId, { cursor: first.nextCursor!, limit: 1000 });
+    expect(second.items.map((row) => row.version)).toEqual([3, 2, 1]);
+    expect(second.nextCursor).toBeNull();
+
+    expect((await repo.getHistory(userId, 7))?.blob.equals(blob('v7'))).toBe(true);
+    const other = await harness.seedUser({ email: 'other@bt.test', username: 'other' });
+    expect(await repo.getHistory(other.id, 7)).toBeNull();
   });
 
   it('bounds the history by age', async () => {
@@ -214,6 +260,6 @@ describe('paranoid vault repository CAS', () => {
       now: later,
     });
     const history = await repo.listHistory(userId);
-    expect(history.map((h) => h.version)).toEqual([2]);
+    expect(history.items.map((h) => h.version)).toEqual([2]);
   });
 });
