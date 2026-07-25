@@ -13,4 +13,5 @@ export * from './rekey';
 export * from './restore';
 export * from './serverBlobDataHome';
 export * from './sync';
+export * from './vaultPortfolioStore';
 export * from './vectors';
