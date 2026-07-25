@@ -2,6 +2,7 @@ import {
   vaultDocumentV1Schema,
   type VaultDocumentV1,
   type VaultEntity,
+  type VaultEntityKind,
   type VaultMergeRecord,
 } from '@bettertrack/contracts';
 
@@ -14,6 +15,8 @@ export interface MergeVaultDocumentsInput {
   leftVersion: number;
   right: VaultDocumentV1;
   rightVersion: number;
+  /** A known locally pending write is an offline fork, even when it dominates. */
+  forceDivergent?: boolean;
   /** Device recording this deterministic merged successor. */
   deviceId: string;
   /** An injected clock makes merge records reproducible in matrix tests. */
@@ -38,18 +41,33 @@ export function mergeVaultDocuments(input: MergeVaultDocumentsInput): MergedVaul
   const left = parseDocument(input.left);
   const right = parseDocument(input.right);
 
-  // Idempotence applies to the same causal snapshot only. A higher-version
-  // document may contain every entity from an older parent yet still be a
-  // concurrent whole-blob fork (for example, offline edits after a prior
-  // merge); treating dominance alone as linear would silently drop it.
-  if (input.leftVersion === input.rightVersion && canonicalJson(left) === canonicalJson(right)) {
-    return { document: left, vaultVersion: input.leftVersion, divergent: false };
+  // A later cache/remote candidate that already contains every winning entity
+  // is a linear successor. Selecting it avoids manufacturing a merge version on
+  // every normal reconnect. The check is deliberately entity-only: mergeLog is
+  // diagnostic, not portfolio state.
+  const leftDominates = documentDominates(left, right);
+  const rightDominates = documentDominates(right, left);
+  if (!input.forceDivergent && (leftDominates || rightDominates)) {
+    // Entity dominance is the causal evidence available in a readable blob: a
+    // normal remote successor contains every winning state from a stale local
+    // cache, so select its highest version without manufacturing a merge write.
+    // The coordinator sets forceDivergent for a locally persisted pending write,
+    // which is the explicit evidence of an offline fork.
+    const selected = selectDominatingDocument(
+      left,
+      input.leftVersion,
+      right,
+      input.rightVersion,
+      leftDominates,
+      rightDominates,
+    );
+    return { document: selected.document, vaultVersion: selected.version, divergent: false };
   }
 
   const vaultVersion = Math.max(input.leftVersion, input.rightVersion) + 1;
-  const entityKinds = new Set<keyof VaultDocumentV1['entities']>([
-    ...(Object.keys(left.entities) as (keyof VaultDocumentV1['entities'])[]),
-    ...(Object.keys(right.entities) as (keyof VaultDocumentV1['entities'])[]),
+  const entityKinds = new Set<VaultEntityKind>([
+    ...(Object.keys(left.entities) as VaultEntityKind[]),
+    ...(Object.keys(right.entities) as VaultEntityKind[]),
   ]);
   const entities: VaultDocumentV1['entities'] = {};
   for (const kind of [...entityKinds].sort(compareText)) {
@@ -89,6 +107,48 @@ export function chooseVaultEntity(left: VaultEntity, right: VaultEntity): VaultE
   return compareText(left.editedBy, right.editedBy) >= 0 ? left : right;
 }
 
+/** True only when every atomic state in `right` already loses to `left`. */
+export function documentDominates(left: VaultDocumentV1, right: VaultDocumentV1): boolean {
+  for (const [kind, entities] of Object.entries(right.entities) as [
+    VaultEntityKind,
+    VaultEntity[],
+  ][]) {
+    const candidates = new Map((left.entities[kind] ?? []).map((entity) => [entity.id, entity]));
+    for (const rightEntity of entities) {
+      const leftEntity = candidates.get(rightEntity.id);
+      if (
+        leftEntity == null ||
+        !sameEntity(chooseVaultEntity(leftEntity, rightEntity), leftEntity)
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function selectDominatingDocument(
+  left: VaultDocumentV1,
+  leftVersion: number,
+  right: VaultDocumentV1,
+  rightVersion: number,
+  leftDominates: boolean,
+  rightDominates: boolean,
+): { document: VaultDocumentV1; version: number } {
+  if (leftDominates && !rightDominates) return { document: left, version: leftVersion };
+  if (rightDominates && !leftDominates) return { document: right, version: rightVersion };
+  if (leftVersion !== rightVersion) {
+    return leftVersion > rightVersion
+      ? { document: left, version: leftVersion }
+      : { document: right, version: rightVersion };
+  }
+  // Equal semantic state and equal version can still have differently ordered
+  // diagnostics. Pick a stable representation so parent order cannot matter.
+  return canonicalJson(left) >= canonicalJson(right)
+    ? { document: left, version: leftVersion }
+    : { document: right, version: rightVersion };
+}
+
 function mergeEntityKind(left: VaultEntity[], right: VaultEntity[]): VaultEntity[] {
   const byId = new Map<string, VaultEntity>();
   for (const entity of [...left, ...right]) {
@@ -115,6 +175,10 @@ function parseDocument(document: VaultDocumentV1): VaultDocumentV1 {
     );
   }
   return parsed.data;
+}
+
+function sameEntity(left: VaultEntity, right: VaultEntity): boolean {
+  return canonicalJson(left) === canonicalJson(right);
 }
 
 function canonicalJson(value: unknown): string {

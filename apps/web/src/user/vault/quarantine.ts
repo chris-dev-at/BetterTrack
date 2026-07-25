@@ -1,7 +1,12 @@
 import type { DataHomeMedium } from './dataHome';
+import {
+  ensureVaultCacheStores,
+  VAULT_CACHE_DATABASE_NAME,
+  VAULT_CACHE_DATABASE_VERSION,
+  VAULT_CACHE_QUARANTINE_STORE,
+} from './localDataHome';
 
-const DATABASE_NAME = 'bettertrack-vault-cache';
-const STORE_NAME = 'quarantine';
+const STORE_NAME = VAULT_CACHE_QUARANTINE_STORE;
 const MAX_QUARANTINED_CANDIDATES = 50;
 
 /** Opaque candidate retained after structural, authentication, schema, or version failure. */
@@ -133,11 +138,9 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 function openDb(): Promise<IDBDatabase> {
   if (globalThis.indexedDB == null) return Promise.reject(new Error('IndexedDB is unavailable.'));
   return new Promise((resolve, reject) => {
-    const open = globalThis.indexedDB.open(DATABASE_NAME, 2);
+    const open = globalThis.indexedDB.open(VAULT_CACHE_DATABASE_NAME, VAULT_CACHE_DATABASE_VERSION);
     open.onupgradeneeded = () => {
-      if (!open.result.objectStoreNames.contains(STORE_NAME)) {
-        open.result.createObjectStore(STORE_NAME, { keyPath: 'id' });
-      }
+      ensureVaultCacheStores(open.result);
     };
     open.onsuccess = () => resolve(open.result);
     open.onerror = () => reject(open.error ?? new Error('IndexedDB could not open.'));

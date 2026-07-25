@@ -1,6 +1,7 @@
 import type {
   CashEntryRequest,
   CashMovementResponse,
+  PortfolioAsset,
   PortfolioListResponse,
   PortfolioSummary,
   Transaction,
@@ -102,7 +103,12 @@ export function createVaultPortfolioStore(engine: VaultSyncEngine): PortfolioSto
             editedAt: timestamp,
             editedBy: deviceId,
             deletedAt: null,
-            data: { ...input, portfolioId, source: 'manual' },
+            data: {
+              ...input,
+              asset: resolveTransactionAsset(document, input.assetId),
+              portfolioId,
+              source: 'manual',
+            },
           };
           created.push(entity);
           return entity;
@@ -160,9 +166,7 @@ function requireDocument(engine: VaultSyncEngine): VaultDocumentV1 {
 }
 
 function requireDeviceId(engine: VaultSyncEngine): string {
-  const state = engine.state;
-  if (state.active == null) throw unavailable('Vault is locked.');
-  return state.active.header.deviceId;
+  return engine.deviceId;
 }
 
 function requirePortfolio(engine: VaultSyncEngine, portfolioId: string): void {
@@ -263,6 +267,7 @@ async function createCashMovement(
     deletedAt: null,
     data: {
       ...body,
+      amountEur: kind === 'withdrawal' ? -body.amountEur : body.amountEur,
       portfolioId,
       kind,
       source: 'manual',
@@ -309,6 +314,49 @@ function portfolioSummaryFromEntity(entity: VaultEntity): PortfolioSummary {
   };
 }
 
+function resolveTransactionAsset(document: VaultDocumentV1, assetId: string): PortfolioAsset {
+  const asset = findLiveEntity(document, 'customAsset', assetId);
+  if (asset == null) {
+    throw unavailable(
+      'Transactions in the vault require a local asset snapshot; market asset lookup is unavailable.',
+    );
+  }
+  return portfolioAssetFromCustomAsset(asset);
+}
+
+function portfolioAssetFromCustomAsset(entity: VaultEntity): PortfolioAsset {
+  return {
+    id: entity.id,
+    symbol: stringField(entity.data, 'symbol'),
+    name: stringField(entity.data, 'name'),
+    exchange: nullableStringField(entity.data, 'exchange'),
+    currency: stringField(entity.data, 'currency') as PortfolioAsset['currency'],
+    type: stringField(entity.data, 'type') as PortfolioAsset['type'],
+    isCustom: true,
+    category: stringField(entity.data, 'category') as PortfolioAsset['category'],
+    smoothing: booleanField(entity.data, 'smoothing', false),
+  };
+}
+
+function assetFromEntity(entity: VaultEntity): PortfolioAsset {
+  const candidate = entity.data.asset;
+  if (candidate == null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    throw unavailable('Vault transaction is missing its asset snapshot.');
+  }
+  const asset = candidate as Record<string, unknown>;
+  return {
+    id: stringField(asset, 'id'),
+    symbol: stringField(asset, 'symbol'),
+    name: stringField(asset, 'name'),
+    exchange: nullableStringField(asset, 'exchange'),
+    currency: stringField(asset, 'currency') as PortfolioAsset['currency'],
+    type: stringField(asset, 'type') as PortfolioAsset['type'],
+    isCustom: booleanField(asset, 'isCustom', false),
+    category: nullableStringField(asset, 'category') as PortfolioAsset['category'],
+    smoothing: typeof asset.smoothing === 'boolean' ? asset.smoothing : undefined,
+  };
+}
+
 function transactionFromEntity(entity: VaultEntity): Transaction {
   return {
     id: entity.id,
@@ -322,7 +370,7 @@ function transactionFromEntity(entity: VaultEntity): Transaction {
     allowUncovered: booleanField(entity.data, 'allowUncovered', false),
     uncoveredEntryPrice: nullableNumberField(entity.data, 'uncoveredEntryPrice'),
     source: stringField(entity.data, 'source', 'manual') as Transaction['source'],
-    asset: entity.data.asset as Transaction['asset'],
+    asset: assetFromEntity(entity),
   };
 }
 

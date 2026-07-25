@@ -1,8 +1,15 @@
 import { webcrypto } from 'node:crypto';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import 'fake-indexeddb/auto';
 
-import type { VaultDocumentV1, VaultEntity, VaultEnvelopeHeader } from '@bettertrack/contracts';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import type {
+  VaultDocumentV1,
+  VaultEntity,
+  VaultEnvelopeHeader,
+  PortfolioAsset,
+} from '@bettertrack/contracts';
 
 import { encryptVaultDocument } from './crypto';
 import type {
@@ -12,15 +19,20 @@ import type {
   DataHomeWriteResult,
 } from './dataHome';
 import {
+  createIndexedDbLocalDataHomeStorage,
   createLocalDataHome,
   type LocalDataHome,
   type LocalDataHomeStorage,
 } from './localDataHome';
 import { chooseVaultEntity, mergeVaultDocuments } from './merge';
-import { createMemoryVaultQuarantineStore } from './quarantine';
+import {
+  createIndexedDbVaultQuarantineStore,
+  createMemoryVaultQuarantineStore,
+} from './quarantine';
 import { createRestorePicker } from './restore';
 import { createServerBlobDataHome } from './serverBlobDataHome';
-import { createVaultSyncEngine } from './sync';
+import { createVaultSyncEngine, type VaultSyncEngine } from './sync';
+import { createVaultPortfolioStore } from './vaultPortfolioStore';
 import { deterministicRandom, VECTOR_DEVICE_ID, VECTOR_KEY_ID, VECTOR_WRITE_ID } from './vectors';
 
 const DEVICE_A = VECTOR_DEVICE_ID;
@@ -36,6 +48,10 @@ const WRAPPED = {
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+});
+
+afterEach(async () => {
+  await deleteDatabase('bettertrack-vault-cache');
 });
 
 function entity(
@@ -259,11 +275,10 @@ describe('PD5 sync reconciliation and restore', () => {
       quarantine: createMemoryVaultQuarantineStore(),
     });
 
-    await expect(engine.start()).resolves.toMatchObject({ status: 'conflict' });
-    // A remote writer advanced after the first merge. Reconnect fetches it, does
-    // not force overwrite, and safely attempts the successor through normal CAS.
-    remote.set(remoteEnvelope, 4);
-    await expect(engine.reconnect()).resolves.toMatchObject({ status: 'synced' });
+    await expect(engine.start()).resolves.toMatchObject({ status: 'synced' });
+    // A second CAS loss is reconciled inside the same startup/push cycle: no
+    // caller-driven reconnect is needed to converge safely.
+    expect(engine.state.active?.document.entities.transaction).toHaveLength(2);
   });
 
   it('keeps an unreadable local cache quarantined and does not replace its last known-good blob', async () => {
@@ -499,13 +514,249 @@ describe('PD5 sync reconciliation and restore', () => {
   });
 });
 
+describe('PD5 vault portfolio store responses', () => {
+  it('uses the local engine device id and returns a complete transaction asset snapshot', async () => {
+    const portfolioId = '018f0000-0000-7000-8000-000000000020';
+    const assetId = '018f0000-0000-7000-8000-000000000021';
+    const remoteDevice = DEVICE_B;
+    const asset: PortfolioAsset = {
+      id: assetId,
+      symbol: 'LOCAL',
+      name: 'Local Asset',
+      exchange: null,
+      currency: 'EUR',
+      type: 'stock',
+      isCustom: true,
+      category: 'stock',
+      smoothing: false,
+    };
+    const initial: VaultDocumentV1 = {
+      schemaVersion: 1,
+      entities: {
+        portfolio: [
+          entity(portfolioId, 0, '2026-07-25T10:00:00.000Z', remoteDevice, null, {
+            name: 'Main',
+            visibility: 'private',
+            sortOrder: 0,
+            isDefault: true,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          }),
+        ],
+        customAsset: [entity(assetId, 0, '2026-07-25T10:00:00.000Z', remoteDevice, null, asset)],
+      },
+      mergeLog: [],
+    };
+    const engine = await startedEngine(initial, 1, remoteDevice);
+    const store = createVaultPortfolioStore(engine);
+
+    const [created] = await store.createTransactions(portfolioId, [
+      {
+        assetId,
+        side: 'buy',
+        quantity: 2,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-25T10:01:00.000Z',
+      },
+    ]);
+
+    expect(created?.asset).toEqual(asset);
+    expect(engine.state.active?.document.entities.transaction?.[0]?.editedBy).toBe(DEVICE_A);
+    await expect(store.listTransactions(portfolioId)).resolves.toMatchObject({
+      items: [expect.objectContaining({ asset })],
+    });
+  });
+
+  it('rejects transaction creation without a local asset snapshot and signs withdrawals', async () => {
+    const portfolioId = '018f0000-0000-7000-8000-000000000022';
+    const initial: VaultDocumentV1 = {
+      schemaVersion: 1,
+      entities: {
+        portfolio: [
+          entity(portfolioId, 0, '2026-07-25T10:00:00.000Z', DEVICE_B, null, {
+            name: 'Main',
+            visibility: 'private',
+            sortOrder: 0,
+            isDefault: true,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          }),
+        ],
+      },
+      mergeLog: [],
+    };
+    const store = createVaultPortfolioStore(await startedEngine(initial, 1, DEVICE_B));
+
+    await expect(
+      store.createTransactions(portfolioId, [
+        {
+          assetId: '018f0000-0000-7000-8000-000000000023',
+          side: 'buy',
+          quantity: 1,
+          price: 1,
+          fee: 0,
+          executedAt: '2026-07-25T10:01:00.000Z',
+        },
+      ]),
+    ).rejects.toMatchObject({ code: 'locked' });
+    await expect(store.withdrawCash(portfolioId, { amountEur: 25 })).resolves.toMatchObject({
+      movement: { kind: 'withdrawal', amountEur: -25 },
+    });
+  });
+});
+
+describe('PD5 review regressions', () => {
+  it('opens a coordinated cache schema after either local cache or quarantine initializes first', async () => {
+    const localStorage = createIndexedDbLocalDataHomeStorage();
+    const local = createLocalDataHome({ scope: 'schema-order', storage: localStorage });
+    const blob = await encrypted(
+      document([entity(ENTITY_A, 1, '2026-07-25T10:00:00.000Z', DEVICE_A)]),
+      1,
+    );
+    const quarantine = createIndexedDbVaultQuarantineStore({
+      scope: 'schema-order',
+      id: () => '018f0000-0000-7000-8000-0000000000f1',
+    });
+
+    await quarantine.put({
+      medium: 'server',
+      envelope: blob,
+      version: 1,
+      updatedAt: null,
+      capturedAt: '2026-07-25T10:00:00.000Z',
+      status: 'corrupt',
+      reason: 'fixture',
+    });
+    await expect(local.write(blob, { ifVersion: null })).resolves.toMatchObject({ status: 'ok' });
+
+    await deleteDatabase('bettertrack-vault-cache');
+    await expect(local.write(blob, { ifVersion: null })).resolves.toMatchObject({ status: 'ok' });
+    await expect(
+      createIndexedDbVaultQuarantineStore({
+        scope: 'schema-order',
+        id: () => '018f0000-0000-7000-8000-0000000000f2',
+      }).put({
+        medium: 'local',
+        envelope: blob,
+        version: 1,
+        updatedAt: null,
+        capturedAt: '2026-07-25T10:00:00.000Z',
+        status: 'corrupt',
+        reason: 'fixture',
+      }),
+    ).resolves.toMatchObject({ id: '018f0000-0000-7000-8000-0000000000f2' });
+  });
+
+  it('selects a higher linear successor without minting a merge record', () => {
+    const base = document([entity(ENTITY_A, 1, '2026-07-25T10:00:00.000Z', DEVICE_A)]);
+    const successor = document([
+      entity(ENTITY_A, 2, '2026-07-25T10:01:00.000Z', DEVICE_A, null, { amount: 2 }),
+    ]);
+    const merged = mergeVaultDocuments({
+      left: base,
+      leftVersion: 1,
+      right: successor,
+      rightVersion: 2,
+      deviceId: DEVICE_A,
+      mergedAt: '2026-07-25T10:02:00.000Z',
+    });
+
+    expect(merged).toEqual({ document: successor, vaultVersion: 2, divergent: false });
+  });
+
+  it('pulls and merges after a write-time CAS loss without requiring reconnect', async () => {
+    const base = document([entity(ENTITY_A, 1, '2026-07-25T10:00:00.000Z', DEVICE_A)]);
+    const remoteDocument = document([
+      entity(ENTITY_A, 1, '2026-07-25T10:00:00.000Z', DEVICE_A),
+      entity(ENTITY_B, 1, '2026-07-25T10:01:00.000Z', DEVICE_B),
+    ]);
+    const baseEnvelope = await encrypted(base, 1);
+    const remoteEnvelope = await encrypted(remoteDocument, 2, DEVICE_B);
+    const local = memoryLocalHome(baseEnvelope, 1);
+    let readCount = 0;
+    let writes = 0;
+    const remote: DataHome = {
+      medium: 'server',
+      async read() {
+        readCount += 1;
+        // start() reads v1 and the mutation pre-write pull reads v1. The
+        // recovery pull after the 412 sees device B's new v2.
+        const current = readCount >= 3 ? remoteEnvelope : baseEnvelope;
+        const version = readCount >= 3 ? 2 : 1;
+        return {
+          status: 'ok',
+          medium: 'server',
+          envelope: current,
+          info: { medium: 'server', version, sizeBytes: current.byteLength, updatedAt: null },
+        };
+      },
+      async info() {
+        return {
+          status: 'ok',
+          medium: 'server',
+          info: {
+            medium: 'server',
+            version: 1,
+            sizeBytes: baseEnvelope.byteLength,
+            updatedAt: null,
+          },
+        };
+      },
+      async write(next, options) {
+        writes += 1;
+        if (writes === 1) return { status: 'conflict', medium: 'server', currentVersion: 2 };
+        expect(options).toEqual({ ifVersion: 2 });
+        expect(next).toBeInstanceOf(Uint8Array);
+        return {
+          status: 'ok',
+          medium: 'server',
+          info: { medium: 'server', version: 3, sizeBytes: next.byteLength, updatedAt: null },
+        };
+      },
+    };
+    const engine = createVaultSyncEngine({
+      local,
+      primary: remote,
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      now: () => '2026-07-25T10:02:00.000Z',
+      quarantine: createMemoryVaultQuarantineStore(),
+    });
+
+    await expect(engine.start()).resolves.toMatchObject({ status: 'synced' });
+    await expect(
+      engine.mutate(({ document: value }) => ({
+        ...value,
+        entities: {
+          ...value.entities,
+          transaction: [
+            ...(value.entities.transaction ?? []),
+            entity('018f0000-0000-7000-8000-000000000012', 1, '2026-07-25T10:02:00.000Z', DEVICE_A),
+          ],
+        },
+      })),
+    ).resolves.toMatchObject({ status: 'synced' });
+    expect(writes).toBeGreaterThanOrEqual(2);
+    expect(engine.state.active?.document.entities.transaction).toHaveLength(3);
+  });
+});
+
 function memoryLocalHome(initial: Uint8Array, initialVersion: number): LocalDataHome {
   const home = memoryHome('local', initial, initialVersion);
   let knownGood = initial.slice();
+  let pendingRemote = false;
   return {
     ...home,
     async markLastKnownGood(envelope) {
       knownGood = envelope.slice();
+    },
+    async isPendingRemote() {
+      return pendingRemote;
+    },
+    async setPendingRemote(pending) {
+      pendingRemote = pending;
     },
     async readLastKnownGood() {
       return {
@@ -568,4 +819,37 @@ function memoryHome(
       version = nextVersion;
     },
   };
+}
+
+async function startedEngine(
+  documentValue: VaultDocumentV1,
+  version: number,
+  remoteDevice: string,
+): Promise<VaultSyncEngine> {
+  const envelope = await encrypted(documentValue, version, remoteDevice);
+  const engine = createVaultSyncEngine({
+    local: memoryLocalHome(envelope, version),
+    primary: memoryHome('server', envelope, version),
+    vaultKey: KEY,
+    deviceId: DEVICE_A,
+    writeId: writeIds(),
+    now: () => '2026-07-25T10:02:00.000Z',
+    quarantine: createMemoryVaultQuarantineStore(),
+  });
+  await engine.start();
+  return engine;
+}
+
+function deleteDatabase(name: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = globalThis.indexedDB.deleteDatabase(name);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error ?? new Error(`Could not delete ${name}.`));
+    request.onblocked = () => reject(new Error(`Deleting ${name} was blocked.`));
+  });
+}
+
+function writeIds(): () => string {
+  let value = 0xf0;
+  return () => `018f0000-0000-7000-8000-0000000000${(value++).toString(16)}`;
 }

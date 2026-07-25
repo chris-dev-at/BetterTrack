@@ -48,6 +48,8 @@ export interface VaultMutationContext {
 }
 
 export interface VaultSyncEngine {
+  /** Stable identity of the local device; never infer it from a pulled envelope. */
+  readonly deviceId: string;
   readonly state: VaultSyncState;
   start(): Promise<VaultSyncState>;
   reconnect(): Promise<VaultSyncState>;
@@ -63,6 +65,10 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   let state: VaultSyncState = { status: 'empty', active: null, pending: null };
 
   return {
+    get deviceId() {
+      return options.deviceId;
+    },
+
     get state() {
       return cloneState(state);
     },
@@ -93,6 +99,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         active.header,
       );
       if (!(await commitLocal(candidate))) return cloneState(state);
+      if (!(await setLocalPending(true))) return cloneState(state);
 
       state = { status: 'pending-offline', active: candidate, pending: candidate };
       return pushPending();
@@ -106,7 +113,8 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     ]);
     const local = await readableCandidate(localResult);
     const remote = await readableCandidate(remoteResult);
-    const pending = state.pending == null ? null : await readablePending(state.pending);
+    const storedPending = await localPendingCandidate(local);
+    const pending = state.pending == null ? storedPending : await readablePending(state.pending);
 
     if (remote != null) return reconcileRemote(local, remote, pending);
 
@@ -147,14 +155,14 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     pending: VaultSyncCandidate | null,
   ): Promise<VaultSyncState> {
     if (pending != null && sameWrite(pending, remote)) {
-      if (!(await commitLocal(remote))) return cloneState(state);
+      if (!(await acknowledgeRemote(remote))) return cloneState(state);
       state = { status: 'synced', active: remote, pending: null };
       return cloneState(state);
     }
 
     const candidate = pending ?? local;
     if (candidate == null) {
-      if (!(await commitLocal(remote))) return cloneState(state);
+      if (!(await acknowledgeRemote(remote))) return cloneState(state);
       state = { status: 'synced', active: remote, pending: null };
       return cloneState(state);
     }
@@ -164,6 +172,9 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       leftVersion: candidate.header.vaultVersion,
       right: remote.document,
       rightVersion: remote.header.vaultVersion,
+      // A candidate from `pending` is an optimistic local write; a cache-only
+      // candidate is merely a stale readable snapshot and may be linear.
+      forceDivergent: candidate === pending,
       deviceId: options.deviceId,
       mergedAt: now(),
     });
@@ -176,7 +187,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         state = { status: 'pending-offline', active: candidate, pending: candidate };
         return pushPending();
       }
-      if (!(await commitLocal(remote))) return cloneState(state);
+      if (!(await acknowledgeRemote(remote))) return cloneState(state);
       state = { status: 'synced', active: remote, pending: null };
       return cloneState(state);
     }
@@ -187,6 +198,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       newestHeader(candidate, remote),
     );
     if (!(await commitLocal(mergedCandidate))) return cloneState(state);
+    if (!(await setLocalPending(true))) return cloneState(state);
     state = { status: 'pending-offline', active: mergedCandidate, pending: mergedCandidate };
     return pushPending();
   }
@@ -210,6 +222,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
 
     // The configured server medium has no blob. Preserve the highest readable
     // local candidate and create it with If-None-Match: *; no data is discarded.
+    if (!(await setLocalPending(true))) return cloneState(state);
     state = { status: 'pending-offline', active: candidate, pending: candidate };
     return pushPending();
   }
@@ -243,7 +256,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
           return cloneState(state);
         }
         if (sameWrite(pending, remote)) {
-          if (!(await commitLocal(remote))) return cloneState(state);
+          if (!(await acknowledgeRemote(remote))) return cloneState(state);
           state = { status: 'synced', active: remote, pending: null };
           return cloneState(state);
         }
@@ -256,11 +269,12 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
             leftVersion: pending.header.vaultVersion,
             right: remote.document,
             rightVersion: remote.header.vaultVersion,
+            forceDivergent: true,
             deviceId: options.deviceId,
             mergedAt: now(),
           });
           if (!merged.divergent) {
-            if (!(await commitLocal(remote))) return cloneState(state);
+            if (!(await acknowledgeRemote(remote))) return cloneState(state);
             state = { status: 'synced', active: remote, pending: null };
             return cloneState(state);
           }
@@ -270,6 +284,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
             newestHeader(pending, remote),
           );
           if (!(await commitLocal(reconciled))) return cloneState(state);
+          if (!(await setLocalPending(true))) return cloneState(state);
           state = { status: 'pending-offline', active: reconciled, pending: reconciled };
           return writePending(reconciled, remote.header.vaultVersion);
         }
@@ -285,11 +300,14 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     const result = await options.primary.write(pending.envelope, { ifVersion: expectedVersion });
     switch (result.status) {
       case 'ok':
+        if (!(await setLocalPending(false))) return cloneState(state);
         state = { status: 'synced', active: pending, pending: null };
         return cloneState(state);
       case 'conflict':
-        state = { ...state, status: 'conflict', lastFailure: 'Vault CAS conflict.' };
-        return cloneState(state);
+        // A competing write can land between our pre-write pull and this CAS
+        // attempt. Pull it immediately and re-run the normal entity-level
+        // reconciliation; callers must never need to trigger a second reconnect.
+        return reconcileAfterCasLoss(pending);
       case 'transport-failure':
         state = { ...state, status: 'pending-offline', lastFailure: result.failure.message };
         return cloneState(state);
@@ -297,6 +315,90 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         await quarantineCorrupt(result);
         state = { ...state, status: 'corrupt', lastFailure: result.message };
         return cloneState(state);
+    }
+  }
+
+  async function reconcileAfterCasLoss(pending: VaultSyncCandidate): Promise<VaultSyncState> {
+    const remoteResult = await options.primary.read();
+    if (remoteResult.status === 'transport-failure') {
+      state = { ...state, status: 'pending-offline', lastFailure: remoteResult.failure.message };
+      return cloneState(state);
+    }
+    if (remoteResult.status === 'corrupt') {
+      await quarantineCorrupt(remoteResult);
+      state = { ...state, status: 'pending-offline', lastFailure: remoteResult.message };
+      return cloneState(state);
+    }
+    if (remoteResult.status === 'absent') {
+      state = {
+        ...state,
+        status: 'pending-offline',
+        lastFailure: 'Vault disappeared while resolving a CAS conflict.',
+      };
+      return cloneState(state);
+    }
+
+    const remote = await readableCandidate(remoteResult);
+    if (remote == null) {
+      state = {
+        ...state,
+        status: 'pending-offline',
+        lastFailure: 'Remote vault is unreadable after a CAS conflict.',
+      };
+      return cloneState(state);
+    }
+    if (sameWrite(pending, remote)) {
+      if (!(await acknowledgeRemote(remote))) return cloneState(state);
+      state = { status: 'synced', active: remote, pending: null };
+      return cloneState(state);
+    }
+
+    const merged = mergeVaultDocuments({
+      left: pending.document,
+      leftVersion: pending.header.vaultVersion,
+      right: remote.document,
+      rightVersion: remote.header.vaultVersion,
+      forceDivergent: true,
+      deviceId: options.deviceId,
+      mergedAt: now(),
+    });
+    if (!merged.divergent) {
+      if (!(await acknowledgeRemote(remote))) return cloneState(state);
+      state = { status: 'synced', active: remote, pending: null };
+      return cloneState(state);
+    }
+
+    const reconciled = await encryptCandidate(
+      merged.document,
+      merged.vaultVersion,
+      newestHeader(pending, remote),
+    );
+    if (!(await commitLocal(reconciled))) return cloneState(state);
+    if (!(await setLocalPending(true))) return cloneState(state);
+    state = { status: 'pending-offline', active: reconciled, pending: reconciled };
+    // We just pulled this remote candidate after a 412, so its version is the
+    // exact CAS predecessor for the merged successor. Write it directly rather
+    // than doing a third pre-write pull that can itself introduce another race.
+    return writePending(reconciled, remote.header.vaultVersion);
+  }
+
+  async function acknowledgeRemote(candidate: VaultSyncCandidate): Promise<boolean> {
+    if (!(await commitLocal(candidate))) return false;
+    return setLocalPending(false);
+  }
+
+  async function setLocalPending(pending: boolean): Promise<boolean> {
+    try {
+      await options.local.setPendingRemote(pending);
+      return true;
+    } catch (cause) {
+      state = withFailure(
+        state,
+        cause instanceof Error
+          ? cause.message
+          : 'Could not update local vault acknowledgement state.',
+      );
+      return false;
     }
   }
 
@@ -373,6 +475,23 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
           });
           return null;
         }
+    }
+  }
+
+  async function localPendingCandidate(
+    local: VaultSyncCandidate | null,
+  ): Promise<VaultSyncCandidate | null> {
+    if (local == null) return null;
+    try {
+      return (await options.local.isPendingRemote()) ? local : null;
+    } catch (cause) {
+      state = withFailure(
+        state,
+        cause instanceof Error
+          ? cause.message
+          : 'Could not read local vault acknowledgement state.',
+      );
+      return null;
     }
   }
 

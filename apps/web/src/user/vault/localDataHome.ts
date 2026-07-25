@@ -9,8 +9,12 @@ import type {
   DataHomeWriteResult,
 } from './dataHome';
 
-const DATABASE_NAME = 'bettertrack-vault-cache';
-const STORE_NAME = 'vaults';
+export const VAULT_CACHE_DATABASE_NAME = 'bettertrack-vault-cache';
+export const VAULT_CACHE_DATABASE_VERSION = 2;
+export const VAULT_CACHE_VAULTS_STORE = 'vaults';
+export const VAULT_CACHE_QUARANTINE_STORE = 'quarantine';
+
+const STORE_NAME = VAULT_CACHE_VAULTS_STORE;
 const RECORD_VERSION = 1;
 
 export interface LocalVaultRecord {
@@ -23,6 +27,8 @@ export interface LocalVaultRecord {
   lastKnownGood: ArrayBuffer;
   lastKnownGoodVersion: number;
   lastKnownGoodUpdatedAt: string;
+  /** Survives restart so a local optimistic write is never mistaken for a stale cache. */
+  pendingRemote?: boolean;
 }
 
 export interface LocalDataHomeOptions {
@@ -42,6 +48,10 @@ export interface LocalDataHome extends DataHome {
   markLastKnownGood(envelope: Uint8Array): Promise<void>;
   /** Returns the rollback-safe encrypted bytes without exposing decrypted data. */
   readLastKnownGood(): Promise<DataHomeReadResult>;
+  /** Whether the current local envelope still needs primary-medium acknowledgement. */
+  isPendingRemote(): Promise<boolean>;
+  /** Persists the acknowledgement state without ever storing plaintext. */
+  setPendingRemote(pending: boolean): Promise<void>;
 }
 
 /**
@@ -111,6 +121,7 @@ export function createLocalDataHome(options: LocalDataHomeOptions): LocalDataHom
         lastKnownGoodVersion: current?.lastKnownGoodVersion ?? parsed.version,
         lastKnownGoodUpdatedAt:
           current?.lastKnownGoodUpdatedAt ?? parsed.updatedAt ?? new Date().toISOString(),
+        pendingRemote: current?.pendingRemote ?? false,
       };
       try {
         await storage.write(options.scope, next);
@@ -146,6 +157,17 @@ export function createLocalDataHome(options: LocalDataHomeOptions): LocalDataHom
         lastKnownGoodVersion: parsed.version,
         lastKnownGoodUpdatedAt: parsed.updatedAt ?? new Date().toISOString(),
       });
+    },
+
+    async isPendingRemote(): Promise<boolean> {
+      const current = await storage.read(options.scope);
+      return current?.pendingRemote ?? false;
+    },
+
+    async setPendingRemote(pending): Promise<void> {
+      const current = await storage.read(options.scope);
+      if (current == null) throw new Error('No encrypted local cache exists.');
+      await storage.write(options.scope, { ...current, pendingRemote: pending });
     },
 
     async readLastKnownGood(): Promise<DataHomeReadResult> {
@@ -269,10 +291,9 @@ function transportFailure(
 function openDb(): Promise<IDBDatabase> {
   if (globalThis.indexedDB == null) return Promise.reject(new Error('IndexedDB is unavailable.'));
   return new Promise((resolve, reject) => {
-    const open = globalThis.indexedDB.open(DATABASE_NAME, 1);
+    const open = globalThis.indexedDB.open(VAULT_CACHE_DATABASE_NAME, VAULT_CACHE_DATABASE_VERSION);
     open.onupgradeneeded = () => {
-      if (!open.result.objectStoreNames.contains(STORE_NAME))
-        open.result.createObjectStore(STORE_NAME);
+      ensureVaultCacheStores(open.result);
     };
     open.onsuccess = () => resolve(open.result);
     open.onerror = () => reject(open.error ?? new Error('IndexedDB could not open.'));
@@ -291,4 +312,17 @@ function complete<T>(value: IDBRequest<T>): Promise<void> {
     value.onsuccess = () => resolve();
     value.onerror = () => reject(value.error ?? new Error('IndexedDB write failed.'));
   });
+}
+
+/**
+ * The local cache and quarantine share one coordinated schema upgrade so either
+ * adapter can initialize first without making the other adapter's open fail.
+ */
+export function ensureVaultCacheStores(db: IDBDatabase): void {
+  if (!db.objectStoreNames.contains(VAULT_CACHE_VAULTS_STORE)) {
+    db.createObjectStore(VAULT_CACHE_VAULTS_STORE);
+  }
+  if (!db.objectStoreNames.contains(VAULT_CACHE_QUARANTINE_STORE)) {
+    db.createObjectStore(VAULT_CACHE_QUARANTINE_STORE, { keyPath: 'id' });
+  }
 }
