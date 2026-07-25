@@ -119,6 +119,13 @@ describe('strict vault-payload completeness', () => {
     }
   });
 
+  it('restores the authoritative standing-order exactly-once ledger', () => {
+    expect(PARANOID_REHYDRATION_POLICY['standing_order_runs']).toEqual({
+      kind: 'restore',
+      entity: 'standingOrderRun',
+    });
+  });
+
   it('has one restore policy for each handler', () => {
     const entities = Object.values(PARANOID_REHYDRATION_POLICY)
       .filter(

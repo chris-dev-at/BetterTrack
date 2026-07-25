@@ -42,7 +42,7 @@ export interface ParanoidRehydrationSourceRepository {
   restoreDividends(rows: readonly EntityOf<'dividend'>[]): Promise<void>;
   restoreCashMovements(rows: readonly EntityOf<'cashMovement'>[]): Promise<void>;
   restoreStandingOrders(userId: string, rows: readonly EntityOf<'standingOrder'>[]): Promise<void>;
-  restoreStandingOrderRuns(rows: readonly EntityOf<'standingOrder'>[]): Promise<void>;
+  restoreStandingOrderRuns(rows: readonly EntityOf<'standingOrderRun'>[]): Promise<void>;
   restoreExpenseCategories(
     userId: string,
     rows: readonly EntityOf<'expenseCategory'>[],
@@ -239,8 +239,8 @@ export function createParanoidRehydrationSourceRepository(
           startDate: entity.data.startDate,
           endDate: entity.data.endDate,
           status: entity.data.status,
-          // Reconstructed runs below are the authoritative no-replay fence; these
-          // displays retain the highest known historical execution as a fast path.
+          // The separately restored run rows are the authoritative no-replay
+          // fence; these displays retain the highest known booking as a fast path.
           lastRunAt: entity.data.lastRunAt ? new Date(entity.data.lastRunAt) : null,
           lastPeriodKey: entity.data.lastPeriodKey,
           createdAt: new Date(entity.data.createdAt),
@@ -250,16 +250,15 @@ export function createParanoidRehydrationSourceRepository(
     },
 
     async restoreStandingOrderRuns(rows) {
-      const runs = rows
-        .filter((entity) => entity.data.lastPeriodKey !== null)
-        .map((entity) => ({
-          standingOrderId: entity.id,
-          periodKey: entity.data.lastPeriodKey!,
-          bookedAt: entity.data.lastRunAt
-            ? new Date(entity.data.lastRunAt)
-            : new Date(entity.editedAt),
-        }));
-      if (runs.length > 0) await tx.insert(standingOrderRuns).values(runs);
+      if (!rows.length) return;
+      await tx.insert(standingOrderRuns).values(
+        rows.map((entity) => ({
+          id: entity.id,
+          standingOrderId: entity.data.standingOrderId,
+          periodKey: entity.data.periodKey,
+          bookedAt: new Date(entity.data.bookedAt),
+        })),
+      );
     },
 
     async restoreExpenseCategories(userId, rows) {

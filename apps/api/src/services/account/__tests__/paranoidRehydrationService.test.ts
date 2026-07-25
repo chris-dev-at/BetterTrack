@@ -2,6 +2,12 @@ import type { ParanoidDisableRehydrationRequest } from '@bettertrack/contracts';
 import { and, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
+import { createAssetRepository } from '../../../data/repositories/assetRepository';
+import { createCashMovementRepository } from '../../../data/repositories/cashMovementRepository';
+import { createCashSourceRepository } from '../../../data/repositories/cashSourceRepository';
+import { createPortfolioRepository } from '../../../data/repositories/portfolioRepository';
+import { createStandingOrderRepository } from '../../../data/repositories/standingOrderRepository';
+import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
 import {
   assets,
   dividends,
@@ -26,6 +32,8 @@ import {
 } from '../../../data/schema';
 import { expenseDedupHash } from '../../../data/expenseDedup';
 import { createTestApp } from '../../../testing/createTestApp';
+import { createStubMarketData } from '../../../testing/marketDataStubs';
+import { createStandingOrderService } from '../../standingOrders/standingOrderService';
 import {
   createParanoidRehydrationService,
   ParanoidRehydrationError,
@@ -43,6 +51,7 @@ const SECOND_CASH_SOURCE_ID = '018f0000-0000-7000-8000-000000000009';
 const SECOND_TRANSACTION_ID = '018f0000-0000-7000-8000-00000000000a';
 const TRANSFER_ID = '018f0000-0000-7000-8000-00000000000b';
 const TRANSFER_OUT_ID = '018f0000-0000-7000-8000-00000000000c';
+const STANDING_ORDER_ID = '018f0000-0000-7000-8000-000000000020';
 const editedAt = '2026-07-24T10:00:00.000Z';
 
 function entity<
@@ -202,6 +211,11 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
       createdAt: editedAt,
       updatedAt: editedAt,
     }),
+    entity('018f0000-0000-7000-8000-000000000017', 'standingOrderRun', {
+      standingOrderId: '018f0000-0000-7000-8000-000000000012',
+      periodKey: '2026-07-24',
+      bookedAt: '2026-07-24T09:59:59.000Z',
+    }),
     entity(categoryId, 'expenseCategory', {
       name: 'Groceries',
       direction: 'expense',
@@ -266,6 +280,98 @@ async function makeParanoid() {
     blob: Buffer.from('old-ciphertext'),
   });
   return { ...harness, user };
+}
+
+type AmbiguousStandingOrderWindow = 'booking-failed' | 'mark-booked-failed';
+
+async function captureAmbiguousStandingOrderWindow(window: AmbiguousStandingOrderWindow) {
+  const harness = await createTestApp();
+  const user = await harness.seedUser();
+  await harness.db.insert(portfolios).values({
+    id: PORTFOLIO_ID,
+    userId: user.id,
+    name: 'Main',
+  });
+  await harness.db.insert(portfolioCashSources).values({
+    id: CASH_SOURCE_ID,
+    portfolioId: PORTFOLIO_ID,
+    name: 'Main',
+    type: 'cash',
+    isMain: true,
+  });
+  await harness.db.insert(standingOrders).values({
+    id: STANDING_ORDER_ID,
+    userId: user.id,
+    portfolioId: PORTFOLIO_ID,
+    kind: 'cash-add',
+    assetId: null,
+    amount: '100',
+    currency: 'EUR',
+    label: 'Salary',
+    cadence: 'daily',
+    anchorDay: null,
+    startDate: '2026-07-01',
+    endDate: null,
+    status: 'active',
+    lastRunAt: null,
+    lastPeriodKey: null,
+  });
+
+  const realStandingOrderRepo = createStandingOrderRepository(harness.db);
+  const realCashMovementRepo = createCashMovementRepository(harness.db);
+  const service = createStandingOrderService({
+    repo:
+      window === 'mark-booked-failed'
+        ? {
+            ...realStandingOrderRepo,
+            async markBooked() {
+              throw new Error('injected markBooked failure');
+            },
+          }
+        : realStandingOrderRepo,
+    portfolioRepo: createPortfolioRepository(harness.db),
+    assetRepo: createAssetRepository(harness.db),
+    transactionRepo: createTransactionRepository(harness.db),
+    cashMovementRepo:
+      window === 'booking-failed'
+        ? {
+            ...realCashMovementRepo,
+            async insert() {
+              throw new Error('injected booking failure');
+            },
+          }
+        : realCashMovementRepo,
+    cashSourceRepo: createCashSourceRepository(harness.db),
+    marketData: createStubMarketData(),
+    snapshots: { async invalidate() {} },
+  });
+
+  const result = await service.processDueOrders({ now: Date.parse(editedAt) });
+  const [order] = await harness.db
+    .select()
+    .from(standingOrders)
+    .where(eq(standingOrders.id, STANDING_ORDER_ID));
+  const [run] = await harness.db
+    .select()
+    .from(standingOrderRuns)
+    .where(eq(standingOrderRuns.standingOrderId, STANDING_ORDER_ID));
+  const bookedRows = await harness.db
+    .select()
+    .from(portfolioCashMovements)
+    .where(
+      and(
+        eq(portfolioCashMovements.portfolioId, PORTFOLIO_ID),
+        eq(portfolioCashMovements.source, 'standing-order'),
+      ),
+    );
+
+  expect(order).toBeDefined();
+  expect(run).toBeDefined();
+  expect(order?.lastPeriodKey).toBeNull();
+  expect(order?.lastRunAt).toBeNull();
+  expect(bookedRows).toHaveLength(window === 'mark-booked-failed' ? 1 : 0);
+  expect(result.booked).toBe(window === 'mark-booked-failed' ? 1 : 0);
+  return { order: order!, run: run!, bookedRows };
 }
 
 describe('paranoid rehydration service', () => {
@@ -486,7 +592,7 @@ describe('paranoid rehydration service', () => {
     ).rejects.toMatchObject({ code: 'REHYDRATION_CONFLICT' });
   });
 
-  it('exercises every reconstructed row covered by the injected rollback matrix', async () => {
+  it('exercises every restored or reconstructed row in the rollback matrix', async () => {
     const { db, user } = await makeParanoid();
     const service = createParanoidRehydrationService({
       db,
@@ -1173,7 +1279,7 @@ describe('paranoid rehydration service', () => {
     ]);
   });
 
-  it('rebuilds standing-order watermark and no-replay run marker', async () => {
+  it('restores the exact standing-order watermark and authoritative run row', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
     input.document.entities.push(
@@ -1194,6 +1300,11 @@ describe('paranoid rehydration service', () => {
         createdAt: editedAt,
         updatedAt: editedAt,
       }),
+      entity('018f0000-0000-7000-8000-00000000000e', 'standingOrderRun', {
+        standingOrderId: '018f0000-0000-7000-8000-00000000000d',
+        periodKey: '2026-07-24',
+        bookedAt: '2026-07-24T09:59:59.000Z',
+      }),
     );
     const service = createParanoidRehydrationService({ db });
 
@@ -1205,8 +1316,154 @@ describe('paranoid rehydration service', () => {
     expect(order?.lastRunAt?.toISOString()).toBe(editedAt);
     expect(order?.lastPeriodKey).toBe('2026-07-24');
     expect(await db.select().from(standingOrderRuns)).toMatchObject([
-      { standingOrderId: '018f0000-0000-7000-8000-00000000000d', periodKey: '2026-07-24' },
+      {
+        id: '018f0000-0000-7000-8000-00000000000e',
+        standingOrderId: '018f0000-0000-7000-8000-00000000000d',
+        periodKey: '2026-07-24',
+        bookedAt: new Date('2026-07-24T09:59:59.000Z'),
+      },
     ]);
+  });
+
+  it.each([
+    { window: 'booking-failed' as const, expectedBookedRows: 0 },
+    { window: 'mark-booked-failed' as const, expectedBookedRows: 1 },
+  ])(
+    'round-trips the retained claim when $window and prevents a retry',
+    async ({ window, expectedBookedRows }) => {
+      const captured = await captureAmbiguousStandingOrderWindow(window);
+      const { db, user, ctx } = await makeParanoid();
+      const input = request();
+      input.document.entities.push(
+        entity(STANDING_ORDER_ID, 'standingOrder', {
+          portfolioId: PORTFOLIO_ID,
+          kind: captured.order.kind,
+          assetId: captured.order.assetId,
+          amount: Number(captured.order.amount),
+          currency: 'EUR',
+          label: captured.order.label,
+          cadence: captured.order.cadence,
+          anchorDay: captured.order.anchorDay,
+          startDate: captured.order.startDate,
+          endDate: captured.order.endDate,
+          status: captured.order.status,
+          lastRunAt: null,
+          lastPeriodKey: null,
+          createdAt: captured.order.createdAt.toISOString(),
+          updatedAt: captured.order.updatedAt.toISOString(),
+        }),
+        entity(captured.run.id, 'standingOrderRun', {
+          standingOrderId: captured.run.standingOrderId,
+          periodKey: captured.run.periodKey,
+          bookedAt: captured.run.bookedAt.toISOString(),
+        }),
+        ...captured.bookedRows.map((movement) =>
+          entity(movement.id, 'cashMovement', {
+            portfolioId: movement.portfolioId,
+            sourceId: movement.sourceId,
+            kind: movement.kind,
+            amountEur: Number(movement.amountEur),
+            transactionId: movement.transactionId,
+            transferId: movement.transferId,
+            counterpartSourceId: movement.counterpartSourceId,
+            dividendId: movement.dividendId,
+            taxYear: movement.taxYear,
+            executedAt: movement.executedAt.toISOString(),
+            createdAt: movement.createdAt.toISOString(),
+            note: movement.note,
+            source: movement.source,
+          }),
+        ),
+      );
+
+      await createParanoidRehydrationService({ db }).rehydrate(user.id, input);
+
+      const restoredRuns = await db
+        .select()
+        .from(standingOrderRuns)
+        .where(eq(standingOrderRuns.standingOrderId, STANDING_ORDER_ID));
+      expect(restoredRuns).toEqual([captured.run]);
+      const beforeRetry = await db
+        .select()
+        .from(portfolioCashMovements)
+        .where(
+          and(
+            eq(portfolioCashMovements.portfolioId, PORTFOLIO_ID),
+            eq(portfolioCashMovements.source, 'standing-order'),
+          ),
+        );
+      expect(beforeRetry).toHaveLength(expectedBookedRows);
+
+      const retry = await ctx.standingOrders.processDueOrders({ now: Date.parse(editedAt) });
+      expect(retry).toMatchObject({ booked: 0, skippedDuplicate: 1 });
+      expect(
+        await db
+          .select()
+          .from(portfolioCashMovements)
+          .where(
+            and(
+              eq(portfolioCashMovements.portfolioId, PORTFOLIO_ID),
+              eq(portfolioCashMovements.source, 'standing-order'),
+            ),
+          ),
+      ).toHaveLength(expectedBookedRows);
+    },
+  );
+
+  it('rejects a standing-order run whose parent is absent before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'standingOrderRun', {
+        standingOrderId: STANDING_ORDER_ID,
+        periodKey: '2026-07-24',
+        bookedAt: editedAt,
+      }),
+    );
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('rejects duplicate order-period claims before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity(STANDING_ORDER_ID, 'standingOrder', {
+        portfolioId: PORTFOLIO_ID,
+        kind: 'cash-add',
+        assetId: null,
+        amount: 100,
+        currency: 'EUR',
+        label: 'Salary',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-01',
+        endDate: null,
+        status: 'active',
+        lastRunAt: null,
+        lastPeriodKey: null,
+        createdAt: editedAt,
+        updatedAt: editedAt,
+      }),
+      entity('018f0000-0000-7000-8000-00000000000d', 'standingOrderRun', {
+        standingOrderId: STANDING_ORDER_ID,
+        periodKey: '2026-07-24',
+        bookedAt: editedAt,
+      }),
+      entity('018f0000-0000-7000-8000-00000000000e', 'standingOrderRun', {
+        standingOrderId: STANDING_ORDER_ID,
+        periodKey: '2026-07-24',
+        bookedAt: '2026-07-24T10:00:01.000Z',
+      }),
+    );
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
 
   it.each([

@@ -402,6 +402,15 @@ describe('vault document v1', () => {
         },
       },
       {
+        ...meta(uuid(15)),
+        kind: 'standingOrderRun',
+        data: {
+          standingOrderId: uuid(11),
+          periodKey: '2026-07-24',
+          bookedAt: '2026-07-24T09:59:59.000Z',
+        },
+      },
+      {
         ...meta(categoryId),
         kind: 'expenseCategory',
         data: {
@@ -471,6 +480,7 @@ describe('vault document v1', () => {
         'customAsset',
         'customAssetValue',
         'standingOrder',
+        'standingOrderRun',
         'expenseCategory',
         'expenseTransaction',
         'expenseRule',

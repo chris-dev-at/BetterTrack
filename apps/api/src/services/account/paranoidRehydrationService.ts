@@ -179,6 +179,7 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
   const sourceIds = ids(entities, 'cashSource');
   const transactionIds = ids(entities, 'transaction');
   const dividendIds = ids(entities, 'dividend');
+  const standingOrderIds = ids(entities, 'standingOrder');
   const categoryIds = ids(entities, 'expenseCategory');
   const taxSettings = rows(entities, 'taxSetting');
   if (taxSettings.length > 1) {
@@ -293,6 +294,22 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
     portfolioIds,
     'standing order',
   );
+  requireSubset(
+    rows(entities, 'standingOrderRun').map((entity) => entity.data.standingOrderId),
+    standingOrderIds,
+    'standing-order run',
+  );
+  const standingOrderRunKeys = new Set<string>();
+  for (const run of rows(entities, 'standingOrderRun')) {
+    const key = `${run.data.standingOrderId}\u0000${run.data.periodKey}`;
+    if (standingOrderRunKeys.has(key)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'standing-order runs must be unique per order and period',
+      );
+    }
+    standingOrderRunKeys.add(key);
+  }
   for (const order of rows(entities, 'standingOrder')) {
     if ((order.data.lastRunAt === null) !== (order.data.lastPeriodKey === null)) {
       throw new ParanoidRehydrationError(
@@ -308,6 +325,15 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
         'a standing-order run watermark must fall within its schedule window',
+      );
+    }
+    if (
+      order.data.lastPeriodKey !== null &&
+      !standingOrderRunKeys.has(`${order.id}\u0000${order.data.lastPeriodKey}`)
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a standing-order run watermark requires its authoritative run row',
       );
     }
   }
@@ -956,7 +982,7 @@ export function createParanoidRehydrationService(
 
         const standingOrderRows = rows(entities, 'standingOrder');
         await sourceRows.restoreStandingOrders(userId, standingOrderRows);
-        await sourceRows.restoreStandingOrderRuns(standingOrderRows);
+        await sourceRows.restoreStandingOrderRuns(rows(entities, 'standingOrderRun'));
         await stage('standingOrders');
 
         const categoryRepo = createExpenseCategoryRepository(tx);
