@@ -293,6 +293,39 @@ kill -0 "$HB_BYSTANDER" 2>/dev/null \
 kill "$HB_BYSTANDER" 2>/dev/null || true
 wait "$HB_BYSTANDER" 2>/dev/null || true
 
+echo "— writer no-PR outcomes (#746)"
+OUTCOME_LOG=$T/writer-no-pr.log
+OUTCOME_COST=$T/writer-no-pr-cost.log
+OUTCOME_STATUS=$T/writer-no-pr-status.log
+OUTCOME_GH=$T/writer-no-pr-gh.log
+gh(){ printf '%s\n' "$*" >>"$OUTCOME_GH"; }
+log(){ printf '%s\n' "$*" >>"$OUTCOME_LOG"; }
+notify(){ log "NOTIFY: $*"; }
+issue_cost(){ printf '%s\n' "$1" >>"$OUTCOME_COST"; }
+wstatus(){ printf '%s|%s|%s\n' "$1" "$2" "${3:-null}" >>"$OUTCOME_STATUS"; }
+
+: >"$OUTCOME_LOG"; : >"$OUTCOME_COST"; : >"$OUTCOME_STATUS"; : >"$OUTCOME_GH"
+CLOSED_RC=0
+writer_no_pr_outcome 746 CLOSED '' || CLOSED_RC=$?
+check "closed writer issue keeps self-resolved log" "1" \
+  "$(grep -Fxc 'issue #746 self-resolved by writer (no PR needed)' "$OUTCOME_LOG")"
+check "closed writer issue acks done" "done|746|null" "$(<"$OUTCOME_STATUS")"
+check "closed writer issue records cost" "746" "$(<"$OUTCOME_COST")"
+check "closed writer issue outcome succeeds" "0" "$CLOSED_RC"
+
+: >"$OUTCOME_LOG"; : >"$OUTCOME_COST"; : >"$OUTCOME_STATUS"; : >"$OUTCOME_GH"
+HUMAN_RC=0
+writer_no_pr_outcome 747 OPEN $'autopilot\nneeds-human' || HUMAN_RC=$?
+check "needs-human writer issue logs escalation" "1" \
+  "$(grep -Fxc 'issue #747 escalated to needs-human by writer (no PR)' "$OUTCOME_LOG")"
+check "needs-human writer issue never claims self-resolution" "0" \
+  "$(grep -Fxc 'issue #747 self-resolved by writer (no PR needed)' "$OUTCOME_LOG" || true)"
+check "needs-human writer issue emits NOTIFY" "1" \
+  "$(grep -Fxc 'NOTIFY: issue #747 escalated to needs-human by writer (no PR)' "$OUTCOME_LOG")"
+check "needs-human writer issue acks failed, not done" "failed|747|null" "$(<"$OUTCOME_STATUS")"
+check "needs-human writer issue records cost" "747" "$(<"$OUTCOME_COST")"
+check "needs-human writer issue outcome is distinguishable" "1" "$HUMAN_RC"
+
 echo "— headless fixer routing authority"
 FIXER_PROMPT=../factory/prompts/fixer.md
 grep -q 'tier-and-delegation rules do NOT apply here' "$FIXER_PROMPT" \
