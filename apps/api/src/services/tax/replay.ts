@@ -1,5 +1,8 @@
 import type { Database } from '../../data/db';
-import { createCashMovementRepository } from '../../data/repositories/cashMovementRepository';
+import {
+  createCashMovementRepository,
+  insertReconciledCashMovementsInTransaction,
+} from '../../data/repositories/cashMovementRepository';
 import type {
   CashMovementRecord,
   NewCashMovement,
@@ -316,7 +319,7 @@ export async function replayRestoredTaxState(
         throw new Error(`Tax replay: restored portfolio ${portfolioId} has no Main cash source`);
       }
 
-      await movementRepo.insertReconciled(portfolioId, (fresh) => {
+      await insertReconciledCashMovementsInTransaction(tx, portfolioId, (fresh) => {
         const existing = fresh.map(toSourcedMovement);
         const posted: NewCashMovement[] = [];
         for (const settlement of settlements) {

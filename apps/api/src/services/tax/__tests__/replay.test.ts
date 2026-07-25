@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { newId } from '../../../data/ids';
 import type { Database } from '../../../data/db';
@@ -619,12 +619,14 @@ describe('transaction-bound restored tax replay', () => {
     await expect(
       harness.db.transaction(async (tx) => {
         const executor = tx as unknown as Database;
+        const nestedTransaction = vi.spyOn(executor, 'transaction');
         await replayRestoredTaxState(executor, {
           userId: user.id,
           portfolioIds: [fixture.portfolioId],
           now: NOW,
           toEur,
         });
+        expect(nestedTransaction).not.toHaveBeenCalled();
         const inside = await executor
           .select({ id: schema.portfolioCashMovements.id })
           .from(schema.portfolioCashMovements)
