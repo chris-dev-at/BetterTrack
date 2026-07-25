@@ -282,7 +282,6 @@ test.describe('mirrorchain lifecycle UI gate', () => {
 
       // The successor was already the live watermark witness above, so transfer
       // ownership through the current owner's member sheet.
-      const successorTransactions = await listTransactions(successor, successorChain.portfolioId);
       expect(
         successorTransactions.some((tx) => tx.quantity === 3),
         'the later chain join replays live history but never the fork-only write',
