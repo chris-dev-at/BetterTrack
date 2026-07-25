@@ -1227,7 +1227,7 @@ function isPrivateSource(addr) {
   return a === '::1' || PRIVATE_SRC.test(a);
 }
 
-const server = createServer(async (req, res) => {
+const handleRequest = async (req, res) => {
   if (!isPrivateSource(req.socket.remoteAddress)) {
     req.socket.destroy();
     return;
@@ -1312,9 +1312,32 @@ const server = createServer(async (req, res) => {
     res.writeHead(500);
     res.end(String(e));
   }
-});
+};
+
+const server = createServer(handleRequest);
 
 const HOST = process.env.MF_CONTROL_HOST || '127.0.0.1';
 server.listen(PORT, HOST, () => {
   console.log(`multi-factory control → http://${HOST}:${PORT} (private-source-only guard active)`);
 });
+
+// Node binds one address family per listener, so an IPv4 bind alone makes
+// http://localhost:8790 fail with a connection refusal on macOS, which resolves
+// `localhost` to ::1 first — the console looks down when it is healthy. Add the
+// IPv6 counterpart of whatever was asked for: loopback pairs with ::1, and the
+// all-interfaces LAN bind (the mode the owner runs) pairs with ::. Any other
+// explicit MF_CONTROL_HOST is honoured verbatim and gets no second listener,
+// and the private-source guard above still runs for every request on both.
+const HOST6 =
+  HOST === '127.0.0.1' || HOST === 'localhost' ? '::1' : HOST === '0.0.0.0' ? '::' : null;
+if (HOST6) {
+  const server6 = createServer(handleRequest);
+  server6.on('error', (e) => {
+    // EADDRINUSE is expected where the IPv4 bind already covers both families.
+    if (e.code !== 'EADDRINUSE' && e.code !== 'EAFNOSUPPORT')
+      console.error(`control: IPv6 listener failed — ${e.code || e.message}`);
+  });
+  server6.listen(PORT, HOST6, () => {
+    console.log(`multi-factory control → http://[${HOST6}]:${PORT} (dual-stack)`);
+  });
+}
