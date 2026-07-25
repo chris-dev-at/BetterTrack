@@ -1,0 +1,666 @@
+import type { VaultDocumentV1, VaultEnvelopeHeader } from '@bettertrack/contracts';
+
+import { decryptVaultDocument, encryptVaultDocument, type VaultKeyMaterial } from './crypto';
+import type { DataHome, DataHomeReadResult, DataHomeWriteResult } from './dataHome';
+import { VaultCryptoError } from './errors';
+import type { LocalDataHome } from './localDataHome';
+import { mergeVaultDocuments } from './merge';
+import type { VaultQuarantineStore } from './quarantine';
+
+const MAX_CAS_RECONCILIATIONS = 16;
+
+export interface VaultSyncCandidate {
+  home: DataHome;
+  envelope: Uint8Array;
+  header: VaultEnvelopeHeader;
+  document: VaultDocumentV1;
+}
+
+export type VaultSyncStatus =
+  | 'synced'
+  | 'pending-offline'
+  | 'conflict'
+  | 'corrupt'
+  | 'locked'
+  | 'empty';
+
+export interface VaultSyncState {
+  status: VaultSyncStatus;
+  /** A failed pull or validation never clears an already-readable candidate. */
+  active: VaultSyncCandidate | null;
+  /** The encrypted local candidate not yet acknowledged by the primary. */
+  pending: VaultSyncCandidate | null;
+  lastFailure?: string;
+}
+
+export interface VaultSyncEngineOptions {
+  local: LocalDataHome;
+  primary: DataHome;
+  vaultKey: VaultKeyMaterial;
+  deviceId: string;
+  writeId: () => string;
+  now?: () => string;
+  quarantine: VaultQuarantineStore;
+}
+
+export interface VaultMutationContext {
+  document: VaultDocumentV1;
+  currentVersion: number;
+}
+
+export interface VaultSyncEngine {
+  readonly deviceId: string;
+  readonly state: VaultSyncState;
+  start(): Promise<VaultSyncState>;
+  reconnect(): Promise<VaultSyncState>;
+  mutate(mutator: (context: VaultMutationContext) => VaultDocumentV1): Promise<VaultSyncState>;
+}
+
+interface RemoteObservation {
+  known: boolean;
+  version: number | null;
+}
+
+/**
+ * Local-first, encrypted-document synchronization. CAS tokens always come from
+ * the caller's previously read candidates; no write helper performs a discovery
+ * read to manufacture its own token.
+ */
+export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyncEngine {
+  const now = options.now ?? (() => new Date().toISOString());
+  let state: VaultSyncState = { status: 'empty', active: null, pending: null };
+  let localHeadVersion: number | null | undefined;
+  let remoteObserved: RemoteObservation = { known: false, version: null };
+
+  return {
+    get deviceId() {
+      return options.deviceId;
+    },
+
+    get state() {
+      return cloneState(state);
+    },
+
+    async start() {
+      return reconcile();
+    },
+
+    async reconnect() {
+      return reconcile();
+    },
+
+    async mutate(mutator) {
+      const active = state.active;
+      if (active == null || state.status === 'corrupt' || state.status === 'locked') {
+        throw new VaultCryptoError(
+          'locked',
+          'A readable unlocked vault is required for a mutation.',
+        );
+      }
+      if (localHeadVersion === undefined) {
+        throw new VaultCryptoError(
+          'storage-failed',
+          'The current local vault version has not been observed.',
+        );
+      }
+
+      const document = mutator({
+        document: active.document,
+        currentVersion: active.header.vaultVersion,
+      });
+      const nextVersion =
+        Math.max(
+          active.header.vaultVersion,
+          localHeadVersion ?? 0,
+          remoteObserved.known ? (remoteObserved.version ?? 0) : 0,
+        ) + 1;
+      const candidate = await encryptCandidate(document, nextVersion, active.header);
+      if (!(await commitLocal(candidate, localHeadVersion))) {
+        if (state.status === 'conflict') return cloneState(state);
+        throw new VaultCryptoError(
+          'storage-failed',
+          state.lastFailure ?? 'Vault mutation could not be committed locally.',
+        );
+      }
+
+      state = { status: 'pending-offline', active: candidate, pending: candidate };
+      return remoteObserved.known
+        ? pushPending(candidate, remoteObserved.version)
+        : cloneState(state);
+    },
+  };
+
+  async function reconcile(): Promise<VaultSyncState> {
+    const [localResult, remoteResult] = await Promise.all([
+      options.local.read(),
+      options.primary.read(),
+    ]);
+    localHeadVersion = observedVersion(localResult);
+    remoteObserved = observeRemote(remoteResult);
+
+    const localCurrent = await readableCandidate(localResult);
+    const lastKnownGood =
+      localCurrent == null
+        ? await readableCandidate(await options.local.readLastKnownGood(), false)
+        : null;
+    const localReadable = localCurrent ?? lastKnownGood;
+    const remoteReadable = await readableCandidate(remoteResult);
+    const localPending =
+      localCurrent != null && localResult.status === 'ok' && localResult.info.pendingRemote === true
+        ? localCurrent
+        : null;
+
+    if (remoteReadable != null) {
+      return reconcileReadableRemote(localReadable, localCurrent, localPending, remoteReadable);
+    }
+
+    if (remoteResult.status === 'absent') {
+      return reconcileAbsentRemote(localReadable, localCurrent, localPending, localResult);
+    }
+
+    const selected = selectHighest(localReadable, state.active);
+    if (selected != null) {
+      state = {
+        status: 'pending-offline',
+        active: selected,
+        pending: localPending,
+        lastFailure: resultMessage(remoteResult),
+      };
+      return cloneState(state);
+    }
+
+    if (remoteResult.status === 'corrupt' || localResult.status === 'corrupt') {
+      state = {
+        ...state,
+        status: 'corrupt',
+        lastFailure: resultMessage(localResult, remoteResult),
+      };
+      return cloneState(state);
+    }
+    if (remoteResult.status === 'transport-failure' || localResult.status === 'transport-failure') {
+      state = withFailure(state, `Vault pull failed: ${resultMessage(localResult, remoteResult)}`);
+      return cloneState(state);
+    }
+    state = { status: 'empty', active: null, pending: null };
+    return cloneState(state);
+  }
+
+  async function reconcileReadableRemote(
+    localReadable: VaultSyncCandidate | null,
+    localCurrent: VaultSyncCandidate | null,
+    localPending: VaultSyncCandidate | null,
+    remote: VaultSyncCandidate,
+  ): Promise<VaultSyncState> {
+    remoteObserved = { known: true, version: remote.header.vaultVersion };
+
+    if (localReadable == null) {
+      return installRemoteOrPromote(remote, localCurrent);
+    }
+
+    if (sameWrite(localReadable, remote)) {
+      if (localCurrent != null && sameWrite(localCurrent, remote)) {
+        if (!(await acknowledgeLocal(remote.header.vaultVersion))) return cloneState(state);
+        state = { status: 'synced', active: remote, pending: null };
+        return cloneState(state);
+      }
+      return installRemoteOrPromote(remote, localCurrent);
+    }
+
+    const merged = mergeVaultDocuments({
+      left: localReadable.document,
+      leftVersion: localReadable.header.vaultVersion,
+      right: remote.document,
+      rightVersion: remote.header.vaultVersion,
+      forceDivergent: localPending != null,
+      deviceId: options.deviceId,
+      mergedAt: now(),
+    });
+
+    const highestObserved = Math.max(localHeadVersion ?? 0, remote.header.vaultVersion);
+    if (!merged.divergent) {
+      if (
+        merged.vaultVersion === remote.header.vaultVersion &&
+        (merged.vaultVersion > localReadable.header.vaultVersion ||
+          merged.vaultVersion === localReadable.header.vaultVersion)
+      ) {
+        return installRemoteOrPromote(remote, localCurrent);
+      }
+
+      if (
+        merged.vaultVersion === localReadable.header.vaultVersion &&
+        localCurrent != null &&
+        sameWrite(localCurrent, localReadable) &&
+        merged.vaultVersion > remote.header.vaultVersion &&
+        merged.vaultVersion >= highestObserved
+      ) {
+        if (!(await markPending(localReadable))) return cloneState(state);
+        state = {
+          status: 'pending-offline',
+          active: localReadable,
+          pending: localReadable,
+        };
+        return pushPending(localReadable, remote.header.vaultVersion);
+      }
+    }
+
+    const version = Math.max(merged.vaultVersion, highestObserved + 1);
+    const candidate = await encryptCandidate(
+      merged.document,
+      version,
+      newestHeader(localReadable, remote),
+    );
+    if (!(await commitLocal(candidate, localHeadVersion))) return cloneState(state);
+    state = { status: 'pending-offline', active: candidate, pending: candidate };
+    return pushPending(candidate, remote.header.vaultVersion);
+  }
+
+  async function installRemoteOrPromote(
+    remote: VaultSyncCandidate,
+    localCurrent: VaultSyncCandidate | null,
+  ): Promise<VaultSyncState> {
+    if (localHeadVersion === undefined) {
+      state = withFailure(state, 'The local vault version could not be read.');
+      return cloneState(state);
+    }
+    if (localCurrent != null && sameWrite(localCurrent, remote)) {
+      if (!(await acknowledgeLocal(remote.header.vaultVersion))) return cloneState(state);
+      state = { status: 'synced', active: remote, pending: null };
+      return cloneState(state);
+    }
+
+    if (localHeadVersion !== null && remote.header.vaultVersion <= localHeadVersion) {
+      const promoted = await encryptCandidate(remote.document, localHeadVersion + 1, remote.header);
+      if (!(await commitLocal(promoted, localHeadVersion))) return cloneState(state);
+      state = { status: 'pending-offline', active: promoted, pending: promoted };
+      return pushPending(promoted, remote.header.vaultVersion);
+    }
+
+    if (!(await commitLocal(remote, localHeadVersion))) return cloneState(state);
+    if (!(await acknowledgeLocal(remote.header.vaultVersion))) return cloneState(state);
+    state = { status: 'synced', active: remote, pending: null };
+    return cloneState(state);
+  }
+
+  async function reconcileAbsentRemote(
+    localReadable: VaultSyncCandidate | null,
+    localCurrent: VaultSyncCandidate | null,
+    localPending: VaultSyncCandidate | null,
+    localResult: DataHomeReadResult,
+  ): Promise<VaultSyncState> {
+    if (localReadable == null) {
+      if (localResult.status === 'corrupt') {
+        state = { ...state, status: 'corrupt', lastFailure: localResult.message };
+      } else if (localResult.status === 'transport-failure') {
+        state = withFailure(state, localResult.failure.message);
+      } else {
+        state = { status: 'empty', active: null, pending: null };
+      }
+      return cloneState(state);
+    }
+    if (localHeadVersion === undefined) {
+      state = withFailure(state, 'The local vault version could not be read.');
+      return cloneState(state);
+    }
+
+    let pending = localPending;
+    if (localCurrent == null || !sameWrite(localCurrent, localReadable)) {
+      const nextVersion = Math.max(localReadable.header.vaultVersion, localHeadVersion ?? 0) + 1;
+      pending = await encryptCandidate(localReadable.document, nextVersion, localReadable.header);
+      if (!(await commitLocal(pending, localHeadVersion))) return cloneState(state);
+    } else if (pending == null) {
+      if (!(await markPending(localReadable))) return cloneState(state);
+      pending = localReadable;
+    }
+
+    state = { status: 'pending-offline', active: pending, pending };
+    return pushPending(pending, null);
+  }
+
+  async function pushPending(
+    initial: VaultSyncCandidate,
+    initialExpectedRemote: number | null,
+  ): Promise<VaultSyncState> {
+    let pending = initial;
+    let expectedRemote = initialExpectedRemote;
+
+    for (let attempt = 0; attempt < MAX_CAS_RECONCILIATIONS; attempt += 1) {
+      const result = await options.primary.write(pending.envelope, {
+        ifVersion: expectedRemote,
+      });
+      switch (result.status) {
+        case 'ok':
+          remoteObserved = { known: true, version: pending.header.vaultVersion };
+          if (!(await acknowledgeLocal(pending.header.vaultVersion))) return cloneState(state);
+          state = { status: 'synced', active: pending, pending: null };
+          return cloneState(state);
+        case 'transport-failure':
+          state = {
+            status: 'pending-offline',
+            active: pending,
+            pending,
+            lastFailure: result.failure.message,
+          };
+          remoteObserved = { known: false, version: null };
+          return cloneState(state);
+        case 'corrupt':
+          await quarantineCorrupt(result);
+          state = {
+            status: 'pending-offline',
+            active: pending,
+            pending,
+            lastFailure: result.message,
+          };
+          remoteObserved = { known: false, version: null };
+          return cloneState(state);
+        case 'conflict':
+          break;
+      }
+
+      const remoteResult = await options.primary.read();
+      remoteObserved = observeRemote(remoteResult);
+      const remote = await readableCandidate(remoteResult);
+      if (remote == null) {
+        state = {
+          status: 'pending-offline',
+          active: pending,
+          pending,
+          lastFailure:
+            remoteResult.status === 'absent'
+              ? 'The primary disappeared while resolving a CAS conflict.'
+              : resultMessage(remoteResult),
+        };
+        return cloneState(state);
+      }
+      if (sameWrite(pending, remote)) {
+        if (!(await acknowledgeLocal(pending.header.vaultVersion))) return cloneState(state);
+        state = { status: 'synced', active: remote, pending: null };
+        return cloneState(state);
+      }
+
+      const merged = mergeVaultDocuments({
+        left: pending.document,
+        leftVersion: pending.header.vaultVersion,
+        right: remote.document,
+        rightVersion: remote.header.vaultVersion,
+        forceDivergent: true,
+        deviceId: options.deviceId,
+        mergedAt: now(),
+      });
+      const reconciled = await encryptCandidate(
+        merged.document,
+        merged.vaultVersion,
+        newestHeader(pending, remote),
+      );
+      if (!(await commitLocal(reconciled, localHeadVersion))) return cloneState(state);
+      pending = reconciled;
+      expectedRemote = remote.header.vaultVersion;
+      state = { status: 'pending-offline', active: pending, pending };
+    }
+
+    state = {
+      status: 'conflict',
+      active: pending,
+      pending,
+      lastFailure: 'Vault synchronization lost too many consecutive CAS races.',
+    };
+    return cloneState(state);
+  }
+
+  async function commitLocal(
+    candidate: VaultSyncCandidate,
+    expectedVersion: number | null | undefined,
+  ): Promise<boolean> {
+    if (expectedVersion === undefined) {
+      state = withFailure(state, 'The local CAS version is unknown.');
+      return false;
+    }
+    const written = await options.local.write(candidate.envelope, {
+      ifVersion: expectedVersion,
+    });
+    if (written.status === 'conflict') {
+      await handleLocalConflict(written.currentVersion);
+      return false;
+    }
+    if (written.status !== 'ok') {
+      if (written.status === 'corrupt') await quarantineCorrupt(written);
+      state = withFailure(state, `Local encrypted commit failed: ${outcomeMessage(written)}`);
+      return false;
+    }
+    localHeadVersion = candidate.header.vaultVersion;
+
+    const marked = await options.local.markLastKnownGood(candidate.envelope, {
+      ifVersion: candidate.header.vaultVersion,
+    });
+    if (marked.status === 'conflict') {
+      await handleLocalConflict(marked.currentVersion);
+      return false;
+    }
+    if (marked.status === 'corrupt') {
+      await quarantineCorrupt(marked);
+      state = withFailure(state, marked.message);
+      return false;
+    }
+    if (marked.status === 'transport-failure') {
+      // The new encrypted current candidate is already durable and the previous
+      // last-known-good bytes remain intact. Keep it pending rather than retrying
+      // the money mutation.
+      state = withFailure(state, marked.failure.message);
+    }
+    return true;
+  }
+
+  async function markPending(candidate: VaultSyncCandidate): Promise<boolean> {
+    const result = await options.local.setPendingRemote(true, {
+      ifVersion: candidate.header.vaultVersion,
+    });
+    if (result.status === 'conflict') {
+      await handleLocalConflict(result.currentVersion);
+      return false;
+    }
+    if (result.status !== 'ok') {
+      if (result.status === 'corrupt') await quarantineCorrupt(result);
+      state = withFailure(state, outcomeMessage(result));
+      return false;
+    }
+    return true;
+  }
+
+  async function acknowledgeLocal(version: number): Promise<boolean> {
+    const result = await options.local.setPendingRemote(false, { ifVersion: version });
+    if (result.status === 'conflict') {
+      await handleLocalConflict(result.currentVersion);
+      return false;
+    }
+    if (result.status !== 'ok') {
+      if (result.status === 'corrupt') await quarantineCorrupt(result);
+      state = withFailure(state, outcomeMessage(result));
+      return false;
+    }
+    return true;
+  }
+
+  async function handleLocalConflict(currentVersion: number | null): Promise<void> {
+    const freshResult = await options.local.read();
+    localHeadVersion = observedVersion(freshResult);
+    const fresh = await readableCandidate(freshResult);
+    state = {
+      status: 'conflict',
+      active: fresh ?? state.active,
+      pending:
+        fresh != null && freshResult.status === 'ok' && freshResult.info.pendingRemote === true
+          ? fresh
+          : null,
+      lastFailure: `Local vault CAS conflict; current version is ${currentVersion ?? 'unknown'}.`,
+    };
+  }
+
+  async function readableCandidate(
+    result: DataHomeReadResult,
+    promoteKnownGood = true,
+  ): Promise<VaultSyncCandidate | null> {
+    switch (result.status) {
+      case 'absent':
+      case 'transport-failure':
+        return null;
+      case 'corrupt':
+        await quarantineCorrupt(result);
+        return null;
+      case 'ok':
+        try {
+          const decrypted = await decryptVaultDocument(result.envelope, options.vaultKey);
+          if (result.medium === 'local' && promoteKnownGood) {
+            const marked = await options.local.markLastKnownGood(result.envelope, {
+              ifVersion: result.info.version,
+            });
+            if (marked.status === 'corrupt') await quarantineCorrupt(marked);
+          }
+          return {
+            home: result.medium === 'local' ? options.local : options.primary,
+            envelope: result.envelope.slice(),
+            header: decrypted.header,
+            document: decrypted.document,
+          };
+        } catch (cause) {
+          await options.quarantine.put({
+            medium: result.medium,
+            envelope: result.envelope,
+            version: result.info.version,
+            updatedAt: result.info.updatedAt,
+            capturedAt: now(),
+            status:
+              cause instanceof VaultCryptoError && cause.code === 'update-required'
+                ? 'unsupported'
+                : 'unreadable',
+            reason: cause instanceof Error ? cause.message : 'Vault could not be decrypted.',
+          });
+          return null;
+        }
+    }
+  }
+
+  async function quarantineCorrupt(
+    result: Extract<DataHomeReadResult | DataHomeWriteResult, { status: 'corrupt' }>,
+  ): Promise<void> {
+    if (result.envelope == null) return;
+    await options.quarantine.put({
+      medium: result.medium,
+      envelope: result.envelope,
+      version: result.version,
+      updatedAt: result.updatedAt,
+      capturedAt: now(),
+      status: result.reason === 'unsupported-version' ? 'unsupported' : 'corrupt',
+      reason: result.message,
+    });
+  }
+
+  async function encryptCandidate(
+    document: VaultDocumentV1,
+    vaultVersion: number,
+    baseHeader: VaultEnvelopeHeader,
+  ): Promise<VaultSyncCandidate> {
+    const encrypted = await encryptVaultDocument({
+      document,
+      vaultKey: options.vaultKey,
+      header: {
+        keyId: baseHeader.keyId,
+        wrappedKeys: baseHeader.wrappedKeys,
+        vaultVersion,
+        deviceId: options.deviceId,
+        writeId: options.writeId(),
+        writtenAt: now(),
+      },
+    });
+    return {
+      home: options.local,
+      envelope: encrypted.envelope,
+      header: encrypted.header,
+      document,
+    };
+  }
+}
+
+function observedVersion(result: DataHomeReadResult): number | null | undefined {
+  switch (result.status) {
+    case 'ok':
+      return result.info.version;
+    case 'absent':
+      return null;
+    case 'corrupt':
+      return result.version ?? undefined;
+    case 'transport-failure':
+      return undefined;
+  }
+}
+
+function observeRemote(result: DataHomeReadResult): RemoteObservation {
+  switch (result.status) {
+    case 'ok':
+      return { known: true, version: result.info.version };
+    case 'absent':
+      return { known: true, version: null };
+    case 'corrupt':
+    case 'transport-failure':
+      return { known: false, version: null };
+  }
+}
+
+function selectHighest(
+  left: VaultSyncCandidate | null,
+  right: VaultSyncCandidate | null,
+): VaultSyncCandidate | null {
+  if (left == null) return right;
+  if (right == null) return left;
+  if (left.header.vaultVersion !== right.header.vaultVersion) {
+    return left.header.vaultVersion > right.header.vaultVersion ? left : right;
+  }
+  return left.header.writeId >= right.header.writeId ? left : right;
+}
+
+function newestHeader(left: VaultSyncCandidate, right: VaultSyncCandidate): VaultEnvelopeHeader {
+  if (left.header.vaultVersion !== right.header.vaultVersion) {
+    return left.header.vaultVersion > right.header.vaultVersion ? left.header : right.header;
+  }
+  return left.header.writeId >= right.header.writeId ? left.header : right.header;
+}
+
+function sameWrite(left: VaultSyncCandidate, right: VaultSyncCandidate): boolean {
+  return (
+    left.header.vaultVersion === right.header.vaultVersion &&
+    left.header.writeId === right.header.writeId
+  );
+}
+
+function cloneState(value: VaultSyncState): VaultSyncState {
+  return { ...value };
+}
+
+function withFailure(value: VaultSyncState, lastFailure: string): VaultSyncState {
+  return {
+    ...value,
+    status: value.active == null ? 'corrupt' : 'pending-offline',
+    lastFailure,
+  };
+}
+
+function resultMessage(...results: DataHomeReadResult[]): string {
+  return results
+    .filter(
+      (
+        result,
+      ): result is Extract<DataHomeReadResult, { status: 'corrupt' | 'transport-failure' }> =>
+        result.status === 'corrupt' || result.status === 'transport-failure',
+    )
+    .map((result) => (result.status === 'corrupt' ? result.message : result.failure.message))
+    .join(' ');
+}
+
+function outcomeMessage(result: Exclude<DataHomeWriteResult, { status: 'ok' }>): string {
+  switch (result.status) {
+    case 'conflict':
+      return 'CAS conflict.';
+    case 'corrupt':
+      return result.message;
+    case 'transport-failure':
+      return result.failure.message;
+  }
+}
