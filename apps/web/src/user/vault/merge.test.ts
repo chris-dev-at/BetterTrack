@@ -355,6 +355,38 @@ describe('vault merge metadata and validation', () => {
     }
   });
 
+  it('fails closed for array index accessors in both candidate and document orders', () => {
+    const accessorValues = new Array<unknown>(1);
+    Object.defineProperty(accessorValues, 0, {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        throw new Error('Vault canonicalization must not invoke array accessors.');
+      },
+    });
+
+    const accessor = entity({ rev: 2, data: { values: accessorValues } });
+    const plain = entity({ rev: 2, data: { values: [1] } });
+    const attempts = [
+      () => chooseVaultEntity(accessor, plain),
+      () => chooseVaultEntity(plain, accessor),
+      () => merge(document([accessor]), document([plain])),
+      () => merge(document([plain]), document([accessor])),
+    ];
+
+    for (const attempt of attempts) {
+      let caught: unknown;
+      try {
+        attempt();
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(VaultCryptoError);
+      expect(caught).toMatchObject({ code: 'document-invalid' });
+    }
+  });
+
   it('fails closed for non-JSON object properties in both candidate and document orders', () => {
     const nonEnumerable: Record<string, unknown> = {};
     Object.defineProperty(nonEnumerable, 'amount', {
@@ -396,6 +428,35 @@ describe('vault merge metadata and validation', () => {
         expect(caught).toBeInstanceOf(VaultCryptoError);
         expect(caught).toMatchObject({ code: 'document-invalid' });
       }
+    }
+  });
+
+  it('fails closed for unsafe versions and safe-integer successor overflow', () => {
+    const left = document([entity({ id: ENTITY_A })]);
+    const right = document([entity({ id: ENTITY_B })]);
+    const attempts = [
+      () =>
+        merge(left, right, {
+          leftVersion: Number.MAX_SAFE_INTEGER + 1,
+          rightVersion: 4,
+        }),
+      () =>
+        merge(left, right, {
+          leftVersion: Number.MAX_SAFE_INTEGER,
+          rightVersion: 4,
+        }),
+    ];
+
+    for (const attempt of attempts) {
+      let caught: unknown;
+      try {
+        attempt();
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(VaultCryptoError);
+      expect(caught).toMatchObject({ code: 'envelope-invalid' });
     }
   });
 });

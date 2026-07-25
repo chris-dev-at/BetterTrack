@@ -293,11 +293,14 @@ function canonicalJson(value: unknown, ancestors = new Set<object>()): string {
     assertAcyclic(value, ancestors);
     const entries: string[] = [];
     for (let index = 0; index < value.length; index += 1) {
-      if (!Object.hasOwn(value, index)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, index);
+      if (descriptor == null || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
         ancestors.delete(value);
-        throw documentInvalid('Vault documents may contain only dense JSON arrays.');
+        throw documentInvalid(
+          'Vault arrays may contain only dense enumerable indexed data properties.',
+        );
       }
-      entries.push(canonicalJson(value[index], ancestors));
+      entries.push(canonicalJson(descriptor.value, ancestors));
     }
     if (Reflect.ownKeys(value).length !== value.length + 1) {
       ancestors.delete(value);
@@ -351,8 +354,11 @@ function compareText(left: string, right: string): number {
 }
 
 function assertVersion(version: number): void {
-  if (!vaultVersionSchema.safeParse(version).success) {
-    throw new VaultCryptoError('envelope-invalid', 'Vault versions must be positive integers.');
+  if (!Number.isSafeInteger(version) || !vaultVersionSchema.safeParse(version).success) {
+    throw new VaultCryptoError(
+      'envelope-invalid',
+      'Vault versions must be positive safe integers.',
+    );
   }
 }
 
