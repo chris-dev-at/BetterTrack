@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { assets, portfolioCashMovements, portfolios, transactions } from '../schema';
@@ -269,12 +269,18 @@ export function createTransactionRepository(db: Database) {
       return rows.map(toRecord);
     },
 
-    /** Every transaction in a portfolio (for holdings + the value series). */
+    /**
+     * Every transaction in a portfolio (for holdings + the value series), in
+     * recording order for equal execution timestamps. UUIDv7 ids preserve the
+     * normal write order and make money-math replays deterministic when an
+     * import restores multiple rows at the same instant.
+     */
     async listForPortfolio(portfolioId: string): Promise<TransactionRecord[]> {
       const rows = await db
         .select()
         .from(transactions)
-        .where(eq(transactions.portfolioId, portfolioId));
+        .where(eq(transactions.portfolioId, portfolioId))
+        .orderBy(asc(transactions.executedAt), asc(transactions.id));
       return rows.map(toRecord);
     },
 

@@ -192,7 +192,10 @@ async function seedEngineFixture(
 
 async function seedUntaxedOpenFixture(
   userId: string,
+  options: { mainFundingEur?: number; otherSourceFundingEur?: number } = {},
 ): Promise<{ portfolioId: string; sourceId: string }> {
+  const mainFundingEur = options.mainFundingEur ?? 1000;
+  const otherSourceFundingEur = options.otherSourceFundingEur ?? 0;
   const portfolioId = newId();
   const sourceId = newId();
   const assetId = newId();
@@ -244,15 +247,36 @@ async function seedUntaxedOpenFixture(
       source: 'manual',
     },
   ]);
-  await harness.db.insert(schema.portfolioCashMovements).values({
-    portfolioId,
-    sourceId,
-    kind: 'deposit',
-    amountEur: '1000',
-    executedAt: new Date('2026-01-01T10:00:00.000Z'),
-    note: null,
-    source: 'manual',
-  });
+  if (mainFundingEur > 0) {
+    await harness.db.insert(schema.portfolioCashMovements).values({
+      portfolioId,
+      sourceId,
+      kind: 'deposit',
+      amountEur: String(mainFundingEur),
+      executedAt: new Date('2026-01-01T10:00:00.000Z'),
+      note: null,
+      source: 'manual',
+    });
+  }
+  if (otherSourceFundingEur > 0) {
+    const otherSourceId = newId();
+    await harness.db.insert(schema.portfolioCashSources).values({
+      id: otherSourceId,
+      portfolioId,
+      name: 'Broker cash',
+      type: 'bank',
+      isMain: false,
+    });
+    await harness.db.insert(schema.portfolioCashMovements).values({
+      portfolioId,
+      sourceId: otherSourceId,
+      kind: 'deposit',
+      amountEur: String(otherSourceFundingEur),
+      executedAt: new Date('2026-01-01T10:00:00.000Z'),
+      note: null,
+      source: 'manual',
+    });
+  }
   return { portfolioId, sourceId };
 }
 
@@ -446,6 +470,145 @@ describe('transaction-bound restored tax replay', () => {
         note: 'Live tax correction (AT)',
       });
     });
+  });
+
+  it('defers an insolvent Main withholding even when another source can cover it', async () => {
+    const user = await harness.seedUser();
+    await setAtUserDefault(user.id);
+    const noCash = await seedUntaxedOpenFixture(user.id, { mainFundingEur: 0 });
+    const otherSourceOnly = await seedUntaxedOpenFixture(user.id, {
+      mainFundingEur: 0,
+      otherSourceFundingEur: 1000,
+    });
+
+    const state = await harness.db.transaction((tx) =>
+      replayRestoredTaxState(tx as unknown as Database, {
+        userId: user.id,
+        portfolioIds: [noCash.portfolioId, otherSourceOnly.portfolioId],
+        now: NOW,
+        toEur,
+      }),
+    );
+
+    for (const portfolio of state.portfolios) {
+      expect(portfolio.years).toEqual([
+        expect.objectContaining({
+          year: 2026,
+          heldEur: 0,
+          targetEur: 275,
+        }),
+      ]);
+      const settlements = await harness.db
+        .select({ id: schema.portfolioCashMovements.id })
+        .from(schema.portfolioCashMovements)
+        .where(
+          and(
+            eq(schema.portfolioCashMovements.portfolioId, portfolio.portfolioId),
+            inArray(schema.portfolioCashMovements.kind, ['tax_withholding', 'tax_refund']),
+          ),
+        );
+      expect(settlements).toHaveLength(0);
+    }
+  });
+
+  it('uses UUIDv7 recording order for equal-timestamp transaction tax replay', async () => {
+    const user = await harness.seedUser();
+    await setAtUserDefault(user.id);
+    const portfolioId = newId();
+    const sourceId = newId();
+    const assetId = newId();
+    const at = new Date('2026-02-10T10:00:00.000Z');
+    const firstBuyId = '01980000-0000-7000-8000-000000000001';
+    const sellId = '01980000-0000-7000-8000-000000000002';
+    const lastBuyId = '01980000-0000-7000-8000-000000000003';
+    await harness.db.insert(schema.portfolios).values({
+      id: portfolioId,
+      userId: user.id,
+      name: 'Equal-time replay',
+      visibility: 'private',
+    });
+    await harness.db.insert(schema.portfolioCashSources).values({
+      id: sourceId,
+      portfolioId,
+      name: 'Main',
+      type: 'cash',
+      isMain: true,
+    });
+    await harness.db.insert(schema.assets).values({
+      id: assetId,
+      providerId: 'yahoo',
+      providerRef: 'EQUAL.TEST',
+      type: 'stock',
+      symbol: 'EQUAL',
+      name: 'Equal-time fixture',
+      currency: 'EUR',
+    });
+    // Deliberately restore in a different physical order. UUIDv7 order is the
+    // normal write order: €10 buy → €30 sell → €100 buy, yielding a €200 gain.
+    await harness.db.insert(schema.transactions).values([
+      {
+        id: lastBuyId,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '10',
+        price: '100',
+        fee: '0',
+        executedAt: at,
+        taxMode: null,
+        source: 'manual',
+      },
+      {
+        id: firstBuyId,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '10',
+        price: '10',
+        fee: '0',
+        executedAt: at,
+        taxMode: null,
+        source: 'manual',
+      },
+      {
+        id: sellId,
+        portfolioId,
+        assetId,
+        side: 'sell',
+        quantity: '10',
+        price: '30',
+        fee: '0',
+        executedAt: at,
+        taxMode: 'none',
+        source: 'manual',
+      },
+    ]);
+    await harness.db.insert(schema.portfolioCashMovements).values({
+      portfolioId,
+      sourceId,
+      kind: 'deposit',
+      amountEur: '100',
+      executedAt: new Date('2026-01-01T10:00:00.000Z'),
+      note: null,
+      source: 'manual',
+    });
+
+    const state = await harness.db.transaction((tx) =>
+      replayRestoredTaxState(tx as unknown as Database, {
+        userId: user.id,
+        portfolioIds: [portfolioId],
+        now: NOW,
+        toEur,
+      }),
+    );
+
+    expect(state.portfolios[0]?.years).toEqual([
+      expect.objectContaining({
+        year: 2026,
+        heldEur: 55,
+        targetEur: 55,
+      }),
+    ]);
   });
 
   it('never commits independently and leaves no derived rows when the caller aborts', async () => {

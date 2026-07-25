@@ -1,6 +1,9 @@
 import type { Database } from '../../data/db';
 import { createCashMovementRepository } from '../../data/repositories/cashMovementRepository';
-import type { CashMovementRecord } from '../../data/repositories/cashMovementRepository';
+import type {
+  CashMovementRecord,
+  NewCashMovement,
+} from '../../data/repositories/cashMovementRepository';
 import { createCashSourceRepository } from '../../data/repositories/cashSourceRepository';
 import { createPortfolioRepository } from '../../data/repositories/portfolioRepository';
 import { createPortfolioSettingsRepository } from '../../data/repositories/portfolioSettingsRepository';
@@ -8,6 +11,11 @@ import { createTaxRepository } from '../../data/repositories/taxRepository';
 import { createTransactionRepository } from '../../data/repositories/transactionRepository';
 import type { TransactionRecord } from '../../data/repositories/transactionRepository';
 import type { AssetRow } from '../../data/schema';
+import {
+  InsufficientCashError,
+  projectCashLedgerBySource,
+  type SourcedCashMovement,
+} from '../../domain/cashLedger';
 import {
   dePotCategoryForAssetType,
   floorCents,
@@ -128,6 +136,15 @@ const deState = (state: NonNullable<OpenYearSettlement['deState']>): ReplayedDeY
   sonstigePotOutEur: floorCents(state.outcome.sonstigePotOutEur),
   kapestEur: state.outcome.kapestEur,
   soliEur: state.outcome.soliEur,
+});
+
+const toSourcedMovement = (
+  movement: Pick<CashMovementRecord, 'kind' | 'amountEur' | 'executedAt' | 'sourceId'>,
+): SourcedCashMovement => ({
+  kind: movement.kind,
+  amountEur: movement.amountEur,
+  occurredAt: movement.executedAt.toISOString(),
+  sourceId: movement.sourceId,
 });
 
 async function taxableTransactions(
@@ -287,7 +304,7 @@ export async function replayRestoredTaxState(
                 : undefined,
           });
 
-    const movements: CashMovementRecord[] = [...initialMovements];
+    let movements: CashMovementRecord[] = [...initialMovements];
     if (
       regime.kind !== 'manual' &&
       settlements.some((settlement) => settlement.correctionDeltaEur !== 0)
@@ -298,20 +315,49 @@ export async function replayRestoredTaxState(
       if (!main) {
         throw new Error(`Tax replay: restored portfolio ${portfolioId} has no Main cash source`);
       }
-      for (const settlement of settlements) {
-        const spec = taxMovementForDelta(settlement.correctionDeltaEur);
-        if (!spec) continue;
-        movements.push(
-          await movementRepo.insert(portfolioId, {
+
+      await movementRepo.insertReconciled(portfolioId, (fresh) => {
+        const existing = fresh.map(toSourcedMovement);
+        const posted: NewCashMovement[] = [];
+        for (const settlement of settlements) {
+          // Match the normal read-path reconciler's stale-derivation guard:
+          // only settle against the exact held state used above.
+          const heldAtDerivation = floorCents(
+            settlement.targetAfterEur - settlement.correctionDeltaEur,
+          );
+          const heldNow = heldForYear(transactions, dividends, fresh, settlement.year);
+          if (heldNow !== heldAtDerivation) continue;
+
+          const spec = taxMovementForDelta(settlement.correctionDeltaEur);
+          if (!spec) continue;
+          const movement = {
             sourceId: main.id,
             kind: spec.kind,
             amountEur: spec.amountEur,
             executedAt: input.now,
             note: correctionNote(regime),
             taxYear: settlement.year,
-          }),
-        );
-      }
+          } as const;
+          if (movement.kind === 'tax_withholding') {
+            try {
+              projectCashLedgerBySource([
+                ...existing,
+                ...posted.map(toSourcedMovement),
+                toSourcedMovement(movement),
+              ]);
+            } catch (error) {
+              if (error instanceof InsufficientCashError) continue;
+              throw error;
+            }
+          }
+          posted.push(movement);
+        }
+        return posted;
+      });
+      // The reconciler re-read under its advisory lock. Re-read again so the
+      // returned state includes exactly the movements committed in this same
+      // caller transaction, including a deliberately deferred withholding.
+      movements = await movementRepo.listForPortfolio(portfolioId);
     }
 
     const settlementByYear = new Map(
