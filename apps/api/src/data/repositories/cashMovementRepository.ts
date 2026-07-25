@@ -101,6 +101,35 @@ function toInsertValues(portfolioId: string, movement: NewCashMovement) {
   };
 }
 
+type CashMovementTransactionExecutor = Pick<Database, 'execute' | 'select' | 'insert'>;
+
+/**
+ * Reconcile movements inside a transaction the caller already owns.
+ *
+ * The deliberately narrow executor excludes `transaction`, so this primitive
+ * cannot open or control a nested boundary. Its advisory lock and fresh read
+ * therefore remain part of the caller's atomic operation.
+ */
+export async function insertReconciledCashMovementsInTransaction(
+  tx: CashMovementTransactionExecutor,
+  portfolioId: string,
+  plan: (fresh: CashMovementRecord[]) => NewCashMovement[],
+): Promise<CashMovementRecord[]> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${portfolioId}))`);
+  const fresh = await tx
+    .select()
+    .from(portfolioCashMovements)
+    .where(eq(portfolioCashMovements.portfolioId, portfolioId))
+    .orderBy(asc(portfolioCashMovements.executedAt), asc(portfolioCashMovements.id));
+  const movements = plan(fresh.map(toRecord));
+  if (movements.length === 0) return [];
+  const rows = await tx
+    .insert(portfolioCashMovements)
+    .values(movements.map((movement) => toInsertValues(portfolioId, movement)))
+    .returning();
+  return rows.map(toRecord);
+}
+
 export function createCashMovementRepository(db: Database) {
   return {
     /** Record a single cash movement (deposit/withdrawal — external, unlinked). */
@@ -126,21 +155,9 @@ export function createCashMovementRepository(db: Database) {
       portfolioId: string,
       plan: (fresh: CashMovementRecord[]) => NewCashMovement[],
     ): Promise<CashMovementRecord[]> {
-      return db.transaction(async (tx) => {
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${portfolioId}))`);
-        const fresh = await tx
-          .select()
-          .from(portfolioCashMovements)
-          .where(eq(portfolioCashMovements.portfolioId, portfolioId))
-          .orderBy(asc(portfolioCashMovements.executedAt), asc(portfolioCashMovements.id));
-        const movements = plan(fresh.map(toRecord));
-        if (movements.length === 0) return [];
-        const rows = await tx
-          .insert(portfolioCashMovements)
-          .values(movements.map((m) => toInsertValues(portfolioId, m)))
-          .returning();
-        return rows.map(toRecord);
-      });
+      return db.transaction((tx) =>
+        insertReconciledCashMovementsInTransaction(tx, portfolioId, plan),
+      );
     },
 
     /**
