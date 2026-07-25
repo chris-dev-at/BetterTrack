@@ -6,6 +6,7 @@ import {
   createTransactionsRequestSchema,
   portfolioAssetSchema,
   portfolioListResponseSchema,
+  portfolioResponseSchema,
   portfolioSummarySchema,
   transactionInputSchema,
   transactionListQuerySchema,
@@ -16,6 +17,7 @@ import {
   type CashEntryRequest,
   type CashMovementResponse,
   type PortfolioAsset,
+  type PortfolioResponse,
   type PortfolioSummary,
   type Transaction,
   type VaultDocumentV1,
@@ -23,11 +25,13 @@ import {
   type VaultEntityKind,
 } from '@bettertrack/contracts';
 import {
+  cashBalance,
   cashBalancesBySource,
   floorCents,
   projectCashLedgerBySource,
   type SourcedCashMovement,
 } from '@bettertrack/domain/cashLedger';
+import { reducePosition } from '@bettertrack/domain/holdings';
 import { uuidv7 } from 'uuidv7';
 
 import type { PortfolioStore } from '../../lib/portfolioStore';
@@ -121,11 +125,7 @@ export function createVaultPortfolioStore(
 
     async getPortfolio(portfolioId, signal) {
       signal?.throwIfAborted();
-      requirePortfolio(requireDocument(engine), portfolioId);
-      throw storeError(
-        'VAULT_OPERATION_UNAVAILABLE',
-        'Client-side holdings and valuation are not available from this store yet.',
-      );
+      return portfolioResponseFromDocument(requireDocument(engine), portfolioId);
     },
 
     async updatePortfolio(portfolioId, patch) {
@@ -149,28 +149,24 @@ export function createVaultPortfolioStore(
       const parsedParams = transactionListQuerySchema.parse(params);
       const all = liveEntities(document, 'transaction')
         .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
-        .map((entity) => ({ entity, transaction: transactionFromEntity(document, entity) }))
         .filter(
-          ({ transaction }) =>
-            parsedParams.source == null || transaction.source === parsedParams.source,
+          (entity) =>
+            parsedParams.source == null ||
+            stringField(entity.data, 'source', 'manual') === parsedParams.source,
         )
-        .sort(
-          (left, right) =>
-            right.transaction.executedAt.localeCompare(left.transaction.executedAt) ||
-            right.entity.id.localeCompare(left.entity.id),
-        );
-      const cursorIndex =
-        parsedParams.cursor == null
-          ? -1
-          : all.findIndex(({ entity }) => entity.id === parsedParams.cursor);
-      const start = cursorIndex < 0 ? 0 : cursorIndex + 1;
+        .filter((entity) => parsedParams.cursor == null || entity.id < parsedParams.cursor)
+        .sort((left, right) => {
+          if (left.id < right.id) return 1;
+          if (left.id > right.id) return -1;
+          return 0;
+        });
       const limit = parsedParams.limit ?? 50;
-      const page = all.slice(start, start + limit);
+      const page = all.slice(0, limit);
       return parseVaultData(
         () =>
           transactionListResponseSchema.parse({
-            items: page.map(({ transaction }) => transaction),
-            nextCursor: start + page.length < all.length ? (page.at(-1)?.entity.id ?? null) : null,
+            items: page.map((entity) => transactionFromEntity(document, entity)),
+            nextCursor: page.length < all.length ? (page.at(-1)?.id ?? null) : null,
           }),
         'Vault transactions do not match the transaction-list contract.',
       );
@@ -482,12 +478,13 @@ async function createCashMovement(
   projectCashLedgerBySource(movements);
   const balances = cashBalancesBySource(movements);
   const sourceId = stringField(committed.data, 'sourceId');
-  const balanceEur = [...balances.values()].reduce((sum, value) => sum + value, 0);
+  const sourceBalanceEur = floorCents(balances.get(sourceId) ?? 0);
+  const balanceEur = floorCents(cashBalance(movements));
   return parseVaultData(
     () =>
       cashMovementResponseSchema.parse({
         movement: cashMovementFromEntity(committed),
-        sourceBalanceEur: balances.get(sourceId) ?? 0,
+        sourceBalanceEur,
         balanceEur,
       }),
     'The committed cash movement does not match the cash response contract.',
@@ -611,6 +608,74 @@ function portfolioSummaryFromEntity(entity: VaultEntity): PortfolioSummary {
       }),
     'A vault portfolio does not match the portfolio contract.',
   );
+}
+
+/**
+ * Build the binding overview entirely from the authenticated document. The
+ * PortfolioStore seam deliberately has no market-provider dependency yet, so
+ * quote-dependent fields degrade to `null`, exactly as the API overview does
+ * when a quote is unavailable. PD7 can supply client-side quotes without
+ * changing this transport boundary; positions and cash are already truthful.
+ */
+function portfolioResponseFromDocument(
+  document: VaultDocumentV1,
+  portfolioId: string,
+): PortfolioResponse {
+  requirePortfolio(document, portfolioId);
+  return parseVaultData(() => {
+    const transactions = liveEntities(document, 'transaction')
+      .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
+      .map((entity) => ({ entity, transaction: transactionFromEntity(document, entity) }))
+      .sort(
+        (left, right) =>
+          Date.parse(left.transaction.executedAt) - Date.parse(right.transaction.executedAt) ||
+          left.entity.id.localeCompare(right.entity.id),
+      );
+    const byAsset = new Map<string, { asset: PortfolioAsset; transactions: Transaction[] }>();
+    for (const { transaction } of transactions) {
+      const group = byAsset.get(transaction.assetId);
+      if (group == null) {
+        byAsset.set(transaction.assetId, {
+          asset: transaction.asset,
+          transactions: [transaction],
+        });
+      } else {
+        group.transactions.push(transaction);
+      }
+    }
+    const holdings = [...byAsset.values()].map(({ asset, transactions: assetTransactions }) => {
+      const position = reducePosition(assetTransactions);
+      return {
+        asset,
+        quantity: position.quantity,
+        avgCost: position.avgCost,
+        realizedPnl: position.realizedPnl,
+        price: null,
+        marketValueEur: null,
+        costBasisEur: null,
+        unrealizedPnlEur: null,
+        unrealizedPnlPct: null,
+        dayChangeEur: null,
+        dayChangePct: null,
+      };
+    });
+    const cashEur = floorCents(cashBalance(domainCashMovements(document, portfolioId)));
+
+    return portfolioResponseSchema.parse({
+      baseCurrency: 'EUR',
+      holdings,
+      totals: {
+        marketValueEur: 0,
+        investedEur: 0,
+        unrealizedPnlEur: 0,
+        unrealizedPnlPct: null,
+        dayChangeEur: 0,
+        dayChangePct: null,
+        cashEur,
+        totalValueEur: cashEur,
+      },
+    });
+  }, 'Vault holdings do not match the portfolio contract.');
 }
 
 function resolveTransactionAsset(document: VaultDocumentV1, assetId: string): PortfolioAsset {
