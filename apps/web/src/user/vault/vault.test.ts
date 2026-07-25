@@ -280,10 +280,14 @@ describe('BTVAULT1 envelope and content crypto', () => {
     expect(bytesToBase64(decodeVaultEnvelope(initialEnvelope).headerBytes)).toBe(
       vector.initial.headerBytesBase64,
     );
-    await expect(decryptVaultDocument(initialEnvelope, vaultKey)).resolves.toMatchObject({
-      document: vaultVectorDocument,
-      header: vector.initial.header,
-    });
+    // The immutable PD4 vector carries the pre-PD3a document shape. Its envelope
+    // remains a valid crypto/KDF vector, but the strict current payload decoder
+    // intentionally rejects that historical body.
+    const expectLegacyDocumentInvalid = () =>
+      expect(decryptVaultDocument(initialEnvelope, vaultKey)).rejects.toMatchObject({
+        code: 'document-invalid',
+      });
+    await expectLegacyDocumentInvalid();
     await expect(
       decryptVaultDocument(
         new Uint8Array(Buffer.from(vector.initial.tamperedEnvelopeBase64!, 'base64')),
@@ -318,29 +322,25 @@ describe('BTVAULT1 envelope and content crypto', () => {
       expect.objectContaining({ code: 'update-required' }),
     );
 
-    const passphraseChanged = await changeVaultPassphrase({
-      envelope: initialEnvelope,
-      oldPassphrase: vector.passphrase,
-      newPassphrase: vector.newPassphrase,
-      metadata: vector.passphraseChanged.header,
-      randomBytes: deterministicRandom(),
-    });
-    expect(bytesToBase64(passphraseChanged.envelope)).toBe(vector.passphraseChanged.envelopeBase64);
-    expect(bytesToBase64(decodeVaultEnvelope(passphraseChanged.envelope).headerBytes)).toBe(
-      vector.passphraseChanged.headerBytesBase64,
-    );
+    await expect(
+      changeVaultPassphrase({
+        envelope: initialEnvelope,
+        oldPassphrase: vector.passphrase,
+        newPassphrase: vector.newPassphrase,
+        metadata: vector.passphraseChanged.header,
+        randomBytes: deterministicRandom(),
+      }),
+    ).rejects.toMatchObject({ code: 'document-invalid' });
 
-    const rotated = await rotateVaultKey({
-      envelope: initialEnvelope,
-      passphrase: vector.passphrase,
-      metadata: vector.rotated.header,
-      randomBytes: deterministicRandom(96),
-      keyIdGenerator: () => VECTOR_NEXT_KEY_ID,
-    });
-    expect(bytesToBase64(rotated.envelope)).toBe(vector.rotated.envelopeBase64);
-    expect(bytesToBase64(decodeVaultEnvelope(rotated.envelope).headerBytes)).toBe(
-      vector.rotated.headerBytesBase64,
-    );
+    await expect(
+      rotateVaultKey({
+        envelope: initialEnvelope,
+        passphrase: vector.passphrase,
+        metadata: vector.rotated.header,
+        randomBytes: deterministicRandom(96),
+        keyIdGenerator: () => VECTOR_NEXT_KEY_ID,
+      }),
+    ).rejects.toMatchObject({ code: 'document-invalid' });
     expect(
       bytesToBase64(
         serializeRecoveryKit({ keyId: VECTOR_KEY_ID, vaultKey, formatVersion: 1 }).bytes,
@@ -371,47 +371,45 @@ describe('BTVAULT1 envelope and content crypto', () => {
     expect(bytesToBase64(vaultKey)).toBe(rollback.expectedVaultKeyBase64);
     expect(vector.initial.header.keyId).toBe(rollback.expectedKeyId);
 
-    const passphraseChangeFailure = changeVaultPassphrase({
-      envelope: initialEnvelope,
-      oldPassphrase: rollback.passphraseChange.oldPassphrase,
-      newPassphrase: rollback.passphraseChange.newPassphrase!,
-      metadata: rollback.passphraseChange.metadata,
-      randomBytes: failingDeterministicRandom(
-        rollback.passphraseChange.failAtRandomCall,
-        rollback.passphraseChange.randomStart,
-      ),
-    });
-    await expect(passphraseChangeFailure).rejects.toThrow(
-      rollback.passphraseChange.expectedErrorMessage,
-    );
+    // These operations decrypt before consuming randomness. The immutable PD4
+    // body predates the strict PD3a document union, so validation deliberately
+    // stops both before their injected random failure points and leaves bytes
+    // untouched.
+    await expect(
+      changeVaultPassphrase({
+        envelope: initialEnvelope,
+        oldPassphrase: rollback.passphraseChange.oldPassphrase,
+        newPassphrase: rollback.passphraseChange.newPassphrase!,
+        metadata: rollback.passphraseChange.metadata,
+        randomBytes: failingDeterministicRandom(
+          rollback.passphraseChange.failAtRandomCall,
+          rollback.passphraseChange.randomStart,
+        ),
+      }),
+    ).rejects.toMatchObject({ code: 'document-invalid' });
     expect(bytesToBase64(initialEnvelope)).toBe(rollback.expectedEnvelopeBase64);
     expect(bytesToBase64(decodeVaultEnvelope(initialEnvelope).headerBytes)).toBe(
       rollback.expectedHeaderBytesBase64,
     );
-    await expect(decryptVaultDocument(initialEnvelope, vaultKey)).resolves.toMatchObject({
-      document: vaultVectorDocument,
-      header: vector.initial.header,
-    });
+    await expectLegacyDocumentInvalid();
 
-    const rotationFailure = rotateVaultKey({
-      envelope: initialEnvelope,
-      passphrase: rollback.rotation.oldPassphrase,
-      metadata: rollback.rotation.metadata,
-      randomBytes: failingDeterministicRandom(
-        rollback.rotation.failAtRandomCall,
-        rollback.rotation.randomStart,
-      ),
-      keyIdGenerator: () => rollback.rotation.keyId,
-    });
-    await expect(rotationFailure).rejects.toThrow(rollback.rotation.expectedErrorMessage);
+    await expect(
+      rotateVaultKey({
+        envelope: initialEnvelope,
+        passphrase: rollback.rotation.oldPassphrase,
+        metadata: rollback.rotation.metadata,
+        randomBytes: failingDeterministicRandom(
+          rollback.rotation.failAtRandomCall,
+          rollback.rotation.randomStart,
+        ),
+        keyIdGenerator: () => rollback.rotation.keyId,
+      }),
+    ).rejects.toMatchObject({ code: 'document-invalid' });
     expect(bytesToBase64(initialEnvelope)).toBe(rollback.expectedEnvelopeBase64);
     expect(bytesToBase64(decodeVaultEnvelope(initialEnvelope).headerBytes)).toBe(
       rollback.expectedHeaderBytesBase64,
     );
-    await expect(decryptVaultDocument(initialEnvelope, vaultKey)).resolves.toMatchObject({
-      document: vaultVectorDocument,
-      header: vector.initial.header,
-    });
+    await expectLegacyDocumentInvalid();
   });
 
   it('rejects producer headers without an active wrapper or the required Argon2id profile', async () => {

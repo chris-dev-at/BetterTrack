@@ -197,11 +197,34 @@ export const users = pgTable(
     // in the client-encrypted vault blob (§1). Present even for Drive-only
     // accounts — it is account metadata, never portfolio data.
     privacyMode: privacyModeEnum('privacy_mode').notNull().default('normal'),
+    // Non-sensitive data-home state (PD3a): the exact non-empty media set selected
+    // by the client, plus an optional Drive adapter attestation. It intentionally
+    // excludes row counts, document hashes, keys, tokens, and all portfolio data.
+    paranoidMediaSet: text('paranoid_media_set').array(),
+    paranoidDriveAttestedVersion: integer('paranoid_drive_attested_version'),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    // A normal account has no data-home metadata. A paranoid account has exactly
+    // one non-empty subset of the supported media; a Drive attestation cannot
+    // exist unless Drive is selected. This stays deliberately portfolio-free.
+    check(
+      'users_paranoid_media_state',
+      sql`(${t.privacyMode} = 'normal' and ${t.paranoidMediaSet} is null and ${t.paranoidDriveAttestedVersion} is null)
+        or (
+          ${t.privacyMode} = 'paranoid'
+          and ${t.paranoidMediaSet} is not null
+          and (
+            ${t.paranoidMediaSet} = array['server']::text[]
+            or ${t.paranoidMediaSet} = array['drive']::text[]
+            or ${t.paranoidMediaSet} = array['server', 'drive']::text[]
+            or ${t.paranoidMediaSet} = array['drive', 'server']::text[]
+          )
+          and (${t.paranoidDriveAttestedVersion} is null or (${t.paranoidDriveAttestedVersion} > 0 and ${t.paranoidMediaSet} @> array['drive']::text[]))
+        )`,
+    ),
     // Email is stored lowercased; username uniqueness is case-insensitive.
     uniqueIndex('users_email_unique').on(t.email),
     uniqueIndex('users_username_lower_unique').on(sql`lower(${t.username})`),
@@ -3202,8 +3225,27 @@ export const paranoidVaultHistory = pgTable(
 
 export type ParanoidVaultRow = typeof paranoidVaults.$inferSelect;
 export type NewParanoidVaultRow = typeof paranoidVaults.$inferInsert;
+/**
+ * One non-sensitive receipt proves a disable rehydration committed. It is the
+ * retry idempotency key and deliberately stores neither document fingerprints nor
+ * restored-row counts; the transaction id is client-supplied UUIDv7/UUID.
+ */
+export const paranoidRehydrationReceipts = pgTable(
+  'paranoid_rehydration_receipts',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    rehydrationId: uuid('rehydration_id').notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('paranoid_rehydration_receipts_rehydration_id_unique').on(t.rehydrationId)],
+);
+
 export type ParanoidVaultHistoryRow = typeof paranoidVaultHistory.$inferSelect;
 export type NewParanoidVaultHistoryRow = typeof paranoidVaultHistory.$inferInsert;
+export type ParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferSelect;
+export type NewParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferInsert;
 
 export const schema = {
   users,
@@ -3285,6 +3327,7 @@ export const schema = {
   webhookDeliveries,
   paranoidVaults,
   paranoidVaultHistory,
+  paranoidRehydrationReceipts,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,

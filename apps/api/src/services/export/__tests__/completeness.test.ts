@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  VAULT_ENTITY_SCHEMAS,
   VAULT_ENTITY_ROW_SCHEMAS,
   VAULT_TABLE_ENTITY_KINDS,
   type VaultEntityKind,
@@ -12,6 +13,8 @@ import * as schema from '../../../data/schema';
 import {
   EXPORT_TABLE_CLASSIFICATION,
   EXPORTED_ENTITY_NAMES,
+  PARANOID_REHYDRATION_HANDLERS,
+  PARANOID_REHYDRATION_POLICY,
   PARANOID_TABLE_CLASSIFICATION,
   schemaTableNames,
 } from '../manifest';
@@ -97,6 +100,36 @@ describe('strict vault-payload completeness', () => {
     expect(enrolled, `strict v1 table enrollment: ${enrolled.join(', ')}`).toEqual(vaultTables);
   });
 
+  it('makes every vault table explicitly restorable or purge-only', () => {
+    expect(Object.keys(PARANOID_REHYDRATION_POLICY).sort()).toEqual(vaultTables);
+  });
+
+  it('requires every restorable table to name a strict payload schema and restore handler', () => {
+    const handlers = new Set(PARANOID_REHYDRATION_HANDLERS);
+    for (const [table, policy] of Object.entries(PARANOID_REHYDRATION_POLICY)) {
+      if (policy.kind !== 'restore') continue;
+      expect(
+        VAULT_ENTITY_SCHEMAS[policy.entity],
+        `${table} restores ${policy.entity} without a strict vault payload schema`,
+      ).toBeDefined();
+      expect(
+        handlers.has(policy.entity),
+        `${table} restores ${policy.entity} without a rehydration insertion branch`,
+      ).toBe(true);
+    }
+  });
+
+  it('has one restore policy for each handler', () => {
+    const entities = Object.values(PARANOID_REHYDRATION_POLICY)
+      .filter(
+        (policy): policy is Extract<typeof policy, { kind: 'restore' }> =>
+          policy.kind === 'restore',
+      )
+      .map((policy) => policy.entity)
+      .sort();
+    expect([...PARANOID_REHYDRATION_HANDLERS].sort()).toEqual(entities);
+  });
+
   it('carries every persisted Drizzle column and names any omission', () => {
     for (const tableName of vaultTables) {
       const table = tablesByName.get(tableName);
@@ -126,5 +159,9 @@ describe('strict vault-payload completeness', () => {
         `${kind} carries non-column fields for ${tableName}: ${stale.join(', ')}`,
       ).toEqual([]);
     }
+  });
+
+  it('does not classify rehydration metadata as vault content', () => {
+    expect(PARANOID_TABLE_CLASSIFICATION['paranoid_rehydration_receipts']).toBe('server');
   });
 });

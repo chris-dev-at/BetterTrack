@@ -11,18 +11,23 @@ export const VECTOR_NEXT_KEY_ID = '018f0000-0000-7000-8000-00000000000d';
 
 export const vaultVectorDocument: VaultDocumentV1 = {
   schemaVersion: 1,
-  entities: {
-    portfolio: [
-      {
-        id: VECTOR_KEY_ID,
-        rev: 1,
-        editedAt: '2026-07-24T10:00:00.000Z',
-        editedBy: VECTOR_DEVICE_ID,
-        deletedAt: null,
-        data: { name: 'Vector portfolio' },
+  entities: [
+    {
+      id: VECTOR_KEY_ID,
+      kind: 'portfolio',
+      rev: 1,
+      editedAt: '2026-07-24T10:00:00.000Z',
+      editedBy: VECTOR_DEVICE_ID,
+      deletedAt: null,
+      data: {
+        name: 'Vector portfolio',
+        visibility: 'private',
+        sortOrder: 0,
+        defaultPayFromCash: false,
+        archivedAt: null,
       },
-    ],
-  },
+    },
+  ],
   mergeLog: [],
 };
 

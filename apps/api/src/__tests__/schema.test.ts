@@ -48,6 +48,52 @@ describe('schema (§5.5)', () => {
     await h.ctx.redis.quit?.();
   });
 
+  it('rejects a paranoid account without a selected media set', async () => {
+    const user = await h.seedUser({
+      email: 'paranoid-media@bettertrack.test',
+      username: 'paranoid-media',
+    });
+
+    await expect(
+      h.db
+        .update(schema.users)
+        .set({
+          privacyMode: 'paranoid',
+          paranoidMediaSet: null,
+          paranoidDriveAttestedVersion: null,
+        })
+        .where(eq(schema.users.id, user.id)),
+    ).rejects.toThrow();
+  });
+
+  it('requires Drive in the durable media set for a Drive attestation', async () => {
+    const user = await h.seedUser({
+      email: 'paranoid-attestation@bettertrack.test',
+      username: 'paranoid-attestation',
+    });
+
+    await expect(
+      h.db
+        .update(schema.users)
+        .set({
+          privacyMode: 'paranoid',
+          paranoidMediaSet: ['server'],
+          paranoidDriveAttestedVersion: 1,
+        })
+        .where(eq(schema.users.id, user.id)),
+    ).rejects.toThrow();
+    await expect(
+      h.db
+        .update(schema.users)
+        .set({
+          privacyMode: 'paranoid',
+          paranoidMediaSet: ['drive'],
+          paranoidDriveAttestedVersion: 1,
+        })
+        .where(eq(schema.users.id, user.id)),
+    ).resolves.toBeDefined();
+  });
+
   it('enforces the transactions CHECK constraints', async () => {
     const portfolio = one(await h.db.insert(schema.portfolios).values({ userId }).returning());
 
