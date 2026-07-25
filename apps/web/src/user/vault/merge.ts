@@ -5,7 +5,6 @@ import {
   vaultVersionSchema,
   type VaultDocumentV1,
   type VaultEntity,
-  type VaultEntityKind,
   type VaultMergeRecord,
 } from '@bettertrack/contracts';
 
@@ -68,15 +67,7 @@ export function mergeVaultDocuments(input: MergeVaultDocumentsInput): MergedVaul
   const vaultVersion = Math.max(input.leftVersion, input.rightVersion) + 1;
   assertVersion(vaultVersion);
 
-  const entityKinds = new Set<VaultEntityKind>([
-    ...(Object.keys(left.entities) as VaultEntityKind[]),
-    ...(Object.keys(right.entities) as VaultEntityKind[]),
-  ]);
-  const entities: VaultDocumentV1['entities'] = {};
-  for (const kind of [...entityKinds].sort(compareText)) {
-    const merged = mergeEntityKind(left.entities[kind] ?? [], right.entities[kind] ?? []);
-    if (merged.length > 0) entities[kind] = merged;
-  }
+  const entities = mergeEntities(left.entities, right.entities);
 
   const record = parseMergeRecord({
     mergedAt: input.mergedAt,
@@ -137,26 +128,20 @@ export function documentDominates(left: VaultDocumentV1, right: VaultDocumentV1)
 }
 
 function documentDominatesParsed(left: VaultDocumentV1, right: VaultDocumentV1): boolean {
-  for (const [kind, entities] of Object.entries(right.entities) as [
-    VaultEntityKind,
-    VaultEntity[],
-  ][]) {
-    const candidates = entityMap(left.entities[kind] ?? []);
-    for (const rightEntity of entities) {
-      const leftEntity = candidates.get(rightEntity.id);
-      if (
-        leftEntity == null ||
-        !sameEntity(chooseVaultEntity(leftEntity, rightEntity), leftEntity)
-      ) {
-        return false;
-      }
+  const candidates = entityMap(left.entities);
+  for (const rightEntity of right.entities) {
+    const leftEntity = candidates.get(rightEntity.id);
+    if (leftEntity == null || !sameEntity(chooseVaultEntity(leftEntity, rightEntity), leftEntity)) {
+      return false;
     }
   }
   return true;
 }
 
-function mergeEntityKind(left: VaultEntity[], right: VaultEntity[]): VaultEntity[] {
-  return [...entityMap([...left, ...right]).values()].sort((a, b) => compareText(a.id, b.id));
+function mergeEntities(left: VaultEntity[], right: VaultEntity[]): VaultEntity[] {
+  return [...entityMap([...left, ...right]).values()].sort(
+    (a, b) => compareText(a.kind, b.kind) || compareText(a.id, b.id),
+  );
 }
 
 function entityMap(entities: VaultEntity[]): Map<string, VaultEntity> {
