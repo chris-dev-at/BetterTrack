@@ -84,10 +84,11 @@ export function createVaultPortfolioStore(engine: VaultSyncEngine): PortfolioSto
         params.cursor == null
           ? 0
           : Math.max(0, all.findIndex((entity) => entity.id === params.cursor) + 1);
-      const items = all.slice(start, start + limit).map(transactionFromEntity);
+      const page = all.slice(start, start + limit);
+      const items = page.map(transactionFromEntity);
       return {
         items,
-        nextCursor: all[start + limit]?.id ?? null,
+        nextCursor: start + page.length < all.length ? (page.at(-1)?.id ?? null) : null,
       } satisfies TransactionListResponse;
     },
 

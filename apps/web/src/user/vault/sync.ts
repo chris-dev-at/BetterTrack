@@ -193,9 +193,9 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     });
 
     if (!merged.divergent) {
-      // A local/pending successor can contain every remote entity while still
-      // needing persistence. Equal-version divergent ciphertext is resolved to
-      // the primary deterministically; it must not be force-overwritten.
+      // The conservative merge fast path only returns a strictly newer linear
+      // successor or equal-version identical contents. A newer local successor
+      // still needs persistence; otherwise the primary is safe to acknowledge.
       if (candidate.header.vaultVersion > remote.header.vaultVersion) {
         state = { status: 'pending-offline', active: candidate, pending: candidate };
         return pushPending();

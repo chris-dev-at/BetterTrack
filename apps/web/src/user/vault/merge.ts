@@ -41,27 +41,20 @@ export function mergeVaultDocuments(input: MergeVaultDocumentsInput): MergedVaul
   const left = parseDocument(input.left);
   const right = parseDocument(input.right);
 
-  // A later cache/remote candidate that already contains every winning entity
-  // is a linear successor. Selecting it avoids manufacturing a merge version on
-  // every normal reconnect. The check is deliberately entity-only: mergeLog is
-  // diagnostic, not portfolio state.
-  const leftDominates = documentDominates(left, right);
-  const rightDominates = documentDominates(right, left);
-  if (!input.forceDivergent && (leftDominates || rightDominates)) {
-    // Entity dominance is the causal evidence available in a readable blob: a
-    // normal remote successor contains every winning state from a stale local
-    // cache, so select its highest version without manufacturing a merge write.
-    // The coordinator sets forceDivergent for a locally persisted pending write,
-    // which is the explicit evidence of an offline fork.
-    const selected = selectDominatingDocument(
-      left,
-      input.leftVersion,
-      right,
-      input.rightVersion,
-      leftDominates,
-      rightDominates,
-    );
-    return { document: selected.document, vaultVersion: selected.version, divergent: false };
+  // Only a strictly newer document that contains every winner from its older
+  // parent is a safe linear successor. Dominance in the other direction is
+  // evidence of an unmarked offline fork, not causal ancestry. Equal-version
+  // documents are linear only when their decrypted contents are identical.
+  if (!input.forceDivergent) {
+    if (input.leftVersion > input.rightVersion && documentDominates(left, right)) {
+      return { document: left, vaultVersion: input.leftVersion, divergent: false };
+    }
+    if (input.rightVersion > input.leftVersion && documentDominates(right, left)) {
+      return { document: right, vaultVersion: input.rightVersion, divergent: false };
+    }
+    if (input.leftVersion === input.rightVersion && canonicalJson(left) === canonicalJson(right)) {
+      return { document: left, vaultVersion: input.leftVersion, divergent: false };
+    }
   }
 
   const vaultVersion = Math.max(input.leftVersion, input.rightVersion) + 1;
@@ -125,28 +118,6 @@ export function documentDominates(left: VaultDocumentV1, right: VaultDocumentV1)
     }
   }
   return true;
-}
-
-function selectDominatingDocument(
-  left: VaultDocumentV1,
-  leftVersion: number,
-  right: VaultDocumentV1,
-  rightVersion: number,
-  leftDominates: boolean,
-  rightDominates: boolean,
-): { document: VaultDocumentV1; version: number } {
-  if (leftDominates && !rightDominates) return { document: left, version: leftVersion };
-  if (rightDominates && !leftDominates) return { document: right, version: rightVersion };
-  if (leftVersion !== rightVersion) {
-    return leftVersion > rightVersion
-      ? { document: left, version: leftVersion }
-      : { document: right, version: rightVersion };
-  }
-  // Equal semantic state and equal version can still have differently ordered
-  // diagnostics. Pick a stable representation so parent order cannot matter.
-  return canonicalJson(left) >= canonicalJson(right)
-    ? { document: left, version: leftVersion }
-    : { document: right, version: rightVersion };
 }
 
 function mergeEntityKind(left: VaultEntity[], right: VaultEntity[]): VaultEntity[] {

@@ -40,6 +40,8 @@ const DEVICE_A = VECTOR_DEVICE_ID;
 const DEVICE_B = '018f0000-0000-7000-8000-00000000000e';
 const ENTITY_A = '018f0000-0000-7000-8000-000000000010';
 const ENTITY_B = '018f0000-0000-7000-8000-000000000011';
+const ENTITY_C = '018f0000-0000-7000-8000-000000000012';
+const ENTITY_D = '018f0000-0000-7000-8000-000000000013';
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const KEY = new Uint8Array(32).fill(9);
 const WRAPPED = {
@@ -263,18 +265,28 @@ describe('PD5 DataHome adapters', () => {
 
 describe('PD5 sync reconciliation and restore', () => {
   it('keeps an offline local write pending, then converges after a second CAS loss and re-merge', async () => {
-    const localEnvelope = await encrypted(
-      document([entity(ENTITY_A, 2, '2026-07-25T10:01:00.000Z', DEVICE_A)]),
-      2,
+    const localEntity = entity(ENTITY_A, 2, '2026-07-25T10:01:00.000Z', DEVICE_A);
+    const firstRemoteEntity = entity(ENTITY_B, 3, '2026-07-25T10:02:00.000Z', DEVICE_B);
+    const localEnvelope = await encrypted(document([localEntity]), 2);
+    const remoteEnvelopeV3 = await encrypted(document([firstRemoteEntity]), 3, DEVICE_B);
+    const remoteEnvelopeV4 = await encrypted(
+      document([firstRemoteEntity, entity(ENTITY_C, 1, '2026-07-25T10:03:00.000Z', DEVICE_B)]),
+      4,
+      DEVICE_B,
     );
-    const remoteEnvelope = await encrypted(
-      document([entity(ENTITY_B, 3, '2026-07-25T10:02:00.000Z', DEVICE_B)]),
-      3,
+    const remoteEnvelopeV5 = await encrypted(
+      document([
+        firstRemoteEntity,
+        entity(ENTITY_C, 1, '2026-07-25T10:03:00.000Z', DEVICE_B),
+        entity(ENTITY_D, 1, '2026-07-25T10:04:00.000Z', DEVICE_B),
+      ]),
+      5,
       DEVICE_B,
     );
     const local = memoryLocalHome(localEnvelope, 2);
-    const remote = memoryHome('server', remoteEnvelope, 3, [
-      { status: 'conflict', currentVersion: 4 },
+    const remote = memoryHome('server', remoteEnvelopeV3, 3, [
+      { status: 'conflict', currentVersion: 4, currentEnvelope: remoteEnvelopeV4 },
+      { status: 'conflict', currentVersion: 5, currentEnvelope: remoteEnvelopeV5 },
       { status: 'ok', version: 6 },
     ]);
     const engine = createVaultSyncEngine({
@@ -290,7 +302,11 @@ describe('PD5 sync reconciliation and restore', () => {
     await expect(engine.start()).resolves.toMatchObject({ status: 'synced' });
     // A second CAS loss is reconciled inside the same startup/push cycle: no
     // caller-driven reconnect is needed to converge safely.
-    expect(engine.state.active?.document.entities.transaction).toHaveLength(2);
+    expect(engine.state.active?.header.vaultVersion).toBe(6);
+    expect(engine.state.active?.document.entities.transaction?.map((row) => row.id).sort()).toEqual(
+      [ENTITY_A, ENTITY_B, ENTITY_C, ENTITY_D],
+    );
+    await expect(remote.read()).resolves.toMatchObject({ status: 'ok', info: { version: 6 } });
   });
 
   it('keeps an unreadable local cache quarantined and does not replace its last known-good blob', async () => {
@@ -646,6 +662,79 @@ describe('PD5 vault portfolio store responses', () => {
       }),
     ).rejects.toMatchObject({ code: 'locked' });
   });
+
+  it('pages transactions from the last emitted cursor without gaps or duplicates', async () => {
+    const portfolioId = '018f0000-0000-7000-8000-000000000030';
+    const assetId = '018f0000-0000-7000-8000-000000000031';
+    const transactionIds = [
+      '018f0000-0000-7000-8000-000000000032',
+      '018f0000-0000-7000-8000-000000000033',
+      '018f0000-0000-7000-8000-000000000034',
+      '018f0000-0000-7000-8000-000000000035',
+      '018f0000-0000-7000-8000-000000000036',
+    ];
+    const asset: PortfolioAsset = {
+      id: assetId,
+      symbol: 'PAGE',
+      name: 'Paged Asset',
+      exchange: null,
+      currency: 'EUR',
+      type: 'stock',
+      isCustom: true,
+      category: 'stock',
+      smoothing: false,
+    };
+    const initial: VaultDocumentV1 = {
+      schemaVersion: 1,
+      entities: {
+        portfolio: [
+          entity(portfolioId, 0, '2026-07-25T10:00:00.000Z', DEVICE_A, null, {
+            name: 'Main',
+            visibility: 'private',
+            sortOrder: 0,
+            isDefault: true,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          }),
+        ],
+        transaction: transactionIds.map((id, index) =>
+          entity(id, 0, `2026-07-25T10:0${index}:00.000Z`, DEVICE_A, null, {
+            portfolioId,
+            assetId,
+            asset,
+            side: 'buy',
+            quantity: index + 1,
+            price: 10,
+            fee: 0,
+            executedAt: `2026-07-25T10:0${index}:00.000Z`,
+            source: 'manual',
+          }),
+        ),
+      },
+      mergeLog: [],
+    };
+    const store = createVaultPortfolioStore(await startedEngine(initial, 1, DEVICE_A));
+
+    const first = await store.listTransactions(portfolioId, { limit: 2 });
+    const second = await store.listTransactions(portfolioId, {
+      limit: 2,
+      cursor: first.nextCursor ?? undefined,
+    });
+    const terminal = await store.listTransactions(portfolioId, {
+      limit: 2,
+      cursor: second.nextCursor ?? undefined,
+    });
+
+    expect(first.items).toHaveLength(2);
+    expect(second.items).toHaveLength(2);
+    expect(terminal.items).toHaveLength(1);
+    expect(first.nextCursor).toBe(first.items[1]?.id);
+    expect(second.nextCursor).toBe(second.items[1]?.id);
+    expect(terminal.nextCursor).toBeNull();
+    const pagedIds = [...first.items, ...second.items, ...terminal.items].map((row) => row.id);
+    expect(pagedIds).toEqual([...transactionIds].reverse());
+    expect(new Set(pagedIds).size).toBe(transactionIds.length);
+  });
 });
 
 describe('PD5 review regressions', () => {
@@ -743,6 +832,61 @@ describe('PD5 review regressions', () => {
     });
 
     expect(merged).toEqual({ document: successor, vaultVersion: 2, divergent: false });
+  });
+
+  it('merges equal-version different writes into a new successor', () => {
+    const left = document([entity(ENTITY_A, 1, '2026-07-25T10:00:00.000Z', DEVICE_A)]);
+    const right = document([entity(ENTITY_B, 1, '2026-07-25T10:01:00.000Z', DEVICE_B)]);
+
+    const merged = mergeVaultDocuments({
+      left,
+      leftVersion: 2,
+      right,
+      rightVersion: 2,
+      deviceId: DEVICE_A,
+      mergedAt: '2026-07-25T10:02:00.000Z',
+    });
+
+    expect(merged).toMatchObject({ divergent: true, vaultVersion: 3 });
+    expect(merged.document.entities.transaction?.map((row) => row.id)).toEqual([
+      ENTITY_A,
+      ENTITY_B,
+    ]);
+  });
+
+  it('recovers an unmarked lower-version local winner after restart', async () => {
+    const localEnvelope = await encrypted(
+      document([entity(ENTITY_A, 2, '2026-07-25T10:02:00.000Z', DEVICE_A, null, { amount: 200 })]),
+      2,
+    );
+    const remoteEnvelope = await encrypted(
+      document([entity(ENTITY_A, 1, '2026-07-25T10:01:00.000Z', DEVICE_B, null, { amount: 100 })]),
+      3,
+      DEVICE_B,
+    );
+    const local = memoryLocalHome(localEnvelope, 2);
+    await local.setPendingRemote(false);
+    const remote = memoryHome('server', remoteEnvelope, 3);
+    const restarted = createVaultSyncEngine({
+      local,
+      primary: remote,
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      now: () => '2026-07-25T10:03:00.000Z',
+      quarantine: createMemoryVaultQuarantineStore(),
+    });
+
+    await expect(restarted.start()).resolves.toMatchObject({
+      status: 'synced',
+      active: { header: { vaultVersion: 4 } },
+    });
+    expect(restarted.state.active?.document.entities.transaction?.[0]).toMatchObject({
+      id: ENTITY_A,
+      rev: 2,
+      data: { amount: 200 },
+    });
+    await expect(remote.read()).resolves.toMatchObject({ status: 'ok', info: { version: 4 } });
   });
 
   it('pulls and merges after a write-time CAS loss without requiring reconnect', async () => {
@@ -959,7 +1103,7 @@ function memoryHome(
   initial: Uint8Array,
   initialVersion: number,
   writes: (
-    | { status: 'conflict'; currentVersion: number | null }
+    | { status: 'conflict'; currentVersion: number; currentEnvelope: Uint8Array }
     | { status: 'ok'; version: number }
   )[] = [],
 ): DataHome & { set(envelope: Uint8Array, version: number): void } {
@@ -984,8 +1128,11 @@ function memoryHome(
     },
     async write(next: Uint8Array, _options: DataHomeWriteOptions): Promise<DataHomeWriteResult> {
       const outcome = writes.shift();
-      if (outcome?.status === 'conflict')
+      if (outcome?.status === 'conflict') {
+        envelope = outcome.currentEnvelope.slice();
+        version = outcome.currentVersion;
         return { status: 'conflict', medium, currentVersion: outcome.currentVersion };
+      }
       envelope = next.slice();
       version = outcome?.status === 'ok' ? outcome.version : version + 1;
       return {
