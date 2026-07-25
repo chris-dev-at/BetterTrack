@@ -37,7 +37,7 @@ import { uuidv7 } from 'uuidv7';
 import type { PortfolioStore } from '../../lib/portfolioStore';
 
 import { VaultCryptoError } from './errors';
-import type { VaultSyncEngine } from './sync';
+import type { VaultSyncEngine, VaultSyncState } from './sync';
 
 export const VAULT_PORTFOLIO_STORE_ERROR_CODES = [
   'VAULT_LOCKED',
@@ -226,7 +226,8 @@ export function createVaultPortfolioStore(
       transactionFromEntity(current, currentEntity);
       assertFinancialEditSupported(current, transactionId, financialEdit);
 
-      await engine.mutate(({ document }) => {
+      let expected: VaultEntity | null = null;
+      const mutationState = await engine.mutate(({ document }) => {
         requirePortfolio(document, portfolioId);
         const existing = requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
         transactionFromEntity(document, existing);
@@ -241,16 +242,19 @@ export function createVaultPortfolioStore(
             ...dataPatch,
           },
         };
+        expected = updated;
         const next = replaceEntity(document, 'transaction', updated);
         assertValidAssetTimeline(next, portfolioId, stringField(updated.data, 'assetId'));
         return next;
       });
 
-      const committed = findLiveEntity(requireDocument(engine), 'transaction', transactionId);
-      if (committed == null) {
-        throw storeError('VAULT_DATA_UNAVAILABLE', 'The updated vault entity is not readable.');
-      }
-      return transactionFromEntity(requireDocument(engine), committed);
+      const committed = requireCommittedMutationEntity(
+        mutationState,
+        'transaction',
+        transactionId,
+        expected,
+      );
+      return transactionFromEntity(committed.document, committed.entity);
     },
 
     async deleteTransaction(portfolioId, transactionId) {
@@ -337,7 +341,8 @@ async function updateEntity(
   mutateData: (data: Record<string, unknown>) => Record<string, unknown>,
 ): Promise<VaultEntity> {
   requireDocument(context.engine);
-  await context.engine.mutate(({ document }) => {
+  let expected: VaultEntity | null = null;
+  const mutationState = await context.engine.mutate(({ document }) => {
     const entities = document.entities[kind] ?? [];
     const existing = entities.find((entity) => entity.id === id && entity.deletedAt === null);
     if (existing == null) {
@@ -350,13 +355,10 @@ async function updateEntity(
       editedBy: context.engine.deviceId,
       data: mutateData(existing.data),
     };
+    expected = updated;
     return replaceEntity(document, kind, updated);
   });
-  const committed = findLiveEntity(requireDocument(context.engine), kind, id);
-  if (committed == null) {
-    throw storeError('VAULT_DATA_UNAVAILABLE', 'The updated vault entity is not readable.');
-  }
-  return committed;
+  return requireCommittedMutationEntity(mutationState, kind, id, expected).entity;
 }
 
 async function deletePortfolioTree(context: StoreContext, portfolioId: string): Promise<void> {
@@ -602,6 +604,66 @@ function findLiveEntity(
 ): VaultEntity | undefined {
   const entity = findEntity(document, kind, id);
   return entity?.deletedAt === null ? entity : undefined;
+}
+
+function requireCommittedMutationEntity(
+  state: VaultSyncState,
+  kind: VaultEntityKind,
+  id: string,
+  expected: VaultEntity | null,
+): { document: VaultDocumentV1; entity: VaultEntity } {
+  const document = state.active?.document;
+  if (document == null || expected == null) {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      'The requested vault update did not survive commit and reconciliation.',
+    );
+  }
+  const committed = findEntity(document, kind, id);
+  if (committed == null || !sameVaultEntity(committed, expected)) {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      'The requested vault update did not survive commit and reconciliation.',
+    );
+  }
+  return { document, entity: committed };
+}
+
+function sameVaultEntity(left: VaultEntity, right: VaultEntity): boolean {
+  return (
+    left.id === right.id &&
+    left.rev === right.rev &&
+    left.editedAt === right.editedAt &&
+    left.editedBy === right.editedBy &&
+    left.deletedAt === right.deletedAt &&
+    sameJsonValue(left.data, right.data)
+  );
+}
+
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameJsonValue(value, right[index]))
+    );
+  }
+  if (left == null || right == null || typeof left !== 'object' || typeof right !== 'object') {
+    return false;
+  }
+
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) => key === rightKeys[index] && sameJsonValue(leftRecord[key], rightRecord[key]),
+    )
+  );
 }
 
 function resolveCashSourceId(
