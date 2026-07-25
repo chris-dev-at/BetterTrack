@@ -77,6 +77,33 @@ export interface ExpenseBudgetService {
    * throws (a failure is logged, never fails the write that triggered it).
    */
   evaluate(userId: string): Promise<void>;
+  /**
+   * Recompute budget progress after a bulk restore without replaying alerts.
+   *
+   * The service must be built over the caller's transaction-bound repositories:
+   * closed affected periods are claimed as no-replay periods in that same
+   * transaction, while the current period remains unclaimed so a genuine later
+   * breach evaluation can still emit exactly once. Unlike {@link evaluate},
+   * failures propagate and abort the caller's transaction.
+   */
+  reconcileRestore(
+    userId: string,
+    affectedPeriods: readonly string[],
+  ): Promise<ExpenseBudgetRestoreAggregate[]>;
+}
+
+export interface ExpenseBudgetRestoreProgress {
+  budgetId: string;
+  categoryId: string;
+  amount: number;
+  spent: number;
+  exceeded: boolean;
+}
+
+export interface ExpenseBudgetRestoreAggregate {
+  period: string;
+  closed: boolean;
+  budgets: ExpenseBudgetRestoreProgress[];
 }
 
 const CATEGORY_REF_INVALID = () =>
@@ -318,6 +345,42 @@ export function createExpenseBudgetService(deps: ExpenseBudgetServiceDeps): Expe
     async deleteBudget(userId, budgetId) {
       const deleted = await budgets.delete(userId, budgetId);
       if (!deleted) throw BUDGET_NOT_FOUND();
+    },
+
+    async reconcileRestore(userId, affectedPeriods) {
+      const currentPeriod = periodKeyFor(now());
+      const periods = [...new Set(affectedPeriods)].sort();
+      const budgetRecords = await budgets.listForOwner(userId);
+      const aggregates: ExpenseBudgetRestoreAggregate[] = [];
+
+      for (const period of periods) {
+        const spentByCategory = await expenseByCategory(userId, period);
+        const closed = period < currentPeriod;
+        const progress = budgetRecords.map((budget) => {
+          const spent = toCents(spentByCategory.get(budget.categoryId) ?? 0);
+          return {
+            budgetId: budget.id,
+            categoryId: budget.categoryId,
+            amount: budget.amount,
+            spent,
+            exceeded: isOverBudget(spent, budget.amount),
+          };
+        });
+
+        if (closed) {
+          // A restored closed period is history the user already lived through.
+          // Claim every budget, even one that finished below its target, so a
+          // later historical recomputation can never replay an old alert.
+          // `claimFire` is idempotent and uses the caller's transaction.
+          for (const budget of budgetRecords) {
+            await budgets.claimFire(budget.id, period);
+          }
+        }
+
+        aggregates.push({ period, closed, budgets: progress });
+      }
+
+      return aggregates;
     },
 
     async evaluate(userId) {
