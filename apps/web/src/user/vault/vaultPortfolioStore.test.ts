@@ -173,6 +173,32 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     });
   });
 
+  it('quantizes fractional deposits and floating-point balance residue to exact cents', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    await expect(
+      store.depositCash(PORTFOLIO_ID, { amountEur: 0.109, sourceId: CASH_SOURCE_ID }),
+    ).resolves.toMatchObject({
+      movement: { amountEur: 0.1 },
+      sourceBalanceEur: 0.1,
+      balanceEur: 0.1,
+    });
+    await expect(
+      store.depositCash(PORTFOLIO_ID, { amountEur: 0.209, sourceId: CASH_SOURCE_ID }),
+    ).resolves.toMatchObject({
+      movement: { amountEur: 0.2 },
+      sourceBalanceEur: 0.3,
+      balanceEur: 0.3,
+    });
+    await expect(store.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
+      totals: { cashEur: 0.3, totalValueEur: 0.3 },
+    });
+  });
+
   it('tombstones a deleted portfolio and all of its portfolio-scoped children', async () => {
     const secondaryId = GENERATED_IDS[0];
     const transactionId = GENERATED_IDS[1];
@@ -306,6 +332,44 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(new Set(pagedIds).size).toBe(created.length);
   });
 
+  it('matches API UUIDv7 keysets for backdated rows and a tombstoned cursor', async () => {
+    const transactionIds = [GENERATED_IDS[0], GENERATED_IDS[1], GENERATED_IDS[2]] as const;
+    const document = initialDocument();
+    const transactionData = (executedAt: string) => ({
+      portfolioId: PORTFOLIO_ID,
+      assetId: ASSET_ID,
+      side: 'buy',
+      quantity: 1,
+      price: 10,
+      fee: 0,
+      executedAt,
+      note: null,
+      source: 'manual',
+    });
+    document.entities.transaction = [
+      vaultEntity(transactionIds[0], transactionData('2026-07-25T12:00:00.000Z')),
+      vaultEntity(transactionIds[1], transactionData('2020-01-01T00:00:00.000Z')),
+      vaultEntity(transactionIds[2], transactionData('2024-01-01T00:00:00.000Z')),
+    ];
+    const engine = createMutableEngine(document);
+    const store = createVaultPortfolioStore(engine, { now: () => AT });
+
+    const first = await store.listTransactions(PORTFOLIO_ID, { limit: 2 });
+    expect(first.items.map((row) => row.id)).toEqual([transactionIds[2], transactionIds[1]]);
+    expect(first.nextCursor).toBe(transactionIds[1]);
+
+    await store.deleteTransaction(PORTFOLIO_ID, transactionIds[1]);
+    const second = await store.listTransactions(PORTFOLIO_ID, {
+      limit: 2,
+      cursor: transactionIds[1],
+    });
+
+    expect(second).toEqual({
+      items: [expect.objectContaining({ id: transactionIds[0] })],
+      nextCursor: null,
+    });
+  });
+
   it('rejects a transaction before commit when its local asset snapshot is missing', async () => {
     const engine = createMutableEngine(initialDocument());
     const store = createVaultPortfolioStore(engine, {
@@ -329,7 +393,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(engine.state.active?.header.vaultVersion).toBe(1);
   });
 
-  it('uses browser-safe UUIDv7 identities and never serves derived reads from the API', async () => {
+  it('uses browser-safe UUIDv7 identities and never serves vault reads from the API', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     vi.stubGlobal('fetch', fetch);
     const engine = createMutableEngine(initialDocument());
@@ -339,8 +403,65 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(created.id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
-    await expect(store.getPortfolio(PORTFOLIO_ID)).rejects.toMatchObject({
-      code: 'VAULT_OPERATION_UNAVAILABLE',
+    await expect(store.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
+      baseCurrency: 'EUR',
+      holdings: [],
+      totals: { cashEur: 0, totalValueEur: 0 },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expectPortfolioApiUnused();
+  });
+
+  it('reads positions and cash from the authenticated vault without API fallback', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal('fetch', fetch);
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+    await store.createTransactions(PORTFOLIO_ID, [
+      {
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 2,
+        price: 10,
+        fee: 2,
+        executedAt: AT,
+      },
+    ]);
+    await store.depositCash(PORTFOLIO_ID, {
+      amountEur: 12.34,
+      sourceId: CASH_SOURCE_ID,
+    });
+
+    await expect(store.getPortfolio(PORTFOLIO_ID)).resolves.toEqual({
+      baseCurrency: 'EUR',
+      holdings: [
+        {
+          asset,
+          quantity: 2,
+          avgCost: 11,
+          realizedPnl: 0,
+          price: null,
+          marketValueEur: null,
+          costBasisEur: null,
+          unrealizedPnlEur: null,
+          unrealizedPnlPct: null,
+          dayChangeEur: null,
+          dayChangePct: null,
+        },
+      ],
+      totals: {
+        marketValueEur: 0,
+        investedEur: 0,
+        unrealizedPnlEur: 0,
+        unrealizedPnlPct: null,
+        dayChangeEur: 0,
+        dayChangePct: null,
+        cashEur: 12.34,
+        totalValueEur: 12.34,
+      },
     });
     expect(fetch).not.toHaveBeenCalled();
     expectPortfolioApiUnused();
@@ -421,6 +542,20 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
 
 async function assertPortfolioStoreConformance(store: PortfolioStore): Promise<void> {
   await expect(store.listPortfolios()).resolves.toEqual({ portfolios: [portfolio] });
+  await expect(store.getPortfolio(PORTFOLIO_ID)).resolves.toEqual({
+    baseCurrency: 'EUR',
+    holdings: [],
+    totals: {
+      marketValueEur: 0,
+      investedEur: 0,
+      unrealizedPnlEur: 0,
+      unrealizedPnlPct: null,
+      dayChangeEur: 0,
+      dayChangePct: null,
+      cashEur: 0,
+      totalValueEur: 0,
+    },
+  });
 
   const createdPortfolio = await store.createPortfolio('Secondary');
   expect(createdPortfolio).toMatchObject({ name: 'Secondary', visibility: 'private' });
@@ -470,6 +605,9 @@ async function assertPortfolioStoreConformance(store: PortfolioStore): Promise<v
     movement: { kind: 'withdrawal', amountEur: -35, sourceId: CASH_SOURCE_ID },
     sourceBalanceEur: 65,
     balanceEur: 65,
+  });
+  await expect(store.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
+    totals: { cashEur: 65, totalValueEur: 65 },
   });
 }
 
