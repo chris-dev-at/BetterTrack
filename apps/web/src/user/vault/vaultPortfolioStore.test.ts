@@ -27,6 +27,7 @@ import {
   type VaultEnvelopeHeader,
 } from '@bettertrack/contracts';
 import { InsufficientCashError } from '@bettertrack/domain/cashLedger';
+import { reducePosition } from '@bettertrack/domain/holdings';
 
 import * as portfolioApi from '../../lib/portfolioApi';
 import { apiPortfolioStore, type PortfolioStore } from '../../lib/portfolioStore';
@@ -63,6 +64,10 @@ const GENERATED_IDS = [
   '018f0000-0000-7000-8000-000000000035',
   '018f0000-0000-7000-8000-000000000036',
   '018f0000-0000-7000-8000-000000000037',
+  '018f0000-0000-7000-8000-000000000038',
+  '018f0000-0000-7000-8000-000000000039',
+  '018f0000-0000-7000-8000-00000000003a',
+  '018f0000-0000-7000-8000-00000000003b',
 ] as const;
 const AT = '2026-07-25T10:00:00.000Z';
 const KEY = new Uint8Array(32).fill(9);
@@ -197,6 +202,86 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     await expect(store.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
       totals: { cashEur: 0.3, totalValueEur: 0.3 },
     });
+  });
+
+  it('rejects deleting cash-linked proceeds that fund a later outflow', async () => {
+    const buyId = GENERATED_IDS[0];
+    const sellId = GENERATED_IDS[1];
+    const proceedsId = GENERATED_IDS[2];
+    const withdrawalId = GENERATED_IDS[3];
+    const document = initialDocument();
+    document.entities.transaction = [
+      vaultEntity(buyId, {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 1,
+        price: 50,
+        fee: 0,
+        executedAt: '2026-07-25T08:00:00.000Z',
+        note: null,
+        source: 'manual',
+      }),
+      vaultEntity(sellId, {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'sell',
+        quantity: 1,
+        price: 100,
+        fee: 0,
+        executedAt: '2026-07-25T09:00:00.000Z',
+        note: null,
+        source: 'manual',
+      }),
+    ];
+    document.entities.cashMovement = [
+      vaultEntity(proceedsId, {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'sell_proceeds',
+        amountEur: 100,
+        transactionId: sellId,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-25T09:00:00.000Z',
+        note: null,
+        source: 'manual',
+        createdAt: '2026-07-25T09:00:00.000Z',
+      }),
+      vaultEntity(withdrawalId, {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'withdrawal',
+        amountEur: -100,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: AT,
+        note: null,
+        source: 'manual',
+        createdAt: AT,
+      }),
+    ];
+    const engine = createMutableEngine(document);
+    const store = createVaultPortfolioStore(engine, { now: () => AT });
+
+    await expect(store.deleteTransaction(PORTFOLIO_ID, sellId)).rejects.toBeInstanceOf(
+      InsufficientCashError,
+    );
+
+    expect(engine.state.active?.header.vaultVersion).toBe(1);
+    expect(
+      engine.state.active?.document.entities.transaction?.find((row) => row.id === sellId)
+        ?.deletedAt,
+    ).toBeNull();
+    expect(
+      engine.state.active?.document.entities.cashMovement?.find((row) => row.id === proceedsId)
+        ?.deletedAt,
+    ).toBeNull();
   });
 
   it('tombstones a deleted portfolio and all of its portfolio-scoped children', async () => {
@@ -393,6 +478,79 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(engine.state.active?.header.vaultVersion).toBe(1);
   });
 
+  it.each([
+    ['side', { side: 'sell' as const }],
+    ['quantity', { quantity: 2 }],
+    ['price', { price: 20 }],
+    ['fee', { fee: 1 }],
+    ['execution time', { executedAt: '2026-07-26T10:00:00.000Z' }],
+  ])('rejects a cash-linked %s edit without starting a CAS mutation', async (_label, patch) => {
+    const transactionId = GENERATED_IDS[0];
+    const depositId = GENERATED_IDS[1];
+    const buyMovementId = GENERATED_IDS[2];
+    const document = initialDocument();
+    document.entities.transaction = [
+      vaultEntity(transactionId, {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 1,
+        price: 10,
+        fee: 0,
+        executedAt: AT,
+        note: null,
+        source: 'manual',
+      }),
+    ];
+    document.entities.cashMovement = [
+      vaultEntity(depositId, {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'deposit',
+        amountEur: 10,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-25T09:00:00.000Z',
+        note: null,
+        source: 'manual',
+        createdAt: '2026-07-25T09:00:00.000Z',
+      }),
+      vaultEntity(buyMovementId, {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'buy',
+        amountEur: -10,
+        transactionId,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: AT,
+        note: null,
+        source: 'manual',
+        createdAt: AT,
+      }),
+    ];
+    const engine = createMutableEngine(document);
+    const store = createVaultPortfolioStore(engine, { now: () => AT });
+
+    await expect(store.updateTransaction(PORTFOLIO_ID, transactionId, patch)).rejects.toMatchObject(
+      {
+        code: 'VAULT_OPERATION_UNAVAILABLE',
+      },
+    );
+
+    expect(engine.mutate).not.toHaveBeenCalled();
+    expect(engine.state.active?.header.vaultVersion).toBe(1);
+    expect(
+      engine.state.active?.document.entities.transaction?.find((row) => row.id === transactionId)
+        ?.data,
+    ).toMatchObject({ side: 'buy', quantity: 1, price: 10, fee: 0, executedAt: AT });
+  });
+
   it('uses browser-safe UUIDv7 identities and never serves vault reads from the API', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     vi.stubGlobal('fetch', fetch);
@@ -559,6 +717,18 @@ async function assertPortfolioStoreConformance(store: PortfolioStore): Promise<v
 
   const createdPortfolio = await store.createPortfolio('Secondary');
   expect(createdPortfolio).toMatchObject({ name: 'Secondary', visibility: 'private' });
+  await expect(store.depositCash(createdPortfolio.id, { amountEur: 25 })).resolves.toMatchObject({
+    movement: {
+      kind: 'deposit',
+      amountEur: 25,
+      sourceId: expect.any(String),
+    },
+    sourceBalanceEur: 25,
+    balanceEur: 25,
+  });
+  await expect(store.getPortfolio(createdPortfolio.id)).resolves.toMatchObject({
+    totals: { cashEur: 25, totalValueEur: 25 },
+  });
   const updatedPortfolio = await store.updatePortfolio(createdPortfolio.id, { name: 'Renamed' });
   expect(updatedPortfolio.name).toBe('Renamed');
   expect((await store.listPortfolios()).portfolios.map((row) => row.id)).toContain(
@@ -568,6 +738,20 @@ async function assertPortfolioStoreConformance(store: PortfolioStore): Promise<v
   expect((await store.listPortfolios()).portfolios.map((row) => row.id)).not.toContain(
     createdPortfolio.id,
   );
+
+  await expect(
+    store.createTransactions(PORTFOLIO_ID, [
+      {
+        assetId: ASSET_ID,
+        side: 'sell',
+        quantity: 1,
+        price: 10,
+        fee: 0,
+        executedAt: AT,
+      },
+    ]),
+  ).rejects.toBeDefined();
+  await expect(store.listTransactions(PORTFOLIO_ID)).resolves.toMatchObject({ items: [] });
 
   const [createdTransaction] = await store.createTransactions(PORTFOLIO_ID, [
     {
@@ -589,6 +773,25 @@ async function assertPortfolioStoreConformance(store: PortfolioStore): Promise<v
   await expect(
     store.updateTransaction(PORTFOLIO_ID, createdTransaction!.id, { note: 'Edited' }),
   ).resolves.toMatchObject({ note: 'Edited' });
+  const [createdSell] = await store.createTransactions(PORTFOLIO_ID, [
+    {
+      assetId: ASSET_ID,
+      side: 'sell',
+      quantity: 2,
+      price: 12,
+      fee: 0,
+      executedAt: '2026-07-25T11:00:00.000Z',
+    },
+  ]);
+  await expect(
+    store.updateTransaction(PORTFOLIO_ID, createdSell!.id, { quantity: 3 }),
+  ).rejects.toBeDefined();
+  expect(
+    (await store.listTransactions(PORTFOLIO_ID)).items.find((row) => row.id === createdSell!.id),
+  ).toMatchObject({ quantity: 2 });
+  await expect(store.deleteTransaction(PORTFOLIO_ID, createdTransaction!.id)).rejects.toBeDefined();
+  expect((await store.listTransactions(PORTFOLIO_ID)).items).toHaveLength(2);
+  await store.deleteTransaction(PORTFOLIO_ID, createdSell!.id);
   await store.deleteTransaction(PORTFOLIO_ID, createdTransaction!.id);
   await expect(store.listTransactions(PORTFOLIO_ID)).resolves.toMatchObject({ items: [] });
 
@@ -614,7 +817,8 @@ async function assertPortfolioStoreConformance(store: PortfolioStore): Promise<v
 function createMemoryPortfolioStore(): PortfolioStore {
   let portfolios = [portfolio];
   let transactions: Transaction[] = [];
-  let cashBalance = 0;
+  const cashBalances = new Map<string, number>([[PORTFOLIO_ID, 0]]);
+  const mainCashSources = new Map<string, string>([[PORTFOLIO_ID, CASH_SOURCE_ID]]);
   const ids = idSequence();
 
   return {
@@ -634,9 +838,13 @@ function createMemoryPortfolioStore(): PortfolioStore {
         archivedAt: null,
       };
       portfolios = [...portfolios, created];
+      cashBalances.set(created.id, 0);
+      mainCashSources.set(created.id, ids());
       return created;
     },
-    async getPortfolio() {
+    async getPortfolio(portfolioId) {
+      const cashBalance = cashBalances.get(portfolioId);
+      if (cashBalance == null) throw new Error('Portfolio not found.');
       return {
         baseCurrency: 'EUR',
         holdings: [],
@@ -661,6 +869,8 @@ function createMemoryPortfolioStore(): PortfolioStore {
     },
     async deletePortfolio(id) {
       portfolios = portfolios.filter((row) => row.id !== id);
+      cashBalances.delete(id);
+      mainCashSources.delete(id);
     },
     async listTransactions(portfolioId, params = {}) {
       const filtered = transactions.filter(
@@ -687,7 +897,11 @@ function createMemoryPortfolioStore(): PortfolioStore {
           asset,
         }),
       );
-      transactions = [...created, ...transactions];
+      const candidate = [...created, ...transactions];
+      for (const assetId of new Set(created.map((row) => row.assetId))) {
+        reducePosition(candidate.filter((row) => row.assetId === assetId));
+      }
+      transactions = candidate;
       return created;
     },
     async updateTransaction(portfolioId, id, patch) {
@@ -695,29 +909,41 @@ function createMemoryPortfolioStore(): PortfolioStore {
       if (current == null) throw new Error('Transaction not found.');
       const { baseSeq: _baseSeq, ...dataPatch } = patch;
       const updated = { ...current, ...dataPatch };
-      transactions = transactions.map((row) => (row.id === id ? updated : row));
+      const candidate = transactions.map((row) => (row.id === id ? updated : row));
+      reducePosition(candidate.filter((row) => row.assetId === current.assetId));
+      transactions = candidate;
       return updated;
     },
     async deleteTransaction(portfolioId, id) {
-      transactions = transactions.filter((row) => portfolioId !== PORTFOLIO_ID || row.id !== id);
+      const current = transactions.find((row) => portfolioId === PORTFOLIO_ID && row.id === id);
+      if (current == null) throw new Error('Transaction not found.');
+      const candidate = transactions.filter((row) => portfolioId !== PORTFOLIO_ID || row.id !== id);
+      reducePosition(candidate.filter((row) => row.assetId === current.assetId));
+      transactions = candidate;
     },
     async depositCash(portfolioId, body) {
-      if (portfolioId !== PORTFOLIO_ID) throw new Error('Portfolio not found.');
-      cashBalance += body.amountEur;
+      const cashBalance = cashBalances.get(portfolioId);
+      const sourceId = body.sourceId ?? mainCashSources.get(portfolioId);
+      if (cashBalance == null || sourceId == null) throw new Error('Portfolio not found.');
+      const nextBalance = cashBalance + body.amountEur;
+      cashBalances.set(portfolioId, nextBalance);
       return {
-        movement: memoryMovement(ids(), 'deposit', body.amountEur, body),
-        sourceBalanceEur: cashBalance,
-        balanceEur: cashBalance,
+        movement: memoryMovement(ids(), 'deposit', body.amountEur, { ...body, sourceId }),
+        sourceBalanceEur: nextBalance,
+        balanceEur: nextBalance,
       };
     },
     async withdrawCash(portfolioId, body) {
-      if (portfolioId !== PORTFOLIO_ID) throw new Error('Portfolio not found.');
+      const cashBalance = cashBalances.get(portfolioId);
+      const sourceId = body.sourceId ?? mainCashSources.get(portfolioId);
+      if (cashBalance == null || sourceId == null) throw new Error('Portfolio not found.');
       if (body.amountEur > cashBalance) throw new Error('Insufficient cash.');
-      cashBalance -= body.amountEur;
+      const nextBalance = cashBalance - body.amountEur;
+      cashBalances.set(portfolioId, nextBalance);
       return {
-        movement: memoryMovement(ids(), 'withdrawal', -body.amountEur, body),
-        sourceBalanceEur: cashBalance,
-        balanceEur: cashBalance,
+        movement: memoryMovement(ids(), 'withdrawal', -body.amountEur, { ...body, sourceId }),
+        sourceBalanceEur: nextBalance,
+        balanceEur: nextBalance,
       };
     },
   };
