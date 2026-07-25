@@ -70,6 +70,7 @@ const GENERATED_IDS = [
   '018f0000-0000-7000-8000-00000000003b',
 ] as const;
 const AT = '2026-07-25T10:00:00.000Z';
+const COMPETING_AT = '2026-07-25T10:00:01.000Z';
 const KEY = new Uint8Array(32).fill(9);
 const WRAPPED_KEY = {
   keyId: VECTOR_KEY_ID,
@@ -684,8 +685,23 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(engine.state.active?.header.vaultVersion).toBe(9);
   });
 
-  it('does not report success when a sync engine leaves a mutation uncommitted', async () => {
-    const stable = createMutableEngine(initialDocument(), false);
+  it('does not report success when existing portfolio and transaction updates are uncommitted', async () => {
+    const transactionId = GENERATED_IDS[0];
+    const document = initialDocument();
+    document.entities.transaction = [
+      vaultEntity(transactionId, {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 1,
+        price: 10,
+        fee: 0,
+        executedAt: AT,
+        note: null,
+        source: 'manual',
+      }),
+    ];
+    const stable = createMutableEngine(document, false);
     const store = createVaultPortfolioStore(stable, {
       now: () => AT,
       newId: idSequence(),
@@ -694,7 +710,108 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     await expect(store.createPortfolio('Not committed')).rejects.toMatchObject({
       code: 'VAULT_DATA_UNAVAILABLE',
     });
+    await expect(
+      store.updatePortfolio(PORTFOLIO_ID, { name: 'Not committed' }),
+    ).rejects.toMatchObject({
+      code: 'VAULT_DATA_UNAVAILABLE',
+    });
+    await expect(
+      store.updateTransaction(PORTFOLIO_ID, transactionId, { note: 'Not committed' }),
+    ).rejects.toMatchObject({
+      code: 'VAULT_DATA_UNAVAILABLE',
+    });
+
     await expect(store.listPortfolios()).resolves.toEqual({ portfolios: [portfolio] });
+    await expect(store.listTransactions(PORTFOLIO_ID)).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: transactionId, note: null })],
+    });
+  });
+
+  it('rejects a portfolio update when competing edit metadata wins for the same payload', async () => {
+    const initial = initialDocument();
+    const competing = initialDocument();
+    const competingPortfolio = competing.entities.portfolio?.[0];
+    if (competingPortfolio == null) throw new Error('Missing portfolio fixture.');
+    competing.entities.portfolio = [
+      {
+        ...competingPortfolio,
+        rev: 1,
+        editedAt: COMPETING_AT,
+        editedBy: REMOTE_DEVICE_ID,
+        data: { ...competingPortfolio.data, name: 'Requested' },
+      },
+    ];
+    const { engine, remote } = await createRacingSyncEngine(
+      initial,
+      competing,
+      'portfolio-store-portfolio-race',
+    );
+    const store = createVaultPortfolioStore(engine, { now: () => AT });
+
+    await expect(store.updatePortfolio(PORTFOLIO_ID, { name: 'Requested' })).rejects.toMatchObject({
+      code: 'VAULT_DATA_UNAVAILABLE',
+    });
+
+    expect(remote.expectedVersions).toEqual([1, 2]);
+    expect(engine.state.active?.document.entities.portfolio?.[0]).toMatchObject({
+      rev: 1,
+      editedAt: COMPETING_AT,
+      editedBy: REMOTE_DEVICE_ID,
+      data: { name: 'Requested' },
+    });
+    await expect(store.listPortfolios()).resolves.toEqual({
+      portfolios: [{ ...portfolio, name: 'Requested' }],
+    });
+  });
+
+  it('rejects a transaction update when a competing same-id edit wins reconciliation', async () => {
+    const transactionId = GENERATED_IDS[0];
+    const transaction = vaultEntity(transactionId, {
+      portfolioId: PORTFOLIO_ID,
+      assetId: ASSET_ID,
+      side: 'buy',
+      quantity: 1,
+      price: 10,
+      fee: 0,
+      executedAt: AT,
+      note: null,
+      source: 'manual',
+    });
+    const initial = initialDocument();
+    initial.entities.transaction = [transaction];
+    const competing = initialDocument();
+    competing.entities.transaction = [
+      {
+        ...transaction,
+        rev: 1,
+        editedAt: COMPETING_AT,
+        editedBy: REMOTE_DEVICE_ID,
+        data: { ...transaction.data, note: 'Competing' },
+      },
+    ];
+    const { engine, remote } = await createRacingSyncEngine(
+      initial,
+      competing,
+      'portfolio-store-transaction-race',
+    );
+    const store = createVaultPortfolioStore(engine, { now: () => AT });
+
+    await expect(
+      store.updateTransaction(PORTFOLIO_ID, transactionId, { note: 'Requested' }),
+    ).rejects.toMatchObject({
+      code: 'VAULT_DATA_UNAVAILABLE',
+    });
+
+    expect(remote.expectedVersions).toEqual([1, 2]);
+    expect(engine.state.active?.document.entities.transaction?.[0]).toMatchObject({
+      rev: 1,
+      editedAt: COMPETING_AT,
+      editedBy: REMOTE_DEVICE_ID,
+      data: { note: 'Competing' },
+    });
+    await expect(store.listTransactions(PORTFOLIO_ID)).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: transactionId, note: 'Competing' })],
+    });
   });
 });
 
@@ -1132,9 +1249,20 @@ interface MemoryRemote extends DataHome {
   expectedVersions: (number | null)[];
 }
 
-function memoryRemote(initial: Uint8Array, initialVersion: number): MemoryRemote {
+interface MemoryRemoteRace {
+  envelope: Uint8Array;
+  version: number;
+}
+
+function memoryRemote(
+  initial: Uint8Array,
+  initialVersion: number,
+  race?: MemoryRemoteRace,
+): MemoryRemote {
   let envelope = initial.slice();
   let version = initialVersion;
+  let pendingRace =
+    race == null ? null : { envelope: race.envelope.slice(), version: race.version };
   const expectedVersions: (number | null)[] = [];
   return {
     medium: 'server',
@@ -1166,6 +1294,12 @@ function memoryRemote(initial: Uint8Array, initialVersion: number): MemoryRemote
     },
     async write(next: Uint8Array, options: DataHomeWriteOptions): Promise<DataHomeWriteResult> {
       expectedVersions.push(options.ifVersion);
+      if (pendingRace != null) {
+        envelope = pendingRace.envelope;
+        version = pendingRace.version;
+        pendingRace = null;
+        return { status: 'conflict', medium: 'server', currentVersion: version };
+      }
       if (options.ifVersion !== version) {
         return { status: 'conflict', medium: 'server', currentVersion: version };
       }
@@ -1184,6 +1318,32 @@ function memoryRemote(initial: Uint8Array, initialVersion: number): MemoryRemote
       };
     },
   };
+}
+
+async function createRacingSyncEngine(
+  initial: VaultDocumentV1,
+  competing: VaultDocumentV1,
+  scope: string,
+): Promise<{ engine: VaultSyncEngine; remote: MemoryRemote }> {
+  const initialEnvelope = await encrypted(initial, 1);
+  const competingEnvelope = await encrypted(competing, 2);
+  const local = createLocalDataHome({ scope, storage: memoryLocalStorage() });
+  await seedLocal(local, initialEnvelope);
+  const remote = memoryRemote(initialEnvelope, 1, {
+    envelope: competingEnvelope,
+    version: 2,
+  });
+  const engine = createVaultSyncEngine({
+    local,
+    primary: remote,
+    vaultKey: KEY,
+    deviceId: DEVICE_ID,
+    writeId: writeIdSequence(),
+    now: () => AT,
+    quarantine: createMemoryVaultQuarantineStore(),
+  });
+  await engine.start();
+  return { engine, remote };
 }
 
 function memoryLocalStorage(): LocalDataHomeStorage {
