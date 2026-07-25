@@ -251,6 +251,178 @@ describe('vault document v1', () => {
     ).toBe(false);
   });
 
+  it('rejects sub-quantum values and accepts the exact storage quantum at every scale', () => {
+    const meta = {
+      id: UUID_A,
+      rev: 0,
+      editedAt: '2026-07-24T10:00:00.000Z',
+      editedBy: UUID_B,
+      deletedAt: null,
+    };
+    const transaction = {
+      ...meta,
+      kind: 'transaction',
+      data: {
+        portfolioId: UUID_A,
+        assetId: UUID_B,
+        side: 'buy',
+        quantity: 1,
+        price: 1,
+        fee: 0,
+        executedAt: '2026-07-24T10:00:00.000Z',
+        note: null,
+        allowUncovered: false,
+        uncoveredEntryPrice: null,
+        source: 'manual',
+        taxMode: null,
+        taxCountry: null,
+        taxAmountEur: null,
+        taxParams: null,
+      },
+    };
+    const dividend = {
+      ...meta,
+      kind: 'dividend',
+      data: {
+        portfolioId: UUID_A,
+        assetId: UUID_B,
+        cashSourceId: UUID_C,
+        grossAmountEur: 1,
+        executedAt: '2026-07-24T10:00:00.000Z',
+        note: null,
+        source: 'manual',
+        taxMode: 'manual_per_trade',
+        taxCountry: null,
+        taxAmountEur: 1,
+        taxParams: null,
+      },
+    };
+    const standingOrder = {
+      ...meta,
+      kind: 'standingOrder',
+      data: {
+        portfolioId: UUID_A,
+        kind: 'cash-add',
+        assetId: null,
+        amount: 1,
+        currency: 'EUR',
+        label: null,
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-24',
+        endDate: null,
+        status: 'active',
+        lastRunAt: null,
+        lastPeriodKey: null,
+        createdAt: '2026-07-24T10:00:00.000Z',
+        updatedAt: '2026-07-24T10:00:00.000Z',
+      },
+    };
+    const expense = {
+      ...meta,
+      kind: 'expenseTransaction',
+      data: {
+        categoryId: null,
+        direction: 'expense',
+        amount: 1,
+        currency: 'EUR',
+        bookedOn: '2026-07-24',
+        description: 'Storage quantum',
+        source: 'manual',
+        createdAt: '2026-07-24T10:00:00.000Z',
+        updatedAt: '2026-07-24T10:00:00.000Z',
+      },
+    };
+    const cashMovement = {
+      ...meta,
+      kind: 'cashMovement',
+      data: {
+        portfolioId: UUID_A,
+        sourceId: UUID_B,
+        kind: 'deposit',
+        amountEur: 1,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-24T10:00:00.000Z',
+        note: null,
+        source: 'manual',
+      },
+    };
+    const cases = [
+      {
+        label: 'scale-2 expense amount',
+        invalid: { ...expense, data: { ...expense.data, amount: 1e-10 } },
+        valid: { ...expense, data: { ...expense.data, amount: 0.01 } },
+      },
+      {
+        label: 'scale-2 cash amount',
+        invalid: { ...cashMovement, data: { ...cashMovement.data, amountEur: 1e-10 } },
+        valid: { ...cashMovement, data: { ...cashMovement.data, amountEur: 0.01 } },
+      },
+      {
+        label: 'scale-6 transaction price',
+        invalid: { ...transaction, data: { ...transaction.data, price: 1e-14 } },
+        valid: { ...transaction, data: { ...transaction.data, price: 0.000001 } },
+      },
+      {
+        label: 'scale-6 dividend amount',
+        invalid: { ...dividend, data: { ...dividend.data, grossAmountEur: 1e-14 } },
+        valid: { ...dividend, data: { ...dividend.data, grossAmountEur: 0.000001 } },
+      },
+      {
+        label: 'scale-6 signed tax amount',
+        invalid: {
+          ...dividend,
+          data: {
+            ...dividend.data,
+            taxMode: 'country_specific',
+            taxCountry: 'AT',
+            taxAmountEur: -1e-14,
+          },
+        },
+        valid: {
+          ...dividend,
+          data: {
+            ...dividend.data,
+            taxMode: 'country_specific',
+            taxCountry: 'AT',
+            taxAmountEur: -0.000001,
+          },
+        },
+      },
+      {
+        label: 'scale-8 transaction quantity',
+        invalid: { ...transaction, data: { ...transaction.data, quantity: 1e-16 } },
+        valid: { ...transaction, data: { ...transaction.data, quantity: 0.00000001 } },
+      },
+      {
+        label: 'scale-8 standing-order amount',
+        invalid: { ...standingOrder, data: { ...standingOrder.data, amount: 1e-16 } },
+        valid: { ...standingOrder, data: { ...standingOrder.data, amount: 0.00000001 } },
+      },
+    ];
+
+    for (const testCase of cases) {
+      expect(
+        vaultDocumentV1Schema.safeParse({
+          schemaVersion: 1,
+          entities: [testCase.invalid],
+        }).success,
+        testCase.label,
+      ).toBe(false);
+      expect(
+        vaultDocumentV1Schema.safeParse({
+          schemaVersion: 1,
+          entities: [testCase.valid],
+        }).success,
+        testCase.label,
+      ).toBe(true);
+    }
+  });
+
   it('rejects non-cent cash and negative manual tax facts', () => {
     const cash = {
       id: UUID_A,
@@ -337,5 +509,72 @@ describe('vault document v1', () => {
         ],
       }).success,
     ).toBe(false);
+  });
+
+  it('requires transfer fields together and only on transfer movements', () => {
+    const movement = {
+      id: UUID_A,
+      kind: 'cashMovement',
+      rev: 0,
+      editedAt: '2026-07-24T10:00:00.000Z',
+      editedBy: UUID_B,
+      deletedAt: null,
+      data: {
+        portfolioId: UUID_A,
+        sourceId: UUID_B,
+        kind: 'deposit',
+        amountEur: 1,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-24T10:00:00.000Z',
+        note: null,
+        source: 'manual',
+      },
+    };
+    const malformed = [
+      { ...movement, data: { ...movement.data, transferId: UUID_C } },
+      { ...movement, data: { ...movement.data, counterpartSourceId: UUID_C } },
+      {
+        ...movement,
+        data: {
+          ...movement.data,
+          kind: 'transfer_in',
+          transferId: UUID_C,
+        },
+      },
+      {
+        ...movement,
+        data: {
+          ...movement.data,
+          kind: 'transfer_in',
+          counterpartSourceId: UUID_C,
+        },
+      },
+    ];
+
+    for (const entity of malformed) {
+      expect(
+        vaultDocumentV1Schema.safeParse({ schemaVersion: 1, entities: [entity] }).success,
+      ).toBe(false);
+    }
+    expect(
+      vaultDocumentV1Schema.safeParse({
+        schemaVersion: 1,
+        entities: [
+          {
+            ...movement,
+            data: {
+              ...movement.data,
+              kind: 'transfer_in',
+              transferId: UUID_C,
+              counterpartSourceId: UUID_A,
+            },
+          },
+        ],
+      }).success,
+    ).toBe(true);
   });
 });

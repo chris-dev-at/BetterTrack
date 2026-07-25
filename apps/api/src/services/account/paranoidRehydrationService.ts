@@ -743,6 +743,30 @@ async function validateTradeCashLinks(
   }
 }
 
+function validateStandingOrderCurrencies(
+  entities: readonly Entity[],
+  referencedAssets: ReadonlyMap<string, ReferencedAsset>,
+): void {
+  for (const order of rows(entities, 'standingOrder')) {
+    if (order.data.kind !== 'buy-asset') {
+      if (order.data.currency !== 'EUR') {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'cash standing orders must use EUR',
+        );
+      }
+      continue;
+    }
+    const asset = order.data.assetId ? referencedAssets.get(order.data.assetId) : undefined;
+    if (!asset || order.data.currency !== asset.currency) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'buy standing-order currency must match its asset',
+      );
+    }
+  }
+}
+
 function toTransactionRecord(entity: EntityOf<'transaction'>): TransactionRecord {
   return {
     id: entity.id,
@@ -1219,6 +1243,7 @@ export function createParanoidRehydrationService(
 
         await ensureNoExistingRestorableRows(tx, userId);
         const referencedAssets = await resolveReferencedAssets(tx, entities);
+        validateStandingOrderCurrencies(entities, referencedAssets);
         await validateTradeCashLinks(entities, referencedAssets, toCashEur);
         await validateTaxRehydration(entities, referencedAssets, toCashEur, now());
 

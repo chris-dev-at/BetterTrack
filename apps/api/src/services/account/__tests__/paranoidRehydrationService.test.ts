@@ -367,6 +367,63 @@ describe('paranoid rehydration service', () => {
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
 
+  it('rejects frozen tax facts on a buy before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const transaction = input.document.entities.find((entry) => entry.kind === 'transaction');
+    if (!transaction || transaction.kind !== 'transaction') throw new Error('expected transaction');
+    transaction.data.taxMode = 'none';
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('rejects a frozen tax amount on a none-mode sell before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const transaction = input.document.entities.find((entry) => entry.kind === 'transaction');
+    if (!transaction || transaction.kind !== 'transaction') throw new Error('expected transaction');
+    transaction.data.side = 'sell';
+    transaction.data.allowUncovered = true;
+    transaction.data.taxMode = 'none';
+    transaction.data.taxAmountEur = 1;
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('rejects a frozen tax amount on a none-mode dividend before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'dividend', {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        cashSourceId: CASH_SOURCE_ID,
+        grossAmountEur: 10,
+        executedAt: editedAt,
+        note: null,
+        taxMode: 'none',
+        taxCountry: null,
+        taxAmountEur: 1,
+        taxParams: null,
+        source: 'manual',
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
   it('restores reconciled country-tax history and its portfolio override', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
@@ -712,6 +769,40 @@ describe('paranoid rehydration service', () => {
     expect(await db.select().from(standingOrderRuns)).toMatchObject([
       { standingOrderId: '018f0000-0000-7000-8000-00000000000d', periodKey: '2026-07-24' },
     ]);
+  });
+
+  it.each([
+    { kind: 'cash-add' as const, assetId: null, currency: 'USD' },
+    { kind: 'cash-deduct' as const, assetId: null, currency: 'USD' },
+    { kind: 'buy-asset' as const, assetId: ASSET_ID, currency: 'USD' },
+  ])('rejects a $kind standing order with a non-derived currency', async (order) => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'standingOrder', {
+        portfolioId: PORTFOLIO_ID,
+        kind: order.kind,
+        assetId: order.assetId,
+        amount: 100,
+        currency: order.currency,
+        label: null,
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-01',
+        endDate: null,
+        status: 'active',
+        lastRunAt: null,
+        lastPeriodKey: null,
+        createdAt: editedAt,
+        updatedAt: editedAt,
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
 
   it('rejects a dividend without its required gross cash movement before writing', async () => {
