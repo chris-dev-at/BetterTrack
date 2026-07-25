@@ -38,9 +38,18 @@ export interface LocalDataHomeOptions {
   storage?: LocalDataHomeStorage;
 }
 
+export type LocalDataHomeCompareAndSwapResult =
+  | { status: 'ok' }
+  | { status: 'conflict'; currentVersion: number | null };
+
 export interface LocalDataHomeStorage {
   read(scope: string): Promise<LocalVaultRecord | null>;
-  write(scope: string, record: LocalVaultRecord): Promise<void>;
+  compareAndSwap(
+    scope: string,
+    ifVersion: number | null,
+    build: (current: LocalVaultRecord | null) => LocalVaultRecord,
+  ): Promise<LocalDataHomeCompareAndSwapResult>;
+  update(scope: string, update: (current: LocalVaultRecord) => LocalVaultRecord): Promise<boolean>;
 }
 
 export interface LocalDataHome extends DataHome {
@@ -95,39 +104,34 @@ export function createLocalDataHome(options: LocalDataHomeOptions): LocalDataHom
       const parsed = inspect(envelope, null, null);
       if ('status' in parsed) return parsed;
 
-      let current: LocalVaultRecord | null;
-      try {
-        current = await storage.read(options.scope);
-      } catch (cause) {
-        return transportFailure('Could not read the encrypted local vault cache.', cause);
-      }
-      const currentVersion = current?.version ?? null;
-      if (currentVersion !== ifVersion) {
-        return { status: 'conflict', medium: 'local', currentVersion };
-      }
-
       const bytes = envelope.slice();
-      const next: LocalVaultRecord = {
-        recordVersion: RECORD_VERSION,
-        envelope: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-        version: parsed.version,
-        updatedAt: parsed.updatedAt ?? new Date().toISOString(),
-        // The incoming blob is authenticated structurally; the sync coordinator
-        // promotes it to active only after decryption. Preserve a separate last
-        // known good record across a failed future activation.
-        lastKnownGood:
-          current?.lastKnownGood.slice(0) ??
-          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-        lastKnownGoodVersion: current?.lastKnownGoodVersion ?? parsed.version,
-        lastKnownGoodUpdatedAt:
-          current?.lastKnownGoodUpdatedAt ?? parsed.updatedAt ?? new Date().toISOString(),
-        pendingRemote: current?.pendingRemote ?? false,
-      };
+      let outcome: Awaited<ReturnType<LocalDataHomeStorage['compareAndSwap']>>;
       try {
-        await storage.write(options.scope, next);
+        outcome = await storage.compareAndSwap(options.scope, ifVersion, (current) => ({
+          recordVersion: RECORD_VERSION,
+          envelope: toArrayBuffer(bytes),
+          version: parsed.version,
+          updatedAt: parsed.updatedAt ?? new Date().toISOString(),
+          // The incoming blob is authenticated structurally; the sync coordinator
+          // promotes it to active only after decryption. Preserve a separate last
+          // known good record across a failed future activation.
+          lastKnownGood: current?.lastKnownGood.slice(0) ?? toArrayBuffer(bytes),
+          lastKnownGoodVersion: current?.lastKnownGoodVersion ?? parsed.version,
+          lastKnownGoodUpdatedAt:
+            current?.lastKnownGoodUpdatedAt ?? parsed.updatedAt ?? new Date().toISOString(),
+          pendingRemote: current?.pendingRemote ?? false,
+        }));
       } catch (cause) {
         return transportFailure('Could not write the encrypted local vault cache.', cause);
       }
+      if (outcome.status === 'conflict') {
+        return {
+          status: 'conflict',
+          medium: 'local',
+          currentVersion: outcome.currentVersion,
+        };
+      }
+
       return { status: 'ok', medium: 'local', info: parsed };
     },
 
@@ -148,15 +152,14 @@ export function createLocalDataHome(options: LocalDataHomeOptions): LocalDataHom
     async markLastKnownGood(envelope): Promise<void> {
       const parsed = inspect(envelope, null, null);
       if ('status' in parsed) throw new Error(parsed.message);
-      const current = await storage.read(options.scope);
-      if (current == null) throw new Error('No encrypted local cache exists.');
       const bytes = toArrayBuffer(envelope);
-      await storage.write(options.scope, {
+      const updated = await storage.update(options.scope, (current) => ({
         ...current,
         lastKnownGood: bytes,
         lastKnownGoodVersion: parsed.version,
         lastKnownGoodUpdatedAt: parsed.updatedAt ?? new Date().toISOString(),
-      });
+      }));
+      if (!updated) throw new Error('No encrypted local cache exists.');
     },
 
     async isPendingRemote(): Promise<boolean> {
@@ -165,9 +168,11 @@ export function createLocalDataHome(options: LocalDataHomeOptions): LocalDataHom
     },
 
     async setPendingRemote(pending): Promise<void> {
-      const current = await storage.read(options.scope);
-      if (current == null) throw new Error('No encrypted local cache exists.');
-      await storage.write(options.scope, { ...current, pendingRemote: pending });
+      const updated = await storage.update(options.scope, (current) => ({
+        ...current,
+        pendingRemote: pending,
+      }));
+      if (!updated) throw new Error('No encrypted local cache exists.');
     },
 
     async readLastKnownGood(): Promise<DataHomeReadResult> {
@@ -213,17 +218,56 @@ export function createIndexedDbLocalDataHomeStorage(): LocalDataHomeStorage {
         db.close();
       }
     },
-    async write(scope, record) {
-      const db = await openDb();
-      try {
-        await complete(
-          db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).put(record, scope),
-        );
-      } finally {
-        db.close();
-      }
+    async compareAndSwap(scope, ifVersion, build) {
+      return mutateIndexedDbRecord<LocalDataHomeCompareAndSwapResult>(scope, (current) => {
+        const currentVersion = current?.version ?? null;
+        if (currentVersion !== ifVersion) {
+          return {
+            write: null,
+            result: { status: 'conflict' as const, currentVersion },
+          };
+        }
+        return { write: build(current), result: { status: 'ok' as const } };
+      });
+    },
+    async update(scope, update) {
+      return mutateIndexedDbRecord(scope, (current) =>
+        current == null ? { write: null, result: false } : { write: update(current), result: true },
+      );
     },
   };
+}
+
+async function mutateIndexedDbRecord<T>(
+  scope: string,
+  mutate: (current: LocalVaultRecord | null) => {
+    write: LocalVaultRecord | null;
+    result: T;
+  },
+): Promise<T> {
+  const db = await openDb();
+  const transaction = db.transaction(STORE_NAME, 'readwrite');
+  const completion = transactionCompletion(transaction);
+  try {
+    const store = transaction.objectStore(STORE_NAME);
+    const current = await request<LocalVaultRecord | undefined>(store.get(scope));
+    const mutation = mutate(
+      current == null || current.recordVersion !== RECORD_VERSION ? null : current,
+    );
+    if (mutation.write != null) store.put(mutation.write, scope);
+    await completion;
+    return mutation.result;
+  } catch (cause) {
+    try {
+      transaction.abort();
+    } catch {
+      // The transaction already failed or committed; preserve the original error.
+    }
+    await completion.catch(() => undefined);
+    throw cause;
+  } finally {
+    db.close();
+  }
 }
 
 function toArrayBuffer(envelope: Uint8Array): ArrayBuffer {
@@ -307,10 +351,13 @@ function request<T>(value: IDBRequest<T>): Promise<T> {
   });
 }
 
-function complete<T>(value: IDBRequest<T>): Promise<void> {
+function transactionCompletion(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
-    value.onsuccess = () => resolve();
-    value.onerror = () => reject(value.error ?? new Error('IndexedDB write failed.'));
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () =>
+      reject(transaction.error ?? new Error('IndexedDB transaction was aborted.'));
+    transaction.onerror = () =>
+      reject(transaction.error ?? new Error('IndexedDB transaction failed.'));
   });
 }
 

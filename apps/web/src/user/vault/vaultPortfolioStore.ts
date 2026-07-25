@@ -9,6 +9,7 @@ import type {
   VaultDocumentV1,
   VaultEntity,
 } from '@bettertrack/contracts';
+import { uuidv7 } from 'uuidv7';
 
 import type { PortfolioStore } from '../../lib/portfolioStore';
 
@@ -259,6 +260,7 @@ async function createCashMovement(
   kind: 'deposit' | 'withdrawal',
 ): Promise<CashMovementResponse> {
   requirePortfolio(engine, portfolioId);
+  const sourceId = resolveCashSourceId(requireDocument(engine), portfolioId, body.sourceId);
   const movement = await appendEntity(engine, 'cashMovement', (id, deviceId, timestamp) => ({
     id,
     rev: 0,
@@ -271,7 +273,7 @@ async function createCashMovement(
       portfolioId,
       kind,
       source: 'manual',
-      sourceId: body.sourceId ?? id,
+      sourceId,
       executedAt: body.executedAt ?? timestamp,
       createdAt: timestamp,
       transactionId: null,
@@ -300,6 +302,28 @@ function findLiveEntity(
   id: string,
 ): VaultEntity | undefined {
   return liveEntities(document, kind).find((entity) => entity.id === id);
+}
+
+function resolveCashSourceId(
+  document: VaultDocumentV1,
+  portfolioId: string,
+  requestedSourceId: string | undefined,
+): string {
+  const source = liveEntities(document, 'cashSource').find(
+    (entity) =>
+      entity.data.portfolioId === portfolioId &&
+      (requestedSourceId == null
+        ? booleanField(entity.data, 'isMain', false)
+        : entity.id === requestedSourceId),
+  );
+  if (source == null) {
+    throw unavailable(
+      requestedSourceId == null
+        ? 'Cash movements require a live Main cash source in the unlocked vault.'
+        : 'Cash source not found in the unlocked vault.',
+    );
+  }
+  return source.id;
 }
 
 function portfolioSummaryFromEntity(entity: VaultEntity): PortfolioSummary {
@@ -429,8 +453,13 @@ function now(): string {
 }
 
 function newId(): string {
-  if (globalThis.crypto?.randomUUID == null) throw unavailable('crypto.randomUUID is unavailable.');
-  return globalThis.crypto.randomUUID();
+  try {
+    return uuidv7();
+  } catch (cause) {
+    throw new VaultCryptoError('unsupported-crypto', 'UUIDv7 generation is unavailable.', {
+      cause,
+    });
+  }
 }
 
 function unavailable(message: string): VaultCryptoError {

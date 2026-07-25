@@ -23,6 +23,7 @@ import {
   createLocalDataHome,
   type LocalDataHome,
   type LocalDataHomeStorage,
+  type LocalVaultRecord,
 } from './localDataHome';
 import { chooseVaultEntity, mergeVaultDocuments } from './merge';
 import {
@@ -39,6 +40,7 @@ const DEVICE_A = VECTOR_DEVICE_ID;
 const DEVICE_B = '018f0000-0000-7000-8000-00000000000e';
 const ENTITY_A = '018f0000-0000-7000-8000-000000000010';
 const ENTITY_B = '018f0000-0000-7000-8000-000000000011';
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const KEY = new Uint8Array(32).fill(9);
 const WRAPPED = {
   keyId: VECTOR_KEY_ID,
@@ -224,8 +226,18 @@ describe('PD5 DataHome adapters', () => {
     let record: Awaited<ReturnType<LocalDataHomeStorage['read']>> = null;
     const storage: LocalDataHomeStorage = {
       read: async () => record,
-      write: async (_scope, next) => {
-        record = next;
+      compareAndSwap: async (_scope, ifVersion, build) => {
+        const currentVersion = record?.version ?? null;
+        if (currentVersion !== ifVersion) {
+          return { status: 'conflict', currentVersion };
+        }
+        record = build(record);
+        return { status: 'ok' };
+      },
+      update: async (_scope, update) => {
+        if (record == null) return false;
+        record = update(record);
+        return true;
       },
     };
     const home = createLocalDataHome({ scope: 'user-device', storage });
@@ -285,8 +297,18 @@ describe('PD5 sync reconciliation and restore', () => {
     let record: Awaited<ReturnType<LocalDataHomeStorage['read']>> = null;
     const storage: LocalDataHomeStorage = {
       read: async () => record,
-      write: async (_scope, next) => {
-        record = next;
+      compareAndSwap: async (_scope, ifVersion, build) => {
+        const currentVersion = record?.version ?? null;
+        if (currentVersion !== ifVersion) {
+          return { status: 'conflict', currentVersion };
+        }
+        record = build(record);
+        return { status: 'ok' };
+      },
+      update: async (_scope, update) => {
+        if (record == null) return false;
+        record = update(record);
+        return true;
       },
     };
     const home = createLocalDataHome({ scope: 'rollback', storage });
@@ -562,6 +584,7 @@ describe('PD5 vault portfolio store responses', () => {
     ]);
 
     expect(created?.asset).toEqual(asset);
+    expect(created?.id).toMatch(UUID_V7);
     expect(engine.state.active?.document.entities.transaction?.[0]?.editedBy).toBe(DEVICE_A);
     await expect(store.listTransactions(portfolioId)).resolves.toMatchObject({
       items: [expect.objectContaining({ asset })],
@@ -570,6 +593,7 @@ describe('PD5 vault portfolio store responses', () => {
 
   it('rejects transaction creation without a local asset snapshot and signs withdrawals', async () => {
     const portfolioId = '018f0000-0000-7000-8000-000000000022';
+    const cashSourceId = '018f0000-0000-7000-8000-000000000024';
     const initial: VaultDocumentV1 = {
       schemaVersion: 1,
       entities: {
@@ -581,6 +605,16 @@ describe('PD5 vault portfolio store responses', () => {
             isDefault: true,
             defaultPayFromCash: false,
             archivedAt: null,
+          }),
+        ],
+        cashSource: [
+          entity(cashSourceId, 0, '2026-07-25T10:00:00.000Z', DEVICE_B, null, {
+            portfolioId,
+            name: 'Main',
+            type: 'cash',
+            isMain: true,
+            archivedAt: null,
+            createdAt: '2026-07-25T10:00:00.000Z',
           }),
         ],
       },
@@ -600,13 +634,59 @@ describe('PD5 vault portfolio store responses', () => {
         },
       ]),
     ).rejects.toMatchObject({ code: 'locked' });
-    await expect(store.withdrawCash(portfolioId, { amountEur: 25 })).resolves.toMatchObject({
-      movement: { kind: 'withdrawal', amountEur: -25 },
+    const withdrawal = await store.withdrawCash(portfolioId, { amountEur: 25 });
+    expect(withdrawal).toMatchObject({
+      movement: { kind: 'withdrawal', amountEur: -25, sourceId: cashSourceId },
     });
+    expect(withdrawal.movement.id).toMatch(UUID_V7);
+    await expect(
+      store.depositCash(portfolioId, {
+        amountEur: 10,
+        sourceId: '018f0000-0000-7000-8000-000000000025',
+      }),
+    ).rejects.toMatchObject({ code: 'locked' });
   });
 });
 
 describe('PD5 review regressions', () => {
+  it('serializes concurrent IndexedDB compare-and-swap writes', async () => {
+    const local = createLocalDataHome({
+      scope: 'concurrent-cas',
+      storage: createIndexedDbLocalDataHomeStorage(),
+    });
+    const initial = await encrypted(
+      document([entity(ENTITY_A, 1, '2026-07-25T10:00:00.000Z', DEVICE_A)]),
+      1,
+    );
+    const left = await encrypted(
+      document([entity(ENTITY_A, 2, '2026-07-25T10:01:00.000Z', DEVICE_A)]),
+      2,
+    );
+    const right = await encrypted(
+      document([entity(ENTITY_B, 2, '2026-07-25T10:01:00.000Z', DEVICE_B)]),
+      2,
+      DEVICE_B,
+    );
+    await expect(local.write(initial, { ifVersion: null })).resolves.toMatchObject({
+      status: 'ok',
+    });
+
+    const outcomes = await Promise.all([
+      local.write(left, { ifVersion: 1 }),
+      local.write(right, { ifVersion: 1 }),
+    ]);
+
+    expect(outcomes.map((outcome) => outcome.status).sort()).toEqual(['conflict', 'ok']);
+    expect(outcomes.find((outcome) => outcome.status === 'conflict')).toMatchObject({
+      currentVersion: 2,
+    });
+    const stored = await local.read();
+    expect(stored).toMatchObject({ status: 'ok', info: { version: 2 } });
+    if (stored.status !== 'ok') throw new Error('Expected the winning local candidate.');
+    const winner = outcomes[0]?.status === 'ok' ? left : right;
+    expect(stored.envelope).toEqual(winner);
+  });
+
   it('opens a coordinated cache schema after either local cache or quarantine initializes first', async () => {
     const localStorage = createIndexedDbLocalDataHomeStorage();
     const local = createLocalDataHome({ scope: 'schema-order', storage: localStorage });
@@ -740,6 +820,106 @@ describe('PD5 review regressions', () => {
     ).resolves.toMatchObject({ status: 'synced' });
     expect(writes).toBeGreaterThanOrEqual(2);
     expect(engine.state.active?.document.entities.transaction).toHaveLength(3);
+  });
+
+  it('recovers from an unreadable current cache through last-known-good while remote is offline', async () => {
+    let record: LocalVaultRecord | null = null;
+    const storage: LocalDataHomeStorage = {
+      read: async () => record,
+      compareAndSwap: async (_scope, ifVersion, build) => {
+        const currentVersion = record?.version ?? null;
+        if (currentVersion !== ifVersion) {
+          return { status: 'conflict', currentVersion };
+        }
+        record = build(record);
+        return { status: 'ok' };
+      },
+      update: async (_scope, update) => {
+        if (record == null) return false;
+        record = update(record);
+        return true;
+      },
+    };
+    const goodDocument = document([entity(ENTITY_A, 1, '2026-07-25T10:00:00.000Z', DEVICE_A)]);
+    const good = await encrypted(goodDocument, 1);
+    const local = createLocalDataHome({ scope: 'last-known-good-recovery', storage });
+    await local.write(good, { ifVersion: null });
+    await local.markLastKnownGood(good);
+    const unreadable = good.slice();
+    unreadable[unreadable.length - 1] = unreadable[unreadable.length - 1]! ^ 1;
+    record = {
+      ...record!,
+      envelope: unreadable.buffer.slice(
+        unreadable.byteOffset,
+        unreadable.byteOffset + unreadable.byteLength,
+      ) as ArrayBuffer,
+    };
+    const quarantine = createMemoryVaultQuarantineStore();
+    const offline: DataHome = {
+      medium: 'server',
+      async read() {
+        return { status: 'transport-failure', medium: 'server', failure: { message: 'offline' } };
+      },
+      async info() {
+        return { status: 'transport-failure', medium: 'server', failure: { message: 'offline' } };
+      },
+      async write() {
+        throw new Error('Offline remote must not be written.');
+      },
+    };
+    const engine = createVaultSyncEngine({
+      local,
+      primary: offline,
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      quarantine,
+    });
+
+    await expect(engine.start()).resolves.toMatchObject({
+      status: 'pending-offline',
+      active: { document: goodDocument },
+    });
+    await expect(quarantine.list()).resolves.toEqual([
+      expect.objectContaining({ medium: 'local', status: 'unreadable', envelope: unreadable }),
+    ]);
+  });
+
+  it('rejects vault-store success when the encrypted local commit fails', async () => {
+    const initial: VaultDocumentV1 = { schemaVersion: 1, entities: {}, mergeLog: [] };
+    const envelope = await encrypted(initial, 1);
+    const durableLocal = memoryLocalHome(envelope, 1);
+    let rejectWrites = false;
+    const local: LocalDataHome = {
+      ...durableLocal,
+      async write(next, options) {
+        if (rejectWrites) {
+          return {
+            status: 'transport-failure',
+            medium: 'local',
+            failure: { message: 'quota exceeded' },
+          };
+        }
+        return durableLocal.write(next, options);
+      },
+    };
+    const engine = createVaultSyncEngine({
+      local,
+      primary: memoryHome('server', envelope, 1),
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      quarantine: createMemoryVaultQuarantineStore(),
+    });
+    await engine.start();
+    rejectWrites = true;
+    const store = createVaultPortfolioStore(engine);
+
+    await expect(store.createPortfolio('Not committed')).rejects.toMatchObject({
+      code: 'storage-failed',
+    });
+    await expect(store.listPortfolios()).resolves.toEqual({ portfolios: [] });
+    expect(engine.state.active?.document.entities.portfolio).toBeUndefined();
   });
 });
 

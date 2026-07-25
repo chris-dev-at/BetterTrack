@@ -98,10 +98,18 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         active.header.vaultVersion + 1,
         active.header,
       );
-      if (!(await commitLocal(candidate))) return cloneState(state);
-      if (!(await setLocalPending(true))) return cloneState(state);
+      if (!(await commitLocal(candidate, active.header.vaultVersion))) {
+        throw new VaultCryptoError(
+          'storage-failed',
+          state.lastFailure ?? 'Vault mutation could not be committed to encrypted local storage.',
+        );
+      }
 
       state = { status: 'pending-offline', active: candidate, pending: candidate };
+      // Once the encrypted envelope is durable locally, the mutation is
+      // committed. A metadata failure keeps it pending in memory but must not
+      // make the caller believe the mutation was lost.
+      if (!(await setLocalPending(true))) return cloneState(state);
       return pushPending();
     },
   };
@@ -113,17 +121,22 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     ]);
     const local = await readableCandidate(localResult);
     const remote = await readableCandidate(remoteResult);
+    const fallback =
+      local == null ? await readableCandidate(await options.local.readLastKnownGood()) : null;
+    const availableLocal = local ?? fallback;
     const storedPending = await localPendingCandidate(local);
     const pending = state.pending == null ? storedPending : await readablePending(state.pending);
 
-    if (remote != null) return reconcileRemote(local, remote, pending);
+    if (remote != null) return reconcileRemote(availableLocal, remote, pending);
 
-    if (remoteResult.status === 'absent') return reconcileAbsentRemote(local, pending, localResult);
+    if (remoteResult.status === 'absent') {
+      return reconcileAbsentRemote(availableLocal, pending, localResult);
+    }
 
     // Transport and corrupt remote outcomes cannot safely be CAS-written over.
     // A readable local cache remains available, and its original encrypted bytes
     // stay either in the local cache or quarantine for later restore.
-    const selected = selectHighest(local, pending);
+    const selected = selectHighest(availableLocal, pending);
     if (selected != null) {
       state = {
         status: 'pending-offline',
@@ -402,27 +415,32 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     }
   }
 
-  async function commitLocal(candidate: VaultSyncCandidate): Promise<boolean> {
-    const current = await options.local.info();
-    let ifVersion: number | null;
-    switch (current.status) {
-      case 'ok':
-        ifVersion = current.info.version;
-        break;
-      case 'absent':
-        ifVersion = null;
-        break;
-      case 'corrupt':
-        await quarantineCorrupt(current);
-        ifVersion = current.version;
-        if (ifVersion == null) {
-          state = withFailure(state, 'Local cache version is unreadable.');
+  async function commitLocal(
+    candidate: VaultSyncCandidate,
+    expectedVersion?: number | null,
+  ): Promise<boolean> {
+    let ifVersion = expectedVersion;
+    if (ifVersion === undefined) {
+      const current = await options.local.info();
+      switch (current.status) {
+        case 'ok':
+          ifVersion = current.info.version;
+          break;
+        case 'absent':
+          ifVersion = null;
+          break;
+        case 'corrupt':
+          await quarantineCorrupt(current);
+          ifVersion = current.version;
+          if (ifVersion == null) {
+            state = withFailure(state, 'Local cache version is unreadable.');
+            return false;
+          }
+          break;
+        case 'transport-failure':
+          state = withFailure(state, current.failure.message);
           return false;
-        }
-        break;
-      case 'transport-failure':
-        state = withFailure(state, current.failure.message);
-        return false;
+      }
     }
 
     const written = await options.local.write(candidate.envelope, { ifVersion });
@@ -438,7 +456,10 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         state,
         cause instanceof Error ? cause.message : 'Could not preserve the local rollback snapshot.',
       );
-      return false;
+      // The active encrypted envelope is already durable and the previous
+      // last-known-good bytes remain intact. Treat this as committed-local so
+      // callers do not retry and duplicate the mutation.
+      return true;
     }
   }
 

@@ -6,6 +6,7 @@ export type VaultCryptoErrorCode =
   | 'kdf-failed'
   | 'locked'
   | 'recovery-kit-invalid'
+  | 'storage-failed'
   | 'unsupported-crypto'
   | 'update-required';
 
