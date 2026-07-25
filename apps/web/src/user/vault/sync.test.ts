@@ -151,7 +151,7 @@ describe('vault DataHome boundaries', () => {
       status: 'transport-failure',
       failure: { message: 'GET vault failed.' },
     });
-    await expect(conflict.write(blob, { ifVersion: 3 })).resolves.toEqual({
+    await expect(conflict.write(blob, { ifVersion: 2 })).resolves.toEqual({
       status: 'conflict',
       medium: 'server',
       currentVersion: 4,
@@ -182,6 +182,53 @@ describe('vault DataHome boundaries', () => {
       'If-Match': '"2"',
       'Content-Type': 'application/octet-stream',
     });
+  });
+
+  it('classifies the shipped malformed-write 400 as corruption, not uncertain transport', async () => {
+    const blob = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 3);
+    let requests = 0;
+    const rejected = createServerBlobDataHome({
+      fetch: async () => {
+        requests += 1;
+        return new Response(
+          JSON.stringify({
+            error: { code: 'VAULT_MALFORMED', message: 'non-advancing envelope' },
+          }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+      },
+    });
+
+    await expect(rejected.write(blob, { ifVersion: 2 })).resolves.toMatchObject({
+      status: 'corrupt',
+      medium: 'server',
+      envelope: blob,
+      version: 3,
+      reason: 'malformed-envelope',
+    });
+    expect(requests).toBe(1);
+  });
+
+  it('rejects malformed and non-advancing envelopes before transport', async () => {
+    let requests = 0;
+    const home = createServerBlobDataHome({
+      fetch: async () => {
+        requests += 1;
+        return new Response(null, { status: 204 });
+      },
+    });
+    const v3 = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 3);
+
+    await expect(home.write(new Uint8Array([1, 2, 3]), { ifVersion: 2 })).resolves.toMatchObject({
+      status: 'corrupt',
+      reason: 'malformed-envelope',
+    });
+    await expect(home.write(v3, { ifVersion: 3 })).resolves.toMatchObject({
+      status: 'corrupt',
+      version: 3,
+      reason: 'malformed-envelope',
+    });
+    expect(requests).toBe(0);
   });
 
   it('serializes IndexedDB compare-and-swap writes from concurrent tabs', async () => {
@@ -274,6 +321,122 @@ describe('versioned encrypted local cache', () => {
 });
 
 describe('CAS-aware vault synchronization', () => {
+  it('serializes a same-engine reconnect snapshot against a concurrent mutation', async () => {
+    const localV1 = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 1);
+    const remoteV2 = await encrypted(
+      document([entity(ENTITY_B, 2, DEVICE_B)]),
+      2,
+      DEVICE_B,
+      '018f0000-0000-7000-8000-0000000000b2',
+    );
+    const storage = memoryLocalStorage();
+    const baseLocal = createLocalDataHome({ scope: 'same-engine-race', storage });
+    await seedLocal(baseLocal, localV1, false);
+
+    const reconnectPromotion = deferred<void>();
+    const releaseReconnect = deferred<void>();
+    let promotionCalls = 0;
+    const local: LocalDataHome = {
+      ...baseLocal,
+      async markLastKnownGood(envelope, options) {
+        promotionCalls += 1;
+        if (promotionCalls === 2) {
+          reconnectPromotion.resolve();
+          await releaseReconnect.promise;
+        }
+        return baseLocal.markLastKnownGood(envelope, options);
+      },
+    };
+    const onlineRemote = memoryRemote(remoteV2, 2);
+    let online = false;
+    const primary: DataHome = {
+      medium: 'server',
+      read: () => (online ? onlineRemote.read() : offlineRemote().read()),
+      info: () => (online ? onlineRemote.info() : offlineRemote().info()),
+      write: (envelope, options) =>
+        online ? onlineRemote.write(envelope, options) : offlineRemote().write(envelope, options),
+    };
+    const engine = createVaultSyncEngine({
+      local,
+      primary,
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      now: () => '2026-07-25T10:10:00.000Z',
+      quarantine: createMemoryVaultQuarantineStore(),
+    });
+    await engine.start();
+
+    online = true;
+    const reconnecting = engine.reconnect();
+    await reconnectPromotion.promise;
+    let mutationRan = false;
+    const mutating = engine.mutate(({ document: value }) => {
+      mutationRan = true;
+      return {
+        ...value,
+        entities: {
+          ...value.entities,
+          transaction: [...(value.entities.transaction ?? []), entity(ENTITY_C, 1, DEVICE_A)],
+        },
+      };
+    });
+    await Promise.resolve();
+    expect(mutationRan).toBe(false);
+    releaseReconnect.resolve();
+
+    await expect(reconnecting).resolves.toMatchObject({
+      status: 'synced',
+      active: { header: { vaultVersion: 3 } },
+    });
+    await expect(mutating).resolves.toMatchObject({
+      status: 'synced',
+      active: { header: { vaultVersion: 4 } },
+    });
+    expect(engine.state.active?.document.entities.transaction?.map((row) => row.id).sort()).toEqual(
+      [ENTITY_A, ENTITY_B, ENTITY_C],
+    );
+  });
+
+  it('restarts selection when last-known-good promotion loses a local race offline', async () => {
+    const localV1 = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 1);
+    const tabBV3 = await encrypted(
+      document([entity(ENTITY_A, 1, DEVICE_A), entity(ENTITY_B, 2, DEVICE_B)]),
+      3,
+      DEVICE_B,
+      '018f0000-0000-7000-8000-0000000000b3',
+    );
+    const storage = memoryLocalStorage();
+    const local = createLocalDataHome({ scope: 'promotion-race-offline', storage });
+    await seedLocal(local, localV1, false);
+    let raced = false;
+    storage.beforeCompareAndSwap = (ifVersion) => {
+      if (!raced && ifVersion === 1) {
+        raced = true;
+        storage.replace(tabBV3, 3, true);
+      }
+    };
+    const engine = createVaultSyncEngine({
+      local,
+      primary: offlineRemote(),
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      quarantine: createMemoryVaultQuarantineStore(),
+    });
+
+    await expect(engine.start()).resolves.toMatchObject({
+      status: 'pending-offline',
+      active: { header: { vaultVersion: 3 } },
+      pending: { header: { vaultVersion: 3 } },
+    });
+    await expect(local.read()).resolves.toMatchObject({
+      status: 'ok',
+      envelope: tabBV3,
+      info: { version: 3, pendingRemote: true },
+    });
+  });
+
   it('rejects tab A stale v1 reconciliation after tab B commits v3', async () => {
     const v1 = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 1);
     const remoteV2 = await encrypted(
@@ -867,6 +1030,17 @@ function cloneRecord(record: LocalVaultRecord | null): LocalVaultRecord | null {
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 function deleteDatabase(name: string): Promise<void> {

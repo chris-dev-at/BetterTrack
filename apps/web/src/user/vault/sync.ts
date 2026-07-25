@@ -8,6 +8,7 @@ import { mergeVaultDocuments } from './merge';
 import type { VaultQuarantineStore } from './quarantine';
 
 const MAX_CAS_RECONCILIATIONS = 16;
+const RETRY_LOCAL_OBSERVATION = Symbol('retry-local-observation');
 
 export interface VaultSyncCandidate {
   home: DataHome;
@@ -71,6 +72,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   let state: VaultSyncState = { status: 'empty', active: null, pending: null };
   let localHeadVersion: number | null | undefined;
   let remoteObserved: RemoteObservation = { known: false, version: null };
+  let operationTail = Promise.resolve();
 
   return {
     get deviceId() {
@@ -81,56 +83,35 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       return cloneState(state);
     },
 
-    async start() {
-      return reconcile();
+    start() {
+      return serialize(reconcile);
     },
 
-    async reconnect() {
-      return reconcile();
+    reconnect() {
+      return serialize(reconcile);
     },
 
-    async mutate(mutator) {
-      const active = state.active;
-      if (active == null || state.status === 'corrupt' || state.status === 'locked') {
-        throw new VaultCryptoError(
-          'locked',
-          'A readable unlocked vault is required for a mutation.',
-        );
-      }
-      if (localHeadVersion === undefined) {
-        throw new VaultCryptoError(
-          'storage-failed',
-          'The current local vault version has not been observed.',
-        );
-      }
-
-      const document = mutator({
-        document: active.document,
-        currentVersion: active.header.vaultVersion,
-      });
-      const nextVersion =
-        Math.max(
-          active.header.vaultVersion,
-          localHeadVersion ?? 0,
-          remoteObserved.known ? (remoteObserved.version ?? 0) : 0,
-        ) + 1;
-      const candidate = await encryptCandidate(document, nextVersion, active.header);
-      if (!(await commitLocal(candidate, localHeadVersion))) {
-        if (state.status === 'conflict') return cloneState(state);
-        throw new VaultCryptoError(
-          'storage-failed',
-          state.lastFailure ?? 'Vault mutation could not be committed locally.',
-        );
-      }
-
-      state = { status: 'pending-offline', active: candidate, pending: candidate };
-      return remoteObserved.known
-        ? pushPending(candidate, remoteObserved.version)
-        : cloneState(state);
+    mutate(mutator) {
+      return serialize(() => mutate(mutator));
     },
   };
 
   async function reconcile(): Promise<VaultSyncState> {
+    for (let attempt = 0; attempt < MAX_CAS_RECONCILIATIONS; attempt += 1) {
+      const result = await reconcileObservation();
+      if (result !== RETRY_LOCAL_OBSERVATION) return result;
+    }
+
+    await handleLocalConflict(localHeadVersion ?? null);
+    state = {
+      ...state,
+      status: 'conflict',
+      lastFailure: 'The local vault changed too often while selecting a readable candidate.',
+    };
+    return cloneState(state);
+  }
+
+  async function reconcileObservation(): Promise<VaultSyncState | typeof RETRY_LOCAL_OBSERVATION> {
     const [localResult, remoteResult] = await Promise.all([
       options.local.read(),
       options.primary.read(),
@@ -138,10 +119,11 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     localHeadVersion = observedVersion(localResult);
     remoteObserved = observeRemote(remoteResult);
 
-    const localCurrent = await readableCandidate(localResult);
+    const localCurrent = await readableLocalCurrent(localResult);
+    if (localCurrent === RETRY_LOCAL_OBSERVATION) return RETRY_LOCAL_OBSERVATION;
     const lastKnownGood =
       localCurrent == null
-        ? await readableCandidate(await options.local.readLastKnownGood(), false)
+        ? await readableCandidate(await options.local.readLastKnownGood())
         : null;
     const localReadable = localCurrent ?? lastKnownGood;
     const remoteReadable = await readableCandidate(remoteResult);
@@ -183,6 +165,45 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     }
     state = { status: 'empty', active: null, pending: null };
     return cloneState(state);
+  }
+
+  async function mutate(
+    mutator: (context: VaultMutationContext) => VaultDocumentV1,
+  ): Promise<VaultSyncState> {
+    const active = state.active;
+    if (active == null || state.status === 'corrupt' || state.status === 'locked') {
+      throw new VaultCryptoError('locked', 'A readable unlocked vault is required for a mutation.');
+    }
+    if (localHeadVersion === undefined) {
+      throw new VaultCryptoError(
+        'storage-failed',
+        'The current local vault version has not been observed.',
+      );
+    }
+
+    const document = mutator({
+      document: active.document,
+      currentVersion: active.header.vaultVersion,
+    });
+    const nextVersion =
+      Math.max(
+        active.header.vaultVersion,
+        localHeadVersion ?? 0,
+        remoteObserved.known ? (remoteObserved.version ?? 0) : 0,
+      ) + 1;
+    const candidate = await encryptCandidate(document, nextVersion, active.header);
+    if (!(await commitLocal(candidate, localHeadVersion))) {
+      if (state.status === 'conflict') return cloneState(state);
+      throw new VaultCryptoError(
+        'storage-failed',
+        state.lastFailure ?? 'Vault mutation could not be committed locally.',
+      );
+    }
+
+    state = { status: 'pending-offline', active: candidate, pending: candidate };
+    return remoteObserved.known
+      ? pushPending(candidate, remoteObserved.version)
+      : cloneState(state);
   }
 
   async function reconcileReadableRemote(
@@ -494,10 +515,21 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     };
   }
 
-  async function readableCandidate(
+  async function readableLocalCurrent(
     result: DataHomeReadResult,
-    promoteKnownGood = true,
-  ): Promise<VaultSyncCandidate | null> {
+  ): Promise<VaultSyncCandidate | null | typeof RETRY_LOCAL_OBSERVATION> {
+    const candidate = await readableCandidate(result);
+    if (candidate == null || result.status !== 'ok') return candidate;
+
+    const marked = await options.local.markLastKnownGood(result.envelope, {
+      ifVersion: result.info.version,
+    });
+    if (marked.status === 'conflict') return RETRY_LOCAL_OBSERVATION;
+    if (marked.status === 'corrupt') await quarantineCorrupt(marked);
+    return candidate;
+  }
+
+  async function readableCandidate(result: DataHomeReadResult): Promise<VaultSyncCandidate | null> {
     switch (result.status) {
       case 'absent':
       case 'transport-failure':
@@ -508,12 +540,6 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       case 'ok':
         try {
           const decrypted = await decryptVaultDocument(result.envelope, options.vaultKey);
-          if (result.medium === 'local' && promoteKnownGood) {
-            const marked = await options.local.markLastKnownGood(result.envelope, {
-              ifVersion: result.info.version,
-            });
-            if (marked.status === 'corrupt') await quarantineCorrupt(marked);
-          }
           return {
             home: result.medium === 'local' ? options.local : options.primary,
             envelope: result.envelope.slice(),
@@ -536,6 +562,15 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
           return null;
         }
     }
+  }
+
+  function serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = operationTail.then(operation);
+    operationTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   async function quarantineCorrupt(

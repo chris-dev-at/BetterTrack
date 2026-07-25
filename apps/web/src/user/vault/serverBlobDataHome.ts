@@ -55,6 +55,17 @@ export function createServerBlobDataHome(options: ServerBlobDataHomeOptions = {}
       envelope: Uint8Array,
       { ifVersion }: DataHomeWriteOptions,
     ): Promise<DataHomeWriteResult> {
+      const outgoingInfo = inspectEnvelope(envelope, null);
+      if ('status' in outgoingInfo) return outgoingInfo;
+      if (ifVersion !== null && outgoingInfo.version <= ifVersion) {
+        return corrupt(
+          envelope,
+          outgoingInfo.version,
+          'malformed-envelope',
+          'The vault envelope version must advance the If-Match version.',
+        );
+      }
+
       const headers: Record<string, string> = {
         'Content-Type': VAULT_CONTENT_TYPE,
         [CSRF_HEADER]: CSRF_VALUE,
@@ -89,8 +100,16 @@ export function createServerBlobDataHome(options: ServerBlobDataHomeOptions = {}
           currentVersion: parseVaultEtag(response.headers.get('ETag')),
         };
       }
+      if (response.status === 400) {
+        return corrupt(
+          envelope,
+          outgoingInfo.version,
+          'malformed-envelope',
+          'The server rejected the vault write as a malformed or non-advancing envelope.',
+        );
+      }
       if (!response.ok) {
-        return transportFailure('PUT vault failed.', undefined, response.status, true);
+        return transportFailure('PUT vault failed.', undefined, response.status);
       }
 
       const responseVersion = parseVaultEtag(response.headers.get('ETag'));
