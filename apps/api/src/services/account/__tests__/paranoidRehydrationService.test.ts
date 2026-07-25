@@ -242,6 +242,24 @@ describe('paranoid rehydration service', () => {
     expect(valuePoint?.close).toBe('0.1234567');
   });
 
+  it('round-trips a valid scale-6 transaction value above the normal cash cap', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const transaction = input.document.entities.find((entry) => entry.kind === 'transaction');
+    if (!transaction || transaction.kind !== 'transaction') {
+      throw new Error('expected transaction');
+    }
+    transaction.data.price = 2_000_000_000_000;
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+    const [restored] = await db
+      .select({ price: transactions.price })
+      .from(transactions)
+      .where(eq(transactions.id, TRANSACTION_ID));
+    expect(restored?.price).toBe('2000000000000.000000');
+  });
+
   it('returns the original receipt after an uncertain response retry', async () => {
     const { db, user } = await makeParanoid();
     const service = createParanoidRehydrationService({
@@ -1129,6 +1147,57 @@ describe('paranoid rehydration service', () => {
       code: 'INVALID_CASH_LEDGER',
     });
     expect(await db.select().from(portfolioCashMovements)).toEqual([]);
+  });
+
+  it('replays equal-time transactions in persisted id order before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities = input.document.entities.filter(
+      (entry) => entry.kind !== 'transaction',
+    );
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000f', 'transaction', {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 1,
+        price: 100,
+        fee: 0,
+        executedAt: editedAt,
+        note: null,
+        taxMode: null,
+        taxCountry: null,
+        taxAmountEur: null,
+        taxParams: null,
+        allowUncovered: false,
+        uncoveredEntryPrice: null,
+        source: 'manual',
+      }),
+      entity('018f0000-0000-7000-8000-000000000000', 'transaction', {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'sell',
+        quantity: 1,
+        price: 100,
+        fee: 0,
+        executedAt: editedAt,
+        note: null,
+        taxMode: null,
+        taxCountry: null,
+        taxAmountEur: null,
+        taxParams: null,
+        allowUncovered: false,
+        uncoveredEntryPrice: null,
+        source: 'manual',
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_CASH_LEDGER',
+    });
+    expect(await db.select().from(transactions)).toEqual([]);
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
 
   it('rejects existing uncategorized expense rows before it can write', async () => {

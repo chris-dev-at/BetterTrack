@@ -664,8 +664,12 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       transactionsByPortfolioAsset.set(key, group);
     }
     for (const transactions of transactionsByPortfolioAsset.values()) {
+      const orderedTransactions = [...transactions].sort(
+        (a, b) =>
+          Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
+      );
       reducePosition(
-        transactions.map((transaction) => ({
+        orderedTransactions.map((transaction) => ({
           assetId: transaction.data.assetId,
           side: transaction.data.side,
           quantity: transaction.data.quantity,
