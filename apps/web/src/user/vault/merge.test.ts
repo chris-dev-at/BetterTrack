@@ -354,4 +354,48 @@ describe('vault merge metadata and validation', () => {
       expect(caught).toMatchObject({ code: 'document-invalid' });
     }
   });
+
+  it('fails closed for non-JSON object properties in both candidate and document orders', () => {
+    const nonEnumerable: Record<string, unknown> = {};
+    Object.defineProperty(nonEnumerable, 'amount', {
+      configurable: true,
+      enumerable: false,
+      value: 1,
+    });
+
+    const symbolKeyed: Record<PropertyKey, unknown> = {};
+    symbolKeyed[Symbol('amount')] = 1;
+
+    const accessor: Record<string, unknown> = {};
+    Object.defineProperty(accessor, 'amount', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        throw new Error('Vault canonicalization must not invoke accessors.');
+      },
+    });
+
+    for (const invalidObject of [nonEnumerable, symbolKeyed, accessor]) {
+      const invalid = entity({ rev: 2, data: { nested: invalidObject } });
+      const plain = entity({ rev: 2, data: { nested: {} } });
+      const attempts = [
+        () => chooseVaultEntity(invalid, plain),
+        () => chooseVaultEntity(plain, invalid),
+        () => merge(document([invalid]), document([plain])),
+        () => merge(document([plain]), document([invalid])),
+      ];
+
+      for (const attempt of attempts) {
+        let caught: unknown;
+        try {
+          attempt();
+        } catch (error) {
+          caught = error;
+        }
+
+        expect(caught).toBeInstanceOf(VaultCryptoError);
+        expect(caught).toMatchObject({ code: 'document-invalid' });
+      }
+    }
+  });
 });

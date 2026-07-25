@@ -314,7 +314,22 @@ function canonicalJson(value: unknown, ancestors = new Set<object>()): string {
       ancestors.delete(value);
       throw documentInvalid('Vault documents may contain only plain JSON objects.');
     }
-    const result = `{${Object.entries(value)
+    const entries = Reflect.ownKeys(value).map((key): [string, unknown] => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        typeof key !== 'string' ||
+        descriptor == null ||
+        !descriptor.enumerable ||
+        !Object.hasOwn(descriptor, 'value')
+      ) {
+        ancestors.delete(value);
+        throw documentInvalid(
+          'Vault objects may contain only enumerable string-keyed data properties.',
+        );
+      }
+      return [key, descriptor.value];
+    });
+    const result = `{${entries
       .sort(([left], [right]) => compareText(left, right))
       .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry, ancestors)}`)
       .join(',')}}`;
