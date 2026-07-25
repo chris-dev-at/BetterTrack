@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
+import { passwordSignIn } from './support/auth';
 import { API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
 
@@ -70,9 +71,7 @@ test('announcements: an active announcement reaches every user and stays dismiss
   const aliceReturn = await browser.newContext();
   const aliceReturnPage = await aliceReturn.newPage();
   await aliceReturnPage.goto('/login');
-  await aliceReturnPage.getByLabel('Email or username').fill(alice.email);
-  await aliceReturnPage.getByLabel('Password').fill('Sup3rSecret!Passw0rd2');
-  await aliceReturnPage.getByRole('button', { name: 'Sign in' }).click();
+  await passwordSignIn(aliceReturnPage, alice.email, 'Sup3rSecret!Passw0rd2');
   await aliceReturnPage.waitForURL(/\/portfolio/);
   await expect(aliceReturnPage.getByTestId(`announcement-${created.id}`)).toHaveCount(0, {
     timeout: 15_000,

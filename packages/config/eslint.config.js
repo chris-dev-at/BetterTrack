@@ -5,6 +5,7 @@ import tseslint from 'typescript-eslint';
 
 import noCustomCategorySlice from './rules/noCustomCategorySlice.js';
 import noLiteralJsxString from './rules/noLiteralJsxString.js';
+import requirePasswordSignInHelper from './rules/requirePasswordSignInHelper.js';
 
 /**
  * The i18n plugin holding the V3-P1 hardcoded-string gate (§13.3). Applied only
@@ -22,6 +23,9 @@ const i18nPlugin = { rules: { 'no-literal-jsx-string': noLiteralJsxString } };
  * tree-wide below — see `rules/noCustomCategorySlice.js`.
  */
 const taxonomyPlugin = { rules: { 'no-custom-category-slice': noCustomCategorySlice } };
+
+/** Keeps password login selectors out of specs and in the shared e2e helper. */
+const e2ePlugin = { rules: { 'require-password-sign-in-helper': requirePasswordSignInHelper } };
 
 /**
  * Non-test app + contract source the CUSTOM-slice gate sweeps. Broad on purpose:
@@ -105,6 +109,15 @@ export default tseslint.config(
     plugins: { taxonomy: taxonomyPlugin },
     rules: {
       'taxonomy/no-custom-category-slice': 'error',
+    },
+  },
+  {
+    // Playwright role-name matching is substring-based. The login page's passkey
+    // button includes "Sign in", so specs must use the helper's exact locator.
+    files: ['e2e/**/*.spec.ts'],
+    plugins: { e2e: e2ePlugin },
+    rules: {
+      'e2e/require-password-sign-in-helper': 'error',
     },
   },
   prettier,
