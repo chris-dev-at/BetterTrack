@@ -151,6 +151,24 @@ const mergeMatrix: { name: string; left: VaultEntity; right: VaultEntity; winner
       }),
     },
     {
+      name: 'later instant against a seconds-omitted instant',
+      left: entity({
+        rev: 2,
+        editedAt: '2026-07-25T10:00Z',
+        data: { amount: 1 },
+      }),
+      right: entity({
+        rev: 2,
+        editedAt: '2026-07-25T10:00:00.001Z',
+        data: { amount: 2 },
+      }),
+      winner: entity({
+        rev: 2,
+        editedAt: '2026-07-25T10:00:00.001Z',
+        data: { amount: 2 },
+      }),
+    },
+    {
       name: 'lexicographically higher device at the same instant',
       left: entity({ rev: 2, editedBy: DEVICE_A, data: { amount: 1 } }),
       right: entity({ rev: 2, editedBy: DEVICE_B, data: { amount: 2 } }),
@@ -161,6 +179,12 @@ const mergeMatrix: { name: string; left: VaultEntity; right: VaultEntity; winner
       left: entity({ rev: 2, data: { amount: 1 } }),
       right: entity({ rev: 2, data: { amount: 2 } }),
       winner: entity({ rev: 2, data: { amount: 2 } }),
+    },
+    {
+      name: 'canonical whole-entity tie-break for signed zero',
+      left: entity({ rev: 2, data: { amount: -0 } }),
+      right: entity({ rev: 2, data: { amount: 0 } }),
+      winner: entity({ rev: 2, data: { amount: 0 } }),
     },
   ];
 
@@ -257,6 +281,37 @@ describe('vault merge metadata and validation', () => {
     expect(result.document.mergeLog).toHaveLength(VAULT_MERGE_LOG_LIMIT);
     expect(result.document.mergeLog.at(-1)).toEqual(appended);
     expect(result.document.mergeLog.filter((record) => record.into === 61)).toEqual([appended]);
+  });
+
+  it('sorts seconds-omitted history and a seconds-omitted supplied merge instant', () => {
+    const existingRecord: VaultMergeRecord = {
+      mergedAt: '2026-07-25T11:00Z',
+      parents: [2],
+      into: 3,
+      deviceId: DEVICE_A,
+    };
+    const first = merge(
+      document([entity({ id: ENTITY_A })], [existingRecord]),
+      document([entity({ id: ENTITY_B })]),
+      { mergedAt: '2026-07-25T12:00Z' },
+    );
+
+    expect(first.document.mergeLog.map((record) => record.mergedAt)).toEqual([
+      '2026-07-25T11:00Z',
+      '2026-07-25T12:00Z',
+    ]);
+
+    const second = merge(first.document, document([entity({ rev: 2 })]), {
+      leftVersion: first.vaultVersion,
+      rightVersion: first.vaultVersion,
+      mergedAt: '2026-07-25T13:00Z',
+    });
+
+    expect(second.document.mergeLog.map((record) => record.mergedAt)).toEqual([
+      '2026-07-25T11:00Z',
+      '2026-07-25T12:00Z',
+      '2026-07-25T13:00Z',
+    ]);
   });
 
   it('fails closed with a typed error for an unparseable editedAt', () => {

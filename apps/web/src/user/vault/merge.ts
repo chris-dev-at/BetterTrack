@@ -38,7 +38,7 @@ interface NormalizedInstant {
   fraction: string;
 }
 
-const INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
+const INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?Z$/;
 
 /**
  * Entity-atomic vault merge. A whole entity wins by revision, live state,
@@ -226,8 +226,16 @@ function parseInstant(value: string, field = 'entity editedAt'): NormalizedInsta
     throw documentInvalid(`Vault ${field} must be a parseable RFC 3339 instant.`);
   }
 
-  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fractionText = ''] =
-    match;
+  const [
+    ,
+    yearText,
+    monthText,
+    dayText,
+    hourText,
+    minuteText,
+    secondText = '00',
+    fractionText = '',
+  ] = match;
   const year = Number(yearText);
   const month = Number(monthText);
   const day = Number(dayText);
@@ -278,6 +286,7 @@ function canonicalJson(value: unknown, ancestors = new Set<object>()): string {
     if (!Number.isFinite(value)) {
       throw documentInvalid('Vault documents may contain only finite JSON numbers.');
     }
+    if (Object.is(value, -0)) return '-0';
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
