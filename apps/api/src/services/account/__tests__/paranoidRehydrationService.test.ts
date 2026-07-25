@@ -4,19 +4,24 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assets,
+  dividends,
   expenseBudgetFires,
   expenseBudgets,
   expenseCategories,
+  expenseRules,
   expenseTransactions,
   priceHistory,
   paranoidRehydrationReceipts,
   paranoidVaultHistory,
   paranoidVaults,
   portfolioCashMovements,
+  portfolioCashSources,
+  portfolioSettings,
   portfolios,
   standingOrderRuns,
   standingOrders,
   transactions,
+  userTaxSettings,
   users,
 } from '../../../data/schema';
 import { expenseDedupHash } from '../../../data/expenseDedup';
@@ -125,6 +130,114 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
       mergeLog: [],
     },
   };
+}
+
+function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
+  const input = request();
+  const dividendId = '018f0000-0000-7000-8000-000000000010';
+  const categoryId = '018f0000-0000-7000-8000-000000000013';
+  input.document.entities.push(
+    entity('018f0000-0000-7000-8000-00000000000d', 'customAssetValue', {
+      assetId: ASSET_ID,
+      date: '2026-07-24',
+      close: 125.1234567,
+    }),
+    entity('018f0000-0000-7000-8000-00000000000e', 'portfolioSetting', {
+      portfolioId: PORTFOLIO_ID,
+      key: 'atomic-restore-test',
+      value: { enabled: true },
+      updatedAt: editedAt,
+    }),
+    entity('018f0000-0000-7000-8000-00000000000f', 'taxSetting', {
+      mode: 'country_specific',
+      country: 'AT',
+      manualDefaultAmountEur: null,
+      manualDefaultRatePct: null,
+      customParams: null,
+      updatedAt: editedAt,
+    }),
+    entity(dividendId, 'dividend', {
+      portfolioId: PORTFOLIO_ID,
+      assetId: ASSET_ID,
+      cashSourceId: CASH_SOURCE_ID,
+      grossAmountEur: 10,
+      executedAt: editedAt,
+      createdAt: editedAt,
+      note: null,
+      taxMode: 'country_specific',
+      taxCountry: 'AT',
+      taxAmountEur: 0,
+      taxParams: null,
+      source: 'manual',
+    }),
+    entity('018f0000-0000-7000-8000-000000000011', 'cashMovement', {
+      portfolioId: PORTFOLIO_ID,
+      sourceId: CASH_SOURCE_ID,
+      kind: 'dividend',
+      amountEur: 10,
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId,
+      taxYear: null,
+      executedAt: editedAt,
+      createdAt: editedAt,
+      note: null,
+      source: 'manual',
+    }),
+    entity('018f0000-0000-7000-8000-000000000012', 'standingOrder', {
+      portfolioId: PORTFOLIO_ID,
+      kind: 'cash-add',
+      assetId: null,
+      amount: 100,
+      currency: 'EUR',
+      label: 'Salary',
+      cadence: 'daily',
+      anchorDay: null,
+      startDate: '2026-07-01',
+      endDate: null,
+      status: 'active',
+      lastRunAt: editedAt,
+      lastPeriodKey: '2026-07-24',
+      createdAt: editedAt,
+      updatedAt: editedAt,
+    }),
+    entity(categoryId, 'expenseCategory', {
+      name: 'Groceries',
+      direction: 'expense',
+      color: '#22c55e',
+      createdAt: editedAt,
+      updatedAt: editedAt,
+    }),
+    entity('018f0000-0000-7000-8000-000000000014', 'expenseTransaction', {
+      categoryId,
+      direction: 'expense',
+      amount: 60,
+      currency: 'EUR',
+      bookedOn: '2026-06-15',
+      description: 'Restored groceries',
+      source: 'manual',
+      createdAt: editedAt,
+      updatedAt: editedAt,
+    }),
+    entity('018f0000-0000-7000-8000-000000000015', 'expenseRule', {
+      categoryId,
+      matchType: 'contains',
+      pattern: 'grocery',
+      priority: 1,
+      enabled: true,
+      createdAt: editedAt,
+      updatedAt: editedAt,
+    }),
+    entity('018f0000-0000-7000-8000-000000000016', 'expenseBudget', {
+      categoryId,
+      amount: 50,
+      currency: 'EUR',
+      createdAt: editedAt,
+      updatedAt: editedAt,
+    }),
+  );
+  return input;
 }
 
 async function makeParanoid() {
@@ -276,6 +389,29 @@ describe('paranoid rehydration service', () => {
     ).rejects.toMatchObject({ code: 'REHYDRATION_CONFLICT' });
   });
 
+  it('exercises every reconstructed row covered by the injected rollback matrix', async () => {
+    const { db, user } = await makeParanoid();
+    const service = createParanoidRehydrationService({
+      db,
+      now: () => new Date('2026-07-24T11:00:00.000Z'),
+    });
+
+    await service.rehydrate(user.id, exhaustiveRequest());
+
+    expect(
+      (await db.select().from(portfolioCashMovements))
+        .filter((row) => row.taxYear !== null)
+        .map((row) => row.kind),
+    ).toEqual(['tax_withholding']);
+    expect(await db.select().from(standingOrderRuns)).toHaveLength(1);
+    expect(await db.select().from(expenseBudgetFires)).toMatchObject([
+      {
+        budgetId: '018f0000-0000-7000-8000-000000000016',
+        periodKey: '2026-06',
+      },
+    ]);
+  });
+
   it.each([
     'customAssets',
     'portfolios',
@@ -303,10 +439,69 @@ describe('paranoid rehydration service', () => {
         },
       });
 
-      await expect(service.rehydrate(user.id, request())).rejects.toMatchObject({
+      await expect(service.rehydrate(user.id, exhaustiveRequest())).rejects.toMatchObject({
         code: 'INJECTED_FAILURE',
       });
+
+      expect(await db.select().from(assets).where(eq(assets.ownerId, user.id))).toEqual([]);
+      expect(
+        await db.select().from(priceHistory).where(eq(priceHistory.assetId, ASSET_ID)),
+      ).toEqual([]);
       expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(portfolioCashSources)
+          .where(eq(portfolioCashSources.portfolioId, PORTFOLIO_ID)),
+      ).toEqual([]);
+      expect(
+        await db.select().from(userTaxSettings).where(eq(userTaxSettings.userId, user.id)),
+      ).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(portfolioSettings)
+          .where(eq(portfolioSettings.portfolioId, PORTFOLIO_ID)),
+      ).toEqual([]);
+      expect(
+        await db.select().from(transactions).where(eq(transactions.portfolioId, PORTFOLIO_ID)),
+      ).toEqual([]);
+      expect(
+        await db.select().from(dividends).where(eq(dividends.portfolioId, PORTFOLIO_ID)),
+      ).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(portfolioCashMovements)
+          .where(eq(portfolioCashMovements.portfolioId, PORTFOLIO_ID)),
+      ).toEqual([]);
+      expect(
+        await db.select().from(standingOrders).where(eq(standingOrders.userId, user.id)),
+      ).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(standingOrderRuns)
+          .where(eq(standingOrderRuns.standingOrderId, '018f0000-0000-7000-8000-000000000012')),
+      ).toEqual([]);
+      expect(
+        await db.select().from(expenseCategories).where(eq(expenseCategories.userId, user.id)),
+      ).toEqual([]);
+      expect(
+        await db.select().from(expenseTransactions).where(eq(expenseTransactions.userId, user.id)),
+      ).toEqual([]);
+      expect(await db.select().from(expenseRules).where(eq(expenseRules.userId, user.id))).toEqual(
+        [],
+      );
+      expect(
+        await db.select().from(expenseBudgets).where(eq(expenseBudgets.userId, user.id)),
+      ).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(expenseBudgetFires)
+          .where(eq(expenseBudgetFires.budgetId, '018f0000-0000-7000-8000-000000000016')),
+      ).toEqual([]);
       expect(
         await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
       ).toHaveLength(1);

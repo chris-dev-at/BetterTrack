@@ -1,4 +1,8 @@
-import type { VaultDocumentV1, VaultEnvelopeHeader, VaultKdfParams } from '@bettertrack/contracts';
+import type {
+  LegacyVaultDocumentV1,
+  VaultEnvelopeHeader,
+  VaultKdfParams,
+} from '@bettertrack/contracts';
 
 import fixture from './vectors.fixture.json';
 
@@ -9,25 +13,20 @@ export const VECTOR_DEVICE_ID = '018f0000-0000-7000-8000-00000000000b';
 export const VECTOR_WRITE_ID = '018f0000-0000-7000-8000-00000000000c';
 export const VECTOR_NEXT_KEY_ID = '018f0000-0000-7000-8000-00000000000d';
 
-export const vaultVectorDocument: VaultDocumentV1 = {
+export const vaultVectorDocument: LegacyVaultDocumentV1 = {
   schemaVersion: 1,
-  entities: [
-    {
-      id: VECTOR_KEY_ID,
-      kind: 'portfolio',
-      rev: 1,
-      editedAt: '2026-07-24T10:00:00.000Z',
-      editedBy: VECTOR_DEVICE_ID,
-      deletedAt: null,
-      data: {
-        name: 'Vector portfolio',
-        visibility: 'private',
-        sortOrder: 0,
-        defaultPayFromCash: false,
-        archivedAt: null,
+  entities: {
+    portfolio: [
+      {
+        id: VECTOR_KEY_ID,
+        rev: 1,
+        editedAt: '2026-07-24T10:00:00.000Z',
+        editedBy: VECTOR_DEVICE_ID,
+        deletedAt: null,
+        data: { name: 'Vector portfolio' },
       },
-    },
-  ],
+    ],
+  },
   mergeLog: [],
 };
 

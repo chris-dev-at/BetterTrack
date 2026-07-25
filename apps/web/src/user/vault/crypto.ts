@@ -6,12 +6,12 @@ import {
   VAULT_DOCUMENT_VERSION,
   VAULT_FORMAT_VERSION,
   VAULT_KDF_ALG,
-  type VaultDocumentV1,
   type VaultEnvelopeHeader,
   type VaultKdfParams,
+  type VaultOnDiskDocumentV1,
   type VaultWrappedKey,
-  vaultDocumentV1Schema,
   vaultEnvelopeHeaderSchema,
+  vaultOnDiskDocumentV1Schema,
 } from '@bettertrack/contracts';
 
 import { base64ToBytes, bytesToBase64, decodeUtf8, utf8, zeroBytes } from './bytes';
@@ -41,7 +41,7 @@ export interface VaultCryptoDeps {
 export type VaultKeyMaterial = Uint8Array | CryptoKey;
 
 export interface EncryptVaultInput {
-  document: VaultDocumentV1;
+  document: VaultOnDiskDocumentV1;
   vaultKey: VaultKeyMaterial;
   header: Omit<VaultEnvelopeHeader, 'cipher' | 'iv' | 'formatVersion' | 'schemaVersion'>;
   randomBytes?: RandomBytes;
@@ -181,7 +181,7 @@ export async function unwrapVaultKey(
 
 export async function encryptVaultDocument(input: EncryptVaultInput): Promise<EncryptedVault> {
   requireKeyMaterial(input.vaultKey, 'Vault key');
-  const parsedDocument = vaultDocumentV1Schema.safeParse(input.document);
+  const parsedDocument = vaultOnDiskDocumentV1Schema.safeParse(input.document);
   if (!parsedDocument.success) {
     throw new VaultCryptoError(
       'document-invalid',
@@ -222,7 +222,7 @@ export async function encryptVaultDocument(input: EncryptVaultInput): Promise<En
 export async function decryptVaultDocument(
   envelope: Uint8Array,
   vaultKey: VaultKeyMaterial,
-): Promise<{ document: VaultDocumentV1; header: VaultEnvelopeHeader }> {
+): Promise<{ document: VaultOnDiskDocumentV1; header: VaultEnvelopeHeader }> {
   requireKeyMaterial(vaultKey, 'Vault key');
   const decoded = decodeVaultEnvelope(envelope);
   if (decoded.header.schemaVersion > VAULT_DOCUMENT_VERSION) {
@@ -253,7 +253,7 @@ export async function decryptVaultDocument(
         cause,
       });
     }
-    const parsed = vaultDocumentV1Schema.safeParse(value);
+    const parsed = vaultOnDiskDocumentV1Schema.safeParse(value);
     if (!parsed.success) {
       throw new VaultCryptoError(
         'document-invalid',
