@@ -7,6 +7,7 @@ import {
 } from '@playwright/test';
 
 import { getRegistrationMode, loginAsAdmin, setRegistrationMode } from './support/adminApi';
+import { passwordSignIn as submitPasswordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL, FAKE_GOOGLE_URL } from './support/config';
 import { provisionUser } from './support/users';
 
@@ -59,9 +60,7 @@ async function clickContinueWithGoogle(page: Page): Promise<void> {
 /** Password sign-in through the real login form; asserts it lands on /portfolio. */
 async function passwordSignIn(page: Page, identifier: string): Promise<void> {
   await page.goto('/login');
-  await page.getByLabel('Email or username').fill(identifier);
-  await page.getByLabel('Password').fill(ACCOUNT_PASSWORD);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await submitPasswordSignIn(page, identifier, ACCOUNT_PASSWORD);
   await expect(page).toHaveURL(/\/portfolio$/, { timeout: 20_000 });
 }
 

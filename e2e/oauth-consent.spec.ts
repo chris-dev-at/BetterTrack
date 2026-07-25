@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { createInvite, loginAsAdmin } from './support/adminApi';
+import { passwordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import { acceptInvite } from './support/flows';
 
@@ -113,9 +114,7 @@ test('oauth consent: first-party chooser renders and Use another account round-t
     // A different account signs in on the login form: the login handler
     // navigates back to the original `from` (the authorize URL, query
     // untouched), where the chooser reappears for the newly-signed-in identity.
-    await page.getByLabel('Email or username').fill(secondUsername);
-    await page.getByLabel('Password').fill(ACCOUNT_PASSWORD);
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    await passwordSignIn(page, secondUsername, ACCOUNT_PASSWORD);
 
     await page.waitForURL(
       (url) => {
