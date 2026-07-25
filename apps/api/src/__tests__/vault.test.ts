@@ -7,6 +7,7 @@ import {
   VAULT_HISTORY_MEDIUM_HEADER,
   VAULT_HISTORY_PAGE_MAX,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
+  VAULT_VERSION_MAX,
 } from '@bettertrack/contracts';
 import type { Application } from 'express';
 import request from 'supertest';
@@ -309,6 +310,19 @@ describe('vault blob store', () => {
     expect(second.status).toBe(200);
     expect(second.body.items.map((item: { version: number }) => item.version)).toEqual([3, 2, 1]);
     expect(second.body.nextCursor).toBeNull();
+  });
+
+  it('rejects history cursor and version overflow before querying PostgreSQL', async () => {
+    const agent = await seedAndLogin('bounds@bt.test', 'bounds', 'paranoid');
+    const overflow = VAULT_VERSION_MAX + 1;
+
+    const list = await agent.get(`/api/v1/vault/history?cursor=${overflow}`);
+    expect(list.status).toBe(400);
+    expect(list.body.error.code).toBe('VALIDATION_ERROR');
+
+    const read = await agent.get(`/api/v1/vault/history/${overflow}`);
+    expect(read.status).toBe(400);
+    expect(read.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('rejects an oversized payload before persistence', async () => {

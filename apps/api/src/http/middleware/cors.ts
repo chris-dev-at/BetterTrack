@@ -1,7 +1,19 @@
 import type { RequestHandler } from 'express';
 
+import {
+  VAULT_HISTORY_CREATED_AT_HEADER,
+  VAULT_HISTORY_MEDIUM_HEADER,
+  VAULT_HISTORY_SIZE_BYTES_HEADER,
+} from '@bettertrack/contracts';
+
 const ALLOW_METHODS = 'GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS';
-const ALLOW_HEADERS = 'Content-Type, X-Requested-With';
+const ALLOW_HEADERS = 'Content-Type, X-Requested-With, If-Match, If-None-Match';
+const EXPOSE_HEADERS = [
+  'ETag',
+  VAULT_HISTORY_CREATED_AT_HEADER,
+  VAULT_HISTORY_MEDIUM_HEADER,
+  VAULT_HISTORY_SIZE_BYTES_HEADER,
+].join(', ');
 const MAX_AGE_SECONDS = '600';
 
 /**
@@ -28,6 +40,7 @@ export function createCorsMiddleware(allowedOrigins: readonly string[]): Request
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       res.setHeader('Access-Control-Allow-Methods', ALLOW_METHODS);
       res.setHeader('Access-Control-Allow-Headers', ALLOW_HEADERS);
+      res.setHeader('Access-Control-Expose-Headers', EXPOSE_HEADERS);
       res.setHeader('Access-Control-Max-Age', MAX_AGE_SECONDS);
     }
 

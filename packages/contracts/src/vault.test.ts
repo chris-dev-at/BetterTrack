@@ -11,6 +11,7 @@ import {
   VAULT_FORMAT_VERSION,
   VAULT_HISTORY_PAGE_MAX,
   VAULT_MAGIC,
+  VAULT_VERSION_MAX,
   vaultDocumentV1Schema,
   vaultEnvelopeHeaderSchema,
   vaultEtag,
@@ -18,8 +19,10 @@ import {
   vaultHistoryListQuerySchema,
   vaultHistoryListResponseSchema,
   vaultHistoryMetadataSchema,
+  vaultHistoryVersionParamSchema,
   vaultMediaSetSchema,
   vaultServerHeaderSchema,
+  vaultVersionSchema,
 } from './vault';
 
 const UUID_A = '018f0000-0000-7000-8000-00000000000a';
@@ -102,6 +105,23 @@ describe('blind vault history', () => {
     expect(vaultHistoryListQuerySchema.parse({ limit: VAULT_HISTORY_PAGE_MAX * 100 })).toEqual({
       limit: VAULT_HISTORY_PAGE_MAX * 100,
     });
+  });
+
+  it('bounds durable versions, list cursors, and read params to PostgreSQL int4', () => {
+    expect(vaultVersionSchema.parse(VAULT_VERSION_MAX)).toBe(VAULT_VERSION_MAX);
+    expect(vaultVersionSchema.safeParse(VAULT_VERSION_MAX + 1).success).toBe(false);
+    expect(vaultHistoryListQuerySchema.parse({ cursor: String(VAULT_VERSION_MAX) })).toEqual({
+      cursor: VAULT_VERSION_MAX,
+    });
+    expect(
+      vaultHistoryListQuerySchema.safeParse({ cursor: String(VAULT_VERSION_MAX + 1) }).success,
+    ).toBe(false);
+    expect(vaultHistoryVersionParamSchema.parse({ version: String(VAULT_VERSION_MAX) })).toEqual({
+      version: VAULT_VERSION_MAX,
+    });
+    expect(
+      vaultHistoryVersionParamSchema.safeParse({ version: String(VAULT_VERSION_MAX + 1) }).success,
+    ).toBe(false);
   });
 });
 

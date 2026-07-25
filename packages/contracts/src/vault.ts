@@ -39,6 +39,8 @@ export const VAULT_MAX_BYTES_DEFAULT = 16 * 1024 * 1024;
 /** Default and hard per-request bounds for blind server-history enumeration. */
 export const VAULT_HISTORY_PAGE_DEFAULT = 10;
 export const VAULT_HISTORY_PAGE_MAX = 10;
+/** PostgreSQL `integer` ceiling shared by live and retained vault versions. */
+export const VAULT_VERSION_MAX = 2_147_483_647;
 
 // ── Privacy mode + media set ─────────────────────────────────────────────────
 
@@ -76,7 +78,7 @@ export type VaultMediaSet = z.infer<typeof vaultMediaSetSchema>;
 // ── Version + envelope header ────────────────────────────────────────────────
 
 /** The monotonic CAS token (`vaultVersion`). The first stored blob is 1. */
-export const vaultVersionSchema = z.number().int().min(1);
+export const vaultVersionSchema = z.number().int().min(1).max(VAULT_VERSION_MAX);
 
 /**
  * Public metadata for one retained server-history blob. This is deliberately
@@ -96,7 +98,7 @@ export type VaultHistoryMetadata = z.infer<typeof vaultHistoryMetadataSchema>;
 /** Keyset pagination for `GET /vault/history`, newest version first. */
 export const vaultHistoryListQuerySchema = z
   .object({
-    cursor: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+    cursor: z.coerce.number().int().min(1).max(VAULT_VERSION_MAX).optional(),
     limit: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
   })
   .strict();
@@ -112,7 +114,7 @@ export type VaultHistoryListResponse = z.infer<typeof vaultHistoryListResponseSc
 
 /** Route params for the opaque `GET /vault/history/:version` blob read. */
 export const vaultHistoryVersionParamSchema = z
-  .object({ version: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER) })
+  .object({ version: z.coerce.number().int().min(1).max(VAULT_VERSION_MAX) })
   .strict();
 export type VaultHistoryVersionParam = z.infer<typeof vaultHistoryVersionParamSchema>;
 
