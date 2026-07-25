@@ -492,6 +492,107 @@ describe('CAS-aware vault synchronization', () => {
     }
   });
 
+  it('keeps readable startup candidates active when acknowledgement metadata writes fail', async () => {
+    const blob = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 2);
+
+    for (const seeded of [true, false]) {
+      const storage = memoryLocalStorage();
+      const baseLocal = createLocalDataHome({
+        scope: seeded ? 'ack-failure-existing' : 'ack-failure-install',
+        storage,
+      });
+      if (seeded) await seedLocal(baseLocal, blob, false);
+      let acknowledgementCalls = 0;
+      const local: LocalDataHome = {
+        ...baseLocal,
+        async setPendingRemote(pending, options) {
+          if (pending) return baseLocal.setPendingRemote(pending, options);
+          acknowledgementCalls += 1;
+          return {
+            status: 'transport-failure',
+            medium: 'local',
+            failure: { message: 'acknowledgement metadata unavailable' },
+          };
+        },
+      };
+      const engine = createVaultSyncEngine({
+        local,
+        primary: memoryRemote(blob, 2),
+        vaultKey: KEY,
+        deviceId: DEVICE_A,
+        writeId: writeIds(),
+        quarantine: createMemoryVaultQuarantineStore(),
+      });
+
+      await expect(
+        engine.start(),
+        seeded ? 'existing local' : 'remote install',
+      ).resolves.toMatchObject({
+        status: 'pending-offline',
+        active: { header: { vaultVersion: 2 }, envelope: blob },
+        pending: null,
+        lastFailure: 'acknowledgement metadata unavailable',
+      });
+      expect(acknowledgementCalls, seeded ? 'existing local' : 'remote install').toBe(1);
+    }
+  });
+
+  it('keeps a readable local startup candidate active when marking it pending fails', async () => {
+    const blob = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 1);
+    const storage = memoryLocalStorage();
+    const baseLocal = createLocalDataHome({ scope: 'pending-marker-failure', storage });
+    await seedLocal(baseLocal, blob, false);
+    const local: LocalDataHome = {
+      ...baseLocal,
+      async setPendingRemote(pending, options) {
+        if (!pending) return baseLocal.setPendingRemote(pending, options);
+        return {
+          status: 'corrupt',
+          medium: 'local',
+          envelope: blob,
+          version: 1,
+          updatedAt: '2026-07-25T10:00:00.000Z',
+          reason: 'invalid-response',
+          message: 'Pending metadata is malformed.',
+        };
+      },
+    };
+    let remoteWriteCalls = 0;
+    const primary: DataHome = {
+      medium: 'server',
+      async read() {
+        return { status: 'absent', medium: 'server' };
+      },
+      async info() {
+        return { status: 'absent', medium: 'server' };
+      },
+      async write() {
+        remoteWriteCalls += 1;
+        return {
+          status: 'transport-failure',
+          medium: 'server',
+          failure: { message: 'unexpected remote write' },
+        };
+      },
+    };
+    const engine = createVaultSyncEngine({
+      local,
+      primary,
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      quarantine: createMemoryVaultQuarantineStore(),
+    });
+
+    await expect(engine.start()).resolves.toMatchObject({
+      status: 'pending-offline',
+      active: { header: { vaultVersion: 1 }, envelope: blob },
+      pending: { header: { vaultVersion: 1 }, envelope: blob },
+      lastFailure: 'Pending metadata is malformed.',
+    });
+    expect(remoteWriteCalls).toBe(0);
+  });
+
   it('serializes a same-engine reconnect snapshot against a concurrent mutation', async () => {
     const localV1 = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 1);
     const remoteV2 = await encrypted(
@@ -1079,6 +1180,8 @@ describe('restore candidate seam', () => {
 
   it('leaves activation unchanged on cancel, wrong key, invalid status and lost CAS', async () => {
     const blob = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 2);
+    const corruptBlob = blob.slice();
+    corruptBlob[0] = 0;
     let activations = 0;
     const destination = memoryRemote(blob, 3);
     destination.alwaysConflict = true;
@@ -1114,7 +1217,7 @@ describe('restore candidate seam', () => {
       picker.restore(candidate, { ...options, vaultKey: new Uint8Array(32).fill(8) }),
     ).resolves.toMatchObject({ status: 'invalid-selection' });
     await expect(
-      picker.restore({ ...candidate, status: 'corrupt' }, options),
+      picker.restore({ ...candidate, envelope: corruptBlob, status: 'corrupt' }, options),
     ).resolves.toMatchObject({ status: 'invalid-selection' });
     await expect(
       picker.restore({ ...candidate, status: 'unsupported' }, options),
@@ -1127,6 +1230,147 @@ describe('restore candidate seam', () => {
       currentVersion: 3,
     });
     expect(activations).toBe(0);
+  });
+
+  it('restores an actual quarantined wrong-key candidate with the correct key', async () => {
+    const candidateBlob = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 2);
+    const quarantine = createMemoryVaultQuarantineStore();
+    const local = createLocalDataHome({
+      scope: 'wrong-key-quarantine',
+      storage: memoryLocalStorage(),
+    });
+    const wrongKeyEngine = createVaultSyncEngine({
+      local,
+      primary: memoryRemote(candidateBlob, 2),
+      vaultKey: new Uint8Array(32).fill(8),
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      quarantine,
+    });
+    await expect(wrongKeyEngine.start()).resolves.toMatchObject({ status: 'locked' });
+
+    const source = createQuarantinedRestoreCandidateSource(quarantine);
+    const current = await encrypted(document([entity(ENTITY_B, 3, DEVICE_B)]), 3);
+    const destination = memoryRemote(current, 3);
+    const picker = createRestorePicker([source], destination);
+    const listed = await picker.listCandidates();
+    expect(listed.candidates).toHaveLength(1);
+    const candidate = listed.candidates[0];
+    if (candidate == null) throw new Error('Expected the quarantined wrong-key candidate.');
+    expect(candidate).toMatchObject({
+      source: 'quarantined-local',
+      status: 'unreadable',
+      version: 2,
+    });
+    let activatedVersion: number | null = null;
+
+    await expect(
+      picker.restore(candidate, {
+        vaultKey: KEY,
+        activeVersion: 3,
+        encrypt: (value, version) => encrypted(value, version),
+        activate: (_value, _envelope, version) => {
+          activatedVersion = version;
+        },
+      }),
+    ).resolves.toEqual({ status: 'restored', version: 4 });
+    expect(destination.expectedVersions).toEqual([3]);
+    expect(activatedVersion).toBe(4);
+  });
+
+  it('uses authenticated envelope metadata when quarantined external metadata was corrupt', async () => {
+    const candidateBlob = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 2);
+    const quarantine = createMemoryVaultQuarantineStore();
+    await quarantine.put({
+      medium: 'local',
+      envelope: candidateBlob,
+      version: 99,
+      updatedAt: '2026-07-25T10:00:00.000Z',
+      capturedAt: '2026-07-25T10:01:00.000Z',
+      status: 'corrupt',
+      reason: 'External version metadata did not match.',
+    });
+    const current = await encrypted(document([entity(ENTITY_B, 3, DEVICE_B)]), 3);
+    const destination = memoryRemote(current, 3);
+    const picker = createRestorePicker(
+      [createQuarantinedRestoreCandidateSource(quarantine)],
+      destination,
+    );
+    const listed = await picker.listCandidates();
+    const candidate = listed.candidates[0];
+    if (candidate == null) throw new Error('Expected the quarantined metadata candidate.');
+
+    await expect(
+      picker.restore(candidate, {
+        vaultKey: KEY,
+        activeVersion: 3,
+        encrypt: (value, version) => encrypted(value, version),
+        activate: () => undefined,
+      }),
+    ).resolves.toEqual({ status: 'restored', version: 4 });
+    expect(destination.expectedVersions).toEqual([3]);
+  });
+
+  it('leaves the destination unchanged for unrecoverable candidates from the actual quarantine source', async () => {
+    const candidateBlob = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 2);
+    const corruptBlob = candidateBlob.slice();
+    corruptBlob[0] = 0;
+    const quarantine = createMemoryVaultQuarantineStore();
+    for (const candidate of [
+      {
+        envelope: candidateBlob,
+        status: 'unreadable' as const,
+        reason: 'Previously opened with the wrong key.',
+      },
+      {
+        envelope: corruptBlob,
+        status: 'corrupt' as const,
+        reason: 'Malformed encrypted bytes.',
+      },
+      {
+        envelope: candidateBlob,
+        status: 'unsupported' as const,
+        reason: 'A newer vault schema is required.',
+      },
+    ]) {
+      await quarantine.put({
+        medium: 'local',
+        envelope: candidate.envelope,
+        version: 2,
+        updatedAt: '2026-07-25T10:00:00.000Z',
+        capturedAt: '2026-07-25T10:01:00.000Z',
+        status: candidate.status,
+        reason: candidate.reason,
+      });
+    }
+    const current = await encrypted(document([entity(ENTITY_B, 3, DEVICE_B)]), 3);
+    const destination = memoryRemote(current, 3);
+    const picker = createRestorePicker(
+      [createQuarantinedRestoreCandidateSource(quarantine)],
+      destination,
+    );
+    const listed = await picker.listCandidates();
+    let activations = 0;
+
+    for (const candidate of listed.candidates) {
+      await expect(
+        picker.restore(candidate, {
+          vaultKey: candidate.status === 'unreadable' ? new Uint8Array(32).fill(8) : KEY,
+          activeVersion: 3,
+          encrypt: (value, version) => encrypted(value, version),
+          activate: () => {
+            activations += 1;
+          },
+        }),
+      ).resolves.toMatchObject({ status: 'invalid-selection' });
+    }
+    expect(destination.writeCalls).toBe(0);
+    expect(activations).toBe(0);
+    await expect(destination.read()).resolves.toMatchObject({
+      status: 'ok',
+      envelope: current,
+      info: { version: 3 },
+    });
   });
 
   it('validates a candidate and restores only through a new monotonic CAS version', async () => {

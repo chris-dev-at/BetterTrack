@@ -94,13 +94,16 @@ export function createRestorePicker(
 
     async restore(candidate, options) {
       if (candidate === null) return { status: 'cancelled' };
-      if (candidate.status !== 'available') {
+      if (candidate.status === 'unsupported') {
         return {
           status: 'invalid-selection',
           reason: candidate.reason ?? 'Candidate is not readable.',
         };
       }
 
+      // Quarantine status records why a previous observation failed. A later
+      // key or authenticated envelope validation may recover unreadable bytes
+      // or bytes retained alongside corrupt external version metadata.
       let decrypted: Awaited<ReturnType<typeof decryptVaultDocument>>;
       try {
         decrypted = await decryptVaultDocument(candidate.envelope, options.vaultKey);
@@ -108,12 +111,6 @@ export function createRestorePicker(
         return {
           status: 'invalid-selection',
           reason: cause instanceof Error ? cause.message : 'Candidate could not be decrypted.',
-        };
-      }
-      if (candidate.version !== null && candidate.version !== decrypted.header.vaultVersion) {
-        return {
-          status: 'invalid-selection',
-          reason: 'Candidate metadata does not match its authenticated vault version.',
         };
       }
 

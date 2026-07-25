@@ -287,8 +287,8 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
 
     if (sameWrite(localReadable, remote)) {
       if (localCurrent != null && sameWrite(localCurrent, remote)) {
-        if (!(await acknowledgeLocal(remote.header.vaultVersion))) return cloneState(state);
         state = { status: 'synced', active: remote, pending: null };
+        if (!(await acknowledgeLocal(remote.header.vaultVersion))) return cloneState(state);
         return cloneState(state);
       }
       return installRemoteOrPromote(remote, localCurrent, expectedLocalVersion);
@@ -321,12 +321,12 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         merged.vaultVersion > remote.header.vaultVersion &&
         merged.vaultVersion >= highestObserved
       ) {
-        if (!(await markPending(localReadable))) return cloneState(state);
         state = {
           status: 'pending-offline',
           active: localReadable,
           pending: localReadable,
         };
+        if (!(await markPending(localReadable))) return cloneState(state);
         return pushPending(localReadable, remote.header.vaultVersion);
       }
     }
@@ -347,6 +347,8 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     localCurrent: VaultSyncCandidate | null,
     expectedLocalVersion: number | null,
   ): Promise<VaultSyncState> {
+    state = { status: 'pending-offline', active: remote, pending: null };
+
     if (localCurrent != null && sameWrite(localCurrent, remote)) {
       if (!(await acknowledgeLocal(remote.header.vaultVersion))) return cloneState(state);
       state = { status: 'synced', active: remote, pending: null };
@@ -396,6 +398,12 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       }
       return cloneState(state);
     }
+
+    state = {
+      status: 'pending-offline',
+      active: localReadable,
+      pending: localPending,
+    };
     if (localHeadVersion === undefined) {
       state = withFailure(state, 'The local vault version could not be read.');
       return cloneState(state);
@@ -407,6 +415,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       pending = await encryptCandidate(localReadable.document, nextVersion, localReadable.header);
       if (!(await commitLocal(pending, localHeadVersion))) return cloneState(state);
     } else if (pending == null) {
+      state = { status: 'pending-offline', active: localReadable, pending: localReadable };
       if (!(await markPending(localReadable))) return cloneState(state);
       pending = localReadable;
     }
