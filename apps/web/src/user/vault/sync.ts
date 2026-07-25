@@ -154,7 +154,13 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         : null;
 
     if (remoteReadable != null) {
-      return reconcileReadableRemote(localReadable, localCurrent, localPending, remoteReadable);
+      return reconcileReadableRemote(
+        localReadable,
+        localCurrent,
+        localPending,
+        remoteReadable,
+        localResult,
+      );
     }
 
     if (remoteResult.status === 'absent') {
@@ -212,7 +218,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     mutator: (context: VaultMutationContext) => VaultDocumentV1,
   ): Promise<VaultSyncState> {
     const active = state.active;
-    if (active == null || state.status === 'corrupt' || state.status === 'locked') {
+    if (active == null || state.status === 'locked') {
       throw new VaultCryptoError('locked', 'A readable unlocked vault is required for a mutation.');
     }
     if (localHeadVersion === undefined) {
@@ -220,6 +226,9 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         'storage-failed',
         'The current local vault version has not been observed.',
       );
+    }
+    if (state.status === 'corrupt') {
+      throw new VaultCryptoError('locked', 'A readable unlocked vault is required for a mutation.');
     }
 
     const document = mutator({
@@ -252,11 +261,28 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     localCurrent: VaultSyncCandidate | null,
     localPending: VaultSyncCandidate | null,
     remote: VaultSyncCandidate,
+    localResult: DataHomeReadResult,
   ): Promise<VaultSyncState> {
     remoteObserved = { known: true, version: remote.header.vaultVersion };
 
+    if (localHeadVersion === undefined) {
+      state = {
+        status: localResult.status === 'transport-failure' ? 'pending-offline' : 'corrupt',
+        active: selectHighest(localReadable, remote),
+        pending: localPending,
+        lastFailure:
+          localResult.status === 'transport-failure'
+            ? localResult.failure.message
+            : localResult.status === 'corrupt'
+              ? localResult.message
+              : 'The local vault version could not be read.',
+      };
+      return cloneState(state);
+    }
+    const expectedLocalVersion = localHeadVersion;
+
     if (localReadable == null) {
-      return installRemoteOrPromote(remote, localCurrent);
+      return installRemoteOrPromote(remote, localCurrent, expectedLocalVersion);
     }
 
     if (sameWrite(localReadable, remote)) {
@@ -265,7 +291,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         state = { status: 'synced', active: remote, pending: null };
         return cloneState(state);
       }
-      return installRemoteOrPromote(remote, localCurrent);
+      return installRemoteOrPromote(remote, localCurrent, expectedLocalVersion);
     }
 
     const merged = mergeVaultDocuments({
@@ -278,14 +304,14 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       mergedAt: now(),
     });
 
-    const highestObserved = Math.max(localHeadVersion ?? 0, remote.header.vaultVersion);
+    const highestObserved = Math.max(expectedLocalVersion ?? 0, remote.header.vaultVersion);
     if (!merged.divergent) {
       if (
         merged.vaultVersion === remote.header.vaultVersion &&
         (merged.vaultVersion > localReadable.header.vaultVersion ||
           merged.vaultVersion === localReadable.header.vaultVersion)
       ) {
-        return installRemoteOrPromote(remote, localCurrent);
+        return installRemoteOrPromote(remote, localCurrent, expectedLocalVersion);
       }
 
       if (
@@ -311,7 +337,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       version,
       newestHeader(localReadable, remote),
     );
-    if (!(await commitLocal(candidate, localHeadVersion))) return cloneState(state);
+    if (!(await commitLocal(candidate, expectedLocalVersion))) return cloneState(state);
     state = { status: 'pending-offline', active: candidate, pending: candidate };
     return pushPending(candidate, remote.header.vaultVersion);
   }
@@ -319,25 +345,26 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   async function installRemoteOrPromote(
     remote: VaultSyncCandidate,
     localCurrent: VaultSyncCandidate | null,
+    expectedLocalVersion: number | null,
   ): Promise<VaultSyncState> {
-    if (localHeadVersion === undefined) {
-      state = withFailure(state, 'The local vault version could not be read.');
-      return cloneState(state);
-    }
     if (localCurrent != null && sameWrite(localCurrent, remote)) {
       if (!(await acknowledgeLocal(remote.header.vaultVersion))) return cloneState(state);
       state = { status: 'synced', active: remote, pending: null };
       return cloneState(state);
     }
 
-    if (localHeadVersion !== null && remote.header.vaultVersion <= localHeadVersion) {
-      const promoted = await encryptCandidate(remote.document, localHeadVersion + 1, remote.header);
-      if (!(await commitLocal(promoted, localHeadVersion))) return cloneState(state);
+    if (expectedLocalVersion !== null && remote.header.vaultVersion <= expectedLocalVersion) {
+      const promoted = await encryptCandidate(
+        remote.document,
+        expectedLocalVersion + 1,
+        remote.header,
+      );
+      if (!(await commitLocal(promoted, expectedLocalVersion))) return cloneState(state);
       state = { status: 'pending-offline', active: promoted, pending: promoted };
       return pushPending(promoted, remote.header.vaultVersion);
     }
 
-    if (!(await commitLocal(remote, localHeadVersion))) return cloneState(state);
+    if (!(await commitLocal(remote, expectedLocalVersion))) return cloneState(state);
     if (!(await acknowledgeLocal(remote.header.vaultVersion))) return cloneState(state);
     state = { status: 'synced', active: remote, pending: null };
     return cloneState(state);

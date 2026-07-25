@@ -318,9 +318,180 @@ describe('versioned encrypted local cache', () => {
     expect(serialized).not.toContain('vaultKey');
     expect(serialized).not.toContain(Array.from(KEY).join(','));
   });
+
+  it('treats every partial last-known-good tuple as corrupt and preserves its provenance', async () => {
+    const current = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 1);
+    const rollback = await encrypted(document([entity(ENTITY_B, 2, DEVICE_B)]), 2);
+    const rollbackBuffer = toArrayBuffer(rollback);
+    const rollbackUpdatedAt = '2026-07-25T10:02:00.000Z';
+    const base = {
+      recordVersion: 1,
+      envelope: toArrayBuffer(current),
+      version: 1,
+      updatedAt: '2026-07-25T10:01:00.000Z',
+      pendingRemote: false,
+    };
+    const permutations = [
+      { label: 'bytes', fields: { lastKnownGood: rollbackBuffer } },
+      { label: 'version', fields: { lastKnownGoodVersion: 2 } },
+      { label: 'timestamp', fields: { lastKnownGoodUpdatedAt: rollbackUpdatedAt } },
+      {
+        label: 'bytes and version',
+        fields: { lastKnownGood: rollbackBuffer, lastKnownGoodVersion: 2 },
+      },
+      {
+        label: 'bytes and timestamp',
+        fields: { lastKnownGood: rollbackBuffer, lastKnownGoodUpdatedAt: rollbackUpdatedAt },
+      },
+      {
+        label: 'version and timestamp',
+        fields: { lastKnownGoodVersion: 2, lastKnownGoodUpdatedAt: rollbackUpdatedAt },
+      },
+    ];
+
+    for (const { label, fields } of permutations) {
+      const malformed = { ...base, ...fields } as LocalVaultRecord;
+      const storage: LocalDataHomeStorage = {
+        async read() {
+          return cloneRecord(malformed);
+        },
+        async compareAndSwap() {
+          throw new Error('A corrupt record must not be mutated.');
+        },
+      };
+      const home = createLocalDataHome({ scope: `partial-rollback-${label}`, storage });
+
+      await expect(home.read(), label).resolves.toMatchObject({
+        status: 'corrupt',
+        reason: 'invalid-response',
+      });
+      const result = await home.readLastKnownGood();
+      expect(result, label).toMatchObject({
+        status: 'corrupt',
+        medium: 'local',
+        reason: 'invalid-response',
+        message: 'The last-known-good vault metadata is incomplete or malformed.',
+      });
+      if (result.status !== 'corrupt') throw new Error(`Expected corrupt result for ${label}.`);
+      expect(result.envelope, label).toEqual('lastKnownGood' in fields ? rollback : undefined);
+      expect(result.version, label).toBe('lastKnownGoodVersion' in fields ? 2 : null);
+      expect(result.updatedAt, label).toBe(
+        'lastKnownGoodUpdatedAt' in fields ? rollbackUpdatedAt : null,
+      );
+    }
+  });
 });
 
 describe('CAS-aware vault synchronization', () => {
+  it('keeps readable remote data active but read-only when the local CAS version is unavailable', async () => {
+    const remoteV2 = await encrypted(
+      document([entity(ENTITY_B, 2, DEVICE_B)]),
+      2,
+      DEVICE_B,
+      '018f0000-0000-7000-8000-0000000000b2',
+    );
+    type LocalReadFailure = Extract<
+      DataHomeReadResult,
+      { status: 'corrupt' } | { status: 'transport-failure' }
+    >;
+    const cases: {
+      label: string;
+      result: LocalReadFailure;
+      expectedStatus: 'corrupt' | 'pending-offline';
+      expectedFailure: string;
+    }[] = [
+      {
+        label: 'transport failure',
+        result: {
+          status: 'transport-failure',
+          medium: 'local',
+          failure: { message: 'IndexedDB is unavailable' },
+        },
+        expectedStatus: 'pending-offline',
+        expectedFailure: 'IndexedDB is unavailable',
+      },
+      {
+        label: 'corrupt metadata without a version',
+        result: {
+          status: 'corrupt',
+          medium: 'local',
+          envelope: new Uint8Array([1, 2, 3]),
+          version: null,
+          updatedAt: '2026-07-25T10:01:00.000Z',
+          reason: 'invalid-response',
+          message: 'Local metadata has no usable version',
+        },
+        expectedStatus: 'corrupt',
+        expectedFailure: 'Local metadata has no usable version',
+      },
+    ];
+
+    for (const testCase of cases) {
+      let localMutationCalls = 0;
+      const local: LocalDataHome = {
+        medium: 'local',
+        async read() {
+          return testCase.result;
+        },
+        async info() {
+          return testCase.result;
+        },
+        async readLastKnownGood() {
+          return { status: 'absent', medium: 'local' };
+        },
+        async write() {
+          localMutationCalls += 1;
+          return {
+            status: 'transport-failure',
+            medium: 'local',
+            failure: { message: 'unexpected local write' },
+          };
+        },
+        async markLastKnownGood() {
+          localMutationCalls += 1;
+          return {
+            status: 'transport-failure',
+            medium: 'local',
+            failure: { message: 'unexpected rollback promotion' },
+          };
+        },
+        async setPendingRemote() {
+          localMutationCalls += 1;
+          return {
+            status: 'transport-failure',
+            medium: 'local',
+            failure: { message: 'unexpected acknowledgement write' },
+          };
+        },
+      };
+      const primary = memoryRemote(remoteV2, 2);
+      const engine = createVaultSyncEngine({
+        local,
+        primary,
+        vaultKey: KEY,
+        deviceId: DEVICE_A,
+        writeId: writeIds(),
+        quarantine: createMemoryVaultQuarantineStore(),
+      });
+
+      const started = await engine.start();
+
+      expect(started, testCase.label).toMatchObject({
+        status: testCase.expectedStatus,
+        active: { header: { vaultVersion: 2 }, envelope: remoteV2 },
+        pending: null,
+        lastFailure: testCase.expectedFailure,
+      });
+      await expect(
+        engine.mutate(({ document: value }) => value),
+        testCase.label,
+      ).rejects.toMatchObject({ code: 'storage-failed' });
+      expect(engine.state.active?.envelope, testCase.label).toEqual(remoteV2);
+      expect(localMutationCalls, testCase.label).toBe(0);
+      expect(primary.writeCalls, testCase.label).toBe(0);
+    }
+  });
+
   it('serializes a same-engine reconnect snapshot against a concurrent mutation', async () => {
     const localV1 = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 1);
     const remoteV2 = await encrypted(

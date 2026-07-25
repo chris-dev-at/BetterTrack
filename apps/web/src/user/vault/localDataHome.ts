@@ -199,27 +199,32 @@ export function createLocalDataHome(options: LocalDataHomeOptions): LocalDataHom
     },
 
     async readLastKnownGood(): Promise<DataHomeReadResult> {
-      const result = await readRecord(storage, options.scope);
-      if (result === null) return { status: 'absent', medium: 'local' };
-      if ('status' in result) return result;
-      if (result.lastKnownGood == null || result.lastKnownGoodVersion == null) {
+      let untrusted: unknown;
+      try {
+        untrusted = await storage.read(options.scope);
+      } catch (cause) {
+        return transportFailure('Could not read the encrypted local vault cache.', cause);
+      }
+      if (untrusted === null) return { status: 'absent', medium: 'local' };
+
+      const rollback = lastKnownGoodTuple(untrusted);
+      if (rollback.status === 'corrupt') return rollback.result;
+      if (!isRecord(untrusted)) return malformedRecord(untrusted);
+      if (rollback.status === 'absent') {
         return { status: 'absent', medium: 'local' };
       }
-      const envelope = new Uint8Array(result.lastKnownGood.slice(0));
-      const parsed = inspect(
-        envelope,
-        result.lastKnownGoodVersion,
-        result.lastKnownGoodUpdatedAt ?? null,
-      );
+      const envelope = new Uint8Array(rollback.envelope.slice(0));
+      const parsed = inspect(envelope, rollback.version, rollback.updatedAt);
       if ('status' in parsed) {
-        return { ...parsed, updatedAt: result.lastKnownGoodUpdatedAt ?? null };
+        return { ...parsed, updatedAt: rollback.updatedAt };
       }
-      if (parsed.version !== result.lastKnownGoodVersion) {
+      if (parsed.version !== rollback.version) {
         return corrupt(
           envelope,
-          result.lastKnownGoodVersion,
+          rollback.version,
           'version-mismatch',
           'Last-known-good metadata does not match its encrypted envelope.',
+          rollback.updatedAt,
         );
       }
       return {
@@ -284,22 +289,22 @@ async function readRecord(
   }
   if (record == null) return null;
   const untrusted: unknown = record;
-  if (!isRecord(untrusted)) {
-    const value =
-      typeof untrusted === 'object' && untrusted !== null
-        ? (untrusted as { envelope?: unknown })
-        : {};
-    const envelope = isArrayBuffer(value.envelope)
-      ? new Uint8Array(value.envelope.slice(0))
-      : undefined;
-    return corrupt(
-      envelope,
-      safeVersion(untrusted),
-      'invalid-response',
-      'The local vault cache record is malformed.',
-    );
-  }
+  if (!isRecord(untrusted)) return malformedRecord(untrusted);
   return untrusted;
+}
+
+function malformedRecord(value: unknown): DataHomeCorruptCandidate {
+  const record =
+    typeof value === 'object' && value !== null ? (value as { envelope?: unknown }) : {};
+  const envelope = isArrayBuffer(record.envelope)
+    ? new Uint8Array(record.envelope.slice(0))
+    : undefined;
+  return corrupt(
+    envelope,
+    safeVersion(value),
+    'invalid-response',
+    'The local vault cache record is malformed.',
+  );
 }
 
 function readCurrent(record: LocalVaultRecord): DataHomeReadResult {
@@ -405,13 +410,14 @@ function corrupt(
   version: number | null,
   reason: DataHomeCorruptCandidate['reason'],
   message: string,
+  updatedAt: string | null = null,
 ): DataHomeCorruptCandidate {
   return {
     status: 'corrupt',
     medium: 'local',
     envelope,
     version,
-    updatedAt: null,
+    updatedAt,
     reason,
     message,
   };
@@ -427,6 +433,7 @@ function transportFailure(
 function isRecord(value: unknown): value is LocalVaultRecord {
   if (typeof value !== 'object' || value === null) return false;
   const record = value as Partial<LocalVaultRecord>;
+  const rollback = lastKnownGoodTuple(record);
   return (
     record.recordVersion === RECORD_VERSION &&
     isArrayBuffer(record.envelope) &&
@@ -434,13 +441,57 @@ function isRecord(value: unknown): value is LocalVaultRecord {
     Number(record.version) >= 1 &&
     typeof record.updatedAt === 'string' &&
     typeof record.pendingRemote === 'boolean' &&
-    (record.lastKnownGood === undefined || isArrayBuffer(record.lastKnownGood)) &&
-    (record.lastKnownGoodVersion === undefined ||
-      (Number.isSafeInteger(record.lastKnownGoodVersion) &&
-        Number(record.lastKnownGoodVersion) >= 1)) &&
-    (record.lastKnownGoodUpdatedAt === undefined ||
-      typeof record.lastKnownGoodUpdatedAt === 'string')
+    rollback.status !== 'corrupt'
   );
+}
+
+type LastKnownGoodTuple =
+  | { status: 'absent' }
+  | { status: 'ok'; envelope: ArrayBuffer; version: number; updatedAt: string }
+  | { status: 'corrupt'; result: DataHomeCorruptCandidate };
+
+function lastKnownGoodTuple(value: unknown): LastKnownGoodTuple {
+  const record =
+    typeof value === 'object' && value !== null
+      ? (value as {
+          lastKnownGood?: unknown;
+          lastKnownGoodVersion?: unknown;
+          lastKnownGoodUpdatedAt?: unknown;
+        })
+      : {};
+  const hasEnvelope = record.lastKnownGood !== undefined;
+  const hasVersion = record.lastKnownGoodVersion !== undefined;
+  const hasUpdatedAt = record.lastKnownGoodUpdatedAt !== undefined;
+
+  if (!hasEnvelope && !hasVersion && !hasUpdatedAt) return { status: 'absent' };
+  if (
+    isArrayBuffer(record.lastKnownGood) &&
+    Number.isSafeInteger(record.lastKnownGoodVersion) &&
+    Number(record.lastKnownGoodVersion) >= 1 &&
+    typeof record.lastKnownGoodUpdatedAt === 'string'
+  ) {
+    return {
+      status: 'ok',
+      envelope: record.lastKnownGood,
+      version: Number(record.lastKnownGoodVersion),
+      updatedAt: record.lastKnownGoodUpdatedAt,
+    };
+  }
+
+  return {
+    status: 'corrupt',
+    result: corrupt(
+      isArrayBuffer(record.lastKnownGood)
+        ? new Uint8Array(record.lastKnownGood.slice(0))
+        : undefined,
+      Number.isSafeInteger(record.lastKnownGoodVersion) && Number(record.lastKnownGoodVersion) >= 1
+        ? Number(record.lastKnownGoodVersion)
+        : null,
+      'invalid-response',
+      'The last-known-good vault metadata is incomplete or malformed.',
+      typeof record.lastKnownGoodUpdatedAt === 'string' ? record.lastKnownGoodUpdatedAt : null,
+    ),
+  };
 }
 
 function safeVersion(value: unknown): number | null {
