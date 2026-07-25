@@ -62,6 +62,16 @@ interface RemoteObservation {
   version: number | null;
 }
 
+interface CandidateValidationFailure {
+  status: 'corrupt' | 'locked';
+  message: string;
+}
+
+interface ReadableCandidateResult {
+  candidate: VaultSyncCandidate | null;
+  validationFailure?: CandidateValidationFailure;
+}
+
 /**
  * Local-first, encrypted-document synchronization. CAS tokens always come from
  * the caller's previously read candidates; no write helper performs a discovery
@@ -73,6 +83,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   let localHeadVersion: number | null | undefined;
   let remoteObserved: RemoteObservation = { known: false, version: null };
   let operationTail = Promise.resolve();
+  let rollbackPersistenceFailure: string | undefined;
 
   return {
     get deviceId() {
@@ -119,14 +130,24 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     localHeadVersion = observedVersion(localResult);
     remoteObserved = observeRemote(remoteResult);
 
-    const localCurrent = await readableLocalCurrent(localResult);
-    if (localCurrent === RETRY_LOCAL_OBSERVATION) return RETRY_LOCAL_OBSERVATION;
-    const lastKnownGood =
+    const localCurrentResult = await readableLocalCurrent(localResult);
+    if (localCurrentResult === RETRY_LOCAL_OBSERVATION) return RETRY_LOCAL_OBSERVATION;
+    const localCurrent = localCurrentResult.candidate;
+    const lastKnownGoodResult: ReadableCandidateResult =
       localCurrent == null
         ? await readableCandidate(await options.local.readLastKnownGood())
-        : null;
-    const localReadable = localCurrent ?? lastKnownGood;
-    const remoteReadable = await readableCandidate(remoteResult);
+        : { candidate: null };
+    const localReadable = localCurrent ?? lastKnownGoodResult.candidate;
+    const remoteCandidateResult = await readableCandidate(remoteResult);
+    const remoteReadable = remoteCandidateResult.candidate;
+    const localValidationFailures = [
+      localCurrentResult.validationFailure,
+      lastKnownGoodResult.validationFailure,
+    ].filter((failure): failure is CandidateValidationFailure => failure != null);
+    const validationFailures = [
+      ...localValidationFailures,
+      remoteCandidateResult.validationFailure,
+    ].filter((failure): failure is CandidateValidationFailure => failure != null);
     const localPending =
       localCurrent != null && localResult.status === 'ok' && localResult.info.pendingRemote === true
         ? localCurrent
@@ -137,7 +158,13 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     }
 
     if (remoteResult.status === 'absent') {
-      return reconcileAbsentRemote(localReadable, localCurrent, localPending, localResult);
+      return reconcileAbsentRemote(
+        localReadable,
+        localCurrent,
+        localPending,
+        localResult,
+        localValidationFailures,
+      );
     }
 
     const selected = selectHighest(localReadable, state.active);
@@ -146,11 +173,25 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         status: 'pending-offline',
         active: selected,
         pending: localPending,
-        lastFailure: resultMessage(remoteResult),
+        lastFailure: combineMessages(
+          resultMessage(remoteResult),
+          ...validationFailures.map((failure) => failure.message),
+        ),
       };
       return cloneState(state);
     }
 
+    if (validationFailures.length > 0) {
+      state = {
+        ...state,
+        status: validationFailureStatus(validationFailures),
+        lastFailure: combineMessages(
+          resultMessage(localResult, remoteResult),
+          ...validationFailures.map((failure) => failure.message),
+        ),
+      };
+      return cloneState(state);
+    }
     if (remoteResult.status === 'corrupt' || localResult.status === 'corrupt') {
       state = {
         ...state,
@@ -307,9 +348,19 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     localCurrent: VaultSyncCandidate | null,
     localPending: VaultSyncCandidate | null,
     localResult: DataHomeReadResult,
+    validationFailures: CandidateValidationFailure[],
   ): Promise<VaultSyncState> {
     if (localReadable == null) {
-      if (localResult.status === 'corrupt') {
+      if (validationFailures.length > 0) {
+        state = {
+          ...state,
+          status: validationFailureStatus(validationFailures),
+          lastFailure: combineMessages(
+            resultMessage(localResult),
+            ...validationFailures.map((failure) => failure.message),
+          ),
+        };
+      } else if (localResult.status === 'corrupt') {
         state = { ...state, status: 'corrupt', lastFailure: localResult.message };
       } else if (localResult.status === 'transport-failure') {
         state = withFailure(state, localResult.failure.message);
@@ -379,7 +430,8 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
 
       const remoteResult = await options.primary.read();
       remoteObserved = observeRemote(remoteResult);
-      const remote = await readableCandidate(remoteResult);
+      const remoteCandidateResult = await readableCandidate(remoteResult);
+      const remote = remoteCandidateResult.candidate;
       if (remote == null) {
         state = {
           status: 'pending-offline',
@@ -388,7 +440,10 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
           lastFailure:
             remoteResult.status === 'absent'
               ? 'The primary disappeared while resolving a CAS conflict.'
-              : resultMessage(remoteResult),
+              : combineMessages(
+                  resultMessage(remoteResult),
+                  remoteCandidateResult.validationFailure?.message,
+                ),
         };
         return cloneState(state);
       }
@@ -465,7 +520,9 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       // The new encrypted current candidate is already durable and the previous
       // last-known-good bytes remain intact. Keep it pending rather than retrying
       // the money mutation.
-      state = withFailure(state, marked.failure.message);
+      rollbackPersistenceFailure = marked.failure.message;
+    } else {
+      rollbackPersistenceFailure = undefined;
     }
     return true;
   }
@@ -503,7 +560,8 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   async function handleLocalConflict(currentVersion: number | null): Promise<void> {
     const freshResult = await options.local.read();
     localHeadVersion = observedVersion(freshResult);
-    const fresh = await readableCandidate(freshResult);
+    const freshCandidateResult = await readableCandidate(freshResult);
+    const fresh = freshCandidateResult.candidate;
     state = {
       status: 'conflict',
       active: fresh ?? state.active,
@@ -511,42 +569,58 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         fresh != null && freshResult.status === 'ok' && freshResult.info.pendingRemote === true
           ? fresh
           : null,
-      lastFailure: `Local vault CAS conflict; current version is ${currentVersion ?? 'unknown'}.`,
+      lastFailure: combineMessages(
+        `Local vault CAS conflict; current version is ${currentVersion ?? 'unknown'}.`,
+        freshCandidateResult.validationFailure?.message,
+      ),
     };
   }
 
   async function readableLocalCurrent(
     result: DataHomeReadResult,
-  ): Promise<VaultSyncCandidate | null | typeof RETRY_LOCAL_OBSERVATION> {
-    const candidate = await readableCandidate(result);
-    if (candidate == null || result.status !== 'ok') return candidate;
+  ): Promise<ReadableCandidateResult | typeof RETRY_LOCAL_OBSERVATION> {
+    const candidateResult = await readableCandidate(result);
+    if (candidateResult.candidate == null || result.status !== 'ok') return candidateResult;
 
     const marked = await options.local.markLastKnownGood(result.envelope, {
       ifVersion: result.info.version,
     });
     if (marked.status === 'conflict') return RETRY_LOCAL_OBSERVATION;
-    if (marked.status === 'corrupt') await quarantineCorrupt(marked);
-    return candidate;
+    if (marked.status === 'corrupt') {
+      await quarantineCorrupt(marked);
+      rollbackPersistenceFailure = marked.message;
+    } else if (marked.status === 'transport-failure') {
+      rollbackPersistenceFailure = marked.failure.message;
+    } else {
+      rollbackPersistenceFailure = undefined;
+    }
+    return candidateResult;
   }
 
-  async function readableCandidate(result: DataHomeReadResult): Promise<VaultSyncCandidate | null> {
+  async function readableCandidate(result: DataHomeReadResult): Promise<ReadableCandidateResult> {
     switch (result.status) {
       case 'absent':
       case 'transport-failure':
-        return null;
+        return { candidate: null };
       case 'corrupt':
         await quarantineCorrupt(result);
-        return null;
+        return {
+          candidate: null,
+          validationFailure: { status: 'corrupt', message: result.message },
+        };
       case 'ok':
         try {
           const decrypted = await decryptVaultDocument(result.envelope, options.vaultKey);
           return {
-            home: result.medium === 'local' ? options.local : options.primary,
-            envelope: result.envelope.slice(),
-            header: decrypted.header,
-            document: decrypted.document,
+            candidate: {
+              home: result.medium === 'local' ? options.local : options.primary,
+              envelope: result.envelope.slice(),
+              header: decrypted.header,
+              document: decrypted.document,
+            },
           };
         } catch (cause) {
+          const message = cause instanceof Error ? cause.message : 'Vault could not be decrypted.';
           await options.quarantine.put({
             medium: result.medium,
             envelope: result.envelope,
@@ -557,15 +631,40 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
               cause instanceof VaultCryptoError && cause.code === 'update-required'
                 ? 'unsupported'
                 : 'unreadable',
-            reason: cause instanceof Error ? cause.message : 'Vault could not be decrypted.',
+            reason: message,
           });
-          return null;
+          return {
+            candidate: null,
+            validationFailure: {
+              status:
+                cause instanceof VaultCryptoError &&
+                (cause.code === 'authentication-failed' ||
+                  cause.code === 'custody-failed' ||
+                  cause.code === 'locked')
+                  ? 'locked'
+                  : 'corrupt',
+              message,
+            },
+          };
         }
     }
   }
 
-  function serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const result = operationTail.then(operation);
+  function serialize(operation: () => Promise<VaultSyncState>): Promise<VaultSyncState> {
+    const result = operationTail.then(async () => {
+      rollbackPersistenceFailure = undefined;
+      const operationState = await operation();
+      if (rollbackPersistenceFailure == null) return operationState;
+      state = {
+        ...operationState,
+        status: operationState.status === 'synced' ? 'pending-offline' : operationState.status,
+        lastFailure: combineMessages(
+          operationState.lastFailure,
+          `Could not preserve the encrypted rollback snapshot: ${rollbackPersistenceFailure}`,
+        ),
+      };
+      return cloneState(state);
+    });
     operationTail = result.then(
       () => undefined,
       () => undefined,
@@ -663,6 +762,22 @@ function sameWrite(left: VaultSyncCandidate, right: VaultSyncCandidate): boolean
     left.header.vaultVersion === right.header.vaultVersion &&
     left.header.writeId === right.header.writeId
   );
+}
+
+function validationFailureStatus(
+  failures: CandidateValidationFailure[],
+): CandidateValidationFailure['status'] {
+  return failures.some((failure) => failure.status === 'corrupt') ? 'corrupt' : 'locked';
+}
+
+function combineMessages(...messages: (string | undefined)[]): string {
+  return [
+    ...new Set(
+      messages
+        .map((message) => message?.trim())
+        .filter((message) => message != null && message !== ''),
+    ),
+  ].join(' ');
 }
 
 function cloneState(value: VaultSyncState): VaultSyncState {

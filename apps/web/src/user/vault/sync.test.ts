@@ -437,6 +437,90 @@ describe('CAS-aware vault synchronization', () => {
     });
   });
 
+  it('keeps a readable current candidate active when rollback promotion transport fails', async () => {
+    const localV1 = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 1);
+    const storage = memoryLocalStorage();
+    const baseLocal = createLocalDataHome({ scope: 'promotion-transport', storage });
+    await seedLocal(baseLocal, localV1, false);
+    const local: LocalDataHome = {
+      ...baseLocal,
+      async markLastKnownGood() {
+        return {
+          status: 'transport-failure',
+          medium: 'local',
+          failure: { message: 'rollback storage unavailable' },
+        };
+      },
+    };
+    const engine = createVaultSyncEngine({
+      local,
+      primary: memoryRemote(localV1, 1),
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      quarantine: createMemoryVaultQuarantineStore(),
+    });
+
+    const result = await engine.start();
+
+    expect(result).toMatchObject({
+      status: 'pending-offline',
+      active: { header: { vaultVersion: 1 } },
+      pending: null,
+    });
+    expect(result.lastFailure).toContain('rollback storage unavailable');
+  });
+
+  it('does not report synced when post-commit rollback promotion transport fails', async () => {
+    const localV1 = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 1);
+    const storage = memoryLocalStorage();
+    const baseLocal = createLocalDataHome({ scope: 'commit-promotion-transport', storage });
+    await seedLocal(baseLocal, localV1, false);
+    let promotionCalls = 0;
+    const local: LocalDataHome = {
+      ...baseLocal,
+      async markLastKnownGood(envelope, options) {
+        promotionCalls += 1;
+        if (promotionCalls === 2) {
+          return {
+            status: 'transport-failure',
+            medium: 'local',
+            failure: { message: 'rollback write interrupted' },
+          };
+        }
+        return baseLocal.markLastKnownGood(envelope, options);
+      },
+    };
+    const engine = createVaultSyncEngine({
+      local,
+      primary: memoryRemote(localV1, 1),
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      quarantine: createMemoryVaultQuarantineStore(),
+    });
+    await expect(engine.start()).resolves.toMatchObject({ status: 'synced' });
+
+    const result = await engine.mutate(({ document: value }) => ({
+      ...value,
+      entities: {
+        ...value.entities,
+        transaction: [...(value.entities.transaction ?? []), entity(ENTITY_B, 1, DEVICE_A)],
+      },
+    }));
+
+    expect(result).toMatchObject({
+      status: 'pending-offline',
+      active: { header: { vaultVersion: 2 } },
+      pending: null,
+    });
+    expect(result.lastFailure).toContain('rollback write interrupted');
+    await expect(local.readLastKnownGood()).resolves.toMatchObject({
+      status: 'ok',
+      info: { version: 1 },
+    });
+  });
+
   it('rejects tab A stale v1 reconciliation after tab B commits v3', async () => {
     const v1 = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 1);
     const remoteV2 = await encrypted(
@@ -616,6 +700,70 @@ describe('CAS-aware vault synchronization', () => {
 });
 
 describe('corruption quarantine and rollback safety', () => {
+  it('reports a cold-start unreadable server candidate as locked instead of empty', async () => {
+    const unreadable = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 2);
+    unreadable[unreadable.length - 1] = unreadable[unreadable.length - 1]! ^ 1;
+    const quarantine = createMemoryVaultQuarantineStore();
+    const engine = createVaultSyncEngine({
+      local: createLocalDataHome({
+        scope: 'unreadable-server-cold-start',
+        storage: memoryLocalStorage(),
+      }),
+      primary: memoryRemote(unreadable, 2),
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      quarantine,
+    });
+
+    const result = await engine.start();
+
+    expect(result).toMatchObject({ status: 'locked', active: null, pending: null });
+    expect(result.lastFailure).toContain('Vault authentication failed');
+    await expect(quarantine.list()).resolves.toEqual([
+      expect.objectContaining({
+        medium: 'server',
+        status: 'unreadable',
+        envelope: unreadable,
+        version: 2,
+      }),
+    ]);
+  });
+
+  it('preserves remote validation failure while using a readable local fallback', async () => {
+    const localV1 = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 1);
+    const unreadableRemoteV2 = await encrypted(
+      document([entity(ENTITY_B, 2, DEVICE_B)]),
+      2,
+      DEVICE_B,
+      '018f0000-0000-7000-8000-0000000000b2',
+    );
+    unreadableRemoteV2[unreadableRemoteV2.length - 1] =
+      unreadableRemoteV2[unreadableRemoteV2.length - 1]! ^ 1;
+    const local = createLocalDataHome({
+      scope: 'unreadable-server-local-fallback',
+      storage: memoryLocalStorage(),
+    });
+    await seedLocal(local, localV1, false);
+    const engine = createVaultSyncEngine({
+      local,
+      primary: memoryRemote(unreadableRemoteV2, 2),
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      quarantine: createMemoryVaultQuarantineStore(),
+    });
+
+    const result = await engine.start();
+
+    expect(result).toMatchObject({
+      status: 'pending-offline',
+      active: { header: { vaultVersion: 1 } },
+      pending: null,
+    });
+    expect(result.lastFailure).toContain('Vault authentication failed');
+  });
+
   it('retains last-known-good bytes and exposes no partial plaintext while offline', async () => {
     const goodDocument = document([entity(ENTITY_A, 1, DEVICE_A, { amount: 100 })]);
     const good = await encrypted(goodDocument, 1);
