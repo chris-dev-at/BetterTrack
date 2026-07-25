@@ -80,6 +80,28 @@ export const DEFAULT_EXPENSE_CATEGORIES: readonly CreateExpenseCategoryInput[] =
  */
 export type ExpenseWriteHook = (userId: string) => Promise<void>;
 
+/**
+ * The minimum facts the expense service needs from a restored row. The caller
+ * keeps the full row shape (including stable ids and timestamps) and passes it
+ * unchanged to its transaction-bound writer.
+ */
+export interface ExpenseRestoreRow {
+  categoryId: string | null;
+  bookedOn: string;
+}
+
+/**
+ * Caller-owned transaction seam for bulk restore. All three operations must use
+ * repositories bound to the same transaction. Keeping the writer here as a
+ * callback lets paranoid rehydration preserve its richer source-row shape
+ * without this service importing vault contracts or opening a transaction.
+ */
+export interface ExpenseRestoreScope<TRow extends ExpenseRestoreRow> {
+  ownsCategory(userId: string, categoryId: string): Promise<boolean>;
+  insertTransactions(userId: string, rows: readonly TRow[]): Promise<void>;
+  reconcileBudgets(userId: string, affectedPeriods: readonly string[]): Promise<void>;
+}
+
 export interface ExpenseServiceDeps {
   categories: ExpenseCategoryRepository;
   transactions: ExpenseTransactionRepository;
@@ -122,6 +144,16 @@ export interface ExpenseService {
     categoryId: string | null,
   ): Promise<ExpenseTransactionResponse>;
   deleteTransaction(userId: string, transactionId: string): Promise<void>;
+  /**
+   * Restore a batch through a caller-provided transaction. Category references
+   * are validated before the first write, rows are inserted as one logical
+   * batch, and budget effects run once through the no-replay restore fence.
+   */
+  restoreTransactions<TRow extends ExpenseRestoreRow>(
+    userId: string,
+    rows: readonly TRow[],
+    scope: ExpenseRestoreScope<TRow>,
+  ): Promise<void>;
   // Rules (shapes only; evaluation is issue 2/3)
   listRules(userId: string): Promise<ExpenseRuleListResponse>;
   createRule(userId: string, input: CreateExpenseRuleRequest): Promise<ExpenseRuleResponse>;
@@ -313,6 +345,27 @@ export function createExpenseService(deps: ExpenseServiceDeps): ExpenseService {
     async deleteTransaction(userId, transactionId) {
       const deleted = await transactions.delete(userId, transactionId);
       if (!deleted) throw TRANSACTION_NOT_FOUND();
+    },
+
+    async restoreTransactions(userId, rows, scope) {
+      if (rows.length === 0) return;
+
+      // Validate every foreign key before the caller's writer can persist the
+      // first row. The unique set avoids one ownership query per restored row.
+      const categoryIds = new Set(
+        rows.flatMap((row) => (row.categoryId === null ? [] : [row.categoryId])),
+      );
+      for (const categoryId of categoryIds) {
+        if (!(await scope.ownsCategory(userId, categoryId))) throw CATEGORY_REF_INVALID();
+      }
+
+      await scope.insertTransactions(userId, rows);
+
+      // Budget reconciliation is once per batch, never once per restored row.
+      // Its errors intentionally propagate so the caller rolls back both the
+      // expense rows and any closed-period no-replay markers.
+      const periods = [...new Set(rows.map((row) => row.bookedOn.slice(0, 7)))].sort();
+      await scope.reconcileBudgets(userId, periods);
     },
 
     // ── Rules ──
