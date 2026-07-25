@@ -108,6 +108,13 @@ import {
   type CustomRowView,
 } from './customState';
 import {
+  activeCustomParams,
+  parseTaxOverride,
+  PORTFOLIO_SETTING_KEY_TAX,
+  settingsRecordFromInput,
+  TAX_SYSTEM_DEFAULT,
+} from './settings';
+import {
   atTargetForYear,
   buildFrozenComponentState,
   closedReshapeCorrections,
@@ -383,83 +390,6 @@ const openCorrectionNote = (regime: OpenRegime): string =>
           ? NOTE_FI_LIVE_CORRECTION
           : NOTE_AT_LIVE_CORRECTION;
 
-/** The setting key the tax override lives under in `portfolio_settings` (#636). */
-const PORTFOLIO_SETTING_KEY_TAX = 'tax';
-/** The system default — the bottom of the scoping cascade (pre-tax-engine behaviour). */
-const TAX_SYSTEM_DEFAULT: UserTaxSettingsRecord = {
-  mode: 'none',
-  country: null,
-  manualDefaultAmountEur: null,
-  manualDefaultRatePct: null,
-  customParams: null,
-};
-
-/** A finite non-negative number, else null (override-value hygiene). */
-const asNonNegative = (value: unknown): number | null =>
-  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
-
-/**
- * Narrow a raw `portfolio_settings` value (jsonb) into a tax record, normalising
- * the mode-dependent fields exactly as writes do (country iff `country_specific`,
- * custom params iff `custom`, manual default — amount or rate, never both — iff
- * `manual_per_trade`). A shape we did not write reads as "no override" rather
- * than throwing — the cascade then falls through to the user default.
- */
-function parseTaxOverride(raw: unknown): UserTaxSettingsRecord | null {
-  if (typeof raw !== 'object' || raw === null) return null;
-  const mode = (raw as { mode?: unknown }).mode;
-  if (
-    mode !== 'none' &&
-    mode !== 'manual_per_trade' &&
-    mode !== 'country_specific' &&
-    mode !== 'custom'
-  ) {
-    return null;
-  }
-  const rawCountry = (raw as { country?: unknown }).country;
-  const country =
-    rawCountry === TAX_COUNTRY_AT || rawCountry === TAX_COUNTRY_DE || rawCountry === TAX_COUNTRY_FI
-      ? rawCountry
-      : null;
-  if (mode === 'custom') {
-    // An override without a valid parameter set is unusable — treat as absent.
-    const parsed = customTaxParamsSchema.safeParse((raw as { custom?: unknown }).custom);
-    if (!parsed.success) return null;
-    return { ...TAX_SYSTEM_DEFAULT, mode, customParams: parsed.data };
-  }
-  const record: UserTaxSettingsRecord = {
-    ...TAX_SYSTEM_DEFAULT,
-    mode,
-    country: mode === 'country_specific' ? (country ?? TAX_COUNTRY_AT) : null,
-  };
-  if (mode === 'manual_per_trade') {
-    const amount = asNonNegative(
-      (raw as { manualDefaultAmountEur?: unknown }).manualDefaultAmountEur,
-    );
-    const rate = asNonNegative((raw as { manualDefaultRatePct?: unknown }).manualDefaultRatePct);
-    record.manualDefaultAmountEur = amount;
-    record.manualDefaultRatePct = amount === null && rate !== null && rate <= 100 ? rate : null;
-  }
-  return record;
-}
-
-/**
- * Normalise an update body into the stored record — mode-dependent fields can
- * never drift from the mode (the contract already pins this; the DB CHECKs are
- * the last resort). Shared by the user-default write and the portfolio override.
- */
-function settingsRecordFromInput(input: UpdateTaxSettingsRequest): UserTaxSettingsRecord {
-  return {
-    mode: input.mode,
-    country: input.mode === 'country_specific' ? (input.country ?? TAX_COUNTRY_AT) : null,
-    manualDefaultAmountEur:
-      input.mode === 'manual_per_trade' ? (input.manualDefaultAmountEur ?? null) : null,
-    manualDefaultRatePct:
-      input.mode === 'manual_per_trade' ? (input.manualDefaultRatePct ?? null) : null,
-    customParams: input.mode === 'custom' ? (input.custom ?? null) : null,
-  };
-}
-
 export function createTaxService(deps: TaxServiceDeps): TaxService {
   const { taxRepo, portfolioSettingsRepo, transactionRepo, cashMovementRepo, cashSourceRepo } =
     deps;
@@ -686,15 +616,6 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       categoryOf: categoryLookup(assetsById),
       yearOf: viennaYearOfDate,
     };
-  }
-
-  /** The active custom parameter set; corrupt settings fail loud (we wrote them). */
-  function activeCustomParams(settings: UserTaxSettingsRecord): CustomTaxParams {
-    const parsed = customTaxParamsSchema.safeParse(settings.customParams);
-    if (!parsed.success) {
-      throw new Error('Tax engine: custom mode is active without a readable parameter set');
-    }
-    return parsed.data;
   }
 
   /** Assemble the {@link CustomRowView} the customState derivations run over. */
