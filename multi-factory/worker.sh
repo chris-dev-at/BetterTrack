@@ -711,6 +711,26 @@ protocol_requeue(){ # $1=issue $2=reason $3=pr(optional)
   return 1
 }
 
+writer_no_pr_outcome(){ # $1=issue $2=state $3=labels; 0=closed, 1=needs-human, 2=neither
+  local n=$1 state=$2 labels=$3
+  if [ "$state" = CLOSED ]; then
+    gh issue edit "$n" --remove-label "in-progress,autopilot,mf:worker-$WORKER_ID" \
+      >/dev/null 2>&1 || true
+    log "issue #$n self-resolved by writer (no PR needed)"
+    issue_cost "$n"; wstatus done "$n"
+    return 0
+  fi
+  if grep -qx needs-human <<<"$labels"; then
+    gh issue edit "$n" --remove-label "in-progress,autopilot,mf:worker-$WORKER_ID" \
+      >/dev/null 2>&1 || true
+    log "issue #$n escalated to needs-human by writer (no PR)"
+    notify "issue #$n escalated to needs-human by writer (no PR)"
+    issue_cost "$n"; wstatus failed "$n"
+    return 1
+  fi
+  return 2
+}
+
 # ---- salvage — never lose the writer's output (issues #328/#332/#370) ------------
 # After the writer returns (success OR failure), before any verdict handling: if the
 # clone has uncommitted work or the task branch carries commits not on main and no
@@ -832,12 +852,11 @@ run_cycle(){ # $1=issue $2=relocated
           local state labels
           state=$(gh issue view "$n" --json state -q '.state' 2>/dev/null)
           labels=$(gh issue view "$n" --json labels -q '.labels[].name' 2>/dev/null)
-          if [ "$state" = CLOSED ] || grep -qx needs-human <<<"$labels"; then
-            gh issue edit "$n" --remove-label "in-progress,autopilot,mf:worker-$WORKER_ID" \
-              >/dev/null 2>&1 || true
-            log "issue #$n self-resolved by writer (no PR needed)"
-            issue_cost "$n"; wstatus done "$n"; hb_stop; return 0
-          fi
+          writer_no_pr_outcome "$n" "$state" "$labels"
+          case $? in
+            0) hb_stop; return 0;;
+            1) hb_stop; return 1;;
+          esac
           protocol_requeue "$n" \
             "writer produced no unique linked PR (transport=$writer_transport, salvaged=${SALVAGED:-0})"
           hb_stop
