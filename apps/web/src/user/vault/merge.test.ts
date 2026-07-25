@@ -330,4 +330,28 @@ describe('vault merge metadata and validation', () => {
       VaultCryptoError,
     );
   });
+
+  it('fails closed for sparse arrays in both candidate and document orders', () => {
+    const sparseValues = new Array<unknown>(1);
+    const sparse = entity({ rev: 2, data: { values: sparseValues } });
+    const dense = entity({ rev: 2, data: { values: [] } });
+    const attempts = [
+      () => chooseVaultEntity(sparse, dense),
+      () => chooseVaultEntity(dense, sparse),
+      () => merge(document([sparse]), document([dense])),
+      () => merge(document([dense]), document([sparse])),
+    ];
+
+    for (const attempt of attempts) {
+      let caught: unknown;
+      try {
+        attempt();
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(VaultCryptoError);
+      expect(caught).toMatchObject({ code: 'document-invalid' });
+    }
+  });
 });

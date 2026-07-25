@@ -291,7 +291,19 @@ function canonicalJson(value: unknown, ancestors = new Set<object>()): string {
   }
   if (Array.isArray(value)) {
     assertAcyclic(value, ancestors);
-    const result = `[${value.map((entry) => canonicalJson(entry, ancestors)).join(',')}]`;
+    const entries: string[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.hasOwn(value, index)) {
+        ancestors.delete(value);
+        throw documentInvalid('Vault documents may contain only dense JSON arrays.');
+      }
+      entries.push(canonicalJson(value[index], ancestors));
+    }
+    if (Reflect.ownKeys(value).length !== value.length + 1) {
+      ancestors.delete(value);
+      throw documentInvalid('Vault arrays may contain only indexed JSON values.');
+    }
+    const result = `[${entries.join(',')}]`;
     ancestors.delete(value);
     return result;
   }
