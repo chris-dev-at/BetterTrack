@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
+import { passwordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import { befriend, provisionUser } from './support/users';
 
@@ -59,9 +60,7 @@ test('account deletion: re-auth + typed confirm deletes the account, revokes ses
 
     // Old credentials no longer sign in. §6.1: never distinguish "no such user"
     // from "wrong password", so the visible error is the generic form.
-    await owner.page.getByLabel('Email or username').fill(ownerUsername);
-    await owner.page.getByLabel('Password').fill(ACCOUNT_PASSWORD);
-    await owner.page.getByRole('button', { name: 'Sign in' }).click();
+    await passwordSignIn(owner.page, ownerUsername, ACCOUNT_PASSWORD);
     await expect(owner.page.getByText(/incorrect email\/username or password/i)).toBeVisible({
       timeout: 15_000,
     });

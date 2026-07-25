@@ -46,7 +46,7 @@ test('imports: TR CSV — autodetect, staged preview, transactional apply, re-up
 
   // Counts strip: three rows, all mapped (SAP SE resolves to the seeded SAP.DE
   // via the exact-name match; the deposit needs no instrument).
-  await expect(page.getByText('3 rows')).toBeVisible();
+  await expect(page.getByText('3 rows', { exact: true })).toBeVisible();
   await expect(page.getByText('3 mapped')).toBeVisible();
   await expect(page.getByText('Mapped', { exact: true })).toHaveCount(3);
   // The framework resolves 'SAP SE' → SAP.DE by exact whole-name match against
@@ -128,7 +128,7 @@ test('imports: malformed row shows as error while the rest apply', async ({ brow
   // as `error` — the mapper flags the buy whose quantity is "kaputt", the other
   // two rows (deposit + real Allianz SE buy) stay mapped.
   await expect(page.getByText('Broker: Trade Republic')).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByText('3 rows')).toBeVisible();
+  await expect(page.getByText('3 rows', { exact: true })).toBeVisible();
   await expect(page.getByText('2 mapped')).toBeVisible();
   await expect(page.getByText('1 errors')).toBeVisible();
   await expect(page.getByText(/Invalid quantity "kaputt"/)).toBeVisible();

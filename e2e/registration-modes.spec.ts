@@ -7,6 +7,7 @@ import {
   newAdminBrowserContext,
   setRegistrationMode,
 } from './support/adminApi';
+import { passwordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 
 /**
@@ -198,17 +199,13 @@ test('registration modes: approval mode gates on admin approve / reject via the 
     // (4) Applicant A can now sign in — an approved application minted a real
     // account with the same email + username + password.
     await approvePage.goto('/login');
-    await approvePage.getByLabel('Email or username').fill(approveUsername);
-    await approvePage.getByLabel('Password').fill(ACCOUNT_PASSWORD);
-    await approvePage.getByRole('button', { name: 'Sign in' }).click();
+    await passwordSignIn(approvePage, approveUsername, ACCOUNT_PASSWORD);
     await expect(approvePage).toHaveURL(/\/portfolio$/, { timeout: 20_000 });
 
     // (5) Applicant B still cannot sign in — a rejected application never
     // becomes an account; §6.1 hides the reason behind the generic form error.
     await rejectPage.goto('/login');
-    await rejectPage.getByLabel('Email or username').fill(rejectUsername);
-    await rejectPage.getByLabel('Password').fill(ACCOUNT_PASSWORD);
-    await rejectPage.getByRole('button', { name: 'Sign in' }).click();
+    await passwordSignIn(rejectPage, rejectUsername, ACCOUNT_PASSWORD);
     await expect(rejectPage.getByText(/incorrect email\/username or password/i)).toBeVisible({
       timeout: 15_000,
     });
