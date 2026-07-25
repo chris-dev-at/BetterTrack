@@ -9,6 +9,7 @@ import {
   encodeVaultEnvelope as encodeContractEnvelope,
   VAULT_HISTORY_CREATED_AT_HEADER,
   VAULT_HISTORY_MEDIUM_HEADER,
+  VAULT_HISTORY_PAGE_MAX,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
   type VaultDocumentV1,
   type VaultEntity,
@@ -1412,6 +1413,93 @@ describe('restore candidate seam', () => {
     await expect(decryptVaultDocument(restored.envelope, KEY)).resolves.toMatchObject({
       document: { entities: { transaction: [expect.objectContaining({ id: ENTITY_A })] } },
     });
+  });
+
+  it('follows server history pagination to candidates older than the first page', async () => {
+    const versions = Array.from(
+      { length: VAULT_HISTORY_PAGE_MAX + 1 },
+      (_, index) => VAULT_HISTORY_PAGE_MAX + 2 - index,
+    );
+    const records = new Map(
+      await Promise.all(
+        versions.map(async (version) => {
+          const envelope = await encrypted(
+            document([entity(ENTITY_A, version, DEVICE_A)]),
+            version,
+          );
+          return [
+            version,
+            {
+              envelope,
+              createdAt: new Date(Date.UTC(2026, 6, 25, 10, 0, version)).toISOString(),
+            },
+          ] as const;
+        }),
+      ),
+    );
+    const listUrls: string[] = [];
+    const history = createServerHistoryRestoreCandidateSource({
+      url: 'https://api.bt.test/api/v1/vault/history',
+      fetch: async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith('/history')) {
+          listUrls.push(url.toString());
+          const cursor = url.searchParams.get('cursor');
+          const pageVersions =
+            cursor === null
+              ? versions.slice(0, VAULT_HISTORY_PAGE_MAX)
+              : versions.slice(VAULT_HISTORY_PAGE_MAX);
+          expect(cursor === null || cursor === String(versions[VAULT_HISTORY_PAGE_MAX - 1])).toBe(
+            true,
+          );
+          return new Response(
+            JSON.stringify({
+              items: pageVersions.map((version) => {
+                const record = records.get(version);
+                if (!record) throw new Error(`Missing history fixture ${version}.`);
+                return {
+                  version,
+                  createdAt: record.createdAt,
+                  sizeBytes: record.envelope.byteLength,
+                  medium: 'server',
+                };
+              }),
+              nextCursor: cursor === null ? versions[VAULT_HISTORY_PAGE_MAX - 1] : null,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+
+        const version = Number(url.pathname.split('/').at(-1));
+        const record = records.get(version);
+        if (!record) return new Response(null, { status: 404 });
+        return new Response(record.envelope, {
+          status: 200,
+          headers: {
+            ETag: `"${version}"`,
+            [VAULT_HISTORY_CREATED_AT_HEADER]: record.createdAt,
+            [VAULT_HISTORY_SIZE_BYTES_HEADER]: String(record.envelope.byteLength),
+            [VAULT_HISTORY_MEDIUM_HEADER]: 'server',
+          },
+        });
+      },
+    });
+
+    const listed = await history.list();
+    expect(listed.status).toBe('ok');
+    if (listed.status !== 'ok') throw new Error('Expected paginated server history.');
+    expect(listed.candidates).toHaveLength(VAULT_HISTORY_PAGE_MAX + 1);
+    expect(listed.candidates.find((candidate) => candidate.version === 2)).toMatchObject({
+      id: 'server-history-2',
+      version: 2,
+      status: 'available',
+    });
+    expect(listUrls).toEqual([
+      `https://api.bt.test/api/v1/vault/history?limit=${VAULT_HISTORY_PAGE_MAX}`,
+      `https://api.bt.test/api/v1/vault/history?limit=${VAULT_HISTORY_PAGE_MAX}&cursor=${
+        versions[VAULT_HISTORY_PAGE_MAX - 1]
+      }`,
+    ]);
   });
 
   it('leaves activation unchanged on cancel, wrong key, invalid status and lost CAS', async () => {

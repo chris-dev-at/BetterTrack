@@ -18,6 +18,12 @@ import type { QuarantinedVaultCandidate, VaultQuarantineStore } from './quaranti
 
 const VAULT_HISTORY_PATH = '/vault/history';
 const SERVER_HISTORY_SOURCE = 'server-history';
+// Match the API's hard retention ceiling while also bounding malformed cursor
+// chains that never terminate or return fewer items than a real page.
+const SERVER_HISTORY_CANDIDATE_MAX = 1_000;
+const SERVER_HISTORY_PAGE_COUNT_MAX = Math.ceil(
+  SERVER_HISTORY_CANDIDATE_MAX / VAULT_HISTORY_PAGE_MAX,
+);
 
 export type RestoreCandidateStatus = 'available' | 'corrupt' | 'unreadable' | 'unsupported';
 
@@ -272,36 +278,58 @@ export function createServerHistoryRestoreCandidateSource(
     id: SERVER_HISTORY_SOURCE,
     medium: 'server',
     async list() {
-      let response: Response;
-      try {
-        const separator = url.includes('?') ? '&' : '?';
-        response = await request(`${url}${separator}limit=${VAULT_HISTORY_PAGE_MAX}`, {
-          credentials: 'include',
-        });
-      } catch (cause) {
-        return historyTransportFailure('GET vault history failed.', cause);
-      }
+      const metadata: VaultHistoryMetadata[] = [];
+      const seenVersions = new Set<number>();
+      const seenCursors = new Set<number>();
+      let cursor: number | null = null;
 
-      if (response.status === 404) {
-        return { status: 'absent', source: SERVER_HISTORY_SOURCE, medium: 'server' };
-      }
-      if (!response.ok) {
-        return historyTransportFailure('GET vault history failed.', undefined, response.status);
-      }
+      for (
+        let pageCount = 0;
+        pageCount < SERVER_HISTORY_PAGE_COUNT_MAX && metadata.length < SERVER_HISTORY_CANDIDATE_MAX;
+        pageCount += 1
+      ) {
+        const limit = Math.min(
+          VAULT_HISTORY_PAGE_MAX,
+          SERVER_HISTORY_CANDIDATE_MAX - metadata.length,
+        );
+        let response: Response;
+        try {
+          response = await request(serverHistoryPageUrl(url, limit, cursor), {
+            credentials: 'include',
+          });
+        } catch (cause) {
+          return historyTransportFailure('GET vault history failed.', cause);
+        }
 
-      let metadata: VaultHistoryMetadata[];
-      try {
-        metadata = vaultHistoryListResponseSchema.parse(await response.json()).items;
-      } catch (cause) {
-        return {
-          status: 'corrupt',
-          source: SERVER_HISTORY_SOURCE,
-          medium: 'server',
-          reason:
-            cause instanceof Error
-              ? `Vault history metadata is invalid: ${cause.message}`
-              : 'Vault history metadata is invalid.',
-        };
+        if (response.status === 404) {
+          return { status: 'absent', source: SERVER_HISTORY_SOURCE, medium: 'server' };
+        }
+        if (!response.ok) {
+          return historyTransportFailure('GET vault history failed.', undefined, response.status);
+        }
+
+        let page: ReturnType<typeof vaultHistoryListResponseSchema.parse>;
+        try {
+          page = vaultHistoryListResponseSchema.parse(await response.json());
+        } catch (cause) {
+          return historyMetadataCorrupt(cause);
+        }
+
+        for (const item of page.items) {
+          if (metadata.length >= SERVER_HISTORY_CANDIDATE_MAX) break;
+          if (seenVersions.has(item.version)) {
+            return historyMetadataCorrupt(new Error(`duplicate version ${item.version}`));
+          }
+          seenVersions.add(item.version);
+          metadata.push(item);
+        }
+
+        if (page.nextCursor === null) break;
+        if (seenCursors.has(page.nextCursor)) {
+          return historyMetadataCorrupt(new Error(`repeated cursor ${page.nextCursor}`));
+        }
+        seenCursors.add(page.nextCursor);
+        cursor = page.nextCursor;
       }
 
       const candidates: RestoreCandidate[] = [];
@@ -343,6 +371,12 @@ export function createRestoreCandidateSources(
   ];
   if (history) sources.push(history);
   return sources;
+}
+
+function serverHistoryPageUrl(baseUrl: string, limit: number, cursor: number | null): string {
+  const separator = baseUrl.includes('?') ? '&' : '?';
+  const cursorQuery = cursor === null ? '' : `&cursor=${cursor}`;
+  return `${baseUrl}${separator}limit=${limit}${cursorQuery}`;
 }
 
 async function readServerHistoryCandidate(
@@ -448,6 +482,20 @@ async function readServerHistoryCandidate(
       },
     };
   }
+}
+
+function historyMetadataCorrupt(
+  cause: unknown,
+): Extract<RestoreCandidateSourceResult, { status: 'corrupt' }> {
+  return {
+    status: 'corrupt',
+    source: SERVER_HISTORY_SOURCE,
+    medium: 'server',
+    reason:
+      cause instanceof Error
+        ? `Vault history metadata is invalid: ${cause.message}`
+        : 'Vault history metadata is invalid.',
+  };
 }
 
 function historyTransportFailure(
