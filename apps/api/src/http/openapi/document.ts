@@ -40,6 +40,7 @@ const componentSchemas = {
   OkResponse: contracts.okResponseSchema,
   HealthResponse: contracts.healthResponseSchema,
   VersionResponse: contracts.versionResponseSchema,
+  VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
 
   // Auth (§6.1)
   LoginRequest: contracts.loginRequestSchema,
@@ -498,9 +499,9 @@ interface EndpointDef {
   /** Success response schema; omit for empty (204) responses. */
   response?: z.ZodTypeAny;
   /**
-   * Success response media type; defaults to JSON. The paranoid vault (§13.5
-   * V5-P13) is the one `application/octet-stream` read — its opaque ciphertext
-   * body is described with a binary schema.
+   * Success response media type; defaults to JSON. Paranoid-vault ciphertext
+   * reads use `application/octet-stream` and describe their opaque bodies with a
+   * binary schema.
    */
   responseContentType?: string;
   /**
@@ -3780,6 +3781,31 @@ const endpoints: EndpointDef[] = [
   },
 
   // Paranoid vault (§13.5 V5-P13 arc b) — the BLIND server blob store.
+  {
+    method: 'get',
+    path: '/vault/history',
+    tag: 'Vault',
+    summary:
+      'List one bounded, newest-first page of retained server ciphertext metadata. The hard page cap is enforced server-side; no cleartext-derived fields are returned.',
+    query: contracts.vaultHistoryListQuerySchema,
+    status: 200,
+    response: R.VaultHistoryListResponse,
+  },
+  {
+    method: 'get',
+    path: '/vault/history/{version}',
+    tag: 'Vault',
+    summary:
+      'Read one owner-scoped retained vault version as byte-identical opaque ciphertext. Version, archive time, byte size and server medium are the only vault metadata exposed.',
+    params: contracts.vaultHistoryVersionParamSchema,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque historical vault envelope bytes (never interpreted server-side).',
+    }),
+    responseContentType: 'application/octet-stream',
+  },
   {
     method: 'get',
     path: '/vault',

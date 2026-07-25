@@ -1,8 +1,19 @@
-import { encodeVaultEnvelope, VAULT_CONTENT_CIPHER } from '@bettertrack/contracts';
+import { eq } from 'drizzle-orm';
+
+import {
+  encodeVaultEnvelope,
+  VAULT_CONTENT_CIPHER,
+  VAULT_HISTORY_CREATED_AT_HEADER,
+  VAULT_HISTORY_MEDIUM_HEADER,
+  VAULT_HISTORY_PAGE_MAX,
+  VAULT_HISTORY_SIZE_BYTES_HEADER,
+  VAULT_VERSION_MAX,
+} from '@bettertrack/contracts';
 import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { users } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -53,8 +64,15 @@ function envelope(vaultVersion: number, ciphertext: Uint8Array): Buffer {
   return Buffer.from(encodeVaultEnvelope(header, ciphertext));
 }
 
-async function seedAndLogin(email: string, username: string): Promise<Agent> {
+async function seedAndLogin(
+  email: string,
+  username: string,
+  privacyMode: 'normal' | 'paranoid' = 'normal',
+): Promise<Agent> {
   const user = await harness.seedUser({ email, username, password: 'user-strong-password-1' });
+  if (privacyMode === 'paranoid') {
+    await harness.db.update(users).set({ privacyMode: 'paranoid' }).where(eq(users.id, user.id));
+  }
   return loginAgent(harness.app, user.email, 'user-strong-password-1');
 }
 
@@ -168,6 +186,143 @@ describe('vault blob store', () => {
     const bob = await seedAndLogin('bob@bt.test', 'bob');
     const res = await bob.get('/api/v1/vault');
     expect(res.status).toBe(404);
+  });
+
+  it('lists safe metadata and reads one historical blob byte-identically', async () => {
+    const agent = await seedAndLogin('alice@bt.test', 'alice', 'paranoid');
+    const v1 = envelope(1, new Uint8Array([7, 8, 9]));
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(v1);
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(envelope(2, new Uint8Array([10])));
+
+    const list = await agent.get('/api/v1/vault/history');
+    expect(list.status).toBe(200);
+    expect(list.body).toEqual({
+      items: [
+        {
+          version: 1,
+          createdAt: expect.any(String),
+          sizeBytes: v1.length,
+          medium: 'server',
+        },
+      ],
+      nextCursor: null,
+    });
+    expect(Object.keys(list.body.items[0]).sort()).toEqual([
+      'createdAt',
+      'medium',
+      'sizeBytes',
+      'version',
+    ]);
+    const serialized = JSON.stringify(list.body);
+    for (const forbiddenField of [
+      'blob',
+      'ciphertext',
+      'documentHash',
+      'entityNames',
+      'decryptedRowCount',
+      'formatVersion',
+    ]) {
+      expect(serialized).not.toContain(forbiddenField);
+    }
+
+    const read = await agent.get('/api/v1/vault/history/1').responseType('blob');
+    expect(read.status).toBe(200);
+    expect(read.headers.etag).toBe('"1"');
+    expect(read.headers['content-type']).toContain('application/octet-stream');
+    expect(read.headers[VAULT_HISTORY_CREATED_AT_HEADER.toLowerCase()]).toBe(
+      list.body.items[0].createdAt,
+    );
+    expect(read.headers[VAULT_HISTORY_SIZE_BYTES_HEADER.toLowerCase()]).toBe(String(v1.length));
+    expect(read.headers[VAULT_HISTORY_MEDIUM_HEADER.toLowerCase()]).toBe('server');
+    expect((read.body as Buffer).equals(v1)).toBe(true);
+  });
+
+  it('enforces authentication, paranoid account mode and owner scope on history', async () => {
+    expect((await request(harness.app).get('/api/v1/vault/history')).status).toBe(401);
+
+    const normal = await seedAndLogin('normal@bt.test', 'normal');
+    const normalResult = await normal.get('/api/v1/vault/history');
+    expect(normalResult.status).toBe(403);
+    expect(normalResult.body.error.code).toBe('VAULT_PARANOID_MODE_REQUIRED');
+
+    const alice = await seedAndLogin('alice@bt.test', 'alice', 'paranoid');
+    await alice
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(envelope(1, new Uint8Array([1])));
+    await alice
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(envelope(2, new Uint8Array([2])));
+
+    const bob = await seedAndLogin('bob@bt.test', 'bob', 'paranoid');
+    const bobList = await bob.get('/api/v1/vault/history');
+    expect(bobList.status).toBe(200);
+    expect(bobList.body).toEqual({ items: [], nextCursor: null });
+    expect((await bob.get('/api/v1/vault/history/1')).status).toBe(404);
+    expect((await alice.get('/api/v1/vault/history')).body.items).toHaveLength(1);
+  });
+
+  it('caps oversized history pages server-side and keyset-paginates the remainder', async () => {
+    harness = await createTestApp({ env: { BT_VAULT_HISTORY_MAX_VERSIONS: '20' } });
+    const agent = await seedAndLogin('pages@bt.test', 'pages', 'paranoid');
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(envelope(1, new Uint8Array([1])));
+    for (let version = 2; version <= 14; version += 1) {
+      const response = await agent
+        .put('/api/v1/vault')
+        .set(...XRW)
+        .set(...OCTET)
+        .set('If-Match', `"${version - 1}"`)
+        .send(envelope(version, new Uint8Array([version])));
+      expect(response.status).toBe(204);
+    }
+
+    const first = await agent.get('/api/v1/vault/history?limit=1000');
+    expect(first.status).toBe(200);
+    expect(first.body.items).toHaveLength(VAULT_HISTORY_PAGE_MAX);
+    expect(first.body.items.map((item: { version: number }) => item.version)).toEqual([
+      13, 12, 11, 10, 9, 8, 7, 6, 5, 4,
+    ]);
+    expect(first.body.nextCursor).toBe(4);
+
+    const second = await agent.get(
+      `/api/v1/vault/history?limit=1000&cursor=${first.body.nextCursor}`,
+    );
+    expect(second.status).toBe(200);
+    expect(second.body.items.map((item: { version: number }) => item.version)).toEqual([3, 2, 1]);
+    expect(second.body.nextCursor).toBeNull();
+  });
+
+  it('rejects history cursor and version overflow before querying PostgreSQL', async () => {
+    const agent = await seedAndLogin('bounds@bt.test', 'bounds', 'paranoid');
+    const overflow = VAULT_VERSION_MAX + 1;
+
+    const list = await agent.get(`/api/v1/vault/history?cursor=${overflow}`);
+    expect(list.status).toBe(400);
+    expect(list.body.error.code).toBe('VALIDATION_ERROR');
+
+    const read = await agent.get(`/api/v1/vault/history/${overflow}`);
+    expect(read.status).toBe(400);
+    expect(read.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('rejects an oversized payload before persistence', async () => {

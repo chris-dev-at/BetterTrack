@@ -1,6 +1,8 @@
 import {
   readVaultServerHeader,
   VaultEnvelopeError,
+  type VaultHistoryListQuery,
+  type VaultHistoryListResponse,
   type VaultMetadata,
 } from '@bettertrack/contracts';
 
@@ -8,7 +10,7 @@ import type {
   ParanoidVaultRepository,
   ParanoidVaultRetention,
 } from '../../data/repositories/paranoidVaultRepository';
-import type { ParanoidVaultRow } from '../../data/schema';
+import type { ParanoidVaultHistoryRow, ParanoidVaultRow } from '../../data/schema';
 
 /**
  * Paranoid-vault service (§13.5 V5-P13 arc b, `docs/paranoid-design.md` §2, §4).
@@ -51,6 +53,10 @@ export interface ParanoidVaultService {
   get(userId: string): Promise<ParanoidVaultRow | null>;
   /** Blob metadata only (version/size/format/updatedAt) — never any content. */
   getMetadata(userId: string): Promise<VaultMetadata | null>;
+  /** Bounded newest-first metadata page; never selects ciphertext bytes. */
+  listHistory(userId: string, input: VaultHistoryListQuery): Promise<VaultHistoryListResponse>;
+  /** One owner-scoped retained opaque blob, or `null` when absent. */
+  getHistory(userId: string, version: number): Promise<ParanoidVaultHistoryRow | null>;
   /** Compare-and-swap write. Never overwrites newer ciphertext. */
   put(input: ParanoidVaultPutInput): Promise<ParanoidVaultPutResult>;
 }
@@ -75,6 +81,23 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
     async getMetadata(userId) {
       const row = await deps.vaults.getCurrent(userId);
       return row ? metadataOf(row) : null;
+    },
+
+    async listHistory(userId, input) {
+      const page = await deps.vaults.listHistory(userId, input);
+      return {
+        items: page.items.map((row) => ({
+          version: row.version,
+          createdAt: row.createdAt.toISOString(),
+          sizeBytes: row.sizeBytes,
+          medium: 'server' as const,
+        })),
+        nextCursor: page.nextCursor,
+      };
+    },
+
+    async getHistory(userId, version) {
+      return deps.vaults.getHistory(userId, version);
     },
 
     async put({ userId, expectedVersion, blob }) {
