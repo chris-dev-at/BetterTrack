@@ -1,0 +1,2254 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BetterTrack Multi-Factory — Control</title>
+    <style>
+      :root {
+        --bg: #131312;
+        --surface: #1a1a19;
+        --surface2: #222220;
+        --border: #32322f;
+        --ink: #f2f1ec;
+        --ink2: #b8b6ad;
+        --muted: #7d7b72;
+        --good: #0ca30c;
+        --warn: #fab219;
+        --serious: #ec835a;
+        --crit: #d03b3b;
+        --accent: #7aa2f7;
+        --master: #82d99a;
+        --w1: #5ab0f2;
+        --w2: #c792ea;
+        --w3: #e5c07b;
+        --w4: #56b6c2;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          14px/1.45 -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          Roboto,
+          sans-serif;
+        padding: 16px 20px 40px;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        flex-wrap: wrap;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 2px 10px;
+        font-size: 12px;
+        color: var(--ink2);
+        background: var(--surface);
+      }
+      .pill b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--muted);
+        display: inline-block;
+      }
+      .dot.live {
+        background: var(--good);
+      }
+      .dot.stale {
+        background: var(--warn);
+      }
+      .tabs {
+        display: inline-flex;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        overflow: hidden;
+      }
+      .tabs button {
+        background: var(--surface);
+        border: 0;
+        color: var(--ink2);
+        padding: 6px 14px;
+        font-size: 12.5px;
+        cursor: pointer;
+        border-radius: 0;
+      }
+      .tabs button.on {
+        background: var(--surface2);
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .bar {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin: 8px 0 12px;
+      }
+      button {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        color: var(--ink);
+        border-radius: 8px;
+        padding: 6px 12px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        border-color: var(--muted);
+      }
+      button:disabled {
+        opacity: 0.38;
+        cursor: not-allowed;
+      }
+      button.armed {
+        border-color: var(--crit);
+        color: var(--crit);
+      }
+      button.primary {
+        border-color: var(--good);
+      }
+      .sep {
+        width: 1px;
+        height: 22px;
+        background: var(--border);
+        margin: 0 3px;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px 14px;
+        min-width: 0;
+      }
+      .card h2 {
+        font-size: 11.5px;
+        margin: 0 0 9px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .chip {
+        font-size: 10.5px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 0 5px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .tag {
+        font-weight: 600;
+        font-size: 10.5px;
+        border-radius: 4px;
+        padding: 0 5px;
+        white-space: nowrap;
+      }
+      .tag.master {
+        color: var(--master);
+        border: 1px solid var(--master);
+      }
+      .tag.w1 {
+        color: var(--w1);
+        border: 1px solid var(--w1);
+      }
+      .tag.w2 {
+        color: var(--w2);
+        border: 1px solid var(--w2);
+      }
+      .tag.w3 {
+        color: var(--w3);
+        border: 1px solid var(--w3);
+      }
+      .tag.w4 {
+        color: var(--w4);
+        border: 1px solid var(--w4);
+      }
+      .ck {
+        font-size: 12px;
+      }
+      .ck.passing {
+        color: var(--good);
+      }
+      .ck.pending {
+        color: var(--warn);
+      }
+      .ck.failing {
+        color: var(--crit);
+      }
+      .warnbox {
+        border: 1px solid var(--warn);
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-size: 13px;
+        color: var(--ink2);
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      #toast {
+        position: fixed;
+        bottom: 18px;
+        right: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 9;
+      }
+      .toastmsg {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--good);
+        border-radius: 8px;
+        padding: 9px 14px;
+        font-size: 13px;
+        max-width: 420px;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+      }
+      .toastmsg.err {
+        border-left-color: var(--crit);
+      }
+      .hint {
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+
+      /* ---- overview: compact strip ---- */
+      .strip {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+      .tile {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 9px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+      }
+      .tile .l {
+        font-size: 10.5px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .tile .v {
+        font-size: 17px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+      }
+      .tile .s {
+        font-size: 11.5px;
+        color: var(--ink2);
+      }
+      .meter {
+        height: 5px;
+        background: var(--surface2);
+        border-radius: 3px;
+        overflow: hidden;
+        margin-top: 3px;
+      }
+      .meter i {
+        display: block;
+        height: 100%;
+        background: var(--accent);
+        border-radius: 3px;
+        transition: width 0.6s;
+      }
+      .meter i.warn {
+        background: var(--warn);
+      }
+      .meter i.crit {
+        background: var(--crit);
+      }
+      .grid2 {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      /* ---- unified issue list ---- */
+      .ilist {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .irow {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 7px 11px;
+        min-width: 0;
+      }
+      .irow.dim {
+        opacity: 0.62;
+      }
+      .irow .num {
+        font-weight: 650;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+      .irow .title {
+        color: var(--ink2);
+        font-size: 13px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+        min-width: 60px;
+      }
+      .irow .chips {
+        display: flex;
+        gap: 5px;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .st {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        border-radius: 5px;
+        padding: 1px 7px;
+        border: 1px solid var(--border);
+        color: var(--ink2);
+        white-space: nowrap;
+      }
+      .st::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--muted);
+        flex: none;
+      }
+      .st.active::before {
+        background: var(--accent);
+      }
+      .st.q::before {
+        background: var(--warn);
+      }
+      .st.merge::before {
+        background: var(--good);
+      }
+      .st.block::before {
+        background: var(--serious);
+      }
+      .st.hold::before {
+        background: var(--muted);
+      }
+
+      /* ---- recently completed ---- */
+      .done-item {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        font-size: 13px;
+        padding: 3px 0;
+        min-width: 0;
+      }
+      .done-item .t {
+        color: var(--ink2);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
+      .done-item .m {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      /* ---- triggers / workers ---- */
+      .trow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12.5px;
+        color: var(--ink2);
+        padding: 4px 0;
+        border-bottom: 1px dashed var(--border);
+      }
+      .trow:last-child {
+        border-bottom: 0;
+      }
+      .trow .x {
+        margin-left: auto;
+        background: none;
+        border: none;
+        color: var(--muted);
+        font-size: 14px;
+        padding: 0 4px;
+        cursor: pointer;
+      }
+      .trow .x:hover {
+        color: var(--crit);
+      }
+      .trow.fired {
+        opacity: 0.55;
+      }
+      .addrow {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-top: 8px;
+      }
+      select,
+      input[type='number'] {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        color: var(--ink);
+        border-radius: 7px;
+        padding: 5px 7px;
+        font-size: 12.5px;
+      }
+      input[type='number'] {
+        width: 64px;
+      }
+      label.cb {
+        font-size: 11.5px;
+        color: var(--ink2);
+        display: inline-flex;
+        gap: 4px;
+        align-items: center;
+      }
+      .stepper {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 20px;
+        font-weight: 650;
+      }
+      .stepper button {
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        border-radius: 8px;
+        font-size: 16px;
+      }
+      /* models tab */
+      .mrow {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .mrow:last-of-type {
+        border-bottom: none;
+      }
+      .dchip {
+        width: 106px;
+        text-align: center;
+        font-size: 11.5px;
+        font-weight: 650;
+        border-radius: 6px;
+        padding: 3px 0;
+        color: #fff;
+        flex: none;
+      }
+      .mrow input[type='text'] {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        color: var(--ink);
+        border-radius: 7px;
+        padding: 5px 7px;
+        font-size: 12.5px;
+        width: 250px;
+      }
+
+      /* ---- flow view ---- */
+      #flowwrap {
+        position: relative;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 26px 18px;
+        min-height: 430px;
+      }
+      #flowwrap.off::after {
+        content: 'factory stopped — start it to see the pipeline live';
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--muted);
+        font-size: 14px;
+        background: rgba(19, 19, 18, 0.55);
+        border-radius: 12px;
+      }
+      #flowsvg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      #flowsvg path {
+        fill: none;
+        stroke: var(--border);
+        stroke-width: 1.6;
+      }
+      #flowsvg path.on {
+        stroke: var(--accent);
+        stroke-width: 2;
+        stroke-dasharray: 7 6;
+        animation: dashrun 0.5s linear infinite;
+      }
+      #flowsvg path.pulse {
+        stroke: var(--good);
+        stroke-width: 2;
+        stroke-dasharray: 7 6;
+        animation: dashrun 0.35s linear infinite;
+      }
+      @keyframes dashrun {
+        to {
+          stroke-dashoffset: -13;
+        }
+      }
+      #flowcols {
+        position: relative;
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        z-index: 1;
+      }
+      .fcol {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        justify-content: center;
+        min-width: 0;
+      }
+      .fnode {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        padding: 9px 12px;
+        font-size: 12px;
+        color: var(--ink2);
+        min-width: 104px;
+        text-align: center;
+      }
+      .fnode b {
+        display: block;
+        color: var(--ink);
+        font-size: 12.5px;
+        margin-bottom: 2px;
+      }
+      .fnode .sub {
+        font-size: 10.5px;
+        color: var(--muted);
+      }
+      .fnode.pulse {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 0 rgba(122, 162, 247, 0.5);
+        animation: npulse 1.6s ease-out infinite;
+      }
+      .fnode.gpulse {
+        border-color: var(--good);
+        animation: gpulse 1.2s ease-out 3;
+      }
+      @keyframes npulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(122, 162, 247, 0.45);
+        }
+        100% {
+          box-shadow: 0 0 0 12px rgba(122, 162, 247, 0);
+        }
+      }
+      @keyframes gpulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(12, 163, 12, 0.5);
+        }
+        100% {
+          box-shadow: 0 0 0 14px rgba(12, 163, 12, 0);
+        }
+      }
+      .fsteps {
+        display: flex;
+        gap: 4px;
+        justify-content: center;
+        margin-top: 5px;
+      }
+      .fsteps span {
+        font-size: 12px;
+        opacity: 0.28;
+        transition: opacity 0.3s;
+      }
+      .fsteps span.on {
+        opacity: 1;
+      }
+      .fq {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-height: 120px;
+        overflow: hidden;
+      }
+      .fq .qi {
+        font-size: 10.5px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 1px 6px;
+        color: var(--ink2);
+      }
+      .fnode.dim {
+        opacity: 0.5;
+      }
+
+      /* ---- detail view (v1 layout) ---- */
+      .kpis {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .kpi {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 14px;
+      }
+      .kpi .v {
+        font-size: 26px;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+      }
+      .kpi .l {
+        font-size: 11.5px;
+        color: var(--muted);
+        margin-top: 2px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 3px 0;
+        font-size: 13px;
+      }
+      .row .k {
+        color: var(--muted);
+      }
+      .row .val {
+        color: var(--ink2);
+        text-align: right;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: 260px;
+        overflow-y: auto;
+      }
+      .item {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        font-size: 13px;
+        min-width: 0;
+      }
+      .item .t {
+        color: var(--ink2);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
+      .item .m {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 12px;
+        border-radius: 6px;
+        padding: 2px 8px;
+        border: 1px solid var(--border);
+        color: var(--ink2);
+      }
+      .badge::before {
+        content: '';
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--muted);
+      }
+      .badge.idle::before {
+        background: var(--muted);
+      }
+      .badge.working::before {
+        background: var(--accent);
+      }
+      .badge.done::before {
+        background: var(--good);
+      }
+      .badge.warn::before {
+        background: var(--warn);
+      }
+      .badge.failed::before {
+        background: var(--crit);
+      }
+      .log {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 11px 13px;
+        overflow-y: auto;
+        font:
+          11.5px/1.6 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        color: var(--ink2);
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      #log-d {
+        height: 300px;
+      }
+      #log-o {
+        height: 190px;
+      }
+      section.tab {
+        display: none;
+      }
+      section.tab.on {
+        display: block;
+      }
+      .sw {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 2px;
+        vertical-align: -1px;
+        margin-right: 3px;
+      }
+      .hb {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 3px 0;
+        font-size: 12.5px;
+      }
+      .hb .n {
+        width: 110px;
+        color: var(--ink2);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-align: right;
+        flex: none;
+      }
+      .hb .track {
+        flex: 1;
+        height: 10px;
+        background: var(--surface2);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      .hb .track i {
+        display: block;
+        height: 100%;
+        background: var(--accent);
+        border-radius: 3px 2px 2px 3px;
+      }
+      .hb .v {
+        width: 64px;
+        color: var(--ink2);
+        font-size: 12px;
+        flex: none;
+      }
+      .hb.codex-hb .v {
+        width: 128px;
+      }
+      .hb.codex-hb .n {
+        width: 132px;
+      }
+      .estimate-note {
+        border-left: 3px solid var(--accent);
+        padding-left: 10px;
+        line-height: 1.55;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>
+        🏭 Multi-Factory
+        <span class="pill">mode <b id="mode">–</b></span>
+        <span class="pill">phase <b id="phase">–</b></span>
+      </h1>
+      <div style="display: flex; gap: 10px; align-items: center">
+        <nav class="tabs" id="tabs">
+          <button data-tab="overview" class="on">Overview</button>
+          <button data-tab="flow">Flow</button>
+          <button data-tab="models">Models</button>
+          <button data-tab="usage">Usage</button>
+          <button data-tab="detail">DetailView</button>
+        </nav>
+        <span class="pill"
+          ><span class="dot" id="livedot"></span><span id="livetxt">connecting…</span></span
+        >
+      </div>
+    </header>
+
+    <div id="sfwarn" class="warnbox" style="display: none">
+      ⚠️ <b>Single factory is running/paused</b> — the multi-factory refuses to start until it
+      stops. <button onclick="act('single-stop', this)">Stop single factory</button>
+    </div>
+
+    <div class="bar">
+      <button
+        id="b-start"
+        class="primary"
+        title="Build + start master and workers"
+        onclick="act('start', this)"
+      >
+        ▶ Start
+      </button>
+      <button
+        id="b-dry"
+        title="Start with MF_DRY_RUN=1 — full protocol, no LLM calls"
+        onclick="act('start-dry', this)"
+      >
+        🧪 Dry-run
+      </button>
+      <div class="sep"></div>
+      <button
+        id="b-pause"
+        title="docker compose pause — freeze all containers"
+        onclick="act('pause', this)"
+      >
+        ⏸ Pause
+      </button>
+      <button id="b-unpause" title="docker compose unpause" onclick="act('unpause', this)">
+        ⏵ Resume
+      </button>
+      <div class="sep"></div>
+      <button
+        id="b-run"
+        title="Normal operation: composer keeps the queue full"
+        onclick="act('mode-run', this)"
+      >
+        🟢 Run
+      </button>
+      <button
+        id="b-runout"
+        title="No NEW composed issues; drains until every open autopilot issue is done, then shuts down"
+        onclick="act('mode-run-out', this, true)"
+      >
+        🌗 Run out
+      </button>
+      <button
+        id="b-close"
+        title="Takes no more issues; finishes only what's in flight, then shuts down"
+        onclick="act('mode-close-down', this, true)"
+      >
+        🌙 Close down
+      </button>
+      <div class="sep"></div>
+      <button
+        id="b-stop"
+        title="Hard stop (containers kept, resumable)"
+        onclick="act('stop', this, true)"
+      >
+        ⏹ Stop
+      </button>
+      <button
+        id="b-down"
+        title="Stop and remove containers (state + clones persist)"
+        onclick="act('down', this, true)"
+      >
+        🗑 Down
+      </button>
+    </div>
+
+    <!-- ================= OVERVIEW ================= -->
+    <section class="tab on" id="tab-overview">
+      <div class="strip" id="strip"></div>
+      <div class="grid2">
+        <div class="card">
+          <h2>Triggers <span class="hint">automation rules</span></h2>
+          <div id="triggers"></div>
+          <div class="addrow">
+            <select id="tg-type" onchange="tgTypeChanged()">
+              <option value="usage">5h usage ≥</option>
+              <option value="usage7">7d usage ≥</option>
+              <option value="timer">in … minutes</option>
+            </select>
+            <input type="number" id="tg-value" value="40" min="1" max="1440" />
+            <span id="tg-unit" class="hint">%</span>
+            <select id="tg-action">
+              <option value="mode-close-down">→ Close down</option>
+              <option value="mode-run-out">→ Run out</option>
+              <option value="stop">→ Hard stop</option>
+            </select>
+            <label class="cb" id="tg-resetwrap"
+              ><input type="checkbox" id="tg-reset" checked />start on new window</label
+            >
+            <label class="cb" id="tg-repeatwrap"
+              ><input type="checkbox" id="tg-repeat" checked />repeat</label
+            >
+            <button onclick="tgAdd(this)">＋ Add</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Workers <span class="hint" id="wk-running"></span></h2>
+          <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap">
+            <span class="stepper"
+              ><button onclick="wkStep(-1, this)">−</button><span id="wk-n">2</span
+              ><button onclick="wkStep(1, this)">＋</button></span
+            >
+            <button id="wk-apply" style="display: none" onclick="act('restart', this, true)">
+              ↻ Apply &amp; restart
+            </button>
+            <span class="hint" id="wk-note"></span>
+          </div>
+          <details style="margin-top: 8px">
+            <summary class="hint" style="cursor: pointer">how many workers make sense?</summary>
+            <div class="hint" style="margin-top: 6px; line-height: 1.5">
+              <b>2 is the sweet spot</b> — this repo usually has two truly independent lanes (api +
+              web). Parallelism only exists when issues claim non-overlapping paths; workers beyond
+              the number of open lanes just idle or serialize.<br />
+              <b>3</b> pays off occasionally (contracts / docs / admin lane open at the same time)
+              at the cost of more conflict-serialization and BEHIND re-gates at the single
+              merger.<br />
+              <b>4</b> is the hard cap — beyond that everything fights: one merge queue, one shared
+              5h token budget, overlapping touches, CI queueing. 10 would mostly be 8 idle
+              containers burning your window.
+            </div>
+          </details>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom: 10px">
+        <h2>Issues <span class="hint" id="icount"></span></h2>
+        <div class="ilist" id="ilist"></div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>
+            Recently completed
+            <button
+              id="rc-more"
+              style="font-size: 11px; padding: 2px 8px"
+              onclick="
+                rcExpanded = !rcExpanded;
+                render(S);
+              "
+            >
+              expand
+            </button>
+          </h2>
+          <div id="recent"></div>
+        </div>
+        <div class="card">
+          <h2>Events</h2>
+          <div class="log" id="log-o"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= FLOW ================= -->
+    <section class="tab" id="tab-flow">
+      <div id="flowwrap">
+        <svg id="flowsvg"></svg>
+        <div id="flowcols"></div>
+      </div>
+      <div class="hint" style="margin-top: 8px">
+        Live pipeline: composer plans → scheduler assigns lane-free issues → workers
+        write/review/fix in isolation → approved PRs queue → the single merger lands them on main.
+        Animated edges = data flowing right now.
+      </div>
+    </section>
+
+    <!-- ================= MODELS ================= -->
+    <section class="tab" id="tab-models">
+      <div class="card" style="margin-bottom: 10px">
+        <h2>
+          Providers
+          <span class="hint">subscription CLIs — auth synced from this Mac on every start</span>
+        </h2>
+        <div
+          id="provs"
+          style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center"
+        ></div>
+        <div class="hint" style="margin-top: 8px">
+          <b>Test</b> runs one tiny prompt through the host CLI — the exact credentials the
+          containers get. Claude auth = factory token (factory/.env / keychain) · Codex =
+          ~/.codex/auth.json (ChatGPT login) · Antigravity (agy) = ~/.gemini Google login. Auth
+          files are copied per-container into multi-factory/auth/ (gitignored) by autorun.sh —
+          nothing ever reaches GitHub.
+        </div>
+      </div>
+      <div class="card">
+        <h2>
+          Difficulty → model routing
+          <span class="hint">saves apply from the NEXT agent run — no restart needed</span>
+        </h2>
+        <div id="mrows"></div>
+        <div class="addrow" style="margin-top: 12px">
+          <span class="hint">composer</span>
+          <select id="m-composer" onchange="mMark()"></select>
+          <span class="hint">checker</span>
+          <select id="m-checker" onchange="mMark()"></select>
+          <span class="hint">review floor</span>
+          <select id="m-floor" onchange="mMark()"></select>
+        </div>
+        <div class="addrow" style="margin-top: 12px">
+          <button class="primary" onclick="mSave(this)">💾 Save routing</button>
+          <button
+            onclick="
+              mDirty = false;
+              mLast = '';
+              renderModels(S);
+            "
+          >
+            ↺ Discard edits
+          </button>
+          <span class="hint" id="mnote"></span>
+        </div>
+        <details style="margin-top: 10px">
+          <summary class="hint" style="cursor: pointer">how difficulty routing works</summary>
+          <div class="hint" style="margin-top: 6px; line-height: 1.55">
+            The composer labels every issue with exactly one of
+            <b>diff:easy · diff:normal · diff:intermediate · diff:hard · diff:max</b>. Writer, fixer
+            and ci-fix run on the model you map to the issue's difficulty; reviews run at the
+            issue's difficulty but never below the <b>review floor</b>; the composer and checker
+            master-roles use the difficulty slots above. A rejected issue escalates ONE difficulty
+            higher on its triage retry (max stays max). Legacy tier labels still resolve:
+            sonnet→easy, opus→intermediate, fable→max. Effort semantics: Claude = --effort (low…max)
+            · Codex = model-supported reasoning effort (low…max/ultra) · Antigravity bakes the level
+            into the model name, e.g. “Gemini 3.1 Pro (High)”.
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- ================= DETAIL (v1 view) ================= -->
+    <!-- ================= USAGE ================= -->
+    <section class="tab" id="tab-usage">
+      <div class="strip" id="ua-kpis"></div>
+      <div class="grid2">
+        <div class="card" style="grid-column: 1/-1">
+          <h2>
+            Spend per day — last 14 days
+            <span class="hint"
+              ><span class="sw" style="background: var(--accent)"></span> Claude&nbsp;&nbsp;<span
+                class="sw"
+                style="background: #8a8878"
+              ></span>
+              Codex&nbsp;&nbsp;<span class="sw" style="background: var(--w3)"></span> other</span
+            >
+          </h2>
+          <svg id="ua-days" viewBox="0 0 720 180" style="width: 100%; height: auto"></svg>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>Spend by model</h2>
+          <div id="ua-model"></div>
+        </div>
+        <div class="card">
+          <h2>Spend by role</h2>
+          <div id="ua-role"></div>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>Most expensive issues</h2>
+          <div id="ua-issues"></div>
+        </div>
+        <div class="card">
+          <h2>Tokens (all time)</h2>
+          <div class="strip" id="ua-tokens" style="margin: 0"></div>
+        </div>
+      </div>
+      <div class="hint" style="margin-top: 2px">
+        Source: factory/usage/ledger.jsonl — one record per agent run
+        (writer/reviewer/fixer/planner/composer/checker/ci-fix). Recorded spend above remains the
+        CLI-reported Claude cost plus API-equivalent OpenAI estimates. Refreshes every 60s while
+        this tab is open.
+      </div>
+      <div class="card" style="margin-top: 14px; margin-bottom: 10px">
+        <h2>
+          OpenAI API-equivalent usage
+          <span class="hint">API-equivalent estimate · not billed subscription spend</span>
+        </h2>
+        <div class="addrow" style="margin-bottom: 10px">
+          <span class="hint">time range</span>
+          <select id="ua-codex-range" onchange="uaCodexFiltersChanged()">
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="all">All time</option>
+          </select>
+          <span class="hint">model</span>
+          <select id="ua-codex-model" onchange="uaCodexFiltersChanged()">
+            <option value="all">All GPT models</option>
+          </select>
+          <span class="hint" id="ua-codex-range-note"></span>
+        </div>
+        <div class="strip" id="ua-codex-kpis" style="margin-bottom: 0"></div>
+      </div>
+      <div class="card" style="margin-bottom: 10px">
+        <h2>
+          OpenAI tokens + API-equivalent USD
+          <span class="hint"
+            ><span class="sw" style="background: var(--accent)"></span> estimate&nbsp;&nbsp;<span
+              class="sw"
+              style="height: 2px; background: var(--warn)"
+            ></span>
+            tokens</span
+          >
+        </h2>
+        <svg id="ua-codex-days" viewBox="0 0 720 200" style="width: 100%; height: auto"></svg>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>OpenAI estimate by model</h2>
+          <div id="ua-codex-models"></div>
+        </div>
+        <div class="card">
+          <h2>OpenAI estimate by role</h2>
+          <div id="ua-codex-roles"></div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom: 10px">
+        <h2>OpenAI usage by issue</h2>
+        <div id="ua-codex-issues"></div>
+      </div>
+      <div class="hint estimate-note">
+        <b>Estimate only — ClaudeX and native Codex still use the existing ChatGPT subscription.</b>
+        No API key is used and this is not an invoice or actual billed spend. Standard/base OpenAI
+        API rates per 1M tokens (effective 2026-07-24): Sol $5.00 input / $0.50 cached input /
+        $30.00 output; Terra $2.50 / $0.25 / $15.00; Luna $1.00 / $0.10 / $6.00. Separately recorded
+        cache-write input is estimated at 1.25× each model’s uncached-input rate. Unknown models or
+        incomplete historical telemetry are shown as unavailable/partial, never as $0. Legacy
+        native-Codex rows without the new inclusive-output marker are also unpriced because their
+        stored output may double-count reasoning tokens. The &gt;272K long-context multiplier is not
+        applied because aggregate CLI telemetry does not reliably identify qualifying requests.
+        <a target="_blank" href="https://openai.com/api/pricing/">Pricing source</a>.
+      </div>
+    </section>
+
+    <section class="tab" id="tab-detail">
+      <div class="kpis" id="kpis"></div>
+      <div class="grid" id="workergrid"></div>
+      <div class="grid">
+        <div class="card">
+          <h2>Merge queue <span id="qcount" class="chip">0</span></h2>
+          <div class="list" id="queue"></div>
+        </div>
+        <div class="card">
+          <h2>Open PRs</h2>
+          <div class="list" id="prs"></div>
+        </div>
+        <div class="card">
+          <h2>Autopilot issues</h2>
+          <div class="list" id="issues"></div>
+        </div>
+        <div class="card">
+          <h2>Recently merged</h2>
+          <div class="list" id="merged"></div>
+        </div>
+        <div class="card">
+          <h2>Needs human <span id="nhcount" class="chip">0</span></h2>
+          <div class="list" id="needshuman"></div>
+        </div>
+        <div class="card">
+          <h2>Cost (multi-factory) by issue</h2>
+          <div class="list" id="costs"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>
+          Factory events
+          <label style="text-transform: none; letter-spacing: 0"
+            ><input type="checkbox" id="autoscroll" checked /> autoscroll</label
+          >
+        </h2>
+        <div class="log" id="log-d"></div>
+      </div>
+    </section>
+
+    <div id="toast"></div>
+
+    <script>
+      'use strict';
+      const $ = (id) => document.getElementById(id);
+      const esc = (s) =>
+        String(s ?? '').replace(
+          /[&<>"]/g,
+          (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c],
+        );
+      const REPO = 'https://github.com/chris-dev-at/BetterTrack';
+      const ago = (s) =>
+        s == null
+          ? '–'
+          : s < 90
+            ? s + 's'
+            : s < 5400
+              ? Math.round(s / 60) + 'm'
+              : Math.round(s / 3600) + 'h';
+      const tago = (iso) => {
+        if (!iso) return '–';
+        const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
+        return ago(Math.round(s)) + ' ago';
+      };
+      const tuntil = (iso) => {
+        if (!iso) return '–';
+        let s = Math.max(0, (new Date(iso) - Date.now()) / 1000);
+        const h = Math.floor(s / 3600);
+        s -= h * 3600;
+        const m = Math.round(s / 60);
+        return (h ? h + 'h ' : '') + m + 'm';
+      };
+      let S = null,
+        rcExpanded = false,
+        activeTab = localStorage.getItem('mf-tab') || 'overview';
+
+      /* ---- tabs ---- */
+      $('tabs').addEventListener('click', (e) => {
+        const t = e.target.dataset?.tab;
+        if (t) setTab(t);
+      });
+      function setTab(t) {
+        activeTab = t;
+        localStorage.setItem('mf-tab', t);
+        document
+          .querySelectorAll('.tabs button')
+          .forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
+        document
+          .querySelectorAll('section.tab')
+          .forEach((s) => s.classList.toggle('on', s.id === 'tab-' + t));
+        if (S) render(S);
+        if (t === 'usage') fetchUsage(true);
+        if (t === 'models' && S) renderModels(S);
+      }
+
+      /* ---- actions ---- */
+      const armed = new Map();
+      async function act(action, btn, confirm = false, payload = {}) {
+        if (confirm && armed.get(action) !== true) {
+          armed.set(action, true);
+          const old = btn.textContent;
+          btn.classList.add('armed');
+          btn.textContent = 'Sure? ' + old;
+          setTimeout(() => {
+            armed.delete(action);
+            btn.classList.remove('armed');
+            btn.textContent = old;
+          }, 3500);
+          return;
+        }
+        armed.delete(action);
+        if (btn) btn.classList.remove('armed');
+        try {
+          const r = await fetch('/api/action', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action, ...payload }),
+          });
+          const j = await r.json();
+          toast(j.message || action, j.ok);
+          return j;
+        } catch (e) {
+          toast(String(e), false);
+          return { ok: false };
+        }
+      }
+      function toast(msg, ok) {
+        const d = document.createElement('div');
+        d.className = 'toastmsg' + (ok ? '' : ' err');
+        d.textContent = (ok ? '✓ ' : '✗ ') + msg;
+        $('toast').appendChild(d);
+        setTimeout(() => d.remove(), 6000);
+      }
+
+      /* ---- triggers UI ---- */
+      function tgTypeChanged() {
+        const t = $('tg-type').value;
+        $('tg-unit').textContent = t === 'timer' ? 'min' : '%';
+        $('tg-value').value = t === 'timer' ? 50 : t === 'usage7' ? 80 : 40;
+        const usage = t !== 'timer';
+        $('tg-resetwrap').style.display = usage ? '' : 'none';
+        $('tg-repeatwrap').style.display = usage ? '' : 'none';
+      }
+      function tgAdd(btn) {
+        const t = $('tg-type').value,
+          v = Number($('tg-value').value),
+          action = $('tg-action').value;
+        const trigger =
+          t === 'timer'
+            ? { type: 'timer', minutes: v, action }
+            : {
+                type: 'usage',
+                metric: t === 'usage7' ? 'seven_day' : 'five_hour',
+                threshold: v,
+                action,
+                onReset: $('tg-reset').checked ? 'start' : 'none',
+                repeat: $('tg-repeat').checked,
+              };
+        act('trigger-add', btn, false, { trigger });
+      }
+      const ACTION_LABEL = {
+        'mode-close-down': 'Close down',
+        'mode-run-out': 'Run out',
+        stop: 'Hard stop',
+      };
+      function renderTriggers(list) {
+        $('triggers').innerHTML =
+          (list || [])
+            .map((t) => {
+              const what =
+                t.type === 'timer'
+                  ? `⏱ at ${new Date(t.fireAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${t.armed ? ' (in ' + tuntil(t.fireAt) + ')' : ''}`
+                  : `📊 ${t.metric === 'seven_day' ? '7d' : '5h'} ≥ ${t.threshold}%`;
+              const extra =
+                t.type === 'usage' && t.onReset === 'start'
+                  ? ` · then start on new window${t.repeat ? ' · repeat' : ''}`
+                  : '';
+              const state = t.armed
+                ? ''
+                : t.waitingReset
+                  ? ' — fired, waiting for new window…'
+                  : ` — fired ${tago(t.firedAt)}${t.note ? ' (' + esc(t.note) + ')' : ''}`;
+              return `<div class="trow${t.armed || t.waitingReset ? '' : ' fired'}"><span>${what} → <b>${ACTION_LABEL[t.action] || esc(t.action)}</b>${extra}${state}</span><button class="x" title="remove" onclick="act('trigger-remove',this,false,{id:'${esc(t.id)}'})">✕</button></div>`;
+            })
+            .join('') ||
+          '<div class="hint">no triggers — add one below (e.g. 5h ≥ 40% → Close down, start on new window)</div>';
+      }
+
+      /* ---- workers UI ---- */
+      let wkDesired = null;
+      function wkStep(d, btn) {
+        const cur = wkDesired ?? S?.workers?.desired ?? 2;
+        const n = Math.min(4, Math.max(1, cur + d));
+        if (n === cur) return;
+        wkDesired = n;
+        $('wk-n').textContent = n;
+        act('set-workers', btn, false, { value: n });
+      }
+
+      /* ---- models (difficulty → provider/model/effort) UI ---- */
+      const DIFF_LIST = ['easy', 'normal', 'intermediate', 'hard', 'max'];
+      const DIFF_COLOR = {
+        easy: '#1d76db',
+        normal: '#7ce38b',
+        intermediate: '#0e8a16',
+        hard: '#8250df',
+        max: '#b60205',
+      };
+      const DIFF_TEXT = { normal: '#0b2e12' }; // dark text on the light-green chip
+      const PROV_LABEL = {
+        claude: 'Claude Code',
+        claudex: 'ClaudeX (Claude Code + Codex OAuth)',
+        codex: 'Codex (OpenAI)',
+        gemini: 'Antigravity (Google)',
+      };
+      const PROV_EFFORTS = {
+        claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+        claudex: ['low', 'medium', 'high', 'xhigh', 'max'],
+        codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+        gemini: [],
+      };
+      const CODEX_MODEL_EFFORTS = {
+        'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+        'gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+        'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
+      };
+      const PROV_MODELS = {
+        claude: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5'],
+        claudex: [
+          'gpt-5.6-sol',
+          'gpt-5.6-terra',
+          'gpt-5.6-luna',
+          'gpt-5.5',
+          'gpt-5.4',
+          'gpt-5.4-mini',
+          'gpt-5.3-codex-spark',
+          'codex-auto-review',
+          'gpt-5-codex',
+        ],
+        codex: [
+          'gpt-5.6-sol',
+          'gpt-5.6-terra',
+          'gpt-5.6-luna',
+          'gpt-5.5',
+          'gpt-5.4',
+          'gpt-5.4-mini',
+          'gpt-5.3-codex-spark',
+          'codex-auto-review',
+          'gpt-5-codex',
+        ],
+        gemini: [
+          'Gemini 3.1 Pro (High)',
+          'Gemini 3.1 Pro (Low)',
+          'Gemini 3.5 Flash (High)',
+          'Gemini 3.5 Flash (Medium)',
+          'Gemini 3.5 Flash (Low)',
+        ],
+      };
+      const PROV_DEFAULT = {
+        claude: 'claude-opus-4-8',
+        claudex: 'gpt-5.6-terra',
+        codex: 'gpt-5.6-terra',
+        gemini: 'Gemini 3.1 Pro (High)',
+      };
+      const mEfforts = (provider, model) =>
+        (provider === 'codex' || provider === 'claudex') && CODEX_MODEL_EFFORTS[model]
+          ? CODEX_MODEL_EFFORTS[model]
+          : PROV_EFFORTS[provider];
+      let mDirty = false,
+        mLast = '',
+        pLast = '';
+      function mMark() {
+        mDirty = true;
+        $('mnote').textContent = 'unsaved changes — Save to apply';
+      }
+      const mOpt = (list, sel, labels) =>
+        list
+          .map(
+            (v) =>
+              `<option value="${esc(v)}"${v === sel ? ' selected' : ''}>${esc(labels?.[v] || v)}</option>`,
+          )
+          .join('');
+      function mRenderRows(m) {
+        const df = m.difficulties || {};
+        $('mrows').innerHTML =
+          DIFF_LIST.map((d) => {
+            const e = df[d] || {};
+            const p = PROV_LABEL[e.provider] ? e.provider : 'claude';
+            const supportedEfforts = mEfforts(p, e.model);
+            const efforts =
+              e.effort && !supportedEfforts.includes(e.effort)
+                ? [...supportedEfforts, e.effort]
+                : supportedEfforts;
+            const effortSel = efforts.length
+              ? `<select data-d="${d}" data-k="effort" onchange="mMark()">${mOpt(efforts, e.effort || 'high')}</select>`
+              : `<span class="hint">effort is part of the model name</span>`;
+            return `<div class="mrow">
+              <span class="dchip" style="background:${DIFF_COLOR[d]};color:${DIFF_TEXT[d] || '#fff'}">${d}</span>
+              <select data-d="${d}" data-k="provider" onchange="mProvChange('${d}', this.value)">${mOpt(Object.keys(PROV_LABEL), p, PROV_LABEL)}</select>
+              <input type="text" data-d="${d}" data-k="model" list="dl-${p}" value="${esc(e.model || PROV_DEFAULT[p])}" oninput="mMark()" onchange="mModelChange('${d}')" spellcheck="false" />
+              ${effortSel}
+            </div>`;
+          }).join('') +
+          Object.keys(PROV_MODELS)
+            .map(
+              (p) =>
+                `<datalist id="dl-${p}">${PROV_MODELS[p].map((v) => `<option value="${esc(v)}">`).join('')}</datalist>`,
+            )
+            .join('');
+        $('m-composer').innerHTML = mOpt(DIFF_LIST, m.roles?.composer || 'hard');
+        $('m-checker').innerHTML = mOpt(DIFF_LIST, m.roles?.checker || 'hard');
+        $('m-floor').innerHTML = mOpt(DIFF_LIST, m.roles?.reviewFloor || 'intermediate');
+      }
+      function mCollect() {
+        const models = {
+          difficulties: {},
+          roles: {
+            composer: $('m-composer').value,
+            checker: $('m-checker').value,
+            reviewFloor: $('m-floor').value,
+          },
+        };
+        for (const d of DIFF_LIST) {
+          const g = (k) => document.querySelector(`[data-d="${d}"][data-k="${k}"]`);
+          const provider = g('provider').value;
+          const effortEl = g('effort');
+          models.difficulties[d] = {
+            provider,
+            model: g('model').value.trim(),
+            ...(effortEl ? { effort: effortEl.value } : {}),
+          };
+        }
+        return models;
+      }
+      function mProvChange(d, p) {
+        const draft = mCollect();
+        const model = PROV_DEFAULT[p];
+        const efforts = mEfforts(p, model);
+        draft.difficulties[d] = {
+          provider: p,
+          model,
+          ...(efforts.length ? { effort: efforts.includes('high') ? 'high' : efforts[0] } : {}),
+        };
+        mMark();
+        mRenderRows(draft);
+      }
+      function mModelChange(d) {
+        const draft = mCollect();
+        const entry = draft.difficulties[d];
+        const efforts = mEfforts(entry.provider, entry.model);
+        if (efforts.length && !efforts.includes(entry.effort))
+          entry.effort = efforts.includes('high') ? 'high' : efforts[0];
+        mRenderRows(draft);
+      }
+      async function mSave(btn) {
+        const j = await act('set-models', btn, false, { models: mCollect() });
+        if (j && j.ok) {
+          mDirty = false;
+          mLast = '';
+          $('mnote').textContent = '';
+        }
+      }
+      function renderModels(s) {
+        if (activeTab !== 'models' || !s) return;
+        const pv = s.providers || {};
+        if (pv.agyModels?.length) PROV_MODELS.gemini = pv.agyModels;
+        if (pv.claudex?.models?.length) PROV_MODELS.claudex = pv.claudex.models;
+        if (pv.codex?.models?.length) PROV_MODELS.codex = pv.codex.models;
+        const pj = JSON.stringify(pv);
+        if (pj !== pLast) {
+          pLast = pj;
+          $('provs').innerHTML = Object.keys(PROV_LABEL)
+            .map((p) => {
+              const ok = pv[p]?.connected;
+              return `<span class="pill"><span class="dot" style="background:${ok ? 'var(--good)' : 'var(--crit)'}"></span> ${PROV_LABEL[p]} <b>${ok ? 'connected' : 'not connected'}</b> <button style="font-size:11px;padding:1px 8px" onclick="act('test-provider',this,false,{provider:'${p}'})">test</button></span>`;
+            })
+            .join('');
+        }
+        if (mDirty) return; // never clobber unsaved edits
+        const mj = JSON.stringify(s.models || {});
+        if (mj === mLast) return; // keep focus while nothing changed server-side
+        mLast = mj;
+        mRenderRows(s.models || {});
+      }
+
+      /* ---- issue difficulty chips ---- */
+      function diffChip(labels, extra = '', title = '') {
+        const d = (labels || []).find((l) => l.startsWith('diff:'))?.slice(5);
+        const t = title ? ` title="${esc(title)}"` : '';
+        if (d && DIFF_COLOR[d])
+          return `<span class="chip"${t} style="border-color:${DIFF_COLOR[d]};color:${DIFF_COLOR[d]}">${esc(d)}${extra}</span>`;
+        const tier = (labels || []).find((l) => l.startsWith('tier:'))?.slice(5);
+        return `<span class="chip"${t}>${esc(d || tier || '?')}${extra}</span>`;
+      }
+
+      /* ---- data joins ---- */
+      function claimPrefix(c) {
+        return c.split('*')[0];
+      }
+      function claimsConflict(a, b) {
+        const x = claimPrefix(a),
+          y = claimPrefix(b);
+        return x.startsWith(y) || y.startsWith(x);
+      }
+      function joinIssues(s) {
+        const p = s.protocol || {},
+          gh = s.github || {};
+        const workers = p.workers || [],
+          queue = p.queue || [],
+          prs = gh.prs || [];
+        const openSet = new Set((gh.issues || []).map((i) => i.number));
+        const inflight = [];
+        for (const w of workers)
+          if (w.assignment)
+            inflight.push({
+              n: w.assignment.issue,
+              claims: w.assignment.touches?.length ? w.assignment.touches : ['**'],
+            });
+        for (const q of queue)
+          inflight.push({ n: q.issue, claims: q.touches?.length ? q.touches : ['**'] });
+        return (gh.issues || [])
+          .map((i) => {
+            const w = workers.find(
+              (w) =>
+                w.status &&
+                w.status.issue === i.number &&
+                !['idle', 'done', 'failed'].includes(w.status.phase),
+            );
+            const pr = prs.find((pr) => pr.branch === 'task/' + i.number);
+            const qi = queue.findIndex((q) => q.issue === i.number);
+            const merging =
+              p.masterActivity &&
+              ['merging', 'ci-fix'].includes(p.masterActivity.activity) &&
+              qi >= 0 &&
+              p.masterActivity.pr === queue[qi].pr;
+            const deps = (i.meta?.dependsOn || []).filter((d) => openSet.has(d));
+            let conflict = null;
+            if (!w && qi < 0 && !deps.length) {
+              const claims = i.meta?.touches?.length ? i.meta.touches : ['**'];
+              for (const f of inflight) {
+                if (
+                  f.n !== i.number &&
+                  claims.some((c) => f.claims.some((fc) => claimsConflict(c, fc)))
+                ) {
+                  conflict = f.n;
+                  break;
+                }
+              }
+            }
+            return {
+              ...i,
+              w,
+              pr,
+              queuePos: qi >= 0 ? qi + 1 : null,
+              merging,
+              deps,
+              conflict,
+              rank: w ? 0 : qi >= 0 ? 1 : conflict || deps.length ? 3 : 2,
+            };
+          })
+          .sort((a, b) => a.rank - b.rank || a.number - b.number);
+      }
+      const PHASE_ICON = { writing: '✍️', reviewing: '🔍', fixing: '🔧', triage: '⚖️' };
+
+      /* ---- renderers ---- */
+      function render(s) {
+        S = s;
+        const p = s.protocol || {},
+          gh = s.github || {},
+          led = s.ledger || {},
+          u = s.usage || {};
+        $('mode').textContent = p.mode || '–';
+        $('phase').textContent = p.phase || '–';
+
+        const multiC = s.docker?.multi?.containers || [];
+        const running = multiC.some((c) => /running/i.test(c.state));
+        const paused = multiC.some((c) => /paused/i.test(c.state));
+        const upCount = multiC.filter((c) => /running/i.test(c.state)).length;
+        const sfC = (s.docker?.single?.containers || []).filter((c) =>
+          /running|paused/i.test(c.state),
+        );
+        $('sfwarn').style.display = sfC.length ? 'flex' : 'none';
+        $('b-start').disabled = running || paused;
+        $('b-dry').disabled = running || paused;
+        $('b-pause').disabled = !running;
+        $('b-unpause').disabled = !paused;
+        $('b-stop').disabled = !running && !paused;
+        $('b-down').disabled = !multiC.length;
+        for (const id of ['b-run', 'b-runout', 'b-close']) $(id).disabled = !running && !paused;
+
+        /* --- strip --- */
+        const mcls = (pct) => (pct >= 90 ? 'crit' : pct >= 75 ? 'warn' : '');
+        const u5 = u.fiveHour,
+          u7 = u.sevenDay;
+        const scoped = (u.scoped || []).map((x) => `${esc(x.name)} ${x.pct}%`).join(' · ');
+        $('strip').innerHTML =
+          `<div class="tile"><span class="l">Factory</span><span class="v">${running ? upCount + ' up' : paused ? 'paused' : 'stopped'}</span><span class="s">${esc(p.mode || '–')} · ${esc(p.phase || '–')} · master hb ${ago(p.masterHeartbeatAge)}</span></div>` +
+          `<div class="tile"><span class="l">Cost (multi)</span><span class="v">$${led.multiToday ?? 0} today</span><span class="s">$${led.multiTotal ?? 0} total · queue ${(p.queue || []).length} · ✋ ${(gh.needsHuman || []).length}</span></div>` +
+          (u5
+            ? `<div class="tile"><span class="l">5h window</span><span class="v">${u5.pct}% used</span><span class="s">resets in ${tuntil(u5.resetsAt)}${u.stale ? ' · cached' : ''}</span><span class="meter"><i class="${mcls(u5.pct)}" style="width:${Math.min(100, u5.pct)}%"></i></span></div>`
+            : `<div class="tile"><span class="l">5h window</span><span class="v">–</span><span class="s">${esc(u.error || 'loading…')}</span></div>`) +
+          (u7
+            ? `<div class="tile"><span class="l">7-day window</span><span class="v">${u7.pct}% used</span><span class="s">resets ${new Date(u7.resetsAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}${scoped ? ' · ' + scoped : ''}</span><span class="meter"><i class="${mcls(u7.pct)}" style="width:${Math.min(100, u7.pct)}%"></i></span></div>`
+            : '') +
+          `<div class="tile"><span class="l">Open issues</span><span class="v">${(gh.issues || []).length}</span><span class="s">${(gh.prs || []).length} open PRs · ${s.inflight?.length ? 'action: ' + esc(s.inflight.join(',')) : s.lastAutoAction ? esc(s.lastAutoAction.action) + ' ' + tago(s.lastAutoAction.at) : 'no pending action'}</span></div>`;
+
+        /* --- triggers + workers --- */
+        renderTriggers(s.triggers);
+        const desired = wkDesired ?? s.workers?.desired ?? 2;
+        $('wk-n').textContent = desired;
+        const liveWorkers = multiC.filter(
+          (c) => /^worker-/.test(c.service) && /running|paused/i.test(c.state),
+        ).length;
+        $('wk-running').textContent =
+          running || paused ? `running: ${liveWorkers}` : 'factory stopped';
+        const mismatch = (running || paused) && liveWorkers !== desired;
+        $('wk-apply').style.display = mismatch ? '' : 'none';
+        $('wk-note').textContent = mismatch
+          ? `restart applies ${desired} workers`
+          : running || paused
+            ? ''
+            : 'applies on next start';
+
+        /* --- unified issues --- */
+        const joined = joinIssues(s);
+        $('icount').textContent = `${joined.length} open`;
+        $('ilist').innerHTML =
+          joined
+            .map((i) => {
+              const chips = [];
+              if (i.w)
+                chips.push(
+                  `<span class="st active"><span class="tag w${i.w.id}">w${i.w.id}</span> ${PHASE_ICON[i.w.status.phase] || ''} ${esc(i.w.status.phase)}</span>`,
+                );
+              if (i.pr)
+                chips.push(
+                  `<span class="st"><a target="_blank" href="${REPO}/pull/${i.pr.number}">PR #${i.pr.number}</a> <span class="ck ${i.pr.checks}">${i.pr.checks === 'passing' ? '✓' : i.pr.checks === 'failing' ? '✗' : '●'}</span></span>`,
+                );
+              if (i.merging) chips.push('<span class="st merge">⚙ merging</span>');
+              else if (i.queuePos) chips.push(`<span class="st q">queued #${i.queuePos}</span>`);
+              if (i.deps.length)
+                chips.push(
+                  `<span class="st block">⛔ needs ${i.deps.map((d) => '#' + d).join(',')}</span>`,
+                );
+              else if (i.conflict)
+                chips.push(`<span class="st hold">⏸ waits for #${i.conflict}</span>`);
+              if ((i.labels || []).includes('mf:relocated'))
+                chips.push('<span class="chip">relocated</span>');
+              chips.push(diffChip(i.labels));
+              const dim = !i.w && !i.queuePos && (i.deps.length || i.conflict);
+              return `<div class="irow${dim ? ' dim' : ''}"><span class="num"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a></span><span class="title" title="${esc(i.title)}">${esc(i.title)}</span><span class="chips">${chips.join('')}</span></div>`;
+            })
+            .join('') ||
+          '<div class="hint">no open autopilot issues — the composer will plan when the factory runs</div>';
+
+        /* --- recently completed --- */
+        const doneAll = (gh.merged || []).filter((m) => /^task\//.test(m.headRefName || ''));
+        const shown = rcExpanded ? doneAll : doneAll.slice(0, 3);
+        $('rc-more').textContent = rcExpanded ? 'collapse' : `expand (${doneAll.length})`;
+        $('recent').innerHTML =
+          shown
+            .map((m) => {
+              const n = (m.headRefName || '').replace('task/', '');
+              const cost = led.multiByIssue?.[n];
+              return `<div class="done-item"><span class="ck passing">✓</span><span class="t"><a target="_blank" href="${REPO}/pull/${m.number}">#${esc(n)}</a> ${esc(m.title)}</span><span class="m">${cost != null ? '$' + cost : '—'} · ${tago(m.mergedAt)}</span></div>`;
+            })
+            .join('') || '<div class="hint">nothing merged yet</div>';
+
+        /* --- events (both views) --- */
+        const evHtml = (p.events || [])
+          .map((l) =>
+            esc(l)
+              .replace(/\[master\]/, '<span class="tag master">master</span>')
+              .replace(/\[w(\d)\]/, (mm, d) => `<span class="tag w${d}">w${d}</span>`),
+          )
+          .join('\n');
+        for (const id of ['log-o', 'log-d']) {
+          const log = $(id);
+          const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+          log.innerHTML = evHtml;
+          if ((id === 'log-o' || $('autoscroll').checked) && atBottom !== false)
+            log.scrollTop = log.scrollHeight;
+        }
+
+        if (activeTab === 'flow') renderFlow(s, running || paused);
+        if (activeTab === 'detail') renderDetail(s, multiC);
+        if (activeTab === 'models') renderModels(s);
+      }
+
+      /* ---- FLOW view ---- */
+      let prevQueuePrs = new Set(),
+        prevMergedHead = null;
+      const pulses = new Map();
+      function pulse(key, ms) {
+        pulses.set(key, Date.now() + ms);
+      }
+      function pulsing(key) {
+        return (pulses.get(key) || 0) > Date.now();
+      }
+      function renderFlow(s, on) {
+        const p = s.protocol || {};
+        const wrap = $('flowwrap');
+        wrap.classList.toggle('off', !on);
+        const activity = p.masterActivity?.activity || 'idle';
+        const workers = p.workers || [];
+        const queue = p.queue || [];
+        const qPrs = new Set(queue.map((q) => q.pr));
+        for (const pr of qPrs)
+          if (!prevQueuePrs.has(pr)) {
+            const q = queue.find((x) => x.pr === pr);
+            const w = workers.find((w) => w.status?.issue === q?.issue);
+            pulse('w' + (w?.id ?? '?') + 'q', 5000);
+          }
+        prevQueuePrs = qPrs;
+        const mergedHead = s.github?.merged?.[0]?.number;
+        if (prevMergedHead && mergedHead !== prevMergedHead) pulse('main', 5000);
+        prevMergedHead = mergedHead;
+
+        const wnodes = workers
+          .map((w) => {
+            const ph = w.status?.phase || 'idle';
+            const busy = !['idle', 'done', 'failed'].includes(ph);
+            const steps =
+              ['writing', 'reviewing', 'fixing']
+                .map((st) => `<span class="${ph === st ? 'on' : ''}">${PHASE_ICON[st]}</span>`)
+                .join('') + (ph === 'triage' ? '<span class="on">⚖️</span>' : '');
+            return `<div class="fnode${busy ? ' pulse' : ' dim'}" id="fn-w${w.id}"><b><span class="tag w${w.id}">w${w.id}</span></b>${busy ? `#${w.status.issue} · ${esc(ph)}` : esc(ph)}<div class="fsteps">${steps}</div></div>`;
+          })
+          .join('');
+        $('flowcols').innerHTML =
+          `<div class="fcol"><div class="fnode${activity === 'composing' ? ' pulse' : ''}" id="fn-composer"><b>🧠 Composer</b><span class="sub">${activity === 'composing' ? 'planning issues…' : 'opus · plans batches'}</span></div></div>` +
+          `<div class="fcol"><div class="fnode" id="fn-sched"><b>🗂 Scheduler</b><span class="sub">${(s.github?.issues || []).length} open · deterministic</span></div></div>` +
+          `<div class="fcol" id="fn-workers">${wnodes}</div>` +
+          `<div class="fcol"><div class="fnode" id="fn-queue"><b>📥 Merge queue</b><div class="fq">${queue.map((q) => `<span class="qi">PR #${q.pr} ← #${q.issue}</span>`).join('') || '<span class="sub">empty</span>'}</div></div></div>` +
+          `<div class="fcol"><div class="fnode${['merging', 'ci-fix'].includes(activity) ? ' pulse' : ''}" id="fn-merger"><b>⚙️ Merger</b><span class="sub">${activity === 'merging' ? 'merging PR #' + (p.masterActivity?.pr ?? '?') : activity === 'ci-fix' ? 'ci-fix PR #' + (p.masterActivity?.pr ?? '?') : 'sequential · re-gates'}</span></div></div>` +
+          `<div class="fcol"><div class="fnode${pulsing('main') ? ' gpulse' : ''}" id="fn-main"><b>🌳 main</b><span class="sub">${esc(s.github?.merged?.[0] ? '#' + s.github.merged[0].number + ' ' + tago(s.github.merged[0].mergedAt) : '')}</span></div></div>`;
+
+        const svg = $('flowsvg');
+        const box = wrap.getBoundingClientRect();
+        const pt = (el, side) => {
+          const r = el.getBoundingClientRect();
+          return [
+            side === 'r' ? r.right - box.left : r.left - box.left,
+            r.top - box.top + r.height / 2,
+          ];
+        };
+        const path = (a, b, cls) => {
+          const dx = Math.max(30, (b[0] - a[0]) / 2);
+          return `<path class="${cls}" d="M${a[0]},${a[1]} C${a[0] + dx},${a[1]} ${b[0] - dx},${b[1]} ${b[0]},${b[1]}"/>`;
+        };
+        let d = '';
+        const C = $('fn-composer'),
+          SC = $('fn-sched'),
+          Q = $('fn-queue'),
+          M = $('fn-merger'),
+          MN = $('fn-main');
+        if (C && SC) d += path(pt(C, 'r'), pt(SC, 'l'), activity === 'composing' ? 'on' : '');
+        for (const w of workers) {
+          const WN = $('fn-w' + w.id);
+          if (!WN) continue;
+          const busy = w.status && !['idle', 'done', 'failed'].includes(w.status.phase);
+          d += path(pt(SC, 'r'), pt(WN, 'l'), busy ? 'on' : '');
+          d += path(pt(WN, 'r'), pt(Q, 'l'), pulsing('w' + w.id + 'q') ? 'pulse' : '');
+        }
+        if (Q && M)
+          d += path(pt(Q, 'r'), pt(M, 'l'), ['merging', 'ci-fix'].includes(activity) ? 'on' : '');
+        if (M && MN)
+          d += path(
+            pt(M, 'r'),
+            pt(MN, 'l'),
+            activity === 'merging' ? 'on' : pulsing('main') ? 'pulse' : '',
+          );
+        svg.setAttribute('viewBox', `0 0 ${box.width} ${box.height}`);
+        svg.innerHTML = d;
+      }
+
+      /* ---- DETAIL view (v1) ---- */
+      function kpi(v, l) {
+        return `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+      }
+      const phaseClass = (p) =>
+        ({
+          idle: 'idle',
+          writing: 'working',
+          reviewing: 'working',
+          fixing: 'working',
+          triage: 'warn',
+          done: 'done',
+          failed: 'failed',
+        })[p] || 'idle';
+      function renderDetail(s, multiC) {
+        const p = s.protocol || {},
+          gh = s.github || {},
+          led = s.ledger || {};
+        $('kpis').innerHTML =
+          kpi(
+            multiC.filter((c) => /running/i.test(c.state)).length + '/' + (multiC.length || '–'),
+            'containers up',
+          ) +
+          kpi((p.queue || []).length, 'merge queue') +
+          kpi((gh.issues || []).length, 'open autopilot') +
+          kpi((gh.needsHuman || []).length, 'needs human') +
+          kpi('$' + (led.multiToday ?? '0'), 'multi cost today') +
+          kpi('$' + (led.multiTotal ?? '0'), 'multi cost total');
+        let cards = `<div class="card"><h2>Master <span class="tag master">master</span></h2>
+    <div class="row"><span class="k">activity</span><span class="val">${esc(p.masterActivity?.activity || '–')}${p.masterActivity?.pr ? ' PR #' + p.masterActivity.pr : ''}</span></div>
+    <div class="row"><span class="k">phase</span><span class="val">${esc(p.phase || '–')} (${esc(p.mode || '')})</span></div>
+    <div class="row"><span class="k">heartbeat</span><span class="val">${ago(p.masterHeartbeatAge)}</span></div>
+    <div class="row"><span class="k">containers</span><span class="val">${esc(multiC.map((c) => `${c.service}:${c.state}`).join(' · ') || 'none')}</span></div>
+    ${s.lastAutoAction ? `<div class="row"><span class="k">auto</span><span class="val">${esc(s.lastAutoAction.action)} ${tago(s.lastAutoAction.at)}</span></div>` : ''}
+    ${p.stopFile ? '<div class="row"><span class="k">STOP</span><span class="val">⚠️ STOP file present</span></div>' : ''}</div>`;
+        for (const w of p.workers || []) {
+          const st = w.status || {};
+          const ph = st.phase || 'idle';
+          const hbWarn = w.assignment && w.heartbeatAge != null && w.heartbeatAge > 900;
+          cards += `<div class="card"><h2>Worker ${w.id} <span class="tag w${w.id}">w${w.id}</span></h2>
+      <div class="row"><span class="k">phase</span><span class="val"><span class="badge ${phaseClass(ph)}">${PHASE_ICON[ph] || '…'} ${esc(ph)}</span></span></div>
+      <div class="row"><span class="k">issue</span><span class="val">${st.issue ? `<a target="_blank" href="${REPO}/issues/${st.issue}">#${st.issue}</a>` : '–'}</span></div>
+      <div class="row"><span class="k">PR</span><span class="val">${st.pr ? `<a target="_blank" href="${REPO}/pull/${st.pr}">#${st.pr}</a>` : '–'}</span></div>
+      <div class="row"><span class="k">heartbeat</span><span class="val">${hbWarn ? '⚠️ ' : ''}${ago(w.heartbeatAge)}</span></div>
+      <div class="row"><span class="k">assigned</span><span class="val">${w.assignment ? '#' + w.assignment.issue + ' · ' + esc((w.assignment.touches || []).join(', ').slice(0, 60) || '**') : '–'}</span></div></div>`;
+        }
+        $('workergrid').innerHTML = cards;
+        $('qcount').textContent = (p.queue || []).length;
+        $('queue').innerHTML =
+          (p.queue || [])
+            .map(
+              (q, i) =>
+                `<div class="item"><span class="m">${i + 1}.</span><span class="t"><a target="_blank" href="${REPO}/pull/${q.pr}">PR #${q.pr}</a> ← issue <a target="_blank" href="${REPO}/issues/${q.issue}">#${q.issue}</a></span><span class="m">${tago(q.enqueued_at)}</span></div>`,
+            )
+            .join('') || '<div class="item"><span class="m">empty</span></div>';
+        $('prs').innerHTML =
+          (gh.prs || [])
+            .map(
+              (pr) =>
+                `<div class="item"><span class="ck ${pr.checks}">${pr.checks === 'passing' ? '✓' : pr.checks === 'failing' ? '✗' : '●'}</span><span class="t"><a target="_blank" href="${REPO}/pull/${pr.number}">#${pr.number}</a> ${esc(pr.title)}</span><span class="m">${esc(pr.checks)}</span></div>`,
+            )
+            .join('') || '<div class="item"><span class="m">none</span></div>';
+        $('issues').innerHTML =
+          (gh.issues || [])
+            .map((i) => {
+              const inprog = (i.labels || []).includes('in-progress');
+              const touches = i.meta?.touches?.length
+                ? i.meta.touches.join(' ')
+                : 'no mf-meta (runs alone)';
+              const deps = i.meta?.dependsOn?.length
+                ? ' · deps: ' + i.meta.dependsOn.map((d) => '#' + d).join(',')
+                : '';
+              return `<div class="item"><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span>${diffChip(i.labels, inprog ? ' · wip' : '', touches + deps)}</div>`;
+            })
+            .join('') || '<div class="item"><span class="m">none</span></div>';
+        $('merged').innerHTML =
+          (gh.merged || [])
+            .slice(0, 10)
+            .map(
+              (m) =>
+                `<div class="item"><span class="ck passing">✓</span><span class="t"><a target="_blank" href="${REPO}/pull/${m.number}">#${m.number}</a> ${esc(m.title)}</span><span class="m">${tago(m.mergedAt)}</span></div>`,
+            )
+            .join('') || '<div class="item"><span class="m">none yet</span></div>';
+        $('nhcount').textContent = (gh.needsHuman || []).length;
+        $('needshuman').innerHTML =
+          (gh.needsHuman || [])
+            .map(
+              (i) =>
+                `<div class="item"><span class="ck failing">✋</span><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span></div>`,
+            )
+            .join('') || '<div class="item"><span class="m">none 🎉</span></div>';
+        const costs = Object.entries(led.multiByIssue || {}).sort((a, b) => b[1] - a[1]);
+        $('costs').innerHTML =
+          costs
+            .map(
+              ([iss, c]) =>
+                `<div class="item"><span class="t">${iss === '-' ? 'composer/overhead' : `<a target="_blank" href="${REPO}/issues/${iss}">#${esc(iss)}</a>`}</span><span class="m">$${c}</span></div>`,
+            )
+            .join('') ||
+          '<div class="item"><span class="m">no multi-factory records yet</span></div>';
+      }
+
+      /* ---- USAGE analytics tab ---- */
+      let uaData = null,
+        uaFetchedAt = 0,
+        uaCodexRange = '14',
+        uaCodexModel = 'all';
+      async function fetchUsage(force) {
+        if (!force && Date.now() - uaFetchedAt < 60000) return;
+        try {
+          const params = new URLSearchParams({ range: uaCodexRange, model: uaCodexModel });
+          const r = await fetch('/api/usage?' + params);
+          uaData = await r.json();
+          uaFetchedAt = Date.now();
+          renderUsage(uaData);
+        } catch {
+          /* keep last */
+        }
+      }
+      setInterval(() => {
+        if (activeTab === 'usage') fetchUsage(false);
+      }, 60000);
+      function uaCodexFiltersChanged() {
+        uaCodexRange = $('ua-codex-range').value;
+        uaCodexModel = $('ua-codex-model').value;
+        uaFetchedAt = 0;
+        fetchUsage(true);
+      }
+      const fmtTok = (n) =>
+        n >= 1e9
+          ? (n / 1e9).toFixed(2) + 'B'
+          : n >= 1e6
+            ? (n / 1e6).toFixed(1) + 'M'
+            : n >= 1e3
+              ? (n / 1e3).toFixed(1) + 'k'
+              : String(n);
+      const fmtEstimate = (n) =>
+        n == null
+          ? 'unavailable'
+          : '$' + (n === 0 ? '0.000000' : n < 0.01 ? Number(n).toFixed(6) : Number(n).toFixed(2));
+      const coverageText = (bucket) =>
+        bucket?.legacyOutputAmbiguousRecords
+          ? `${bucket.legacyOutputAmbiguousRecords} legacy output-ambiguous run${bucket.legacyOutputAmbiguousRecords === 1 ? '' : 's'}`
+          : bucket?.coverage === 'partial'
+            ? 'partial coverage'
+            : bucket?.coverage === 'unavailable'
+              ? 'estimate unavailable'
+              : bucket?.coverage === 'none'
+                ? 'no Codex rows'
+                : 'complete telemetry';
+      function hbars(el, rows, colorFor) {
+        const max = Math.max(...rows.map((r) => r.v), 0.01);
+        $(el).innerHTML =
+          rows
+            .map(
+              (r) =>
+                `<div class="hb"><span class="n" title="${esc(r.k)}">${esc(r.label || r.k)}</span><span class="track"><i style="width:${Math.max(1, (r.v / max) * 100)}%${colorFor ? ';background:' + colorFor(r.k) : ''}"></i></span><span class="v">$${r.v}</span></div>`,
+            )
+            .join('') || '<div class="hint">no data yet</div>';
+      }
+      const MODEL_COLOR = { sonnet: 'var(--w1)', opus: 'var(--w2)', fable: 'var(--w3)' };
+      function codexBars(el, rows, issueLinks) {
+        const max = Math.max(...rows.map((r) => r.tokens?.total || 0), 1);
+        $(el).innerHTML =
+          rows
+            .map((r) => {
+              const label =
+                issueLinks && /^\d+$/.test(r.k)
+                  ? `<a target="_blank" href="${REPO}/issues/${r.k}">#${esc(r.k)}</a>`
+                  : esc(r.label || r.k);
+              const status = r.coverage === 'complete' ? '' : ` · ${coverageText(r)}`;
+              const tokenTitle = `input ${fmtTok(r.tokens?.input || 0)} · cached ${fmtTok(r.tokens?.cachedInput || 0)} · cache-write ${fmtTok(r.tokens?.cacheWrite || 0)} · output ${fmtTok(r.tokens?.output || 0)}`;
+              return `<div class="hb codex-hb" title="${esc(tokenTitle + status)}"><span class="n">${label}</span><span class="track"><i style="width:${Math.max(1, ((r.tokens?.total || 0) / max) * 100)}%"></i></span><span class="v">${fmtEstimate(r.estimatedUsd)} · ${fmtTok(r.tokens?.total || 0)}</span></div>`;
+            })
+            .join('') || '<div class="hint">no Codex data in this range</div>';
+      }
+      function codexIssueRows(rows) {
+        $('ua-codex-issues').innerHTML =
+          rows
+            .map((r) => {
+              const issue = /^\d+$/.test(r.k)
+                ? `<a target="_blank" href="${REPO}/issues/${r.k}">#${esc(r.k)}</a>`
+                : esc(r.label || r.k);
+              const tk = r.tokens || {};
+              return `<div class="irow"><span class="num">${issue}</span><span class="title">input ${fmtTok(tk.input || 0)} · cached ${fmtTok(tk.cachedInput || 0)} · cache-write ${fmtTok(tk.cacheWrite || 0)} · output ${fmtTok(tk.output || 0)}</span><span class="hint">${fmtEstimate(r.estimatedUsd)}${r.coverage === 'complete' ? '' : ' · ' + coverageText(r)}</span></div>`;
+            })
+            .join('') || '<div class="hint">no Codex issue usage in this range</div>';
+      }
+      function renderCodexUsage(c) {
+        const totals = c.totals || {};
+        const tk = totals.tokens || {};
+        const status = coverageText(totals);
+        const today = (c.days || []).find((day) => day.k === new Date().toISOString().slice(0, 10));
+        $('ua-codex-kpis').innerHTML =
+          `<div class="tile"><span class="l">API-equivalent estimate</span><span class="v">${fmtEstimate(totals.estimatedUsd)}</span><span class="s">not billed subscription spend · ${status}</span></div>` +
+          `<div class="tile"><span class="l">Today’s estimate</span><span class="v">${fmtEstimate(totals.todayEstimatedUsd ?? today?.estimatedUsd)}</span><span class="s">standard/base API price</span></div>` +
+          `<div class="tile"><span class="l">OpenAI tokens</span><span class="v">${fmtTok(tk.total || 0)}</span><span class="s">input ${fmtTok(tk.input || 0)} · output ${fmtTok(tk.output || 0)}</span></div>` +
+          `<div class="tile"><span class="l">Cached input</span><span class="v">${fmtTok(tk.cachedInput || 0)}</span><span class="s">cache-write ${fmtTok(tk.cacheWrite || 0)}${totals.cacheWriteUnreportedRecords ? ` · ${totals.cacheWriteUnreportedRecords} run${totals.cacheWriteUnreportedRecords === 1 ? '' : 's'} unreported` : ''}</span></div>` +
+          `<div class="tile"><span class="l">Coverage</span><span class="v">${totals.pricedRecords || 0}/${totals.records || 0}</span><span class="s">priced runs · ${totals.unpricedRecords || 0} unavailable</span></div>`;
+
+        const modelSelect = $('ua-codex-model');
+        modelSelect.innerHTML =
+          '<option value="all">All GPT models</option>' +
+          (c.availableModels || [])
+            .map((model) => `<option value="${esc(model)}">${esc(model)}</option>`)
+            .join('');
+        modelSelect.value = c.model || 'all';
+        if (modelSelect.value !== (c.model || 'all')) modelSelect.value = 'all';
+        $('ua-codex-range').value = c.range || '14';
+        $('ua-codex-range-note').textContent =
+          (c.range === 'all' ? 'all recorded dates' : `${c.rangeStart} → ${c.rangeEnd}`) +
+          (c.model && c.model !== 'all' ? ` · ${c.model}` : '');
+
+        const W = 720,
+          H = 200,
+          padL = 42,
+          padR = 48,
+          padB = 22,
+          padT = 10;
+        const days = c.days || [];
+        const maxCost = Math.max(...days.map((d) => d.estimatedUsd || 0), 0.000001) * 1.14;
+        const maxTokens = Math.max(...days.map((d) => d.tokens?.total || 0), 1) * 1.08;
+        const bw = days.length ? (W - padL - padR) / days.length : W - padL - padR;
+        let svg = '';
+        for (const frac of [0.5, 1]) {
+          const y = padT + (H - padB - padT) * (1 - frac);
+          svg +=
+            `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>` +
+            `<text x="${padL - 5}" y="${y + 4}" text-anchor="end" font-size="9.5" fill="var(--muted)">${fmtEstimate(maxCost * frac)}</text>` +
+            `<text x="${W - padR + 5}" y="${y + 4}" font-size="9.5" fill="var(--muted)">${fmtTok(maxTokens * frac)}</text>`;
+        }
+        const points = [];
+        const labelEvery = Math.max(1, Math.ceil(days.length / 14));
+        days.forEach((day, i) => {
+          const cx = padL + i * bw + bw * 0.2;
+          const w = Math.max(1, bw * 0.6);
+          const cost = day.estimatedUsd || 0;
+          const h = ((H - padB - padT) * cost) / maxCost;
+          const y = H - padB - h;
+          if (h > 0.3)
+            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${h}" rx="2" fill="var(--accent)"><title>${day.k}: ${fmtEstimate(day.estimatedUsd)}${day.coverage === 'complete' ? '' : ' (' + coverageText(day) + ')'}</title></rect>`;
+          else if (day.records > 0 && day.estimatedUsd == null)
+            svg += `<rect x="${cx}" y="${H - padB - 2}" width="${w}" height="2" fill="var(--muted)"><title>${day.k}: estimate unavailable</title></rect>`;
+          const tokenY = H - padB - ((H - padB - padT) * (day.tokens?.total || 0)) / maxTokens;
+          points.push(`${cx + w / 2},${tokenY}`);
+          if (i % labelEvery === days.length % labelEvery)
+            svg += `<text x="${cx + w / 2}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${day.k.slice(5)}</text>`;
+        });
+        if (points.length > 1)
+          svg += `<polyline points="${points.join(' ')}" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linejoin="round"><title>OpenAI token volume</title></polyline>`;
+        $('ua-codex-days').innerHTML =
+          svg ||
+          '<text x="360" y="100" text-anchor="middle" fill="var(--muted)">no OpenAI data</text>';
+        codexBars('ua-codex-models', c.byModel || [], false);
+        codexBars('ua-codex-roles', c.byRole || [], false);
+        codexIssueRows(c.byIssue || []);
+      }
+      function renderUsage(d) {
+        if (!d) return;
+        const t = d.totals || {};
+        $('ua-kpis').innerHTML =
+          `<div class="tile"><span class="l">Total spend</span><span class="v">$${t.cost ?? 0}</span><span class="s">${t.records ?? 0} agent runs</span></div>` +
+          `<div class="tile"><span class="l">Today</span><span class="v">$${t.today ?? 0}</span><span class="s">${new Date().toISOString().slice(0, 10)}</span></div>` +
+          `<div class="tile"><span class="l">Issues built</span><span class="v">${t.issues ?? 0}</span><span class="s">avg $${t.avgPerIssue ?? 0} per issue</span></div>` +
+          `<div class="tile"><span class="l">Output tokens</span><span class="v">${fmtTok(d.tokens?.output || 0)}</span><span class="s">input ${fmtTok(d.tokens?.input || 0)}</span></div>` +
+          `<div class="tile"><span class="l">Cache traffic</span><span class="v">${fmtTok(d.tokens?.cacheRead || 0)}</span><span class="s">read · write ${fmtTok(d.tokens?.cacheWrite || 0)}</span></div>`;
+        // daily stacked bars
+        const W = 720,
+          H = 180,
+          padL = 34,
+          padB = 20,
+          padT = 8;
+        const days = d.days || [];
+        const dayParts = (x) => ({
+          claude: Number(x.claude ?? x.multi ?? 0),
+          codex: Number(x.codex ?? x.single ?? 0),
+          other: Number(x.other ?? 0),
+        });
+        const max =
+          Math.max(
+            ...days.map((x) => {
+              const parts = dayParts(x);
+              return parts.claude + parts.codex + parts.other;
+            }),
+            1,
+          ) * 1.14;
+        const bw = (W - padL - 8) / days.length;
+        let svg = '';
+        for (const frac of [0.5, 1]) {
+          const y = padT + (H - padB - padT) * (1 - frac);
+          svg +=
+            `<line x1="${padL}" y1="${y}" x2="${W - 4}" y2="${y}" stroke="var(--border)" stroke-width="1"/>` +
+            `<text x="${padL - 5}" y="${y + 4}" text-anchor="end" font-size="9.5" fill="var(--muted)">$${(max * frac).toFixed(0)}</text>`;
+        }
+        days.forEach((x, i) => {
+          const parts = dayParts(x);
+          const cx = padL + i * bw + bw * 0.18;
+          const w = bw * 0.64;
+          const hClaude = ((H - padB - padT) * parts.claude) / max;
+          const hCodex = ((H - padB - padT) * parts.codex) / max;
+          const hOther = ((H - padB - padT) * parts.other) / max;
+          let y = H - padB;
+          if (hOther > 0.5) {
+            y -= hOther;
+            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${hOther}" rx="2" fill="var(--w3)"><title>${x.date} other: $${parts.other}</title></rect>`;
+            y -= 2;
+          }
+          if (hCodex > 0.5) {
+            y -= hCodex;
+            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${hCodex}" rx="2" fill="#8a8878"><title>${x.date} Codex: $${parts.codex}</title></rect>`;
+            y -= 2;
+          }
+          if (hClaude > 0.5) {
+            y -= hClaude;
+            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${hClaude}" rx="2" fill="var(--accent)"><title>${x.date} Claude: $${parts.claude}</title></rect>`;
+          }
+          const tot = parts.claude + parts.codex + parts.other;
+          if (tot > 0)
+            svg += `<text x="${cx + w / 2}" y="${y - 4}" text-anchor="middle" font-size="9" fill="var(--ink2)">$${tot.toFixed(0)}</text>`;
+          if (i % 2 === (days.length - 1) % 2)
+            svg += `<text x="${cx + w / 2}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${x.date.slice(5)}</text>`;
+        });
+        $('ua-days').innerHTML = svg;
+        hbars(
+          'ua-model',
+          (d.byModel || []).map((r) => ({ ...r, label: r.k })),
+          (k) => MODEL_COLOR[k] || 'var(--accent)',
+        );
+        hbars('ua-role', d.byRole || []);
+        hbars(
+          'ua-issues',
+          (d.topIssues || []).map((r) => ({
+            ...r,
+            label: /^\d+$/.test(r.k) ? '#' + r.k : r.k,
+          })),
+        );
+        const tk = d.tokens || {};
+        $('ua-tokens').innerHTML = ['input', 'output', 'cacheRead', 'cacheWrite']
+          .map(
+            (k) =>
+              `<div class="tile"><span class="l">${k.replace('cache', 'cache ')}</span><span class="v">${fmtTok(tk[k] || 0)}</span></div>`,
+          )
+          .join('');
+        renderCodexUsage(d.openai || d.codex || {});
+      }
+
+      /* ---- live ---- */
+      let lastEvent = 0;
+      function connect() {
+        const es = new EventSource('/api/events');
+        es.onmessage = (e) => {
+          lastEvent = Date.now();
+          try {
+            render(JSON.parse(e.data));
+          } catch {
+            /* skip bad frame */
+          }
+        };
+        es.onerror = () => {
+          es.close();
+          setTimeout(connect, 3000);
+        };
+      }
+      setInterval(() => {
+        const fresh = Date.now() - lastEvent < 6000;
+        $('livedot').className = 'dot ' + (fresh ? 'live' : 'stale');
+        $('livetxt').textContent = fresh ? 'live' : 'reconnecting…';
+      }, 1000);
+      window.addEventListener('resize', () => {
+        if (S && activeTab === 'flow') renderFlow(S, true);
+      });
+      setTab(activeTab);
+      tgTypeChanged();
+      connect();
+    </script>
+  </body>
+</html>

@@ -1346,6 +1346,8 @@
       .bar {
         display: flex;
         gap: 7px;
+        align-items: center;
+        flex-wrap: wrap;
         margin: 0 0 13px;
         padding: 13px;
         border: 1px solid var(--border);
@@ -1355,6 +1357,70 @@
       .bar .sep {
         height: 28px;
         background: var(--border);
+      }
+
+      /* Secondary runtime actions live behind a disclosure. Start/Pause/Resume are
+         the controls used in normal operation; the drain modes and the two
+         destructive actions no longer sit inline beside them, where a hard stop or
+         a container removal was one mis-click from Resume. */
+      .more-actions {
+        position: relative;
+        margin-left: auto;
+      }
+      .more-actions > summary {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 32px;
+        padding: 0 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgba(18, 33, 38, 0.66);
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 620;
+        cursor: pointer;
+        list-style: none;
+        user-select: none;
+      }
+      .more-actions > summary::-webkit-details-marker {
+        display: none;
+      }
+      .more-actions > summary::after {
+        content: '\25be';
+        font-size: 10px;
+        opacity: 0.75;
+      }
+      .more-actions[open] > summary::after {
+        content: '\25b4';
+      }
+      .more-actions > summary:hover,
+      .more-actions > summary:focus-visible {
+        color: var(--text);
+      }
+      .more-actions-panel {
+        position: absolute;
+        z-index: 40;
+        top: calc(100% + 6px);
+        right: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-width: 232px;
+        padding: 13px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: rgba(9, 18, 22, 0.98);
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+      }
+      .more-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      .more-group .control-label {
+        width: 100%;
       }
       .control-label {
         display: inline-flex;
@@ -2171,13 +2237,57 @@
           align-items: stretch;
         }
       }
+      /* Phones: the console must answer "is it running / what needs me" without
+         scrolling past chrome, so the fixed band is cut and the nav scrolls
+         sideways instead of wrapping into a second permanent row. */
       @media (max-width: 700px) {
         body {
-          padding-top: 146px;
+          padding-top: 104px;
         }
         header {
-          height: 146px;
+          height: 104px;
           flex-wrap: wrap;
+          padding: 8px 12px;
+          gap: 6px;
+        }
+        .bar {
+          gap: 6px;
+          padding: 10px;
+        }
+        .bar > button {
+          flex: 1 1 auto;
+          min-height: 44px;
+        }
+        .more-actions {
+          flex: 1 1 100%;
+          margin-left: 0;
+        }
+        .more-actions > summary {
+          justify-content: center;
+          width: 100%;
+          min-height: 44px;
+        }
+        .more-actions-panel {
+          left: 0;
+          right: 0;
+          min-width: 0;
+        }
+        .more-group button {
+          flex: 1 1 auto;
+          min-height: 44px;
+        }
+        .grid,
+        .grid2,
+        .kpis {
+          grid-template-columns: 1fr;
+        }
+        /* Wide content scrolls inside its own box; the page body never does. */
+        .log,
+        .list,
+        table,
+        #flowwrap {
+          max-width: 100%;
+          overflow-x: auto;
         }
         header h1 {
           width: 100%;
@@ -2194,12 +2304,19 @@
           display: none;
         }
         .tabs {
-          justify-content: space-between;
-          overflow-x: visible;
+          justify-content: flex-start;
+          overflow-x: auto;
+          scrollbar-width: none;
+          -webkit-overflow-scrolling: touch;
+        }
+        .tabs::-webkit-scrollbar {
+          display: none;
         }
         .tabs button {
+          flex: 0 0 auto;
           min-width: 0;
-          padding-inline: 6px;
+          min-height: 44px;
+          padding-inline: 12px;
         }
         .tabs button .nav-glyph {
           display: none;
@@ -2213,9 +2330,9 @@
           display: none;
         }
         .pagehead {
-          top: 146px;
-          min-height: 74px;
-          padding: 14px 16px 12px;
+          top: 104px;
+          min-height: 0;
+          padding: 10px 14px 8px;
         }
         .pagehead p,
         .head-health .pill:not(.live-head) {
@@ -2325,12 +2442,25 @@
         }
       }
       @media (max-width: 420px) {
+        /* Two-up, not stacked: five full-width KPI tiles pushed the attention tray
+           and Open Work off the first screen, so the phone opened on numbers
+           instead of on whatever needs a decision. */
         .strip,
         .kpis {
-          grid-template-columns: 1fr;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
         }
         .tile {
-          min-height: 92px;
+          min-height: 0;
+          padding: 10px 11px;
+        }
+        .tile b {
+          font-size: 19px;
+          line-height: 1.15;
+          overflow-wrap: anywhere;
+        }
+        .tile .hint {
+          font-size: 10px;
         }
         .pagehead h2 {
           font-size: 20px;
@@ -2427,7 +2557,6 @@
     </div>
 
     <div class="bar">
-      <span class="control-label">Runtime</span>
       <button
         id="b-start"
         class="primary"
@@ -2437,16 +2566,6 @@
       >
         ▶ Start
       </button>
-      <button
-        id="b-dry"
-        title="Start with MF_DRY_RUN=1 — full protocol, no LLM calls"
-        onclick="act('start-dry', this)"
-        disabled
-      >
-        🧪 Dry-run
-      </button>
-      <div class="sep"></div>
-      <span class="control-label">Process</span>
       <button
         id="b-pause"
         title="docker compose pause — freeze all containers"
@@ -2458,52 +2577,70 @@
       <button id="b-unpause" title="docker compose unpause" onclick="act('unpause', this)" disabled>
         ⏵ Resume
       </button>
-      <div class="sep"></div>
-      <span class="control-label">Intake</span>
-      <button
-        id="b-run"
-        title="Normal operation: composer keeps the queue full"
-        onclick="act('mode-run', this)"
-        disabled
-      >
-        🟢 Run
-      </button>
-      <button
-        id="b-runout"
-        title="No NEW composed issues; drains until every open autopilot issue is done, then shuts down"
-        onclick="act('mode-run-out', this, true)"
-        disabled
-      >
-        🌗 Run out
-      </button>
-      <button
-        id="b-close"
-        title="Takes no more issues; finishes only what's in flight, then shuts down"
-        onclick="act('mode-close-down', this, true)"
-        disabled
-      >
-        🌙 Close down
-      </button>
-      <div class="sep"></div>
-      <span class="control-label">Danger</span>
-      <button
-        id="b-stop"
-        class="danger"
-        title="Hard stop (containers kept, resumable)"
-        onclick="act('stop', this, true)"
-        disabled
-      >
-        ⏹ Stop
-      </button>
-      <button
-        id="b-down"
-        class="danger"
-        title="Stop and remove containers (state + clones persist)"
-        onclick="act('down', this, true)"
-        disabled
-      >
-        🗑 Remove containers
-      </button>
+      <details class="more-actions">
+        <summary aria-label="More runtime actions">More…</summary>
+        <div class="more-actions-panel">
+          <div class="more-group">
+            <span class="control-label">Runtime</span>
+            <button
+              id="b-dry"
+              title="Start with MF_DRY_RUN=1 — full protocol, no LLM calls"
+              onclick="act('start-dry', this)"
+              disabled
+            >
+              🧪 Dry-run
+            </button>
+          </div>
+          <div class="more-group">
+            <span class="control-label">Intake</span>
+            <button
+              id="b-run"
+              title="Normal operation: composer keeps the queue full"
+              onclick="act('mode-run', this)"
+              disabled
+            >
+              🟢 Run
+            </button>
+            <button
+              id="b-runout"
+              title="No NEW composed issues; drains until every open autopilot issue is done, then shuts down"
+              onclick="act('mode-run-out', this, true)"
+              disabled
+            >
+              🌗 Run out
+            </button>
+            <button
+              id="b-close"
+              title="Takes no more issues; finishes only what's in flight, then shuts down"
+              onclick="act('mode-close-down', this, true)"
+              disabled
+            >
+              🌙 Close down
+            </button>
+          </div>
+          <div class="more-group">
+            <span class="control-label">Danger</span>
+            <button
+              id="b-stop"
+              class="danger"
+              title="Hard stop (containers kept, resumable)"
+              onclick="act('stop', this, true)"
+              disabled
+            >
+              ⏹ Stop
+            </button>
+            <button
+              id="b-down"
+              class="danger"
+              title="Stop and remove containers (state + clones persist)"
+              onclick="act('down', this, true)"
+              disabled
+            >
+              🗑 Remove containers
+            </button>
+          </div>
+        </div>
+      </details>
     </div>
 
     <!-- ================= OVERVIEW ================= -->
@@ -2516,26 +2653,6 @@
         tabindex="-1"
       >
         <div class="strip" id="strip"></div>
-        <section class="card open-work-card" id="open-work-card" aria-labelledby="open-work-title">
-          <div class="open-work-head">
-            <div class="open-work-title">
-              <h2 id="open-work-title">Open Work</h2>
-              <span class="hint">active, ready, merging, and waiting for a decision</span>
-            </div>
-            <div class="open-work-actions">
-              <span class="chip" id="open-work-count" aria-live="polite" aria-atomic="true"
-                >checking</span
-              >
-              <button type="button" onclick="setTab('flow', true)">View full work</button>
-            </div>
-          </div>
-          <div id="open-work" aria-busy="true">
-            <div class="open-work-message">
-              <b>Loading open work</b>
-              <span>Waiting for the first GitHub and worker snapshot.</span>
-            </div>
-          </div>
-        </section>
         <div class="attention-panel" id="attention-panel">
           <div class="attention-head">
             <div>
@@ -2612,6 +2729,27 @@
           <h2>Issues <span class="hint" id="icount"></span></h2>
           <div class="ilist" id="ilist"></div>
         </div>
+
+        <section class="card open-work-card" id="open-work-card" aria-labelledby="open-work-title">
+          <div class="open-work-head">
+            <div class="open-work-title">
+              <h2 id="open-work-title">Open Work</h2>
+              <span class="hint">active, ready, merging, and waiting for a decision</span>
+            </div>
+            <div class="open-work-actions">
+              <span class="chip" id="open-work-count" aria-live="polite" aria-atomic="true"
+                >checking</span
+              >
+              <button type="button" onclick="setTab('flow', true)">View full work</button>
+            </div>
+          </div>
+          <div id="open-work" aria-busy="true">
+            <div class="open-work-message">
+              <b>Loading open work</b>
+              <span>Waiting for the first GitHub and worker snapshot.</span>
+            </div>
+          </div>
+        </section>
         <div class="grid2">
           <div class="card" id="recent-card">
             <h2>
