@@ -85,7 +85,16 @@ export const vaultMediaStateSchema = z
     /** Last version the Drive adapter attested, or null until it has one. */
     driveAttestedVersion: z.number().int().positive().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.driveAttestedVersion !== null && !value.mediaSet.includes('drive')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['driveAttestedVersion'],
+        message: 'a Drive attestation requires the Drive medium',
+      });
+    }
+  });
 export type VaultMediaState = z.infer<typeof vaultMediaStateSchema>;
 
 // ── Version + envelope header ────────────────────────────────────────────────
@@ -468,6 +477,7 @@ const customAssetDataSchema = z
     currency: currencyCodeSchema,
     category: z.enum(['stock', 'etf', 'crypto', 'commodity', 'cash_like', 'other']),
     smoothing: z.boolean(),
+    recategorize: z.boolean(),
   })
   .strict();
 

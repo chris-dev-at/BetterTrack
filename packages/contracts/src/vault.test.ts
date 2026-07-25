@@ -15,6 +15,7 @@ import {
   vaultEtag,
   VaultEnvelopeError,
   vaultMediaSetSchema,
+  vaultMediaStateSchema,
   vaultServerHeaderSchema,
 } from './vault';
 
@@ -63,6 +64,15 @@ describe('media set', () => {
     expect(vaultMediaSetSchema.safeParse([]).success).toBe(false);
     expect(vaultMediaSetSchema.safeParse(['icloud']).success).toBe(false);
     expect(vaultMediaSetSchema.safeParse(['server', 'server']).success).toBe(false);
+  });
+
+  it('requires Drive when a Drive attestation is present', () => {
+    expect(
+      vaultMediaStateSchema.safeParse({ mediaSet: ['server'], driveAttestedVersion: 1 }).success,
+    ).toBe(false);
+    expect(
+      vaultMediaStateSchema.safeParse({ mediaSet: ['drive'], driveAttestedVersion: 1 }).success,
+    ).toBe(true);
   });
 });
 

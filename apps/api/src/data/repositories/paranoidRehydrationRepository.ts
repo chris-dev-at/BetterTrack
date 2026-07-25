@@ -75,7 +75,11 @@ export function createParanoidRehydrationSourceRepository(
           name: entity.data.name,
           exchange: entity.data.exchange,
           currency: entity.data.currency,
-          meta: { category: entity.data.category, smoothing: entity.data.smoothing },
+          meta: {
+            category: entity.data.category,
+            smoothing: entity.data.smoothing,
+            ...(entity.data.recategorize ? { recategorize: true } : {}),
+          },
         })),
       );
     },

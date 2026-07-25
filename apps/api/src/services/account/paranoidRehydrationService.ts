@@ -1,4 +1,5 @@
 import {
+  customTaxParamsSchema,
   type ParanoidDisableRehydrationRequest,
   type ParanoidDisableRehydrationResult,
   type ParanoidRehydrationPostCommitPlan,
@@ -9,15 +10,21 @@ import {
   floorCents,
   projectCashLedgerBySource,
 } from '@bettertrack/domain/cashLedger';
-import { viennaYearOf } from '@bettertrack/domain/tax';
-
-import { expenseDedupHash } from '../../data/expenseDedup';
-import { reducePosition } from '../../domain/holdings';
-import { hasActivePortfolio } from '../portfolio/portfolioService';
+import {
+  dePotCategoryForAssetType,
+  realizedSellsEur,
+  type SellRealizationEur,
+  type TaxableTransaction,
+  viennaYearOf,
+} from '@bettertrack/domain/tax';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '../../data/db';
+import { expenseDedupHash } from '../../data/expenseDedup';
+import type { CashMovementRecord } from '../../data/repositories/cashMovementRepository';
 import { createParanoidRehydrationSourceRepository } from '../../data/repositories/paranoidRehydrationRepository';
+import type { DividendRecord } from '../../data/repositories/taxRepository';
+import type { TransactionRecord } from '../../data/repositories/transactionRepository';
 import {
   createParanoidRehydrationTransactionRepository,
   withParanoidRehydrationTransaction,
@@ -30,6 +37,17 @@ import {
   standingOrders,
   userTaxSettings,
 } from '../../data/schema';
+import { reducePosition } from '../../domain/holdings';
+import { hasActivePortfolio } from '../portfolio/portfolioService';
+import { buildFrozenComponentState, lockedResidueForYear } from '../tax/closedSettlement';
+import { portfolioHasDeRows, portfolioHasFiRows } from '../tax/countryState';
+import { customParamsKey, portfolioHasCustomRows } from '../tax/customState';
+import {
+  closedYearSlice,
+  openDerivableYears,
+  settleOpenYears,
+  type OpenRegime,
+} from '../tax/openYear';
 
 /**
  * Dedicated normal-write transaction seam for PD3a. It validates exactly the
@@ -117,33 +135,6 @@ function requireSubset(
     if (!allowed.has(id)) {
       throw new ParanoidRehydrationError('INVALID_REFERENCE', `${label} references missing ${id}`);
     }
-  }
-}
-
-/**
- * V1 rehydration has no transaction-bound tax planner yet. Country/custom
- * histories cannot be replayed faithfully as frozen rows: normal writes derive
- * their tax facts and append both per-row settlements and historical corrections
- * from the complete pre-write state. Reject those documents before the outer
- * transaction rather than silently restoring a tax report and cash ledger that
- * the normal write path could never produce. Tax overrides are likewise rejected
- * because normal override writes reconcile affected open years.
- */
-function validateSupportedTaxRehydration(entities: readonly Entity[]): void {
-  const engineTaxRow = [...rows(entities, 'transaction'), ...rows(entities, 'dividend')].find(
-    (entity) => entity.data.taxMode === 'country_specific' || entity.data.taxMode === 'custom',
-  );
-  if (engineTaxRow) {
-    throw new ParanoidRehydrationError(
-      'INVALID_REFERENCE',
-      'country and custom tax histories require transaction-bound rehydration planning',
-    );
-  }
-  if (rows(entities, 'portfolioSetting').some((entity) => entity.data.key === 'tax')) {
-    throw new ParanoidRehydrationError(
-      'INVALID_REFERENCE',
-      'portfolio tax overrides require transaction-bound rehydration reconciliation',
-    );
   }
 }
 
@@ -668,14 +659,22 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
   }
 }
 
-async function resolveReferencedAssetCurrencies(
+interface ReferencedAsset {
+  currency: string;
+  type: string;
+}
+
+async function resolveReferencedAssets(
   tx: Database,
   entities: readonly Entity[],
-): Promise<ReadonlyMap<string, string>> {
-  const currencies = new Map(
-    rows(entities, 'customAsset').map((entity) => [entity.id, entity.data.currency]),
+): Promise<ReadonlyMap<string, ReferencedAsset>> {
+  const assetsById = new Map<string, ReferencedAsset>(
+    rows(entities, 'customAsset').map((entity) => [
+      entity.id,
+      { currency: entity.data.currency, type: entity.data.type },
+    ]),
   );
-  const customAssetIds = new Set(currencies.keys());
+  const customAssetIds = new Set(assetsById.keys());
   const referencedAssetIds = new Set([
     ...rows(entities, 'transaction').map((entity) => entity.data.assetId),
     ...rows(entities, 'dividend').map((entity) => entity.data.assetId),
@@ -684,14 +683,16 @@ async function resolveReferencedAssetCurrencies(
       .filter((assetId): assetId is string => assetId !== null),
   ]);
   const marketAssetIds = [...referencedAssetIds].filter((id) => !customAssetIds.has(id));
-  if (marketAssetIds.length === 0) return currencies;
+  if (marketAssetIds.length === 0) return assetsById;
   const found = await tx
-    .select({ id: assets.id, currency: assets.currency })
+    .select({ id: assets.id, currency: assets.currency, type: assets.type })
     .from(assets)
     .where(and(inArray(assets.id, marketAssetIds), isNull(assets.ownerId)));
   requireSubset(marketAssetIds, new Set(found.map((asset) => asset.id)), 'restore source');
-  for (const asset of found) currencies.set(asset.id, asset.currency);
-  return currencies;
+  for (const asset of found) {
+    assetsById.set(asset.id, { currency: asset.currency, type: asset.type });
+  }
+  return assetsById;
 }
 
 /**
@@ -701,7 +702,7 @@ async function resolveReferencedAssetCurrencies(
  */
 async function validateTradeCashLinks(
   entities: readonly Entity[],
-  assetCurrencies: ReadonlyMap<string, string>,
+  referencedAssets: ReadonlyMap<string, ReferencedAsset>,
   toCashEur: (amount: number, currency: string, day: string) => Promise<number>,
 ): Promise<void> {
   const movementsByTransactionId = new Map<string, EntityOf<'cashMovement'>[]>();
@@ -718,8 +719,8 @@ async function validateTradeCashLinks(
       (movement) => movement.data.kind === grossKind,
     );
     if (gross.length === 0) continue;
-    const currency = assetCurrencies.get(transaction.data.assetId);
-    if (!currency) {
+    const asset = referencedAssets.get(transaction.data.assetId);
+    if (!asset) {
       throw new ParanoidRehydrationError('INVALID_REFERENCE', 'transaction asset is unavailable');
     }
     const nativeAmount =
@@ -727,7 +728,7 @@ async function validateTradeCashLinks(
         ? transaction.data.quantity * transaction.data.price + transaction.data.fee
         : transaction.data.quantity * transaction.data.price - transaction.data.fee;
     const day = new Date(transaction.data.executedAt).toISOString().slice(0, 10);
-    const expectedMagnitude = floorCents(await toCashEur(nativeAmount, currency, day));
+    const expectedMagnitude = floorCents(await toCashEur(nativeAmount, asset.currency, day));
     const expectedAmount = transaction.data.side === 'buy' ? -expectedMagnitude : expectedMagnitude;
     if (
       expectedMagnitude <= 0 ||
@@ -737,6 +738,369 @@ async function validateTradeCashLinks(
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
         'linked transaction cash movement does not match normal trade economics',
+      );
+    }
+  }
+}
+
+function toTransactionRecord(entity: EntityOf<'transaction'>): TransactionRecord {
+  return {
+    id: entity.id,
+    portfolioId: entity.data.portfolioId,
+    assetId: entity.data.assetId,
+    side: entity.data.side,
+    quantity: entity.data.quantity,
+    price: entity.data.price,
+    fee: entity.data.fee,
+    executedAt: new Date(entity.data.executedAt),
+    note: entity.data.note,
+    taxMode: entity.data.taxMode,
+    taxCountry: entity.data.taxCountry,
+    taxAmountEur: entity.data.taxAmountEur,
+    taxParams: entity.data.taxParams,
+    allowUncovered: entity.data.allowUncovered,
+    uncoveredEntryPrice: entity.data.uncoveredEntryPrice,
+    source: entity.data.source,
+  };
+}
+
+function toDividendRecord(entity: EntityOf<'dividend'>): DividendRecord {
+  return {
+    id: entity.id,
+    portfolioId: entity.data.portfolioId,
+    assetId: entity.data.assetId,
+    cashSourceId: entity.data.cashSourceId,
+    grossAmountEur: entity.data.grossAmountEur,
+    executedAt: new Date(entity.data.executedAt),
+    note: entity.data.note,
+    taxMode: entity.data.taxMode,
+    taxCountry: entity.data.taxCountry,
+    taxAmountEur: entity.data.taxAmountEur,
+    taxParams: entity.data.taxParams,
+    source: entity.data.source,
+    createdAt: new Date(entity.editedAt),
+  };
+}
+
+function toCashMovementRecord(entity: EntityOf<'cashMovement'>): CashMovementRecord {
+  return {
+    id: entity.id,
+    portfolioId: entity.data.portfolioId,
+    sourceId: entity.data.sourceId,
+    kind: entity.data.kind,
+    amountEur: entity.data.amountEur,
+    transactionId: entity.data.transactionId,
+    transferId: entity.data.transferId,
+    counterpartSourceId: entity.data.counterpartSourceId,
+    dividendId: entity.data.dividendId,
+    taxYear: entity.data.taxYear,
+    executedAt: new Date(entity.data.executedAt),
+    note: entity.data.note,
+    source: entity.data.source,
+    createdAt: new Date(entity.editedAt),
+  };
+}
+
+function validateFrozenEngineTaxFacts(
+  entity: EntityOf<'transaction'> | EntityOf<'dividend'>,
+): boolean {
+  if (entity.data.taxMode !== 'country_specific' && entity.data.taxMode !== 'custom') return false;
+  if (entity.data.taxMode === 'country_specific') {
+    if (
+      entity.data.taxCountry !== 'AT' &&
+      entity.data.taxCountry !== 'DE' &&
+      entity.data.taxCountry !== 'FI'
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        `country tax row ${entity.id} has an unsupported frozen country`,
+      );
+    }
+    return true;
+  }
+  if (!customTaxParamsSchema.safeParse(entity.data.taxParams).success) {
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      `custom tax row ${entity.id} has invalid frozen parameters`,
+    );
+  }
+  return true;
+}
+
+function taxOpenRegimeFromSettings(entities: readonly Entity[], portfolioId: string): OpenRegime {
+  const setting = rows(entities, 'portfolioSetting').find(
+    (entity) => entity.data.portfolioId === portfolioId && entity.data.key === 'tax',
+  );
+  if (!setting) return { kind: 'none' };
+  const value = setting.data.value;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ParanoidRehydrationError('INVALID_REFERENCE', 'portfolio tax override is malformed');
+  }
+  const raw = value as Record<string, unknown>;
+  if (raw.mode === 'none') return { kind: 'none' };
+  if (raw.mode === 'manual_per_trade') return { kind: 'manual' };
+  if (raw.mode === 'country_specific') {
+    if (raw.country === 'AT' || raw.country === 'DE' || raw.country === 'FI') {
+      return { kind: 'country', country: raw.country };
+    }
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      'country tax override needs a supported country',
+    );
+  }
+  if (raw.mode === 'custom') {
+    const params = customTaxParamsSchema.safeParse(raw.custom);
+    if (params.success) return { kind: 'custom', params: params.data };
+  }
+  throw new ParanoidRehydrationError('INVALID_REFERENCE', 'portfolio tax override is malformed');
+}
+
+function validateTaxSettingsRehydration(entities: readonly Entity[]): void {
+  for (const setting of rows(entities, 'taxSetting')) {
+    const value = setting.data;
+    if (
+      (value.mode === 'country_specific') !== (value.country !== null) ||
+      (value.mode === 'custom') !== (value.customParams !== null) ||
+      (value.mode !== 'manual_per_trade' &&
+        (value.manualDefaultAmountEur !== null || value.manualDefaultRatePct !== null)) ||
+      (value.manualDefaultAmountEur !== null && value.manualDefaultRatePct !== null)
+    ) {
+      throw new ParanoidRehydrationError('INVALID_REFERENCE', 'tax setting is malformed');
+    }
+    if (value.mode === 'custom' && !customTaxParamsSchema.safeParse(value.customParams).success) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'tax setting custom parameters are invalid',
+      );
+    }
+  }
+
+  for (const setting of rows(entities, 'portfolioSetting')) {
+    if (setting.data.key === 'tax') taxOpenRegimeFromSettings(entities, setting.data.portfolioId);
+  }
+}
+
+function openTaxTarget(
+  transactions: readonly TransactionRecord[],
+  dividends: readonly DividendRecord[],
+  movements: readonly CashMovementRecord[],
+  frozen: ReturnType<typeof buildFrozenComponentState>,
+  regime: Exclude<OpenRegime, { kind: 'manual' }>,
+  openFrom: number,
+  categoryOf: (assetId: string) => ReturnType<typeof dePotCategoryForAssetType>,
+  movingAverageRealizations: ReadonlyMap<string, SellRealizationEur>,
+  fifoRealizations: ReadonlyMap<string, SellRealizationEur>,
+): void {
+  const years = openDerivableYears(
+    { transactions, dividendRows: dividends, yearOf: (at) => viennaYearOf(at.toISOString()) },
+    movements,
+    openFrom,
+  );
+  if (years.length === 0) return;
+  const settlements = settleOpenYears({
+    regime,
+    view: {
+      transactions,
+      dividendRows: dividends,
+      realizationsFor: (strategy) =>
+        strategy === 'fifo' ? fifoRealizations : movingAverageRealizations,
+      categoryOf,
+      yearOf: (at) => viennaYearOf(at.toISOString()),
+    },
+    years,
+    heldOf: (_year) => 0,
+    closedDeEvents:
+      regime.kind === 'country' && regime.country === 'DE'
+        ? closedYearSlice(frozen.deEvents, openFrom)
+        : undefined,
+    closedCustomEvents:
+      regime.kind === 'custom'
+        ? closedYearSlice(
+            frozen.customGroups.get(customParamsKey(regime.params))?.eventsByYear ?? new Map(),
+            openFrom,
+          )
+        : undefined,
+  });
+  for (const settlement of settlements) {
+    if (settlement.targetAfterEur < 0) {
+      throw new ParanoidRehydrationError('INVALID_REFERENCE', 'open tax target is invalid');
+    }
+  }
+}
+
+async function validateTaxRehydration(
+  entities: readonly Entity[],
+  referencedAssets: ReadonlyMap<string, ReferencedAsset>,
+  toCashEur: (amount: number, currency: string, day: string) => Promise<number>,
+  now: Date,
+): Promise<void> {
+  validateTaxSettingsRehydration(entities);
+  const transactions = rows(entities, 'transaction').map(toTransactionRecord);
+  const dividends = rows(entities, 'dividend').map(toDividendRecord);
+  const movements = rows(entities, 'cashMovement').map(toCashMovementRecord);
+  const transactionsById = new Map(
+    transactions.map((transaction) => [transaction.id, transaction]),
+  );
+  const dividendsById = new Map(dividends.map((dividend) => [dividend.id, dividend]));
+
+  const linkedTaxMovements = new Set<string>();
+  for (const movement of movements) {
+    if (movement.kind !== 'tax_withholding' && movement.kind !== 'tax_refund') continue;
+    const linked = movement.transactionId
+      ? transactionsById.get(movement.transactionId)
+      : movement.dividendId
+        ? dividendsById.get(movement.dividendId)
+        : undefined;
+    if (!linked) continue;
+    const frozenTax = linked.taxAmountEur;
+    if (
+      frozenTax === null ||
+      frozenTax === 0 ||
+      movement.amountEur !== -frozenTax ||
+      movement.taxYear !== viennaYearOf(linked.executedAt.toISOString())
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'linked tax movement does not match its frozen tax fact',
+      );
+    }
+    linkedTaxMovements.add(movement.id);
+  }
+
+  for (const entity of [...rows(entities, 'transaction'), ...rows(entities, 'dividend')]) {
+    if (!validateFrozenEngineTaxFacts(entity)) continue;
+    const linked = movements.filter(
+      (movement) =>
+        (entity.kind === 'transaction'
+          ? movement.transactionId === entity.id
+          : movement.dividendId === entity.id) &&
+        (movement.kind === 'tax_withholding' || movement.kind === 'tax_refund'),
+    );
+    if (linked.length > 1 || (linked.length === 1 && !linkedTaxMovements.has(linked[0]!.id))) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'engine tax rows require exactly their matching tax settlement',
+      );
+    }
+  }
+
+  const assetById = referencedAssets;
+  const taxables: TaxableTransaction[] = await Promise.all(
+    transactions.map(async (transaction): Promise<TaxableTransaction> => {
+      const asset = assetById.get(transaction.assetId);
+      if (!asset) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'tax transaction asset is unavailable',
+        );
+      }
+      const day = transaction.executedAt.toISOString().slice(0, 10);
+      return {
+        id: transaction.id,
+        assetId: transaction.assetId,
+        side: transaction.side,
+        quantity: transaction.quantity,
+        priceEur:
+          transaction.price === 0 ? 0 : await toCashEur(transaction.price, asset.currency, day),
+        feeEur: transaction.fee === 0 ? 0 : await toCashEur(transaction.fee, asset.currency, day),
+        executedAt: transaction.executedAt.toISOString(),
+        allowUncovered: transaction.allowUncovered,
+        uncoveredEntryPriceEur:
+          transaction.uncoveredEntryPrice === null || transaction.uncoveredEntryPrice === 0
+            ? transaction.uncoveredEntryPrice
+            : await toCashEur(transaction.uncoveredEntryPrice, asset.currency, day),
+      };
+    }),
+  );
+  const movingAverageRealizations = new Map<string, SellRealizationEur>();
+  for (const realization of realizedSellsEur(taxables)) {
+    movingAverageRealizations.set(realization.id, realization);
+  }
+  const fifoRealizations = new Map<string, SellRealizationEur>();
+  for (const realization of realizedSellsEur(taxables, 'fifo')) {
+    fifoRealizations.set(realization.id, realization);
+  }
+  const categoryOf = (assetId: string) => {
+    const asset = assetById.get(assetId);
+    if (!asset) throw new ParanoidRehydrationError('INVALID_REFERENCE', 'tax asset is unavailable');
+    return dePotCategoryForAssetType(asset.type);
+  };
+
+  for (const portfolio of rows(entities, 'portfolio')) {
+    const portfolioId = portfolio.id;
+    const portfolioTransactions = transactions.filter(
+      (transaction) => transaction.portfolioId === portfolioId,
+    );
+    const portfolioDividends = dividends.filter((dividend) => dividend.portfolioId === portfolioId);
+    const portfolioMovements = movements.filter((movement) => movement.portfolioId === portfolioId);
+    const engineTransactions = portfolioTransactions.filter(
+      (transaction) =>
+        transaction.side === 'sell' &&
+        (transaction.taxMode === 'country_specific' || transaction.taxMode === 'custom'),
+    );
+    const engineDividends = portfolioDividends.filter(
+      (dividend) => dividend.taxMode === 'country_specific' || dividend.taxMode === 'custom',
+    );
+    if (engineTransactions.length === 0 && engineDividends.length === 0) continue;
+
+    const involveDe = portfolioHasDeRows(portfolioTransactions, portfolioDividends);
+    const involveFi = portfolioHasFiRows(portfolioTransactions, portfolioDividends);
+    const involveCustom = portfolioHasCustomRows(portfolioTransactions, portfolioDividends);
+    const frozen = buildFrozenComponentState({
+      transactions: portfolioTransactions,
+      dividendRows: portfolioDividends,
+      realizations: movingAverageRealizations,
+      fifoRealizations,
+      categoryOf,
+      involveDe,
+      involveFi,
+      involveCustom,
+    });
+
+    const activeOpenRegime = taxOpenRegimeFromSettings(entities, portfolioId);
+    const openFrom =
+      activeOpenRegime.kind === 'manual'
+        ? Number.POSITIVE_INFINITY
+        : viennaYearOf(now.toISOString());
+    const closedYears = new Set<number>();
+    for (const transaction of engineTransactions) {
+      const year = viennaYearOf(transaction.executedAt.toISOString());
+      if (year < openFrom) closedYears.add(year);
+    }
+    for (const dividend of engineDividends) {
+      const year = viennaYearOf(dividend.executedAt.toISOString());
+      if (year < openFrom) closedYears.add(year);
+    }
+    for (const movement of portfolioMovements) {
+      if (
+        (movement.kind === 'tax_withholding' || movement.kind === 'tax_refund') &&
+        movement.taxYear !== null &&
+        movement.taxYear < openFrom
+      ) {
+        closedYears.add(movement.taxYear);
+      }
+    }
+
+    for (const year of closedYears) {
+      const residue = lockedResidueForYear(frozen, portfolioMovements, year);
+      if (!Number.isFinite(residue)) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          `tax year ${year} carries an invalid frozen tax residue`,
+        );
+      }
+    }
+    if (activeOpenRegime.kind !== 'manual') {
+      openTaxTarget(
+        portfolioTransactions,
+        portfolioDividends,
+        portfolioMovements,
+        frozen,
+        activeOpenRegime,
+        openFrom,
+        categoryOf,
+        movingAverageRealizations,
+        fifoRealizations,
       );
     }
   }
@@ -829,7 +1193,6 @@ export function createParanoidRehydrationService(
       // validate the restore graph from live facts before any database mutation.
       const entities = liveEntities(normalizedRequest.document);
       validateGraph(userId, entities);
-      validateSupportedTaxRehydration(entities);
 
       return withParanoidRehydrationTransaction(deps.db, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);
@@ -855,8 +1218,9 @@ export function createParanoidRehydrationService(
         }
 
         await ensureNoExistingRestorableRows(tx, userId);
-        const assetCurrencies = await resolveReferencedAssetCurrencies(tx, entities);
-        await validateTradeCashLinks(entities, assetCurrencies, toCashEur);
+        const referencedAssets = await resolveReferencedAssets(tx, entities);
+        await validateTradeCashLinks(entities, referencedAssets, toCashEur);
+        await validateTaxRehydration(entities, referencedAssets, toCashEur, now());
 
         const sourceRows = createParanoidRehydrationSourceRepository(tx);
         await sourceRows.restoreCustomAssets(userId, rows(entities, 'customAsset'));

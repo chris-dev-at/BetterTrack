@@ -76,6 +76,7 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
           currency: 'EUR',
           category: 'other',
           smoothing: false,
+          recategorize: false,
         }),
         entity(CASH_SOURCE_ID, 'cashSource', {
           portfolioId: PORTFOLIO_ID,
@@ -195,6 +196,26 @@ describe('paranoid rehydration service', () => {
           ),
         ),
     ).toHaveLength(1);
+  });
+
+  it('preserves a custom asset recategorization marker through restoration', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const asset = input.document.entities.find((entry) => entry.kind === 'customAsset');
+    if (!asset || asset.kind !== 'customAsset') throw new Error('expected custom asset');
+    asset.data.recategorize = true;
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+    const [restored] = await db
+      .select({ meta: assets.meta })
+      .from(assets)
+      .where(eq(assets.id, ASSET_ID));
+    expect(restored?.meta).toMatchObject({
+      category: 'other',
+      smoothing: false,
+      recategorize: true,
+    });
   });
 
   it('restores a custom-asset value point with precision beyond transaction money', async () => {
@@ -346,33 +367,113 @@ describe('paranoid rehydration service', () => {
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
 
-  it('rejects country-tax history before the restore transaction', async () => {
+  it('restores reconciled country-tax history and its portfolio override', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
     const transaction = input.document.entities.find((entry) => entry.kind === 'transaction')!;
-    if (transaction.kind !== 'transaction') throw new Error('expected transaction');
+    const movement = input.document.entities.find((entry) => entry.kind === 'cashMovement')!;
+    if (transaction.kind !== 'transaction' || movement.kind !== 'cashMovement') {
+      throw new Error('expected transaction and cash movement');
+    }
     transaction.data.side = 'sell';
     transaction.data.allowUncovered = true;
     transaction.data.uncoveredEntryPrice = null;
     transaction.data.taxMode = 'country_specific';
     transaction.data.taxCountry = 'AT';
     transaction.data.taxAmountEur = 0;
-    const service = createParanoidRehydrationService({ db });
-
-    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
-      code: 'INVALID_REFERENCE',
-    });
-    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
-  });
-
-  it('rejects a tax override before the restore transaction', async () => {
-    const { db, user } = await makeParanoid();
-    const input = request();
+    movement.data.kind = 'sell_proceeds';
+    movement.data.transactionId = TRANSACTION_ID;
+    movement.data.amountEur = 100;
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'portfolioSetting', {
         portfolioId: PORTFOLIO_ID,
         key: 'tax',
         value: { mode: 'country_specific', country: 'AT' },
+        updatedAt: editedAt,
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+    expect(await db.select().from(transactions)).toMatchObject([
+      {
+        id: TRANSACTION_ID,
+        taxMode: 'country_specific',
+        taxCountry: 'AT',
+        taxAmountEur: '0.000000',
+      },
+    ]);
+  });
+
+  it('restores reconciled custom-tax dividend history', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'dividend', {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        cashSourceId: CASH_SOURCE_ID,
+        grossAmountEur: 10,
+        executedAt: editedAt,
+        note: null,
+        taxMode: 'custom',
+        taxCountry: null,
+        taxAmountEur: 1,
+        taxParams: {
+          ratePct: 10,
+          lossOffset: true,
+          refund: true,
+          yearReset: true,
+          carryForward: false,
+          costBasis: 'moving-average',
+        },
+        source: 'manual',
+      }),
+      entity('018f0000-0000-7000-8000-00000000000e', 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'dividend',
+        amountEur: 10,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: '018f0000-0000-7000-8000-00000000000d',
+        taxYear: null,
+        executedAt: editedAt,
+        note: null,
+        source: 'manual',
+      }),
+      entity('018f0000-0000-7000-8000-00000000000f', 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'tax_withholding',
+        amountEur: -1,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: '018f0000-0000-7000-8000-00000000000d',
+        taxYear: 2026,
+        executedAt: editedAt,
+        note: null,
+        source: 'manual',
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toHaveLength(
+      1,
+    );
+  });
+
+  it('rejects a malformed tax override before the restore transaction', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-000000000010', 'portfolioSetting', {
+        portfolioId: PORTFOLIO_ID,
+        key: 'tax',
+        value: { mode: 'custom', custom: { ratePct: 150 } },
         updatedAt: editedAt,
       }),
     );
