@@ -2521,6 +2521,10 @@
           <button data-tab="usage" role="tab" aria-controls="tab-usage" aria-selected="false">
             <span class="nav-glyph" aria-hidden="true">05</span><span class="nav-label">Usage</span>
           </button>
+          <button data-tab="status" role="tab" aria-controls="tab-status" aria-selected="false">
+            <span class="nav-glyph" aria-hidden="true">06</span
+            ><span class="nav-label">Status</span>
+          </button>
         </nav>
         <div class="sidebar-status" aria-label="Factory connection status">
           <div class="status-line"><span>Mode</span><b id="mode">–</b></div>
@@ -3153,6 +3157,50 @@
           </div>
         </div>
       </section>
+
+      <!-- ================= STATUS ================= -->
+      <section
+        class="tab"
+        id="tab-status"
+        role="tabpanel"
+        aria-labelledby="page-title"
+        tabindex="-1"
+      >
+        <div class="section-intro">
+          <div>
+            <h3>Status</h3>
+            <p>
+              One page: limits, what is open, what needs a human, what shipped, and what the factory
+              just did.
+            </p>
+          </div>
+        </div>
+        <div class="strip" id="st-limits"></div>
+        <div class="grid2">
+          <div class="card">
+            <h2>Needs human <span class="chip" id="st-nh-count">0</span></h2>
+            <div class="list" id="st-needs-human"></div>
+          </div>
+          <div class="card">
+            <h2>Awaiting owner <span class="chip" id="st-ao-count">0</span></h2>
+            <div class="list" id="st-awaiting-owner"></div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <h2>Open issues <span class="chip" id="st-oi-count">0</span></h2>
+            <div class="list" id="st-open-issues"></div>
+          </div>
+          <div class="card">
+            <h2>Recently completed <span class="chip" id="st-rc-count">0</span></h2>
+            <div class="list" id="st-recent"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Events</h2>
+          <div class="log" id="st-events"></div>
+        </div>
+      </section>
     </main>
 
     <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -3233,6 +3281,11 @@
         usage: {
           title: 'Usage',
           subtitle: 'Understand limits, tokens, actual telemetry, and API-equivalent estimates.',
+        },
+        status: {
+          title: 'Status',
+          subtitle:
+            'Limits, open issues, decisions waiting on a human or the owner, what shipped, and the event log — on one page.',
         },
       };
       function setTab(t, moveFocus = false) {
@@ -4949,7 +5002,99 @@
 
         if (activeTab === 'flow') renderFlow(s, state);
         renderDetail(s, multiC, state, github);
+        renderStatus(s);
         if (activeTab === 'models') renderModels(s);
+      }
+
+      /* ---- STATUS view: limits, open work, decisions, shipped, events on one page ---- */
+      function statusRows(items, empty, fmt) {
+        if (!items || !items.length) return `<div class="hint">${esc(empty)}</div>`;
+        return items.map(fmt).join('');
+      }
+      function issueLink(n, title) {
+        return `<a href="https://github.com/chris-dev-at/BetterTrack/issues/${encodeURIComponent(n)}" target="_blank" rel="noopener">#${esc(String(n))}</a> ${esc(title || '')}`;
+      }
+      function renderStatus(s) {
+        const gh = s.github || {},
+          u = s.usage || {},
+          p = s.protocol || {};
+
+        // Limits: same windows the header strip uses, restated here so this page stands alone.
+        const pct = (w) => (w && typeof w.used === 'number' ? Math.round(w.used) : null);
+        const lim = [
+          ['5h window', pct(u.fiveHour), u.fiveHour?.resetsAt],
+          ['7d window', pct(u.sevenDay), u.sevenDay?.resetsAt],
+        ]
+          .map(([label, v, reset]) => {
+            const val = v === null ? 'unavailable' : `${v}% used`;
+            const sub = reset ? `resets ${esc(new Date(reset).toLocaleString())}` : 'no reset data';
+            return `<div class="tile"><div class="hint">${esc(label)}</div><b>${esc(val)}</b><div class="hint">${sub}</div></div>`;
+          })
+          .join('');
+        const counts = `<div class="tile"><div class="hint">Open / needs-human / awaiting-owner</div><b>${(gh.issues || []).length} · ${(gh.needsHuman || []).length} · ${(gh.awaitingOwner || []).length}</b><div class="hint">mode ${esc(p.mode || '–')} · phase ${esc(p.phase || '–')}</div></div>`;
+        const el = $('st-limits');
+        if (el) el.innerHTML = lim + counts;
+
+        const set = (id, html) => {
+          const n = $(id);
+          if (n) n.innerHTML = html;
+        };
+        const setCount = (id, n) => {
+          const e = $(id);
+          if (e) e.textContent = String(n);
+        };
+
+        const nh = gh.needsHuman || [];
+        setCount('st-nh-count', nh.length);
+        set(
+          'st-needs-human',
+          statusRows(
+            nh,
+            'Nothing blocked on a decision.',
+            (i) => `<div class="row">${issueLink(i.number, i.title)}</div>`,
+          ),
+        );
+
+        const ao = gh.awaitingOwner || [];
+        setCount('st-ao-count', ao.length);
+        set(
+          'st-awaiting-owner',
+          statusRows(
+            ao,
+            'Nothing awaiting the owner.',
+            (i) => `<div class="row">${issueLink(i.number, i.title)}</div>`,
+          ),
+        );
+
+        const oi = gh.issues || [];
+        setCount('st-oi-count', oi.length);
+        set(
+          'st-open-issues',
+          statusRows(oi.slice(0, 25), 'No open autopilot issues.', (i) => {
+            const deps =
+              i.meta && i.meta.dependsOn && i.meta.dependsOn.length
+                ? ` <span class="hint">waits on ${esc(i.meta.dependsOn.join(', '))}</span>`
+                : '';
+            const diff = (i.labels || []).find((l) => l.startsWith('diff:')) || '';
+            return `<div class="row">${issueLink(i.number, i.title)} ${diff ? `<span class="chip">${esc(diff)}</span>` : ''}${deps}</div>`;
+          }),
+        );
+
+        const rc = gh.merged || [];
+        setCount('st-rc-count', rc.length);
+        set(
+          'st-recent',
+          statusRows(rc.slice(0, 15), 'Nothing merged yet.', (m) => {
+            const when = m.mergedAt ? esc(new Date(m.mergedAt).toLocaleString()) : '';
+            return `<div class="row">${issueLink(m.number, m.title)} <span class="hint">${when}</span></div>`;
+          }),
+        );
+
+        const ev = (p.events || []).slice(-60).reverse();
+        set(
+          'st-events',
+          statusRows(ev, 'No factory events yet.', (line) => `<div class="row">${esc(line)}</div>`),
+        );
       }
 
       /* ---- FLOW view ---- */
