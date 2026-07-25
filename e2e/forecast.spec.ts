@@ -2,7 +2,7 @@ import { expect, request as newRequestContext, test, type Page } from '@playwrig
 
 import { loginAsAdmin } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
-import { provisionUser } from './support/users';
+import { provisionUserInContext } from './support/users';
 
 /**
  * V5-P14's standing-order + Forecast gate. A recurring cash-add standing order
@@ -102,68 +102,66 @@ async function pinForecastInputs(page: Page): Promise<{ assertUsed: () => void }
 }
 
 test('forecast: a scheduled cash-add lifts the enabled one-year projection', async ({
-  browser,
+  context,
 }) => {
   test.setTimeout(120_000);
 
   const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
   await loginAsAdmin(apiRequest);
-  const owner = await provisionUser(browser, apiRequest, 'forecastowner');
+  // Use the test context so this scenario retains each project's device
+  // emulation; in particular, mobile-chromium exercises the Pixel 7 viewport.
+  const owner = await provisionUserInContext(context, apiRequest, 'forecastowner');
   await apiRequest.dispose();
 
   const page = owner.page;
   const fixtures = await pinForecastInputs(page);
 
-  try {
-    await page.goto('/forecast');
+  await page.goto('/forecast');
 
-    const baseLegend = page.getByTestId('projection-series-base');
-    const returnFactor = page.getByRole('checkbox', { name: 'Average return' });
-    const ordersFactor = page.getByRole('checkbox', { name: 'Standing orders' });
-    await expect(baseLegend).toBeVisible({ timeout: 15_000 });
+  const baseLegend = page.getByTestId('projection-series-base');
+  const returnFactor = page.getByRole('checkbox', { name: 'Average return' });
+  const ordersFactor = page.getByRole('checkbox', { name: 'Standing orders' });
+  await expect(baseLegend).toBeVisible({ timeout: 15_000 });
 
-    // A fresh default portfolio is the deterministic €0 cash/net-worth fixture.
-    // Disable every factor first, then explicitly enable standing orders once the
-    // real UI flow has persisted its scheduled €500 monthly contribution.
-    await page.getByLabel('Horizon (years)').fill('1');
-    await returnFactor.uncheck();
-    await ordersFactor.uncheck();
-    await expect(baseLegend).toContainText('0.00 €');
+  // A fresh default portfolio is the deterministic €0 cash/net-worth fixture.
+  // Disable every factor first, then explicitly enable standing orders once the
+  // real UI flow has persisted its scheduled €500 monthly contribution.
+  await page.getByLabel('Horizon (years)').fill('1');
+  await returnFactor.uncheck();
+  await ordersFactor.uncheck();
+  await expect(baseLegend).toContainText('0.00 €');
 
-    // Create the recurring contribution through the real dialog, with a fixed
-    // schedule rather than relying on the API's default "today" start date.
-    await page.getByRole('button', { name: 'New standing order' }).click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole('button', { name: 'Add cash' }).click();
-    await dialog.getByLabel('Amount (€)').fill('500');
-    await dialog.getByLabel('Label (optional)').fill('salary');
-    await dialog.getByLabel('Day of month').fill('15');
-    await dialog.getByLabel('Start date').fill(ORDER_START_DATE);
-    await dialog.getByRole('button', { name: 'Create' }).click();
-    await expect(dialog).toBeHidden();
+  // Create the recurring contribution through the real dialog, with a fixed
+  // schedule rather than relying on the API's default "today" start date.
+  await page.getByRole('button', { name: 'New standing order' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Add cash' }).click();
+  await dialog.getByLabel('Amount (€)').fill('500');
+  await dialog.getByLabel('Label (optional)').fill('salary');
+  await dialog.getByLabel('Day of month').fill('15');
+  await dialog.getByLabel('Start date').fill(ORDER_START_DATE);
+  await dialog.getByRole('button', { name: 'Create' }).click();
+  await expect(dialog).toBeHidden();
 
-    // The row proves the persisted user-facing schedule and amount, not merely
-    // that a standing-order request returned successfully.
-    const section = page.getByRole('region', { name: /standing orders/i });
-    const row = section.getByRole('listitem').filter({ hasText: 'salary' });
-    await expect(row).toBeVisible({ timeout: 15_000 });
-    await expect(row).toContainText('Active');
-    await expect(row).toContainText('Add 500.00 €');
-    await expect(row).toContainText('Monthly on day 15');
-    await expect(row).toContainText('Next run: 15 Feb 2090');
+  // The row proves the persisted user-facing schedule and amount, not merely
+  // that a standing-order request returned successfully.
+  const section = page.getByRole('region', { name: /standing orders/i });
+  const row = section.getByRole('listitem').filter({ hasText: 'salary' });
+  await expect(row).toBeVisible({ timeout: 15_000 });
+  await expect(row).toContainText('Active');
+  await expect(row).toContainText('Add 500.00 €');
+  await expect(row).toContainText('Monthly on day 15');
+  await expect(row).toContainText('Next run: 15 Feb 2090');
 
-    // The persisted order is deliberately inert while its factor is disabled.
-    await expect(ordersFactor).not.toBeChecked();
-    await expect(baseLegend).toContainText('0.00 €');
+  // The persisted order is deliberately inert while its factor is disabled.
+  await expect(ordersFactor).not.toBeChecked();
+  await expect(baseLegend).toContainText('0.00 €');
 
-    // Enabling the factor changes the real browser projection in the expected
-    // positive direction and exposes the exact one-year scheduled contribution.
-    await ordersFactor.check();
-    await expect(ordersFactor).toBeChecked();
-    await expect(baseLegend).toContainText(ONE_YEAR_SALARY_TOTAL, { timeout: 15_000 });
-    fixtures.assertUsed();
-  } finally {
-    await owner.context.close();
-  }
+  // Enabling the factor changes the real browser projection in the expected
+  // positive direction and exposes the exact one-year scheduled contribution.
+  await ordersFactor.check();
+  await expect(ordersFactor).toBeChecked();
+  await expect(baseLegend).toContainText(ONE_YEAR_SALARY_TOTAL, { timeout: 15_000 });
+  fixtures.assertUsed();
 });

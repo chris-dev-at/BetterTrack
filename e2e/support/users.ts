@@ -38,6 +38,20 @@ export async function provisionUser(
   apiRequest: APIRequestContext,
   label: string,
 ): Promise<E2EUser> {
+  const context = await browser.newContext();
+  return provisionUserInContext(context, apiRequest, label);
+}
+
+/**
+ * Mint a brand-new account in an existing browser context. Specs that need to
+ * retain their project's device settings should pass Playwright's `context`
+ * fixture here rather than creating an unconfigured context from `browser`.
+ */
+export async function provisionUserInContext(
+  context: BrowserContext,
+  apiRequest: APIRequestContext,
+  label: string,
+): Promise<E2EUser> {
   const uid = `${Date.now().toString(36)}${(seq++).toString(36)}`;
   const email = `e2e-${label}-${uid}@bettertrack.local`;
   const username = `e2e${label}${uid}`
@@ -46,7 +60,6 @@ export async function provisionUser(
     .slice(0, 40);
 
   const token = await createInvite(apiRequest, email);
-  const context = await browser.newContext();
   const page = await context.newPage();
   await acceptInvite(page, token, username, ACCOUNT_PASSWORD);
   return { context, page, username, email };
