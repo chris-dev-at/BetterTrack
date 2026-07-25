@@ -1,4 +1,5 @@
 import type { ExpenseRuleMatchType } from '@bettertrack/contracts';
+import RE2 from 're2';
 
 import type { ExpenseRuleRecord } from '../../data/repositories/expenseRepository';
 
@@ -11,9 +12,29 @@ import type { ExpenseRuleRecord } from '../../data/repositories/expenseRepositor
  *
  * All four match types are **case-insensitive** — bank memos are wildly cased
  * ("BILLA DANKT", "spotify") and a user categorizing "billa" expects both to hit.
- * A `regex` whose pattern is invalid never throws: it simply does not match, so a
- * fat-fingered rule can never crash an import.
+ * A `regex` always runs through RE2, whose matching time is linear rather than
+ * backtracking. That keeps legacy user-supplied rules from stalling an import.
+ * A malformed or unsupported pattern is inert, so a fat-fingered rule can never
+ * crash an import either.
  */
+
+/**
+ * Compile with the linear-time regex engine used for every expense-rule match.
+ * RE2 rejects syntax that would need backtracking (for example lookarounds and
+ * backreferences), as well as malformed patterns.
+ */
+function compileRegex(pattern: string): RE2 | null {
+  try {
+    return new RE2(pattern, 'i');
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a regex-rule pattern can be saved for RE2 evaluation. */
+export function isSupportedExpenseRuleRegex(pattern: string): boolean {
+  return compileRegex(pattern) !== null;
+}
 
 /** Whether `description` matches a single rule's `matchType` + `pattern`. */
 export function ruleMatches(
@@ -32,12 +53,9 @@ export function ruleMatches(
     case 'starts_with':
       return haystack.trimStart().startsWith(needle);
     case 'regex':
-      try {
-        return new RegExp(pattern, 'i').test(description);
-      } catch {
-        // An invalid pattern is inert — never a thrown import.
-        return false;
-      }
+      // Compile each stored pattern with RE2: rows persisted before write-time
+      // validation are deliberately not trusted to be safe.
+      return compileRegex(pattern)?.test(description) ?? false;
     default: {
       // Exhaustiveness guard: a new match type must be handled here.
       const _never: never = matchType;

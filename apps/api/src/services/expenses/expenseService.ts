@@ -28,6 +28,7 @@ import type {
   ExpenseTransactionRecord,
   ExpenseTransactionRepository,
 } from '../../data/repositories/expenseRepository';
+import { isSupportedExpenseRuleRegex } from './ruleEngine';
 
 /**
  * Expense tracking — CRUD orchestration (PROJECTPLAN.md §13.5 V5-P9, foundation
@@ -173,6 +174,8 @@ const CATEGORY_REF_INVALID = () =>
   badRequest('Referenced category not found.', 'EXPENSE_CATEGORY_REF_NOT_FOUND');
 const CATEGORY_NAME_TAKEN = () =>
   conflict('A category with that name already exists.', 'EXPENSE_CATEGORY_NAME_TAKEN');
+const RULE_REGEX_UNSUPPORTED = () =>
+  badRequest('This regex pattern uses unsupported syntax.', 'EXPENSE_RULE_REGEX_UNSUPPORTED');
 
 /** A Postgres unique-constraint violation (23505) — both postgres-js and PGlite set `.code`. */
 function isUniqueViolation(err: unknown): boolean {
@@ -375,6 +378,9 @@ export function createExpenseService(deps: ExpenseServiceDeps): ExpenseService {
     },
 
     async createRule(userId, input) {
+      if (input.matchType === 'regex' && !isSupportedExpenseRuleRegex(input.pattern)) {
+        throw RULE_REGEX_UNSUPPORTED();
+      }
       await assertOwnsCategory(userId, input.categoryId);
       const record = await rules.create(userId, {
         categoryId: input.categoryId,
@@ -388,6 +394,19 @@ export function createExpenseService(deps: ExpenseServiceDeps): ExpenseService {
 
     async updateRule(userId, ruleId, patch) {
       if (patch.categoryId !== undefined) await assertOwnsCategory(userId, patch.categoryId);
+
+      // Resolve the next shape before persisting. A PATCH may change only the
+      // pattern of an existing regex rule, or change a literal rule into a regex.
+      if (patch.matchType !== undefined || patch.pattern !== undefined) {
+        const existing = await rules.findByIdForOwner(userId, ruleId);
+        if (!existing) throw RULE_NOT_FOUND();
+        const matchType = patch.matchType ?? existing.matchType;
+        const pattern = patch.pattern ?? existing.pattern;
+        if (matchType === 'regex' && !isSupportedExpenseRuleRegex(pattern)) {
+          throw RULE_REGEX_UNSUPPORTED();
+        }
+      }
+
       const record = await rules.update(userId, ruleId, {
         categoryId: patch.categoryId,
         matchType: patch.matchType,

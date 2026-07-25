@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ExpenseRuleMatchType } from '@bettertrack/contracts';
 
 import type { ExpenseRuleRecord } from '../../../data/repositories/expenseRepository';
-import { categorizeByRules, ruleMatches } from '../ruleEngine';
+import { categorizeByRules, isSupportedExpenseRuleRegex, ruleMatches } from '../ruleEngine';
 
 /**
  * Auto-categorization rule engine (PROJECTPLAN.md §13.5 V5-P9, issue 2/3): all
@@ -13,6 +13,10 @@ import { categorizeByRules, ruleMatches } from '../ruleEngine';
  */
 
 let seq = 0;
+const CATASTROPHIC_PATTERN = '(a+)+$';
+const ADVERSARIAL_DESCRIPTION = `${'a'.repeat(30)}!`;
+const MAX_REGEX_EVALUATION_MS = 100;
+
 function rule(
   categoryId: string,
   matchType: ExpenseRuleMatchType,
@@ -50,6 +54,20 @@ describe('ruleMatches', () => {
     expect(ruleMatches('regex', '([a-z', 'anything')).toBe(false);
   });
 
+  it('uses a bounded engine for a catastrophic-backtracking pattern', () => {
+    const startedAt = performance.now();
+
+    expect(ruleMatches('regex', CATASTROPHIC_PATTERN, ADVERSARIAL_DESCRIPTION)).toBe(false);
+
+    expect(performance.now() - startedAt).toBeLessThan(MAX_REGEX_EVALUATION_MS);
+  });
+
+  it('identifies regex syntax the bounded engine cannot save', () => {
+    expect(isSupportedExpenseRuleRegex('net(flix|gear)')).toBe(true);
+    expect(isSupportedExpenseRuleRegex('(?=netflix)')).toBe(false);
+    expect(isSupportedExpenseRuleRegex('([a-z')).toBe(false);
+  });
+
   it('never matches an empty pattern', () => {
     expect(ruleMatches('contains', '   ', 'anything')).toBe(false);
   });
@@ -76,5 +94,14 @@ describe('categorizeByRules', () => {
   it('returns null when nothing matches', () => {
     expect(categorizeByRules('UNKNOWN MERCHANT', [rule('cat-x', 'contains', 'billa')])).toBeNull();
     expect(categorizeByRules('anything', [])).toBeNull();
+  });
+
+  it('bounds a catastrophic regex stored before write-time validation', () => {
+    const persistedRule = rule('cat-legacy', 'regex', CATASTROPHIC_PATTERN);
+    const startedAt = performance.now();
+
+    expect(categorizeByRules(ADVERSARIAL_DESCRIPTION, [persistedRule])).toBeNull();
+
+    expect(performance.now() - startedAt).toBeLessThan(MAX_REGEX_EVALUATION_MS);
   });
 });
