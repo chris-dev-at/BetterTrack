@@ -249,10 +249,29 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         }
         const expectedVersion = pending.header.vaultVersion - 1;
         if (remote.header.vaultVersion !== expectedVersion) {
-          // A competing writer won. Preserve pending and let reconnect pull and
-          // re-merge at entity granularity rather than force-overwrite.
-          state = { ...state, status: 'conflict', lastFailure: 'Vault CAS conflict.' };
-          return cloneState(state);
+          // A competing writer won. Reconcile the still-pending local document
+          // with the fresh remote snapshot before writing a normal successor.
+          const merged = mergeVaultDocuments({
+            left: pending.document,
+            leftVersion: pending.header.vaultVersion,
+            right: remote.document,
+            rightVersion: remote.header.vaultVersion,
+            deviceId: options.deviceId,
+            mergedAt: now(),
+          });
+          if (!merged.divergent) {
+            if (!(await commitLocal(remote))) return cloneState(state);
+            state = { status: 'synced', active: remote, pending: null };
+            return cloneState(state);
+          }
+          const reconciled = await encryptCandidate(
+            merged.document,
+            merged.vaultVersion,
+            newestHeader(pending, remote),
+          );
+          if (!(await commitLocal(reconciled))) return cloneState(state);
+          state = { status: 'pending-offline', active: reconciled, pending: reconciled };
+          return writePending(reconciled, remote.header.vaultVersion);
         }
         return writePending(pending, expectedVersion);
       }

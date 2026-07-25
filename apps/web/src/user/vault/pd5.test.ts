@@ -247,7 +247,7 @@ describe('PD5 sync reconciliation and restore', () => {
     const local = memoryLocalHome(localEnvelope, 2);
     const remote = memoryHome('server', remoteEnvelope, 3, [
       { status: 'conflict', currentVersion: 4 },
-      { status: 'ok', version: 5 },
+      { status: 'ok', version: 6 },
     ]);
     const engine = createVaultSyncEngine({
       local,
