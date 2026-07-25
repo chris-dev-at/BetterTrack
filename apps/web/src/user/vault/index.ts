@@ -3,6 +3,7 @@ export * from './custody';
 export * from './envelope';
 export * from './errors';
 export * from './lock';
+export * from './merge';
 export * from './migration';
 export * from './recovery';
 export * from './rekey';
