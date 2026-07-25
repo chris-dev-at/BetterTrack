@@ -373,6 +373,103 @@ describe('paranoid rehydration service', () => {
     expect(restored?.price).toBe('2000000000000.000000');
   });
 
+  it('round-trips import-created notes and descriptions beyond manual-entry limits', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const transactionNote = `Imported trade ${'t'.repeat(1_001)}`;
+    const dividendNote = `Imported dividend ${'d'.repeat(1_001)}`;
+    const cashNote = `Imported cash ${'c'.repeat(1_001)}`;
+    const expenseDescription = `Imported bank memo ${'e'.repeat(501)}`;
+    const transaction = input.document.entities.find((entry) => entry.kind === 'transaction');
+    const cashMovement = input.document.entities.find((entry) => entry.kind === 'cashMovement');
+    if (!transaction || transaction.kind !== 'transaction') {
+      throw new Error('expected transaction');
+    }
+    if (!cashMovement || cashMovement.kind !== 'cashMovement') {
+      throw new Error('expected cash movement');
+    }
+    transaction.data.note = transactionNote;
+    transaction.data.source = 'import:ibkr';
+    cashMovement.data.note = cashNote;
+    cashMovement.data.source = 'import:ibkr';
+
+    const dividendId = '018f0000-0000-7000-8000-000000000017';
+    const dividendMovementId = '018f0000-0000-7000-8000-000000000018';
+    const expenseId = '018f0000-0000-7000-8000-000000000019';
+    input.document.entities.push(
+      entity(dividendId, 'dividend', {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        cashSourceId: CASH_SOURCE_ID,
+        grossAmountEur: 10,
+        executedAt: editedAt,
+        createdAt: editedAt,
+        note: dividendNote,
+        taxMode: 'none',
+        taxCountry: null,
+        taxAmountEur: null,
+        taxParams: null,
+        source: 'import:flatex',
+      }),
+      entity(dividendMovementId, 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'dividend',
+        amountEur: 10,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId,
+        taxYear: null,
+        executedAt: editedAt,
+        createdAt: editedAt,
+        note: dividendNote,
+        source: 'import:flatex',
+      }),
+      entity(expenseId, 'expenseTransaction', {
+        categoryId: null,
+        direction: 'expense',
+        amount: 10,
+        currency: 'EUR',
+        bookedOn: '2026-07-24',
+        description: expenseDescription,
+        source: 'import:n26',
+        createdAt: editedAt,
+        updatedAt: editedAt,
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+    const [restoredTransaction] = await db
+      .select({ note: transactions.note, source: transactions.source })
+      .from(transactions)
+      .where(eq(transactions.id, TRANSACTION_ID));
+    const [restoredDividend] = await db
+      .select({ note: dividends.note, source: dividends.source })
+      .from(dividends)
+      .where(eq(dividends.id, dividendId));
+    const [restoredCash] = await db
+      .select({ note: portfolioCashMovements.note, source: portfolioCashMovements.source })
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.id, MOVEMENT_ID));
+    const [restoredExpense] = await db
+      .select({
+        description: expenseTransactions.description,
+        source: expenseTransactions.source,
+      })
+      .from(expenseTransactions)
+      .where(eq(expenseTransactions.id, expenseId));
+
+    expect(restoredTransaction).toEqual({ note: transactionNote, source: 'import:ibkr' });
+    expect(restoredDividend).toEqual({ note: dividendNote, source: 'import:flatex' });
+    expect(restoredCash).toEqual({ note: cashNote, source: 'import:ibkr' });
+    expect(restoredExpense).toEqual({
+      description: expenseDescription,
+      source: 'import:n26',
+    });
+  });
+
   it('returns the original receipt after an uncertain response retry', async () => {
     const { db, user } = await makeParanoid();
     const service = createParanoidRehydrationService({

@@ -482,6 +482,107 @@ describe('vault document v1', () => {
     );
   });
 
+  it('accepts import-created notes and descriptions beyond manual-entry limits', () => {
+    const at = '2026-07-24T10:00:00.000Z';
+    const transactionNote = `Imported trade ${'t'.repeat(1_001)}`;
+    const dividendNote = `Imported dividend ${'d'.repeat(1_001)}`;
+    const cashNote = `Imported cash ${'c'.repeat(1_001)}`;
+    const expenseDescription = `Imported bank memo ${'e'.repeat(501)}`;
+    const meta = (id: string) => ({
+      id,
+      rev: 0,
+      editedAt: at,
+      editedBy: UUID_B,
+      deletedAt: null,
+    });
+
+    const parsed = vaultDocumentV1Schema.parse({
+      schemaVersion: 1,
+      entities: [
+        {
+          ...meta(uuid(20)),
+          kind: 'transaction',
+          data: {
+            portfolioId: UUID_A,
+            assetId: UUID_B,
+            side: 'buy',
+            quantity: 1,
+            price: 10,
+            fee: 0,
+            executedAt: at,
+            note: transactionNote,
+            allowUncovered: false,
+            uncoveredEntryPrice: null,
+            source: 'import:ibkr',
+            taxMode: null,
+            taxCountry: null,
+            taxAmountEur: null,
+            taxParams: null,
+          },
+        },
+        {
+          ...meta(uuid(21)),
+          kind: 'dividend',
+          data: {
+            portfolioId: UUID_A,
+            assetId: UUID_B,
+            cashSourceId: UUID_C,
+            grossAmountEur: 10,
+            executedAt: at,
+            createdAt: at,
+            note: dividendNote,
+            source: 'import:flatex',
+            taxMode: 'none',
+            taxCountry: null,
+            taxAmountEur: null,
+            taxParams: null,
+          },
+        },
+        {
+          ...meta(uuid(22)),
+          kind: 'cashMovement',
+          data: {
+            portfolioId: UUID_A,
+            sourceId: UUID_C,
+            kind: 'deposit',
+            amountEur: 10,
+            transactionId: null,
+            transferId: null,
+            counterpartSourceId: null,
+            dividendId: null,
+            taxYear: null,
+            executedAt: at,
+            createdAt: at,
+            note: cashNote,
+            source: 'import:ibkr',
+          },
+        },
+        {
+          ...meta(uuid(23)),
+          kind: 'expenseTransaction',
+          data: {
+            categoryId: null,
+            direction: 'expense',
+            amount: 10,
+            currency: 'EUR',
+            bookedOn: '2026-07-24',
+            description: expenseDescription,
+            source: 'import:n26',
+            createdAt: at,
+            updatedAt: at,
+          },
+        },
+      ],
+    });
+
+    expect(parsed.entities.map((entry) => entry.data)).toEqual([
+      expect.objectContaining({ note: transactionNote }),
+      expect.objectContaining({ note: dividendNote }),
+      expect.objectContaining({ note: cashNote }),
+      expect.objectContaining({ description: expenseDescription }),
+    ]);
+  });
+
   it('rejects unknown kinds, unknown fields, duplicate ids, and wrong schema versions', () => {
     const valid = {
       schemaVersion: 1,
