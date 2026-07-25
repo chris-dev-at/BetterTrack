@@ -220,6 +220,21 @@ mf_issue_json_valid "$MULTI" "$RUN" false \
 mf_issue_json_valid "$BAD_META" "$RUN" false \
   && bad "bad mf-meta must fail" || ok "bad terminal mf-meta rejected"
 
+# depends-on arity: the pre-fix regex only accepted a two-number list under mawk,
+# so single-dep and 3+-dep issues were silently unschedulable forever (the whole
+# V5-P13 chain deadlocked behind #725). Every arity is asserted here, and the
+# check must hold under whichever awk the host provides.
+dep_issue(){ issue_json "${VALID_BODY%-->*}depends-on: $1
+-->" '["autopilot","diff:hard"]'; }
+for DEPS in "724" "724,725" "724, 725" "728,729,730" "723, 726, 730" "1, 2, 3, 4"; do
+  mf_issue_json_valid "$(dep_issue "$DEPS")" "$RUN" false \
+    && ok "depends-on accepted: $DEPS" || bad "depends-on rejected: $DEPS"
+done
+for DEPS in "nope" "" "724,,725" "724," ",724" "724 725" "-1" "724,abc"; do
+  mf_issue_json_valid "$(dep_issue "$DEPS")" "$RUN" false \
+    && bad "malformed depends-on must fail: '$DEPS'" || ok "malformed depends-on rejected: '$DEPS'"
+done
+
 printf 'ISSUE 101 autopilot\n' >"$T/manifest"
 mf_manifest_validate "$T/manifest" '[]' "[$VALID]" "$RUN" autopilot \
   && ok "new valid manifest issue accepted" || bad "new valid manifest issue rejected"
