@@ -60,7 +60,19 @@ mf_meta_valid(){ # $1=required factory-run token, or empty
         deps++
         sub(/^[[:space:]]*depends-on:[[:space:]]*/, "", value)
         value=trim(value)
-        if (value !~ /^[0-9]+([[:space:]]*,[[:space:]]*[0-9]+)*$/) bad=1
+        gsub(/[[:space:]]*,[[:space:]]*/, ",", value)
+        # Validated by splitting rather than by one repeated-group regex: mawk
+        # (the factory image awk) mis-evaluates a POSIX class inside a starred
+        # group, so /^[0-9]+([[:space:]]*,[[:space:]]*[0-9]+)*$/ only matched a
+        # list of exactly two numbers there. That silently made every 1-dep and
+        # 3+-dep issue permanently unschedulable. Separators are normalized only
+        # around commas, so a space-separated list stays as invalid as before.
+        if (value == "") bad=1
+        else {
+          dep_n=split(value, dep_parts, ",")
+          for (dep_i=1; dep_i<=dep_n; dep_i++)
+            if (dep_parts[dep_i] !~ /^[0-9]+$/) bad=1
+        }
         next
       }
       if (value ~ /^[[:space:]]*touches:[[:space:]]*/) {
