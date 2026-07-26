@@ -178,15 +178,17 @@ export function createVaultPortfolioStore(
     },
 
     async createTransactions(portfolioId, inputs) {
-      requireDocument(engine);
+      const current = requireDocument(engine);
+      requirePortfolio(current, portfolioId);
       const parsedRequest = createTransactionsRequestSchema.parse({ transactions: inputs });
       const parsedInputs =
         'transactions' in parsedRequest ? parsedRequest.transactions : [parsedRequest];
-      assertLocallySupportedTransactions(parsedInputs);
+      assertLocallySupportedTransactions(current, portfolioId, parsedInputs);
       const createdIds: string[] = [];
 
       await engine.mutate(({ document }) => {
         requirePortfolio(document, portfolioId);
+        assertLocallySupportedTransactions(document, portfolioId, parsedInputs);
         const timestamp = context.now();
         const entities = parsedInputs.map((input) => {
           const id = safeNewId(context);
@@ -230,6 +232,7 @@ export function createVaultPortfolioStore(
       requirePortfolio(current, portfolioId);
       const currentEntity = requireOwnedEntity(current, 'transaction', transactionId, portfolioId);
       const currentTransaction = transactionFromEntity(current, currentEntity);
+      assertTransactionUpdateTaxSupported(current, portfolioId, currentEntity, financialEdit);
       assertFinancialEditSupported(current, transactionId, financialEdit);
       if (Object.keys(dataPatch).length === 0) {
         return currentTransaction;
@@ -240,6 +243,7 @@ export function createVaultPortfolioStore(
         requirePortfolio(document, portfolioId);
         const existing = requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
         transactionFromEntity(document, existing);
+        assertTransactionUpdateTaxSupported(document, portfolioId, existing, financialEdit);
         assertFinancialEditSupported(document, transactionId, financialEdit);
         const updated: VaultEntity = {
           ...existing,
@@ -269,7 +273,8 @@ export function createVaultPortfolioStore(
     async deleteTransaction(portfolioId, transactionId) {
       const document = requireDocument(engine);
       requirePortfolio(document, portfolioId);
-      requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
+      const transaction = requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
+      assertTransactionDeleteTaxSupported(document, portfolioId, transaction);
       await deleteTransactionTree(context, portfolioId, transactionId);
     },
 
@@ -445,6 +450,7 @@ async function deleteTransactionTree(
   await context.engine.mutate(({ document }) => {
     requirePortfolio(document, portfolioId);
     const transaction = requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
+    assertTransactionDeleteTaxSupported(document, portfolioId, transaction);
     const timestamp = context.now();
     let next = replaceEntity(
       document,
@@ -694,6 +700,7 @@ interface ReconcileChange {
   kind: VaultEntityKind;
   local: VaultEntity;
   remote: VaultEntity | undefined;
+  localWon: boolean;
 }
 
 interface ReconcileGroup {
@@ -712,16 +719,17 @@ class VaultAggregateConflictError extends Error {
 /**
  * Reconcile portfolio-domain mutations before the sync engine encrypts or
  * publishes a divergent merge. The observed durable document is the baseline;
- * each locally winning atomic edit group is admitted only when the complete
- * candidate still satisfies holdings, cash, active-portfolio and cascade
- * invariants. Rejected entities receive a dominating compensation so the same
- * invalid branch cannot be unioned back in on the next reconnect.
+ * each complete local atomic edit group is admitted only when all of its
+ * members won the entity merge and the complete candidate still satisfies
+ * holdings, cash, active-portfolio and cascade invariants. Rejected entities
+ * receive a dominating compensation so a partial group cannot be unioned back
+ * in on the next reconnect.
  */
 function reconcilePortfolioDocument(
   document: VaultDocumentV1,
   context: VaultDocumentReconcileContext,
 ): VaultDocumentV1 {
-  const changes = locallyWinningChanges(document, context);
+  const changes = localMutationChanges(document, context);
   let reconciled = document;
   for (const change of changes) {
     reconciled = setEntity(reconciled, change.kind, change.local.id, change.remote);
@@ -731,6 +739,11 @@ function reconcilePortfolioDocument(
   assertPortfolioDocumentInvariants(reconciled);
 
   for (const group of reconcileGroups(changes)) {
+    if (group.changes.some((change) => !change.localWon)) {
+      reconciled = compensateRejectedGroup(reconciled, group, context);
+      continue;
+    }
+
     let candidate = reconciled;
     for (const change of group.changes) {
       candidate = setEntity(candidate, change.kind, change.local.id, change.local);
@@ -742,24 +755,14 @@ function reconcilePortfolioDocument(
       reconciled = candidate;
     } catch (cause) {
       if (!isAggregateConflict(cause)) throw cause;
-      for (const change of group.changes) {
-        const desired = findEntity(reconciled, change.kind, change.local.id);
-        reconciled = setEntity(
-          reconciled,
-          change.kind,
-          change.local.id,
-          compensationEntity(change.local, desired, context),
-        );
-      }
-      reconciled = normalizeReconciledStructure(reconciled, context);
-      assertPortfolioDocumentInvariants(reconciled);
+      reconciled = compensateRejectedGroup(reconciled, group, context);
     }
   }
 
   return reconciled;
 }
 
-function locallyWinningChanges(
+function localMutationChanges(
   document: VaultDocumentV1,
   context: VaultDocumentReconcileContext,
 ): ReconcileChange[] {
@@ -771,12 +774,13 @@ function locallyWinningChanges(
     for (const local of entities) {
       const merged = findEntity(document, kind, local.id);
       const remote = findEntity(context.remote, kind, local.id);
-      if (
-        merged != null &&
-        sameVaultEntity(merged, local) &&
-        (remote == null || !sameVaultEntity(remote, local))
-      ) {
-        changes.push({ kind, local, remote });
+      if (remote == null || !sameVaultEntity(remote, local)) {
+        changes.push({
+          kind,
+          local,
+          remote,
+          localWon: merged != null && sameVaultEntity(merged, local),
+        });
       }
     }
   }
@@ -811,6 +815,26 @@ function reconcileGroups(changes: ReconcileChange[]): ReconcileGroup[] {
           left.kind.localeCompare(right.kind) || left.local.id.localeCompare(right.local.id),
       ),
     }));
+}
+
+function compensateRejectedGroup(
+  document: VaultDocumentV1,
+  group: ReconcileGroup,
+  context: VaultDocumentReconcileContext,
+): VaultDocumentV1 {
+  let compensated = document;
+  for (const change of group.changes) {
+    const desired = findEntity(compensated, change.kind, change.local.id);
+    compensated = setEntity(
+      compensated,
+      change.kind,
+      change.local.id,
+      compensationEntity(change.local, desired, context),
+    );
+  }
+  compensated = normalizeReconciledStructure(compensated, context);
+  assertPortfolioDocumentInvariants(compensated);
+  return compensated;
 }
 
 function setEntity(
@@ -1404,6 +1428,8 @@ function assertFinancialEditSupported(
 }
 
 function assertLocallySupportedTransactions(
+  document: VaultDocumentV1,
+  portfolioId: string,
   inputs: ReturnType<typeof transactionInputSchema.parse>[],
 ): void {
   const requiresDerivedEngine = inputs.some(
@@ -1414,12 +1440,138 @@ function assertLocallySupportedTransactions(
       input.taxAmountEur !== undefined ||
       input.taxRatePct !== undefined,
   );
-  if (requiresDerivedEngine) {
+  const effectiveTaxMode = effectivePortfolioTaxMode(document, portfolioId);
+  const recordsEngineTax = inputs.some(
+    (input) => input.side === 'sell' && effectiveTaxMode !== 'none',
+  );
+  const affectedAssets = new Set(inputs.map((input) => input.assetId));
+  const reshapesFrozenTax = liveEntities(document, 'transaction').some(
+    (entity) =>
+      stringField(entity.data, 'portfolioId') === portfolioId &&
+      affectedAssets.has(stringField(entity.data, 'assetId')) &&
+      isEngineTaxedSell(entity),
+  );
+  if (requiresDerivedEngine || recordsEngineTax || reshapesFrozenTax) {
     throw storeError(
       'VAULT_OPERATION_UNAVAILABLE',
       'Cash-linked and tax-computed transactions require the client portfolio engine.',
     );
   }
+}
+
+function assertTransactionUpdateTaxSupported(
+  document: VaultDocumentV1,
+  portfolioId: string,
+  transaction: VaultEntity,
+  financialEdit: boolean,
+): void {
+  if (!financialEdit) return;
+  const assetId = stringField(transaction.data, 'assetId');
+  if (
+    isFrozenTaxSensitiveSell(transaction) ||
+    liveEntities(document, 'transaction').some(
+      (entity) =>
+        entity.id !== transaction.id &&
+        stringField(entity.data, 'portfolioId') === portfolioId &&
+        stringField(entity.data, 'assetId') === assetId &&
+        isEngineTaxedSell(entity),
+    )
+  ) {
+    throw taxOperationUnavailable();
+  }
+}
+
+function assertTransactionDeleteTaxSupported(
+  document: VaultDocumentV1,
+  portfolioId: string,
+  transaction: VaultEntity,
+): void {
+  const assetId = stringField(transaction.data, 'assetId');
+  if (
+    isFrozenTaxSensitiveSell(transaction) ||
+    liveEntities(document, 'transaction').some(
+      (entity) =>
+        stringField(entity.data, 'portfolioId') === portfolioId &&
+        stringField(entity.data, 'assetId') === assetId &&
+        isEngineTaxedSell(entity),
+    )
+  ) {
+    throw taxOperationUnavailable();
+  }
+}
+
+function effectivePortfolioTaxMode(
+  document: VaultDocumentV1,
+  portfolioId: string,
+): 'none' | 'manual_per_trade' | 'country_specific' | 'custom' {
+  const override = liveEntities(document, 'portfolioSetting').find(
+    (entity) =>
+      stringField(entity.data, 'portfolioId') === portfolioId &&
+      stringField(entity.data, 'key') === 'tax',
+  );
+  const overrideMode = taxModeField(override == null ? null : recordField(override.data, 'value'));
+  if (overrideMode != null) return overrideMode;
+
+  const portfolio = requirePortfolio(document, portfolioId);
+  const userId = nullableStringField(portfolio.data, 'userId');
+  const userDefault = liveEntities(document, 'taxSetting')
+    .filter(
+      (entity) =>
+        userId == null ||
+        nullableStringField(entity.data, 'userId') == null ||
+        nullableStringField(entity.data, 'userId') === userId,
+    )
+    .sort(
+      (left, right) =>
+        stringField(left.data, 'updatedAt', left.editedAt).localeCompare(
+          stringField(right.data, 'updatedAt', right.editedAt),
+        ) || left.id.localeCompare(right.id),
+    )
+    .at(-1);
+  return taxModeField(userDefault?.data ?? null) ?? 'none';
+}
+
+function taxModeField(
+  data: Record<string, unknown> | null,
+): 'none' | 'manual_per_trade' | 'country_specific' | 'custom' | null {
+  const mode = data?.mode;
+  return mode === 'none' ||
+    mode === 'manual_per_trade' ||
+    mode === 'country_specific' ||
+    mode === 'custom'
+    ? mode
+    : null;
+}
+
+function isEngineTaxedSell(entity: VaultEntity): boolean {
+  if (stringField(entity.data, 'side') !== 'sell') return false;
+  const mode = frozenTransactionTaxMode(entity);
+  return mode === 'country_specific' || mode === 'custom';
+}
+
+function isFrozenTaxSensitiveSell(entity: VaultEntity): boolean {
+  if (stringField(entity.data, 'side') !== 'sell') return false;
+  const mode = frozenTransactionTaxMode(entity);
+  return mode === 'manual_per_trade' || mode === 'country_specific' || mode === 'custom';
+}
+
+function frozenTransactionTaxMode(
+  entity: VaultEntity,
+): 'none' | 'manual_per_trade' | 'country_specific' | 'custom' | null {
+  const mode = entity.data.taxMode;
+  return mode === 'none' ||
+    mode === 'manual_per_trade' ||
+    mode === 'country_specific' ||
+    mode === 'custom'
+    ? mode
+    : null;
+}
+
+function taxOperationUnavailable(): VaultPortfolioStoreError {
+  return storeError(
+    'VAULT_OPERATION_UNAVAILABLE',
+    'This transaction requires the client tax engine to preserve frozen tax state.',
+  );
 }
 
 function recordField(data: Record<string, unknown>, field: string): Record<string, unknown> | null {
