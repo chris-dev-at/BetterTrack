@@ -11,7 +11,6 @@ import {
 } from '@bettertrack/contracts';
 import { CASH_MOVEMENT_SIGN } from '@bettertrack/domain/cashLedger';
 import { viennaYearOf } from '@bettertrack/domain/tax';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '../../data/db';
 import {
@@ -20,19 +19,14 @@ import {
   createExpenseRuleRepository,
   createExpenseTransactionRepository,
 } from '../../data/repositories/expenseRepository';
-import { createParanoidRehydrationSourceRepository } from '../../data/repositories/paranoidRehydrationRepository';
+import {
+  createParanoidRehydrationSourceRepository,
+  type ParanoidRehydrationSourceRepository,
+} from '../../data/repositories/paranoidRehydrationRepository';
 import {
   createParanoidRehydrationTransactionRepository,
   withParanoidRehydrationTransaction,
 } from '../../data/repositories/paranoidVaultRepository';
-import {
-  assets,
-  expenseCategories,
-  expenseTransactions,
-  portfolios,
-  standingOrders,
-  userTaxSettings,
-} from '../../data/schema';
 import { createExpenseBudgetService } from '../expenses/budgetService';
 import { createExpenseService } from '../expenses/expenseService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -179,6 +173,36 @@ function ids<K extends Entity['kind']>(entities: readonly Entity[], kind: K): Se
   return new Set(rows(entities, kind).map((entity) => entity.id));
 }
 
+const RESTORED_ID_KINDS = [
+  'portfolio',
+  'transaction',
+  'dividend',
+  'cashSource',
+  'cashMovement',
+  'customAsset',
+  'standingOrder',
+  'standingOrderRun',
+  'expenseCategory',
+  'expenseTransaction',
+  'expenseRule',
+  'expenseBudget',
+] as const satisfies readonly Entity['kind'][];
+
+function validateUniqueRestoredIds(entities: readonly Entity[]): void {
+  for (const kind of RESTORED_ID_KINDS) {
+    const seen = new Set<string>();
+    for (const entity of rows(entities, kind)) {
+      if (seen.has(entity.id)) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          `${kind} persisted ids must be unique`,
+        );
+      }
+      seen.add(entity.id);
+    }
+  }
+}
+
 function requireSubset(
   candidate: Iterable<string>,
   allowed: ReadonlySet<string>,
@@ -283,6 +307,13 @@ function validFrozenTaxShape(
 }
 
 function validatePersistedNumerics(entities: readonly Entity[]): void {
+  for (const value of rows(entities, 'customAssetValue')) {
+    requireNonnegative(
+      exactDecimal(value.data.close, 'custom-asset close').coefficient,
+      'custom-asset close',
+    );
+  }
+
   for (const transaction of rows(entities, 'transaction')) {
     const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
     const price = persistedNumeric(transaction.data.price, 20, 6, 'transaction price');
@@ -444,6 +475,7 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
  * as one clean failure and makes the no-write guarantee directly testable.
  */
 function validateGraph(userId: string, entities: readonly Entity[]): void {
+  validateUniqueRestoredIds(entities);
   validateOwnedRows(userId, entities);
   validatePersistedNumerics(entities);
 
@@ -591,6 +623,32 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
     standingOrderRunKeys.add(key);
   }
   for (const order of rows(entities, 'standingOrder')) {
+    const isBuy = order.data.kind === 'buy-asset';
+    if (isBuy !== (order.data.assetId !== null)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a standing-order asset must be present exactly for an asset buy',
+      );
+    }
+    const isMonthly = order.data.cadence === 'monthly';
+    if (isMonthly !== (order.data.anchorDay !== null)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a standing-order anchor day must be present exactly for a monthly schedule',
+      );
+    }
+    if (order.data.anchorDay !== null && (order.data.anchorDay < 1 || order.data.anchorDay > 31)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a standing-order anchor day must be between 1 and 31',
+      );
+    }
+    if (order.data.endDate !== null && order.data.endDate < order.data.startDate) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a standing-order end date must not precede its start date',
+      );
+    }
     if ((order.data.lastRunAt === null) !== (order.data.lastPeriodKey === null)) {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
@@ -716,6 +774,30 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
         'cash movement cannot link both a transaction and a dividend',
+      );
+    }
+    const isTransfer =
+      movement.data.kind === 'transfer_out' || movement.data.kind === 'transfer_in';
+    if (
+      isTransfer !== (movement.data.transferId !== null) ||
+      isTransfer !== (movement.data.counterpartSourceId !== null)
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'cash-movement transfer links do not match its kind',
+      );
+    }
+    const isTax = movement.data.kind === 'tax_withholding' || movement.data.kind === 'tax_refund';
+    if (isTax !== (movement.data.taxYear !== null)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'cash-movement tax year does not match its kind',
+      );
+    }
+    if (movement.data.kind === 'dividend' && movement.data.dividendId === null) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a dividend cash movement requires its dividend',
       );
     }
     if (movement.data.transactionId) {
@@ -1035,7 +1117,7 @@ interface ReferencedAsset {
 }
 
 async function resolveReferencedAssets(
-  tx: Database,
+  sourceRows: ParanoidRehydrationSourceRepository,
   entities: readonly Entity[],
 ): Promise<ReadonlyMap<string, ReferencedAsset>> {
   const assetsById = new Map<string, ReferencedAsset>(
@@ -1051,10 +1133,7 @@ async function resolveReferencedAssets(
   ]);
   const marketAssetIds = [...referencedAssetIds].filter((id) => !customAssetIds.has(id));
   if (marketAssetIds.length === 0) return assetsById;
-  const found = await tx
-    .select({ id: assets.id, currency: assets.currency })
-    .from(assets)
-    .where(and(inArray(assets.id, marketAssetIds), isNull(assets.ownerId)));
+  const found = await sourceRows.findReferencedGlobalAssets(marketAssetIds);
   requireSubset(marketAssetIds, new Set(found.map((asset) => asset.id)), 'restore source');
   for (const asset of found) {
     assetsById.set(asset.id, { currency: asset.currency });
@@ -1086,53 +1165,11 @@ function validateStandingOrderCurrencies(
   }
 }
 
-async function ownedAssetIds(tx: Database, userId: string): Promise<Set<string>> {
-  const records = await tx
-    .select({ id: assets.id })
-    .from(assets)
-    .where(and(eq(assets.ownerId, userId), eq(assets.providerId, 'manual')));
-  return new Set(records.map((record) => record.id));
-}
-
-async function ensureNoExistingRestorableRows(tx: Database, userId: string): Promise<void> {
-  const ownedAssets = await ownedAssetIds(tx, userId);
-  const portfolioRows = await tx
-    .select({ id: portfolios.id })
-    .from(portfolios)
-    .where(eq(portfolios.userId, userId));
-  const portfolioIds = portfolioRows.map((row) => row.id);
-  const present = await Promise.all([
-    Promise.resolve(ownedAssets.size),
-    Promise.resolve(portfolioIds.length),
-    tx
-      .select({ id: expenseCategories.id })
-      .from(expenseCategories)
-      .where(eq(expenseCategories.userId, userId))
-      .limit(1),
-    tx
-      .select({ id: expenseTransactions.id })
-      .from(expenseTransactions)
-      .where(eq(expenseTransactions.userId, userId))
-      .limit(1),
-    tx
-      .select({ id: standingOrders.id })
-      .from(standingOrders)
-      .where(eq(standingOrders.userId, userId))
-      .limit(1),
-    tx
-      .select({ userId: userTaxSettings.userId })
-      .from(userTaxSettings)
-      .where(eq(userTaxSettings.userId, userId))
-      .limit(1),
-  ]);
-  if (
-    present[0] !== 0 ||
-    present[1] !== 0 ||
-    present[2].length ||
-    present[3].length ||
-    present[4].length ||
-    present[5].length
-  ) {
+async function ensureNoExistingRestorableRows(
+  sourceRows: ParanoidRehydrationSourceRepository,
+  userId: string,
+): Promise<void> {
+  if (await sourceRows.hasExistingRestorableRows(userId)) {
     throw new ParanoidRehydrationError(
       'REHYDRATION_CONFLICT',
       'normal restore-source rows already exist for this account',
@@ -1194,11 +1231,11 @@ export function createParanoidRehydrationService(
           throw new ParanoidRehydrationError('NOT_PARANOID', 'account is not in paranoid mode');
         }
 
-        await ensureNoExistingRestorableRows(tx, userId);
-        const referencedAssets = await resolveReferencedAssets(tx, entities);
+        const sourceRows = createParanoidRehydrationSourceRepository(tx);
+        await ensureNoExistingRestorableRows(sourceRows, userId);
+        const referencedAssets = await resolveReferencedAssets(sourceRows, entities);
         validateStandingOrderCurrencies(entities, referencedAssets);
 
-        const sourceRows = createParanoidRehydrationSourceRepository(tx);
         await sourceRows.restoreCustomAssets(rows(entities, 'customAsset'));
         await sourceRows.restoreCustomAssetValues(rows(entities, 'customAssetValue'));
         await stage('customAssets');

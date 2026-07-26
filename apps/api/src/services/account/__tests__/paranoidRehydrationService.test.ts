@@ -59,9 +59,83 @@ const STANDING_ORDER_ID = '018f0000-0000-7000-8000-000000000020';
 const editedAt = '2026-07-24T10:00:00.000Z';
 let restoreUserId = DEVICE_ID;
 
-function entity<
-  K extends ParanoidDisableRehydrationRequest['document']['entities'][number]['kind'],
->(
+type StrictEntity = ParanoidDisableRehydrationRequest['document']['entities'][number];
+type StrictStandingOrderEntity = Extract<StrictEntity, { kind: 'standingOrder' }>;
+type StrictCashMovementEntity = Extract<StrictEntity, { kind: 'cashMovement' }>;
+
+const INVALID_STANDING_ORDER_MUTATIONS: readonly {
+  name: string;
+  mutate: (order: StrictStandingOrderEntity) => void;
+}[] = [
+  {
+    name: 'an asset on a cash order',
+    mutate(order) {
+      order.data.kind = 'cash-add';
+      order.data.assetId = ASSET_ID;
+    },
+  },
+  {
+    name: 'a missing asset on a buy order',
+    mutate(order) {
+      order.data.kind = 'buy-asset';
+      order.data.assetId = null;
+    },
+  },
+  {
+    name: 'a missing monthly anchor',
+    mutate(order) {
+      order.data.cadence = 'monthly';
+      order.data.anchorDay = null;
+    },
+  },
+  {
+    name: 'an anchor on a daily schedule',
+    mutate(order) {
+      order.data.cadence = 'daily';
+      order.data.anchorDay = 1;
+    },
+  },
+  {
+    name: 'an out-of-range monthly anchor',
+    mutate(order) {
+      order.data.cadence = 'monthly';
+      order.data.anchorDay = 32;
+    },
+  },
+  {
+    name: 'an end date before its start date',
+    mutate(order) {
+      order.data.endDate = '2026-06-30';
+    },
+  },
+];
+
+const INVALID_CASH_MOVEMENT_MUTATIONS: readonly {
+  name: string;
+  mutate: (movement: StrictCashMovementEntity) => void;
+}[] = [
+  {
+    name: 'a transfer without its link fields',
+    mutate(movement) {
+      movement.data.kind = 'transfer_out';
+      movement.data.amountEur = '-100.000000';
+    },
+  },
+  {
+    name: 'a tax year on a non-tax movement',
+    mutate(movement) {
+      movement.data.taxYear = 2026;
+    },
+  },
+  {
+    name: 'a dividend movement without its dividend link',
+    mutate(movement) {
+      movement.data.kind = 'dividend';
+    },
+  },
+];
+
+function entity<K extends StrictEntity['kind']>(
   id: string,
   kind: K,
   data: Extract<
@@ -573,6 +647,31 @@ describe('paranoid rehydration service', () => {
     expect(valuePoint?.close).toBe('0.1234567');
   });
 
+  it('rejects a negative custom-asset value before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const stages: string[] = [];
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'customAssetValue', {
+        assetId: ASSET_ID,
+        date: '2026-07-24',
+        close: '-1',
+      }),
+    );
+
+    await expect(
+      createParanoidRehydrationService({
+        db,
+        afterStage(stage) {
+          stages.push(stage);
+        },
+      }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+    expect(stages).toEqual([]);
+    expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
   it('round-trips a valid scale-6 transaction value above the normal cash cap', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
@@ -617,6 +716,32 @@ describe('paranoid rehydration service', () => {
       price: '90071992547409.123456',
       fee: '0.123456',
     });
+  });
+
+  it('restores more transactions than one PostgreSQL bind-parameter batch can hold', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities = input.document.entities.filter(
+      (entry) => entry.kind !== 'cashSource' && entry.kind !== 'cashMovement',
+    );
+    const first = input.document.entities.find((entry) => entry.kind === 'transaction');
+    if (!first || first.kind !== 'transaction') throw new Error('expected transaction');
+
+    const transactionCount = 4_096;
+    for (let index = 1; index < transactionCount; index += 1) {
+      input.document.entities.push(
+        entity(`10000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`, 'transaction', {
+          ...first.data,
+        }),
+      );
+    }
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+    expect(await db.select({ id: transactions.id }).from(transactions)).toHaveLength(
+      transactionCount,
+    );
   });
 
   it('round-trips a settle-as-of-today buy leg and its pre-coercion cash amount', async () => {
@@ -1911,6 +2036,35 @@ describe('paranoid rehydration service', () => {
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
 
+  it.each(INVALID_STANDING_ORDER_MUTATIONS)(
+    'rejects a standing order with $name before writing',
+    async ({ mutate }) => {
+      const { db, user } = await makeParanoid();
+      const input = exhaustiveRequest();
+      const stages: string[] = [];
+      const order = input.document.entities.find(
+        (entry): entry is StrictStandingOrderEntity => entry.kind === 'standingOrder',
+      );
+      if (!order) throw new Error('expected standing order');
+      mutate(order);
+
+      await expect(
+        createParanoidRehydrationService({
+          db,
+          afterStage(stage) {
+            stages.push(stage);
+          },
+        }).rehydrate(user.id, input),
+      ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+      expect(stages).toEqual([]);
+      expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+      expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+      expect(
+        await db.select().from(standingOrders).where(eq(standingOrders.userId, user.id)),
+      ).toEqual([]);
+    },
+  );
+
   it.each([
     { kind: 'cash-add' as const, assetId: null, currency: 'USD' },
     { kind: 'cash-deduct' as const, assetId: null, currency: 'USD' },
@@ -1995,6 +2149,37 @@ describe('paranoid rehydration service', () => {
       code: 'INVALID_REFERENCE',
     });
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('rejects a duplicate later-stage persisted id before writing earlier tables', async () => {
+    const { db, user } = await makeParanoid();
+    const input = exhaustiveRequest();
+    const stages: string[] = [];
+    const category = input.document.entities.find((entry) => entry.kind === 'expenseCategory');
+    if (!category || category.kind !== 'expenseCategory') {
+      throw new Error('expected expense category');
+    }
+    input.document.entities.push(
+      entity(category.id, 'expenseCategory', {
+        ...category.data,
+        name: 'Duplicate primary key',
+      }),
+    );
+
+    await expect(
+      createParanoidRehydrationService({
+        db,
+        afterStage(stage) {
+          stages.push(stage);
+        },
+      }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+    expect(stages).toEqual([]);
+    expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    expect(
+      await db.select().from(expenseCategories).where(eq(expenseCategories.userId, user.id)),
+    ).toEqual([]);
   });
 
   it('rejects a sell-proceeds leg dated apart from its transaction before writing', async () => {
@@ -2296,6 +2481,38 @@ describe('paranoid rehydration service', () => {
     });
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
+
+  it.each(INVALID_CASH_MOVEMENT_MUTATIONS)(
+    'rejects a cash movement with $name before writing',
+    async ({ mutate }) => {
+      const { db, user } = await makeParanoid();
+      const input = request();
+      const stages: string[] = [];
+      const movement = input.document.entities.find(
+        (entry): entry is StrictCashMovementEntity => entry.kind === 'cashMovement',
+      );
+      if (!movement) throw new Error('expected cash movement');
+      mutate(movement);
+
+      await expect(
+        createParanoidRehydrationService({
+          db,
+          afterStage(stage) {
+            stages.push(stage);
+          },
+        }).rehydrate(user.id, input),
+      ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+      expect(stages).toEqual([]);
+      expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+      expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(portfolioCashMovements)
+          .where(eq(portfolioCashMovements.portfolioId, PORTFOLIO_ID)),
+      ).toEqual([]);
+    },
+  );
 
   it('rejects a cash movement linked to a transaction in another portfolio', async () => {
     const { db, user } = await makeParanoid();
