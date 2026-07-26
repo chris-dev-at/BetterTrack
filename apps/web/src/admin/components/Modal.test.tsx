@@ -189,6 +189,31 @@ test('excludes controls hidden directly or by an ancestor from the tab order', a
   expect(save).toHaveFocus();
 });
 
+test('excludes controls beneath an inert ancestor from the tab order', async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <Modal title="Edit user" onClose={vi.fn()}>
+        <button>Save changes</button>
+        <div inert>
+          <button>Unavailable action</button>
+        </div>
+      </Modal>
+      <button>Outside modal</button>
+    </>,
+  );
+
+  const save = screen.getByRole('button', { name: 'Save changes' });
+
+  expect(save).toHaveFocus();
+
+  await user.tab();
+  expect(save).toHaveFocus();
+
+  await user.tab({ shift: true });
+  expect(save).toHaveFocus();
+});
+
 test('treats a summary as a focusable control and skips closed details content', async () => {
   const user = userEvent.setup();
   render(

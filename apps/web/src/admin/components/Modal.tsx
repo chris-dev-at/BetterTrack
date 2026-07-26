@@ -37,6 +37,10 @@ function isRendered(element: HTMLElement) {
   return true;
 }
 
+function isInInertSubtree(element: HTMLElement) {
+  return element.closest('[inert]') !== null;
+}
+
 function isGroupedRadio(element: HTMLElement): element is HTMLInputElement {
   return element instanceof HTMLInputElement && element.type === 'radio' && element.name !== '';
 }
@@ -85,6 +89,7 @@ function focusableDescendants(container: HTMLElement) {
       !element.matches(':disabled') &&
       element.getAttribute('aria-hidden') !== 'true' &&
       isRendered(element) &&
+      !isInInertSubtree(element) &&
       !isInClosedDetails(element),
   );
 
