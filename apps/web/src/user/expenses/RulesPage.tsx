@@ -52,6 +52,13 @@ export function RulesPage() {
   });
 
   const rules = rulesQuery.data?.rules ?? [];
+  const isLoading = rulesQuery.isPending || categoriesQuery.isPending;
+  const hasLoadError = rulesQuery.isError || categoriesQuery.isError;
+
+  function retryPrerequisites() {
+    if (rulesQuery.isError) void rulesQuery.refetch();
+    if (categoriesQuery.isError) void categoriesQuery.refetch();
+  }
 
   return (
     <section className="flex flex-col gap-4">
@@ -62,13 +69,24 @@ export function RulesPage() {
         </Button>
       </div>
 
-      {rulesQuery.isLoading ? (
+      {isLoading ? (
         <div className="flex flex-col gap-2">
           <Skeleton height="h-12" />
           <Skeleton height="h-12" />
         </div>
-      ) : rulesQuery.isError ? (
-        <Alert tone="error">{t('expenses.rules.loadError')}</Alert>
+      ) : hasLoadError ? (
+        <div className="flex flex-col gap-3">
+          <Alert tone="error">{t('expenses.rules.loadError')}</Alert>
+          <div>
+            <Button
+              variant="secondary"
+              onClick={retryPrerequisites}
+              disabled={rulesQuery.isFetching || categoriesQuery.isFetching}
+            >
+              {t('common.retry')}
+            </Button>
+          </div>
+        </div>
       ) : rules.length === 0 ? (
         <EmptyState
           title={t('expenses.rules.emptyTitle')}
