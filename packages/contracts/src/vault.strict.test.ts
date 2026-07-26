@@ -139,10 +139,10 @@ const fixtures: VaultStrictEntity[] = [
     data: {
       userId: USER_ID,
       mode: 'manual_per_trade',
-      country: 'DE',
+      country: null,
       manualDefaultAmountEur: '12.345678',
-      manualDefaultRatePct: '27.500000',
-      customParams: { carryForward: true },
+      manualDefaultRatePct: null,
+      customParams: null,
       updatedAt: AT,
     },
   },

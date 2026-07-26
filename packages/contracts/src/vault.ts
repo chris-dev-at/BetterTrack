@@ -216,10 +216,10 @@ export type VaultServerHeader = z.infer<typeof vaultServerHeaderSchema>;
 // ── Vault document v1 (structural) ───────────────────────────────────────────
 
 /**
- * The entity kinds that live in the encrypted vault document. A superset of the
- * portfolio/money entities the server hard-deletes at enable (the
- * `PARANOID_TABLE_CLASSIFICATION` `vault` set) — derived-only tables (snapshots)
- * are recomputed client-side, not serialized here (`§10`).
+ * The entity kinds that live in the encrypted vault document. This matches the
+ * server's `PARANOID_TABLE_CLASSIFICATION` `vault` set, including persisted
+ * derived snapshots so disable/rehydration can restore every classified row
+ * without deriving or silently dropping columns.
  */
 export const VAULT_ENTITY_KINDS = [
   'portfolio',
