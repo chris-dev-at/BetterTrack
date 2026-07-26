@@ -53,6 +53,15 @@ export function BudgetsPage() {
   const budgets = budgetsQuery.data?.budgets ?? [];
   const categories = categoriesQuery.data?.categories ?? [];
   const budgetedCategoryIds = useMemo(() => new Set(budgets.map((b) => b.categoryId)), [budgets]);
+  const prerequisitesPending = budgetsQuery.isPending || categoriesQuery.isPending;
+  const prerequisitesFailed = budgetsQuery.isError || categoriesQuery.isError;
+  const hasUsableCategories = categories.some((category) => category.direction === 'expense');
+  const hasUnbudgetedExpenseCategory = categories.some(
+    (category) => category.direction === 'expense' && !budgetedCategoryIds.has(category.id),
+  );
+  const canCreateBudget =
+    !prerequisitesPending && !prerequisitesFailed && hasUnbudgetedExpenseCategory;
+  const canEditBudget = !prerequisitesPending && !prerequisitesFailed && hasUsableCategories;
 
   const remove = useMutation({
     mutationFn: (id: string) => deleteExpenseBudget(id),
@@ -62,20 +71,32 @@ export function BudgetsPage() {
     },
   });
 
+  function retryPrerequisites() {
+    void budgetsQuery.refetch();
+    void categoriesQuery.refetch();
+  }
+
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-neutral-500">{t('expenses.budgets.subtitle')}</p>
-        <Button onClick={() => setCreating(true)}>{t('expenses.budgets.new')}</Button>
+        <Button onClick={() => setCreating(true)} disabled={!canCreateBudget}>
+          {t('expenses.budgets.new')}
+        </Button>
       </div>
 
-      {budgetsQuery.isLoading ? (
+      {prerequisitesPending ? (
         <div className="flex flex-col gap-2">
           <Skeleton height="h-16" />
           <Skeleton height="h-16" />
         </div>
-      ) : budgetsQuery.isError ? (
-        <Alert tone="error">{t('expenses.budgets.loadError')}</Alert>
+      ) : prerequisitesFailed ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <Alert tone="error">{t('expenses.budgets.loadError')}</Alert>
+          <Button variant="secondary" onClick={retryPrerequisites}>
+            {t('common.retry')}
+          </Button>
+        </div>
       ) : budgets.length === 0 ? (
         <EmptyState
           icon="🎯"
@@ -85,6 +106,7 @@ export function BudgetsPage() {
             <button
               type="button"
               onClick={() => setCreating(true)}
+              disabled={!canCreateBudget}
               className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
               {t('expenses.budgets.emptyCta')}
@@ -118,6 +140,7 @@ export function BudgetsPage() {
                     <button
                       type="button"
                       onClick={() => setEditing(b)}
+                      disabled={!canEditBudget}
                       className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
                     >
                       {t('common.edit')}
@@ -185,6 +208,8 @@ export function BudgetsPage() {
           })}
         </ul>
       )}
+
+      {remove.isError ? <Alert tone="error">{t('expenses.budgets.deleteError')}</Alert> : null}
 
       {creating ? (
         <BudgetDialog

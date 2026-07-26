@@ -65,8 +65,27 @@ describe('checkPasswordPolicy', () => {
 });
 
 describe('generateTempPassword', () => {
-  it('produces a 16-char password by default', () => {
-    expect(generateTempPassword()).toHaveLength(16);
-    expect(generateTempPassword()).not.toBe(generateTempPassword());
+  it('produces the default 16-character password', () => {
+    const password = generateTempPassword();
+
+    expect(password).toHaveLength(16);
+  });
+
+  it.each([8, 24])('honors a caller-supplied length of %i', (length) => {
+    expect(generateTempPassword(length)).toHaveLength(length);
+  });
+
+  it('uses only the documented unambiguous alphabet', () => {
+    const password = generateTempPassword(128);
+
+    expect(password).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789]+$/);
+    expect(password).not.toMatch(/[0O1lI]/);
+  });
+
+  it('produces distinct passwords on separate calls', () => {
+    const first = generateTempPassword();
+    const second = generateTempPassword();
+
+    expect(first).not.toBe(second);
   });
 });
