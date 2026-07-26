@@ -274,6 +274,19 @@ describe('Rule CRUD (shapes only; evaluation is issue 2/3)', () => {
     expect(expenseRuleResponseSchema.parse(edited.body).rule.enabled).toBe(false);
   });
 
+  it('returns a normal validation error for regex syntax RE2 cannot evaluate', async () => {
+    const agent = await newUserAgent('r-regex@bt.test', 'r-regex');
+    const categoryId = await firstCategoryId(agent);
+
+    const res = await agent
+      .post('/api/v1/expenses/rules')
+      .set(...XRW)
+      .send({ categoryId, matchType: 'regex', pattern: '(?=netflix)' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('EXPENSE_RULE_REGEX_UNSUPPORTED');
+  });
+
   it('rejects a rule that targets a foreign category (400)', async () => {
     const owner = await newUserAgent('r2@bt.test', 'r2');
     const created = await owner

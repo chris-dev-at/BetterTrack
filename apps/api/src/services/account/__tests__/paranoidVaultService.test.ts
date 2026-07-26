@@ -47,7 +47,10 @@ function fakeRepo(options: FakeRepoOptions = {}) {
       return options.current ?? null;
     },
     async listHistory() {
-      return [];
+      return { items: [], nextCursor: null };
+    },
+    async getHistory() {
+      return null;
     },
     async compareAndSwap(input) {
       calls.push(input);

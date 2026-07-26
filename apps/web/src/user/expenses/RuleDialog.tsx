@@ -69,6 +69,10 @@ export function RuleDialog({ existing, categories, onClose }: RuleDialogProps) {
       onClose();
     },
     onError: (err) => {
+      if (err instanceof ApiError && err.code === 'EXPENSE_RULE_REGEX_UNSUPPORTED') {
+        setFormError(t('expenses.rules.dialog.regexUnsupported'));
+        return;
+      }
       setFormError(err instanceof ApiError ? err.message : t('expenses.rules.dialog.saveError'));
     },
   });
