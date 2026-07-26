@@ -269,6 +269,41 @@ after stopping api + worker (see the "Restore from a dump" block in
 artifact is a superset of that dump; once decrypted it's a normal
 `.sql.gz` file usable with the existing local-restore procedure.
 
+## Market-data provider failover
+
+BetterTrack uses Yahoo as its primary market-data provider. The optional v5
+failover chain adds the keyless Stooq provider for supported equities and ETFs;
+crypto, FX, and commodities stay single-source. When Yahoo has a transient
+failure or an open circuit breaker, the same quote/history read continues
+through Stooq without changing the asset or cache key.
+
+The chain is off by default. Set the following in `infra/.env`, then recreate
+both market-data processes so API requests and worker refresh jobs use the same
+configuration:
+
+```dotenv
+MARKET_FAILOVER_ENABLED=true
+```
+
+```bash
+cd infra
+docker compose up -d --force-recreate api worker
+```
+
+To verify it, sign in to the admin app, open **Health**, and request or refresh a
+supported equity/ETF quote so an upstream provider has served traffic. The
+provider failover panel shows the ordered `yahoo → stooq` chain, a badge for the
+provider currently serving it, per-provider serve counts, and recent switch
+events. The panel stays absent until a configured chain has served traffic; with
+the flag off it remains absent.
+
+Recovery needs no operator action. After Yahoo's circuit-breaker cooldown, the
+next upstream refresh tries Yahoo in half-open state. A successful probe closes
+the breaker, serves from Yahoo again, and records the switch back in **Health**;
+a failed probe keeps Stooq serving and starts another cooldown. A still-fresh
+cached quote can delay the probe and visible switch until the next upstream
+refresh.
+
 ## Observability (Prometheus + Grafana)
 
 Full monitoring ships **inside the deploy stack** — PROJECTPLAN.md §13.5 V5-P2

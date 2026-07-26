@@ -4,7 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi, type Mock } from 'vitest';
 
-import type { BacktestResponse, SharedConglomerateDetailResponse } from '@bettertrack/contracts';
+import type {
+  SharedConglomerateDetailResponse,
+  SharedSandboxPreviewResponse,
+} from '@bettertrack/contracts';
 
 vi.mock('../../lib/socialApi', () => ({
   getSharedConglomerate: vi.fn(),
@@ -44,6 +47,7 @@ import { getSharedConglomerate, previewSharedConglomerateSandbox } from '../../l
 import { SharedConglomeratePage } from './SharedConglomeratePage';
 
 const CONGLOMERATE_ID = '00000000-0000-0000-0000-000000000010';
+const CHILD_ID = '00000000-0000-0000-0000-000000000011';
 const A_ID = '00000000-0000-0000-0000-00000000000a';
 const B_ID = '00000000-0000-0000-0000-00000000000b';
 
@@ -71,7 +75,28 @@ const detail: SharedConglomerateDetailResponse = {
   ],
 };
 
-const previewResponse: BacktestResponse = {
+const nestedDetail: SharedConglomerateDetailResponse = {
+  ...detail,
+  name: 'Nested duo',
+  positions: [
+    {
+      kind: 'conglomerate',
+      childId: CHILD_ID,
+      weightPct: 70,
+      sortOrder: 0,
+      child: { id: CHILD_ID, name: 'Core basket', status: 'active', positionCount: 2 },
+    },
+    {
+      kind: 'asset',
+      assetId: A_ID,
+      weightPct: 30,
+      sortOrder: 1,
+      asset: { symbol: 'AAA', name: 'Asset A', currency: 'EUR', type: 'stock' },
+    },
+  ],
+};
+
+const previewResponse: SharedSandboxPreviewResponse = {
   startDate: '2020-01-01',
   endDate: '2021-01-01',
   series: [
@@ -86,12 +111,8 @@ const previewResponse: BacktestResponse = {
     bestDay: null,
     worstDay: null,
   },
-  contributions: [],
-  notice: null,
-  benchmark: null,
   mode: 'clip',
   rebalance: 'none',
-  entryEvents: [],
   rebalanceEvents: [],
   idleCashAvgPct: null,
 };
@@ -167,6 +188,41 @@ describe('SharedConglomeratePage — what-if sandbox (V5-P6 arc c)', () => {
 
     // The shared object was only ever READ once — a sandbox tweak issues no write
     // and never refetches, let alone mutates, the shared basket.
+    expect(getSharedConglomerate).toHaveBeenCalledTimes(1);
+  });
+
+  test('a nested child renders as one re-weightable top-level sandbox row', async () => {
+    const user = userEvent.setup();
+    const untouchedSharedDetail = structuredClone(nestedDetail);
+    (getSharedConglomerate as unknown as Mock).mockResolvedValue(nestedDetail);
+
+    renderPage();
+    await screen.findByText('Nested duo');
+
+    const toggle = screen.getByRole('button', { name: /What-if sandbox/i });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await user.click(toggle);
+
+    const childWeight = await screen.findByLabelText('Weight for Core basket');
+    await waitFor(() => expect(previewSharedConglomerateSandbox).toHaveBeenCalled());
+    expect(lastPreviewPositions()).toEqual([
+      { id: CHILD_ID, weight: 70 },
+      { id: A_ID, weight: 30 },
+    ]);
+
+    await user.clear(childWeight);
+    await user.type(childWeight, '80');
+    await waitFor(() =>
+      expect(lastPreviewPositions()).toContainEqual({ id: CHILD_ID, weight: 80 }),
+    );
+
+    await user.click(screen.getByRole('button', { name: /Reset to shared/i }));
+    await waitFor(() =>
+      expect((screen.getByLabelText('Weight for Core basket') as HTMLInputElement).value).toBe(
+        '70',
+      ),
+    );
+    expect(nestedDetail).toEqual(untouchedSharedDetail);
     expect(getSharedConglomerate).toHaveBeenCalledTimes(1);
   });
 });

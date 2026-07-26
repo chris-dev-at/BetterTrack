@@ -203,6 +203,30 @@ test('the return factor toggle hides the sampling controls', async () => {
   expect(screen.queryByLabelText('Return rate (%)')).not.toBeInTheDocument();
 });
 
+test('clamps an out-of-range return rate instead of rendering NaN', async () => {
+  const user = userEvent.setup();
+  renderSection();
+  await screen.findByTestId('projection-series-base');
+
+  const returnRate = screen.getByLabelText('Return rate (%)');
+  expect(returnRate).toHaveAttribute('min', '-100');
+  expect(returnRate).toHaveAttribute('max', '100');
+
+  await waitFor(() => expect(returnRate).toHaveValue(5));
+
+  await user.clear(returnRate);
+  await user.type(returnRate, '-200');
+
+  await waitFor(() => expect(returnRate).toHaveValue(-200));
+  await waitFor(() =>
+    expect(screen.getByTestId('projection-series-base')).toHaveTextContent('0,00 €'),
+  );
+  expect(screen.getByTestId('projection-series-base')).not.toHaveTextContent('NaN');
+  expect(screen.getByRole('alert')).toHaveTextContent(
+    'The return rate is limited to -100% to 100%. The nearest value is used for this projection.',
+  );
+});
+
 test('the dividend factor toggle is hidden when the provider is unconfigured', async () => {
   renderSection();
   await screen.findByTestId('projection-series-base');

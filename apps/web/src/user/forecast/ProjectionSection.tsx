@@ -26,6 +26,9 @@ import { Button, TextField } from '../components/ui';
 import {
   FORECAST_HORIZON_MAX_YEARS,
   FORECAST_HORIZON_MIN_YEARS,
+  FORECAST_RETURN_MAX_PCT,
+  FORECAST_RETURN_MIN_PCT,
+  clampForecastReturnPct,
   normalizeStandingOrders,
   projectNetWorth,
   type ForecastWhatIfPlan,
@@ -122,7 +125,9 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     FORECAST_HORIZON_MIN_YEARS,
     FORECAST_HORIZON_MAX_YEARS,
   );
-  const annualReturnPct = returnEnabled ? safeNumber(returnPct) : 0;
+  const enteredReturnPct = safeNumber(returnPct);
+  const annualReturnPct = returnEnabled ? clampForecastReturnPct(enteredReturnPct) : 0;
+  const returnPctIsClamped = returnEnabled && enteredReturnPct !== annualReturnPct;
   const standingOrders = ordersEnabled
     ? normalizeStandingOrders(ordersQuery.data?.orders ?? [])
     : [];
@@ -265,12 +270,20 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
               <TextField
                 type="number"
                 inputMode="decimal"
+                min={FORECAST_RETURN_MIN_PCT}
+                max={FORECAST_RETURN_MAX_PCT}
+                step="any"
                 className="sm:w-40"
                 label={t('forecast.projection.returnPctLabel')}
                 hint={t('forecast.projection.returnPctHint')}
                 value={returnPct}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setReturnPct(e.target.value)}
               />
+              {returnPctIsClamped ? (
+                <p role="alert" className="text-xs text-amber-300">
+                  {t('forecast.projection.returnPctClamped')}
+                </p>
+              ) : null}
             </div>
           ) : null}
 

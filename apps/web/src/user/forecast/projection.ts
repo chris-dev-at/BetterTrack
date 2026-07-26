@@ -45,6 +45,10 @@ import type { StandingOrder } from '@bettertrack/contracts';
 export const FORECAST_HORIZON_MIN_YEARS = 1;
 export const FORECAST_HORIZON_MAX_YEARS = 30;
 
+/** Return bounds the UI enforces; the engine clamps defensively to the same. */
+export const FORECAST_RETURN_MIN_PCT = -100;
+export const FORECAST_RETURN_MAX_PCT = 100;
+
 /** A standing order normalized to the only facts the projection needs. */
 export interface ForecastStandingOrder {
   /** Signed EUR flow per single occurrence (+ into net worth, − out of it). */
@@ -107,10 +111,21 @@ export interface ForecastResult {
   overlays: ForecastSeries[];
 }
 
+/**
+ * Clamp a return-rate input to the range the Forecast model can represent.
+ * A loss beyond -100 % would make the geometric monthly-rate calculation take
+ * a fractional power of a negative number, which is not a real number.
+ */
+export function clampForecastReturnPct(annualPct: number): number {
+  if (!Number.isFinite(annualPct)) return 0;
+  return Math.max(FORECAST_RETURN_MIN_PCT, Math.min(FORECAST_RETURN_MAX_PCT, annualPct));
+}
+
 /** Geometric monthly-equivalent of an annual return %/yr (`0` maps to `0`). */
 export function monthlyRateFromAnnualPct(annualPct: number): number {
-  if (annualPct === 0) return 0;
-  return Math.pow(1 + annualPct / 100, 1 / 12) - 1;
+  const clampedAnnualPct = clampForecastReturnPct(annualPct);
+  if (clampedAnnualPct === 0) return 0;
+  return Math.pow(1 + clampedAnnualPct / 100, 1 / 12) - 1;
 }
 
 function pad2(n: number): string {

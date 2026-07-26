@@ -1,6 +1,7 @@
 import type { AssetRef } from '@bettertrack/contracts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { loadConfig } from '../../config/env';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import { CircuitOpenError } from '../circuitBreaker';
 import { createMarketData } from '../createMarketData';
@@ -8,6 +9,12 @@ import type { StooqClient } from '../stooqClient';
 import type { YahooClient, YahooQuoteResult } from '../yahooClient';
 
 const YAHOO_REF: AssetRef = { providerId: 'yahoo', providerRef: 'AAPL' };
+const DEPLOY_ENV: NodeJS.ProcessEnv = {
+  NODE_ENV: 'production',
+  DATABASE_URL: 'postgres://x',
+  REDIS_URL: 'redis://x',
+  SESSION_SECRET: 'a-sufficiently-long-secret-value',
+};
 
 describe('createMarketData registers both providers (§5.1)', () => {
   let h: TestHarness;
@@ -102,11 +109,20 @@ describe('createMarketData registers both providers (§5.1)', () => {
       quoteSummary: () => Promise.resolve({}),
       searchNews: () => Promise.resolve({ news: [] }),
     };
-    const { registry } = createMarketData({ db: h.db, redis: h.ctx.redis, yahooClient: stub });
+    const failover = loadConfig({
+      ...DEPLOY_ENV,
+      MARKET_FAILOVER_ENABLED: 'false',
+    }).providers.failover;
+    const { registry } = createMarketData({
+      db: h.db,
+      redis: h.ctx.redis,
+      yahooClient: stub,
+      failover,
+    });
     expect(registry.has('stooq')).toBe(false);
   });
 
-  it('registers Stooq and fails over to it when enabled and Yahoo is down (§13.5 V5-P1c)', async () => {
+  it('carries the deploy env into the registry and fails over when Yahoo is down (§13.5 V5-P1c)', async () => {
     await h.ctx.redis.flushall();
     const yahoo: YahooClient = {
       search: () => Promise.resolve({ quotes: [] }),
@@ -120,12 +136,19 @@ describe('createMarketData registers both providers (§5.1)', () => {
       quote: async () => ({ symbol: 'AAPL.US', date: '2026-07-16', time: '22:00:00', close: 200 }),
       history: async () => [],
     };
+    // The API and worker composition roots both pass this resolved object to
+    // createMarketData. Assert the documented env reaches the registry/service,
+    // rather than stopping at a config-parser assertion.
+    const failover = loadConfig({
+      ...DEPLOY_ENV,
+      MARKET_FAILOVER_ENABLED: 'true',
+    }).providers.failover;
     const { registry, service } = createMarketData({
       db: h.db,
       redis: h.ctx.redis,
       yahooClient: yahoo,
       stooqClient: stooq,
-      failover: { enabled: true },
+      failover,
       queueOptions: { minSpacingMs: 0 },
     });
 

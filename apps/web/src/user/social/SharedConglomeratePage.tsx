@@ -23,11 +23,12 @@ import { ItemFollowButton } from './ItemFollowButton';
 
 const SHARED_STALE_MS = 30_000;
 
-/** One shared asset constituent — the only kind the what-if sandbox re-weights. */
-type SharedAssetPosition = Extract<
-  SharedConglomerateDetailResponse['positions'][number],
-  { kind: 'asset' }
->;
+/** One top-level shared constituent — an asset or a nested conglomerate. */
+type SharedSandboxConstituent = SharedConglomerateDetailResponse['positions'][number];
+
+function constituentId(position: SharedSandboxConstituent): string {
+  return position.kind === 'asset' ? position.assetId : position.childId;
+}
 
 /**
  * Read-only view of a friend-shared conglomerate (PROJECTPLAN.md §6.9, §13.2
@@ -37,8 +38,8 @@ type SharedAssetPosition = Extract<
  *
  * V5-P6 arc c adds a collapsed-by-default "what-if" sandbox: the viewer can
  * re-weight the constituents locally and see the backtest recompute, without any
- * write and without edit rights. It folds away compact and is offered only for
- * flat (non-nested) all-asset baskets — nested re-weighting is #592's scope.
+ * write and without edit rights. A nested child remains one compact top-level
+ * row; its stored internal allocation is resolved recursively by the preview.
  */
 export function SharedConglomeratePage() {
   const t = useT();
@@ -49,15 +50,6 @@ export function SharedConglomeratePage() {
     staleTime: SHARED_STALE_MS,
     retry: false,
   });
-
-  // The sandbox re-weights top-level ASSET constituents only. A basket with any
-  // nested child is not sandboxable here (recursive re-weighting is #592), so it
-  // simply renders without the sandbox — zero added bloat on the shared view.
-  const assetPositions = useMemo<SharedAssetPosition[]>(
-    () => (data ? data.positions.filter((p): p is SharedAssetPosition => p.kind === 'asset') : []),
-    [data],
-  );
-  const sandboxable = Boolean(data) && assetPositions.length === (data?.positions.length ?? 0);
 
   if (isLoading) {
     return (
@@ -131,7 +123,7 @@ export function SharedConglomeratePage() {
         </ul>
       )}
 
-      {sandboxable ? <WhatIfSandbox conglomerateId={id} positions={assetPositions} /> : null}
+      <WhatIfSandbox conglomerateId={id} positions={data.positions} />
 
       <CommentThread kind="conglomerate" subjectId={id} />
     </div>
@@ -170,24 +162,30 @@ function WhatIfSandbox({
   positions,
 }: {
   conglomerateId: string;
-  positions: SharedAssetPosition[];
+  positions: SharedSandboxConstituent[];
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [range, setRange] = useState<BacktestPreviewRange>('MAX');
-  // Local weight overrides keyed by assetId; seeded from the shared weights.
+  // Local weight overrides keyed by assetId/childId; seeded from the shared weights.
   const [weights, setWeights] = useState<Record<string, number>>(() =>
-    Object.fromEntries(positions.map((p) => [p.assetId, p.weightPct])),
+    Object.fromEntries(positions.map((p) => [constituentId(p), p.weightPct])),
   );
 
   // The tweak set is pinned to the CURRENT shared constituents: an un-tweaked (or
-  // newly-appeared) asset falls back to its shared weight, so the request always
+  // newly-appeared) row falls back to its shared weight, so the request always
   // covers exactly the shared basket — the server's exact-set guard is satisfied.
-  const weightFor = (assetId: string, fallback: number) => weights[assetId] ?? fallback;
-  const isPristine = positions.every((p) => weightFor(p.assetId, p.weightPct) === p.weightPct);
+  const weightFor = (id: string, fallback: number) => weights[id] ?? fallback;
+  const isPristine = positions.every(
+    (position) => weightFor(constituentId(position), position.weightPct) === position.weightPct,
+  );
 
   const previewPositions = useMemo(
-    () => positions.map((p) => ({ id: p.assetId, weight: weights[p.assetId] ?? p.weightPct })),
+    () =>
+      positions.map((position) => {
+        const id = constituentId(position);
+        return { id, weight: weights[id] ?? position.weightPct };
+      }),
     [positions, weights],
   );
   const allPositive = previewPositions.every((p) => p.weight > 0);
@@ -275,7 +273,11 @@ function WhatIfSandbox({
             <button
               type="button"
               onClick={() =>
-                setWeights(Object.fromEntries(positions.map((p) => [p.assetId, p.weightPct])))
+                setWeights(
+                  Object.fromEntries(
+                    positions.map((position) => [constituentId(position), position.weightPct]),
+                  ),
+                )
               }
               disabled={isPristine}
               className={cx(
@@ -291,15 +293,24 @@ function WhatIfSandbox({
           </div>
 
           <ul className="flex flex-col gap-2">
-            {positions.map((p) => (
-              <SandboxWeightRow
-                key={p.assetId}
-                symbol={p.asset.symbol}
-                name={p.asset.name}
-                weight={weightFor(p.assetId, p.weightPct)}
-                onWeight={(w) => setWeights((prev) => ({ ...prev, [p.assetId]: clampWeight(w) }))}
-              />
-            ))}
+            {positions.map((position) => {
+              const id = constituentId(position);
+              return (
+                <SandboxWeightRow
+                  key={`${position.kind}:${id}`}
+                  label={position.kind === 'asset' ? position.asset.symbol : position.child.name}
+                  name={position.kind === 'asset' ? position.asset.name : undefined}
+                  nested={position.kind === 'conglomerate'}
+                  weight={weightFor(id, position.weightPct)}
+                  onWeight={(weight) =>
+                    setWeights((previous) => ({
+                      ...previous,
+                      [id]: clampWeight(weight),
+                    }))
+                  }
+                />
+              );
+            })}
           </ul>
 
           {!allPositive ? (
@@ -354,13 +365,15 @@ function WhatIfSandbox({
  * changes elsewhere (slider, reset).
  */
 function SandboxWeightRow({
-  symbol,
+  label,
   name,
+  nested,
   weight,
   onWeight,
 }: {
-  symbol: string;
-  name: string;
+  label: string;
+  name?: string;
+  nested: boolean;
   weight: number;
   onWeight: (weight: number) => void;
 }) {
@@ -375,10 +388,22 @@ function SandboxWeightRow({
   return (
     <li className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 sm:flex-row sm:items-center sm:gap-4">
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate font-mono text-sm font-semibold text-neutral-100">{symbol}</span>
-        <span className="truncate text-xs text-neutral-500" title={name}>
-          {name}
+        <span className="flex min-w-0 items-center gap-2">
+          <span
+            className={cx(
+              'truncate text-sm font-semibold text-neutral-100',
+              nested ? undefined : 'font-mono',
+            )}
+          >
+            {label}
+          </span>
+          {nested ? <NestedBadge /> : null}
         </span>
+        {name ? (
+          <span className="truncate text-xs text-neutral-500" title={name}>
+            {name}
+          </span>
+        ) : null}
       </div>
       <div className="flex flex-1 items-center gap-3">
         <input
@@ -388,7 +413,7 @@ function SandboxWeightRow({
           step={0.5}
           value={weight}
           onChange={(e) => onWeight(Number(e.target.value))}
-          aria-label={t('social.shared.sandbox.weightSliderAriaLabel', { symbol })}
+          aria-label={t('social.shared.sandbox.weightSliderAriaLabel', { symbol: label })}
           className="min-w-0 flex-1 accent-sky-500"
         />
         <div className="flex items-center gap-1">
@@ -405,7 +430,7 @@ function SandboxWeightRow({
               const parsed = Number(raw);
               if (Number.isFinite(parsed)) onWeight(parsed);
             }}
-            aria-label={t('social.shared.sandbox.weightAriaLabel', { symbol })}
+            aria-label={t('social.shared.sandbox.weightAriaLabel', { symbol: label })}
             className="w-20 rounded-md bg-neutral-950 px-2 py-1.5 text-right text-sm tabular-nums text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
           />
           <span aria-hidden="true" className="text-sm text-neutral-500">
