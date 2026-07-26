@@ -20,6 +20,7 @@ import {
   type PortfolioResponse,
   type PortfolioSummary,
   type Transaction,
+  type UpdateTransactionRequest,
   type VaultDocumentV1,
   type VaultEntity,
   type VaultEntityKind,
@@ -77,6 +78,8 @@ interface StoreContext {
   newId: () => string;
   newMutationId: () => string;
 }
+
+type TransactionDataPatch = Omit<UpdateTransactionRequest, 'baseSeq'>;
 
 /**
  * PortfolioStore for paranoid accounts. The only mutable dependency is the
@@ -239,6 +242,7 @@ export function createVaultPortfolioStore(
         current,
         portfolioId,
         currentEntity,
+        dataPatch,
         financialEdit,
         context.now(),
       );
@@ -256,6 +260,7 @@ export function createVaultPortfolioStore(
           document,
           portfolioId,
           existing,
+          dataPatch,
           financialEdit,
           context.now(),
         );
@@ -1566,9 +1571,7 @@ function assertValidAssetTimeline(
   reducePosition(transactions);
 }
 
-function hasFinancialTransactionPatch(
-  patch: Partial<Omit<ReturnType<typeof updateTransactionRequestSchema.parse>, 'baseSeq'>>,
-): boolean {
+function hasFinancialTransactionPatch(patch: TransactionDataPatch): boolean {
   return (
     patch.side !== undefined ||
     patch.quantity !== undefined ||
@@ -1644,14 +1647,24 @@ function assertTransactionUpdateTaxSupported(
   document: VaultDocumentV1,
   portfolioId: string,
   transaction: VaultEntity,
+  patch: TransactionDataPatch,
   financialEdit: boolean,
   now: string,
 ): void {
   if (!financialEdit) return;
   const assetId = stringField(transaction.data, 'assetId');
   const openFromYear = taxEngineOpenFromYear(effectivePortfolioTaxMode(document, portfolioId), now);
+  const prospectiveTransaction: VaultEntity = {
+    ...transaction,
+    data: definedFields({
+      ...transaction.data,
+      ...patch,
+    }),
+  };
   if (
     isFrozenTaxSensitiveSell(transaction) ||
+    isFrozenTaxSensitiveSell(prospectiveTransaction) ||
+    sellRequiresClientTaxEngine(prospectiveTransaction, openFromYear) ||
     liveEntities(document, 'transaction').some(
       (entity) =>
         stringField(entity.data, 'portfolioId') === portfolioId &&

@@ -678,6 +678,108 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(engine.state.active?.document.entities.transaction).toHaveLength(1);
   });
 
+  it.each(['country_specific', 'custom'] as const)(
+    'rejects turning a covered open-year buy into a sell under effective %s before CAS',
+    async (effectiveMode) => {
+      const firstBuyId = GENERATED_IDS[0];
+      const laterBuyId = GENERATED_IDS[1];
+      const document = initialDocument();
+      document.entities.transaction = [
+        vaultEntity(firstBuyId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 2,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-25T08:00:00.000Z',
+          note: null,
+          source: 'manual',
+        }),
+        vaultEntity(laterBuyId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 1,
+          price: 12,
+          fee: 0,
+          executedAt: '2026-07-25T09:00:00.000Z',
+          note: null,
+          source: 'manual',
+        }),
+      ];
+      configureEffectiveEngineTaxMode(document, effectiveMode);
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, { now: () => AT });
+
+      await expect(
+        store.updateTransaction(PORTFOLIO_ID, laterBuyId, { side: 'sell' }),
+      ).rejects.toMatchObject({ code: 'VAULT_OPERATION_UNAVAILABLE' });
+
+      expect(engine.mutate).not.toHaveBeenCalled();
+      expect(engine.state.active?.header.vaultVersion).toBe(1);
+      expect(
+        engine.state.active?.document.entities.transaction?.find(
+          (entity) => entity.id === laterBuyId,
+        )?.data,
+      ).toMatchObject({ side: 'buy', executedAt: '2026-07-25T09:00:00.000Z' });
+    },
+  );
+
+  it.each([
+    ['none', 'country_specific'],
+    ['legacy null', 'country_specific'],
+    ['none', 'custom'],
+    ['legacy null', 'custom'],
+  ] as const)(
+    'rejects moving a closed %s sell into the open year under effective %s before CAS',
+    async (frozenLabel, effectiveMode) => {
+      const buyId = GENERATED_IDS[0];
+      const sellId = GENERATED_IDS[1];
+      const closedExecutedAt = '2025-07-25T09:00:00.000Z';
+      const document = initialDocument();
+      document.entities.transaction = [
+        vaultEntity(buyId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 2,
+          price: 10,
+          fee: 0,
+          executedAt: '2025-07-25T08:00:00.000Z',
+          note: null,
+          source: 'manual',
+        }),
+        vaultEntity(sellId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'sell',
+          quantity: 1,
+          price: 12,
+          fee: 0,
+          executedAt: closedExecutedAt,
+          note: null,
+          taxMode: frozenLabel === 'none' ? 'none' : null,
+          source: 'manual',
+        }),
+      ];
+      configureEffectiveEngineTaxMode(document, effectiveMode);
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, { now: () => AT });
+
+      await expect(
+        store.updateTransaction(PORTFOLIO_ID, sellId, { executedAt: AT }),
+      ).rejects.toMatchObject({ code: 'VAULT_OPERATION_UNAVAILABLE' });
+
+      expect(engine.mutate).not.toHaveBeenCalled();
+      expect(engine.state.active?.header.vaultVersion).toBe(1);
+      expect(
+        engine.state.active?.document.entities.transaction?.find((entity) => entity.id === sellId)
+          ?.data,
+      ).toMatchObject({ side: 'sell', executedAt: closedExecutedAt });
+    },
+  );
+
   it.each([
     ['none', 'country_specific'],
     ['legacy null', 'country_specific'],
@@ -2491,6 +2593,44 @@ function wireApiModel(model: PortfolioStore): void {
   vi.mocked(portfolioApi.deleteTransaction).mockImplementation(model.deleteTransaction);
   vi.mocked(portfolioApi.depositCash).mockImplementation(model.depositCash);
   vi.mocked(portfolioApi.withdrawCash).mockImplementation(model.withdrawCash);
+}
+
+function configureEffectiveEngineTaxMode(
+  document: VaultDocumentV1,
+  mode: 'country_specific' | 'custom',
+): void {
+  if (mode === 'country_specific') {
+    document.entities.taxSetting = [
+      vaultEntity(GENERATED_IDS[10], {
+        userId: GENERATED_IDS[11],
+        mode,
+        country: 'DE',
+        manualDefaultAmountEur: null,
+        manualDefaultRatePct: null,
+        customParams: null,
+        updatedAt: AT,
+      }),
+    ];
+    return;
+  }
+  document.entities.portfolioSetting = [
+    vaultEntity(GENERATED_IDS[10], {
+      portfolioId: PORTFOLIO_ID,
+      key: 'tax',
+      value: {
+        mode,
+        custom: {
+          ratePct: 25,
+          lossOffset: true,
+          refund: true,
+          yearReset: true,
+          carryForward: false,
+          costBasis: 'fifo',
+        },
+      },
+      updatedAt: AT,
+    }),
+  ];
 }
 
 function initialDocument(): VaultDocumentV1 {
