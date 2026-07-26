@@ -92,6 +92,30 @@ describe('quiet-hours window end', () => {
     const end = quietHoursWindowEnd(ny, utc('2026-01-15T04:00:00Z'));
     expect(end.toISOString()).toBe('2026-01-15T12:00:00.000Z');
   });
+
+  it('closes a spring-forward overnight window at 07:00 EDT, exclusively', () => {
+    const ny: QuietHoursConfig = { ...OVERNIGHT, timezone: 'America/New_York' };
+    // 04:00 UTC = 23:00 EST on Mar 7. The next local 07:00 is EDT, not EST.
+    const openedAt = utc('2026-03-08T04:00:00Z');
+    const end = quietHoursWindowEnd(ny, openedAt);
+
+    expect(isInQuietHours(ny, openedAt)).toBe(true);
+    expect(end.toISOString()).toBe('2026-03-08T11:00:00.000Z');
+    expect(isInQuietHours(ny, utc('2026-03-08T10:59:00Z'))).toBe(true);
+    expect(isInQuietHours(ny, end)).toBe(false);
+  });
+
+  it('closes a fall-back overnight window at 07:00 EST, exclusively', () => {
+    const ny: QuietHoursConfig = { ...OVERNIGHT, timezone: 'America/New_York' };
+    // 03:00 UTC = 23:00 EDT on Oct 31. The next local 07:00 is EST, not EDT.
+    const openedAt = utc('2026-11-01T03:00:00Z');
+    const end = quietHoursWindowEnd(ny, openedAt);
+
+    expect(isInQuietHours(ny, openedAt)).toBe(true);
+    expect(end.toISOString()).toBe('2026-11-01T12:00:00.000Z');
+    expect(isInQuietHours(ny, utc('2026-11-01T11:59:00Z'))).toBe(true);
+    expect(isInQuietHours(ny, end)).toBe(false);
+  });
 });
 
 describe('digest period bucketing by local day (§13.5 V5-P3)', () => {
