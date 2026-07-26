@@ -189,16 +189,17 @@ export function createVaultPortfolioStore(
       const parsedRequest = createTransactionsRequestSchema.parse({ transactions: inputs });
       const parsedInputs =
         'transactions' in parsedRequest ? parsedRequest.transactions : [parsedRequest];
-      assertLocallySupportedTransactions(current, portfolioId, parsedInputs, context.now());
-      const createdIds: string[] = [];
+      const candidates = parsedInputs.map((input) => ({
+        id: safeNewId(context),
+        input,
+      }));
+      assertLocallySupportedTransactions(current, portfolioId, candidates, context.now());
 
       await mutateDocument(context, (document) => {
         requirePortfolio(document, portfolioId);
-        assertLocallySupportedTransactions(document, portfolioId, parsedInputs, context.now());
+        assertLocallySupportedTransactions(document, portfolioId, candidates, context.now());
         const timestamp = context.now();
-        const entities = parsedInputs.map((input) => {
-          const id = safeNewId(context);
-          createdIds.push(id);
+        const entities = candidates.map(({ id, input }) => {
           resolveTransactionAsset(document, input.assetId);
           return entityRecord(id, engine.deviceId, timestamp, {
             ...input,
@@ -217,7 +218,7 @@ export function createVaultPortfolioStore(
       });
 
       const committed = requireDocument(engine);
-      return createdIds.map((id) => {
+      return candidates.map(({ id }) => {
         const entity = findLiveEntity(committed, 'transaction', id);
         if (entity == null) {
           throw storeError(
@@ -1612,11 +1613,14 @@ function assertFinancialEditSupported(
 function assertLocallySupportedTransactions(
   document: VaultDocumentV1,
   portfolioId: string,
-  inputs: ReturnType<typeof transactionInputSchema.parse>[],
+  candidates: {
+    id: string;
+    input: ReturnType<typeof transactionInputSchema.parse>;
+  }[],
   now: string,
 ): void {
-  const requiresDerivedEngine = inputs.some(
-    (input) =>
+  const requiresDerivedEngine = candidates.some(
+    ({ input }) =>
       input.payFromCash === true ||
       input.addProceedsToCash === true ||
       input.settleCashAsOfToday === true ||
@@ -1625,17 +1629,17 @@ function assertLocallySupportedTransactions(
   );
   const effectiveTaxMode = effectivePortfolioTaxMode(document, portfolioId);
   const openFromYear = taxEngineOpenFromYear(effectiveTaxMode, now);
-  const recordsEngineTax = inputs.some(
-    (input) => input.side === 'sell' && effectiveTaxMode !== 'none',
+  const recordsEngineTax = candidates.some(
+    ({ input }) => input.side === 'sell' && effectiveTaxMode !== 'none',
   );
   const existingTransactions = liveEntities(document, 'transaction');
-  const reshapesFrozenTax = inputs.some((input) =>
+  const reshapesFrozenTax = candidates.some(({ id, input }) =>
     existingTransactions.some(
       (entity) =>
         stringField(entity.data, 'portfolioId') === portfolioId &&
         stringField(entity.data, 'assetId') === input.assetId &&
         sellRequiresClientTaxEngine(entity, openFromYear) &&
-        taxSellFollowsTransaction(entity, input.executedAt, null),
+        taxSellFollowsTransaction(entity, input.executedAt, id),
     ),
   );
   if (requiresDerivedEngine || recordsEngineTax || reshapesFrozenTax) {
@@ -1784,13 +1788,11 @@ function sellRequiresClientTaxEngine(entity: VaultEntity, openFromYear: number |
 /**
  * A transaction can only reshape a frozen sell when it precedes that sell in
  * the same deterministic order used by persisted transaction replay.
- * New rows do not have an id before CAS, so equal instants stay conservatively
- * guarded until their final UUIDv7 tie-breaker exists.
  */
 function taxSellFollowsTransaction(
   sell: VaultEntity,
   transactionExecutedAt: string,
-  transactionId: string | null,
+  transactionId: string,
 ): boolean {
   const sellExecutedAt = Date.parse(stringField(sell.data, 'executedAt'));
   const affectedExecutedAt = Date.parse(transactionExecutedAt);
@@ -1799,7 +1801,7 @@ function taxSellFollowsTransaction(
   }
   const timeDelta = sellExecutedAt - affectedExecutedAt;
   if (timeDelta !== 0) return timeDelta > 0;
-  return transactionId == null || transactionId.localeCompare(sell.id) < 0;
+  return transactionId.localeCompare(sell.id) < 0;
 }
 
 function isEngineTaxedSell(entity: VaultEntity): boolean {
