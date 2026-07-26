@@ -855,13 +855,14 @@ interface ReconcileChange {
 
 interface ReconcileGroup {
   orderAt: string;
-  orderKey: string;
+  sequenceKey: string;
   changes: ReconcileChange[];
 }
 
 interface ReconcileOperation {
   token: string;
   orderAt: string;
+  sequenceKey: string;
 }
 
 class VaultAggregateConflictError extends Error {
@@ -966,21 +967,21 @@ function reconcileGroups(changes: ReconcileChange[]): ReconcileGroup[] {
 
   return components
     .map((component): ReconcileGroup => {
-      const orderedTokens = [...component.tokens].sort();
+      // Namespaced tokens connect group members; the raw UUIDv7 sequence keeps
+      // same-instant single and atomic operations in their actual write order.
+      const firstOperation = component.changes
+        .flatMap((change) => reconcileOperations(change))
+        .sort(compareReconcileOperations)[0]!;
       return {
-        orderAt: earliestOperationAt(
-          component.changes.flatMap((change) =>
-            reconcileOperations(change).map(({ orderAt }) => orderAt),
-          ),
-        ),
-        orderKey: orderedTokens.join('\u0000'),
+        orderAt: firstOperation.orderAt,
+        sequenceKey: firstOperation.sequenceKey,
         changes: component.changes,
       };
     })
     .sort(
       (left, right) =>
         Date.parse(left.orderAt) - Date.parse(right.orderAt) ||
-        left.orderKey.localeCompare(right.orderKey),
+        left.sequenceKey.localeCompare(right.sequenceKey),
     )
     .map((group) => ({
       ...group,
@@ -997,6 +998,7 @@ function reconcileOperations(change: ReconcileChange): ReconcileOperation[] {
     operations.push({
       token: `mutation:${change.local.mutationId}`,
       orderAt: change.local.editedAt,
+      sequenceKey: change.local.mutationId,
     });
   }
 
@@ -1006,6 +1008,7 @@ function reconcileOperations(change: ReconcileChange): ReconcileOperation[] {
       operations.push({
         token: `atomic:${mutationId}`,
         orderAt: change.local.atomicMutationTimestamps?.[mutationId] ?? change.local.editedAt,
+        sequenceKey: mutationId,
       });
     }
   }
@@ -1016,8 +1019,17 @@ function reconcileOperations(change: ReconcileChange): ReconcileOperation[] {
         {
           token: `legacy:${change.local.editedAt}\u0000${change.local.editedBy}`,
           orderAt: change.local.editedAt,
+          sequenceKey: `${change.local.editedAt}\u0000${change.local.editedBy}`,
         },
       ];
+}
+
+function compareReconcileOperations(left: ReconcileOperation, right: ReconcileOperation): number {
+  return (
+    Date.parse(left.orderAt) - Date.parse(right.orderAt) ||
+    left.sequenceKey.localeCompare(right.sequenceKey) ||
+    left.token.localeCompare(right.token)
+  );
 }
 
 function earliestOperationAt(timestamps: readonly string[]): string {

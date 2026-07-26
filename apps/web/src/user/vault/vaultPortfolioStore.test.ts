@@ -1925,6 +1925,85 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     });
   });
 
+  it('orders mixed single and atomic same-millisecond mutations by operation id', async () => {
+    const buyId = GENERATED_IDS[0];
+    const remoteSellId = GENERATED_IDS[1];
+    const singleSellId = GENERATED_IDS[2];
+    const firstAtomicSellId = GENERATED_IDS[3];
+    const secondAtomicSellId = GENERATED_IDS[4];
+    const singleMutationId = GENERATED_IDS[5];
+    const atomicMutationId = GENERATED_IDS[6];
+    const document = initialDocument();
+    document.entities.transaction = [
+      vaultEntity(buyId, {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 3,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-25T09:00:00.000Z',
+        note: null,
+        source: 'manual',
+      }),
+    ];
+    const { first, second, remote } = await createConcurrentSyncEngines(
+      document,
+      'portfolio-store-same-millisecond-mixed-sells',
+    );
+    const remoteStore = createVaultPortfolioStore(first, {
+      now: () => AT,
+      newId: () => remoteSellId,
+    });
+    const offlineStore = createVaultPortfolioStore(second, {
+      now: () => AT,
+      newId: idSequenceFrom(singleSellId, firstAtomicSellId, secondAtomicSellId),
+      newMutationId: idSequenceFrom(singleMutationId, atomicMutationId),
+    });
+    const sell = {
+      assetId: ASSET_ID,
+      side: 'sell' as const,
+      quantity: 1,
+      price: 12,
+      fee: 0,
+      executedAt: AT,
+    };
+
+    remote.setOnline(false);
+    await expect(offlineStore.createTransactions(PORTFOLIO_ID, [sell])).resolves.toMatchObject([
+      { id: singleSellId },
+    ]);
+    await expect(
+      offlineStore.createTransactions(PORTFOLIO_ID, [sell, sell]),
+    ).resolves.toMatchObject([{ id: firstAtomicSellId }, { id: secondAtomicSellId }]);
+    remote.setOnline(true);
+    await expect(remoteStore.createTransactions(PORTFOLIO_ID, [sell])).resolves.toMatchObject([
+      { id: remoteSellId },
+    ]);
+
+    await expect(second.reconnect()).resolves.toMatchObject({ status: 'synced' });
+    const localRows = second.state.active?.document.entities.transaction ?? [];
+    expect(localRows.find((row) => row.id === singleSellId)).toMatchObject({ deletedAt: null });
+    for (const id of [firstAtomicSellId, secondAtomicSellId]) {
+      expect(localRows.find((row) => row.id === id)).toMatchObject({ deletedAt: AT });
+    }
+    await expect(offlineStore.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
+      holdings: [expect.objectContaining({ quantity: 1 })],
+    });
+
+    await expect(first.reconnect()).resolves.toMatchObject({ status: 'synced' });
+    const publishedRows = first.state.active?.document.entities.transaction ?? [];
+    expect(publishedRows.find((row) => row.id === singleSellId)).toMatchObject({
+      deletedAt: null,
+    });
+    for (const id of [firstAtomicSellId, secondAtomicSellId]) {
+      expect(publishedRows.find((row) => row.id === id)).toMatchObject({ deletedAt: AT });
+    }
+    await expect(remoteStore.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
+      holdings: [expect.objectContaining({ quantity: 1 })],
+    });
+  });
+
   it('rejects a divergent withdrawal before any negative merged ledger is persisted', async () => {
     const depositId = GENERATED_IDS[0];
     const firstWithdrawalId = GENERATED_IDS[1];
