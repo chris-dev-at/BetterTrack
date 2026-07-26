@@ -77,7 +77,6 @@ import {
   createWebhookDispatcher,
   createFetchWebhookTransport,
 } from '../services/webhooks';
-import { newId } from '../data/ids';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
@@ -401,7 +400,6 @@ const webhookBridge = createWebhookBridge({
   enqueue: async (job) => {
     await registry.enqueue('webhooks.deliver', job);
   },
-  generateId: newId,
   logger,
 });
 

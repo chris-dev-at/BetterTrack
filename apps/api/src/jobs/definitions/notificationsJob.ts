@@ -26,8 +26,9 @@ export interface NotificationsDispatchJobDeps {
    * Outbound-webhook fan-out (§13.5 V5-P10): the durable `notifications.dispatch`
    * queue is the ONE place every user-scoped domain event converges, so webhooks
    * tap it here rather than duplicating the pipeline. Optional — deployments/
-   * tests without webhooks pass nothing. `handleEvent` never throws, so it can't
-   * fail (or retrigger) the notification dispatch it rides alongside.
+   * tests without webhooks pass nothing. A failed enqueue is rethrown only after
+   * all sibling subscriptions were attempted, so this durable job retries it;
+   * the notification dispatch marker keeps that replay idempotent.
    */
   webhooks?: WebhookBridge;
 }

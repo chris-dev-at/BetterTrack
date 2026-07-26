@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { WEBHOOK_EVENT_TYPES } from '@bettertrack/contracts';
 
 import type { WebhookSubscriptionRepository } from '../../data/repositories/webhookRepository';
@@ -14,8 +16,10 @@ import type { WebhookDeliveryJob } from './webhookDispatcher';
  * webhooks never depend on the ephemeral pub/sub bus surviving a restart, and a
  * subscription only ever receives its owner's own events (`event.userId`).
  *
- * `handleEvent` never throws: a fan-out failure must not fail the notification
- * job it runs alongside.
+ * Enqueue failures are isolated per subscription so one broken enqueue cannot
+ * suppress its siblings. Once every sibling has been attempted, a failure is
+ * rethrown to the durable notification job for retry. Deterministic delivery
+ * ids make that replay safe for receiver-side deduplication.
  */
 
 const WEBHOOK_EVENT_TYPE_SET: ReadonlySet<string> = new Set(WEBHOOK_EVENT_TYPES);
@@ -30,12 +34,46 @@ export function eventUserId(event: DomainEvent): string | null {
   return 'userId' in event && typeof event.userId === 'string' ? event.userId : null;
 }
 
+/** Serialize an event independent of the insertion order of its object keys. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * A deterministic UUIDv8 for one subscription's delivery of one logical event.
+ * Replaying the same BullMQ event therefore preserves both the receiver's
+ * dedupe key and the delivery-log primary key.
+ */
+function webhookDeliveryId(subscriptionId: string, event: DomainEvent): string {
+  const hash = createHash('sha256')
+    .update('bettertrack:webhook-delivery:v1\0')
+    .update(subscriptionId)
+    .update('\0')
+    .update(canonicalJson(event))
+    .digest('hex');
+  const variant = '89ab'.charAt(Number.parseInt(hash.slice(16, 17), 16) & 0x3);
+
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    `8${hash.slice(13, 16)}`,
+    `${variant}${hash.slice(17, 20)}`,
+    hash.slice(20, 32),
+  ].join('-');
+}
+
 export interface WebhookBridgeDeps {
   subscriptions: WebhookSubscriptionRepository;
   /** Enqueue one delivery (durable BullMQ in prod; synchronous under test). */
   enqueue: (job: WebhookDeliveryJob) => Promise<void>;
-  /** Mint a stable delivery id (UUIDv7). */
-  generateId: () => string;
   logger: Logger;
 }
 
@@ -44,22 +82,37 @@ export interface WebhookBridge {
 }
 
 export function createWebhookBridge(deps: WebhookBridgeDeps): WebhookBridge {
-  const { subscriptions, enqueue, generateId, logger } = deps;
+  const { subscriptions, enqueue, logger } = deps;
 
   return {
     async handleEvent(event) {
-      try {
-        if (!isWebhookEventType(event.type)) return;
-        const userId = eventUserId(event);
-        if (!userId) return;
+      if (!isWebhookEventType(event.type)) return;
+      const userId = eventUserId(event);
+      if (!userId) return;
 
-        const subs = await subscriptions.findEnabledForUserEvent(userId, event.type);
-        for (const sub of subs) {
-          await enqueue({ subscriptionId: sub.id, deliveryId: generateId(), event });
+      const subs = await subscriptions.findEnabledForUserEvent(userId, event.type);
+      let failedEnqueues = 0;
+
+      for (const sub of subs) {
+        try {
+          await enqueue({
+            subscriptionId: sub.id,
+            deliveryId: webhookDeliveryId(sub.id, event),
+            event,
+          });
+        } catch (err) {
+          failedEnqueues += 1;
+          logger.error(
+            { subscriptionId: sub.id, type: event.type, err },
+            'webhook bridge: delivery enqueue failed',
+          );
         }
-      } catch (err) {
-        // Isolated from the surrounding notification dispatch — log and move on.
-        logger.error({ err, type: event.type }, 'webhook bridge: fan-out failed');
+      }
+
+      if (failedEnqueues > 0) {
+        throw new Error(
+          `webhook bridge: ${failedEnqueues} delivery ${failedEnqueues === 1 ? 'enqueue' : 'enqueues'} failed`,
+        );
       }
     },
   };
