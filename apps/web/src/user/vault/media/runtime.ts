@@ -9,7 +9,11 @@ import {
   stageParanoidServerCandidate,
 } from '../../../lib/userApi';
 import type { VaultKeyMaterial } from '../crypto';
-import type { DriveDataHome } from '../drive/driveDataHome';
+import type {
+  DriveDataHome,
+  DriveDuplicateCandidate,
+  DriveDuplicateResolver,
+} from '../drive/driveDataHome';
 import { createDriveDataHome } from '../drive/driveDataHome';
 import type { GoogleDriveTokenClient } from '../drive/tokenClient';
 import { createGoogleDriveTokenClient, googleDriveClientId } from '../drive/tokenClient';
@@ -21,6 +25,7 @@ import { createVaultSyncEngine } from '../sync';
 import {
   createReplicatedVaultDataHome,
   createVaultReplicaMergeResolver,
+  type VaultReplicaDivergenceResolver,
 } from './replicatedDataHome';
 import { projectDriveSyncStatus, type ParanoidSyncStatusProjection } from './status';
 import {
@@ -216,7 +221,19 @@ export function installUnlockedVaultDriveRuntime(
 
   const tokens = options.tokens ?? createGoogleDriveTokenClient({ clientId });
   const server = options.server ?? createServerBlobDataHome();
-  const drive = options.drive ?? createDriveDataHome({ tokens });
+  const deviceId = browserVaultDeviceId(keyId);
+  const writeId = () => globalThis.crypto.randomUUID();
+  const resolveDivergence = createVaultReplicaMergeResolver({
+    vaultKey,
+    deviceId,
+    writeId,
+  });
+  const drive =
+    options.drive ??
+    createDriveDataHome({
+      tokens,
+      resolveDuplicates: createDriveDuplicateResolver(resolveDivergence),
+    });
   const state: VaultMediaStateApi = options.state ?? {
     get: getParanoidMediaState,
     prepare: prepareParanoidMediaVerification,
@@ -240,6 +257,9 @@ export function installUnlockedVaultDriveRuntime(
       state,
       server,
       drive,
+      deviceId,
+      writeId,
+      resolveDivergence,
     });
   const dispose = installVaultDriveConnectionController(
     createVaultDriveConnectionController({
@@ -261,26 +281,23 @@ function createDefaultSyncBridge(options: {
   state: VaultMediaStateApi;
   server: DataHome;
   drive: DriveDataHome;
+  deviceId: string;
+  writeId: () => string;
+  resolveDivergence: VaultReplicaDivergenceResolver;
 }): VaultDriveSyncBridge {
   const scope = `vault:${options.keyId}`;
   const local = createLocalDataHome({ scope });
-  const deviceId = browserVaultDeviceId(options.keyId);
-  const writeId = () => globalThis.crypto.randomUUID();
   const primary = createReplicatedVaultDataHome({
     ...options,
     authenticate: createVaultEnvelopeAuthenticator(options.vaultKey),
-    resolveDivergence: createVaultReplicaMergeResolver({
-      vaultKey: options.vaultKey,
-      deviceId,
-      writeId,
-    }),
+    resolveDivergence: options.resolveDivergence,
   });
   const engine = createVaultSyncEngine({
     local,
     primary,
     vaultKey: options.vaultKey,
-    deviceId,
-    writeId,
+    deviceId: options.deviceId,
+    writeId: options.writeId,
     quarantine: createIndexedDbVaultQuarantineStore({ scope }),
   });
   let reconnecting = false;
@@ -303,6 +320,44 @@ function createDefaultSyncBridge(options: {
         lastWriteAt: state.active?.header.writtenAt ?? null,
       };
     },
+  };
+}
+
+function createDriveDuplicateResolver(
+  resolveDivergence: VaultReplicaDivergenceResolver,
+): DriveDuplicateResolver {
+  return async (candidates) => {
+    if (candidates.length < 2) {
+      throw new Error('Drive duplicate recovery requires at least two candidates.');
+    }
+    let current = readableDriveCandidate(candidates[0]!);
+    for (const candidate of candidates.slice(1)) {
+      const resolved = await resolveDivergence(current, readableDriveCandidate(candidate));
+      current = {
+        status: 'ok',
+        medium: 'drive',
+        envelope: resolved.envelope.slice(),
+        info: {
+          medium: 'drive',
+          version: resolved.version,
+          sizeBytes: resolved.envelope.byteLength,
+          updatedAt: null,
+        },
+      };
+    }
+    return {
+      envelope: current.envelope.slice(),
+      version: current.info.version,
+    };
+  };
+}
+
+function readableDriveCandidate(candidate: DriveDuplicateCandidate) {
+  return {
+    status: 'ok' as const,
+    medium: 'drive' as const,
+    envelope: candidate.envelope.slice(),
+    info: { ...candidate.info, medium: 'drive' as const },
   };
 }
 

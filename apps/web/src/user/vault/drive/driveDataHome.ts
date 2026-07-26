@@ -1,5 +1,6 @@
 import { VAULT_FORMAT_VERSION } from '@bettertrack/contracts';
 
+import { equalBytes } from '../bytes';
 import type {
   DataHome,
   DataHomeCorruptCandidate,
@@ -19,6 +20,7 @@ import type {
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
+const DUPLICATE_RECOVERY_ATTEMPTS = 4;
 export const DRIVE_VAULT_FILE_NAME = 'bettertrack-vault.bin';
 
 interface DriveFileMetadata {
@@ -35,6 +37,21 @@ type MetadataResult =
   | { status: 'absent' }
   | Extract<DataHomeInfoResult, { status: 'corrupt' | 'transport-failure' }>;
 
+type ListedFilesResult =
+  | { status: 'ok'; files: DriveFileMetadata[] }
+  | Extract<DataHomeInfoResult, { status: 'corrupt' | 'transport-failure' }>;
+
+type DuplicateRecoveryResult = MetadataResult | { status: 'retry' };
+
+export interface DriveDuplicateCandidate {
+  envelope: Uint8Array;
+  info: DataHomeInfo;
+}
+
+export type DriveDuplicateResolver = (
+  candidates: readonly DriveDuplicateCandidate[],
+) => Promise<{ envelope: Uint8Array; version: number }>;
+
 export type DriveDataHomeDeleteResult =
   | { status: 'ok'; medium: 'drive' }
   | { status: 'absent'; medium: 'drive' }
@@ -50,6 +67,11 @@ export interface DriveDataHomeOptions {
   tokens: Pick<GoogleDriveTokenClient, 'token' | 'invalidate'>;
   fetch?: typeof fetch;
   boundary?: () => string;
+  /**
+   * Unlocked, authentication-aware resolver. The adapter invokes it before
+   * consolidating files created by an absent-file race on two owner devices.
+   */
+  resolveDuplicates?: DriveDuplicateResolver;
 }
 
 /**
@@ -106,12 +128,12 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     }
   }
 
-  async function listMetadata(): Promise<MetadataResult> {
+  async function listFiles(): Promise<ListedFilesResult> {
     const params = new URLSearchParams({
       spaces: 'appDataFolder',
       q: `name = '${DRIVE_VAULT_FILE_NAME}' and trashed = false`,
-      fields: 'files(id,name,appProperties,headRevisionId,modifiedTime,size)',
-      pageSize: '2',
+      fields: 'nextPageToken,files(id,name,appProperties,headRevisionId,modifiedTime,size)',
+      pageSize: '1000',
     });
     const fetched = await authorizedFetch(`${DRIVE_API}/files?${params}`);
     if (fetched.status === 'failure') return transport(fetched.failure);
@@ -138,16 +160,201 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         'Google Drive returned malformed file metadata.',
       );
     }
-    if (payload.files.length === 0) return { status: 'absent' };
-    if (payload.files.length !== 1) {
+    if (typeof payload.nextPageToken === 'string' && payload.nextPageToken.length > 0) {
       return corrupt(
         undefined,
         null,
         'malformed-metadata',
-        'Google Drive contains more than one BetterTrack vault file.',
+        'Google Drive contains too many BetterTrack vault files to recover safely.',
       );
     }
-    return parseMetadata(payload.files[0]);
+
+    const files: DriveFileMetadata[] = [];
+    for (const value of payload.files) {
+      const parsed = parseMetadata(value);
+      if (parsed.status !== 'ok') {
+        return parsed.status === 'absent'
+          ? corrupt(
+              undefined,
+              null,
+              'malformed-metadata',
+              'Google Drive returned an empty vault file entry.',
+            )
+          : parsed;
+      }
+      files.push(parsed.file);
+    }
+    files.sort((left, right) => left.id.localeCompare(right.id));
+    return { status: 'ok', files };
+  }
+
+  async function listMetadata(): Promise<MetadataResult> {
+    for (let attempt = 0; attempt < DUPLICATE_RECOVERY_ATTEMPTS; attempt += 1) {
+      const listed = await listFiles();
+      if (listed.status !== 'ok') return listed;
+      if (listed.files.length === 0) return { status: 'absent' };
+      if (listed.files.length === 1) return { status: 'ok', file: listed.files[0]! };
+
+      const recovered = await recoverDuplicates(listed.files);
+      if (recovered.status !== 'retry') return recovered;
+    }
+    return transport({
+      kind: 'api-failure',
+      message: 'Google Drive vault files kept changing during duplicate recovery.',
+    });
+  }
+
+  async function recoverDuplicates(
+    initialFiles: readonly DriveFileMetadata[],
+  ): Promise<DuplicateRecoveryResult> {
+    const readable: {
+      file: DriveFileMetadata;
+      read: Extract<DataHomeReadResult, { status: 'ok' }>;
+    }[] = [];
+    for (const file of initialFiles) {
+      const read = await readFile(file);
+      if (read.status === 'absent') return { status: 'retry' };
+      if (read.status !== 'ok') return read;
+      readable.push({ file, read });
+    }
+
+    let resolved = {
+      envelope: readable[0]!.read.envelope.slice(),
+      version: readable[0]!.read.info.version,
+    };
+    if (!readable.every(({ read }) => equalBytes(read.envelope, resolved.envelope))) {
+      if (!options.resolveDuplicates) {
+        return corrupt(
+          undefined,
+          Math.max(...readable.map(({ read }) => read.info.version)),
+          'malformed-metadata',
+          'Google Drive contains divergent BetterTrack vault files that require an unlocked recovery.',
+        );
+      }
+      try {
+        resolved = await options.resolveDuplicates(
+          readable.map(({ read }) => ({
+            envelope: read.envelope.slice(),
+            info: { ...read.info },
+          })),
+        );
+      } catch (cause) {
+        return corrupt(
+          undefined,
+          Math.max(...readable.map(({ read }) => read.info.version)),
+          'corrupt-bytes',
+          'Google Drive duplicate vault files could not be authenticated and reconciled.',
+          cause,
+        );
+      }
+    }
+
+    const outgoing = inspectOutgoing(resolved.envelope);
+    const highestParent = Math.max(...readable.map(({ read }) => read.info.version));
+    if (
+      'status' in outgoing ||
+      outgoing.version !== resolved.version ||
+      resolved.version < highestParent
+    ) {
+      return corrupt(
+        resolved.envelope,
+        'status' in outgoing ? outgoing.version : resolved.version,
+        'version-mismatch',
+        'Google Drive duplicate recovery returned an invalid vault successor.',
+      );
+    }
+
+    const stable = await listFiles();
+    if (stable.status !== 'ok') return stable;
+    if (stable.files.length === 1) return { status: 'ok', file: stable.files[0]! };
+    if (!sameFileSet(initialFiles, stable.files)) return { status: 'retry' };
+
+    const canonical = stable.files[0]!;
+    const canonicalRead = readable.find(({ file }) => file.id === canonical.id)!.read;
+    if (!equalBytes(canonicalRead.envelope, resolved.envelope)) {
+      const written = await upload(
+        canonical,
+        resolved.envelope,
+        resolved.version,
+        outgoing.formatVersion,
+      );
+      if (written.status === 'conflict') return { status: 'retry' };
+      if (written.status !== 'ok') return written;
+    }
+
+    const afterWrite = await listFiles();
+    if (afterWrite.status !== 'ok') return afterWrite;
+    if (afterWrite.files.length === 0) return { status: 'retry' };
+    const afterCanonical = afterWrite.files.find((file) => file.id === canonical.id);
+    if (!afterCanonical) return { status: 'retry' };
+    if (
+      afterWrite.files.length > 1 &&
+      !sameNonCanonicalFiles(stable.files, afterWrite.files, canonical.id)
+    ) {
+      return { status: 'retry' };
+    }
+
+    const roundTrip = await readFile(afterCanonical);
+    if (roundTrip.status === 'absent') return { status: 'retry' };
+    if (roundTrip.status !== 'ok') return roundTrip;
+    if (!equalBytes(roundTrip.envelope, resolved.envelope)) return { status: 'retry' };
+
+    if (afterWrite.files.length === 1) {
+      return { status: 'ok', file: afterCanonical };
+    }
+    const beforeDelete = await listFiles();
+    if (beforeDelete.status !== 'ok') return beforeDelete;
+    if (beforeDelete.files.length === 1) {
+      return { status: 'ok', file: beforeDelete.files[0]! };
+    }
+    if (!sameFileSet(afterWrite.files, beforeDelete.files)) return { status: 'retry' };
+
+    for (const duplicate of beforeDelete.files) {
+      if (duplicate.id === canonical.id) continue;
+      const deleted = await deleteFile(duplicate.id);
+      if (deleted.status !== 'ok' && deleted.status !== 'absent') return deleted;
+    }
+
+    const final = await listFiles();
+    if (final.status !== 'ok') return final;
+    if (final.files.length !== 1 || final.files[0]!.id !== canonical.id) {
+      return { status: 'retry' };
+    }
+    return { status: 'ok', file: final.files[0]! };
+  }
+
+  async function readFile(file: DriveFileMetadata): Promise<DataHomeReadResult> {
+    const fetched = await authorizedFetch(
+      `${DRIVE_API}/files/${encodeURIComponent(file.id)}?alt=media`,
+    );
+    if (fetched.status === 'failure') return transport(fetched.failure);
+    if (fetched.response.status === 404) return { status: 'absent', medium: 'drive' };
+    if (!fetched.response.ok) {
+      return apiFailure('Google Drive vault read failed.', fetched.response);
+    }
+    let envelope: Uint8Array;
+    try {
+      envelope = new Uint8Array(await fetched.response.arrayBuffer());
+    } catch (cause) {
+      return transport({
+        kind: 'api-failure',
+        message: 'Google Drive vault bytes could not be read.',
+        cause,
+      });
+    }
+    return inspectRead(envelope, file);
+  }
+
+  async function deleteFile(fileId: string): Promise<DriveDataHomeDeleteResult> {
+    const fetched = await authorizedFetch(`${DRIVE_API}/files/${encodeURIComponent(fileId)}`, {
+      method: 'DELETE',
+    });
+    if (fetched.status === 'failure') return transport(fetched.failure);
+    if (fetched.response.status === 404) return { status: 'absent', medium: 'drive' };
+    if (!fetched.response.ok) {
+      return apiFailure('Google Drive vault deletion failed.', fetched.response);
+    }
+    return { status: 'ok', medium: 'drive' };
   }
 
   async function upload(
@@ -220,25 +427,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       const metadata = await listMetadata();
       if (metadata.status === 'absent') return { status: 'absent', medium: 'drive' };
       if (metadata.status !== 'ok') return metadata;
-      const fetched = await authorizedFetch(
-        `${DRIVE_API}/files/${encodeURIComponent(metadata.file.id)}?alt=media`,
-      );
-      if (fetched.status === 'failure') return transport(fetched.failure);
-      if (fetched.response.status === 404) return { status: 'absent', medium: 'drive' };
-      if (!fetched.response.ok) {
-        return apiFailure('Google Drive vault read failed.', fetched.response);
-      }
-      let envelope: Uint8Array;
-      try {
-        envelope = new Uint8Array(await fetched.response.arrayBuffer());
-      } catch (cause) {
-        return transport({
-          kind: 'api-failure',
-          message: 'Google Drive vault bytes could not be read.',
-          cause,
-        });
-      }
-      return inspectRead(envelope, metadata.file);
+      return readFile(metadata.file);
     },
 
     async write(
@@ -293,7 +482,30 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         return upload(second.file, envelope, outgoing.version, outgoing.formatVersion);
       }
 
-      return upload(null, envelope, outgoing.version, outgoing.formatVersion);
+      const created = await upload(null, envelope, outgoing.version, outgoing.formatVersion);
+      if (created.status !== 'ok') return created;
+
+      // A name is not unique in Drive. Re-observe after POST so two absent-file
+      // creators either converge to the same verified file or report a normal
+      // CAS conflict; never acknowledge bytes that duplicate recovery replaced.
+      const settled = await listMetadata();
+      if (settled.status === 'absent') {
+        return { status: 'conflict', medium: 'drive', currentVersion: null };
+      }
+      if (settled.status !== 'ok') return settled;
+      const roundTrip = await readFile(settled.file);
+      if (roundTrip.status === 'absent') {
+        return { status: 'conflict', medium: 'drive', currentVersion: null };
+      }
+      if (roundTrip.status !== 'ok') return roundTrip;
+      if (!equalBytes(roundTrip.envelope, envelope)) {
+        return {
+          status: 'conflict',
+          medium: 'drive',
+          currentVersion: roundTrip.info.version,
+        };
+      }
+      return { status: 'ok', medium: 'drive', info: roundTrip.info };
     },
 
     async info(): Promise<DataHomeInfoResult> {
@@ -304,17 +516,12 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     },
 
     async delete(): Promise<DriveDataHomeDeleteResult> {
-      const metadata = await listMetadata();
-      if (metadata.status === 'absent') return { status: 'absent', medium: 'drive' };
-      if (metadata.status !== 'ok') return metadata;
-      const fetched = await authorizedFetch(
-        `${DRIVE_API}/files/${encodeURIComponent(metadata.file.id)}`,
-        { method: 'DELETE' },
-      );
-      if (fetched.status === 'failure') return transport(fetched.failure);
-      if (fetched.response.status === 404) return { status: 'absent', medium: 'drive' };
-      if (!fetched.response.ok) {
-        return apiFailure('Google Drive vault deletion failed.', fetched.response);
+      const listed = await listFiles();
+      if (listed.status !== 'ok') return listed;
+      if (listed.files.length === 0) return { status: 'absent', medium: 'drive' };
+      for (const file of listed.files) {
+        const deleted = await deleteFile(file.id);
+        if (deleted.status !== 'ok' && deleted.status !== 'absent') return deleted;
       }
       return { status: 'ok', medium: 'drive' };
     },
@@ -435,6 +642,38 @@ function infoOf(file: DriveFileMetadata, exactSize = file.sizeBytes): DataHomeIn
     sizeBytes: exactSize,
     updatedAt: file.modifiedTime,
   };
+}
+
+function sameFileSet(
+  left: readonly DriveFileMetadata[],
+  right: readonly DriveFileMetadata[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((file, index) => sameFileMetadata(file, right[index]))
+  );
+}
+
+function sameNonCanonicalFiles(
+  left: readonly DriveFileMetadata[],
+  right: readonly DriveFileMetadata[],
+  canonicalId: string,
+): boolean {
+  const leftRest = left.filter((file) => file.id !== canonicalId);
+  const rightRest = right.filter((file) => file.id !== canonicalId);
+  return sameFileSet(leftRest, rightRest);
+}
+
+function sameFileMetadata(left: DriveFileMetadata, right: DriveFileMetadata | undefined): boolean {
+  return (
+    right !== undefined &&
+    left.id === right.id &&
+    left.version === right.version &&
+    left.formatVersion === right.formatVersion &&
+    left.headRevisionId === right.headRevisionId &&
+    left.modifiedTime === right.modifiedTime &&
+    left.sizeBytes === right.sizeBytes
+  );
 }
 
 function multipartBody(

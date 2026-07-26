@@ -6,6 +6,8 @@ import {
   VAULT_HISTORY_CREATED_AT_HEADER,
   VAULT_HISTORY_MEDIUM_HEADER,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
+  VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER,
+  VAULT_SERVER_CANDIDATE_ID_HEADER,
 } from '@bettertrack/contracts';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -165,6 +167,61 @@ describe('CORS allowlist', () => {
     }
     expect(historyRead.headers.etag).toBe('"1"');
     expect(historyRead.headers[VAULT_HISTORY_MEDIUM_HEADER.toLowerCase()]).toBe('server');
+  });
+
+  it('exposes staged-candidate binding headers to the credentialed web origin', async () => {
+    const user = await harness.seedUser({
+      email: 'vault-candidate-cors@bt.test',
+      username: 'vault-candidate-cors',
+    });
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(users.id, user.id));
+
+    const agent = request.agent(harness.app);
+    const login = await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .set('Origin', WEB)
+      .send({ identifier: user.email, password: user.password });
+    expect(login.status).toBe(200);
+
+    const staged = await agent
+      .put('/api/v1/account/paranoid/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('Origin', WEB)
+      .send(vaultEnvelope(1, new Uint8Array([1])));
+    expect(staged.status).toBe(200);
+
+    const candidateRead = await agent
+      .get(`/api/v1/account/paranoid/media/server-candidate/${staged.body.candidateId as string}`)
+      .set('Origin', WEB)
+      .responseType('blob');
+    expect(candidateRead.status).toBe(200);
+    const exposed = new Set(
+      String(candidateRead.headers['access-control-expose-headers'] ?? '')
+        .split(',')
+        .map((header) => header.trim().toLowerCase()),
+    );
+    for (const header of [
+      VAULT_SERVER_CANDIDATE_ID_HEADER,
+      VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER,
+    ]) {
+      expect(exposed.has(header.toLowerCase())).toBe(true);
+      expect(candidateRead.headers[header.toLowerCase()]).toBeDefined();
+    }
+    expect(candidateRead.headers[VAULT_SERVER_CANDIDATE_ID_HEADER.toLowerCase()]).toBe(
+      staged.body.candidateId,
+    );
+    expect(candidateRead.headers[VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER.toLowerCase()]).toBe(
+      staged.body.expiresAt,
+    );
   });
 });
 
