@@ -51,7 +51,17 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? [['github'], ['list']] : 'list',
+  reporter: process.env.CI
+    ? [
+        [
+          'blob',
+          {
+            outputDir: 'blob-report',
+            fileName: `report-${process.env.PLAYWRIGHT_SHARD ?? 'ci'}.zip`,
+          },
+        ],
+      ]
+    : 'list',
   use: {
     baseURL: WEB_BASE_URL,
     trace: 'retain-on-failure',
