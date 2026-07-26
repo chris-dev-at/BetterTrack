@@ -9,6 +9,7 @@ import type {
   WatchedAssetRow,
 } from '../../../data/repositories/marketIntelRepository';
 import { createStubMarketData, cachedIntel } from '../../../testing/marketDataStubs';
+import { FxRateUnavailableError } from '../../currency/currencyService';
 import { createPortfolioMarketIntelService } from '../portfolioMarketIntelService';
 
 /** Fixed clock inside the calendar fixtures' window. */
@@ -152,6 +153,108 @@ describe('portfolio projected dividend income (V5-P5)', () => {
 
     const result = await service.projectedIncome('user-1');
     expect(result).toEqual({
+      available: false,
+      currency: 'EUR',
+      monthlyTotalEur: 0,
+      yearlyTotalEur: 0,
+      holdings: [],
+    });
+  });
+
+  it('returns the unavailable projection when FX is unavailable instead of throwing', async () => {
+    const marketData = createStubMarketData({
+      dividends: dividendsByRef({
+        AAA: makeDividends({ currency: 'USD', trailingAmount: 2 }),
+      }),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({ held: [held({ providerRef: 'AAA', quantity: 10 })] }),
+      currency: {
+        convert: async () => {
+          throw new FxRateUnavailableError('USD', 'EUR', null, 'EURUSD=X is unavailable');
+        },
+      },
+      enabled: true,
+      now: () => NOW,
+    });
+
+    await expect(service.projectedIncome('user-1')).resolves.toEqual({
+      available: false,
+      currency: 'EUR',
+      monthlyTotalEur: 0,
+      yearlyTotalEur: 0,
+      holdings: [],
+    });
+  });
+
+  it('resolves other holdings before applying all-or-nothing FX degradation', async () => {
+    const successfulConversions: number[] = [];
+    const marketData = createStubMarketData({
+      dividends: dividendsByRef({
+        AAA: makeDividends({ currency: 'USD', trailingAmount: 2 }),
+        BBB: makeDividends({ currency: 'EUR', trailingAmount: 4 }),
+      }),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({
+        held: [
+          held({ providerRef: 'AAA', quantity: 10 }),
+          held({
+            assetId: 'asset-b',
+            providerRef: 'BBB',
+            symbol: 'BBB',
+            name: 'Asset B',
+            currency: 'EUR',
+            quantity: 5,
+          }),
+        ],
+      }),
+      currency: {
+        convert: async (amount: number, from: string) => {
+          if (from === 'USD') {
+            throw new FxRateUnavailableError('USD', 'EUR', null, 'EURUSD=X is unavailable');
+          }
+          successfulConversions.push(amount);
+          return amount;
+        },
+      },
+      enabled: true,
+      now: () => NOW,
+    });
+
+    const result = await service.projectedIncome('user-1');
+
+    expect(successfulConversions).toEqual([20]);
+    expect(result).toEqual({
+      available: false,
+      currency: 'EUR',
+      monthlyTotalEur: 0,
+      yearlyTotalEur: 0,
+      holdings: [],
+    });
+  });
+
+  it('returns the unavailable projection when a non-ISO dividend currency rejects conversion', async () => {
+    const marketData = createStubMarketData({
+      dividends: dividendsByRef({
+        AAA: makeDividends({ currency: 'NOT-ISO', trailingAmount: 2 }),
+      }),
+    });
+    const service = createPortfolioMarketIntelService({
+      marketData,
+      repo: stubRepo({ held: [held({ providerRef: 'AAA', quantity: 10 })] }),
+      currency: {
+        convert: async () => {
+          throw new Error('Invalid currency code: "NOT-ISO"');
+        },
+      },
+      enabled: true,
+      now: () => NOW,
+    });
+
+    await expect(service.projectedIncome('user-1')).resolves.toEqual({
       available: false,
       currency: 'EUR',
       monthlyTotalEur: 0,
