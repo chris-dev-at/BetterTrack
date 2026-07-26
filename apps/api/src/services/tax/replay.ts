@@ -70,9 +70,10 @@ export interface ReplayRestoredTaxStateInput {
   toEur: TaxReplayToEur;
   /**
    * Sells proven by exact strict-document preflight to exceed their persisted
-   * holding by exactly one scale-8 storage quantum. Normal batch validation
-   * accepted the raw values before PostgreSQL rounded the rows apart; replay
-   * treats only that rounding suffix as uncovered at sale-price basis.
+   * holding only because of scale-8 storage rounding. Normal batch validation
+   * accepted the public-number values before PostgreSQL rounded individual rows
+   * apart; replay treats only those proven rounding suffixes as uncovered at
+   * sale-price basis.
    */
   storageRoundingSellIds?: ReadonlySet<string>;
 }

@@ -896,16 +896,16 @@ describe('paranoid rehydration service', () => {
     expect(restored?.price).toBe('2000000000000.000000');
   });
 
-  it('round-trips normal-write-reachable transaction decimals byte-for-byte', async () => {
+  it('round-trips a solvent transaction decimal beyond IEEE-754 precision byte-for-byte', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
     const transaction = input.document.entities.find((entry) => entry.kind === 'transaction');
     if (!transaction || transaction.kind !== 'transaction') {
       throw new Error('expected transaction');
     }
-    // This scale-8 value has the public-number preimage 90071992547.12346.
-    // Price and fee retain wider byte-exact persisted-decimal coverage.
-    transaction.data.quantity = '90071992547.12346000';
+    // The positive-only ledger is exactly solvent, so strict v1 preserves this
+    // scale-8 decimal even though no public number serializes back to it.
+    transaction.data.quantity = '90071992547.12345678';
     transaction.data.price = '90071992547409.123456';
     transaction.data.fee = '0.123456';
 
@@ -920,7 +920,7 @@ describe('paranoid rehydration service', () => {
       .from(transactions)
       .where(eq(transactions.id, TRANSACTION_ID));
     expect(restored).toEqual({
-      quantity: '90071992547.12346000',
+      quantity: '90071992547.12345678',
       price: '90071992547409.123456',
       fee: '0.123456',
     });

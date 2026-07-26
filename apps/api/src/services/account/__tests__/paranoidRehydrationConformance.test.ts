@@ -611,7 +611,7 @@ function normalWriteEnrollmentFocus(document: StrictDocument): FieldValue[] {
     }
   }
 
-  return NORMAL_WRITE_VARIANTS.map(({ kind, field, values }) => {
+  for (const { kind, field, values } of NORMAL_WRITE_VARIANTS) {
     const observedValues = document.entities
       .filter((entry) => entry.kind === kind)
       .map((entry) => (entry.data as Record<string, unknown>)[field]);
@@ -621,8 +621,18 @@ function normalWriteEnrollmentFocus(document: StrictDocument): FieldValue[] {
       observed,
       `${kind}.${field} normal-write variants are not mechanically enrolled`,
     ).toEqual(expected);
-    return { field: `${kind}.${field}`, value: observedValues };
-  });
+  }
+
+  // If a future validation rule rejects this accepted graph, the wrapper must
+  // name the concrete entity, field, and value that was enrolled. Keep every
+  // persisted field in the diagnostic focus rather than only finite variants.
+  return document.entities.flatMap((entry) => [
+    { field: `${entry.kind}[${entry.id}].id`, value: entry.id },
+    ...Object.entries(entry.data).map(([field, value]) => ({
+      field: `${entry.kind}[${entry.id}].${field}`,
+      value,
+    })),
+  ]);
 }
 
 function focusText(focus: readonly FieldValue[]): string {

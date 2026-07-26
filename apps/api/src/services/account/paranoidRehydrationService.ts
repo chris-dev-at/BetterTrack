@@ -182,8 +182,9 @@ function firstQuantityFloatBits(predicate: (persisted: bigint) => boolean, label
  * Return the outermost JavaScript numbers whose repository serialization lands
  * on one persisted numeric(20,8) quantity. The mapping is monotonic, so an
  * exact binary search covers both sub-quantum rounding and coarse ULPs around
- * 1e12. A persisted decimal without a public-number preimage is unreachable
- * through the normal transaction writer and must fail closed.
+ * 1e12. This proof is needed only when independent row rounding makes an exact
+ * persisted ledger appear insolvent; an exact-solvent strict-v1 ledger keeps
+ * its original decimals even when an older value has no public-number preimage.
  */
 function quantityNumberPreimages(
   persistedQuantity: bigint,
@@ -1283,39 +1284,67 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
         (a, b) =>
           Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
       );
-      const preimagesByQuantity = new Map<bigint, { lower: number; upper: number }>();
-      const normalWriteTransactions = orderedTransactions.map((transaction) => {
-        const quantity = persistedNumeric(
+      const persistedTransactions = orderedTransactions.map((transaction) => ({
+        transaction,
+        quantity: persistedNumeric(
           transaction.data.quantity,
           20,
           8,
           `transaction[${transaction.id}].quantity=${JSON.stringify(transaction.data.quantity)}`,
-        );
-        let preimages = preimagesByQuantity.get(quantity);
-        if (!preimages) {
-          preimages = quantityNumberPreimages(
-            quantity,
-            `transaction[${transaction.id}].quantity=${JSON.stringify(transaction.data.quantity)}`,
-          );
-          preimagesByQuantity.set(quantity, preimages);
+        ),
+      }));
+
+      // Strict v1 is consumed byte-for-byte. Public-number preimages are needed
+      // only to prove that a non-uncovered sell which exceeds the independently
+      // rounded persisted buys was nevertheless admitted by the normal writer.
+      let persistedHeld = 0n;
+      const apparentOversellIds = new Set<string>();
+      let lastApparentOversellIndex = -1;
+      for (const [index, { transaction, quantity }] of persistedTransactions.entries()) {
+        if (transaction.data.side === 'buy') {
+          persistedHeld += quantity;
+        } else {
+          const persistedShortfall = quantity - persistedHeld;
+          if (persistedShortfall > 0n && !transaction.data.allowUncovered) {
+            apparentOversellIds.add(transaction.id);
+            lastApparentOversellIndex = index;
+          }
+          persistedHeld = persistedShortfall > 0n ? 0n : -persistedShortfall;
         }
-        return {
-          transaction,
-          domain: {
-            assetId: transaction.data.assetId,
-            side: transaction.data.side,
-            // Maximizing buys and minimizing sells proves whether any public
-            // number preimage of the persisted sequence can pass normal
-            // admission. IEEE-754 arithmetic is monotonic for these finite,
-            // positive operands, and reducePosition supplies the exact reducer.
-            quantity: transaction.data.side === 'buy' ? preimages.upper : preimages.lower,
-            price: 0,
-            fee: 0,
-            executedAt: transaction.data.executedAt,
-            allowUncovered: transaction.data.allowUncovered,
-          },
-        };
-      });
+      }
+      if (lastApparentOversellIndex < 0) continue;
+
+      const preimagesByQuantity = new Map<bigint, { lower: number; upper: number }>();
+      const normalWriteTransactions = persistedTransactions
+        .slice(0, lastApparentOversellIndex + 1)
+        .map(({ transaction, quantity }) => {
+          let preimages = preimagesByQuantity.get(quantity);
+          if (!preimages) {
+            preimages = quantityNumberPreimages(
+              quantity,
+              `transaction[${transaction.id}].quantity=${JSON.stringify(
+                transaction.data.quantity,
+              )}`,
+            );
+            preimagesByQuantity.set(quantity, preimages);
+          }
+          return {
+            transaction,
+            domain: {
+              assetId: transaction.data.assetId,
+              side: transaction.data.side,
+              // Maximizing buys and minimizing sells proves whether any public
+              // number preimage of the persisted sequence can pass normal
+              // admission. IEEE-754 arithmetic is monotonic for these finite,
+              // positive operands, and reducePosition supplies the exact reducer.
+              quantity: transaction.data.side === 'buy' ? preimages.upper : preimages.lower,
+              price: 0,
+              fee: 0,
+              executedAt: transaction.data.executedAt,
+              allowUncovered: transaction.data.allowUncovered,
+            },
+          };
+        });
 
       try {
         reducePosition(normalWriteTransactions.map(({ domain }) => domain));
@@ -1346,18 +1375,8 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
         throw error;
       }
 
-      let persistedHeld = 0n;
-      for (const transaction of orderedTransactions) {
-        const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
-        if (transaction.data.side === 'buy') {
-          persistedHeld += quantity;
-        } else {
-          const persistedShortfall = quantity - persistedHeld;
-          if (persistedShortfall > 0n && !transaction.data.allowUncovered) {
-            storageRoundingSellIds.add(transaction.id);
-          }
-          persistedHeld = persistedShortfall > 0n ? 0n : -persistedShortfall;
-        }
+      for (const transactionId of apparentOversellIds) {
+        storageRoundingSellIds.add(transactionId);
       }
     }
   } catch (error) {
