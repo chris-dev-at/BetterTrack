@@ -174,6 +174,31 @@ function requirePostgresInteger(value: number, label: string): void {
   }
 }
 
+const POSTGRES_DAY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function requirePostgresDate(value: string, label: string): void {
+  const match = POSTGRES_DAY_PATTERN.exec(value);
+  const year = Number(match?.[1]);
+  const month = Number(match?.[2]);
+  const day = Number(match?.[3]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+  if (
+    !match ||
+    year < 1 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > (daysInMonth[month - 1] ?? 0)
+  ) {
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      `${label} is not a valid PostgreSQL calendar date`,
+    );
+  }
+}
+
 function rows<K extends Entity['kind']>(
   entities: readonly Entity[],
   kind: K,
@@ -320,6 +345,27 @@ function validFrozenTaxShape(
   if (mode === 'country_specific') return country !== null && params === null;
   if (mode === 'custom') return country === null && customTaxParamsSchema.safeParse(params).success;
   return country === null && params === null;
+}
+
+function validatePersistedDates(entities: readonly Entity[]): void {
+  for (const value of rows(entities, 'customAssetValue')) {
+    requirePostgresDate(value.data.date, 'custom-asset value date');
+  }
+  for (const order of rows(entities, 'standingOrder')) {
+    requirePostgresDate(order.data.startDate, 'standing-order start date');
+    if (order.data.endDate !== null) {
+      requirePostgresDate(order.data.endDate, 'standing-order end date');
+    }
+    if (order.data.lastPeriodKey !== null) {
+      requirePostgresDate(order.data.lastPeriodKey, 'standing-order last period');
+    }
+  }
+  for (const run of rows(entities, 'standingOrderRun')) {
+    requirePostgresDate(run.data.periodKey, 'standing-order run period');
+  }
+  for (const expense of rows(entities, 'expenseTransaction')) {
+    requirePostgresDate(expense.data.bookedOn, 'expense booking date');
+  }
 }
 
 function validatePersistedNumerics(entities: readonly Entity[]): void {
@@ -508,6 +554,7 @@ interface ValidatedGraph {
 function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGraph {
   validateUniqueRestoredIds(entities);
   validateOwnedRows(userId, entities);
+  validatePersistedDates(entities);
   validatePersistedNumerics(entities);
 
   const portfolioRows = rows(entities, 'portfolio');

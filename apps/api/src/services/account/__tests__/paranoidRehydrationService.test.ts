@@ -178,6 +178,71 @@ const OUT_OF_RANGE_PERSISTED_INTEGER_MUTATIONS: readonly {
   },
 ];
 
+const INVALID_PERSISTED_DATE_MUTATIONS: readonly {
+  name: string;
+  mutate: (input: ParanoidDisableRehydrationRequest) => void;
+}[] = [
+  {
+    name: 'custom-asset value date',
+    mutate(input) {
+      const value = input.document.entities.find((entry) => entry.kind === 'customAssetValue');
+      if (!value || value.kind !== 'customAssetValue') {
+        throw new Error('expected custom-asset value');
+      }
+      value.data.date = '2026-02-30';
+    },
+  },
+  {
+    name: 'standing-order start date',
+    mutate(input) {
+      const order = input.document.entities.find((entry) => entry.kind === 'standingOrder');
+      if (!order || order.kind !== 'standingOrder') throw new Error('expected standing order');
+      order.data.startDate = '2026-02-30';
+    },
+  },
+  {
+    name: 'standing-order end date',
+    mutate(input) {
+      const order = input.document.entities.find((entry) => entry.kind === 'standingOrder');
+      if (!order || order.kind !== 'standingOrder') throw new Error('expected standing order');
+      order.data.endDate = '2026-07-32';
+    },
+  },
+  {
+    name: 'standing-order last-period date',
+    mutate(input) {
+      const order = input.document.entities.find((entry) => entry.kind === 'standingOrder');
+      const run = input.document.entities.find((entry) => entry.kind === 'standingOrderRun');
+      if (!order || order.kind !== 'standingOrder') throw new Error('expected standing order');
+      if (!run || run.kind !== 'standingOrderRun') throw new Error('expected standing-order run');
+      order.data.lastPeriodKey = '2026-07-32';
+      run.data.periodKey = '2026-07-32';
+    },
+  },
+  {
+    name: 'standing-order run period date',
+    mutate(input) {
+      const order = input.document.entities.find((entry) => entry.kind === 'standingOrder');
+      const run = input.document.entities.find((entry) => entry.kind === 'standingOrderRun');
+      if (!order || order.kind !== 'standingOrder') throw new Error('expected standing order');
+      if (!run || run.kind !== 'standingOrderRun') throw new Error('expected standing-order run');
+      order.data.lastRunAt = null;
+      order.data.lastPeriodKey = null;
+      run.data.periodKey = '2026-07-32';
+    },
+  },
+  {
+    name: 'expense booking date',
+    mutate(input) {
+      const expense = input.document.entities.find((entry) => entry.kind === 'expenseTransaction');
+      if (!expense || expense.kind !== 'expenseTransaction') {
+        throw new Error('expected expense transaction');
+      }
+      expense.data.bookedOn = '2026-02-30';
+    },
+  },
+];
+
 function entity<K extends StrictEntity['kind']>(
   id: string,
   kind: K,
@@ -781,6 +846,35 @@ describe('paranoid rehydration service', () => {
       expect(await db.select().from(expenseRules).where(eq(expenseRules.userId, user.id))).toEqual(
         [],
       );
+    },
+  );
+
+  it.each(INVALID_PERSISTED_DATE_MUTATIONS)(
+    'rejects an invalid $name before any restore stage',
+    async ({ mutate }) => {
+      const { db, user } = await makeParanoid();
+      const input = exhaustiveRequest();
+      const stages: string[] = [];
+      mutate(input);
+      expect(paranoidDisableRehydrationRequestSchema.safeParse(input).success).toBe(true);
+
+      await expect(
+        createParanoidRehydrationService({
+          db,
+          afterStage(stage) {
+            stages.push(stage);
+          },
+        }).rehydrate(user.id, input),
+      ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+      expect(stages).toEqual([]);
+      expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+      expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+      expect(
+        await db.select().from(standingOrders).where(eq(standingOrders.userId, user.id)),
+      ).toEqual([]);
+      expect(
+        await db.select().from(expenseTransactions).where(eq(expenseTransactions.userId, user.id)),
+      ).toEqual([]);
     },
   );
 
