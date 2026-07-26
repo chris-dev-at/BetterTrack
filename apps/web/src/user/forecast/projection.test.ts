@@ -4,6 +4,8 @@ import type { StandingOrder } from '@bettertrack/contracts';
 
 import {
   FORECAST_HORIZON_MAX_YEARS,
+  FORECAST_RETURN_MAX_PCT,
+  FORECAST_RETURN_MIN_PCT,
   monthlyRateFromAnnualPct,
   normalizeStandingOrders,
   projectNetWorth,
@@ -50,6 +52,14 @@ describe('monthlyRateFromAnnualPct', () => {
   test('twelve monthly compounds reproduce the annual return', () => {
     const r = monthlyRateFromAnnualPct(10);
     expect(Math.pow(1 + r, 12)).toBeCloseTo(1.1, 10);
+  });
+
+  test.each([-200, -1_000_000])('clamps %d %%/yr to a finite monthly rate', (annualPct) => {
+    expect(monthlyRateFromAnnualPct(annualPct)).toBe(-1);
+  });
+
+  test('preserves the -100 %/yr monthly rate', () => {
+    expect(monthlyRateFromAnnualPct(FORECAST_RETURN_MIN_PCT)).toBe(-1);
   });
 });
 
@@ -134,6 +144,37 @@ describe('projectNetWorth — factor toggling (base line responds)', () => {
     expect(last(withDiv.base)).toBe(1600);
     expect(last(without.base)).toBe(1000);
   });
+
+  test.each([-1_000_000, -200, FORECAST_RETURN_MIN_PCT, 0, 10, FORECAST_RETURN_MAX_PCT, 1_000_000])(
+    'never emits NaN for a finite %d %%/yr return input',
+    (annualReturnPct) => {
+      const result = projectNetWorth(
+        makeInput({
+          annualReturnPct,
+          whatIfPlans: [
+            {
+              id: 'own-return',
+              label: 'Own return',
+              monthlyContributionEur: 100,
+              annualReturnPct,
+            },
+          ],
+        }),
+      );
+
+      expect(result.base.every((point) => Number.isFinite(point.value))).toBe(true);
+      expect(
+        result.overlays.every((overlay) =>
+          overlay.points.every((point) => Number.isFinite(point.value)),
+        ),
+      ).toBe(true);
+      expect(
+        [result.base.at(-1)!.value, result.overlays[0]!.points.at(-1)!.value].every(
+          Number.isFinite,
+        ),
+      ).toBe(true);
+    },
+  );
 });
 
 describe('projectNetWorth — standing orders honor cadence & dates', () => {
