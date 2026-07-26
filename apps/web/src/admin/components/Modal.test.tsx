@@ -78,6 +78,70 @@ test('follows positive tabindex order when focusing and wrapping', async () => {
   expect(normal).toHaveFocus();
 });
 
+test('wraps around a checked radio before unchecked group members', async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <Modal title="Edit user" onClose={vi.fn()}>
+        <button>Before choices</button>
+        <input type="radio" name="role" aria-label="Selected role" defaultChecked />
+        <input type="radio" name="role" aria-label="Other role" />
+      </Modal>
+      <button>Outside modal</button>
+    </>,
+  );
+
+  const before = screen.getByRole('button', { name: 'Before choices' });
+  const selected = screen.getByRole('radio', { name: 'Selected role' });
+
+  expect(before).toHaveFocus();
+
+  await user.tab();
+  expect(selected).toHaveFocus();
+
+  await user.tab();
+  expect(before).toHaveFocus();
+
+  await user.tab({ shift: true });
+  expect(selected).toHaveFocus();
+});
+
+test('wraps around a checked radio after unchecked group members', async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <Modal title="Edit user" onClose={vi.fn()}>
+        <input type="radio" name="role" aria-label="Other role" />
+        <input type="radio" name="role" aria-label="Selected role" defaultChecked />
+        <button>After choices</button>
+      </Modal>
+      <button>Outside modal</button>
+    </>,
+  );
+
+  const selected = screen.getByRole('radio', { name: 'Selected role' });
+  const after = screen.getByRole('button', { name: 'After choices' });
+
+  expect(selected).toHaveFocus();
+
+  await user.tab({ shift: true });
+  expect(after).toHaveFocus();
+
+  await user.tab();
+  expect(selected).toHaveFocus();
+});
+
+test("uses the first radio as an unchecked group's focus entry", () => {
+  render(
+    <Modal title="Edit user" onClose={vi.fn()}>
+      <input type="radio" name="role" aria-label="First role" />
+      <input type="radio" name="role" aria-label="Second role" />
+    </Modal>,
+  );
+
+  expect(screen.getByRole('radio', { name: 'First role' })).toHaveFocus();
+});
+
 test('excludes tabindex=-1 controls when wrapping Tab and Shift+Tab', async () => {
   const user = userEvent.setup();
   render(

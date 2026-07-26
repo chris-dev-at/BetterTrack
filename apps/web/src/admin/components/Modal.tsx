@@ -21,24 +21,65 @@ function isInClosedDetails(element: HTMLElement) {
   );
 }
 
-function focusableDescendants(container: HTMLElement) {
-  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
-    .filter(
-      (element) =>
-        element.tabIndex >= 0 &&
-        !element.matches(':disabled') &&
-        element.getAttribute('aria-hidden') !== 'true' &&
-        !isInClosedDetails(element),
-    )
-    .sort((left, right) => {
-      const leftTabIndex = left.tabIndex;
-      const rightTabIndex = right.tabIndex;
+function isGroupedRadio(element: HTMLElement): element is HTMLInputElement {
+  return element instanceof HTMLInputElement && element.type === 'radio' && element.name !== '';
+}
 
-      if (leftTabIndex === rightTabIndex) return 0;
-      if (leftTabIndex === 0) return 1;
-      if (rightTabIndex === 0) return -1;
-      return leftTabIndex - rightTabIndex;
-    });
+function normalizeRadioGroups(elements: HTMLElement[]) {
+  // Native Tab navigation exposes one stop per named radio group, scoped to its form owner.
+  const groupsByForm = new Map<
+    HTMLFormElement | null,
+    Map<string, { checked: HTMLInputElement | undefined; first: HTMLInputElement }>
+  >();
+
+  for (const element of elements) {
+    if (!isGroupedRadio(element)) continue;
+
+    let groupsByName = groupsByForm.get(element.form);
+    if (!groupsByName) {
+      groupsByName = new Map();
+      groupsByForm.set(element.form, groupsByName);
+    }
+
+    const group = groupsByName.get(element.name);
+    if (group) {
+      if (element.checked) group.checked = element;
+    } else {
+      groupsByName.set(element.name, {
+        checked: element.checked ? element : undefined,
+        first: element,
+      });
+    }
+  }
+
+  const radioStops = new Set<HTMLElement>();
+  for (const groupsByName of groupsByForm.values()) {
+    for (const group of groupsByName.values()) {
+      radioStops.add(group.checked ?? group.first);
+    }
+  }
+
+  return elements.filter((element) => !isGroupedRadio(element) || radioStops.has(element));
+}
+
+function focusableDescendants(container: HTMLElement) {
+  const candidates = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (element) =>
+      element.tabIndex >= 0 &&
+      !element.matches(':disabled') &&
+      element.getAttribute('aria-hidden') !== 'true' &&
+      !isInClosedDetails(element),
+  );
+
+  return normalizeRadioGroups(candidates).sort((left, right) => {
+    const leftTabIndex = left.tabIndex;
+    const rightTabIndex = right.tabIndex;
+
+    if (leftTabIndex === rightTabIndex) return 0;
+    if (leftTabIndex === 0) return 1;
+    if (rightTabIndex === 0) return -1;
+    return leftTabIndex - rightTabIndex;
+  });
 }
 
 /**
