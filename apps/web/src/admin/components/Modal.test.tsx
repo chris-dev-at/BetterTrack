@@ -86,3 +86,23 @@ test('restores focus to the opener when the modal unmounts', () => {
   expect(opener).toHaveFocus();
   opener.remove();
 });
+
+test('restores focus to the opener when a descendant uses autoFocus', () => {
+  const opener = document.createElement('button');
+  opener.textContent = 'Open modal';
+  document.body.append(opener);
+  opener.focus();
+
+  const { unmount } = render(
+    <Modal title="Create user" onClose={vi.fn()}>
+      <input aria-label="Email" autoFocus />
+    </Modal>,
+  );
+
+  expect(screen.getByRole('textbox', { name: 'Email' })).toHaveFocus();
+
+  unmount();
+
+  expect(opener).toHaveFocus();
+  opener.remove();
+});

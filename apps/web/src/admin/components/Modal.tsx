@@ -32,13 +32,18 @@ export function Modal({
   children: ReactNode;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  // Capture this during the initial render, before React commits descendants
+  // with autoFocus. A passive or layout effect would see the modal field instead
+  // of the control that opened the dialog.
+  const openingElementRef = useRef<HTMLElement | null>(
+    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  );
   const onCloseRef = useRef(onClose);
   const titleId = useId();
 
   onCloseRef.current = onClose;
 
   useEffect(() => {
-    const openingElement = document.activeElement;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onCloseRef.current();
     };
@@ -53,6 +58,7 @@ export function Modal({
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
+      const openingElement = openingElementRef.current;
       if (openingElement instanceof HTMLElement && openingElement.isConnected) {
         openingElement.focus();
       }
