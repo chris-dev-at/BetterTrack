@@ -78,6 +78,12 @@ const CLOSES: Record<string, Array<{ date: string; close: number }>> = {
     { date: '2026-01-02', close: 10 },
     { date: '2026-01-05', close: 11 },
   ],
+  D: [
+    { date: '2025-12-30', close: 100 },
+    { date: '2025-12-31', close: 105 },
+    { date: '2026-01-02', close: 95 },
+    { date: '2026-01-05', close: 110 },
+  ],
   HIDDEN_EARLY: [
     { date: '2025-12-30', close: 20 },
     { date: '2026-01-02', close: 22 },
@@ -115,6 +121,8 @@ const HIDDEN_ROOT_ID = '018f0000-0000-7000-8000-000000000007';
 const HIDDEN_CUSTOM_ROOT_ID = '018f0000-0000-7000-8000-000000000008';
 const HIDDEN_NO_HISTORY_CHILD_ID = '018f0000-0000-7000-8000-000000000009';
 const HIDDEN_NO_HISTORY_ROOT_ID = '018f0000-0000-7000-8000-00000000000a';
+/** Flat fixture whose valid three-decimal weights expose redundant normalization drift. */
+const PRECISE_FLAT_ID = '018f0000-0000-7000-8000-00000000000b';
 /** The friend viewing u1's shared baskets in the arc-c sandbox tests. */
 const VIEWER_ID = 'v1';
 
@@ -225,6 +233,17 @@ function createHarness() {
           ],
         };
       }
+      if (id === PRECISE_FLAT_ID) {
+        return {
+          id: PRECISE_FLAT_ID,
+          name: 'Precise Flat Mix',
+          positions: [
+            { kind: 'asset', assetId: 'A', weightPct: 0.001 },
+            { kind: 'asset', assetId: 'B', weightPct: 0.61 },
+            { kind: 'asset', assetId: 'D', weightPct: 99.389 },
+          ],
+        };
+      }
       return null;
     },
   } as unknown as ConglomerateRepository;
@@ -271,6 +290,7 @@ function createHarness() {
         HIDDEN_ROOT_ID,
         HIDDEN_CUSTOM_ROOT_ID,
         HIDDEN_NO_HISTORY_ROOT_ID,
+        PRECISE_FLAT_ID,
       ].includes(conglomerateId)
         ? { ownerId: 'u1' }
         : undefined,
@@ -636,12 +656,24 @@ describe('backtestService.runSharedSandboxPreview', () => {
     range: '1Y' as const,
   };
 
-  it('at the shared weights it reproduces the owner’s own backtest exactly (reset-to-shared curve)', async () => {
+  it('keeps a valid three-decimal flat vector bit-identical to the legacy direct-position preview', async () => {
     const { service } = createHarness();
-    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, ORIGINAL);
-    // The owner backtesting the same 60/40 A/B basket inline is the ground-truth
-    // shared curve; the viewer's sandbox at the shared weights must equal it.
-    const ownerPreview = await service.runPreview('u1', PREVIEW);
+    const positions = [
+      { assetId: 'A', weight: 0.001 },
+      { assetId: 'B', weight: 0.61 },
+      { assetId: 'D', weight: 99.389 },
+    ];
+    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: PRECISE_FLAT_ID,
+      positions: positions.map((position) => ({
+        id: position.assetId,
+        weight: position.weight,
+      })),
+      range: '1Y',
+    });
+    // The owner inline preview is the pre-nesting direct-position path. Pin the
+    // complete response, including exact normalized contribution weights.
+    const ownerPreview = await service.runPreview('u1', { positions, range: '1Y' });
     expect(() => backtestResponseSchema.parse(sandbox)).not.toThrow();
     expect(sandbox).toEqual(ownerPreview);
   });

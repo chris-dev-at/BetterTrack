@@ -661,6 +661,11 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       // keeps its stored internal weights; the shared flattener resolves those
       // recursively after applying the viewer's local root allocation.
       const constituents = detail.positions;
+      const assetConstituents = constituents.filter(
+        (position): position is Extract<ConglomerateConstituentRow, { kind: 'asset' }> =>
+          position.kind === 'asset',
+      );
+      const hasNestedConstituents = assetConstituents.length !== constituents.length;
       const constituentId = (position: ConglomerateConstituentRow): string =>
         position.kind === 'asset' ? position.assetId : position.childId;
 
@@ -685,43 +690,50 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           : currencyService.withBase(opts.baseCurrency);
       const providerRange = PROVIDER_RANGE[input.range];
 
-      // Apply only the root overrides, then reuse the canonical recursive
-      // resolver. This preserves the stored child structure, cycle/depth
-      // invariants and effective-weight semantics instead of reimplementing
-      // nesting in the sandbox.
-      const flat = await flattenConglomerate(
-        (conglomerateId) =>
-          conglomerateId === detail.id
-            ? Promise.resolve(detail)
-            : conglomerateRepo.findByIdForOwner(owner.ownerId, conglomerateId),
-        detail.id,
-        { rootWeights: tweak },
-      );
-      if (!flat || flat.positions.length === 0) {
+      let positions: Array<{ assetId: string; weight: number }>;
+      if (hasNestedConstituents) {
+        // Apply only the root overrides, then reuse the canonical recursive
+        // resolver. This preserves the stored child structure, cycle/depth
+        // invariants and effective-weight semantics instead of reimplementing
+        // nesting in the sandbox.
+        const flat = await flattenConglomerate(
+          (conglomerateId) =>
+            conglomerateId === detail.id
+              ? Promise.resolve(detail)
+              : conglomerateRepo.findByIdForOwner(owner.ownerId, conglomerateId),
+          detail.id,
+          { rootWeights: tweak },
+        );
+        positions =
+          flat?.positions.map((position) => ({
+            assetId: position.assetId,
+            weight: position.weightPct,
+          })) ?? [];
+      } else {
+        // Preserve the original flat-sandbox path exactly: pass raw top-level
+        // tweak weights to the engine without the flattener's percentage
+        // normalization round trip.
+        positions = assetConstituents.map((position) => ({
+          assetId: position.assetId,
+          weight: tweak.get(position.assetId)!,
+        }));
+      }
+      if (positions.length === 0) {
         throw unprocessable(
           `Conglomerate ${detail.name} has no positions to backtest.`,
           'BACKTEST_UNAVAILABLE',
         );
       }
-      const positions = flat.positions.map((position) => ({
-        assetId: position.assetId,
-        weight: position.weightPct,
-      }));
       // A nested row hides both descendant identities and its internal
       // allocation. Even when every flattened asset also happens to be exposed
       // directly at the root, a full contribution response could reveal the
       // child's effective weights. Therefore response/error redaction is keyed
       // to the presence of nesting itself, not to whether flattening introduced
       // a previously unseen asset id.
-      const hasNestedConstituents = constituents.some(
-        (position) => position.kind === 'conglomerate',
-      );
       // Asset rows at the shared root already expose their identity. Assets
       // reachable only through a nested child remain opaque and must never be
       // named by load failures.
-      const exposedAssetIds = new Set(
-        constituents.flatMap((position) => (position.kind === 'asset' ? [position.assetId] : [])),
-      );
+      const exposedAssetIds = new Set(assetConstituents.map((position) => position.assetId));
       const assets: BacktestAsset[] = [];
       for (const pos of positions) {
         assets.push(
