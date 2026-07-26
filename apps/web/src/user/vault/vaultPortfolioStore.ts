@@ -1628,12 +1628,15 @@ function assertLocallySupportedTransactions(
   const recordsEngineTax = inputs.some(
     (input) => input.side === 'sell' && effectiveTaxMode !== 'none',
   );
-  const affectedAssets = new Set(inputs.map((input) => input.assetId));
-  const reshapesFrozenTax = liveEntities(document, 'transaction').some(
-    (entity) =>
-      stringField(entity.data, 'portfolioId') === portfolioId &&
-      affectedAssets.has(stringField(entity.data, 'assetId')) &&
-      sellRequiresClientTaxEngine(entity, openFromYear),
+  const existingTransactions = liveEntities(document, 'transaction');
+  const reshapesFrozenTax = inputs.some((input) =>
+    existingTransactions.some(
+      (entity) =>
+        stringField(entity.data, 'portfolioId') === portfolioId &&
+        stringField(entity.data, 'assetId') === input.assetId &&
+        sellRequiresClientTaxEngine(entity, openFromYear) &&
+        taxSellFollowsTransaction(entity, input.executedAt, null),
+    ),
   );
   if (requiresDerivedEngine || recordsEngineTax || reshapesFrozenTax) {
     throw storeError(
@@ -1664,12 +1667,24 @@ function assertTransactionUpdateTaxSupported(
   if (
     isFrozenTaxSensitiveSell(transaction) ||
     isFrozenTaxSensitiveSell(prospectiveTransaction) ||
+    sellRequiresClientTaxEngine(transaction, openFromYear) ||
     sellRequiresClientTaxEngine(prospectiveTransaction, openFromYear) ||
     liveEntities(document, 'transaction').some(
       (entity) =>
+        entity.id !== transaction.id &&
         stringField(entity.data, 'portfolioId') === portfolioId &&
         stringField(entity.data, 'assetId') === assetId &&
-        sellRequiresClientTaxEngine(entity, openFromYear),
+        sellRequiresClientTaxEngine(entity, openFromYear) &&
+        (taxSellFollowsTransaction(
+          entity,
+          stringField(transaction.data, 'executedAt'),
+          transaction.id,
+        ) ||
+          taxSellFollowsTransaction(
+            entity,
+            stringField(prospectiveTransaction.data, 'executedAt'),
+            prospectiveTransaction.id,
+          )),
     )
   ) {
     throw taxOperationUnavailable();
@@ -1686,11 +1701,18 @@ function assertTransactionDeleteTaxSupported(
   const openFromYear = taxEngineOpenFromYear(effectivePortfolioTaxMode(document, portfolioId), now);
   if (
     isFrozenTaxSensitiveSell(transaction) ||
+    sellRequiresClientTaxEngine(transaction, openFromYear) ||
     liveEntities(document, 'transaction').some(
       (entity) =>
+        entity.id !== transaction.id &&
         stringField(entity.data, 'portfolioId') === portfolioId &&
         stringField(entity.data, 'assetId') === assetId &&
-        sellRequiresClientTaxEngine(entity, openFromYear),
+        sellRequiresClientTaxEngine(entity, openFromYear) &&
+        taxSellFollowsTransaction(
+          entity,
+          stringField(transaction.data, 'executedAt'),
+          transaction.id,
+        ),
     )
   ) {
     throw taxOperationUnavailable();
@@ -1757,6 +1779,27 @@ function sellRequiresClientTaxEngine(entity: VaultEntity, openFromYear: number |
     return false;
   }
   return viennaYearOf(stringField(entity.data, 'executedAt')) >= openFromYear;
+}
+
+/**
+ * A transaction can only reshape a frozen sell when it precedes that sell in
+ * the same deterministic order used by persisted transaction replay.
+ * New rows do not have an id before CAS, so equal instants stay conservatively
+ * guarded until their final UUIDv7 tie-breaker exists.
+ */
+function taxSellFollowsTransaction(
+  sell: VaultEntity,
+  transactionExecutedAt: string,
+  transactionId: string | null,
+): boolean {
+  const sellExecutedAt = Date.parse(stringField(sell.data, 'executedAt'));
+  const affectedExecutedAt = Date.parse(transactionExecutedAt);
+  if (!Number.isFinite(sellExecutedAt) || !Number.isFinite(affectedExecutedAt)) {
+    throw storeError('VAULT_DATA_INVALID', 'A vault transaction has an invalid execution date.');
+  }
+  const timeDelta = sellExecutedAt - affectedExecutedAt;
+  if (timeDelta !== 0) return timeDelta > 0;
+  return transactionId == null || transactionId.localeCompare(sell.id) < 0;
 }
 
 function isEngineTaxedSell(entity: VaultEntity): boolean {
