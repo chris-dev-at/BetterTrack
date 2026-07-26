@@ -13,6 +13,7 @@ import { createPortfolioRepository } from '../../../data/repositories/portfolioR
 import { createStandingOrderRepository } from '../../../data/repositories/standingOrderRepository';
 import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
 import {
+  assetIdentities,
   assets,
   dividends,
   expenseBudgetFires,
@@ -701,6 +702,9 @@ async function captureAmbiguousStandingOrderWindow(window: AmbiguousStandingOrde
 describe('paranoid rehydration service', () => {
   it('restores stable UUIDs and completes the transition atomically', async () => {
     const { db, user } = await makeParanoid();
+    // Paranoid enable detached the content row but retained the opaque identity
+    // referenced by kept watchlist/conglomerate/alert state.
+    await db.insert(assetIdentities).values({ id: ASSET_ID });
     const service = createParanoidRehydrationService({
       db,
       now: () => new Date('2026-07-24T11:00:00.000Z'),
@@ -726,6 +730,9 @@ describe('paranoid rehydration service', () => {
       1,
     );
     expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toHaveLength(1);
+    expect(
+      await db.select().from(assetIdentities).where(eq(assetIdentities.id, ASSET_ID)),
+    ).toHaveLength(1);
     expect(
       await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
     ).toEqual([]);

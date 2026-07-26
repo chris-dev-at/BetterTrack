@@ -125,6 +125,9 @@ export function createParanoidRehydrationSourceRepository(
 
     async restoreCustomAssets(rows) {
       await forEachChunk(rows, async (chunk) => {
+        // The database insert trigger creates a missing opaque identity or
+        // reuses the one retained by paranoid detach. Keeping that invariant in
+        // the database covers this strict restore and every other asset writer.
         await tx.insert(assets).values(
           chunk.map((entity) => ({
             id: entity.id,

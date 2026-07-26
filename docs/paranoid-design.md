@@ -77,6 +77,19 @@ _sharing_ dies, §8), API keys/OAuth grants (portfolio scopes refuse, §8),
 announcements, feature flags, audit log, usage-analytics counters, and the
 vault blob rows themselves (ciphertext + version metadata only).
 
+`asset_identities` is the metadata-free server-side integrity seam between
+those two sets. It stores exactly one opaque asset UUID and no owner, name,
+symbol, provider, category, price/value, portfolio relation, or other
+vault-derived field. The three kept consumers (`workboard_items`,
+`conglomerate_positions`, and `alerts`) reference that key instead of the
+content-bearing `assets` row. Paranoid purge may therefore detach a user's
+custom `assets` row without rewriting or invalidating kept rows; strict
+rehydration inserts the same UUID and reconnects them. Ordinary asset and
+account deletion still remove the identity and cascade all consumers through
+database lifecycle triggers. The identity table is explicitly server-classified
+and skipped by account export because it is neither content nor a separately
+user-owned entity; the completeness tests bind both decisions.
+
 The account itself gains `users.privacy_mode` enum `normal | paranoid`
 (default `normal`) plus the media-set record (§5) — account metadata, present
 even in Drive-only mode (knowing THAT a user is paranoid is not portfolio
