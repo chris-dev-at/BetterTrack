@@ -626,15 +626,20 @@ async function mutateDocument(
 
     const mutationId = safeNewMutationId(context);
     const isAtomic = changed.length > 1;
+    const mutationAt = earliestOperationAt(changed.map(({ entity }) => entity.editedAt));
     let stamped = next;
     for (const { kind, entity } of changed) {
       const atomicMutationIds = isAtomic
         ? [...new Set([...(entity.atomicMutationIds ?? []), mutationId])]
         : entity.atomicMutationIds;
+      const atomicMutationTimestamps = isAtomic
+        ? { ...(entity.atomicMutationTimestamps ?? {}), [mutationId]: mutationAt }
+        : entity.atomicMutationTimestamps;
       stamped = replaceEntity(stamped, kind, {
         ...entity,
         mutationId,
         ...(atomicMutationIds === undefined ? {} : { atomicMutationIds }),
+        ...(atomicMutationTimestamps === undefined ? {} : { atomicMutationTimestamps }),
       });
     }
     return stamped;
@@ -800,7 +805,8 @@ function sameVaultEntity(left: VaultEntity, right: VaultEntity): boolean {
   return (
     sameMutationResultEntity(left, right) &&
     left.mutationId === right.mutationId &&
-    sameStringArray(left.atomicMutationIds, right.atomicMutationIds)
+    sameStringArray(left.atomicMutationIds, right.atomicMutationIds) &&
+    sameJsonValue(left.atomicMutationTimestamps, right.atomicMutationTimestamps)
   );
 }
 
@@ -851,6 +857,11 @@ interface ReconcileGroup {
   orderAt: string;
   orderKey: string;
   changes: ReconcileChange[];
+}
+
+interface ReconcileOperation {
+  token: string;
+  orderAt: string;
 }
 
 class VaultAggregateConflictError extends Error {
@@ -934,7 +945,7 @@ function localMutationChanges(
 function reconcileGroups(changes: ReconcileChange[]): ReconcileGroup[] {
   const components: { tokens: Set<string>; changes: ReconcileChange[] }[] = [];
   for (const change of changes) {
-    const tokens = new Set(reconcileOperationTokens(change));
+    const tokens = new Set(reconcileOperations(change).map(({ token }) => token));
     const matching = components.filter((component) =>
       [...tokens].some((token) => component.tokens.has(token)),
     );
@@ -957,9 +968,11 @@ function reconcileGroups(changes: ReconcileChange[]): ReconcileGroup[] {
     .map((component): ReconcileGroup => {
       const orderedTokens = [...component.tokens].sort();
       return {
-        orderAt: component.changes
-          .map((change) => change.local.editedAt)
-          .sort((left, right) => Date.parse(left) - Date.parse(right))[0]!,
+        orderAt: earliestOperationAt(
+          component.changes.flatMap((change) =>
+            reconcileOperations(change).map(({ orderAt }) => orderAt),
+          ),
+        ),
         orderKey: orderedTokens.join('\u0000'),
         changes: component.changes,
       };
@@ -978,20 +991,39 @@ function reconcileGroups(changes: ReconcileChange[]): ReconcileGroup[] {
     }));
 }
 
-function reconcileOperationTokens(change: ReconcileChange): string[] {
-  const tokens: string[] = [];
+function reconcileOperations(change: ReconcileChange): ReconcileOperation[] {
+  const operations: ReconcileOperation[] = [];
   if (change.local.mutationId != null && change.local.mutationId !== change.remote?.mutationId) {
-    tokens.push(`mutation:${change.local.mutationId}`);
+    operations.push({
+      token: `mutation:${change.local.mutationId}`,
+      orderAt: change.local.editedAt,
+    });
   }
 
   const remoteAtomicIds = new Set(change.remote?.atomicMutationIds ?? []);
   for (const mutationId of change.local.atomicMutationIds ?? []) {
-    if (!remoteAtomicIds.has(mutationId)) tokens.push(`atomic:${mutationId}`);
+    if (!remoteAtomicIds.has(mutationId)) {
+      operations.push({
+        token: `atomic:${mutationId}`,
+        orderAt: change.local.atomicMutationTimestamps?.[mutationId] ?? change.local.editedAt,
+      });
+    }
   }
 
-  return tokens.length > 0
-    ? tokens
-    : [`legacy:${change.local.editedAt}\u0000${change.local.editedBy}`];
+  return operations.length > 0
+    ? operations
+    : [
+        {
+          token: `legacy:${change.local.editedAt}\u0000${change.local.editedBy}`,
+          orderAt: change.local.editedAt,
+        },
+      ];
+}
+
+function earliestOperationAt(timestamps: readonly string[]): string {
+  return [...timestamps].sort(
+    (left, right) => Date.parse(left) - Date.parse(right) || left.localeCompare(right),
+  )[0]!;
 }
 
 function compensateRejectedGroup(

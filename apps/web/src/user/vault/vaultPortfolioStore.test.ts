@@ -1776,6 +1776,86 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     });
   });
 
+  it('retains atomic batch chronology after every member is edited offline', async () => {
+    const firstBuyId = GENERATED_IDS[0];
+    const secondBuyId = GENERATED_IDS[1];
+    const sellId = GENERATED_IDS[2];
+    const document = initialDocument();
+    const { first, second, remote } = await createConcurrentSyncEngines(
+      document,
+      'portfolio-store-edited-atomic-buy-chronology',
+    );
+    let offlineNow = AT;
+    const offlineStore = createVaultPortfolioStore(second, {
+      now: () => offlineNow,
+      newId: idSequenceFrom(firstBuyId, secondBuyId, sellId),
+    });
+    const buy = {
+      assetId: ASSET_ID,
+      side: 'buy' as const,
+      quantity: 1,
+      price: 10,
+      fee: 0,
+      executedAt: '2026-07-25T09:00:00.000Z',
+    };
+
+    remote.setOnline(false);
+    await expect(offlineStore.createTransactions(PORTFOLIO_ID, [buy, buy])).resolves.toMatchObject([
+      { id: firstBuyId },
+      { id: secondBuyId },
+    ]);
+    const atomicMutationId = second.state.active?.document.entities.transaction?.find(
+      (row) => row.id === firstBuyId,
+    )?.atomicMutationIds?.[0];
+    expect(atomicMutationId).toEqual(expect.any(String));
+    if (atomicMutationId == null) throw new Error('The buy batch must retain its atomic id.');
+    offlineNow = '2026-07-25T10:00:01.000Z';
+    await expect(
+      offlineStore.createTransactions(PORTFOLIO_ID, [
+        {
+          ...buy,
+          side: 'sell',
+          quantity: 2,
+          price: 12,
+          executedAt: '2026-07-25T09:30:00.000Z',
+        },
+      ]),
+    ).resolves.toMatchObject([{ id: sellId }]);
+    offlineNow = '2026-07-25T10:00:02.000Z';
+    await expect(
+      offlineStore.updateTransaction(PORTFOLIO_ID, firstBuyId, {
+        note: 'First batch member edited',
+      }),
+    ).resolves.toMatchObject({ note: 'First batch member edited' });
+    await expect(
+      offlineStore.updateTransaction(PORTFOLIO_ID, secondBuyId, {
+        note: 'Second batch member edited',
+      }),
+    ).resolves.toMatchObject({ note: 'Second batch member edited' });
+
+    remote.setOnline(true);
+    await expect(second.reconnect()).resolves.toMatchObject({ status: 'synced' });
+    const localRows = second.state.active?.document.entities.transaction ?? [];
+    expect(localRows.find((row) => row.id === firstBuyId)).toMatchObject({
+      deletedAt: null,
+      atomicMutationTimestamps: { [atomicMutationId]: AT },
+      data: { note: 'First batch member edited' },
+    });
+    expect(localRows.find((row) => row.id === secondBuyId)).toMatchObject({
+      deletedAt: null,
+      atomicMutationTimestamps: { [atomicMutationId]: AT },
+      data: { note: 'Second batch member edited' },
+    });
+    expect(localRows.find((row) => row.id === sellId)).toMatchObject({ deletedAt: null });
+
+    await expect(first.reconnect()).resolves.toMatchObject({ status: 'synced' });
+    for (const id of [firstBuyId, secondBuyId, sellId]) {
+      expect(
+        first.state.active?.document.entities.transaction?.find((row) => row.id === id),
+      ).toMatchObject({ deletedAt: null });
+    }
+  });
+
   it('keeps independent same-millisecond mutations in separate reconciliation groups', async () => {
     const buyId = GENERATED_IDS[0];
     const remoteSellId = GENERATED_IDS[1];

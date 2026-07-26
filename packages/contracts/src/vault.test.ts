@@ -212,6 +212,9 @@ describe('vault document v1', () => {
             deletedAt: null,
             mutationId: UUID_C,
             atomicMutationIds: [UUID_C],
+            atomicMutationTimestamps: {
+              [UUID_C]: '2026-07-24T10:00:00.000Z',
+            },
             data: { name: 'Main' },
           },
         ],
@@ -222,6 +225,9 @@ describe('vault document v1', () => {
     expect(doc.entities.portfolio?.[0]).toMatchObject({
       mutationId: UUID_C,
       atomicMutationIds: [UUID_C],
+      atomicMutationTimestamps: {
+        [UUID_C]: '2026-07-24T10:00:00.000Z',
+      },
     });
   });
 
