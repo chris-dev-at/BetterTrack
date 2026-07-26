@@ -480,16 +480,23 @@ describe('liveRingBuffer', () => {
 
   it('rejects when a resolved pipeline result contains a command error', async () => {
     const commandError = new Error('LTRIM failed');
+    const rpush = vi.fn();
+    const ltrim = vi.fn();
+    const pexpire = vi.fn();
+    const exec = vi.fn().mockResolvedValue([
+      [null, 1],
+      [commandError, null],
+      [null, 1],
+    ]);
     const pipeline = {
-      rpush: () => pipeline,
-      ltrim: () => pipeline,
-      pexpire: () => pipeline,
-      exec: async () => [
-        [null, 1],
-        [commandError, null],
-        [null, 1],
-      ],
+      rpush,
+      ltrim,
+      pexpire,
+      exec,
     };
+    rpush.mockReturnValue(pipeline);
+    ltrim.mockReturnValue(pipeline);
+    pexpire.mockReturnValue(pipeline);
     const pipelineRedis = { pipeline: () => pipeline } as unknown as Redis;
     const ring = createLiveRingBuffer(pipelineRedis, { capacity: 3, retentionMs: 60_000 });
 
