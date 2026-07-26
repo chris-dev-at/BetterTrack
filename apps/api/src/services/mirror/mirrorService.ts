@@ -71,6 +71,7 @@ import type { MirrorChainMemberRow, MirrorChainOpRow, MirrorChainRow } from '../
 import { ApiError, badRequest, forbidden, notFound } from '../../errors';
 import type { EventBus, MirrorNotificationEvent } from '../../events';
 import type { Logger } from '../../logger';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { PortfolioService } from '../portfolio/portfolioService';
@@ -192,6 +193,8 @@ export interface MirrorServiceDeps {
   logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
+  /** Defense in depth: paranoid accounts cannot create, join, or mutate chains. */
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
 }
 
 export interface ReplicateChainResult {
@@ -502,6 +505,9 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   } = deps;
   const now = deps.now ?? Date.now;
   const maxMembers = deps.maxMembers ?? MIRROR_MAX_MEMBERS;
+  const assertMirrorAllowed = async (userId: string) => {
+    await deps.paranoid?.assertAllowed(userId, 'mirrorchain');
+  };
 
   // ── Infrastructure ─────────────────────────────────────────────────────────
 
@@ -1691,6 +1697,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async convertToChain(userId, portfolioId, opts) {
+      await assertMirrorAllowed(userId);
       const row = await portfolioRepo.findByIdForUser(userId, portfolioId);
       if (!row) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
       if (await repo.findActiveMembershipByPortfolio(portfolioId)) {
@@ -1950,6 +1957,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async attachMemberCopy(chainId, userId, opts) {
+      await assertMirrorAllowed(userId);
       const chain = await repo.getChain(chainId);
       if (!chain || chain.status !== 'active') {
         throw notFound('Group portfolio not found.', 'MIRROR_CHAIN_NOT_FOUND');
@@ -2114,6 +2122,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     // ── M3 membership lifecycle (design §§4–7, §11) ────────────────────────────
 
     async createChain(userId, name) {
+      await assertMirrorAllowed(userId);
       // "New group portfolio": a fresh empty portfolio becomes the origin copy,
       // then convert synthesizes just the chain.genesis (+ Main source.create).
       const created = await portfolio.createPortfolio(userId, { name });
@@ -2121,6 +2130,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async convertChain(userId, portfolioId, opts) {
+      await assertMirrorAllowed(userId);
       const { chain, member } = await service.convertToChain(userId, portfolioId, opts);
       await audit.record({
         actorId: userId,
@@ -2133,6 +2143,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async listChainsForUser(userId) {
+      await assertMirrorAllowed(userId);
       const memberships = await repo.listActiveMembershipsForUser(userId);
       const summaries: MirrorChainSummary[] = [];
       for (const member of memberships) {
@@ -2145,6 +2156,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async getMemberList(userId, chainId) {
+      await assertMirrorAllowed(userId);
       const chain = await repo.getChain(chainId);
       if (!chain) throw chainNotFound();
       // Severed members lose chain access (design §6): a non-active membership
@@ -2163,6 +2175,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async getActivity(userId, chainId, opts) {
+      await assertMirrorAllowed(userId);
       const chain = await repo.getChain(chainId);
       if (!chain) throw chainNotFound();
       const caller = await repo.findActiveMembership(chainId, userId);
@@ -2181,6 +2194,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async listInvites(userId) {
+      await assertMirrorAllowed(userId);
       const rows = await repo.listInvitesForUserDetailed(userId);
       const incoming: MirrorInvite[] = [];
       const outgoing: MirrorInvite[] = [];
@@ -2195,6 +2209,8 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async inviteMember(actorId, chainId, inviteeId) {
+      await assertMirrorAllowed(actorId);
+      await assertMirrorAllowed(inviteeId);
       if (actorId === inviteeId) {
         throw badRequest('You cannot invite yourself.', MIRROR_CANNOT_INVITE_SELF);
       }
@@ -2254,6 +2270,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async acceptInvite(userId, inviteId) {
+      await assertMirrorAllowed(userId);
       const invite = await repo.getInvite(inviteId);
       if (!invite || invite.status !== 'pending' || invite.toUser !== userId) {
         throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
@@ -2327,6 +2344,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async declineInvite(userId, inviteId) {
+      await assertMirrorAllowed(userId);
       const invite = await repo.getInvite(inviteId);
       if (!invite || invite.status !== 'pending' || invite.toUser !== userId) {
         throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
@@ -2335,6 +2353,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async revokeInvite(actorId, inviteId) {
+      await assertMirrorAllowed(actorId);
       const invite = await repo.getInvite(inviteId);
       if (!invite || invite.status !== 'pending') {
         throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
@@ -2346,6 +2365,8 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async setMemberRole(actorId, chainId, targetUserId, role) {
+      await assertMirrorAllowed(actorId);
+      await assertMirrorAllowed(targetUserId);
       await withAuthorizedMember(
         chainId,
         actorId,
@@ -2400,6 +2421,8 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async transferOwnership(actorId, chainId, toUserId) {
+      await assertMirrorAllowed(actorId);
+      await assertMirrorAllowed(toUserId);
       const { chain, seq } = await withAuthorizedMember(
         chainId,
         actorId,
@@ -2461,6 +2484,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async removeMember(actorId, chainId, targetUserId) {
+      await assertMirrorAllowed(actorId);
       const { chain, targetName, seq, notifyOwnerId } = await withAuthorizedMember(
         chainId,
         actorId,
@@ -2530,6 +2554,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async leaveChain(userId, chainId) {
+      await assertMirrorAllowed(userId);
       const outcome = await withAuthorizedMember(
         chainId,
         userId,
@@ -2610,6 +2635,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async renameChain(actorId, chainId, name) {
+      await assertMirrorAllowed(actorId);
       const trimmed = name.trim();
       await withAuthorizedMember(
         chainId,
@@ -2638,6 +2664,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async dissolveChain(actorId, chainId) {
+      await assertMirrorAllowed(actorId);
       const { chain, members } = await withAuthorizedMember(
         chainId,
         actorId,
@@ -2680,6 +2707,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitPortfolioDelete(userId, portfolioId) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.deletePortfolio(userId, portfolioId);
       // A synced copy is intercepted as leave-then-delete (§6): the copy leaves
@@ -2811,6 +2839,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     // ── Submits ──────────────────────────────────────────────────────────────
 
     async submitTransactionsCreate(userId, portfolioId, inputs, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.createTransactions(userId, portfolioId, inputs, opts);
       await assertSyncableAssets(inputs.map((i) => i.assetId));
@@ -2880,6 +2909,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitTransactionUpdate(userId, portfolioId, txId, patch, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.updateTransaction(userId, portfolioId, txId, patch);
       const username = await usernameOf(userId);
@@ -2945,6 +2975,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitTransactionDelete(userId, portfolioId, txId, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.deleteTransaction(userId, portfolioId, txId);
       const username = await usernameOf(userId);
@@ -2990,6 +3021,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitDividendRecord(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return tax.recordDividend(userId, portfolioId, input);
       await assertSyncableAssets([input.assetId]);
@@ -3040,6 +3072,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitDividendDelete(userId, portfolioId, dividendId, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return tax.deleteDividend(userId, portfolioId, dividendId);
       const username = await usernameOf(userId);
@@ -3083,14 +3116,17 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitCashDeposit(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       return submitCashEntry(userId, portfolioId, input, 'cash.deposit');
     },
 
     async submitCashWithdraw(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       return submitCashEntry(userId, portfolioId, input, 'cash.withdraw');
     },
 
     async submitCashTransfer(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.transferCash(userId, portfolioId, input);
       const username = await usernameOf(userId);
@@ -3142,6 +3178,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitSetCashBalance(userId, portfolioId, sourceId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.setCashBalance(userId, portfolioId, sourceId, input);
       const username = await usernameOf(userId);
@@ -3190,6 +3227,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitSourceCreate(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.createCashSource(userId, portfolioId, input);
       const username = await usernameOf(userId);
@@ -3233,6 +3271,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitSourceUpdate(userId, portfolioId, sourceId, patch, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.updateCashSource(userId, portfolioId, sourceId, patch);
       const username = await usernameOf(userId);
@@ -3286,10 +3325,12 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitSourceArchive(userId, portfolioId, sourceId, opts) {
+      await assertMirrorAllowed(userId);
       return submitSourceFlip(userId, portfolioId, sourceId, 'source.archive', opts);
     },
 
     async submitSourceRestore(userId, portfolioId, sourceId, opts) {
+      await assertMirrorAllowed(userId);
       return submitSourceFlip(userId, portfolioId, sourceId, 'source.restore', opts);
     },
   };

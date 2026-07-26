@@ -203,6 +203,23 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
       .send({ body: 'about to vanish' });
     expect(sent.status).toBe(201);
 
+    // Paranoid ciphertext uses the same account cascade. Drive bytes are never
+    // present server-side, so deletion can only remove current/history rows.
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: user.id,
+      version: 2,
+      formatVersion: 1,
+      sizeBytes: 7,
+      blob: Buffer.from('current'),
+    });
+    await harness.db.insert(schema.paranoidVaultHistory).values({
+      userId: user.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 3,
+      blob: Buffer.from('old'),
+    });
+
     // The bearer works before deletion.
     const bearerBefore = await request(harness.app)
       .get('/api/v1/portfolios')

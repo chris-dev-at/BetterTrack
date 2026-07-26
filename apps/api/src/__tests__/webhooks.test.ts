@@ -21,7 +21,7 @@ import {
   createWebhookDeliveryRepository,
   createWebhookSubscriptionRepository,
 } from '../data/repositories/webhookRepository';
-import type { AlertTriggeredEvent } from '../events';
+import type { AlertTriggeredEvent, DividendEventNotice } from '../events';
 import { WEBHOOK_DELIVERY_RETENTION_DAYS, createWebhookDeliveryCleanupJob } from '../jobs';
 import type { AuditService } from '../services/audit/auditService';
 import { decryptSecret } from '../services/crypto/secretBox';
@@ -248,6 +248,34 @@ describe('signed delivery', () => {
   it('does not deliver an event type the subscription did not select', async () => {
     const { userId, id } = await createSubscription(['budget.exceeded']);
     await harness.ctx.webhookBridge.handleEvent(alertEvent(userId));
+    expect(recorder.requests).toHaveLength(0);
+    const log = webhookDeliveryListResponseSchema.parse(await deliveriesFor(id));
+    expect(log.deliveries).toHaveLength(0);
+  });
+
+  it('skips stale portfolio events after the owner enters paranoid mode', async () => {
+    const { userId, id } = await createSubscription(['dividend.event']);
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(schema.users.id, userId));
+    const event: DividendEventNotice = {
+      type: 'dividend.event',
+      userId,
+      assetId: '00000000-0000-7000-8000-000000000003',
+      symbol: 'PRIVATE',
+      exDate: '2026-08-01T00:00:00.000Z',
+      payDate: null,
+      amount: 1,
+      currency: 'EUR',
+      occurredAt: new Date().toISOString(),
+    };
+
+    await harness.ctx.webhookBridge.handleEvent(event);
     expect(recorder.requests).toHaveLength(0);
     const log = webhookDeliveryListResponseSchema.parse(await deliveriesFor(id));
     expect(log.deliveries).toHaveLength(0);

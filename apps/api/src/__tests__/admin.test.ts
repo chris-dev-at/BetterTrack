@@ -1,9 +1,15 @@
 import request from 'supertest';
 import type { Application } from 'express';
+import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { adminStatsSchema, createUserResponseSchema } from '@bettertrack/contracts';
+import {
+  adminStatsSchema,
+  adminUserListResponseSchema,
+  createUserResponseSchema,
+} from '@bettertrack/contracts';
 
+import { paranoidVaultHistory, paranoidVaults, users } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -63,6 +69,61 @@ describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
 
     const anon = await request(harness.app).get('/api/v1/admin/users');
     expect(anon.status).toBe(404);
+  });
+
+  it('lists only non-sensitive paranoid mode, media and blob metadata', async () => {
+    const admin = await harness.seedAdmin();
+    const user = await harness.seedUser({
+      email: 'paranoid@test.dev',
+      username: 'paranoid_admin_view',
+    });
+    const blob = Buffer.from('ciphertext-must-not-leak');
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server', 'drive'],
+        paranoidDriveAttestedVersion: 4,
+      })
+      .where(eq(users.id, user.id));
+    await harness.db.insert(paranoidVaults).values({
+      userId: user.id,
+      version: 4,
+      formatVersion: 1,
+      sizeBytes: blob.length,
+      blob,
+    });
+    await harness.db.insert(paranoidVaultHistory).values({
+      userId: user.id,
+      version: 3,
+      formatVersion: 1,
+      sizeBytes: 3,
+      blob: Buffer.from('old'),
+    });
+
+    const response = await (await harness.loginAdmin(admin)).get('/api/v1/admin/users');
+    expect(response.status).toBe(200);
+    const body = adminUserListResponseSchema.parse(response.body);
+    const row = body.users.find((candidate) => candidate.id === user.id);
+    expect(row).toMatchObject({
+      privacyMode: 'paranoid',
+      paranoid: {
+        mediaSet: ['server', 'drive'],
+        vault: { version: 4, sizeBytes: blob.length, updatedAt: expect.any(String) },
+        historyCount: 1,
+      },
+    });
+    const serialized = JSON.stringify(row);
+    for (const forbidden of [
+      'ciphertext',
+      'blob',
+      'passphrase',
+      'driveToken',
+      'documentHash',
+      'portfolio',
+    ]) {
+      expect(serialized.toLowerCase()).not.toContain(forbidden.toLowerCase());
+    }
   });
 });
 

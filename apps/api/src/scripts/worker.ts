@@ -11,6 +11,8 @@
  */
 import { loadConfig } from '../config/env';
 import { createDatabase } from '../data/db';
+import { portfolios, users } from '../data/schema';
+import { eq } from 'drizzle-orm';
 import { createAlertRepository } from '../data/repositories/alertRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
@@ -107,6 +109,7 @@ import { createNotificationDispatcher } from '../services/notifications/notifica
 import { createDigestService } from '../services/notifications/digestService';
 import { createPresenceStore } from '../services/notifications/presence';
 import { createWebPushChannel } from '../services/notifications/webPush';
+import { createParanoidModeGuard } from '../services/account/paranoidEnforcement';
 
 const config = loadConfig();
 const logger = createLogger(config);
@@ -130,6 +133,10 @@ const registry = createQueueRegistry(createConnection());
 // The market-data jobs read/write Postgres and reach providers through the same
 // caching/resilience service the API uses.
 const { db, client } = createDatabase(config.databaseUrl);
+const workerUserRepo = createUserRepository(db);
+const paranoidGuard = createParanoidModeGuard({
+  privacyModeFor: async (userId) => (await workerUserRepo.findById(userId))?.privacyMode ?? null,
+});
 // DB-backed problem capture (§13.5 V5-P2 arc (d), the Sentry replacement): the
 // worker captures its own permanently-failed jobs and provider failures into
 // the shared `problems` table. No audit sink here — resolve/reopen is admin-only.
@@ -270,6 +277,15 @@ const snapshots = createPortfolioSnapshotService({
   cashMovementRepo: createCashMovementRepository(db),
   marketData,
   currencyService: createCurrencyService({ source: createMarketDataFxSource(marketData) }),
+  isParanoidPortfolio: async (portfolioId) => {
+    const [row] = await db
+      .select({ privacyMode: users.privacyMode })
+      .from(portfolios)
+      .innerJoin(users, eq(portfolios.userId, users.id))
+      .where(eq(portfolios.id, portfolioId))
+      .limit(1);
+    return row?.privacyMode === 'paranoid';
+  },
   logger,
 });
 
@@ -306,6 +322,7 @@ const taxService = createTaxService({
   currencyService,
   snapshots,
   logger,
+  paranoid: paranoidGuard,
 });
 const portfolioService = createPortfolioService({
   portfolioRepo,
@@ -368,6 +385,7 @@ const standingOrders = createStandingOrderService({
   cashSourceRepo: createCashSourceRepository(db),
   marketData,
   snapshots,
+  paranoid: paranoidGuard,
   logger,
 });
 
@@ -401,6 +419,7 @@ const webhookBridge = createWebhookBridge({
     await registry.enqueue('webhooks.deliver', job);
   },
   logger,
+  paranoid: paranoidGuard,
 });
 
 const definitions = [
@@ -419,7 +438,18 @@ const definitions = [
   createDeferredDeliveryJob({ digest: digestService }),
   createExportBuildJob({ exportService: dataExportService }),
   createExportCleanupJob({ exportService: dataExportService }),
-  createSnapshotsRecomputeJob({ snapshots }),
+  createSnapshotsRecomputeJob({
+    snapshots,
+    isParanoidPortfolio: async (portfolioId) => {
+      const [row] = await db
+        .select({ privacyMode: users.privacyMode })
+        .from(portfolios)
+        .innerJoin(users, eq(portfolios.userId, users.id))
+        .where(eq(portfolios.id, portfolioId))
+        .limit(1);
+      return row?.privacyMode === 'paranoid';
+    },
+  }),
   createSnapshotsBackfillJob({ snapshots }),
   createUsageRollupJob({ usageAnalytics }),
   // V5-P5 market intelligence (#582): the daily opt-in earnings-reminder scan
@@ -430,6 +460,7 @@ const definitions = [
     marketData,
     notify,
     enabled: config.marketIntel.enabled,
+    isParanoid: (userId) => paranoidGuard.isParanoid(userId),
   }),
   // V5-P5 dividend-event scan (#581): fires opt-in ex-date reminders for held
   // assets. Gated by MARKET_INTEL_ENABLED; per-user opt-in read from the matrix.
@@ -439,6 +470,7 @@ const definitions = [
     notify,
     isEnabled: dividendNotifyGate(notificationRepo),
     enabled: config.marketIntel.enabled,
+    isParanoid: (userId) => paranoidGuard.isParanoid(userId),
   }),
   // V5-P6b standing orders (#593): the daily scan that books each active order's
   // newest due occurrence exactly once.

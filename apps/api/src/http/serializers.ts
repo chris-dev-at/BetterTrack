@@ -19,6 +19,7 @@ import {
 
 import type { AlertRecord } from '../data/repositories/alertRepository';
 import type { WorkboardItemWithAsset } from '../data/repositories/workboardRepository';
+import type { ParanoidAdminMetadata } from '../data/repositories/paranoidTransitionRepository';
 import type {
   AuditLogRow,
   EmailLogRow,
@@ -94,7 +95,23 @@ export function toMeResponse(user: AuthUser): MeResponse {
 
 export const toMeResponseFromRow = (row: UserRow): MeResponse => toMeResponse(toAuthUser(row));
 
-export function toAdminUser(row: UserRow): AdminUser {
+export function toAdminUser(row: UserRow, metadata?: ParanoidAdminMetadata | null): AdminUser {
+  const paranoid =
+    row.privacyMode === 'paranoid'
+      ? {
+          mediaSet: (metadata?.mediaSet ?? row.paranoidMediaSet) as NonNullable<
+            AdminUser['paranoid']
+          >['mediaSet'],
+          vault: metadata?.vault
+            ? {
+                version: metadata.vault.version,
+                sizeBytes: metadata.vault.sizeBytes,
+                updatedAt: toIsoRequired(metadata.vault.updatedAt),
+              }
+            : null,
+          historyCount: metadata?.historyCount ?? 0,
+        }
+      : null;
   return {
     id: row.id,
     email: row.email,
@@ -103,6 +120,8 @@ export function toAdminUser(row: UserRow): AdminUser {
     status: row.status,
     mustChangePassword: row.mustChangePassword,
     chatBanned: row.chatBanned,
+    privacyMode: row.privacyMode,
+    paranoid,
     lastLoginAt: toIso(row.lastLoginAt),
     createdAt: toIsoRequired(row.createdAt),
   };

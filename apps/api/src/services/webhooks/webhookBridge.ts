@@ -5,6 +5,10 @@ import { WEBHOOK_EVENT_TYPES } from '@bettertrack/contracts';
 import type { WebhookSubscriptionRepository } from '../../data/repositories/webhookRepository';
 import type { DomainEvent } from '../../events';
 import type { Logger } from '../../logger';
+import {
+  isPortfolioContentWebhookEvent,
+  type ParanoidModeGuard,
+} from '../account/paranoidEnforcement';
 
 import type { WebhookDeliveryJob } from './webhookDispatcher';
 
@@ -75,6 +79,7 @@ export interface WebhookBridgeDeps {
   /** Enqueue one delivery (durable BullMQ in prod; synchronous under test). */
   enqueue: (job: WebhookDeliveryJob) => Promise<void>;
   logger: Logger;
+  paranoid?: Pick<ParanoidModeGuard, 'isParanoid'>;
 }
 
 export interface WebhookBridge {
@@ -89,6 +94,9 @@ export function createWebhookBridge(deps: WebhookBridgeDeps): WebhookBridge {
       if (!isWebhookEventType(event.type)) return;
       const userId = eventUserId(event);
       if (!userId) return;
+      if (isPortfolioContentWebhookEvent(event) && (await deps.paranoid?.isParanoid(userId))) {
+        return;
+      }
 
       const subs = await subscriptions.findEnabledForUserEvent(userId, event.type);
       let failedEnqueues = 0;

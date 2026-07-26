@@ -3,6 +3,8 @@ import type { Request, RequestHandler } from 'express';
 import { scopeSatisfies } from '@bettertrack/contracts';
 
 import { forbidden, notFound, unauthorized } from '../../errors';
+import { PARANOID_TRANSITION_ERROR_CODES } from '@bettertrack/contracts';
+import { isParanoidKilledScope } from '../../services/account/paranoidEnforcement';
 import { toAuthUser } from '../serializers';
 import type { AppContext } from '../context';
 
@@ -254,6 +256,15 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       return;
     }
     const required = SAFE_METHODS.has(req.method) ? policy.read : policy.write;
+    if (req.authUser?.privacyMode === 'paranoid' && isParanoidKilledScope(required)) {
+      next(
+        forbidden(
+          'Portfolio, tax, and import API scopes are unavailable while paranoid mode is active.',
+          PARANOID_TRANSITION_ERROR_CODES.mode,
+        ),
+      );
+      return;
+    }
     // Write-implies-read (#371): a held `:write` satisfies the corresponding
     // `:read` requirement, so no read-only route is unreachable to a write-scoped
     // token. Enforced here at check time — the single authoritative point that

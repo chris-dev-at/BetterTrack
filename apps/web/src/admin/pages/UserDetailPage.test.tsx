@@ -33,6 +33,8 @@ const jane: AdminUser = {
   status: 'active',
   mustChangePassword: false,
   chatBanned: false,
+  privacyMode: 'normal',
+  paranoid: null,
   lastLoginAt: null,
   createdAt: '2026-02-02T00:00:00.000Z',
 };

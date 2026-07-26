@@ -53,6 +53,8 @@ export interface EarningsReminderScanDeps {
   notify: NotificationCenter;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ the scan is a no-op. */
   enabled: boolean;
+  /** Paranoid users keep watchlist reminders, but stale holding-only rows are skipped. */
+  isParanoid?: (userId: string) => Promise<boolean>;
   logger?: Logger;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
@@ -83,7 +85,12 @@ export async function runEarningsReminderScan(
 
   if (!enabled) return { scanned: 0, reminded: 0 };
 
-  const inScope = await intelRepo.listAllWatchAndHoldAssets();
+  const allInScope = await intelRepo.listAllWatchAndHoldAssets();
+  const inScope = [];
+  for (const row of allInScope) {
+    if (row.held && !row.watched && (await deps.isParanoid?.(row.userId))) continue;
+    inScope.push(row);
+  }
   if (inScope.length === 0) return { scanned: 0, reminded: 0 };
 
   // The next earnings report per distinct asset, fetched once and reused across

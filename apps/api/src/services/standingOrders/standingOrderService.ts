@@ -18,6 +18,7 @@ import type {
 import type { TransactionRepository } from '../../data/repositories/transactionRepository';
 import { badRequest, notFound } from '../../errors';
 import type { Logger } from '../../logger';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { MarketDataService } from '../../providers';
 import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 import {
@@ -73,6 +74,7 @@ export interface StandingOrderServiceDeps {
   /** Timezone for calendar-day resolution; defaults to {@link STANDING_ORDERS_SCAN_TZ}. */
   timezone?: string;
   logger?: Logger;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'isParanoid'>;
 }
 
 /** Outcome tallies for one scan, surfaced to the job log. */
@@ -165,17 +167,20 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
 
   return {
     async list(userId, opts) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       const today = calendarDayInTimezone(now(), timezone);
       const records = await repo.listForUser(userId, { portfolioId: opts?.portfolioId });
       return { orders: records.map((r) => toDto(r, today)) };
     },
 
     async get(userId, id) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       const record = await requireOwnedOrder(userId, id);
       return toDto(record, calendarDayInTimezone(now(), timezone));
     },
 
     async create(userId, input) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       // Ownership: the target portfolio must be the caller's own (§8/§10).
       const portfolio = await portfolioRepo.findByIdForUser(userId, input.portfolioId);
       if (!portfolio) throw notFound('Portfolio not found.');
@@ -217,6 +222,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     },
 
     async update(userId, id, patch) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       const existing = await requireOwnedOrder(userId, id);
       const endDate = patch.endDate === undefined ? existing.endDate : patch.endDate;
       if (endDate !== null && endDate < existing.startDate) {
@@ -235,6 +241,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     },
 
     async pause(userId, id) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       await requireOwnedOrder(userId, id);
       const record = await repo.setStatus(userId, id, 'paused');
       if (!record) throw ORDER_NOT_FOUND();
@@ -242,6 +249,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     },
 
     async resume(userId, id) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       await requireOwnedOrder(userId, id);
       const record = await repo.setStatus(userId, id, 'active');
       if (!record) throw ORDER_NOT_FOUND();
@@ -249,6 +257,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     },
 
     async remove(userId, id) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       const removed = await repo.remove(userId, id);
       if (!removed) throw ORDER_NOT_FOUND();
     },
@@ -266,6 +275,10 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       };
 
       for (const order of orders) {
+        // Definitions are vault-owned in paranoid mode. A row seen by a stale
+        // worker around the enable transaction is skipped before quote, claim,
+        // ledger write, or snapshot invalidation.
+        if (await deps.paranoid?.isParanoid(order.userId)) continue;
         const due = dueOccurrence(specOf(order), today);
         if (due === null) continue;
         // Fast path: this exact period (or a later one) is already booked. The

@@ -90,6 +90,7 @@ export function createProfileRepository(db: Database) {
             sql`lower(${users.username}) = ${needle}`,
             eq(users.status, 'active'),
             eq(users.profilePublic, true),
+            eq(users.privacyMode, 'normal'),
           ),
         )
         .limit(1);

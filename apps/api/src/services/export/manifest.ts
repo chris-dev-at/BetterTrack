@@ -482,3 +482,19 @@ export const PARANOID_VAULT_TABLE_NAMES: readonly string[] = Object.entries(
   .filter(([, c]) => c === 'vault')
   .map(([table]) => table)
   .sort();
+
+/**
+ * Account-export entities that remain cleartext for paranoid accounts. This is
+ * derived from both binding classification axes: a normal exported table is
+ * included only when its paranoid classification is `server`.
+ */
+export const PARANOID_SERVER_EXPORTED_ENTITY_NAMES: readonly string[] = [
+  ...new Set(
+    Object.entries(EXPORT_TABLE_CLASSIFICATION)
+      .filter(
+        ([table, classification]) =>
+          classification.kind === 'export' && PARANOID_TABLE_CLASSIFICATION[table] === 'server',
+      )
+      .map(([, classification]) => (classification as { entity: string }).entity),
+  ),
+].sort();

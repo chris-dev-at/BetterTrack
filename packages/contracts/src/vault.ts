@@ -749,6 +749,108 @@ export type ParanoidDisableRehydrationResult = z.infer<
   typeof paranoidDisableRehydrationResultSchema
 >;
 
+// ── Public enable / disable transition DTOs ──────────────────────────────────
+
+/**
+ * Client proof that the selected Drive medium completed the §5 write/read
+ * round-trip immediately before enable. The server deliberately persists only
+ * the attested version — never a Drive id, token, path, document hash, or
+ * decrypted metadata.
+ */
+export const paranoidDriveReadinessAttestationSchema = z
+  .object({
+    verifiedRoundTrip: z.literal(true),
+    vaultVersion: vaultVersionSchema,
+  })
+  .strict();
+export type ParanoidDriveReadinessAttestation = z.infer<
+  typeof paranoidDriveReadinessAttestationSchema
+>;
+
+/**
+ * `POST /account/paranoid/enable`. Evidence for every selected medium is tied to
+ * one exact v1 vault version: the server medium is checked against the blind
+ * blob row, while Drive is accepted only with this strict client attestation.
+ */
+export const paranoidEnableRequestSchema = z
+  .object({
+    mediaSet: vaultMediaSetSchema,
+    vaultVersion: vaultVersionSchema,
+    driveAttestation: paranoidDriveReadinessAttestationSchema.nullable().default(null),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const driveSelected = value.mediaSet.includes('drive');
+    if (driveSelected && value.driveAttestation === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['driveAttestation'],
+        message: 'the Drive medium requires a verified round-trip attestation',
+      });
+    }
+    if (!driveSelected && value.driveAttestation !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['driveAttestation'],
+        message: 'a Drive attestation requires the Drive medium',
+      });
+    }
+    if (
+      value.driveAttestation !== null &&
+      value.driveAttestation.vaultVersion !== value.vaultVersion
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['driveAttestation', 'vaultVersion'],
+        message: 'the Drive attestation must match vaultVersion',
+      });
+    }
+  });
+export type ParanoidEnableRequest = z.infer<typeof paranoidEnableRequestSchema>;
+
+/** Auditable, portfolio-free enable receipt. */
+export const paranoidEnableResponseSchema = z
+  .object({
+    mode: z.literal('paranoid'),
+    mediaSet: vaultMediaSetSchema,
+    vaultVersion: vaultVersionSchema,
+    completedAt: z.string().datetime(),
+    idempotent: z.boolean(),
+  })
+  .strict();
+export type ParanoidEnableResponse = z.infer<typeof paranoidEnableResponseSchema>;
+
+/**
+ * `POST /account/paranoid/disable`. `rehydrationId` is the durable idempotency
+ * key from PD3a; the literal confirmation prevents an unlocked document alone
+ * from authorizing the destructive mode transition.
+ */
+export const paranoidDisableRequestSchema = paranoidDisableRehydrationRequestSchema
+  .extend({ confirm: z.literal(true) })
+  .strict();
+export type ParanoidDisableRequest = z.infer<typeof paranoidDisableRequestSchema>;
+
+/** Public disable receipt; still contains no restored-row counts or cleartext metadata. */
+export const paranoidDisableResponseSchema = paranoidDisableRehydrationResultSchema
+  .extend({ mode: z.literal('normal') })
+  .strict();
+export type ParanoidDisableResponse = z.infer<typeof paranoidDisableResponseSchema>;
+
+/** Stable typed transition errors surfaced in the standard API error envelope. */
+export const PARANOID_TRANSITION_ERROR_CODES = {
+  mode: 'PARANOID_MODE',
+  alreadyEnabled: 'PARANOID_ALREADY_ENABLED',
+  notEnabled: 'PARANOID_NOT_ENABLED',
+  mediaNotReady: 'PARANOID_MEDIA_NOT_READY',
+  mirrorchainActive: 'PARANOID_MIRRORCHAIN_ACTIVE',
+  importInFlight: 'PARANOID_IMPORT_IN_FLIGHT',
+  exportInFlight: 'PARANOID_EXPORT_IN_FLIGHT',
+  transitionConflict: 'PARANOID_TRANSITION_CONFLICT',
+  invalidRehydration: 'PARANOID_REHYDRATION_INVALID',
+} as const;
+export type ParanoidTransitionErrorCode =
+  (typeof PARANOID_TRANSITION_ERROR_CODES)[keyof typeof PARANOID_TRANSITION_ERROR_CODES];
+
 // ── Endpoint DTOs + metadata ─────────────────────────────────────────────────
 
 /**

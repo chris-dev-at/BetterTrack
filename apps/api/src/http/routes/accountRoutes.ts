@@ -4,11 +4,22 @@ import {
   deleteAccountRequestSchema,
   exportDownloadQuerySchema,
   exportRequestSchema,
+  paranoidDisableRequestSchema,
+  paranoidDisableResponseSchema,
+  paranoidEnableRequestSchema,
+  paranoidEnableResponseSchema,
   type DeleteAccountRequest,
   type ExportDownloadQuery,
   type ExportRequest,
+  type ParanoidDisableRequest,
+  type ParanoidEnableRequest,
 } from '@bettertrack/contracts';
 
+import { ApiError } from '../../errors';
+import {
+  PARANOID_TRANSITION_HTTP_ERRORS,
+  ParanoidTransitionError,
+} from '../../services/account/paranoidTransitionService';
 import { clearSessionCookie } from '../cookies';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateQuery } from '../middleware/validate';
@@ -31,6 +42,12 @@ import type { AppContext } from '../context';
  */
 export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
+
+  const transitionError = (error: unknown): never => {
+    if (!(error instanceof ParanoidTransitionError)) throw error;
+    const mapped = PARANOID_TRANSITION_HTTP_ERRORS[error.code];
+    throw new ApiError(mapped.status, mapped.code, error.message);
+  };
 
   router.delete(
     '/',
@@ -81,6 +98,44 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
       const { token } = req.valid?.query as ExportDownloadQuery;
       const file = await ctx.dataExport.resolveDownload({ userId: req.authUser!.id, token });
       res.download(file.filePath, file.fileName);
+    },
+  );
+
+  // The pair is deliberately mounted together: enable is destructive and must
+  // never ship without the complete strict disable/rehydration escape path.
+  router.post(
+    '/paranoid/enable',
+    requireUser,
+    limiters.vault,
+    validateBody(paranoidEnableRequestSchema),
+    async (req, res) => {
+      try {
+        const result = await ctx.paranoidTransitions.enable(
+          req.authUser!.id,
+          req.valid?.body as ParanoidEnableRequest,
+        );
+        res.json(paranoidEnableResponseSchema.parse(result));
+      } catch (error) {
+        transitionError(error);
+      }
+    },
+  );
+
+  router.post(
+    '/paranoid/disable',
+    requireUser,
+    limiters.vault,
+    validateBody(paranoidDisableRequestSchema),
+    async (req, res) => {
+      try {
+        const result = await ctx.paranoidTransitions.disable(
+          req.authUser!.id,
+          req.valid?.body as ParanoidDisableRequest,
+        );
+        res.json(paranoidDisableResponseSchema.parse(result));
+      } catch (error) {
+        transitionError(error);
+      }
     },
   );
 

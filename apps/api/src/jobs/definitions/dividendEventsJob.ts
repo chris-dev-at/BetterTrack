@@ -42,6 +42,8 @@ export interface DividendEventsScanDeps {
   notify: NotificationCenter;
   /** Per-user opt-in gate (skip a holder who never enabled the type). */
   isEnabled: DividendNotifyGate;
+  /** Defense in depth for stale holding rows after a paranoid transition. */
+  isParanoid?: (userId: string) => Promise<boolean>;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ the scan is a no-op. */
   enabled: boolean;
   horizonDays?: number;
@@ -103,6 +105,7 @@ export async function runDividendEventsScan(
   // Group holders by asset so each asset's events are fetched exactly once.
   const groups = new Map<string, AssetGroup>();
   for (const row of await repo.listHeldAssetHoldersAllUsers()) {
+    if (await deps.isParanoid?.(row.userId)) continue;
     let group = groups.get(row.assetId);
     if (!group) {
       group = {

@@ -13,7 +13,7 @@ import { exportRequestResponseSchema, exportStatusResponseSchema } from '@better
 import * as schema from '../../../data/schema';
 import { hashToken } from '../../crypto/tokens';
 import { collectUserExport } from '../collector';
-import { EXPORTED_ENTITY_NAMES } from '../manifest';
+import { EXPORTED_ENTITY_NAMES, PARANOID_SERVER_EXPORTED_ENTITY_NAMES } from '../manifest';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -151,6 +151,101 @@ describe('account data export', () => {
     const account = collected.entities.account as Record<string, unknown>[];
     expect(account.length).toBe(1);
     expect(account[0]).not.toHaveProperty('passwordHash');
+  });
+
+  it('exports a paranoid server account as server data plus only the current ciphertext', async () => {
+    const user = await harness.seedUser();
+    await seedPortfolio(user.id, 'must-not-leak');
+    const current = Buffer.from('opaque-current-ciphertext');
+    const historical = Buffer.from('opaque-historical-ciphertext');
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(schema.users.id, user.id));
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: user.id,
+      version: 2,
+      formatVersion: 1,
+      sizeBytes: current.length,
+      blob: current,
+    });
+    await harness.db.insert(schema.paranoidVaultHistory).values({
+      userId: user.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: historical.length,
+      blob: historical,
+    });
+
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { downloadToken } = exportRequestResponseSchema.parse(requested.body);
+    const downloaded = await agent
+      .get(`/api/v1/account/export/download?token=${encodeURIComponent(downloadToken)}`)
+      .responseType('blob');
+    const files = unzipSync(new Uint8Array(downloaded.body as Buffer));
+    const names = Object.keys(files).sort();
+
+    expect(Buffer.from(files['vault/current.btvault']!)).toEqual(current);
+    expect(names.some((name) => name.startsWith('vault/history'))).toBe(false);
+    expect(names.some((name) => name.startsWith('csv/'))).toBe(false);
+    expect(names).not.toContain('data/portfolios.json');
+    expect(
+      names
+        .filter((name) => name.startsWith('data/'))
+        .map((name) => name.slice('data/'.length, -'.json'.length))
+        .sort(),
+    ).toEqual([...PARANOID_SERVER_EXPORTED_ENTITY_NAMES]);
+    const manifest = JSON.parse(strFromU8(files['manifest.json']!)) as {
+      csv: string[];
+      paranoidVault: { version: number; sizeBytes: number; path: string };
+    };
+    expect(manifest.csv).toEqual([]);
+    expect(manifest.paranoidVault).toEqual(
+      expect.objectContaining({
+        version: 2,
+        sizeBytes: current.length,
+        path: 'vault/current.btvault',
+      }),
+    );
+  });
+
+  it('exports no blob bytes or cleartext portfolio files for Drive-only paranoid mode', async () => {
+    const user = await harness.seedUser();
+    await seedPortfolio(user.id, 'must-not-leak');
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 7,
+      })
+      .where(eq(schema.users.id, user.id));
+
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { downloadToken } = exportRequestResponseSchema.parse(requested.body);
+    const downloaded = await agent
+      .get(`/api/v1/account/export/download?token=${encodeURIComponent(downloadToken)}`)
+      .responseType('blob');
+    const files = unzipSync(new Uint8Array(downloaded.body as Buffer));
+    const names = Object.keys(files);
+
+    expect(names.some((name) => name.startsWith('vault/'))).toBe(false);
+    expect(names.some((name) => name.startsWith('csv/'))).toBe(false);
+    expect(names).not.toContain('data/portfolios.json');
+    const manifest = JSON.parse(strFromU8(files['manifest.json']!)) as Record<string, unknown>;
+    expect(manifest).not.toHaveProperty('paranoidVault');
   });
 
   it('rejects a wrong re-auth without creating a job', async () => {
