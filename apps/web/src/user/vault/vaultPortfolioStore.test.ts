@@ -1026,6 +1026,132 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
   );
 
   it.each(['country_specific', 'custom'] as const)(
+    'creates an equal-time buy ordered after a frozen %s sell by id',
+    async (frozenMode) => {
+      const firstBuyId = GENERATED_IDS[0];
+      const sellId = GENERATED_IDS[1];
+      const laterBuyId = GENERATED_IDS[2];
+      const document = initialDocument();
+      document.entities.transaction = [
+        vaultEntity(firstBuyId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 2,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-25T08:00:00.000Z',
+          note: null,
+          source: 'manual',
+        }),
+        vaultEntity(sellId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'sell',
+          quantity: 1,
+          price: 12,
+          fee: 0,
+          executedAt: AT,
+          note: null,
+          taxMode: frozenMode,
+          taxCountry: frozenMode === 'country_specific' ? 'DE' : null,
+          taxAmountEur: 1,
+          taxParams: frozenMode === 'custom' ? { ratePct: 25 } : null,
+          source: 'manual',
+        }),
+      ];
+      configureEffectiveEngineTaxMode(document, frozenMode);
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, {
+        now: () => AT,
+        newId: () => laterBuyId,
+      });
+
+      await expect(
+        store.createTransactions(PORTFOLIO_ID, [
+          {
+            assetId: ASSET_ID,
+            side: 'buy',
+            quantity: 1,
+            price: 9,
+            fee: 0,
+            executedAt: AT,
+          },
+        ]),
+      ).resolves.toEqual([expect.objectContaining({ id: laterBuyId })]);
+
+      expect(engine.mutate).toHaveBeenCalledOnce();
+      expectPortfolioApiUnused();
+    },
+  );
+
+  it.each(['country_specific', 'custom'] as const)(
+    'rejects an equal-time buy ordered before a frozen %s sell by id before CAS',
+    async (frozenMode) => {
+      const firstBuyId = GENERATED_IDS[0];
+      const earlierBuyId = GENERATED_IDS[1];
+      const sellId = GENERATED_IDS[2];
+      const document = initialDocument();
+      document.entities.transaction = [
+        vaultEntity(firstBuyId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 2,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-25T08:00:00.000Z',
+          note: null,
+          source: 'manual',
+        }),
+        vaultEntity(sellId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'sell',
+          quantity: 1,
+          price: 12,
+          fee: 0,
+          executedAt: AT,
+          note: null,
+          taxMode: frozenMode,
+          taxCountry: frozenMode === 'country_specific' ? 'DE' : null,
+          taxAmountEur: 1,
+          taxParams: frozenMode === 'custom' ? { ratePct: 25 } : null,
+          source: 'manual',
+        }),
+      ];
+      configureEffectiveEngineTaxMode(document, frozenMode);
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, {
+        now: () => AT,
+        newId: () => earlierBuyId,
+      });
+
+      await expect(
+        store.createTransactions(PORTFOLIO_ID, [
+          {
+            assetId: ASSET_ID,
+            side: 'buy',
+            quantity: 1,
+            price: 9,
+            fee: 0,
+            executedAt: AT,
+          },
+        ]),
+      ).rejects.toMatchObject({ code: 'VAULT_OPERATION_UNAVAILABLE' });
+
+      expect(engine.mutate).not.toHaveBeenCalled();
+      expect(engine.state.active?.header.vaultVersion).toBe(1);
+      expect(
+        engine.state.active?.document.entities.transaction?.some(
+          (entity) => entity.id === earlierBuyId,
+        ),
+      ).toBe(false);
+      expectPortfolioApiUnused();
+    },
+  );
+
+  it.each(['country_specific', 'custom'] as const)(
     'rejects moving a later buy across a frozen %s sell before CAS',
     async (frozenMode) => {
       const firstBuyId = GENERATED_IDS[0];
