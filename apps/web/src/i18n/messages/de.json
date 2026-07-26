@@ -430,6 +430,7 @@
       "subtitle": "Lege pro Kategorie ein monatliches Ziel fest — wir warnen dich, wenn eines überschritten wird.",
       "new": "Neues Budget",
       "loadError": "Budgets konnten nicht geladen werden.",
+      "deleteError": "Budget konnte nicht gelöscht werden. Bitte versuche es erneut.",
       "exceeded": "Überschritten",
       "over": "{{amount}} über",
       "left": "{{amount}} übrig",
