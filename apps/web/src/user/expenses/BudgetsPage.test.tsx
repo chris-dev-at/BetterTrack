@@ -153,6 +153,27 @@ describe('BudgetsPage', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
+  test('disables creation but keeps editing available when every category is budgeted', async () => {
+    vi.mocked(expensesApi.listExpenseBudgets).mockResolvedValueOnce({
+      period: '2026-07',
+      budgets: [BUDGETS.budgets[0]!],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText('Under target')).toBeInTheDocument();
+    const newBudget = screen.getByRole('button', { name: 'New budget' });
+    const edit = screen.getByRole('button', { name: 'Edit' });
+    expect(newBudget).toBeDisabled();
+    expect(edit).toBeEnabled();
+
+    await user.click(newBudget);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    await user.click(edit);
+    expect(screen.getByRole('dialog', { name: 'Edit budget' })).toBeInTheDocument();
+  });
+
   test('renders progress tone, clamped values, and remaining amounts', async () => {
     vi.mocked(expensesApi.listExpenseBudgets).mockResolvedValueOnce(BUDGETS);
     renderPage();

@@ -56,7 +56,12 @@ export function BudgetsPage() {
   const prerequisitesPending = budgetsQuery.isPending || categoriesQuery.isPending;
   const prerequisitesFailed = budgetsQuery.isError || categoriesQuery.isError;
   const hasUsableCategories = categories.some((category) => category.direction === 'expense');
-  const canOpenDialog = !prerequisitesPending && !prerequisitesFailed && hasUsableCategories;
+  const hasUnbudgetedExpenseCategory = categories.some(
+    (category) => category.direction === 'expense' && !budgetedCategoryIds.has(category.id),
+  );
+  const canCreateBudget =
+    !prerequisitesPending && !prerequisitesFailed && hasUnbudgetedExpenseCategory;
+  const canEditBudget = !prerequisitesPending && !prerequisitesFailed && hasUsableCategories;
 
   const remove = useMutation({
     mutationFn: (id: string) => deleteExpenseBudget(id),
@@ -75,7 +80,7 @@ export function BudgetsPage() {
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-neutral-500">{t('expenses.budgets.subtitle')}</p>
-        <Button onClick={() => setCreating(true)} disabled={!canOpenDialog}>
+        <Button onClick={() => setCreating(true)} disabled={!canCreateBudget}>
           {t('expenses.budgets.new')}
         </Button>
       </div>
@@ -101,7 +106,7 @@ export function BudgetsPage() {
             <button
               type="button"
               onClick={() => setCreating(true)}
-              disabled={!canOpenDialog}
+              disabled={!canCreateBudget}
               className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
               {t('expenses.budgets.emptyCta')}
@@ -135,7 +140,7 @@ export function BudgetsPage() {
                     <button
                       type="button"
                       onClick={() => setEditing(b)}
-                      disabled={!canOpenDialog}
+                      disabled={!canEditBudget}
                       className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
                     >
                       {t('common.edit')}
