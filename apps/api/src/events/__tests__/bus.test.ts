@@ -160,8 +160,8 @@ describe('EventBus publish → subscribe', () => {
     const error = vi.fn();
     const sibling = vi.fn();
     bus = createEventBus({ publisher, subscriber, logger: { error } as unknown as Logger });
-    await bus.subscribe('quote.updated', sibling);
     await bus.subscribe('quote.updated', () => Promise.reject(new Error('handler boom')));
+    await bus.subscribe('quote.updated', sibling);
 
     await bus.publish(quoteEvent);
 
