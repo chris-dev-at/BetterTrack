@@ -382,6 +382,60 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     });
   });
 
+  it('keeps the successor default when its concurrent edit wins a default-delete race', async () => {
+    const secondaryId = GENERATED_IDS[0];
+    const document = initialDocument();
+    document.entities.portfolio = [
+      ...(document.entities.portfolio ?? []),
+      vaultEntity(secondaryId, {
+        name: 'Secondary',
+        visibility: 'private',
+        sortOrder: 1,
+        isDefault: false,
+        defaultPayFromCash: false,
+        archivedAt: null,
+      }),
+    ];
+    const { first, second } = await createConcurrentSyncEngines(
+      document,
+      'portfolio-store-default-delete-race',
+    );
+    const deletingStore = createVaultPortfolioStore(first, { now: () => AT });
+    const editingStore = createVaultPortfolioStore(second, { now: () => AT });
+
+    await expect(
+      editingStore.updatePortfolio(secondaryId, { name: 'Concurrent edit' }),
+    ).resolves.toMatchObject({ name: 'Concurrent edit', isDefault: false });
+    await expect(deletingStore.deletePortfolio(PORTFOLIO_ID)).resolves.toBeUndefined();
+
+    await expect(deletingStore.listPortfolios()).resolves.toEqual({
+      portfolios: [
+        expect.objectContaining({
+          id: secondaryId,
+          name: 'Concurrent edit',
+          isDefault: true,
+        }),
+      ],
+    });
+    expect(
+      first.state.active?.document.entities.portfolio?.find((row) => row.id === secondaryId),
+    ).toMatchObject({
+      rev: 2,
+      data: { name: 'Concurrent edit', isDefault: true },
+    });
+
+    await second.reconnect();
+    await expect(editingStore.listPortfolios()).resolves.toEqual({
+      portfolios: [
+        expect.objectContaining({
+          id: secondaryId,
+          name: 'Concurrent edit',
+          isDefault: true,
+        }),
+      ],
+    });
+  });
+
   it('pages transactions from the last emitted row without gaps or duplicates', async () => {
     const engine = createMutableEngine(initialDocument());
     const store = createVaultPortfolioStore(engine, {
@@ -771,6 +825,66 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     await first.reconnect();
     await expect(firstStore.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
       totals: { cashEur: 20, totalValueEur: 20 },
+    });
+  });
+
+  it('collapses concurrent first deposits onto one reachable Main cash source', async () => {
+    const firstSourceId = GENERATED_IDS[0];
+    const firstDepositId = GENERATED_IDS[1];
+    const secondSourceId = GENERATED_IDS[2];
+    const secondDepositId = GENERATED_IDS[3];
+    const withdrawalId = GENERATED_IDS[4];
+    const document = initialDocument();
+    delete document.entities.cashSource;
+    const { first, second } = await createConcurrentSyncEngines(
+      document,
+      'portfolio-store-concurrent-main-source',
+    );
+    const firstStore = createVaultPortfolioStore(first, {
+      now: () => AT,
+      newId: idSequenceFrom(firstSourceId, firstDepositId),
+    });
+    const secondStore = createVaultPortfolioStore(second, {
+      now: () => AT,
+      newId: idSequenceFrom(secondSourceId, secondDepositId, withdrawalId),
+    });
+
+    await expect(firstStore.depositCash(PORTFOLIO_ID, { amountEur: 40 })).resolves.toMatchObject({
+      movement: { id: firstDepositId, sourceId: firstSourceId },
+      sourceBalanceEur: 40,
+      balanceEur: 40,
+    });
+    await expect(secondStore.depositCash(PORTFOLIO_ID, { amountEur: 60 })).resolves.toMatchObject({
+      movement: { id: secondDepositId, sourceId: firstSourceId },
+      sourceBalanceEur: 100,
+      balanceEur: 100,
+    });
+
+    const cashSources = second.state.active?.document.entities.cashSource ?? [];
+    expect(cashSources.filter((row) => row.deletedAt === null)).toEqual([
+      expect.objectContaining({
+        id: firstSourceId,
+        data: expect.objectContaining({ isMain: true }),
+      }),
+    ]);
+    expect(cashSources.find((row) => row.id === secondSourceId)).toMatchObject({
+      deletedAt: AT,
+      rev: 1,
+    });
+    expect(
+      second.state.active?.document.entities.cashMovement
+        ?.filter((row) => row.deletedAt === null)
+        .map((row) => row.data.sourceId),
+    ).toEqual([firstSourceId, firstSourceId]);
+
+    await expect(secondStore.withdrawCash(PORTFOLIO_ID, { amountEur: 90 })).resolves.toMatchObject({
+      movement: { id: withdrawalId, sourceId: firstSourceId },
+      sourceBalanceEur: 10,
+      balanceEur: 10,
+    });
+    await first.reconnect();
+    await expect(firstStore.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
+      totals: { cashEur: 10, totalValueEur: 10 },
     });
   });
 
@@ -1764,6 +1878,16 @@ function idSequence(): () => string {
     const id = GENERATED_IDS[index];
     index += 1;
     if (id == null) throw new Error('Test id sequence exhausted.');
+    return id;
+  };
+}
+
+function idSequenceFrom(...ids: string[]): () => string {
+  let index = 0;
+  return () => {
+    const id = ids[index];
+    index += 1;
+    if (id == null) throw new Error('Selected test id sequence exhausted.');
     return id;
   };
 }
