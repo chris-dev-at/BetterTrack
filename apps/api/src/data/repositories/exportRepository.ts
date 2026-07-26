@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, isNotNull, lte } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { exportJobs, type ExportJobRow } from '../schema';
+import { exportJobs, users, type ExportJobRow } from '../schema';
 
 /**
  * Account data-export job persistence (§13.4 V4-P6a, #494). Owns the
@@ -51,8 +51,20 @@ export interface ExportRepository {
 export function createExportRepository(db: Database): ExportRepository {
   return {
     async create({ userId, downloadTokenHash }) {
-      const [row] = await db.insert(exportJobs).values({ userId, downloadTokenHash }).returning();
-      return row!;
+      return db.transaction(async (tx) => {
+        // Serialize export creation with paranoid enable, which takes this same
+        // account-row lock before locking/retiring export rows. Whichever wins
+        // determines the job's content mode; a pre-enable pending job makes the
+        // transition stop, while a post-enable job is built as a paranoid export.
+        const [owner] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, userId))
+          .for('update');
+        if (!owner) throw new Error('export owner does not exist');
+        const [row] = await tx.insert(exportJobs).values({ userId, downloadTokenHash }).returning();
+        return row!;
+      });
     },
 
     async findLatestForUser(userId) {
