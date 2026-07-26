@@ -174,7 +174,7 @@ export function skippedPeriodCount(
   const lower = afterExclusive !== null && afterExclusive >= spec.startDate ? afterExclusive : null;
   let cursor = lower === null ? prevDay(spec.startDate) : lower;
   let count = 0;
-  while (count <= cap) {
+  while (count < cap) {
     const next = firstAfter(spec, cursor);
     if (next >= throughInclusive) break;
     cursor = next;

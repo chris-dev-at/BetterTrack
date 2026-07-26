@@ -109,6 +109,22 @@ describe('standing-order schedule: skippedPeriodCount', () => {
     // Fresh (due is the very first occurrence) → nothing skipped.
     expect(skippedPeriodCount(daily('2026-04-01'), null, '2026-04-01')).toBe(0);
   });
+
+  it('keeps counts below the cap and preserves its exclusive/inclusive bounds', () => {
+    const spec = daily('2026-04-01');
+    // Apr 1 was booked; Apr 2/3 are skipped and the Apr 4 due day is excluded.
+    expect(skippedPeriodCount(spec, '2026-04-01', '2026-04-04', 3)).toBe(2);
+  });
+
+  it('caps long daily and monthly spans at the supplied limit', () => {
+    expect(skippedPeriodCount(daily('2026-01-01'), null, '2026-01-05', 3)).toBe(3);
+    expect(skippedPeriodCount(monthly(1, '2026-01-01'), null, '2026-06-01', 3)).toBe(3);
+  });
+
+  it('returns zero immediately when the cap is zero', () => {
+    expect(skippedPeriodCount(daily('2026-01-01'), null, '2026-01-02', 0)).toBe(0);
+    expect(skippedPeriodCount(monthly(1, '2026-01-01'), null, '2026-02-01', 0)).toBe(0);
+  });
 });
 
 describe('standing-order schedule: calendarDayInTimezone', () => {
