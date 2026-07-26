@@ -71,7 +71,7 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   assets: exported('customAssets'),
   price_history: exported('customAssetPriceHistory'),
   asset_identities: skipped(
-    'Metadata-free asset UUID integrity anchors; contain no account or portfolio content and are reconstructed by asset inserts.',
+    'Content-free asset UUID integrity anchors plus opaque account claims; contain no asset or portfolio content.',
   ),
 
   // ── Global / not user-owned ───────────────────────────────────────────────
@@ -344,8 +344,8 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
 
   // ── server: identity + auth (kept, unchanged) ──────────────────────────────
   users: 'server',
-  // Opaque UUID only: preserves referential integrity for kept watchlist,
-  // conglomerate and alert rows while a custom assets row is detached.
+  // Opaque asset UUID + nullable account UUID claim: preserves referential
+  // integrity and authorizes same-account restore while content is detached.
   asset_identities: 'server',
   api_keys: 'server',
   api_key_tiers: 'server',

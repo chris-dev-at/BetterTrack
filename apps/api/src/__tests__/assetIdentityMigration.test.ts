@@ -53,6 +53,7 @@ async function clientAtTarget(): Promise<PGlite> {
 }
 
 const USER_ID = '019756a0-1111-7000-8000-000000000001';
+const ATTACKER_USER_ID = '019756a0-1111-7000-8000-000000000002';
 const ASSET_ID = '019756a0-1111-7000-8000-0000000000a1';
 const WATCHLIST_ID = '019756a0-1111-7000-8000-0000000000b1';
 const WORKBOARD_ID = '019756a0-1111-7000-8000-0000000000c1';
@@ -80,7 +81,9 @@ describe('migration 0071_asset_identities', () => {
     try {
       await client.exec(`
         INSERT INTO "users" ("id", "email", "username", "password_hash")
-        VALUES ('${USER_ID}', 'identity@bettertrack.test', 'identity', 'x');
+        VALUES
+          ('${USER_ID}', 'identity@bettertrack.test', 'identity', 'x'),
+          ('${ATTACKER_USER_ID}', 'attacker@bettertrack.test', 'identity_attacker', 'x');
         INSERT INTO "watchlists" ("id", "user_id", "name", "is_default")
         VALUES ('${WATCHLIST_ID}', '${USER_ID}', 'General', true);
         INSERT INTO "assets"
@@ -113,6 +116,10 @@ describe('migration 0071_asset_identities', () => {
       await applyMigration(client, TARGET);
 
       expect(await countById(client, 'asset_identities', ASSET_ID)).toBe(1);
+      expect(await rowJson(client, 'asset_identities', ASSET_ID)).toEqual({
+        id: ASSET_ID,
+        owner_id: USER_ID,
+      });
       const columns = await client.query<{
         columnName: string;
         dataType: string;
@@ -123,7 +130,20 @@ describe('migration 0071_asset_identities', () => {
         WHERE table_schema = 'public' AND table_name = 'asset_identities'
         ORDER BY ordinal_position
       `);
-      expect(columns.rows).toEqual([{ columnName: 'id', dataType: 'uuid', nullable: 'NO' }]);
+      expect(columns.rows).toEqual([
+        { columnName: 'id', dataType: 'uuid', nullable: 'NO' },
+        { columnName: 'owner_id', dataType: 'uuid', nullable: 'YES' },
+      ]);
+      const ownerConstraint = await client.query<{
+        target: string;
+        deleteAction: string;
+      }>(`
+        SELECT target.relname AS "target", c.confdeltype::text AS "deleteAction"
+        FROM pg_constraint c
+        JOIN pg_class target ON target.oid = c.confrelid
+        WHERE c.conname = 'asset_identities_owner_id_users_id_fk'
+      `);
+      expect(ownerConstraint.rows).toEqual([{ target: 'users', deleteAction: 'c' }]);
 
       const replacementNames = [
         'workboard_items_asset_id_asset_identities_id_fk',
@@ -189,6 +209,29 @@ describe('migration 0071_asset_identities', () => {
         alert: await rowJson(client, 'alerts', ALERT_ID),
       }).toEqual(keptBefore);
 
+      // A foreign account cannot turn knowledge of a detached UUID into
+      // ownership. The trigger checks the retained opaque account claim and
+      // rolls the attacker asset back without touching the victim's kept rows.
+      await expect(
+        client.exec(`
+          INSERT INTO "assets"
+            ("id", "provider_id", "provider_ref", "owner_id", "type", "symbol", "name", "currency")
+          VALUES
+            ('${ASSET_ID}', 'manual', '${ASSET_ID}', '${ATTACKER_USER_ID}', 'custom',
+             'STOLEN', 'Stolen', 'EUR')
+        `),
+      ).rejects.toThrow(/claimed by another account/);
+      expect(await countById(client, 'assets', ASSET_ID)).toBe(0);
+      expect(await rowJson(client, 'asset_identities', ASSET_ID)).toEqual({
+        id: ASSET_ID,
+        owner_id: USER_ID,
+      });
+      expect({
+        workboard: await rowJson(client, 'workboard_items', WORKBOARD_ID),
+        position: await rowJson(client, 'conglomerate_positions', POSITION_ID),
+        alert: await rowJson(client, 'alerts', ALERT_ID),
+      }).toEqual(keptBefore);
+
       // Strict restore carries the original UUID. The insert trigger reuses the
       // retained identity, reconnecting all three rows without rewriting them.
       await client.exec(`
@@ -199,6 +242,19 @@ describe('migration 0071_asset_identities', () => {
            '{"category":"other","smoothing":false}'::jsonb)
       `);
       expect(await countById(client, 'asset_identities', ASSET_ID)).toBe(1);
+      expect({
+        workboard: await rowJson(client, 'workboard_items', WORKBOARD_ID),
+        position: await rowJson(client, 'conglomerate_positions', POSITION_ID),
+        alert: await rowJson(client, 'alerts', ALERT_ID),
+      }).toEqual(keptBefore);
+
+      // An owner-scoped ordinary delete by the attacker cannot reach the
+      // victim's restored row or its identity-backed dependents.
+      await client.exec(`
+        DELETE FROM "assets"
+        WHERE "id" = '${ASSET_ID}' AND "owner_id" = '${ATTACKER_USER_ID}'
+      `);
+      expect(await countById(client, 'assets', ASSET_ID)).toBe(1);
       expect({
         workboard: await rowJson(client, 'workboard_items', WORKBOARD_ID),
         position: await rowJson(client, 'conglomerate_positions', POSITION_ID),

@@ -240,9 +240,7 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
         `${table}.${column} still keyed to the deleted user`,
       ).toBe(0);
     }
-    // asset_identities intentionally carries no user FK, so the schema-wide
-    // keyed-row sweep cannot see it. The asset lifecycle trigger must still
-    // remove this user's opaque key during the users→assets cascade.
+    // The content-free identity claim participates in the account cascade too.
     expect(
       await harness.db
         .select()

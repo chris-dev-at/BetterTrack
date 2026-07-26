@@ -4,6 +4,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { Database } from '../db';
 
 import {
+  assetIdentities,
   assets,
   dividends,
   expenseBudgets,
@@ -41,6 +42,8 @@ export interface ParanoidRehydrationSourceRepository {
     assetIds: readonly string[],
   ): Promise<readonly ParanoidRehydrationReferencedAsset[]>;
   hasExistingRestorableRows(userId: string): Promise<boolean>;
+  listRetainedCustomAssetIdentityIds(userId: string): Promise<readonly string[]>;
+  retireRetainedCustomAssetIdentities(userId: string, assetIds: readonly string[]): Promise<void>;
   restoreCustomAssets(rows: readonly EntityOf<'customAsset'>[]): Promise<void>;
   restoreCustomAssetValues(rows: readonly EntityOf<'customAssetValue'>[]): Promise<void>;
   restorePortfolios(rows: readonly EntityOf<'portfolio'>[]): Promise<void>;
@@ -123,11 +126,29 @@ export function createParanoidRehydrationSourceRepository(
       return present.some((records) => records.length > 0);
     },
 
+    async listRetainedCustomAssetIdentityIds(userId) {
+      const retained = await tx
+        .select({ id: assetIdentities.id })
+        .from(assetIdentities)
+        .where(eq(assetIdentities.ownerId, userId))
+        .for('update');
+      return retained.map((identity) => identity.id);
+    },
+
+    async retireRetainedCustomAssetIdentities(userId, assetIds) {
+      await forEachChunk(assetIds, async (chunk) => {
+        await tx
+          .delete(assetIdentities)
+          .where(and(eq(assetIdentities.ownerId, userId), inArray(assetIdentities.id, [...chunk])));
+      });
+    },
+
     async restoreCustomAssets(rows) {
       await forEachChunk(rows, async (chunk) => {
         // The database insert trigger creates a missing opaque identity or
-        // reuses the one retained by paranoid detach. Keeping that invariant in
-        // the database covers this strict restore and every other asset writer.
+        // verifies that a retained identity carries this account's claim.
+        // Keeping that invariant in the database covers this strict restore and
+        // every other asset writer.
         await tx.insert(assets).values(
           chunk.map((entity) => ({
             id: entity.id,

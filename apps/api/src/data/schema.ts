@@ -673,7 +673,7 @@ export const assetTypeEnum = pgEnum('asset_type', [
 ]);
 
 /**
- * Metadata-free identity anchor for an asset UUID.
+ * Content-free identity anchor for an asset UUID.
  *
  * Paranoid mode removes a user's content-bearing custom `assets` row while
  * server-kept watchlist/conglomerate/alert rows retain this opaque key. The
@@ -682,11 +682,18 @@ export const assetTypeEnum = pgEnum('asset_type', [
  * removes it (cascading kept references), and the dedicated paranoid detach
  * operation preserves it for strict same-UUID rehydration.
  *
- * No owner, provider, symbol, value, or other content may ever be added here.
+ * `ownerId` is the content-free authorization claim for a detached custom
+ * asset; NULL identifies a global catalog asset. No provider, symbol, value, or
+ * other asset/portfolio content may ever be added here.
  */
-export const assetIdentities = pgTable('asset_identities', {
-  id: uuid('id').primaryKey(),
-});
+export const assetIdentities = pgTable(
+  'asset_identities',
+  {
+    id: uuid('id').primaryKey(),
+    ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
+  },
+  (t) => [index('asset_identities_owner_id_idx').on(t.ownerId)],
+);
 
 export const assets = pgTable(
   'assets',

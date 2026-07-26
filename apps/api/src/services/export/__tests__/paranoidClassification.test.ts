@@ -74,10 +74,10 @@ describe('paranoid table classification completeness', () => {
     }
   });
 
-  it('keeps the opaque identity anchor server-side and content-free', () => {
+  it('keeps the opaque identity anchor and account claim server-side and content-free', () => {
     expect(PARANOID_TABLE_CLASSIFICATION.asset_identities).toBe('server');
     expect(EXPORT_TABLE_CLASSIFICATION.asset_identities).toMatchObject({ kind: 'skip' });
-    expect(Object.keys(getTableColumns(assetIdentities))).toEqual(['id']);
+    expect(Object.keys(getTableColumns(assetIdentities))).toEqual(['id', 'ownerId']);
   });
 
   it('derives the vault table-name list from the classification', () => {

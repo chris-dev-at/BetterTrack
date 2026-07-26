@@ -3,27 +3,53 @@
 -- replacement one atomic cutover: readers continue, while no writer can enter
 -- between the backfill, validation, and old-constraint retirement.
 CREATE TABLE "asset_identities" (
-	"id" uuid PRIMARY KEY NOT NULL
+	"id" uuid PRIMARY KEY NOT NULL,
+	"owner_id" uuid
 );
+--> statement-breakpoint
+ALTER TABLE "asset_identities"
+ADD CONSTRAINT "asset_identities_owner_id_users_id_fk"
+FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id")
+ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+CREATE INDEX "asset_identities_owner_id_idx" ON "asset_identities" USING btree ("owner_id");
 --> statement-breakpoint
 LOCK TABLE "assets", "workboard_items", "conglomerate_positions", "alerts" IN SHARE ROW EXCLUSIVE MODE;
 --> statement-breakpoint
-INSERT INTO "asset_identities" ("id")
-SELECT "id" FROM "assets"
+INSERT INTO "asset_identities" ("id", "owner_id")
+SELECT "id", "owner_id" FROM "assets"
 ON CONFLICT ("id") DO NOTHING;
 --> statement-breakpoint
 -- A row-level AFTER trigger runs only for assets that were actually inserted,
 -- including INSERT .. ON CONFLICT: a skipped candidate cannot strand an
 -- identity. Trigger work is part of the inserting statement, so any later
--- constraint/error rolls both rows back together. Existing identities are the
--- intentional paranoid-detach case and make same-UUID rehydration idempotent.
+-- constraint/error rolls both rows back together. A retained identity also
+-- carries the opaque account UUID that originally owned the custom asset:
+-- same-owner rehydration can reconnect, while a foreign account cannot claim a
+-- detached UUID.
 CREATE FUNCTION "bettertrack_asset_identity_after_insert"()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
+DECLARE
+	claimed_owner_id uuid;
 BEGIN
-	INSERT INTO "asset_identities" ("id") VALUES (NEW."id")
+	INSERT INTO "asset_identities" ("id", "owner_id")
+	VALUES (NEW."id", NEW."owner_id")
 	ON CONFLICT ("id") DO NOTHING;
+
+	SELECT identity."owner_id"
+	INTO claimed_owner_id
+	FROM "asset_identities" identity
+	WHERE identity."id" = NEW."id"
+	FOR UPDATE;
+
+	IF NOT FOUND OR claimed_owner_id IS DISTINCT FROM NEW."owner_id" THEN
+		RAISE EXCEPTION 'asset identity % is claimed by another account', NEW."id"
+			USING
+				ERRCODE = '23503',
+				CONSTRAINT = 'assets_id_asset_identity_owner_guard';
+	END IF;
 	RETURN NEW;
 END;
 $$;
@@ -101,7 +127,11 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-	IF EXISTS (SELECT 1 FROM "assets" WHERE "id" = OLD."id") THEN
+	IF EXISTS (SELECT 1 FROM "assets" WHERE "id" = OLD."id")
+		AND (
+			OLD."owner_id" IS NULL
+			OR EXISTS (SELECT 1 FROM "users" WHERE "id" = OLD."owner_id")
+		) THEN
 		RAISE EXCEPTION 'asset identity % still has a content row', OLD."id"
 			USING
 				ERRCODE = '23503',
@@ -116,8 +146,8 @@ BEFORE DELETE ON "asset_identities"
 FOR EACH ROW
 EXECUTE FUNCTION "bettertrack_asset_identity_before_delete"();
 --> statement-breakpoint
--- Detached identities have deliberately no owner/content column. Prune one
--- once it has neither an assets row nor any kept reference. The three
+-- Detached identities retain only their opaque account claim, never asset
+-- content. Prune one once it has neither an assets row nor any kept reference. The three
 -- DEFERRABLE triggers share this function and run at transaction end, so a
 -- delete-and-reinsert edit cannot lose its key between statements. This also
 -- cleans detached identities when account deletion cascades the last kept row,
@@ -178,8 +208,8 @@ EXECUTE FUNCTION "bettertrack_asset_reference_after_change"();
 --> statement-breakpoint
 -- Internal paranoid-purge seam. It can detach only a custom/owned asset, locks
 -- that row against concurrent mutation, and scopes the trigger bypass to this
--- exact UUID for the duration of the transaction. It stores no marker row or
--- metadata; after the delete only asset_identities(id) and kept references
+-- exact UUID for the duration of the transaction. It stores no asset metadata;
+-- after the delete only asset_identities(id, owner_id) and kept references
 -- remain. Calling it again or for a global/foreign asset is a no-op.
 CREATE FUNCTION "bettertrack_detach_owned_asset_data"(
 	"p_asset_id" uuid,

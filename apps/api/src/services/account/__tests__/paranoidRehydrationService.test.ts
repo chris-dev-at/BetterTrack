@@ -9,12 +9,16 @@ import { describe, expect, it } from 'vitest';
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
 import { createCashMovementRepository } from '../../../data/repositories/cashMovementRepository';
 import { createCashSourceRepository } from '../../../data/repositories/cashSourceRepository';
+import { createCustomAssetRepository } from '../../../data/repositories/customAssetRepository';
 import { createPortfolioRepository } from '../../../data/repositories/portfolioRepository';
 import { createStandingOrderRepository } from '../../../data/repositories/standingOrderRepository';
 import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
 import {
+  alerts,
   assetIdentities,
   assets,
+  conglomeratePositions,
+  conglomerates,
   dividends,
   expenseBudgetFires,
   expenseBudgets,
@@ -38,6 +42,8 @@ import {
   transactions,
   userTaxSettings,
   users,
+  watchlists,
+  workboardItems,
 } from '../../../data/schema';
 import { createTestApp } from '../../../testing/createTestApp';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
@@ -61,6 +67,11 @@ const SECOND_TRANSACTION_ID = '018f0000-0000-7000-8000-00000000000a';
 const TRANSFER_ID = '018f0000-0000-7000-8000-00000000000b';
 const TRANSFER_OUT_ID = '018f0000-0000-7000-8000-00000000000c';
 const STANDING_ORDER_ID = '018f0000-0000-7000-8000-000000000020';
+const WATCHLIST_ID = '018f0000-0000-7000-8000-000000000021';
+const WORKBOARD_ITEM_ID = '018f0000-0000-7000-8000-000000000022';
+const CONGLOMERATE_ID = '018f0000-0000-7000-8000-000000000023';
+const CONGLOMERATE_POSITION_ID = '018f0000-0000-7000-8000-000000000024';
+const ALERT_ID = '018f0000-0000-7000-8000-000000000025';
 const editedAt = '2026-07-24T10:00:00.000Z';
 let restoreUserId = DEVICE_ID;
 
@@ -607,6 +618,87 @@ async function makeParanoid() {
   return { ...harness, user };
 }
 
+async function seedDetachedCustomAssetReferences(
+  harness: Awaited<ReturnType<typeof createTestApp>>,
+  userId: string,
+): Promise<void> {
+  await harness.db.insert(assets).values({
+    id: ASSET_ID,
+    ownerId: userId,
+    providerId: 'manual',
+    providerRef: ASSET_ID,
+    type: 'custom',
+    symbol: 'HOME',
+    name: 'House',
+    currency: 'EUR',
+    meta: { category: 'other', smoothing: false, recategorize: false },
+  });
+  await harness.db.insert(watchlists).values({
+    id: WATCHLIST_ID,
+    userId,
+    name: 'General',
+    isDefault: true,
+  });
+  await harness.db.insert(workboardItems).values({
+    id: WORKBOARD_ITEM_ID,
+    userId,
+    watchlistId: WATCHLIST_ID,
+    assetId: ASSET_ID,
+    sortOrder: 0,
+    note: 'keep through paranoid mode',
+  });
+  await harness.db.insert(conglomerates).values({
+    id: CONGLOMERATE_ID,
+    ownerId: userId,
+    name: 'Kept basket',
+    status: 'active',
+  });
+  await harness.db.insert(conglomeratePositions).values({
+    id: CONGLOMERATE_POSITION_ID,
+    conglomerateId: CONGLOMERATE_ID,
+    assetId: ASSET_ID,
+    weightPct: '100.000',
+    sortOrder: 0,
+  });
+  await harness.db.insert(alerts).values({
+    id: ALERT_ID,
+    userId,
+    assetId: ASSET_ID,
+    kind: 'price_above',
+    threshold: '300000',
+    repeat: false,
+    status: 'active',
+  });
+  await expect(
+    createCustomAssetRepository(harness.db).detachForParanoidPurge(userId, ASSET_ID),
+  ).resolves.toBe(true);
+}
+
+async function retainedCustomAssetState(
+  harness: Awaited<ReturnType<typeof createTestApp>>,
+): Promise<{
+  identities: unknown[];
+  workboard: unknown[];
+  positions: unknown[];
+  alerts: unknown[];
+}> {
+  return {
+    identities: await harness.db
+      .select()
+      .from(assetIdentities)
+      .where(eq(assetIdentities.id, ASSET_ID)),
+    workboard: await harness.db
+      .select()
+      .from(workboardItems)
+      .where(eq(workboardItems.assetId, ASSET_ID)),
+    positions: await harness.db
+      .select()
+      .from(conglomeratePositions)
+      .where(eq(conglomeratePositions.assetId, ASSET_ID)),
+    alerts: await harness.db.select().from(alerts).where(eq(alerts.assetId, ASSET_ID)),
+  };
+}
+
 type AmbiguousStandingOrderWindow = 'booking-failed' | 'mark-booked-failed';
 
 async function captureAmbiguousStandingOrderWindow(window: AmbiguousStandingOrderWindow) {
@@ -701,10 +793,10 @@ async function captureAmbiguousStandingOrderWindow(window: AmbiguousStandingOrde
 
 describe('paranoid rehydration service', () => {
   it('restores stable UUIDs and completes the transition atomically', async () => {
-    const { db, user } = await makeParanoid();
-    // Paranoid enable detached the content row but retained the opaque identity
-    // referenced by kept watchlist/conglomerate/alert state.
-    await db.insert(assetIdentities).values({ id: ASSET_ID });
+    const harness = await makeParanoid();
+    const { db, user } = harness;
+    await seedDetachedCustomAssetReferences(harness, user.id);
+    const retainedBefore = await retainedCustomAssetState(harness);
     const service = createParanoidRehydrationService({
       db,
       now: () => new Date('2026-07-24T11:00:00.000Z'),
@@ -730,9 +822,8 @@ describe('paranoid rehydration service', () => {
       1,
     );
     expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toHaveLength(1);
-    expect(
-      await db.select().from(assetIdentities).where(eq(assetIdentities.id, ASSET_ID)),
-    ).toHaveLength(1);
+    expect(await retainedCustomAssetState(harness)).toEqual(retainedBefore);
+    expect(retainedBefore.identities).toEqual([{ id: ASSET_ID, ownerId: user.id }]);
     expect(
       await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
     ).toEqual([]);
@@ -749,6 +840,114 @@ describe('paranoid rehydration service', () => {
             eq(paranoidRehydrationReceipts.rehydrationId, REHYDRATION_ID),
           ),
         ),
+    ).toHaveLength(1);
+  });
+
+  it('fails closed when a retained custom asset has neither a live row nor a tombstone', async () => {
+    const harness = await makeParanoid();
+    const { db, user } = harness;
+    await seedDetachedCustomAssetReferences(harness, user.id);
+    const retainedBefore = await retainedCustomAssetState(harness);
+    const input = request();
+    input.document.entities = input.document.entities.filter(
+      (entry) =>
+        entry.kind !== 'customAsset' &&
+        !(entry.kind === 'transaction' && entry.data.assetId === ASSET_ID),
+    );
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+      message: expect.stringContaining('requires a live row or tombstone'),
+    });
+
+    expect(await retainedCustomAssetState(harness)).toEqual(retainedBefore);
+    expect(
+      await db.select({ privacyMode: users.privacyMode }).from(users).where(eq(users.id, user.id)),
+    ).toEqual([{ privacyMode: 'paranoid' }]);
+    expect(
+      await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toHaveLength(1);
+  });
+
+  it('retires an explicitly tombstoned retained custom asset through the normal cascade', async () => {
+    const harness = await makeParanoid();
+    const { db, user } = harness;
+    await seedDetachedCustomAssetReferences(harness, user.id);
+    const input = request();
+    for (const entry of input.document.entities) {
+      if (
+        entry.kind === 'customAsset' ||
+        (entry.kind === 'transaction' && entry.data.assetId === ASSET_ID)
+      ) {
+        entry.deletedAt = editedAt;
+      }
+    }
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    expect(await retainedCustomAssetState(harness)).toEqual({
+      identities: [],
+      workboard: [],
+      positions: [],
+      alerts: [],
+    });
+    expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+    expect(
+      await db.select({ privacyMode: users.privacyMode }).from(users).where(eq(users.id, user.id)),
+    ).toEqual([{ privacyMode: 'normal' }]);
+    expect(
+      await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toEqual([]);
+  });
+
+  it('rejects cross-account reconnect and keeps the victim references safe from delete', async () => {
+    const harness = await makeParanoid();
+    const victim = harness.user;
+    const attacker = await harness.seedUser({
+      email: 'rehydration-attacker@bettertrack.test',
+      username: 'rehydration_attacker',
+    });
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(users.id, attacker.id));
+    await harness.db.insert(paranoidVaults).values({
+      userId: attacker.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 10,
+      blob: Buffer.from('attacker-ciphertext'),
+    });
+    await seedDetachedCustomAssetReferences(harness, victim.id);
+    const victimBefore = await retainedCustomAssetState(harness);
+    restoreUserId = attacker.id;
+
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(attacker.id, request()),
+    ).rejects.toThrow(/claimed by another account/);
+
+    expect(await retainedCustomAssetState(harness)).toEqual(victimBefore);
+    expect(await harness.db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+    await expect(
+      createCustomAssetRepository(harness.db).deleteForUser(attacker.id, ASSET_ID),
+    ).resolves.toBe(false);
+    expect(await retainedCustomAssetState(harness)).toEqual(victimBefore);
+    expect(
+      await harness.db
+        .select({ privacyMode: users.privacyMode })
+        .from(users)
+        .where(eq(users.id, attacker.id)),
+    ).toEqual([{ privacyMode: 'paranoid' }]);
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, attacker.id)),
     ).toHaveLength(1);
   });
 
