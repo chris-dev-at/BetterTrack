@@ -3,6 +3,7 @@ import type { Redis } from 'ioredis';
 
 import { cacheEventsTotal } from '../metrics';
 
+import { releaseCacheLock } from './cacheLock';
 import { AssetNotFoundError } from './errors';
 import { NEGATIVE_TTL_SECONDS, STALE_TTL_SECONDS } from './ttl';
 
@@ -196,15 +197,6 @@ export function createMarketCache(
     return result === 'OK' ? token : null;
   }
 
-  async function releaseLock(key: string, token: string): Promise<void> {
-    // GET+DEL is not atomic; the worst case (our lock expired mid-load and we
-    // delete a successor's) costs one duplicate upstream fetch — politeness is
-    // best-effort, correctness is unaffected.
-    if ((await redis.get(loadLockKey(key))) === token) {
-      await redis.del(loadLockKey(key));
-    }
-  }
-
   async function store<T>(
     params: Pick<GetOrLoadParams<T>, 'key' | 'ttlSeconds' | 'staleTtlSeconds'>,
     value: T,
@@ -257,7 +249,7 @@ export function createMarketCache(
       try {
         return await loadAndStore(params);
       } finally {
-        await releaseLock(params.key, token);
+        await releaseCacheLock(redis, loadLockKey(params.key), token);
       }
     }
 
@@ -301,7 +293,7 @@ export function createMarketCache(
         try {
           await loadAndStore(params);
         } finally {
-          await releaseLock(params.key, token);
+          await releaseCacheLock(redis, loadLockKey(params.key), token);
         }
       } catch (err) {
         // The caller already got the stale copy; a failed refresh must never
