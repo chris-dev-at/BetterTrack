@@ -84,7 +84,10 @@ jobs:
             blob-report/
             test-results/
           retention-days: 7
-          if-no-files-found: error
+          # An externally cancelled runner may not let Playwright flush a report.
+          # Keep the diagnostics upload non-fatal; the merge job explicitly fails
+          # if no usable blob archives were retained by any shard.
+          if-no-files-found: ignore
 
   merge-report:
     name: Merge Playwright reports
