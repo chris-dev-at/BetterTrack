@@ -594,6 +594,22 @@ function transactionVariantKey(input: {
   ].join(',');
 }
 
+const QUANTITY_ROUNDING_BUY = 0.2500000046;
+const QUANTITY_ROUNDING_VARIANTS = [
+  { buyCount: 1, expectedStoredShortfallQuanta: 1n },
+  { buyCount: 4, expectedStoredShortfallQuanta: 2n },
+  { buyCount: 8, expectedStoredShortfallQuanta: 4n },
+] as const;
+
+function scale8Integer(value: string): bigint {
+  const [whole = '0', fraction = ''] = value.split('.');
+  return BigInt(whole) * 100_000_000n + BigInt(fraction.padEnd(8, '0'));
+}
+
+function quantityRoundingVariantKey(buyCount: number, storedShortfallQuanta: bigint): string {
+  return `buyCount=${buyCount},storedShortfallQuanta=${storedShortfallQuanta}`;
+}
+
 interface TaxSettingVariant {
   name: string;
   input: UpdateTaxSettingsRequest;
@@ -899,35 +915,43 @@ const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
     },
   },
   {
-    name: 'transaction.quantity epsilon-valid values rounded one scale-8 quantum apart',
+    name: 'transaction.quantity cumulative scale-8 rounding envelope',
     options: { taxNow: () => TEST_NOW },
     async arrange(harness) {
       const user = await harness.seedUser();
       const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
-      const custom = await harness.ctx.customAssets.create(user.id, {
-        name: 'Quantity boundary',
-        category: 'other',
-        currency: 'EUR',
-        smoothing: false,
-      });
-      await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
-        {
-          assetId: custom.asset.id,
-          side: 'buy',
-          quantity: 1.0000000046,
-          price: 10,
-          fee: 0,
-          executedAt: '2026-07-23T10:00:00.000Z',
-        },
-        {
-          assetId: custom.asset.id,
-          side: 'sell',
-          quantity: 1.0000000051,
-          price: 11,
-          fee: 0,
-          executedAt: '2026-07-23T10:01:00.000Z',
-        },
-      ]);
+      const arrangedAssets: { assetId: string; buyCount: number }[] = [];
+
+      for (const variant of QUANTITY_ROUNDING_VARIANTS) {
+        const custom = await harness.ctx.customAssets.create(user.id, {
+          name: `Quantity boundary ${variant.buyCount}`,
+          category: 'other',
+          currency: 'EUR',
+          smoothing: false,
+        });
+        arrangedAssets.push({ assetId: custom.asset.id, buyCount: variant.buyCount });
+        await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+          ...Array.from({ length: variant.buyCount }, (_, index) => ({
+            assetId: custom.asset.id,
+            side: 'buy' as const,
+            quantity: QUANTITY_ROUNDING_BUY,
+            price: 10,
+            fee: 0,
+            executedAt: `2026-07-23T10:${index.toString().padStart(2, '0')}:00.000Z`,
+          })),
+          {
+            assetId: custom.asset.id,
+            side: 'sell',
+            // The raw sell exceeds the accumulated raw buys by only 5e-10,
+            // below QTY_EPSILON. Independent scale-8 storage rounding widens
+            // the persisted shortfall as the batch grows.
+            quantity: variant.buyCount * QUANTITY_ROUNDING_BUY + 0.0000000005,
+            price: 11,
+            fee: 0,
+            executedAt: `2026-07-23T10:${variant.buyCount.toString().padStart(2, '0')}:00.000Z`,
+          },
+        ]);
+      }
 
       return {
         userId: user.id,
@@ -935,10 +959,40 @@ const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
           return [
             {
               field: 'transaction.quantity',
-              value: entities(document, 'transaction').map((entry) => ({
-                side: entry.data.side,
-                quantity: entry.data.quantity,
-              })),
+              value: arrangedAssets.map(({ assetId }) =>
+                entities(document, 'transaction')
+                  .filter((entry) => entry.data.assetId === assetId)
+                  .map((entry) => ({
+                    side: entry.data.side,
+                    quantity: entry.data.quantity,
+                  })),
+              ),
+            },
+          ];
+        },
+        variantDimensions(document) {
+          return [
+            {
+              name: 'transaction accumulated quantity-rounding',
+              expected: QUANTITY_ROUNDING_VARIANTS.map((variant) =>
+                quantityRoundingVariantKey(variant.buyCount, variant.expectedStoredShortfallQuanta),
+              ),
+              actual: arrangedAssets.map(({ assetId }) => {
+                const assetTransactions = entities(document, 'transaction').filter(
+                  (entry) => entry.data.assetId === assetId,
+                );
+                const buys = assetTransactions.filter((entry) => entry.data.side === 'buy');
+                const sell = assetTransactions.find((entry) => entry.data.side === 'sell');
+                if (!sell) throw new Error(`expected quantity-boundary sell for ${assetId}`);
+                const persistedBuys = buys.reduce(
+                  (total, entry) => total + scale8Integer(entry.data.quantity),
+                  0n,
+                );
+                return quantityRoundingVariantKey(
+                  buys.length,
+                  scale8Integer(sell.data.quantity) - persistedBuys,
+                );
+              }),
             },
           ];
         },

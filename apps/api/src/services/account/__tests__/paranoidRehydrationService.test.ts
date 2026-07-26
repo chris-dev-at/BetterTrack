@@ -1029,6 +1029,31 @@ describe('paranoid rehydration service', () => {
     );
   });
 
+  it('rejects an apparent oversell outside the reachable cumulative rounding envelope', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const buy = input.document.entities.find((entry) => entry.kind === 'transaction');
+    if (!buy || buy.kind !== 'transaction') throw new Error('expected transaction');
+    buy.data.quantity = '0.25000000';
+    input.document.entities.push(
+      entity(SECOND_TRANSACTION_ID, 'transaction', {
+        ...buy.data,
+        side: 'sell',
+        quantity: '0.25000002',
+        executedAt: '2026-07-24T10:01:00.000Z',
+      }),
+    );
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({
+      code: 'INVALID_CASH_LEDGER',
+      message: expect.stringMatching(/oversell/i),
+    });
+    expect(await db.select().from(transactions)).toEqual([]);
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
   it('restores more transactions than one PostgreSQL bind-parameter batch can hold', async () => {
     const { db, user } = await makeParanoid();
     const input = request();

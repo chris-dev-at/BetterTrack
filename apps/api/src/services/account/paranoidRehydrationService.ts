@@ -114,11 +114,27 @@ interface ExactDecimal {
 const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
 const pow10 = (scale: number): bigint => 10n ** BigInt(scale);
 /**
- * Normal batch validation runs against the unrounded client quantities with a
- * 1e-9 epsilon, then PostgreSQL rounds each row independently to scale 8. Two
- * epsilon-valid inputs can therefore persist one scale-8 quantum apart.
+ * Normal batch validation runs against unrounded client quantities with a
+ * 1e-9 epsilon, then PostgreSQL rounds every quantity independently to scale 8.
+ * Rehydration therefore tracks the raw-input upper envelope at scale 9: one
+ * persisted unit is ten envelope units, every row can contribute another
+ * half-quantum (five units), and the normal reducer's epsilon is one unit.
+ *
+ * The envelope is cumulative. A fixed one-quantum allowance is insufficient:
+ * several buys that each round down can fund a sell that rounds up by several
+ * persisted quanta while still passing normal validation.
  */
-const PERSISTED_QUANTITY_ROUNDING_TOLERANCE = 1n;
+const PERSISTED_TO_RAW_QUANTITY_SCALE = 10n;
+const PERSISTED_QUANTITY_HALF_QUANTUM = 5n;
+const NORMAL_QUANTITY_EPSILON = 1n;
+
+function rawQuantityLowerBound(persistedQuantity: bigint): bigint {
+  return persistedQuantity * PERSISTED_TO_RAW_QUANTITY_SCALE - PERSISTED_QUANTITY_HALF_QUANTUM;
+}
+
+function rawQuantityUpperBound(persistedQuantity: bigint): bigint {
+  return persistedQuantity * PERSISTED_TO_RAW_QUANTITY_SCALE + PERSISTED_QUANTITY_HALF_QUANTUM;
+}
 
 function exactDecimal(value: string, label: string): ExactDecimal {
   const match = DECIMAL_PATTERN.exec(value);
@@ -547,7 +563,7 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
  * as one clean failure and makes the no-write guarantee directly testable.
  */
 interface ValidatedGraph {
-  /** Sells whose apparent oversell is exactly one scale-8 storage quantum. */
+  /** Apparent oversells proven reachable within cumulative scale-8 storage rounding. */
   storageRoundingSellIds: ReadonlySet<string>;
 }
 
@@ -1191,27 +1207,35 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
         (a, b) =>
           Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
       );
-      let held = 0n;
+      let persistedHeld = 0n;
+      // Maximum holding the normal reducer could have seen before PostgreSQL
+      // rounded this sequence. Choosing every buy at its upper preimage and
+      // every sell at its lower preimage maximizes every chronological prefix,
+      // so one running bound covers arbitrary batch lengths without accepting
+      // a genuine oversell. Once even that remainder is inside QTY_EPSILON, the
+      // normal reducer clamps it to zero and the rounding envelope resets.
+      let rawHeldUpperBound = 0n;
       for (const transaction of orderedTransactions) {
         const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
         if (transaction.data.side === 'buy') {
-          held += quantity;
+          persistedHeld += quantity;
+          rawHeldUpperBound += rawQuantityUpperBound(quantity);
         } else {
-          const shortfall = quantity - held;
-          if (
-            shortfall > 0n &&
-            shortfall <= PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
-            !transaction.data.allowUncovered
-          ) {
-            storageRoundingSellIds.add(transaction.id);
-          }
-          if (
-            shortfall > PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
-            !transaction.data.allowUncovered
-          ) {
+          const persistedShortfall = quantity - persistedHeld;
+          const rawSellLowerBound = rawQuantityLowerBound(quantity);
+          const rawSellCanBeCovered =
+            rawSellLowerBound <= rawHeldUpperBound + NORMAL_QUANTITY_EPSILON;
+          if (!rawSellCanBeCovered && !transaction.data.allowUncovered) {
             throw new Error('transaction would oversell its position');
           }
-          held = shortfall > 0n ? 0n : held - quantity;
+          if (persistedShortfall > 0n && !transaction.data.allowUncovered) {
+            storageRoundingSellIds.add(transaction.id);
+          }
+
+          persistedHeld = persistedShortfall > 0n ? 0n : -persistedShortfall;
+          const rawRemainderUpperBound = rawHeldUpperBound - rawSellLowerBound;
+          rawHeldUpperBound =
+            rawRemainderUpperBound > NORMAL_QUANTITY_EPSILON ? rawRemainderUpperBound : 0n;
         }
       }
     }
