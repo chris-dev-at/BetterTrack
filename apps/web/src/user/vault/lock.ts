@@ -9,12 +9,15 @@ import {
 import { decodeVaultEnvelope } from './envelope';
 import { VaultCryptoError } from './errors';
 import { importRecoveryKit } from './recovery';
+import { installUnlockedVaultDriveRuntime } from './media/runtime';
 
 export type VaultLockState = { status: 'locked' } | { status: 'unlocked'; keyId: string };
 
 export interface VaultLockCoreOptions {
   custody?: DeviceVaultCustody;
   onLock?: () => void;
+  /** Injectable real-runtime composition boundary; defaults to the browser one. */
+  installUnlockedRuntime?: (vaultKey: VaultKeyMaterial, keyId: string) => (() => void) | undefined;
 }
 
 /**
@@ -32,6 +35,7 @@ export class VaultLockCore {
   private readonly custodyOwners = new Map<string, number>();
   /** Serializes device-key writes and removals so stale work cannot clear newer custody. */
   private custodyMutation: Promise<void> = Promise.resolve();
+  private disposeUnlockedRuntime: (() => void) | null = null;
 
   constructor(private readonly options: VaultLockCoreOptions = {}) {}
 
@@ -111,6 +115,8 @@ export class VaultLockCore {
         (value): value is string => value != null,
       ),
     );
+    this.disposeUnlockedRuntime?.();
+    this.disposeUnlockedRuntime = null;
     if (this.vaultKey instanceof Uint8Array) disposeVaultKey(this.vaultKey);
     this.vaultKey = null;
     this.keyId = null;
@@ -186,9 +192,14 @@ export class VaultLockCore {
       this.requireCurrentUnlock(generation);
     }
 
+    this.disposeUnlockedRuntime?.();
+    this.disposeUnlockedRuntime = null;
     if (this.vaultKey instanceof Uint8Array) disposeVaultKey(this.vaultKey);
     this.vaultKey = vaultKey;
     this.keyId = keyId;
+    this.disposeUnlockedRuntime =
+      (this.options.installUnlockedRuntime ?? installUnlockedVaultDriveRuntime)(vaultKey, keyId) ??
+      null;
     this.custodyDeviceId = nextCustodyDeviceId;
     if (nextCustodyDeviceId != null) this.claimCustody(nextCustodyDeviceId, generation);
   }

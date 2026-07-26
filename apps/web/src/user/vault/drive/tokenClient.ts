@@ -1,3 +1,5 @@
+import { getRuntimeConfig } from '../../../lib/runtimeConfig';
+
 /** The only Google permission BetterTrack's paranoid Drive medium ever asks for. */
 export const DRIVE_APPDATA_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 
@@ -233,7 +235,8 @@ export function createGoogleDriveTokenClient(
 }
 
 export function googleDriveClientId(): string | null {
-  const value = import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID?.trim();
+  const value =
+    getRuntimeConfig().googleDriveClientId || import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID?.trim();
   return value ? value : null;
 }
 

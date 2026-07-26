@@ -42,6 +42,9 @@ const componentSchemas = {
   VersionResponse: contracts.versionResponseSchema,
   VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
   ParanoidMediaStatusResponse: contracts.paranoidMediaStatusResponseSchema,
+  PrepareParanoidMediaVerificationRequest: contracts.prepareParanoidMediaVerificationRequestSchema,
+  PrepareParanoidMediaVerificationResponse:
+    contracts.prepareParanoidMediaVerificationResponseSchema,
   PatchParanoidMediaRequest: contracts.patchParanoidMediaRequestSchema,
   PatchParanoidMediaResponse: contracts.patchParanoidMediaResponseSchema,
 
@@ -675,12 +678,37 @@ const endpoints: EndpointDef[] = [
     response: R.ParanoidMediaStatusResponse,
   },
   {
+    method: 'post',
+    path: '/account/paranoid/media/verification',
+    tag: 'Account',
+    summary:
+      'Mint a short-lived server-verifiable proof for one exact media transition after checking the current locked server head.',
+    body: R.PrepareParanoidMediaVerificationRequest,
+    status: 200,
+    response: R.PrepareParanoidMediaVerificationResponse,
+  },
+  {
     method: 'patch',
     path: '/account/paranoid/media',
     tag: 'Account',
     summary:
       'Commit one verified media-set transition; switching to Drive-only atomically deletes current and retained server ciphertext.',
     body: R.PatchParanoidMediaRequest,
+    status: 200,
+    response: R.PatchParanoidMediaResponse,
+  },
+  {
+    method: 'put',
+    path: '/account/paranoid/media/server',
+    tag: 'Account',
+    summary:
+      'Atomically store an opaque Drive-source envelope and activate the server medium. Drive-only state and server bytes change in one transaction.',
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque AES-256-GCM vault envelope bytes read from Drive.',
+    }),
+    bodyContentType: 'application/octet-stream',
     status: 200,
     response: R.PatchParanoidMediaResponse,
   },

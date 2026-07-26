@@ -307,6 +307,7 @@ describe('paranoid vault repository media transaction', () => {
 
     const added = await repo.patchMedia({
       userId,
+      proofVerified: true,
       expected: { mediaSet: ['server'], driveAttestedVersion: null },
       nextMediaSet: ['server', 'drive'],
       verification: { medium: 'drive', version: 2 },
@@ -314,36 +315,78 @@ describe('paranoid vault repository media transaction', () => {
     });
     expect(added).toEqual({
       status: 'ok',
-      state: { mediaSet: ['server', 'drive'], driveAttestedVersion: 2 },
+      state: { mediaSet: ['server', 'drive'], driveAttestedVersion: null },
       idempotent: false,
     });
     expect((await repo.getCurrent(userId))?.version).toBe(2);
     expect((await repo.listHistory(userId)).items.map((row) => row.version)).toEqual([1]);
 
+    await repo.compareAndSwap({
+      userId,
+      expectedVersion: 2,
+      version: 3,
+      formatVersion: 1,
+      sizeBytes: 2,
+      blob: blob('v3'),
+      retention: RETENTION,
+      now: T0,
+    });
+    const refreshed = await repo.patchMedia({
+      userId,
+      proofVerified: true,
+      expected: { mediaSet: ['server', 'drive'], driveAttestedVersion: null },
+      nextMediaSet: ['server', 'drive'],
+      verification: { medium: 'drive', version: 3 },
+      now: new Date('2026-07-26T10:00:30.000Z'),
+    });
+    expect(refreshed).toEqual({
+      status: 'ok',
+      state: { mediaSet: ['server', 'drive'], driveAttestedVersion: 3 },
+      idempotent: false,
+    });
+
     const driveOnly = await repo.patchMedia({
       userId,
-      expected: { mediaSet: ['server', 'drive'], driveAttestedVersion: 2 },
+      proofVerified: true,
+      expected: { mediaSet: ['server', 'drive'], driveAttestedVersion: 3 },
       nextMediaSet: ['drive'],
-      verification: { medium: 'drive', version: 2 },
+      verification: { medium: 'drive', version: 3 },
       now: new Date('2026-07-26T10:01:00.000Z'),
     });
     expect(driveOnly).toEqual({
       status: 'ok',
-      state: { mediaSet: ['drive'], driveAttestedVersion: 2 },
+      state: { mediaSet: ['drive'], driveAttestedVersion: 3 },
       idempotent: false,
     });
     expect(await repo.getCurrent(userId)).toBeNull();
     expect((await repo.listHistory(userId)).items).toEqual([]);
     expect(await repo.getMediaState(userId)).toEqual({
       privacyMode: 'paranoid',
-      mediaState: { mediaSet: ['drive'], driveAttestedVersion: 2 },
+      mediaState: { mediaSet: ['drive'], driveAttestedVersion: 3 },
     });
+
+    const restored = await repo.addServerMedium({
+      userId,
+      version: 4,
+      formatVersion: 1,
+      sizeBytes: 2,
+      blob: blob('v4'),
+      now: new Date('2026-07-26T10:02:00.000Z'),
+    });
+    expect(restored).toEqual({
+      status: 'ok',
+      state: { mediaSet: ['server', 'drive'], driveAttestedVersion: 4 },
+      idempotent: false,
+    });
+    expect((await repo.getCurrent(userId))?.blob.equals(blob('v4'))).toBe(true);
+    expect((await repo.listHistory(userId)).items).toEqual([]);
   });
 
   it('fails closed on normal mode, stale state, fabricated verification, and an empty target', async () => {
     expect(
       await repo.patchMedia({
         userId,
+        proofVerified: true,
         expected: { mediaSet: ['server'], driveAttestedVersion: null },
         nextMediaSet: ['server', 'drive'],
         verification: { medium: 'drive', version: 1 },
@@ -356,6 +399,7 @@ describe('paranoid vault repository media transaction', () => {
     expect(
       await repo.patchMedia({
         userId,
+        proofVerified: true,
         expected: { mediaSet: ['server', 'drive'], driveAttestedVersion: 2 },
         nextMediaSet: ['drive'],
         verification: { medium: 'drive', version: 2 },
@@ -365,6 +409,7 @@ describe('paranoid vault repository media transaction', () => {
     expect(
       await repo.patchMedia({
         userId,
+        proofVerified: true,
         expected: { mediaSet: ['server'], driveAttestedVersion: null },
         nextMediaSet: ['server', 'drive'],
         verification: { medium: 'server', version: 2 },
@@ -374,6 +419,7 @@ describe('paranoid vault repository media transaction', () => {
     expect(
       await repo.patchMedia({
         userId,
+        proofVerified: true,
         expected: { mediaSet: ['server'], driveAttestedVersion: null },
         nextMediaSet: ['server', 'drive'],
         verification: { medium: 'drive', version: 99 },
@@ -383,6 +429,7 @@ describe('paranoid vault repository media transaction', () => {
     expect(
       await repo.patchMedia({
         userId,
+        proofVerified: true,
         expected: { mediaSet: ['server'], driveAttestedVersion: null },
         nextMediaSet: [],
         verification: { medium: 'server', version: 2 },

@@ -69,6 +69,13 @@ const payloadTooLarge = (): ApiError =>
 const malformed = (message: string): ApiError =>
   new ApiError(400, VAULT_ERROR_CODES.malformed, message);
 
+const serverMediumInactive = (): ApiError =>
+  new ApiError(
+    409,
+    VAULT_ERROR_CODES.serverMediumInactive,
+    'The server vault medium is inactive. Add it through the atomic media transition.',
+  );
+
 const requireParanoidHistory: RequestHandler = (req, _res, next) => {
   if (req.authUser?.privacyMode !== 'paranoid') {
     next(
@@ -201,6 +208,8 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
             res.setHeader('ETag', vaultEtag(result.currentVersion));
           }
           throw preconditionFailed();
+        case 'medium_inactive':
+          throw serverMediumInactive();
         case 'too_large':
           throw payloadTooLarge();
         case 'malformed':

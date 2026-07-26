@@ -1,6 +1,7 @@
 import type {
   ParanoidMediaStatusResponse,
   PatchParanoidMediaRequest,
+  PrepareParanoidMediaVerificationRequest,
   VaultMediaState,
 } from '@bettertrack/contracts';
 import { describe, expect, it } from 'vitest';
@@ -125,6 +126,7 @@ function harness(
     server?: MemoryHome;
     drive?: DriveDataHome & MemoryHome;
     patchFailure?: 'before' | 'after';
+    addServerFailure?: 'before' | 'after';
   } = {},
 ) {
   let state = structuredClone(initial);
@@ -137,18 +139,30 @@ function harness(
   let serverHistoryExists = server.value != null;
   const drive = options.drive ?? driveHome(initial.mediaSet.includes('drive') ? bytes(5) : null);
   const patches: PatchParanoidMediaRequest[] = [];
+  const proofs: PrepareParanoidMediaVerificationRequest[] = [];
+  const serverAdds: Uint8Array[] = [];
   const stateApi = {
     async get(): Promise<ParanoidMediaStatusResponse> {
       return { privacyMode: 'paranoid', mediaState: structuredClone(state) };
     },
+    async prepare(request: PrepareParanoidMediaVerificationRequest) {
+      proofs.push(request);
+      return {
+        proof: 'p'.repeat(32),
+        expiresAt: '2026-07-26T10:02:00.000Z',
+      };
+    },
     async patch(request: PatchParanoidMediaRequest): Promise<VaultMediaState> {
       patches.push(request);
       if (options.patchFailure === 'before') throw new Error('PATCH failed');
+      const addsDrive = !state.mediaSet.includes('drive') && request.nextMediaSet.includes('drive');
       state = {
         mediaSet: [...request.nextMediaSet],
-        driveAttestedVersion: request.nextMediaSet.includes('drive')
-          ? request.verification.version
-          : null,
+        driveAttestedVersion: !request.nextMediaSet.includes('drive')
+          ? null
+          : addsDrive
+            ? state.driveAttestedVersion
+            : request.verification.version,
       };
       if (!request.nextMediaSet.includes('server')) {
         server.value = null;
@@ -157,12 +171,25 @@ function harness(
       if (options.patchFailure === 'after') throw new Error('response lost');
       return structuredClone(state);
     },
+    async addServer(envelope: Uint8Array): Promise<VaultMediaState> {
+      serverAdds.push(envelope.slice());
+      if (options.addServerFailure === 'before') throw new Error('atomic add failed');
+      server.value = envelope.slice();
+      state = {
+        mediaSet: ['server', 'drive'],
+        driveAttestedVersion: envelope[0]!,
+      };
+      if (options.addServerFailure === 'after') throw new Error('response lost');
+      return structuredClone(state);
+    },
   };
   return {
     stateApi,
     server,
     drive,
     patches,
+    proofs,
+    serverAdds,
     get state() {
       return state;
     },
@@ -188,7 +215,13 @@ describe('verified paranoid media switching', () => {
     });
     expect(h.drive.value).toEqual(bytes(5));
     expect(h.server.value).toEqual(bytes(5));
-    expect(h.patches[0]?.verification).toEqual({ medium: 'drive', version: 5 });
+    expect(h.patches[0]?.verification).toMatchObject({ medium: 'drive', version: 5 });
+    expect(h.patches[0]?.expected.driveAttestedVersion).toBeNull();
+    expect(h.patches[1]?.expected).toEqual({
+      mediaSet: ['server', 'drive'],
+      driveAttestedVersion: null,
+    });
+    expect(h.patches[1]?.verification).toMatchObject({ medium: 'drive', version: 5 });
 
     expect(await switcher.remove('server')).toMatchObject({
       status: 'ok',
@@ -203,7 +236,7 @@ describe('verified paranoid media switching', () => {
       state: { mediaSet: ['server', 'drive'], driveAttestedVersion: 5 },
     });
     expect(h.server.value).toEqual(bytes(5));
-    expect(h.patches[2]?.verification).toEqual({ medium: 'server', version: 5 });
+    expect(h.serverAdds).toEqual([bytes(5)]);
 
     expect(await switcher.remove('drive')).toMatchObject({
       status: 'ok',
@@ -243,7 +276,7 @@ describe('verified paranoid media switching', () => {
       status: 'ok',
       recoveredAfterPatchFailure: true,
     });
-    expect(retry.patches).toHaveLength(1);
+    expect(retry.patches).toHaveLength(2);
   });
 
   it('leaves the old set authoritative on verification, stale-version, and PATCH failures', async () => {
@@ -298,6 +331,59 @@ describe('verified paranoid media switching', () => {
     });
     expect(interrupted.drive.value).toEqual(bytes(5));
     expect(interrupted.server.value).toEqual(bytes(5));
+  });
+
+  it('keeps Drive-only physically server-empty when the atomic add is interrupted', async () => {
+    const interrupted = harness(
+      { mediaSet: ['drive'], driveAttestedVersion: 5 },
+      { addServerFailure: 'before' },
+    );
+    const switcher = createVaultMediaSwitcher({
+      state: interrupted.stateApi,
+      server: interrupted.server,
+      drive: interrupted.drive,
+      authenticate,
+    });
+
+    await expect(switcher.add('server')).resolves.toMatchObject({
+      status: 'failed',
+      reason: 'patch-failed',
+      authoritativeState: { mediaSet: ['drive'], driveAttestedVersion: 5 },
+    });
+    expect(interrupted.state.mediaSet).toEqual(['drive']);
+    expect(interrupted.server.value).toBeNull();
+    expect(interrupted.serverHistoryExists).toBe(false);
+    expect(interrupted.drive.value).toEqual(bytes(5));
+  });
+
+  it('refreshes a both-media attestation after both copies advance before removal', async () => {
+    const h = harness({ mediaSet: ['server', 'drive'], driveAttestedVersion: 5 });
+    h.server.value = bytes(6);
+    h.drive.value = bytes(6);
+    const switcher = createVaultMediaSwitcher({
+      state: h.stateApi,
+      server: h.server,
+      drive: h.drive,
+      authenticate,
+    });
+
+    await expect(switcher.remove('server')).resolves.toMatchObject({
+      status: 'ok',
+      state: { mediaSet: ['drive'], driveAttestedVersion: 6 },
+    });
+    expect(h.proofs).toHaveLength(2);
+    expect(h.proofs[0]).toMatchObject({
+      expected: { mediaSet: ['server', 'drive'], driveAttestedVersion: 5 },
+      nextMediaSet: ['server', 'drive'],
+      verification: { medium: 'drive', version: 6 },
+    });
+    expect(h.proofs[1]).toMatchObject({
+      expected: { mediaSet: ['server', 'drive'], driveAttestedVersion: 6 },
+      nextMediaSet: ['drive'],
+      verification: { medium: 'drive', version: 6 },
+    });
+    expect(h.server.value).toBeNull();
+    expect(h.drive.value).toEqual(bytes(6));
   });
 
   it('verifies an indeterminate upload and surfaces failed Drive cleanup honestly', async () => {

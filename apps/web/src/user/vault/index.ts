@@ -14,5 +14,6 @@ export * from './recovery';
 export * from './rekey';
 export * from './restore';
 export * from './serverBlobDataHome';
+export * from './VaultRuntimeProvider';
 export * from './sync';
 export * from './vectors';

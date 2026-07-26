@@ -20,8 +20,10 @@ COPY apps/web/ ./apps/web/
 # compose (GIT_SHA/GIT_BUILD_TIME); default to "unknown" for a bare build.
 ARG GIT_SHA=unknown
 ARG GIT_BUILD_TIME=unknown
+ARG VITE_GOOGLE_DRIVE_CLIENT_ID=
 ENV VITE_BUILD_SHA=$GIT_SHA \
-    VITE_BUILD_TIME=$GIT_BUILD_TIME
+    VITE_BUILD_TIME=$GIT_BUILD_TIME \
+    VITE_GOOGLE_DRIVE_CLIENT_ID=$VITE_GOOGLE_DRIVE_CLIENT_ID
 RUN pnpm --filter @bettertrack/web build
 
 # ── runner: nginx front proxy — fronts web/admin/api origins, both modes ─────

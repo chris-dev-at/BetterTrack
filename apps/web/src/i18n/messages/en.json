@@ -520,6 +520,7 @@
         "disconnect": "Disconnect Drive",
         "lastMedium": "Drive is your only vault location. Add server storage before disconnecting it.",
         "unconfigured": "Google Drive storage isn't configured on this deployment.",
+        "unlockRequired": "Unlock your encrypted vault to manage its Drive storage.",
         "status": {
           "disconnected": "Disconnected",
           "connected": "Connected",

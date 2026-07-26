@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type {
   ParanoidMediaPatchInput,
   ParanoidMediaPatchResult,
+  ParanoidMediaVerificationInput,
   ParanoidVaultCasInput,
   ParanoidVaultCasResult,
   ParanoidVaultRepository,
@@ -46,6 +47,7 @@ interface FakeRepoOptions {
 function fakeRepo(options: FakeRepoOptions = {}) {
   const calls: ParanoidVaultCasInput[] = [];
   const mediaCalls: ParanoidMediaPatchInput[] = [];
+  const verificationCalls: ParanoidMediaVerificationInput[] = [];
   const repo: ParanoidVaultRepository = {
     async getCurrent() {
       return options.current ?? null;
@@ -72,6 +74,13 @@ function fakeRepo(options: FakeRepoOptions = {}) {
         }
       );
     },
+    async verifyMediaTransition(input) {
+      verificationCalls.push(input);
+      return {
+        status: 'ok',
+        current: { mediaSet: ['server'], driveAttestedVersion: null },
+      };
+    },
     async patchMedia(input) {
       mediaCalls.push(input);
       return (
@@ -82,8 +91,18 @@ function fakeRepo(options: FakeRepoOptions = {}) {
         }
       );
     },
+    async addServerMedium(input) {
+      return {
+        status: 'ok',
+        state: {
+          mediaSet: ['server', 'drive'],
+          driveAttestedVersion: input.version,
+        },
+        idempotent: false,
+      };
+    },
   };
-  return { repo, calls, mediaCalls };
+  return { repo, calls, mediaCalls, verificationCalls };
 }
 
 const retention = { maxVersions: 10, maxAgeMs: 30 * 24 * 60 * 60 * 1000 };
@@ -196,8 +215,9 @@ describe('paranoid vault service', () => {
       maxBytes: 1_000_000,
       retention,
       now: () => new Date('2026-07-26T12:00:00.000Z'),
+      proofSecret: 'test-proof-secret',
     });
-    const request = {
+    const claim = {
       expected: {
         mediaSet: ['server'] as ('server' | 'drive')[],
         driveAttestedVersion: null,
@@ -205,11 +225,19 @@ describe('paranoid vault service', () => {
       nextMediaSet: ['server', 'drive'] as ('server' | 'drive')[],
       verification: { medium: 'drive' as const, version: 3 },
     };
+    const prepared = await service.prepareMediaVerification(UUID_A, claim);
+    expect(prepared.status).toBe('ok');
+    if (prepared.status !== 'ok') throw new Error('proof preparation failed');
+    const request = {
+      ...claim,
+      verification: { ...claim.verification, proof: prepared.proof.proof },
+    };
     await expect(service.patchMedia(UUID_A, request)).resolves.toMatchObject({ status: 'ok' });
     expect(mediaCalls).toEqual([
       {
         userId: UUID_A,
-        ...request,
+        ...claim,
+        proofVerified: true,
         now: new Date('2026-07-26T12:00:00.000Z'),
       },
     ]);

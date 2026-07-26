@@ -1,6 +1,8 @@
 import type {
   ParanoidMediaStatusResponse,
   PatchParanoidMediaRequest,
+  PrepareParanoidMediaVerificationRequest,
+  PrepareParanoidMediaVerificationResponse,
   VaultMediaSet,
   VaultMediaState,
   VaultMedium,
@@ -20,7 +22,12 @@ export type VaultEnvelopeAuthenticator = (envelope: Uint8Array) => Promise<Authe
 
 export interface VaultMediaStateApi {
   get(): Promise<ParanoidMediaStatusResponse>;
+  prepare(
+    request: PrepareParanoidMediaVerificationRequest,
+  ): Promise<PrepareParanoidMediaVerificationResponse>;
   patch(request: PatchParanoidMediaRequest): Promise<VaultMediaState>;
+  /** Atomic Drive-only → both commit; no inactive server row is ever exposed. */
+  addServer(envelope: Uint8Array): Promise<VaultMediaState>;
 }
 
 export interface VaultMediaSwitcherOptions {
@@ -37,6 +44,7 @@ export type MediaSwitchFailureReason =
   | 'source-unavailable'
   | 'verification-failed'
   | 'stale-version'
+  | 'verification-proof-failed'
   | 'patch-failed'
   | 'consent-required'
   | 'token-expired'
@@ -122,6 +130,7 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
     if (added.length + removed.length !== 1) {
       return failed('invalid-transition', current);
     }
+    let expectedState = current;
 
     const verifiedMedium = added[0] ?? next[0];
     if (verifiedMedium === undefined) return failed('last-medium', current);
@@ -135,6 +144,35 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       comparisonHome = home(sourceMedium);
       const source = await readAuthenticated(comparisonHome);
       if (source.status === 'failed') return { ...source, authoritativeState: current };
+
+      // Drive-only → both cannot pre-write the live server DataHome: even a
+      // PATCH transport failure would then violate Drive-only's physical
+      // zero-server-bytes invariant. The API accepts the authenticated Drive
+      // envelope through one raw-byte transaction that inserts it and activates
+      // the medium atomically.
+      if (verifiedMedium === 'server') {
+        let durable: VaultMediaState;
+        let recoveredAfterPatchFailure = false;
+        try {
+          durable = await options.state.addServer(source.envelope);
+        } catch {
+          const observed = await safeGetState();
+          if (observed === null || !sameSet(observed.mediaSet, next)) {
+            return failed('patch-failed', observed ?? current);
+          }
+          durable = observed;
+          recoveredAfterPatchFailure = true;
+        }
+        const serverCopy = await readAuthenticated(options.server);
+        if (
+          serverCopy.status === 'failed' ||
+          !sameAuthenticatedEnvelope(source.authenticated, serverCopy.authenticated)
+        ) {
+          return failed('verification-failed', durable);
+        }
+        return { status: 'ok', state: durable, recoveredAfterPatchFailure };
+      }
+
       const copied = await ensureVerifiedCopy(source, verifiedHome);
       if (copied.status === 'failed') return { ...copied, authoritativeState: current };
       expectedVerified = copied.authenticated;
@@ -154,6 +192,14 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
         return failed('verification-failed', current);
       }
       expectedVerified = remaining.authenticated;
+      if (
+        removedMedium === 'server' &&
+        current.driveAttestedVersion !== remaining.authenticated.version
+      ) {
+        const attested = await refreshDriveAttestation(current);
+        if (attested.status === 'failed') return attested;
+        expectedState = attested.state;
+      }
     }
 
     const verified = await readAuthenticated(verifiedHome);
@@ -168,12 +214,25 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
     ) {
       return failed('verification-failed', current);
     }
-    const request: PatchParanoidMediaRequest = {
-      expected: current,
+    const claim: PrepareParanoidMediaVerificationRequest = {
+      expected: expectedState,
       nextMediaSet: next,
       verification: {
         medium: verifiedMedium,
         version: verified.authenticated.version,
+      },
+    };
+    let prepared: PrepareParanoidMediaVerificationResponse;
+    try {
+      prepared = await options.state.prepare(claim);
+    } catch {
+      return failed('verification-proof-failed', expectedState);
+    }
+    const request: PatchParanoidMediaRequest = {
+      ...claim,
+      verification: {
+        ...claim.verification,
+        proof: prepared.proof,
       },
     };
 
@@ -186,10 +245,20 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       // metadata-only read; never repeat a destructive transition blindly.
       const observed = await safeGetState();
       if (observed === null || !sameSet(observed.mediaSet, next)) {
-        return failed('patch-failed', observed ?? current);
+        return failed('patch-failed', observed ?? expectedState);
       }
       durable = observed;
       recoveredAfterPatchFailure = true;
+    }
+
+    // Adding Drive records it as live but deliberately does NOT make that first
+    // transition proof destructive. Re-read/authenticate both now-durable media
+    // and commit a separate same-set attestation. Only that durable second step
+    // can later authorize removing server.
+    if (added[0] === 'drive') {
+      const attested = await refreshDriveAttestation(durable);
+      if (attested.status === 'failed') return attested;
+      durable = attested.state;
     }
 
     if (removed[0] === 'drive') {
@@ -275,6 +344,47 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       return observed.privacyMode === 'paranoid' ? observed.mediaState : null;
     } catch {
       return null;
+    }
+  }
+
+  async function refreshDriveAttestation(
+    durable: VaultMediaState,
+  ): Promise<
+    { status: 'ok'; state: VaultMediaState } | Extract<MediaSwitchResult, { status: 'failed' }>
+  > {
+    const [server, drive] = await Promise.all([
+      readAuthenticated(options.server),
+      readAuthenticated(options.drive),
+    ]);
+    if (
+      server.status === 'failed' ||
+      drive.status === 'failed' ||
+      !sameAuthenticatedEnvelope(server.authenticated, drive.authenticated)
+    ) {
+      return failed('verification-failed', durable);
+    }
+    const claim: PrepareParanoidMediaVerificationRequest = {
+      expected: durable,
+      nextMediaSet: durable.mediaSet,
+      verification: {
+        medium: 'drive',
+        version: drive.authenticated.version,
+      },
+    };
+    try {
+      const prepared = await options.state.prepare(claim);
+      const state = await options.state.patch({
+        ...claim,
+        verification: { ...claim.verification, proof: prepared.proof },
+      });
+      return { status: 'ok', state };
+    } catch {
+      const observed = await safeGetState();
+      return observed &&
+        sameSet(observed.mediaSet, durable.mediaSet) &&
+        observed.driveAttestedVersion === drive.authenticated.version
+        ? { status: 'ok', state: observed }
+        : failed('verification-proof-failed', observed ?? durable);
     }
   }
 }

@@ -6,6 +6,7 @@ import {
   parseVaultEtag,
   paranoidMediaStatusResponseSchema,
   patchParanoidMediaRequestSchema,
+  prepareParanoidMediaVerificationRequestSchema,
   privacyModeSchema,
   readVaultServerHeader,
   VAULT_CONTENT_CIPHER,
@@ -99,10 +100,17 @@ describe('media set', () => {
       }),
     ).toEqual({ privacyMode: 'normal', mediaState: null });
 
-    const request = {
+    const verificationRequest = {
       expected: { mediaSet: ['server'], driveAttestedVersion: null },
       nextMediaSet: ['server', 'drive'],
       verification: { medium: 'drive', version: 7 },
+    };
+    expect(prepareParanoidMediaVerificationRequestSchema.parse(verificationRequest)).toEqual(
+      verificationRequest,
+    );
+    const request = {
+      ...verificationRequest,
+      verification: { ...verificationRequest.verification, proof: 'p'.repeat(32) },
     };
     expect(patchParanoidMediaRequestSchema.parse(request)).toEqual(request);
     expect(

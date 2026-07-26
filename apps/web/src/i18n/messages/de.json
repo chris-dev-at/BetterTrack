@@ -520,6 +520,7 @@
         "disconnect": "Drive trennen",
         "lastMedium": "Drive ist dein einziger Tresor-Speicherort. Füge Server-Speicher hinzu, bevor du Drive trennst.",
         "unconfigured": "Google-Drive-Speicher ist in dieser Installation nicht konfiguriert.",
+        "unlockRequired": "Entsperre deinen verschlüsselten Tresor, um den Drive-Speicher zu verwalten.",
         "status": {
           "disconnected": "Nicht verbunden",
           "connected": "Verbunden",

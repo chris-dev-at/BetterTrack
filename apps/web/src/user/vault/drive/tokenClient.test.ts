@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createGoogleDriveTokenClient,
   DRIVE_APPDATA_SCOPE,
+  googleDriveClientId,
   type GoogleIdentityServices,
 } from './tokenClient';
 
@@ -30,6 +31,17 @@ function gisHarness() {
 }
 
 describe('Google Drive GIS token client', () => {
+  it('reads the deploy-time runtime client id without requiring a rebuilt image', () => {
+    const previous = window.__BT__;
+    window.__BT__ = {
+      app: 'user',
+      apiOrigin: '',
+      googleDriveClientId: 'runtime-client.apps.googleusercontent.com',
+    };
+    expect(googleDriveClientId()).toBe('runtime-client.apps.googleusercontent.com');
+    window.__BT__ = previous;
+  });
+
   it('requests the app-data permission exactly and keeps the token in memory', async () => {
     const gis = gisHarness();
     let now = 1_000;

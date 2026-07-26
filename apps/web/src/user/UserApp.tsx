@@ -18,6 +18,7 @@ import { LoginPage } from './auth/LoginPage';
 import { RegisterPage } from './auth/RegisterPage';
 import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
+import { VaultRuntimeProvider } from './vault/VaultRuntimeProvider';
 import { ForecastPage } from './forecast/ForecastPage';
 import { ExpensesLayout } from './expenses/ExpensesSection';
 import { DashboardPage as ExpenseDashboardPage } from './expenses/DashboardPage';
@@ -257,6 +258,15 @@ function UserShell() {
   );
 }
 
+function VaultRuntimeRoot({ children }: { children: ReactNode }) {
+  const { status } = useAuth();
+  return (
+    <VaultRuntimeProvider authenticated={status === 'authenticated'}>
+      {children}
+    </VaultRuntimeProvider>
+  );
+}
+
 /**
  * Realtime gateway socket (§4.5, V3-P7a): live only for a fully authenticated
  * session — anonymous/loading/locked states run without a socket, and every
@@ -307,12 +317,14 @@ export function UserApp() {
     <I18nProvider>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <LocaleSync />
-          <RateLimitToastPortal />
-          <RealtimeRoot>
-            <AnnouncementBannerRoot />
-            <UserShell />
-          </RealtimeRoot>
+          <VaultRuntimeRoot>
+            <LocaleSync />
+            <RateLimitToastPortal />
+            <RealtimeRoot>
+              <AnnouncementBannerRoot />
+              <UserShell />
+            </RealtimeRoot>
+          </VaultRuntimeRoot>
         </AuthProvider>
       </QueryClientProvider>
     </I18nProvider>

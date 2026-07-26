@@ -19,6 +19,7 @@ import {
   connectDriveConnection,
   disconnectDriveConnection,
   driveConnectionConfigured,
+  driveConnectionReady,
   driveConnectionState,
   prepareDriveConnection,
 } from '../vault/media/runtime';
@@ -303,6 +304,7 @@ function GoogleDriveSection() {
 
   const media = query.data.mediaState;
   const configured = driveConnectionConfigured();
+  const runtimeReady = driveConnectionReady();
   const state = configured ? driveConnectionState(media) : 'unavailable';
   const driveSelected = media.mediaSet.includes('drive');
   const canDisconnect = driveSelected && media.mediaSet.length > 1;
@@ -332,6 +334,9 @@ function GoogleDriveSection() {
       {!configured ? (
         <p className="text-xs text-amber-300">{t('settings.connections.drive.unconfigured')}</p>
       ) : null}
+      {configured && !runtimeReady ? (
+        <p className="text-xs text-amber-300">{t('settings.connections.drive.unlockRequired')}</p>
+      ) : null}
       {driveSelected && state === 'needs-sign-in' ? (
         <p className="text-xs text-amber-300">{t('vault.sync.signInToGoogle')}</p>
       ) : null}
@@ -340,7 +345,7 @@ function GoogleDriveSection() {
       ) : null}
 
       <div className="flex flex-wrap gap-2">
-        {configured && (!driveSelected || state === 'needs-sign-in') ? (
+        {configured && runtimeReady && (!driveSelected || state === 'needs-sign-in') ? (
           <Button
             variant="secondary"
             disabled={busy}
@@ -356,7 +361,7 @@ function GoogleDriveSection() {
             )}
           </Button>
         ) : null}
-        {configured && canDisconnect ? (
+        {configured && runtimeReady && canDisconnect ? (
           <Button
             variant="secondary"
             disabled={busy}

@@ -35,6 +35,16 @@ else
 fi
 API_ORIGIN="${API_ORIGIN%/}"
 
+# Public GIS SPA client id for the client-only Drive app-data medium. Restrict
+# the value before interpolating it into JavaScript; normal Google client ids
+# contain only letters, digits, dots, colons, underscores and hyphens.
+GOOGLE_DRIVE_CLIENT_ID="${BT_GOOGLE_DRIVE_CLIENT_ID:-}"
+if [ -n "$GOOGLE_DRIVE_CLIENT_ID" ] &&
+    ! printf '%s' "$GOOGLE_DRIVE_CLIENT_ID" | grep -Eq '^[A-Za-z0-9._:-]+$'; then
+    echo "bettertrack-web: BT_GOOGLE_DRIVE_CLIENT_ID contains invalid characters" >&2
+    exit 1
+fi
+
 export BT_DOMAIN="$DOMAIN"
 export BT_SUB_API="${BT_SUB_API:-api}"
 export BT_SUB_WEB="${BT_SUB_WEB:-web}"
@@ -51,6 +61,7 @@ export API_UPSTREAM="${API_UPSTREAM:-api:3000}"
 # mobile placeholder — both proxied to this upstream over the internal network.
 export LANDING_UPSTREAM="${LANDING_UPSTREAM:-landing:80}"
 export API_ORIGIN
+export GOOGLE_DRIVE_CLIENT_ID
 
 TEMPLATE="/etc/nginx/bt-templates/${MODE}.conf.template"
 if [ ! -f "$TEMPLATE" ]; then
@@ -59,7 +70,7 @@ if [ ! -f "$TEMPLATE" ]; then
 fi
 
 # Restrict envsubst to OUR vars so nginx runtime vars ($host, $uri, …) survive.
-VARS='${BT_DOMAIN} ${BT_SUB_API} ${BT_SUB_WEB} ${BT_SUB_ADMIN} ${BT_SUB_MOBILE} ${BT_PORT_API} ${BT_PORT_WEB} ${BT_PORT_ADMIN} ${BT_PORT_PRODUCT} ${BT_PORT_MOBILE} ${API_UPSTREAM} ${LANDING_UPSTREAM} ${API_ORIGIN}'
+VARS='${BT_DOMAIN} ${BT_SUB_API} ${BT_SUB_WEB} ${BT_SUB_ADMIN} ${BT_SUB_MOBILE} ${BT_PORT_API} ${BT_PORT_WEB} ${BT_PORT_ADMIN} ${BT_PORT_PRODUCT} ${BT_PORT_MOBILE} ${API_UPSTREAM} ${LANDING_UPSTREAM} ${API_ORIGIN} ${GOOGLE_DRIVE_CLIENT_ID}'
 envsubst "$VARS" < "$TEMPLATE" > /etc/nginx/conf.d/default.conf
 
 echo "bettertrack-web: mode=${MODE} apiOrigin=${API_ORIGIN}"

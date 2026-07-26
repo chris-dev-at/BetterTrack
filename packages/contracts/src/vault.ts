@@ -120,10 +120,23 @@ export type VaultMediaState = z.infer<typeof vaultMediaStateSchema>;
  * transition. Only the opaque envelope version crosses this boundary: Drive
  * tokens, file ids, document hashes and decrypted metadata stay in the browser.
  */
-export const vaultMediaVerificationSchema = z
+export const vaultMediaVerificationClaimSchema = z
   .object({
     medium: vaultMediumSchema,
     version: z.number().int().min(1).max(VAULT_VERSION_MAX),
+  })
+  .strict();
+export type VaultMediaVerificationClaim = z.infer<typeof vaultMediaVerificationClaimSchema>;
+
+/**
+ * Server-verifiable, short-lived proof for one exact media transition. The
+ * proof is minted only after the API has checked the locked server head and is
+ * bound to the user, expected state, target set, medium and version. It carries
+ * no Drive credential or file metadata.
+ */
+export const vaultMediaVerificationSchema = vaultMediaVerificationClaimSchema
+  .extend({
+    proof: z.string().min(32).max(2048),
   })
   .strict();
 export type VaultMediaVerification = z.infer<typeof vaultMediaVerificationSchema>;
@@ -150,9 +163,37 @@ export const paranoidMediaStatusResponseSchema = z
 export type ParanoidMediaStatusResponse = z.infer<typeof paranoidMediaStatusResponseSchema>;
 
 /**
+ * Request a short-lived proof for one exact transition after the browser has
+ * authenticated both round-trip candidates. A second transition requires a
+ * second proof, so two bare PATCH requests can never authorize a destructive
+ * switch.
+ */
+export const prepareParanoidMediaVerificationRequestSchema = z
+  .object({
+    expected: vaultMediaStateSchema,
+    nextMediaSet: vaultMediaSetSchema,
+    verification: vaultMediaVerificationClaimSchema,
+  })
+  .strict();
+export type PrepareParanoidMediaVerificationRequest = z.infer<
+  typeof prepareParanoidMediaVerificationRequestSchema
+>;
+
+export const prepareParanoidMediaVerificationResponseSchema = z
+  .object({
+    proof: z.string().min(32).max(2048),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type PrepareParanoidMediaVerificationResponse = z.infer<
+  typeof prepareParanoidMediaVerificationResponseSchema
+>;
+
+/**
  * Safe media-set switch. `expected` is the caller's last durable observation;
  * `verification` identifies the copy it authenticated immediately before this
- * request. The server re-checks that version against its locked blind blob.
+ * request and carries the API-issued proof for this exact transition. The
+ * server re-checks that proof and version against its locked blind blob.
  */
 export const patchParanoidMediaRequestSchema = z
   .object({
@@ -833,6 +874,7 @@ export const VAULT_ERROR_CODES = {
   modeRequired: 'VAULT_PARANOID_MODE_REQUIRED',
   mediaStateConflict: 'VAULT_MEDIA_STATE_CONFLICT',
   mediaVerificationFailed: 'VAULT_MEDIA_VERIFICATION_FAILED',
+  serverMediumInactive: 'VAULT_SERVER_MEDIUM_INACTIVE',
   preconditionRequired: 'VAULT_PRECONDITION_REQUIRED',
   preconditionFailed: 'VAULT_PRECONDITION_FAILED',
   tooLarge: 'VAULT_TOO_LARGE',

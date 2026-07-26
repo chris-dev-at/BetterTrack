@@ -3,6 +3,8 @@ import {
   VaultEnvelopeError,
   type ParanoidMediaStatusResponse,
   type PatchParanoidMediaRequest,
+  type PrepareParanoidMediaVerificationRequest,
+  type PrepareParanoidMediaVerificationResponse,
   type VaultHistoryListQuery,
   type VaultHistoryListResponse,
   type VaultMetadata,
@@ -13,6 +15,12 @@ import type {
   ParanoidVaultRetention,
 } from '../../data/repositories/paranoidVaultRepository';
 import type { ParanoidVaultHistoryRow, ParanoidVaultRow } from '../../data/schema';
+import {
+  PARANOID_MEDIA_PROOF_TTL_MS,
+  proofMatchesRequest,
+  signParanoidMediaProof,
+  verifyParanoidMediaProof,
+} from './paranoidMediaProof';
 
 /**
  * Paranoid-vault service (§13.5 V5-P13 arc b, `docs/paranoid-design.md` §2, §4).
@@ -31,6 +39,8 @@ export interface ParanoidVaultServiceDeps {
   retention: ParanoidVaultRetention;
   /** Injected clock so archive/prune timestamps stay deterministic in tests. */
   now?: () => Date;
+  /** First session-signing secret, domain-separated for short-lived media proofs. */
+  proofSecret?: string;
 }
 
 export interface ParanoidVaultPutInput {
@@ -47,6 +57,7 @@ export interface ParanoidVaultPutInput {
 export type ParanoidVaultPutResult =
   | { status: 'ok'; version: number; updatedAt: Date }
   | { status: 'precondition_failed'; currentVersion: number | null }
+  | { status: 'medium_inactive' }
   | { status: 'too_large'; sizeBytes: number; maxBytes: number }
   | { status: 'malformed'; reason: string };
 
@@ -63,6 +74,17 @@ export interface ParanoidVaultService {
   put(input: ParanoidVaultPutInput): Promise<ParanoidVaultPutResult>;
   /** Portfolio-free durable media metadata for the caller's account. */
   getMediaState(userId: string): Promise<ParanoidMediaStatusResponse | null>;
+  /** Mint a short-lived proof after checking the current locked server head. */
+  prepareMediaVerification(
+    userId: string,
+    input: PrepareParanoidMediaVerificationRequest,
+  ): Promise<
+    | { status: 'ok'; proof: PrepareParanoidMediaVerificationResponse }
+    | Exclude<
+        Awaited<ReturnType<ParanoidVaultRepository['verifyMediaTransition']>>,
+        { status: 'ok' }
+      >
+  >;
   /**
    * One verified media-set transition. Removing server ciphertext is delegated
    * to the repository's account-row transaction.
@@ -71,6 +93,15 @@ export interface ParanoidVaultService {
     userId: string,
     input: PatchParanoidMediaRequest,
   ): ReturnType<ParanoidVaultRepository['patchMedia']>;
+  /** Atomically store the Drive source bytes and activate the server medium. */
+  addServerMedium(
+    userId: string,
+    blob: Buffer,
+  ): Promise<
+    | Awaited<ReturnType<ParanoidVaultRepository['addServerMedium']>>
+    | { status: 'too_large'; sizeBytes: number; maxBytes: number }
+    | { status: 'malformed'; reason: string }
+  >;
 }
 
 function metadataOf(row: ParanoidVaultRow): VaultMetadata {
@@ -115,20 +146,9 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
     async put({ userId, expectedVersion, blob }) {
       // Size cap FIRST — an oversized payload is rejected before any parse or
       // persistence.
-      if (blob.length > deps.maxBytes) {
-        return { status: 'too_large', sizeBytes: blob.length, maxBytes: deps.maxBytes };
-      }
-
-      // Read ONLY the safe header fields the blind store is entitled to.
-      let header: { formatVersion: number; vaultVersion: number };
-      try {
-        header = readVaultServerHeader(blob);
-      } catch (err) {
-        if (err instanceof VaultEnvelopeError) {
-          return { status: 'malformed', reason: err.message };
-        }
-        throw err;
-      }
+      const inspected = inspectBlob(blob, deps.maxBytes);
+      if ('status' in inspected) return inspected;
+      const { header } = inspected;
 
       // The envelope's version must strictly advance the precondition — a
       // client always writes `last seen + 1` (or a merged max(parents)+1). A
@@ -157,12 +177,101 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
       return deps.vaults.getMediaState(userId);
     },
 
+    async prepareMediaVerification(userId, input) {
+      const verified = await deps.vaults.verifyMediaTransition({ userId, ...input });
+      if (verified.status !== 'ok') return verified;
+      if (!deps.proofSecret) {
+        return { status: 'verification_failed', current: verified.current };
+      }
+      const expiresAt = new Date(now().getTime() + PARANOID_MEDIA_PROOF_TTL_MS);
+      return {
+        status: 'ok',
+        proof: {
+          proof: signParanoidMediaProof(deps.proofSecret, {
+            userId,
+            ...input,
+            expiresAtMs: expiresAt.getTime(),
+          }),
+          expiresAt: expiresAt.toISOString(),
+        },
+      };
+    },
+
     async patchMedia(userId, input) {
+      const account = await deps.vaults.getMediaState(userId);
+      if (!account) return { status: 'not_found' };
+      if (account.privacyMode !== 'paranoid' || account.mediaState === null) {
+        return { status: 'mode_required' };
+      }
+      if (!sameMediaState(account.mediaState, input.expected)) {
+        return { status: 'state_conflict', current: account.mediaState };
+      }
+      const request = {
+        expected: input.expected,
+        nextMediaSet: input.nextMediaSet,
+        verification: {
+          medium: input.verification.medium,
+          version: input.verification.version,
+        },
+      };
+      const proof = deps.proofSecret
+        ? verifyParanoidMediaProof(deps.proofSecret, input.verification.proof, now().getTime())
+        : null;
+      if (!proof || !proofMatchesRequest(proof, userId, request)) {
+        return { status: 'verification_failed', current: input.expected };
+      }
       return deps.vaults.patchMedia({
         userId,
-        ...input,
+        expected: input.expected,
+        nextMediaSet: input.nextMediaSet,
+        verification: request.verification,
+        proofVerified: true,
+        now: now(),
+      });
+    },
+
+    async addServerMedium(userId, blob) {
+      const inspected = inspectBlob(blob, deps.maxBytes);
+      if ('status' in inspected) return inspected;
+      return deps.vaults.addServerMedium({
+        userId,
+        version: inspected.header.vaultVersion,
+        formatVersion: inspected.header.formatVersion,
+        sizeBytes: blob.length,
+        blob,
         now: now(),
       });
     },
   };
+}
+
+function sameMediaState(
+  left: NonNullable<ParanoidMediaStatusResponse['mediaState']>,
+  right: NonNullable<ParanoidMediaStatusResponse['mediaState']>,
+): boolean {
+  return (
+    left.driveAttestedVersion === right.driveAttestedVersion &&
+    left.mediaSet.length === right.mediaSet.length &&
+    left.mediaSet.every((medium) => right.mediaSet.includes(medium))
+  );
+}
+
+function inspectBlob(
+  blob: Buffer,
+  maxBytes: number,
+):
+  | { header: { formatVersion: number; vaultVersion: number } }
+  | { status: 'too_large'; sizeBytes: number; maxBytes: number }
+  | { status: 'malformed'; reason: string } {
+  if (blob.length > maxBytes) {
+    return { status: 'too_large', sizeBytes: blob.length, maxBytes };
+  }
+  try {
+    return { header: readVaultServerHeader(blob) };
+  } catch (err) {
+    if (err instanceof VaultEnvelopeError) {
+      return { status: 'malformed', reason: err.message };
+    }
+    throw err;
+  }
 }

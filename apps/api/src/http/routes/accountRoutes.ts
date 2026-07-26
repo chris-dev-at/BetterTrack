@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 
 import {
   deleteAccountRequestSchema,
@@ -7,11 +7,14 @@ import {
   paranoidMediaStatusResponseSchema,
   patchParanoidMediaRequestSchema,
   patchParanoidMediaResponseSchema,
+  prepareParanoidMediaVerificationRequestSchema,
+  prepareParanoidMediaVerificationResponseSchema,
   VAULT_ERROR_CODES,
   type DeleteAccountRequest,
   type ExportDownloadQuery,
   type ExportRequest,
   type PatchParanoidMediaRequest,
+  type PrepareParanoidMediaVerificationRequest,
 } from '@bettertrack/contracts';
 
 import { ApiError, forbidden, notFound } from '../../errors';
@@ -46,6 +49,43 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     res.json(paranoidMediaStatusResponseSchema.parse(state));
   });
 
+  router.post(
+    '/paranoid/media/verification',
+    requireUser,
+    validateBody(prepareParanoidMediaVerificationRequestSchema),
+    async (req, res) => {
+      const result = await ctx.paranoidVault.prepareMediaVerification(
+        req.authUser!.id,
+        req.valid?.body as PrepareParanoidMediaVerificationRequest,
+      );
+      switch (result.status) {
+        case 'ok':
+          res.setHeader('Cache-Control', 'private, no-store');
+          res.json(prepareParanoidMediaVerificationResponseSchema.parse(result.proof));
+          return;
+        case 'not_found':
+          throw notFound('Account not found.');
+        case 'mode_required':
+          throw forbidden(
+            'Vault media can be changed only while paranoid mode is active.',
+            VAULT_ERROR_CODES.modeRequired,
+          );
+        case 'state_conflict':
+          throw new ApiError(
+            409,
+            VAULT_ERROR_CODES.mediaStateConflict,
+            'Vault media changed after the client last read it.',
+          );
+        case 'verification_failed':
+          throw new ApiError(
+            412,
+            VAULT_ERROR_CODES.mediaVerificationFailed,
+            'The verified copy is not fresh enough for this media change.',
+          );
+      }
+    },
+  );
+
   router.patch(
     '/paranoid/media',
     requireUser,
@@ -79,6 +119,80 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
             VAULT_ERROR_CODES.mediaVerificationFailed,
             'The verified copy is not fresh enough for this media change.',
           );
+      }
+    },
+  );
+
+  // Drive-only → both is one raw-byte transaction: the opaque Drive source is
+  // inserted as the server head and the account media set changes together.
+  // A request interrupted before commit therefore leaves BOTH rows untouched,
+  // preserving the Drive-only zero-server-bytes boundary.
+  const rawVaultBody = express.raw({ type: () => true, limit: ctx.config.vault.maxBytes });
+  router.put(
+    '/paranoid/media/server',
+    requireUser,
+    limiters.vault,
+    (req, res, next) => {
+      rawVaultBody(req, res, (err?: unknown) => {
+        if ((err as { type?: string } | undefined)?.type === 'entity.too.large') {
+          next(
+            new ApiError(
+              413,
+              VAULT_ERROR_CODES.tooLarge,
+              'The vault ciphertext exceeds the configured size cap.',
+            ),
+          );
+          return;
+        }
+        if (err) {
+          next(err);
+          return;
+        }
+        next();
+      });
+    },
+    async (req, res) => {
+      const blob = Buffer.isBuffer(req.body) ? req.body : null;
+      if (!blob || blob.length === 0) {
+        throw new ApiError(
+          400,
+          VAULT_ERROR_CODES.malformed,
+          'The vault write body must be non-empty envelope bytes.',
+        );
+      }
+      const result = await ctx.paranoidVault.addServerMedium(req.authUser!.id, blob);
+      switch (result.status) {
+        case 'ok':
+          res.setHeader('Cache-Control', 'private, no-store');
+          res.json(patchParanoidMediaResponseSchema.parse(result.state));
+          return;
+        case 'not_found':
+          throw notFound('Account not found.');
+        case 'mode_required':
+          throw forbidden(
+            'The server vault medium can be added only while paranoid mode is active.',
+            VAULT_ERROR_CODES.modeRequired,
+          );
+        case 'state_conflict':
+          throw new ApiError(
+            409,
+            VAULT_ERROR_CODES.mediaStateConflict,
+            'Vault media changed before the server medium could be added.',
+          );
+        case 'verification_failed':
+          throw new ApiError(
+            412,
+            VAULT_ERROR_CODES.mediaVerificationFailed,
+            'The Drive source is older than the durable media state.',
+          );
+        case 'too_large':
+          throw new ApiError(
+            413,
+            VAULT_ERROR_CODES.tooLarge,
+            'The vault ciphertext exceeds the configured size cap.',
+          );
+        case 'malformed':
+          throw new ApiError(400, VAULT_ERROR_CODES.malformed, result.reason);
       }
     },
   );

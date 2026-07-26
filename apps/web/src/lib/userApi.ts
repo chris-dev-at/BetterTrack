@@ -1,4 +1,5 @@
 import {
+  apiErrorSchema,
   googleLinkStatusResponseSchema,
   googleRegisterTicketResponseSchema,
   inviteValidationResponseSchema,
@@ -11,6 +12,7 @@ import {
   pinQuickAuthResponseSchema,
   paranoidMediaStatusResponseSchema,
   patchParanoidMediaResponseSchema,
+  prepareParanoidMediaVerificationResponseSchema,
   publicRegistrationInfoResponseSchema,
   registerResponseSchema,
   rememberedDeviceResponseSchema,
@@ -43,6 +45,8 @@ import {
   type ParanoidMediaStatusResponse,
   type PatchParanoidMediaRequest,
   type PatchParanoidMediaResponse,
+  type PrepareParanoidMediaVerificationRequest,
+  type PrepareParanoidMediaVerificationResponse,
   type PublicRegistrationInfoResponse,
   type RegisterRequest,
   type RegisterResponse,
@@ -57,9 +61,10 @@ import {
   type SetPinRequest,
   type TwoFactorEmailCodeRequest,
   type TwoFactorVerifyRequest,
+  VAULT_CONTENT_TYPE,
 } from '@bettertrack/contracts';
 
-import { apiRequest } from './apiClient';
+import { ApiError, apiRequest } from './apiClient';
 import { apiBaseUrl } from './runtimeConfig';
 
 /**
@@ -418,6 +423,17 @@ export async function getParanoidMediaState(
   return paranoidMediaStatusResponseSchema.parse(data);
 }
 
+/** Obtain the API-issued proof bound to one exact verified media transition. */
+export async function prepareParanoidMediaVerification(
+  body: PrepareParanoidMediaVerificationRequest,
+): Promise<PrepareParanoidMediaVerificationResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/media/verification', {
+    method: 'POST',
+    body,
+  });
+  return prepareParanoidMediaVerificationResponseSchema.parse(data);
+}
+
 /**
  * Commit one client-verified media switch. Drive credentials and file metadata
  * never enter this request; it carries only durable state plus an envelope
@@ -431,6 +447,43 @@ export async function patchParanoidMedia(
     body,
   });
   return patchParanoidMediaResponseSchema.parse(data);
+}
+
+/**
+ * Drive-only → both atomic commit. The opaque envelope and media metadata land
+ * in one API transaction, so an interrupted request cannot leave inactive
+ * server ciphertext behind.
+ */
+export async function addParanoidServerMedium(
+  envelope: Uint8Array,
+): Promise<PatchParanoidMediaResponse> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl()}/account/paranoid/media/server`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': VAULT_CONTENT_TYPE,
+        'X-Requested-With': 'BetterTrack',
+      },
+      credentials: 'include',
+      body: envelope.slice(),
+    });
+  } catch {
+    throw new ApiError(0, 'NETWORK_ERROR', 'Unable to reach the server. Check your connection.');
+  }
+  const payload: unknown = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    const parsed = apiErrorSchema.safeParse(payload);
+    throw parsed.success
+      ? new ApiError(
+          response.status,
+          parsed.data.error.code,
+          parsed.data.error.message,
+          parsed.data.error.details,
+        )
+      : new ApiError(response.status, 'UNKNOWN_ERROR', 'The server returned an invalid response.');
+  }
+  return patchParanoidMediaResponseSchema.parse(payload);
 }
 
 /**

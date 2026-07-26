@@ -853,6 +853,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     vaults: createParanoidVaultRepository(db),
     maxBytes: config.vault.maxBytes,
     retention: config.vault.history,
+    proofSecret: config.sessionSecrets[0],
   });
 
   const webhookSubscriptionRepo = createWebhookSubscriptionRepository(db);

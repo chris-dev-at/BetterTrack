@@ -15,6 +15,7 @@ vi.mock('../vault/media/runtime', () => ({
   connectDriveConnection: vi.fn(),
   disconnectDriveConnection: vi.fn(),
   driveConnectionConfigured: vi.fn(() => true),
+  driveConnectionReady: vi.fn(() => true),
   driveConnectionState: vi.fn(() => 'disconnected'),
   prepareDriveConnection: vi.fn(async () => undefined),
 }));
@@ -24,6 +25,7 @@ import { getGoogleLinkStatus, getParanoidMediaState, unlinkGoogle } from '../../
 import {
   connectDriveConnection,
   disconnectDriveConnection,
+  driveConnectionReady,
   driveConnectionState,
 } from '../vault/media/runtime';
 import { ConnectionsPage } from './ConnectionsPage';
@@ -74,6 +76,7 @@ beforeEach(() => {
     state: { mediaSet: ['server'], driveAttestedVersion: null },
     recoveredAfterPatchFailure: false,
   });
+  vi.mocked(driveConnectionReady).mockReturnValue(true);
   vi.mocked(driveConnectionState).mockReturnValue('disconnected');
 });
 
@@ -195,6 +198,19 @@ describe('ConnectionsPage — paranoid Google Drive app-data card', () => {
     await user.click(screen.getByRole('button', { name: 'Connect Drive' }));
     await waitFor(() => expect(connectDriveConnection).toHaveBeenCalledOnce());
     expect(await screen.findByText('Google Drive storage connected.')).toBeInTheDocument();
+  });
+
+  test('does not expose a dead Drive action while the encrypted vault is locked', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: { mediaSet: ['server'], driveAttestedVersion: null },
+    });
+    vi.mocked(driveConnectionReady).mockReturnValue(false);
+    vi.mocked(driveConnectionState).mockReturnValue('unavailable');
+    renderPage();
+
+    expect(await screen.findByText(/unlock your encrypted vault/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect Drive' })).not.toBeInTheDocument();
   });
 
   test('shows needs-sign-in honestly and routes the gesture through the controller', async () => {

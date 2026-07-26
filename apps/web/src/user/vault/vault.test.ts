@@ -688,6 +688,27 @@ describe('passphrase and key lifecycle', () => {
 });
 
 describe('recovery kit and custody lock core', () => {
+  it('installs and disposes the unlocked browser runtime with the vault key lifecycle', async () => {
+    const original = await fixture();
+    let installs = 0;
+    let disposals = 0;
+    const core = new VaultLockCore({
+      installUnlockedRuntime: (_vaultKey, keyId) => {
+        installs += 1;
+        expect(keyId).toBe(VECTOR_KEY_ID);
+        return () => {
+          disposals += 1;
+        };
+      },
+    });
+
+    await core.unlockWithPassphrase(original.envelope, 'correct horse battery staple');
+    expect(installs).toBe(1);
+    expect(disposals).toBe(0);
+    await core.lock();
+    expect(disposals).toBe(1);
+  });
+
   it('round-trips a strict recovery kit and unlocks its matching envelope', async () => {
     const original = await fixture();
     const download = serializeRecoveryKit({
