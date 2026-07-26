@@ -34,6 +34,7 @@ import {
   createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
   createApiKeyRequestLogCleanupJob,
+  createVaultServerCandidateCleanupJob,
   createNotificationsDispatchJob,
   createDigestDailyJob,
   createDigestWeeklyJob,
@@ -65,6 +66,7 @@ import { createShareAudienceRepository } from '../data/repositories/shareAudienc
 import { createStandingOrderRepository } from '../data/repositories/standingOrderRepository';
 import { createStandingOrderService } from '../services/standingOrders/standingOrderService';
 import { createApiKeyRequestLogRepository } from '../data/repositories/apiKeyRequestLogRepository';
+import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
 import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserFollowsRepository } from '../data/repositories/userFollowsRepository';
@@ -460,6 +462,9 @@ const definitions = [
   // V5-P10 API-key governance (issue 2/2): the daily retention sweep over the
   // bounded per-key request-log audit trail.
   createApiKeyRequestLogCleanupJob({ requestLog: createApiKeyRequestLogRepository(db) }),
+  // V5-P13 PD6: abandoned inactive server candidates are physically purged
+  // independently of future owner traffic, preserving Drive-only zero bytes.
+  createVaultServerCandidateCleanupJob({ vaults: createParanoidVaultRepository(db) }),
 ];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };

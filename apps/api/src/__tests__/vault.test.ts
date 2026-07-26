@@ -652,6 +652,130 @@ describe('paranoid media endpoint', () => {
     ).toBe(404);
   });
 
+  it('rejects a destructive proof after the exact visible media state recurs', async () => {
+    const agent = await seedAndLogin('proof-cycle@bt.test', 'proof-cycle', 'paranoid');
+    const source = envelope(1, new Uint8Array([1]));
+    expect(
+      (
+        await agent
+          .put('/api/v1/vault')
+          .set(...XRW)
+          .set(...OCTET)
+          .set('If-None-Match', '*')
+          .send(source)
+      ).status,
+    ).toBe(204);
+
+    const addDriveClaim = {
+      expected: {
+        mediaSet: ['server'] as ('server' | 'drive')[],
+        driveAttestedVersion: null,
+      },
+      nextMediaSet: ['server', 'drive'] as ('server' | 'drive')[],
+      verification: { medium: 'drive' as const, version: 1 },
+    };
+    const addDriveProof = await prepareMediaProof(agent, addDriveClaim);
+    expect(
+      (
+        await agent
+          .patch('/api/v1/account/paranoid/media')
+          .set(...XRW)
+          .send({
+            ...addDriveClaim,
+            verification: { ...addDriveClaim.verification, proof: addDriveProof },
+          })
+      ).status,
+    ).toBe(200);
+
+    const attestClaim = {
+      expected: {
+        mediaSet: ['server', 'drive'] as ('server' | 'drive')[],
+        driveAttestedVersion: null,
+      },
+      nextMediaSet: ['server', 'drive'] as ('server' | 'drive')[],
+      verification: { medium: 'drive' as const, version: 1 },
+    };
+    const attestProof = await prepareMediaProof(agent, attestClaim);
+    expect(
+      (
+        await agent
+          .patch('/api/v1/account/paranoid/media')
+          .set(...XRW)
+          .send({
+            ...attestClaim,
+            verification: { ...attestClaim.verification, proof: attestProof },
+          })
+      ).status,
+    ).toBe(200);
+
+    const removeServerClaim = {
+      expected: {
+        mediaSet: ['server', 'drive'] as ('server' | 'drive')[],
+        driveAttestedVersion: 1,
+      },
+      nextMediaSet: ['drive'] as ('server' | 'drive')[],
+      verification: { medium: 'drive' as const, version: 1 },
+    };
+    const staleRemovalProof = await prepareMediaProof(agent, removeServerClaim);
+    expect(
+      (
+        await agent
+          .patch('/api/v1/account/paranoid/media')
+          .set(...XRW)
+          .send({
+            ...removeServerClaim,
+            verification: { ...removeServerClaim.verification, proof: staleRemovalProof },
+          })
+      ).status,
+    ).toBe(200);
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+
+    const staged = await agent
+      .put('/api/v1/account/paranoid/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .send(source);
+    expect(staged.status).toBe(200);
+    const addServerClaim = {
+      expected: {
+        mediaSet: ['drive'] as ('server' | 'drive')[],
+        driveAttestedVersion: 1,
+      },
+      nextMediaSet: ['server', 'drive'] as ('server' | 'drive')[],
+      verification: {
+        medium: 'server' as const,
+        version: 1,
+        serverCandidateId: staged.body.candidateId as string,
+      },
+    };
+    const addServerProof = await prepareMediaProof(agent, addServerClaim);
+    expect(
+      (
+        await agent
+          .patch('/api/v1/account/paranoid/media')
+          .set(...XRW)
+          .send({
+            ...addServerClaim,
+            verification: { ...addServerClaim.verification, proof: addServerProof },
+          })
+      ).status,
+    ).toBe(200);
+    expect((await agent.get('/api/v1/account/paranoid/media')).body.mediaState).toEqual(
+      removeServerClaim.expected,
+    );
+
+    const replay = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        ...removeServerClaim,
+        verification: { ...removeServerClaim.verification, proof: staleRemovalProof },
+      });
+    expect(replay.status).toBe(412);
+    expect(replay.body.error.code).toBe('VAULT_MEDIA_VERIFICATION_FAILED');
+    expect((await agent.get('/api/v1/vault')).status).toBe(200);
+  });
+
   it('rejects stale or fabricated verification without deleting ciphertext', async () => {
     const agent = await seedAndLogin('stale-media@bt.test', 'stale-media', 'paranoid');
     await agent

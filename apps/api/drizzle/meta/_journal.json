@@ -505,6 +505,13 @@
       "when": 1784490300290,
       "tag": "0071_paranoid_vault_server_candidates",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1784490360290,
+      "tag": "0072_paranoid_media_generation",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt, lte, sql } from 'drizzle-orm';
 
 import {
   VAULT_HISTORY_PAGE_DEFAULT,
@@ -71,6 +71,7 @@ export function createParanoidRehydrationTransactionRepository(
           privacyMode: 'normal',
           paranoidMediaSet: null,
           paranoidDriveAttestedVersion: null,
+          paranoidMediaGeneration: sql`${users.paranoidMediaGeneration} + 1`,
           updatedAt: new Date(),
         })
         .where(eq(users.id, userId));
@@ -182,6 +183,8 @@ export interface ParanoidMediaPatchInput extends Omit<PatchParanoidMediaRequest,
   verification: VaultMediaVerificationClaim;
   /** Set only after the service validates the signed proof against this request. */
   proofVerified: true;
+  /** Monotonic generation embedded in that signed proof. */
+  expectedGeneration: number;
   now: Date;
 }
 
@@ -191,7 +194,7 @@ export interface ParanoidMediaVerificationInput extends PrepareParanoidMediaVeri
 }
 
 export type ParanoidMediaVerificationResult =
-  | { status: 'ok'; current: VaultMediaState }
+  | { status: 'ok'; current: VaultMediaState; generation: number }
   | Exclude<ParanoidMediaPatchResult, { status: 'ok' }>;
 
 export interface ParanoidStageServerCandidateInput extends ParanoidVaultBlobInput {
@@ -229,6 +232,8 @@ export interface ParanoidVaultRepository {
     now: Date,
   ): Promise<ParanoidVaultServerCandidateRow | null>;
   discardServerCandidate(userId: string, candidateId: string): Promise<void>;
+  /** Independently purge a bounded batch of abandoned inactive ciphertext. */
+  deleteExpiredServerCandidates(now: Date, limit: number): Promise<number>;
 }
 
 function historyPageSize(requested: number | undefined): number {
@@ -413,6 +418,7 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
             privacyMode: users.privacyMode,
             mediaSet: users.paranoidMediaSet,
             driveAttestedVersion: users.paranoidDriveAttestedVersion,
+            generation: users.paranoidMediaGeneration,
           })
           .from(users)
           .where(eq(users.id, input.userId))
@@ -491,7 +497,7 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
             return { status: 'verification_failed', current } as const;
           }
         }
-        return { status: 'ok', current } as const;
+        return { status: 'ok', current, generation: user.generation } as const;
       });
     },
 
@@ -502,6 +508,7 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
             privacyMode: users.privacyMode,
             mediaSet: users.paranoidMediaSet,
             driveAttestedVersion: users.paranoidDriveAttestedVersion,
+            generation: users.paranoidMediaGeneration,
           })
           .from(users)
           .where(eq(users.id, input.userId))
@@ -515,6 +522,9 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
 
         if (!sameMediaState(current, input.expected)) {
           return { status: 'state_conflict', current } as const;
+        }
+        if (user.generation !== input.expectedGeneration) {
+          return { status: 'verification_failed', current } as const;
         }
 
         // A retried request whose first response was lost is harmless: once the
@@ -632,6 +642,7 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           .set({
             paranoidMediaSet: next.mediaSet,
             paranoidDriveAttestedVersion: next.driveAttestedVersion,
+            paranoidMediaGeneration: sql`${users.paranoidMediaGeneration} + 1`,
             updatedAt: input.now,
           })
           .where(eq(users.id, input.userId));
@@ -745,6 +756,30 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
             eq(paranoidVaultServerCandidates.id, candidateId),
           ),
         );
+    },
+
+    async deleteExpiredServerCandidates(now, limit) {
+      const boundedLimit = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, 1_000) : 100;
+      return db.transaction(async (tx) => {
+        const expired = await tx
+          .select({ id: paranoidVaultServerCandidates.id })
+          .from(paranoidVaultServerCandidates)
+          .where(lte(paranoidVaultServerCandidates.expiresAt, now))
+          .orderBy(asc(paranoidVaultServerCandidates.expiresAt))
+          .limit(boundedLimit)
+          .for('update', { skipLocked: true });
+        if (expired.length === 0) return 0;
+        const deleted = await tx
+          .delete(paranoidVaultServerCandidates)
+          .where(
+            inArray(
+              paranoidVaultServerCandidates.id,
+              expired.map((row) => row.id),
+            ),
+          )
+          .returning({ id: paranoidVaultServerCandidates.id });
+        return deleted.length;
+      });
     },
   };
 }

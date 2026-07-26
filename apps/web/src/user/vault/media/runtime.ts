@@ -18,7 +18,10 @@ import { createLocalDataHome } from '../localDataHome';
 import { createIndexedDbVaultQuarantineStore } from '../quarantine';
 import { createServerBlobDataHome } from '../serverBlobDataHome';
 import { createVaultSyncEngine } from '../sync';
-import { createReplicatedVaultDataHome } from './replicatedDataHome';
+import {
+  createReplicatedVaultDataHome,
+  createVaultReplicaMergeResolver,
+} from './replicatedDataHome';
 import { projectDriveSyncStatus, type ParanoidSyncStatusProjection } from './status';
 import {
   createVaultEnvelopeAuthenticator,
@@ -261,16 +264,23 @@ function createDefaultSyncBridge(options: {
 }): VaultDriveSyncBridge {
   const scope = `vault:${options.keyId}`;
   const local = createLocalDataHome({ scope });
+  const deviceId = browserVaultDeviceId(options.keyId);
+  const writeId = () => globalThis.crypto.randomUUID();
   const primary = createReplicatedVaultDataHome({
     ...options,
     authenticate: createVaultEnvelopeAuthenticator(options.vaultKey),
+    resolveDivergence: createVaultReplicaMergeResolver({
+      vaultKey: options.vaultKey,
+      deviceId,
+      writeId,
+    }),
   });
   const engine = createVaultSyncEngine({
     local,
     primary,
     vaultKey: options.vaultKey,
-    deviceId: browserVaultDeviceId(options.keyId),
-    writeId: () => globalThis.crypto.randomUUID(),
+    deviceId,
+    writeId,
     quarantine: createIndexedDbVaultQuarantineStore({ scope }),
   });
   let reconnecting = false;

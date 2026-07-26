@@ -218,6 +218,7 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
         proof: {
           proof: signParanoidMediaProof(deps.proofSecret, {
             userId,
+            generation: verified.generation,
             ...input,
             expiresAtMs: expiresAt.getTime(),
           }),
@@ -258,6 +259,7 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
         nextMediaSet: input.nextMediaSet,
         verification: request.verification,
         proofVerified: true,
+        expectedGeneration: proof.generation,
         now: now(),
       });
     },

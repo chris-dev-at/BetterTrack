@@ -19,11 +19,13 @@ describe('paranoid media transition proof', () => {
   it('binds one signed proof to the user, exact transition and expiry', () => {
     const proof = signParanoidMediaProof('secret-a', {
       userId: '018f0000-0000-7000-8000-00000000000a',
+      generation: 4,
       ...request,
       expiresAtMs: 20_000,
     });
     const verified = verifyParanoidMediaProof('secret-a', proof, 10_000);
     expect(verified).not.toBeNull();
+    expect(verified?.generation).toBe(4);
     expect(
       verified && proofMatchesRequest(verified, '018f0000-0000-7000-8000-00000000000a', request),
     ).toBe(true);
@@ -53,6 +55,7 @@ describe('paranoid media transition proof', () => {
   it('rejects a wrong secret and any payload or signature tampering', () => {
     const proof = signParanoidMediaProof('secret-a', {
       userId: '018f0000-0000-7000-8000-00000000000a',
+      generation: 4,
       ...request,
       expiresAtMs: 20_000,
     });

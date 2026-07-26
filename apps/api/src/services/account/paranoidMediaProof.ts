@@ -12,6 +12,8 @@ export const PARANOID_MEDIA_PROOF_TTL_MS = 2 * 60 * 1000;
 
 export interface ParanoidMediaProofPayload extends PrepareParanoidMediaVerificationRequest {
   userId: string;
+  /** Internal monotonic account-media generation observed while minting. */
+  generation: number;
   expiresAtMs: number;
 }
 
@@ -25,6 +27,7 @@ export function signParanoidMediaProof(secret: string, payload: ParanoidMediaPro
     JSON.stringify({
       v: PROOF_VERSION,
       userId: payload.userId,
+      generation: payload.generation,
       expected: payload.expected,
       nextMediaSet: payload.nextMediaSet,
       verification: payload.verification,
@@ -52,6 +55,7 @@ export function verifyParanoidMediaProof(
     const decoded = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as {
       v?: unknown;
       userId?: unknown;
+      generation?: unknown;
       expected?: unknown;
       nextMediaSet?: unknown;
       verification?: unknown;
@@ -61,6 +65,8 @@ export function verifyParanoidMediaProof(
       decoded.v !== PROOF_VERSION ||
       typeof decoded.userId !== 'string' ||
       decoded.userId.length === 0 ||
+      !Number.isSafeInteger(decoded.generation) ||
+      (decoded.generation as number) < 0 ||
       !Number.isSafeInteger(decoded.expiresAtMs) ||
       (decoded.expiresAtMs as number) <= nowMs
     ) {
@@ -74,6 +80,7 @@ export function verifyParanoidMediaProof(
     if (!request.success) return null;
     return {
       userId: decoded.userId,
+      generation: decoded.generation as number,
       ...request.data,
       expiresAtMs: decoded.expiresAtMs as number,
     };

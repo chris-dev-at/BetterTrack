@@ -1,7 +1,9 @@
 import { equalBytes } from '../bytes';
-import type { VaultMediaState } from '@bettertrack/contracts';
+import type { VaultEnvelopeHeader, VaultMediaState } from '@bettertrack/contracts';
+import { decryptVaultDocument, encryptVaultDocument, type VaultKeyMaterial } from '../crypto';
 import type { DataHome, DataHomeReadResult, DataHomeWriteResult } from '../dataHome';
 import type { DriveDataHome } from '../drive/driveDataHome';
+import { mergeVaultDocuments } from '../merge';
 import type {
   AuthenticatedEnvelope,
   VaultEnvelopeAuthenticator,
@@ -13,6 +15,84 @@ export interface ReplicatedVaultDataHomeOptions {
   server: DataHome;
   drive: DriveDataHome;
   authenticate: VaultEnvelopeAuthenticator;
+  resolveDivergence: VaultReplicaDivergenceResolver;
+}
+
+type ReadableReplica = Extract<DataHomeReadResult, { status: 'ok' }>;
+
+export interface ResolvedVaultReplicas {
+  envelope: Uint8Array;
+  version: number;
+}
+
+export type VaultReplicaDivergenceResolver = (
+  server: ReadableReplica,
+  drive: ReadableReplica,
+) => Promise<ResolvedVaultReplicas>;
+
+export interface VaultReplicaMergeResolverOptions {
+  vaultKey: VaultKeyMaterial;
+  deviceId: string;
+  writeId: () => string;
+  now?: () => string;
+}
+
+/**
+ * Authentication-aware PD5 resolver for two live remote branches. It first
+ * decrypts both candidates, then delegates dominance/divergence selection to
+ * the same entity-atomic merge engine used by normal sync. Only its resolved
+ * successor is handed back for cross-medium repair.
+ */
+export function createVaultReplicaMergeResolver(
+  options: VaultReplicaMergeResolverOptions,
+): VaultReplicaDivergenceResolver {
+  const now = options.now ?? (() => new Date().toISOString());
+  return async (server, drive) => {
+    const [serverVault, driveVault] = await Promise.all([
+      decryptVaultDocument(server.envelope, options.vaultKey),
+      decryptVaultDocument(drive.envelope, options.vaultKey),
+    ]);
+    if (
+      serverVault.header.vaultVersion !== server.info.version ||
+      driveVault.header.vaultVersion !== drive.info.version
+    ) {
+      throw new Error('Authenticated replica metadata does not match its envelope.');
+    }
+    const merged = mergeVaultDocuments({
+      left: serverVault.document,
+      leftVersion: serverVault.header.vaultVersion,
+      right: driveVault.document,
+      rightVersion: driveVault.header.vaultVersion,
+      deviceId: options.deviceId,
+      mergedAt: now(),
+    });
+    if (!merged.divergent) {
+      const selected =
+        serverVault.header.vaultVersion >= driveVault.header.vaultVersion ? server : drive;
+      return {
+        envelope: selected.envelope.slice(),
+        version: selected.info.version,
+      };
+    }
+
+    const baseHeader = newestHeader(serverVault.header, driveVault.header);
+    const encrypted = await encryptVaultDocument({
+      document: merged.document,
+      vaultKey: options.vaultKey,
+      header: {
+        keyId: baseHeader.keyId,
+        wrappedKeys: baseHeader.wrappedKeys,
+        vaultVersion: merged.vaultVersion,
+        deviceId: options.deviceId,
+        writeId: options.writeId(),
+        writtenAt: now(),
+      },
+    });
+    return {
+      envelope: encrypted.envelope,
+      version: encrypted.header.vaultVersion,
+    };
+  };
 }
 
 /**
@@ -22,8 +102,8 @@ export interface ReplicatedVaultDataHomeOptions {
  * identical Drive bytes are read back and the durable Drive attestation is
  * refreshed. A secondary failure is therefore returned as indeterminate, which
  * keeps the encrypted local candidate pending; the next reconnect repairs the
- * stale secondary before reporting synced. Reads authenticate every divergent
- * candidate before either live medium can be repaired.
+ * stale secondary before reporting synced. Reads authenticate and merge every
+ * divergent candidate before either live medium can be repaired.
  */
 export function createReplicatedVaultDataHome(options: ReplicatedVaultDataHomeOptions): DataHome {
   return {
@@ -97,31 +177,27 @@ export function createReplicatedVaultDataHome(options: ReplicatedVaultDataHomeOp
       ]);
       if (authenticatedServer.status === 'corrupt') return authenticatedServer;
       if (authenticatedDrive.status === 'corrupt') return authenticatedDrive;
-      if (authenticatedServer.authenticated.version === authenticatedDrive.authenticated.version) {
-        return corruptDivergence(server);
+      let resolved: ResolvedVaultReplicas;
+      try {
+        resolved = await options.resolveDivergence(server, drive);
+      } catch {
+        return readFailure('Authenticated vault replicas could not be reconciled.');
       }
+      const authenticatedResolved = await authenticateEnvelope(resolved.envelope, resolved.version);
+      if (authenticatedResolved.status === 'corrupt') return authenticatedResolved;
 
-      const source =
-        authenticatedServer.authenticated.version > authenticatedDrive.authenticated.version
-          ? server
-          : drive;
-      const target = source === server ? options.drive : options.server;
-      const targetVersion = source === server ? drive.info.version : server.info.version;
-      const repaired = await target.write(source.envelope, {
-        ifVersion: targetVersion,
-      });
-      if (repaired.status !== 'ok') return readFailure(failureMessage(repaired));
-      const roundTrip = await target.read();
-      if (roundTrip.status !== 'ok' || !equalBytes(roundTrip.envelope, source.envelope)) {
-        return readFailure(
-          roundTrip.status === 'ok'
-            ? 'A repaired vault medium returned different bytes.'
-            : failureMessage(roundTrip),
-        );
+      const serverResolved = equalBytes(server.envelope, resolved.envelope)
+        ? server
+        : await replaceReplica(options.server, server, resolved);
+      if (serverResolved.status !== 'ok') return serverResolved;
+      const driveResolved = equalBytes(drive.envelope, resolved.envelope)
+        ? drive
+        : await replaceReplica(options.drive, drive, resolved);
+      if (driveResolved.status !== 'ok') return driveResolved;
+      if (!equalBytes(serverResolved.envelope, driveResolved.envelope)) {
+        return readFailure('Reconciled vault media returned different bytes.');
       }
-      const authenticatedRoundTrip = await authenticateRead(roundTrip);
-      if (authenticatedRoundTrip.status === 'corrupt') return authenticatedRoundTrip;
-      return (await attestRead(media, source)) ?? source;
+      return (await attestRead(media, serverResolved)) ?? serverResolved;
     }
 
     if (server.status === 'ok' && drive.status === 'absent') {
@@ -181,6 +257,48 @@ export function createReplicatedVaultDataHome(options: ReplicatedVaultDataHomeOp
     }
   }
 
+  async function authenticateEnvelope(
+    envelope: Uint8Array,
+    version: number,
+  ): Promise<
+    | { status: 'ok'; authenticated: AuthenticatedEnvelope }
+    | Extract<DataHomeReadResult, { status: 'corrupt' }>
+  > {
+    const candidate: ReadableReplica = {
+      status: 'ok',
+      medium: 'server',
+      envelope,
+      info: {
+        medium: 'server',
+        version,
+        sizeBytes: envelope.byteLength,
+        updatedAt: null,
+      },
+    };
+    return authenticateRead(candidate);
+  }
+
+  async function replaceReplica(
+    target: DataHome,
+    current: ReadableReplica,
+    resolved: ResolvedVaultReplicas,
+  ): Promise<DataHomeReadResult> {
+    const repaired = await target.write(resolved.envelope, {
+      ifVersion: current.info.version,
+    });
+    if (repaired.status !== 'ok') return readFailure(failureMessage(repaired));
+    const roundTrip = await target.read();
+    if (roundTrip.status !== 'ok' || !equalBytes(roundTrip.envelope, resolved.envelope)) {
+      return readFailure(
+        roundTrip.status === 'ok'
+          ? 'A repaired vault medium returned different bytes.'
+          : failureMessage(roundTrip),
+      );
+    }
+    const authenticatedRoundTrip = await authenticateRead(roundTrip);
+    return authenticatedRoundTrip.status === 'corrupt' ? authenticatedRoundTrip : roundTrip;
+  }
+
   async function attestRead(
     media: VaultMediaState,
     source: Extract<DataHomeReadResult, { status: 'ok' }>,
@@ -238,15 +356,6 @@ async function mediaState(
   } catch {
     return readFailure('Could not read paranoid media state.');
   }
-}
-
-function corruptDivergence(
-  server: Extract<DataHomeReadResult, { status: 'ok' }>,
-): Extract<DataHomeReadResult, { status: 'corrupt' }> {
-  return corruptCandidate(
-    server,
-    'Server and Drive contain different ciphertext at the same vault version.',
-  );
 }
 
 function corruptCandidate(
@@ -309,4 +418,11 @@ function sameSet(left: readonly string[], right: readonly string[]): boolean {
     left.every((medium) => right.includes(medium)) &&
     right.every((medium) => left.includes(medium))
   );
+}
+
+function newestHeader(left: VaultEnvelopeHeader, right: VaultEnvelopeHeader): VaultEnvelopeHeader {
+  if (left.vaultVersion !== right.vaultVersion) {
+    return left.vaultVersion > right.vaultVersion ? left : right;
+  }
+  return left.writeId >= right.writeId ? left : right;
 }

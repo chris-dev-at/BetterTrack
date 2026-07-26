@@ -202,6 +202,11 @@ export const users = pgTable(
     // excludes row counts, document hashes, keys, tokens, and all portfolio data.
     paranoidMediaSet: text('paranoid_media_set').array(),
     paranoidDriveAttestedVersion: integer('paranoid_drive_attested_version'),
+    // Internal monotonic generation for proof freshness. It is deliberately not
+    // returned in VaultMediaState: clients need only the signed opaque proof,
+    // while the repository uses this value to reject a proof after any
+    // intervening media mutation even when the visible state later recurs.
+    paranoidMediaGeneration: integer('paranoid_media_generation').notNull().default(0),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

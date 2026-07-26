@@ -79,6 +79,7 @@ function fakeRepo(options: FakeRepoOptions = {}) {
       return {
         status: 'ok',
         current: { mediaSet: ['server'], driveAttestedVersion: null },
+        generation: 0,
       };
     },
     async patchMedia(input) {
@@ -111,6 +112,9 @@ function fakeRepo(options: FakeRepoOptions = {}) {
       return null;
     },
     async discardServerCandidate() {},
+    async deleteExpiredServerCandidates() {
+      return 0;
+    },
   };
   return { repo, calls, mediaCalls, verificationCalls };
 }
@@ -248,6 +252,7 @@ describe('paranoid vault service', () => {
         userId: UUID_A,
         ...claim,
         proofVerified: true,
+        expectedGeneration: 0,
         now: new Date('2026-07-26T12:00:00.000Z'),
       },
     ]);

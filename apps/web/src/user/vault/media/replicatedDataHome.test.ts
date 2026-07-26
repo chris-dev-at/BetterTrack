@@ -1,11 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { webcrypto } from 'node:crypto';
+
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import type {
   ParanoidMediaStatusResponse,
   PatchParanoidMediaRequest,
+  VaultDocumentV1,
+  VaultEntity,
   VaultMediaState,
 } from '@bettertrack/contracts';
 
+import { decryptVaultDocument, encryptVaultDocument } from '../crypto';
 import type {
   DataHome,
   DataHomeReadResult,
@@ -15,16 +20,89 @@ import type {
 import { base64ToBytes } from '../bytes';
 import type { DriveDataHome } from '../drive/driveDataHome';
 import { decodeVaultEnvelope, encodeVaultEnvelope } from '../envelope';
-import { vaultInteroperabilityFixture } from '../vectors';
-import { createReplicatedVaultDataHome } from './replicatedDataHome';
+import {
+  deterministicRandom,
+  VECTOR_DEVICE_ID,
+  VECTOR_KEY_ID,
+  VECTOR_WRITE_ID,
+  vaultInteroperabilityFixture,
+} from '../vectors';
+import {
+  createReplicatedVaultDataHome,
+  createVaultReplicaMergeResolver,
+  type VaultReplicaDivergenceResolver,
+} from './replicatedDataHome';
 import {
   createVaultEnvelopeAuthenticator,
   type VaultEnvelopeAuthenticator,
   type VaultMediaStateApi,
 } from './switcher';
 
+const DEVICE_B = '018f0000-0000-7000-8000-00000000000e';
+const ENTITY_A = '018f0000-0000-7000-8000-000000000010';
+const ENTITY_B = '018f0000-0000-7000-8000-000000000011';
+const MERGE_WRITE_ID = '018f0000-0000-7000-8000-000000000012';
+const TEST_KEY = base64ToBytes(vaultInteroperabilityFixture.vaultKeyBase64, 'envelope-invalid');
+const WRAPPED_KEYS = vaultInteroperabilityFixture.initial.header.wrappedKeys;
+
+beforeEach(() => {
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+});
+
 function bytes(version: number, marker = version): Uint8Array {
   return new Uint8Array([version, marker]);
+}
+
+function entity(id: string, editedBy: string): VaultEntity {
+  return {
+    id,
+    rev: 1,
+    editedAt: '2026-07-26T10:00:00.000Z',
+    editedBy,
+    deletedAt: null,
+    data: { amount: id },
+  };
+}
+
+function document(rows: VaultEntity[]): VaultDocumentV1 {
+  return { schemaVersion: 1, entities: { transaction: rows }, mergeLog: [] };
+}
+
+async function encrypted(
+  value: VaultDocumentV1,
+  version: number,
+  deviceId: string,
+  writeId: string,
+): Promise<Uint8Array> {
+  return (
+    await encryptVaultDocument({
+      document: value,
+      vaultKey: TEST_KEY,
+      header: {
+        keyId: VECTOR_KEY_ID,
+        wrappedKeys: WRAPPED_KEYS,
+        vaultVersion: version,
+        deviceId,
+        writeId,
+        writtenAt: '2026-07-26T10:00:00.000Z',
+      },
+      randomBytes: deterministicRandom(version * 31 + writeId.charCodeAt(writeId.length - 1)),
+    })
+  ).envelope;
+}
+
+const resolveHigherVersion: VaultReplicaDivergenceResolver = async (server, drive) => {
+  const selected = server.info.version >= drive.info.version ? server : drive;
+  return { envelope: selected.envelope.slice(), version: selected.info.version };
+};
+
+function mergeResolver(): VaultReplicaDivergenceResolver {
+  return createVaultReplicaMergeResolver({
+    vaultKey: TEST_KEY,
+    deviceId: VECTOR_DEVICE_ID,
+    writeId: () => MERGE_WRITE_ID,
+    now: () => '2026-07-26T10:05:00.000Z',
+  });
 }
 
 function memoryHome<M extends 'server' | 'drive'>(
@@ -148,6 +226,7 @@ describe('replicated paranoid DataHome', () => {
       server,
       drive,
       authenticate: authenticateBytes,
+      resolveDivergence: resolveHigherVersion,
     });
 
     drive.failNextWrite = true;
@@ -167,9 +246,23 @@ describe('replicated paranoid DataHome', () => {
     expect(h.durable.driveAttestedVersion).toBe(2);
   });
 
-  it('fails closed on different ciphertext at the same version', async () => {
-    const server = memoryHome('server', bytes(3, 1));
-    const driveBase = memoryHome('drive', bytes(3, 2));
+  it('merges valid non-dominating replicas at the same version before repairing either', async () => {
+    const serverEnvelope = await encrypted(
+      document([entity(ENTITY_A, VECTOR_DEVICE_ID)]),
+      3,
+      VECTOR_DEVICE_ID,
+      VECTOR_WRITE_ID,
+    );
+    const driveEnvelope = await encrypted(
+      document([entity(ENTITY_B, DEVICE_B)]),
+      3,
+      DEVICE_B,
+      DEVICE_B,
+    );
+    const envelopeVersion = (envelope: Uint8Array) =>
+      decodeVaultEnvelope(envelope).header.vaultVersion;
+    const server = memoryHome('server', serverEnvelope, envelopeVersion);
+    const driveBase = memoryHome('drive', driveEnvelope, envelopeVersion);
     const drive: DriveDataHome & typeof driveBase = Object.assign(driveBase, {
       async delete() {
         return { status: 'ok' as const, medium: 'drive' as const };
@@ -185,15 +278,72 @@ describe('replicated paranoid DataHome', () => {
         state: h.state,
         server,
         drive,
-        authenticate: authenticateBytes,
+        authenticate: createVaultEnvelopeAuthenticator(TEST_KEY),
+        resolveDivergence: mergeResolver(),
       }).read(),
     ).resolves.toMatchObject({
-      status: 'corrupt',
-      reason: 'corrupt-bytes',
-      version: 3,
+      status: 'ok',
+      info: { version: 4 },
     });
-    expect(server.value).toEqual(bytes(3, 1));
-    expect(drive.value).toEqual(bytes(3, 2));
+    expect(server.value).toEqual(drive.value);
+    const merged = await decryptVaultDocument(server.value!, TEST_KEY);
+    expect(merged.header.vaultVersion).toBe(4);
+    expect(merged.document.entities.transaction?.map((row) => row.id)).toEqual([
+      ENTITY_A,
+      ENTITY_B,
+    ]);
+    expect(merged.document.mergeLog.at(-1)?.parents).toEqual([3]);
+    expect(h.durable.driveAttestedVersion).toBe(4);
+  });
+
+  it('merges valid non-dominating replicas at unequal versions without losing either branch', async () => {
+    const serverEnvelope = await encrypted(
+      document([entity(ENTITY_A, VECTOR_DEVICE_ID)]),
+      4,
+      VECTOR_DEVICE_ID,
+      VECTOR_WRITE_ID,
+    );
+    const driveEnvelope = await encrypted(
+      document([entity(ENTITY_B, DEVICE_B)]),
+      3,
+      DEVICE_B,
+      DEVICE_B,
+    );
+    const envelopeVersion = (envelope: Uint8Array) =>
+      decodeVaultEnvelope(envelope).header.vaultVersion;
+    const server = memoryHome('server', serverEnvelope, envelopeVersion);
+    const driveBase = memoryHome('drive', driveEnvelope, envelopeVersion);
+    const drive: DriveDataHome & typeof driveBase = Object.assign(driveBase, {
+      async delete() {
+        return { status: 'ok' as const, medium: 'drive' as const };
+      },
+    });
+    const h = harness({
+      mediaSet: ['server', 'drive'],
+      driveAttestedVersion: 3,
+    });
+
+    await expect(
+      createReplicatedVaultDataHome({
+        state: h.state,
+        server,
+        drive,
+        authenticate: createVaultEnvelopeAuthenticator(TEST_KEY),
+        resolveDivergence: mergeResolver(),
+      }).read(),
+    ).resolves.toMatchObject({
+      status: 'ok',
+      info: { version: 5 },
+    });
+    expect(server.value).toEqual(drive.value);
+    const merged = await decryptVaultDocument(server.value!, TEST_KEY);
+    expect(merged.header.vaultVersion).toBe(5);
+    expect(merged.document.entities.transaction?.map((row) => row.id)).toEqual([
+      ENTITY_A,
+      ENTITY_B,
+    ]);
+    expect(merged.document.mergeLog.at(-1)?.parents).toEqual([3, 4]);
+    expect(h.durable.driveAttestedVersion).toBe(5);
   });
 
   it('quarantines a higher-version invalid-AEAD candidate without repairing either medium', async () => {
@@ -228,6 +378,11 @@ describe('replicated paranoid DataHome', () => {
         server,
         drive,
         authenticate: createVaultEnvelopeAuthenticator(vaultKey),
+        resolveDivergence: createVaultReplicaMergeResolver({
+          vaultKey,
+          deviceId: VECTOR_DEVICE_ID,
+          writeId: () => MERGE_WRITE_ID,
+        }),
       }).read(),
     ).resolves.toMatchObject({
       status: 'corrupt',
