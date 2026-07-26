@@ -115,6 +115,46 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
     now = Date.now,
   } = deps;
 
+  async function recordTerminalFailure(input: {
+    subscriptionId: string;
+    userId: string;
+    deliveryId: string;
+    eventType: string;
+    attempts: number;
+    responseStatus: number | null;
+    error: string;
+  }): Promise<boolean> {
+    const inserted = await deliveries.record({
+      id: input.deliveryId,
+      subscriptionId: input.subscriptionId,
+      eventType: input.eventType,
+      status: 'failed',
+      responseStatus: input.responseStatus,
+      attempts: input.attempts,
+      error: input.error,
+    });
+    if (!inserted) return false;
+
+    const at = new Date(now());
+    const failures = await subscriptions.incrementFailure(input.subscriptionId, at);
+    if (failures < autoDisableThreshold) return false;
+
+    await subscriptions.disable(input.subscriptionId, 'auto', at);
+    logger.warn(
+      { subscriptionId: input.subscriptionId, failures },
+      'webhook subscription auto-disabled after consecutive failures',
+    );
+    await audit.record({
+      actorId: input.userId,
+      action: AuditAction.WebhookAutoDisabled,
+      targetType: 'webhook_subscription',
+      targetId: input.subscriptionId,
+      ip: null,
+      meta: { failures },
+    });
+    return true;
+  }
+
   return {
     async deliver(job, { attempt, maxAttempts }) {
       const sub = await subscriptions.findById(job.subscriptionId);
@@ -129,18 +169,23 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
         secret = decryptSecret(sub.secretEncrypted, encryptionKey);
       } catch (err) {
         // A secret that won't decrypt (rotated/corrupt key) is unrecoverable —
-        // no point retrying. Record a terminal failure and stop.
+        // no point retrying. Record a terminal failure and count it toward the
+        // same auto-disable circuit as a terminal transport failure.
         logger.error({ subscriptionId: sub.id, err }, 'webhook secret decrypt failed');
-        await deliveries.record({
-          id: job.deliveryId,
+        const disabled = await recordTerminalFailure({
           subscriptionId: sub.id,
+          userId: sub.userId,
+          deliveryId: job.deliveryId,
           eventType: job.event.type,
-          status: 'failed',
-          responseStatus: null,
           attempts: attempt,
+          responseStatus: null,
           error: 'secret unavailable',
         });
-        return { outcome: 'failed', status: null, error: 'secret unavailable' };
+        return {
+          outcome: disabled ? 'disabled' : 'failed',
+          status: null,
+          error: 'secret unavailable',
+        };
       }
 
       const signature = signWebhookPayload(secret, timestamp, body);
@@ -181,36 +226,15 @@ export function createWebhookDispatcher(deps: WebhookDispatcherDeps): WebhookDis
 
       // Terminal failure: record it and advance the auto-disable streak once.
       const reason = shortReason(result.status, result.error);
-      const inserted = await deliveries.record({
-        id: job.deliveryId,
+      const disabled = await recordTerminalFailure({
         subscriptionId: sub.id,
+        userId: sub.userId,
+        deliveryId: job.deliveryId,
         eventType: job.event.type,
-        status: 'failed',
-        responseStatus: result.status,
         attempts: attempt,
+        responseStatus: result.status,
         error: reason,
       });
-
-      let disabled = false;
-      if (inserted) {
-        const failures = await subscriptions.incrementFailure(sub.id, new Date(now()));
-        if (failures >= autoDisableThreshold) {
-          await subscriptions.disable(sub.id, 'auto', new Date(now()));
-          disabled = true;
-          logger.warn(
-            { subscriptionId: sub.id, failures },
-            'webhook subscription auto-disabled after consecutive failures',
-          );
-          await audit.record({
-            actorId: sub.userId,
-            action: AuditAction.WebhookAutoDisabled,
-            targetType: 'webhook_subscription',
-            targetId: sub.id,
-            ip: null,
-            meta: { failures },
-          });
-        }
-      }
 
       return { outcome: disabled ? 'disabled' : 'failed', status: result.status, error: reason };
     },
