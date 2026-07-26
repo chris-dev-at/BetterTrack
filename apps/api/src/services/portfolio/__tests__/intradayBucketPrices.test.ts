@@ -15,18 +15,20 @@ describe('buildIntradayBucketPrices', () => {
       { atMs: 5, price: 50 },
       { atMs: 10, price: 100 },
       { atMs: 10, price: 101 },
-      { atMs: 29, price: 290 },
       { atMs: 30, price: 300 },
+      { atMs: 50, price: 500 },
     ];
 
-    const prices = buildIntradayBucketPrices(candles, [0, 10, 20, 30, 40], 10);
+    const prices = buildIntradayBucketPrices(candles, [0, 10, 20, 30, 40, 50, 60], 10);
 
     expect([...prices]).toEqual([
       [0, 50], // atMs 10 is excluded by the strict atMs < bucket + step rule
       [10, 101], // the last duplicate timestamp wins
-      [20, 290],
-      [30, 300], // the bucket containing the reference close includes it
-      [40, 300], // gaps carry the last observed price forward
+      [20, 101], // an internal gap carries until the atMs 30 candle becomes eligible
+      [30, 300],
+      [40, 300], // a second internal gap carries until atMs 50 becomes eligible
+      [50, 500], // the bucket containing the reference close includes it
+      [60, 500],
     ]);
   });
 
