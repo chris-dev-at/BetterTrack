@@ -9,7 +9,7 @@ import {
   taxSettingsResponseSchema,
   updateTaxSettingsRequestSchema,
 } from '@bettertrack/contracts';
-import { CASH_MOVEMENT_SIGN, floorCents } from '@bettertrack/domain/cashLedger';
+import { CASH_MOVEMENT_SIGN } from '@bettertrack/domain/cashLedger';
 import { viennaYearOf } from '@bettertrack/domain/tax';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 
@@ -76,7 +76,7 @@ export class ParanoidRehydrationError extends Error {
 export interface ParanoidRehydrationServiceDeps {
   db: Database;
   now?: () => Date;
-  /** Converts a native trade amount into the EUR cash ledger at the trade day. */
+  /** Converts native amounts during tax-state replay at the historical day. */
   toCashEur?: (amount: number, currency: string, day: string) => Promise<number>;
   /** Test-only stage hook proving each transaction-stage rolls back completely. */
   afterStage?: (stage: ParanoidRehydrationStage) => void | Promise<void>;
@@ -150,23 +150,6 @@ function persistedNumeric(value: string, precision: number, scale: number, label
     );
   }
   return decimal.coefficient * pow10(scale - decimal.scale);
-}
-
-function decimalAtScale(value: string, scale: number, label: string): bigint {
-  const decimal = exactDecimal(value, label);
-  if (decimal.scale > scale) {
-    throw new ParanoidRehydrationError('INVALID_REFERENCE', `${label} has excess precision`);
-  }
-  return decimal.coefficient * pow10(scale - decimal.scale);
-}
-
-function scaledDecimalText(value: bigint, scale: number): string {
-  const sign = value < 0 ? '-' : '';
-  const magnitude = value < 0 ? -value : value;
-  if (scale === 0) return `${sign}${magnitude}`;
-  const digits = magnitude.toString().padStart(scale + 1, '0');
-  const split = digits.length - scale;
-  return `${sign}${digits.slice(0, split)}.${digits.slice(split)}`;
 }
 
 function requirePositive(value: bigint, label: string): void {
@@ -873,6 +856,13 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
         'a transaction may have at most one linked gross cash movement',
       );
     }
+    // The persisted cash amount is authoritative. Normal writes calculate it
+    // from the accepted client numbers (and, for foreign assets, that moment's
+    // historical FX result) before PostgreSQL independently coerces the
+    // transaction columns to their fixed scales. Recomputing from the stored
+    // transaction cannot reproduce every valid row. Parent/source ownership,
+    // kind/side, source tag, sign, uniqueness, and ledger solvency are all
+    // validated around this loop without changing the frozen amount.
     const settlement = linked.filter(
       (movement) => movement.data.kind === 'tax_withholding' || movement.data.kind === 'tax_refund',
     );
@@ -1031,7 +1021,6 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
 
 interface ReferencedAsset {
   currency: string;
-  type: string;
 }
 
 async function resolveReferencedAssets(
@@ -1039,10 +1028,7 @@ async function resolveReferencedAssets(
   entities: readonly Entity[],
 ): Promise<ReadonlyMap<string, ReferencedAsset>> {
   const assetsById = new Map<string, ReferencedAsset>(
-    rows(entities, 'customAsset').map((entity) => [
-      entity.id,
-      { currency: entity.data.currency, type: entity.data.type },
-    ]),
+    rows(entities, 'customAsset').map((entity) => [entity.id, { currency: entity.data.currency }]),
   );
   const customAssetIds = new Set(assetsById.keys());
   const referencedAssetIds = new Set([
@@ -1055,91 +1041,14 @@ async function resolveReferencedAssets(
   const marketAssetIds = [...referencedAssetIds].filter((id) => !customAssetIds.has(id));
   if (marketAssetIds.length === 0) return assetsById;
   const found = await tx
-    .select({ id: assets.id, currency: assets.currency, type: assets.type })
+    .select({ id: assets.id, currency: assets.currency })
     .from(assets)
     .where(and(inArray(assets.id, marketAssetIds), isNull(assets.ownerId)));
   requireSubset(marketAssetIds, new Set(found.map((asset) => asset.id)), 'restore source');
   for (const asset of found) {
-    assetsById.set(asset.id, { currency: asset.currency, type: asset.type });
+    assetsById.set(asset.id, { currency: asset.currency });
   }
   return assetsById;
-}
-
-/**
- * Normal transaction writes derive a linked gross movement from the immutable
- * trade facts. A decrypted document may not substitute its own amount: doing so
- * would manufacture cash while retaining an otherwise valid transaction.
- */
-async function validateTradeCashLinks(
-  entities: readonly Entity[],
-  referencedAssets: ReadonlyMap<string, ReferencedAsset>,
-  toCashEur: (amount: number, currency: string, day: string) => Promise<number>,
-): Promise<void> {
-  const movementsByTransactionId = new Map<string, EntityOf<'cashMovement'>[]>();
-  for (const movement of rows(entities, 'cashMovement')) {
-    if (!movement.data.transactionId) continue;
-    const linked = movementsByTransactionId.get(movement.data.transactionId) ?? [];
-    linked.push(movement);
-    movementsByTransactionId.set(movement.data.transactionId, linked);
-  }
-
-  for (const transaction of rows(entities, 'transaction')) {
-    const grossKind = transaction.data.side === 'buy' ? 'buy' : 'sell_proceeds';
-    const gross = (movementsByTransactionId.get(transaction.id) ?? []).filter(
-      (movement) => movement.data.kind === grossKind,
-    );
-    if (gross.length === 0) continue;
-    const asset = referencedAssets.get(transaction.data.assetId);
-    if (!asset) {
-      throw new ParanoidRehydrationError('INVALID_REFERENCE', 'transaction asset is unavailable');
-    }
-    const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
-    const price = persistedNumeric(transaction.data.price, 20, 6, 'transaction price');
-    const fee = persistedNumeric(transaction.data.fee, 20, 6, 'transaction fee');
-    const productAtScale14 = quantity * price;
-    const feeAtScale14 = fee * pow10(8);
-    const nativeAtScale14 =
-      transaction.data.side === 'buy'
-        ? productAtScale14 + feeAtScale14
-        : productAtScale14 - feeAtScale14;
-    const day = new Date(transaction.data.executedAt).toISOString().slice(0, 10);
-    let expectedMagnitudeAtScale6: bigint;
-    if (asset.currency === 'EUR') {
-      // Normal booking floors money to cents after exact quantity × price ± fee.
-      expectedMagnitudeAtScale6 = (nativeAtScale14 / pow10(12)) * pow10(4);
-    } else {
-      // The historical FX adapter is number-based today. Keep the persisted
-      // operands and all native arithmetic exact, crossing that boundary only
-      // for the external conversion, then return immediately to fixed decimals.
-      const nativeAmount = Number(scaledDecimalText(nativeAtScale14, 14));
-      if (!Number.isFinite(nativeAmount)) {
-        throw new ParanoidRehydrationError(
-          'INVALID_REFERENCE',
-          'foreign-currency trade magnitude cannot be converted safely',
-        );
-      }
-      const converted = floorCents(await toCashEur(nativeAmount, asset.currency, day));
-      expectedMagnitudeAtScale6 = decimalAtScale(converted.toFixed(2), 6, 'converted trade amount');
-    }
-    const expectedAmountAtScale6 =
-      transaction.data.side === 'buy' ? -expectedMagnitudeAtScale6 : expectedMagnitudeAtScale6;
-    const restoredAmountAtScale6 = persistedNumeric(
-      gross[0]!.data.amountEur,
-      20,
-      6,
-      'linked trade cash amount',
-    );
-    if (
-      expectedMagnitudeAtScale6 <= 0n ||
-      gross.length !== 1 ||
-      restoredAmountAtScale6 !== expectedAmountAtScale6
-    ) {
-      throw new ParanoidRehydrationError(
-        'INVALID_REFERENCE',
-        'linked transaction cash movement does not match normal trade economics',
-      );
-    }
-  }
 }
 
 function validateStandingOrderCurrencies(
@@ -1230,7 +1139,7 @@ export function createParanoidRehydrationService(
       if (currency !== 'EUR') {
         throw new ParanoidRehydrationError(
           'INVALID_REFERENCE',
-          'non-EUR trade cash links require a historical EUR conversion',
+          'non-EUR tax replay requires a historical EUR conversion',
         );
       }
       return amount;
@@ -1277,7 +1186,6 @@ export function createParanoidRehydrationService(
         await ensureNoExistingRestorableRows(tx, userId);
         const referencedAssets = await resolveReferencedAssets(tx, entities);
         validateStandingOrderCurrencies(entities, referencedAssets);
-        await validateTradeCashLinks(entities, referencedAssets, toCashEur);
 
         const sourceRows = createParanoidRehydrationSourceRepository(tx);
         await sourceRows.restoreCustomAssets(rows(entities, 'customAsset'));

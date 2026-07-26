@@ -528,6 +528,168 @@ describe('paranoid rehydration service', () => {
     });
   });
 
+  it('round-trips the cash amount booked before transaction numeric coercion', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const [asset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'test',
+        providerRef: 'ROUND.EUR',
+        ownerId: null,
+        type: 'stock',
+        symbol: 'ROUND',
+        name: 'Rounding boundary',
+        exchange: null,
+        currency: 'EUR',
+      })
+      .returning();
+    if (!asset) throw new Error('expected market asset');
+
+    await harness.ctx.portfolio.depositCash(user.id, portfolioId, {
+      amountEur: 10,
+      executedAt: '2026-07-24T09:59:59.000Z',
+    });
+    const [created] = await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 1,
+        price: 1.9999999,
+        fee: 0,
+        executedAt: editedAt,
+        payFromCash: true,
+      },
+    ]);
+    if (!created) throw new Error('expected normal transaction');
+
+    const [sourcePortfolio] = await harness.db
+      .select()
+      .from(portfolios)
+      .where(eq(portfolios.id, portfolioId));
+    const [sourceCashSource] = await harness.db
+      .select()
+      .from(portfolioCashSources)
+      .where(eq(portfolioCashSources.portfolioId, portfolioId));
+    const [sourceTransaction] = await harness.db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, created.id));
+    const sourceMovements = await harness.db
+      .select()
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.portfolioId, portfolioId));
+    const sourceGross = sourceMovements.find(
+      (movement) => movement.transactionId === sourceTransaction?.id,
+    );
+    if (!sourcePortfolio || !sourceCashSource || !sourceTransaction || !sourceGross) {
+      throw new Error('expected complete normal cash-linked transaction');
+    }
+    if (sourceTransaction.taxCountry !== null || sourceTransaction.taxParams !== null) {
+      throw new Error('expected untaxed normal buy');
+    }
+
+    // The cash leg is calculated from the accepted client numbers, then the
+    // transaction columns are independently coerced to PostgreSQL scale.
+    expect(sourceTransaction.price).toBe('2.000000');
+    expect(sourceGross.amountEur).toBe('-1.990000');
+
+    const input: ParanoidDisableRehydrationRequest = {
+      rehydrationId: REHYDRATION_ID,
+      document: {
+        schemaVersion: 1,
+        entities: [
+          entity(sourcePortfolio.id, 'portfolio', {
+            userId: sourcePortfolio.userId,
+            name: sourcePortfolio.name,
+            visibility: sourcePortfolio.visibility,
+            sortOrder: sourcePortfolio.sortOrder,
+            defaultPayFromCash: sourcePortfolio.defaultPayFromCash,
+            archivedAt: sourcePortfolio.archivedAt?.toISOString() ?? null,
+          }),
+          entity(sourceCashSource.id, 'cashSource', {
+            portfolioId: sourceCashSource.portfolioId,
+            name: sourceCashSource.name,
+            type: sourceCashSource.type,
+            isMain: sourceCashSource.isMain,
+            archivedAt: sourceCashSource.archivedAt?.toISOString() ?? null,
+            createdAt: sourceCashSource.createdAt.toISOString(),
+          }),
+          entity(sourceTransaction.id, 'transaction', {
+            portfolioId: sourceTransaction.portfolioId,
+            assetId: sourceTransaction.assetId,
+            side: sourceTransaction.side,
+            quantity: sourceTransaction.quantity,
+            price: sourceTransaction.price,
+            fee: sourceTransaction.fee,
+            executedAt: sourceTransaction.executedAt.toISOString(),
+            note: sourceTransaction.note,
+            taxMode: sourceTransaction.taxMode,
+            taxCountry: null,
+            taxAmountEur: sourceTransaction.taxAmountEur,
+            taxParams: null,
+            allowUncovered: sourceTransaction.allowUncovered,
+            uncoveredEntryPrice: sourceTransaction.uncoveredEntryPrice,
+            source: sourceTransaction.source,
+          }),
+          ...sourceMovements.map((movement) =>
+            entity(movement.id, 'cashMovement', {
+              portfolioId: movement.portfolioId,
+              sourceId: movement.sourceId,
+              kind: movement.kind,
+              amountEur: movement.amountEur,
+              transactionId: movement.transactionId,
+              transferId: movement.transferId,
+              counterpartSourceId: movement.counterpartSourceId,
+              dividendId: movement.dividendId,
+              taxYear: movement.taxYear,
+              executedAt: movement.executedAt.toISOString(),
+              createdAt: movement.createdAt.toISOString(),
+              note: movement.note,
+              source: movement.source,
+            }),
+          ),
+        ],
+        mergeLog: [],
+      },
+    };
+
+    // Model the encrypted interval: the strict source document survives while
+    // its normal rows are absent and a server vault is the active data home.
+    await harness.db.delete(portfolios).where(eq(portfolios.userId, user.id));
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(users.id, user.id));
+    await harness.db.insert(paranoidVaults).values({
+      userId: user.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 10,
+      blob: Buffer.from('ciphertext'),
+    });
+
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    const [restoredTransaction] = await harness.db
+      .select({ price: transactions.price })
+      .from(transactions)
+      .where(eq(transactions.id, sourceTransaction.id));
+    const [restoredGross] = await harness.db
+      .select({ amountEur: portfolioCashMovements.amountEur })
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.id, sourceGross.id));
+    expect(restoredTransaction?.price).toBe('2.000000');
+    expect(restoredGross?.amountEur).toBe('-1.990000');
+  });
+
   it('accepts every strict purge-only entity without restoring its cache or staging row', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
@@ -1688,7 +1850,7 @@ describe('paranoid rehydration service', () => {
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
 
-  it('rejects an untrusted linked trade cash amount before it can write', async () => {
+  it('preserves a structurally valid linked trade cash amount without re-deriving it', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
     const movement = input.document.entities.find((entry) => entry.kind === 'cashMovement')!;
@@ -1715,13 +1877,15 @@ describe('paranoid rehydration service', () => {
     );
     const service = createParanoidRehydrationService({ db });
 
-    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
-      code: 'INVALID_REFERENCE',
-    });
-    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+    const [restored] = await db
+      .select({ amountEur: portfolioCashMovements.amountEur })
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.id, MOVEMENT_ID));
+    expect(restored?.amountEur).toBe('-1.000000');
   });
 
-  it('uses the historical conversion and normal cash rounding for a linked foreign-currency trade', async () => {
+  it('does not re-query mutable FX for a linked foreign-currency trade', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
     const asset = input.document.entities.find((entry) => entry.kind === 'customAsset')!;
@@ -1750,20 +1914,23 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
     );
-    const conversion = async (amount: number, currency: string, day: string) => {
-      expect({ amount, currency, day }).toEqual({
-        amount: 100,
-        currency: 'USD',
-        day: '2026-07-24',
-      });
-      return 75.009;
+    let conversionCalls = 0;
+    const conversion = async () => {
+      conversionCalls += 1;
+      throw new Error('linked cash restore must not depend on current FX');
     };
     const service = createParanoidRehydrationService({ db, toCashEur: conversion });
 
     await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+    expect(conversionCalls).toBe(0);
+    const [restored] = await db
+      .select({ amountEur: portfolioCashMovements.amountEur })
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.id, MOVEMENT_ID));
+    expect(restored?.amountEur).toBe('-75.000000');
   });
 
-  it('rejects a linked foreign-currency trade when the historical conversion is unavailable', async () => {
+  it('still rejects a linked foreign-currency cash leg with the wrong sign', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
     const asset = input.document.entities.find((entry) => entry.kind === 'customAsset')!;
@@ -1773,29 +1940,12 @@ describe('paranoid rehydration service', () => {
     }
     asset.data.currency = 'USD';
     movement.data.kind = 'buy';
-    movement.data.amountEur = '-75.000000';
+    movement.data.amountEur = '75.000000';
     movement.data.transactionId = TRANSACTION_ID;
-    input.document.entities.push(
-      entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
-        portfolioId: PORTFOLIO_ID,
-        sourceId: CASH_SOURCE_ID,
-        kind: 'deposit',
-        amountEur: '75.000000',
-        transactionId: null,
-        transferId: null,
-        counterpartSourceId: null,
-        dividendId: null,
-        taxYear: null,
-        executedAt: '2026-07-24T09:59:59.000Z',
-        createdAt: '2026-07-24T09:59:59.000Z',
-        note: null,
-        source: 'manual',
-      }),
-    );
     const service = createParanoidRehydrationService({ db });
 
     await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
-      code: 'INVALID_REFERENCE',
+      code: 'INVALID_CASH_LEDGER',
     });
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
