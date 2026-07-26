@@ -1,6 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import { EXPORT_TABLE_CLASSIFICATION, EXPORTED_ENTITY_NAMES, schemaTableNames } from '../manifest';
+import {
+  VAULT_ENTITY_ROW_SCHEMAS,
+  VAULT_TABLE_ENTITY_KINDS,
+  type VaultEntityKind,
+} from '@bettertrack/contracts';
+import { getTableColumns, getTableName, is } from 'drizzle-orm';
+import { PgTable } from 'drizzle-orm/pg-core';
+
+import * as schema from '../../../data/schema';
+import {
+  EXPORT_TABLE_CLASSIFICATION,
+  EXPORTED_ENTITY_NAMES,
+  PARANOID_TABLE_CLASSIFICATION,
+  schemaTableNames,
+} from '../manifest';
 
 /**
  * Completeness sweep vs the Drizzle schema (§13.4 V4-P6a "done-when", #494). The
@@ -64,5 +78,53 @@ describe('account-export completeness', () => {
         .map((c) => (c as { entity: string }).entity),
     );
     expect(new Set(EXPORTED_ENTITY_NAMES)).toEqual(fromMap);
+  });
+});
+
+describe('strict vault-payload completeness', () => {
+  const vaultTables = Object.entries(PARANOID_TABLE_CLASSIFICATION)
+    .filter(([, classification]) => classification === 'vault')
+    .map(([table]) => table)
+    .sort();
+  const tablesByName = new Map(
+    Object.values(schema as unknown as Record<string, unknown>)
+      .filter((value): value is PgTable => is(value, PgTable))
+      .map((table) => [getTableName(table), table]),
+  );
+
+  it('enrolls every vault-classified table in the strict v1 entity map', () => {
+    const enrolled = Object.keys(VAULT_TABLE_ENTITY_KINDS).sort();
+    expect(enrolled, `strict v1 table enrollment: ${enrolled.join(', ')}`).toEqual(vaultTables);
+  });
+
+  it('carries every persisted Drizzle column and names any omission', () => {
+    for (const tableName of vaultTables) {
+      const table = tablesByName.get(tableName);
+      expect(table, `${tableName}: Drizzle table not found`).toBeDefined();
+      if (table == null) continue;
+
+      const kind = VAULT_TABLE_ENTITY_KINDS[
+        tableName as keyof typeof VAULT_TABLE_ENTITY_KINDS
+      ] as VaultEntityKind;
+      const rowSchema = VAULT_ENTITY_ROW_SCHEMAS[kind] as {
+        shape: Record<string, unknown>;
+      };
+      const persisted = Object.keys(getTableColumns(table));
+      // Database `id` is carried by the common strict entity metadata. Every
+      // other column remains same-named in `data`, with no restore derivation.
+      const expectedDataFields = persisted.filter((column) => column !== 'id').sort();
+      const carriedDataFields = Object.keys(rowSchema.shape).sort();
+      const missing = expectedDataFields.filter((column) => !carriedDataFields.includes(column));
+      const stale = carriedDataFields.filter((column) => !expectedDataFields.includes(column));
+
+      expect(
+        missing,
+        `${tableName}.${missing.join(`, ${tableName}.`)} missing from strict ${kind} payload`,
+      ).toEqual([]);
+      expect(
+        stale,
+        `${kind} carries non-column fields for ${tableName}: ${stale.join(', ')}`,
+      ).toEqual([]);
+    }
   });
 });
