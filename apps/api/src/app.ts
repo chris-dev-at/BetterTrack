@@ -50,6 +50,7 @@ import { createSocialRouter } from './http/routes/socialRoutes';
 import { createWebhooksRouter } from './http/routes/webhooksRoutes';
 import { createWorkboardRouter } from './http/routes/workboardRoutes';
 import type { AppContext } from './http/context';
+import { createParanoidRouteGuard } from './services/account/paranoidEnforcement';
 
 // Side-effect import: augments Express's Request type (req.authUser, etc.).
 import './http/types';
@@ -132,6 +133,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/oauth', createOAuthPublicRouter(ctx));
   app.use('/api/v1', createCsrfGuard(ctx.config.corsOrigins));
   app.use('/api/v1', enforcePasswordChange);
+  app.use('/api/v1', createParanoidRouteGuard());
   app.use('/api/v1', enforceApiKeyScope(ctx));
 
   // First-party usage capture (§13.5 V5-P2 arc (b)): folds one in-memory signal

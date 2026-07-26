@@ -41,6 +41,18 @@ const componentSchemas = {
   HealthResponse: contracts.healthResponseSchema,
   VersionResponse: contracts.versionResponseSchema,
   VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
+  ParanoidEnableRequest: contracts.paranoidEnableRequestSchema,
+  ParanoidEnableResponse: contracts.paranoidEnableResponseSchema,
+  // The strict v1 restore graph contains a recursive JSON-value validator
+  // (`z.lazy`), which zod-to-openapi 7 cannot traverse. Keep the exact runtime
+  // contract as the registered schema while documenting its outer body as an
+  // object; validation remains wholly contract-driven in the route.
+  ParanoidDisableRequest: contracts.paranoidDisableRequestSchema.openapi({
+    type: 'object',
+    description:
+      'Strict paranoid disable body: confirm=true, a UUID rehydrationId, and the complete decrypted vault document v1. Unknown fields or unsupported document versions are rejected.',
+  }),
+  ParanoidDisableResponse: contracts.paranoidDisableResponseSchema,
 
   // Auth (§6.1)
   LoginRequest: contracts.loginRequestSchema,
@@ -678,6 +690,26 @@ const endpoints: EndpointDef[] = [
       'Download the ready export zip; session-authenticated and token-gated (foreign/expired tokens 404).',
     query: contracts.exportDownloadQuerySchema,
     status: 200,
+  },
+  {
+    method: 'post',
+    path: '/account/paranoid/enable',
+    tag: 'Account',
+    summary:
+      'Atomically enable paranoid mode after exact media readiness checks; purges server cleartext portfolio rows and revokes sharing.',
+    body: R.ParanoidEnableRequest,
+    status: 200,
+    response: R.ParanoidEnableResponse,
+  },
+  {
+    method: 'post',
+    path: '/account/paranoid/disable',
+    tag: 'Account',
+    summary:
+      'Disable paranoid mode by atomically rehydrating one strict decrypted vault document under an explicit confirmation and idempotency key.',
+    body: R.ParanoidDisableRequest,
+    status: 200,
+    response: R.ParanoidDisableResponse,
   },
   {
     method: 'get',

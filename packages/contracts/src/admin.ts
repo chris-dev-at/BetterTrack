@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { emailSchema, roleSchema, userStatusSchema, usernameSchema } from './auth';
 import { portfolioVisibilitySchema } from './portfolio';
 import { notificationChannelsConfigurableSchema, notificationMatrixSchema } from './settings';
+import { privacyModeSchema, vaultMediaSetSchema } from './vault';
 
 /**
  * Global registration mode (PROJECTPLAN.md §4, §6.12, §13.4 V4-P4a). Governs how
@@ -170,6 +171,20 @@ export const adminUserSchema = z.object({
   mustChangePassword: z.boolean(),
   /** Admin chat ban (§13.4 V4-P0d): while true the user cannot send DMs. */
   chatBanned: z.boolean(),
+  privacyMode: privacyModeSchema,
+  paranoid: z
+    .object({
+      mediaSet: vaultMediaSetSchema,
+      vault: z
+        .object({
+          version: z.number().int().positive(),
+          sizeBytes: z.number().int().nonnegative(),
+          updatedAt: z.string().datetime(),
+        })
+        .nullable(),
+      historyCount: z.number().int().nonnegative(),
+    })
+    .nullable(),
   lastLoginAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),
 });

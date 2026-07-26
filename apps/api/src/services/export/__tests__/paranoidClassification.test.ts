@@ -8,6 +8,10 @@ import {
   PARANOID_VAULT_TABLE_NAMES,
   schemaTableNames,
 } from '../manifest';
+import {
+  PARANOID_PROBE_HANDLER_NAMES,
+  PARANOID_PURGE_HANDLER_NAMES,
+} from '../../../data/repositories/paranoidTransitionRepository';
 
 /**
  * Paranoid data-home completeness sweep vs the Drizzle schema (§13.5 V5-P13 arc
@@ -89,5 +93,10 @@ describe('paranoid table classification completeness', () => {
     // The vault set is a strict, non-empty subset (the server keeps identity etc).
     expect(PARANOID_VAULT_TABLE_NAMES.length).toBeGreaterThan(0);
     expect(PARANOID_VAULT_TABLE_NAMES.length).toBeLessThan(tables.length);
+  });
+
+  it('has one executable purge handler for every vault-classified table', () => {
+    expect(PARANOID_PURGE_HANDLER_NAMES).toEqual([...PARANOID_VAULT_TABLE_NAMES]);
+    expect(PARANOID_PROBE_HANDLER_NAMES).toEqual([...PARANOID_VAULT_TABLE_NAMES]);
   });
 });

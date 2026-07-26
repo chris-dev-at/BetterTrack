@@ -179,14 +179,17 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
         throw conflict('A watchlist with this name already exists.', 'WATCHLIST_NAME_TAKEN');
       }
       await repo.renameWatchlist(userId, watchlistId, trimmed);
-      const audienceState = await audience.getAudience(userId, 'watchlist', watchlistId);
+      // Keep private watchlist management usable in paranoid mode without
+      // crossing the disabled sharing rail. The enable transition removes every
+      // audience row, so an absent entry is authoritatively private.
+      const audiences = await audience.audiencesForSubjects('watchlist', [watchlistId]);
       const items = await repo.listByWatchlistForUser(userId, watchlistId);
       return {
         id: watchlistId,
         name: trimmed,
         isDefault: false,
         itemCount: items.length,
-        audience: audienceState?.audience ?? 'private',
+        audience: audiences.get(watchlistId) ?? 'private',
       };
     },
 

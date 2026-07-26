@@ -21,10 +21,11 @@ import type { FriendshipRepository } from '../../data/repositories/friendshipRep
 import type { ItemFollowsRepository } from '../../data/repositories/itemFollowsRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type { UserFollowsRepository } from '../../data/repositories/userFollowsRepository';
-import { badRequest } from '../../errors';
+import { ApiError, badRequest } from '../../errors';
 import type { Logger } from '../../logger';
 import { generateToken, hashToken } from '../crypto/tokens';
 import type { NotificationCenter } from '../notifications/notificationCenter';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 
 /**
  * The ONE server-side sharing-enforcement layer (PROJECTPLAN.md §13.3 V3-P5,
@@ -75,6 +76,7 @@ export interface AudienceServiceDeps {
   /** The central notification pipeline (#368) — `*.shared` + `follow.published` enter here. */
   notify?: NotificationCenter;
   logger?: Logger;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'isParanoid'>;
 }
 
 export interface AudienceService {
@@ -190,7 +192,8 @@ function linkPath(token: string): string {
 }
 
 export function createAudienceService(deps: AudienceServiceDeps): AudienceService {
-  const { repo, friendship, groups, follows, itemFollows, profile, notify, logger } = deps;
+  const { repo, friendship, groups, follows, itemFollows, profile, notify, logger, paranoid } =
+    deps;
 
   /**
    * Tell each friend the picker just admitted that the item is shared with them
@@ -355,21 +358,43 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
   }
 
   return {
-    authorizePortfolioRead: (viewerId, portfolioId) =>
-      repo.authorizePortfolioRead(viewerId, portfolioId),
-    authorizeConglomerateRead: (viewerId, conglomerateId) =>
-      repo.authorizeConglomerateRead(viewerId, conglomerateId),
-    authorizeWatchlistRead: (viewerId, watchlistId) =>
-      repo.authorizeWatchlistRead(viewerId, watchlistId),
-    authorizeIdeaRead: (viewerId, ideaId) => repo.authorizeIdeaRead(viewerId, ideaId),
-    listFriendPortfolios: (viewerId) => repo.listFriendPortfolios(viewerId),
-    listFriendConglomerates: (viewerId) => repo.listFriendConglomerates(viewerId),
-    listFriendWatchlists: (viewerId) => repo.listFriendWatchlists(viewerId),
-    listFriendIdeas: (viewerId) => repo.listFriendIdeas(viewerId),
+    async authorizePortfolioRead(viewerId, portfolioId) {
+      await paranoid?.assertAllowed(viewerId, 'sharing');
+      return repo.authorizePortfolioRead(viewerId, portfolioId);
+    },
+    async authorizeConglomerateRead(viewerId, conglomerateId) {
+      await paranoid?.assertAllowed(viewerId, 'sharing');
+      return repo.authorizeConglomerateRead(viewerId, conglomerateId);
+    },
+    async authorizeWatchlistRead(viewerId, watchlistId) {
+      await paranoid?.assertAllowed(viewerId, 'sharing');
+      return repo.authorizeWatchlistRead(viewerId, watchlistId);
+    },
+    async authorizeIdeaRead(viewerId, ideaId) {
+      await paranoid?.assertAllowed(viewerId, 'sharing');
+      return repo.authorizeIdeaRead(viewerId, ideaId);
+    },
+    async listFriendPortfolios(viewerId) {
+      await paranoid?.assertAllowed(viewerId, 'sharing');
+      return repo.listFriendPortfolios(viewerId);
+    },
+    async listFriendConglomerates(viewerId) {
+      await paranoid?.assertAllowed(viewerId, 'sharing');
+      return repo.listFriendConglomerates(viewerId);
+    },
+    async listFriendWatchlists(viewerId) {
+      await paranoid?.assertAllowed(viewerId, 'sharing');
+      return repo.listFriendWatchlists(viewerId);
+    },
+    async listFriendIdeas(viewerId) {
+      await paranoid?.assertAllowed(viewerId, 'sharing');
+      return repo.listFriendIdeas(viewerId);
+    },
 
     async resolvePublicLink(token) {
       const target: PublicLinkTarget | undefined = await repo.resolvePublicLink(hashToken(token));
       if (!target) return undefined;
+      if (await paranoid?.isParanoid(target.ownerId)) return undefined;
       // Final liveness gate: the subject must still exist (and, for a portfolio,
       // not be archived). A vanished subject 404s even if a stale row lingered.
       const identity = await repo.getSubjectIdentity(target.kind, target.subjectId);
@@ -378,12 +403,14 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     },
 
     async getAudience(ownerId, kind, subjectId) {
+      await paranoid?.assertAllowed(ownerId, 'sharing');
       if (!(await repo.ownsSubject(ownerId, kind, subjectId))) return undefined;
       const owned = await repo.getOwnedState(kind, subjectId);
       return toState(kind, subjectId, owned);
     },
 
     async setAudience(ownerId, kind, subjectId, input) {
+      await paranoid?.assertAllowed(ownerId, 'sharing');
       if (!(await repo.ownsSubject(ownerId, kind, subjectId))) return undefined;
 
       // §16 friction ladder — the public rung cannot be selected without the
@@ -411,6 +438,21 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
         input.audience === 'specific_friends'
           ? await repo.friendIdsOf(ownerId, input.friendIds ?? [])
           : [];
+      const prospectiveRecipients =
+        input.audience === 'all_friends' && friendship
+          ? (await friendship.listFriends(ownerId)).map((friend) => friend.id)
+          : input.audience === 'group' && groupId && groups
+            ? await groups.listMemberIds(groupId)
+            : memberIds;
+      for (const recipientId of prospectiveRecipients) {
+        if (await paranoid?.isParanoid(recipientId)) {
+          throw new ApiError(
+            403,
+            'PARANOID_MODE',
+            'A paranoid account cannot receive shared items.',
+          );
+        }
+      }
 
       const audienceId = await repo.setAudience(
         ownerId,
@@ -453,6 +495,7 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     },
 
     async applyVisibility(ownerId, kind, subjectId, visibility) {
+      await paranoid?.assertAllowed(ownerId, 'sharing');
       const audience: ShareAudience = visibility === 'friends' ? 'all_friends' : 'private';
       await repo.setAudience(ownerId, kind, subjectId, audience, []);
     },
@@ -463,6 +506,9 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       repo.audienceSummariesForSubjects(kind, subjectIds),
 
     async listPublicProfileItems(ownerId) {
+      if (await paranoid?.isParanoid(ownerId)) {
+        return { portfolios: [], conglomerates: [], watchlists: [] };
+      }
       const [portfolios, conglomerates, watchlists] = await Promise.all([
         repo.listPublicPortfolios(ownerId),
         repo.listPublicConglomerates(ownerId),
@@ -471,8 +517,10 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       return { portfolios, conglomerates, watchlists };
     },
 
-    authorizePublicItemRead: (ownerId, kind, subjectId) =>
-      repo.authorizePublicItemRead(ownerId, kind, subjectId),
+    async authorizePublicItemRead(ownerId, kind, subjectId) {
+      if (await paranoid?.isParanoid(ownerId)) return undefined;
+      return repo.authorizePublicItemRead(ownerId, kind, subjectId);
+    },
 
     ownsSubject: (ownerId, kind, subjectId) => repo.ownsSubject(ownerId, kind, subjectId),
 
@@ -486,6 +534,7 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     },
 
     async authorizeItemFollowRead(viewerId, kind, subjectId) {
+      await paranoid?.assertAllowed(viewerId, 'sharing');
       // Friend mode first: the standard enforcement join. When it grants, the
       // friend-shared read-only pages are the natural surface.
       if (kind === 'portfolio') {

@@ -38,7 +38,7 @@ import {
   workboardItems,
 } from '../../data/schema';
 
-import { EXPORTED_ENTITY_NAMES } from './manifest';
+import { EXPORTED_ENTITY_NAMES, PARANOID_SERVER_EXPORTED_ENTITY_NAMES } from './manifest';
 
 /**
  * The assembled contents of one user's export (§13.4 V4-P6a, #494), before zip
@@ -55,6 +55,8 @@ export interface CollectedExport {
     cashMovements: string;
     holdings: string;
   };
+  /** False for paranoid exports: cleartext portfolio CSV files must not be packaged. */
+  includeCleartextCsv: boolean;
 }
 
 /**
@@ -348,8 +350,18 @@ export async function collectUserExport(db: Database, userId: string): Promise<C
       .map((h) => [h.portfolioId, h.assetId, h.net]),
   );
 
+  const paranoid = accountRows[0]?.privacyMode === 'paranoid';
+  const selectedEntities = paranoid
+    ? Object.fromEntries(
+        Object.entries(entities).filter(([entity]) =>
+          PARANOID_SERVER_EXPORTED_ENTITY_NAMES.includes(entity),
+        ),
+      )
+    : entities;
+
   return {
-    entities,
+    entities: selectedEntities,
     csv: { transactions: csvTransactions, cashMovements: csvCashMovements, holdings: csvHoldings },
+    includeCleartextCsv: !paranoid,
   };
 }

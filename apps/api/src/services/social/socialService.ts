@@ -50,6 +50,7 @@ import type {
 } from '../../data/repositories/userFollowsRepository';
 import { badRequest, notFound } from '../../errors';
 import type { Logger } from '../../logger';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { ConglomerateService } from '../conglomerate/conglomerateService';
 import type { IdeasService } from '../ideas/ideasService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -93,6 +94,7 @@ export interface SocialServiceDeps {
   /** The central notification pipeline (#368) — friend.request/accepted enter here. */
   notify: NotificationCenter;
   logger?: Logger;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
 }
 
 export interface SocialService {
@@ -563,6 +565,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async followUser(userId, targetId, opts) {
+      await deps.paranoid?.assertAllowed(targetId, 'sharing');
       if (userId === targetId) throw CANNOT_FOLLOW_SELF();
       // The target must be a real, active, non-admin account. Validating first
       // turns an unknown/admin/disabled id into a uniform 404 (never an FK crash),
@@ -922,6 +925,9 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     getProfileSettings: (userId) => loadProfileSettings(userId),
 
     async updateProfileSettings(userId, input) {
+      // The profile-icon picker remains part of the kept social identity
+      // surface. Only the public-profile opt-in is killed in paranoid mode.
+      if (input.isPublic) await deps.paranoid?.assertAllowed(userId, 'publicProfile');
       // §16 friction ladder, mirrored server-side: enabling a public profile needs
       // the explicit acknowledgment, defense-in-depth behind the UI warning.
       if (input.isPublic && input.acknowledgePublic !== true) throw PROFILE_ACK_REQUIRED();

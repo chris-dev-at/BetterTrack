@@ -157,4 +157,21 @@ describe('marketIntel.dividendScan (V5-P5)', () => {
     expect(result).toEqual({ assetsScanned: 0, emitted: 0 });
     expect(await dividendRows(user.id)).toHaveLength(0);
   });
+
+  it('does not fetch or notify from a paranoid account holding row', async () => {
+    const user = await harness.seedUser({ email: 'private@bt.test', username: 'private' });
+    const deps = scanDeps({
+      holders: [holder(user.id)],
+      upcoming: [
+        { exDate: '2026-07-21T00:00:00.000Z', payDate: null, amount: 0.3, currency: 'USD' },
+      ],
+    });
+
+    const result = await runDividendEventsScan({
+      ...deps,
+      isParanoid: async (userId) => userId === user.id,
+    });
+    expect(result).toEqual({ assetsScanned: 0, emitted: 0 });
+    expect(await dividendRows(user.id)).toHaveLength(0);
+  });
 });

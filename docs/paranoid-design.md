@@ -343,6 +343,17 @@ are). Only after rehydration commits does the mode flip back, the server blob
   (rows are re-created under fresh ids only after a full wipe of the partial
   batch — no half-hydrated ghosts).
 
+**Approved PD3a / PD3b boundary (2026-07-26).** PD3a owns the strict complete
+vault-document validator and the transaction-bound rehydration primitive,
+including its idempotent completion receipt. PD3b owns the public enable/disable
+orchestrator, the exhaustive purge/revocation sweep, and the §8 enforcement
+registry. Enable's evidence checks, purge, revocation, and mode flip execute in
+one account-row-locked transaction. Disable delegates exactly once to PD3a so
+validation, restoration, the normal-mode flip, and server ciphertext/history
+deletion execute in one account-row-locked transaction; derived rebuilds run
+only after commit. This split does not alter PD4's separate full-header-AAD and
+passphrase-change correction.
+
 ## 8. The feature-kill list (exact, binding)
 
 Everything that depends on the server reading the portfolio is **absent by

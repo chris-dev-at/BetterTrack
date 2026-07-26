@@ -277,4 +277,15 @@ describe('snapshots.recompute', () => {
     expect(state[0]?.dirtyFrom ?? null).toBeNull();
     expect(state[0]?.computedThrough).toBe(dayOffset(-1));
   });
+
+  it('skips a stale recompute job for a paranoid account without side effects', async () => {
+    const recompute = vi.fn(async () => {});
+    const def = createSnapshotsRecomputeJob({
+      snapshots: { recompute } as unknown as PortfolioSnapshotService,
+      isParanoidPortfolio: async () => true,
+    });
+
+    await def.handler(makeJob({ portfolioId: 'paranoid-portfolio' }) as never, makeCtx());
+    expect(recompute).not.toHaveBeenCalled();
+  });
 });

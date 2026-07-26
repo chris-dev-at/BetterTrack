@@ -2,13 +2,14 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join as joinPath } from 'node:path';
 
 import type { Redis } from 'ioredis';
+import { eq } from 'drizzle-orm';
 
 import type { ExportRequest, ExportStatus } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
 import type { Database } from '../../data/db';
 import type { ExportRepository } from '../../data/repositories/exportRepository';
-import type { ExportJobRow } from '../../data/schema';
+import { paranoidVaults, users, type ExportJobRow } from '../../data/schema';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import { ApiError, badRequest, notFound, tooManyRequests, unauthorized } from '../../errors';
 import type { Logger } from '../../logger';
@@ -240,7 +241,34 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
       try {
         const collected = await collectUserExport(db, job.userId);
         const generatedAt = now();
-        const zip = buildExportZip({ userId: job.userId, collected, generatedAt });
+        const [privacy] = await db
+          .select({
+            privacyMode: users.privacyMode,
+            mediaSet: users.paranoidMediaSet,
+          })
+          .from(users)
+          .where(eq(users.id, job.userId))
+          .limit(1);
+        const [currentVault] =
+          privacy?.privacyMode === 'paranoid' && privacy.mediaSet?.includes('server')
+            ? await db
+                .select({
+                  version: paranoidVaults.version,
+                  formatVersion: paranoidVaults.formatVersion,
+                  sizeBytes: paranoidVaults.sizeBytes,
+                  updatedAt: paranoidVaults.updatedAt,
+                  blob: paranoidVaults.blob,
+                })
+                .from(paranoidVaults)
+                .where(eq(paranoidVaults.userId, job.userId))
+                .limit(1)
+            : [];
+        const zip = buildExportZip({
+          userId: job.userId,
+          collected,
+          generatedAt,
+          ...(currentVault ? { currentVault } : {}),
+        });
         await mkdir(dir, { recursive: true });
         const filePath = filePathFor(jobId);
         await writeFile(filePath, zip);
