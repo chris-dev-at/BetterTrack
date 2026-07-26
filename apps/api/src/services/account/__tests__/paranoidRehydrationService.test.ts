@@ -1,8 +1,9 @@
 import {
   paranoidDisableRehydrationRequestSchema,
+  SOURCE_TAG_SYNC_MIRRORCHAIN,
   type ParanoidDisableRehydrationRequest,
 } from '@bettertrack/contracts';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
@@ -63,6 +64,8 @@ const editedAt = '2026-07-24T10:00:00.000Z';
 let restoreUserId = DEVICE_ID;
 
 type StrictEntity = ParanoidDisableRehydrationRequest['document']['entities'][number];
+type StrictTransactionEntity = Extract<StrictEntity, { kind: 'transaction' }>;
+type StrictDividendEntity = Extract<StrictEntity, { kind: 'dividend' }>;
 type StrictStandingOrderEntity = Extract<StrictEntity, { kind: 'standingOrder' }>;
 type StrictCashMovementEntity = Extract<StrictEntity, { kind: 'cashMovement' }>;
 type StrictExpenseRuleEntity = Extract<StrictEntity, { kind: 'expenseRule' }>;
@@ -226,6 +229,43 @@ function strictCashMovementEntity(row: typeof portfolioCashMovements.$inferSelec
     createdAt: row.createdAt.toISOString(),
     note: row.note,
     source: row.source,
+  });
+}
+
+function strictTransactionEntity(row: typeof transactions.$inferSelect) {
+  return entity(row.id, 'transaction', {
+    portfolioId: row.portfolioId,
+    assetId: row.assetId,
+    side: row.side,
+    quantity: row.quantity,
+    price: row.price,
+    fee: row.fee,
+    executedAt: row.executedAt.toISOString(),
+    note: row.note,
+    taxMode: row.taxMode,
+    taxCountry: row.taxCountry as StrictTransactionEntity['data']['taxCountry'],
+    taxAmountEur: row.taxAmountEur,
+    taxParams: row.taxParams as StrictTransactionEntity['data']['taxParams'],
+    allowUncovered: row.allowUncovered,
+    uncoveredEntryPrice: row.uncoveredEntryPrice,
+    source: row.source,
+  });
+}
+
+function strictDividendEntity(row: typeof dividends.$inferSelect) {
+  return entity(row.id, 'dividend', {
+    portfolioId: row.portfolioId,
+    assetId: row.assetId,
+    cashSourceId: row.cashSourceId,
+    grossAmountEur: row.grossAmountEur,
+    executedAt: row.executedAt.toISOString(),
+    note: row.note,
+    taxMode: row.taxMode,
+    taxCountry: row.taxCountry as StrictDividendEntity['data']['taxCountry'],
+    taxAmountEur: row.taxAmountEur,
+    taxParams: row.taxParams as StrictDividendEntity['data']['taxParams'],
+    source: row.source,
+    createdAt: row.createdAt.toISOString(),
   });
 }
 
@@ -788,6 +828,111 @@ describe('paranoid rehydration service', () => {
       price: '90071992547409.123456',
       fee: '0.123456',
     });
+  });
+
+  it('round-trips an epsilon-valid transaction batch after scale-8 quantities round apart', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const [asset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'test',
+        providerRef: 'QUANTITY-ROUNDING.EUR',
+        ownerId: null,
+        type: 'stock',
+        symbol: 'QTY',
+        name: 'Quantity rounding boundary',
+        exchange: null,
+        currency: 'EUR',
+      })
+      .returning();
+    if (!asset) throw new Error('expected market asset');
+
+    await expect(
+      harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+        {
+          assetId: asset.id,
+          side: 'buy',
+          quantity: 1.0000000046,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-23T10:00:00.000Z',
+        },
+        {
+          assetId: asset.id,
+          side: 'sell',
+          quantity: 1.0000000051,
+          price: 11,
+          fee: 0,
+          executedAt: '2026-07-23T10:01:00.000Z',
+        },
+      ]),
+    ).resolves.toHaveLength(2);
+
+    const [sourcePortfolio] = await harness.db
+      .select()
+      .from(portfolios)
+      .where(eq(portfolios.id, portfolioId));
+    const sourceCashSources = await harness.db
+      .select()
+      .from(portfolioCashSources)
+      .where(eq(portfolioCashSources.portfolioId, portfolioId));
+    const sourceTransactions = await harness.db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.portfolioId, portfolioId));
+    if (!sourcePortfolio) throw new Error('expected source portfolio');
+    expect(
+      sourceTransactions
+        .map((row) => ({ side: row.side, quantity: row.quantity }))
+        .sort((a, b) => a.side.localeCompare(b.side)),
+    ).toEqual([
+      { side: 'buy', quantity: '1.00000000' },
+      { side: 'sell', quantity: '1.00000001' },
+    ]);
+
+    const input: ParanoidDisableRehydrationRequest = {
+      rehydrationId: REHYDRATION_ID,
+      document: {
+        schemaVersion: 1,
+        entities: [
+          strictPortfolioEntity(sourcePortfolio),
+          ...sourceCashSources.map(strictCashSourceEntity),
+          ...sourceTransactions.map(strictTransactionEntity),
+        ],
+        mergeLog: [],
+      },
+    };
+
+    await replaceNormalPortfolioGraphWithServerVault(harness, user.id);
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    const restoredTransactions = await harness.db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.portfolioId, portfolioId));
+    expect(
+      restoredTransactions
+        .map((row) => ({
+          id: row.id,
+          side: row.side,
+          quantity: row.quantity,
+          allowUncovered: row.allowUncovered,
+        }))
+        .sort((a, b) => a.side.localeCompare(b.side)),
+    ).toEqual(
+      sourceTransactions
+        .map((row) => ({
+          id: row.id,
+          side: row.side,
+          quantity: row.quantity,
+          allowUncovered: row.allowUncovered,
+        }))
+        .sort((a, b) => a.side.localeCompare(b.side)),
+    );
   });
 
   it('restores more transactions than one PostgreSQL bind-parameter batch can hold', async () => {
@@ -1802,6 +1947,165 @@ describe('paranoid rehydration service', () => {
         })
       ).sources.find((source) => source.id === secondary.id),
     ).toMatchObject({ balanceEur: 100, archivedAt: sourceArchived.archivedAt?.toISOString() });
+  });
+
+  it('round-trips a detached MIRRORCHAIN fork whose replica ledger is overdrawn', async () => {
+    const now = Date.parse('2026-07-24T12:00:00.000Z');
+    const harness = await createTestApp({ taxNow: () => now });
+    const alice = await harness.seedUser({
+      email: 'rehydration-mirror-owner@bettertrack.test',
+      username: 'rehydration-mirror-owner',
+    });
+    const bob = await harness.seedUser({
+      email: 'rehydration-mirror-member@bettertrack.test',
+      username: 'rehydration-mirror-member',
+    });
+    const [asset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'test',
+        providerRef: 'MIRROR-FORK.EUR',
+        ownerId: null,
+        type: 'stock',
+        symbol: 'FORK',
+        name: 'Mirror fork boundary',
+        exchange: null,
+        currency: 'EUR',
+      })
+      .returning();
+    if (!asset) throw new Error('expected market asset');
+
+    const alicePortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(alice.id);
+    const { chain } = await harness.ctx.mirror.convertToChain(alice.id, alicePortfolioId, {
+      name: 'Tax-skewed family',
+    });
+    const { portfolioId: bobForkId } = await harness.ctx.mirror.attachMemberCopy(chain.id, bob.id);
+    await harness.ctx.mirror.replicateChain(chain.id);
+    await harness.ctx.tax.updateSettings(bob.id, {
+      mode: 'country_specific',
+      country: 'AT',
+    });
+
+    await harness.ctx.mirror.submitTransactionsCreate(alice.id, alicePortfolioId, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 1,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-22T10:00:00.000Z',
+      },
+    ]);
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    const aliceMain = (
+      await harness.ctx.portfolio.listCashSources(alice.id, alicePortfolioId)
+    ).sources.find((source) => source.isMain);
+    if (!aliceMain) throw new Error('expected owner Main cash source');
+    await harness.ctx.mirror.submitDividendRecord(alice.id, alicePortfolioId, {
+      assetId: asset.id,
+      grossAmountEur: 100,
+      cashSourceId: aliceMain.id,
+      executedAt: '2026-07-23T10:00:00.000Z',
+    });
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    // Alice's untaxed copy has EUR 100. Bob's Austrian copy has EUR 72.50
+    // after its copy-local withholding. The origin-authoritative withdrawal is
+    // force-applied to Bob and intentionally leaves his replica at EUR -27.50.
+    await harness.ctx.mirror.submitCashWithdraw(alice.id, alicePortfolioId, {
+      sourceId: aliceMain.id,
+      amountEur: 100,
+      executedAt: '2026-07-24T10:00:00.000Z',
+    });
+    await harness.ctx.mirror.replicateChain(chain.id);
+    expect((await harness.ctx.portfolio.getCashMovements(bob.id, bobForkId)).balanceEur).toBe(
+      -27.5,
+    );
+
+    await harness.ctx.mirror.removeMember(alice.id, chain.id, bob.id);
+    await expect(harness.ctx.mirror.syncedMembership(bobForkId)).resolves.toBeNull();
+
+    const sourcePortfolios = await harness.db
+      .select()
+      .from(portfolios)
+      .where(eq(portfolios.userId, bob.id));
+    const sourcePortfolioIds = sourcePortfolios.map((portfolio) => portfolio.id);
+    const sourceCashSources = await harness.db
+      .select()
+      .from(portfolioCashSources)
+      .where(inArray(portfolioCashSources.portfolioId, sourcePortfolioIds));
+    const sourceTransactions = await harness.db
+      .select()
+      .from(transactions)
+      .where(inArray(transactions.portfolioId, sourcePortfolioIds));
+    const sourceDividends = await harness.db
+      .select()
+      .from(dividends)
+      .where(inArray(dividends.portfolioId, sourcePortfolioIds));
+    const sourceMovements = await harness.db
+      .select()
+      .from(portfolioCashMovements)
+      .where(inArray(portfolioCashMovements.portfolioId, sourcePortfolioIds));
+    const [sourceTaxSettings] = await harness.db
+      .select()
+      .from(userTaxSettings)
+      .where(eq(userTaxSettings.userId, bob.id));
+    if (!sourceTaxSettings || sourceTaxSettings.country !== 'AT') {
+      throw new Error('expected Austrian source tax settings');
+    }
+    expect(
+      sourceMovements.some(
+        (movement) =>
+          movement.portfolioId === bobForkId &&
+          movement.source === SOURCE_TAG_SYNC_MIRRORCHAIN &&
+          movement.amountEur === '-100.000000',
+      ),
+    ).toBe(true);
+
+    const input: ParanoidDisableRehydrationRequest = {
+      rehydrationId: REHYDRATION_ID,
+      document: {
+        schemaVersion: 1,
+        entities: [
+          ...sourcePortfolios.map(strictPortfolioEntity),
+          ...sourceCashSources.map(strictCashSourceEntity),
+          ...sourceTransactions.map(strictTransactionEntity),
+          ...sourceDividends.map(strictDividendEntity),
+          ...sourceMovements.map(strictCashMovementEntity),
+          entity('018f0000-0000-7000-8000-0000000000f0', 'taxSetting', {
+            userId: sourceTaxSettings.userId,
+            mode: sourceTaxSettings.mode,
+            country: 'AT',
+            manualDefaultAmountEur: sourceTaxSettings.manualDefaultAmountEur,
+            manualDefaultRatePct: sourceTaxSettings.manualDefaultRatePct,
+            customParams: null,
+            updatedAt: sourceTaxSettings.updatedAt.toISOString(),
+          }),
+        ],
+        mergeLog: [],
+      },
+    };
+
+    await replaceNormalPortfolioGraphWithServerVault(harness, bob.id);
+    await harness.db.delete(userTaxSettings).where(eq(userTaxSettings.userId, bob.id));
+    await expect(
+      createParanoidRehydrationService({
+        db: harness.db,
+        now: () => new Date(now),
+      }).rehydrate(bob.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    expect((await harness.ctx.portfolio.getCashMovements(bob.id, bobForkId)).balanceEur).toBe(
+      -27.5,
+    );
+    const restoredMovements = await harness.db
+      .select()
+      .from(portfolioCashMovements)
+      .where(inArray(portfolioCashMovements.portfolioId, sourcePortfolioIds));
+    expect(restoredMovements.sort((a, b) => a.id.localeCompare(b.id))).toEqual(
+      sourceMovements.sort((a, b) => a.id.localeCompare(b.id)),
+    );
   });
 
   it('preserves an imported expense deduplication marker exactly', async () => {

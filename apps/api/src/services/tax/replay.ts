@@ -68,6 +68,13 @@ export interface ReplayRestoredTaxStateInput {
   /** The replay boundary's clock; determines the current Vienna/open tax year. */
   now: Date;
   toEur: TaxReplayToEur;
+  /**
+   * Sells proven by exact strict-document preflight to exceed their persisted
+   * holding by exactly one scale-8 storage quantum. Normal batch validation
+   * accepted the raw values before PostgreSQL rounded the rows apart; replay
+   * treats only that rounding suffix as uncovered at sale-price basis.
+   */
+  storageRoundingSellIds?: ReadonlySet<string>;
 }
 
 export interface ReplayedDeYearState {
@@ -154,6 +161,7 @@ async function taxableTransactions(
   transactions: readonly TransactionRecord[],
   assetsById: ReadonlyMap<string, AssetRow>,
   toEur: TaxReplayToEur,
+  storageRoundingSellIds: ReadonlySet<string>,
 ): Promise<TaxableTransaction[]> {
   const neededAssetIds = new Set(
     transactions.filter((row) => row.side === 'sell').map((row) => row.assetId),
@@ -175,7 +183,7 @@ async function taxableTransactions(
           priceEur: await toEur(row.price, asset.currency, day),
           feeEur: await toEur(row.fee, asset.currency, day),
           executedAt: row.executedAt.toISOString(),
-          allowUncovered: row.allowUncovered,
+          allowUncovered: row.allowUncovered || storageRoundingSellIds.has(row.id),
           uncoveredEntryPriceEur:
             row.uncoveredEntryPrice === null
               ? null
@@ -248,7 +256,12 @@ export async function replayRestoredTaxState(
       throw new Error(`Tax replay: portfolio ${portfolioId} references a missing asset`);
     }
 
-    const taxables = await taxableTransactions(transactions, assetsById, input.toEur);
+    const taxables = await taxableTransactions(
+      transactions,
+      assetsById,
+      input.toEur,
+      input.storageRoundingSellIds ?? new Set(),
+    );
     const movingAverage = realizationsById(taxables);
     const fifo = realizationsById(taxables, 'fifo');
     const categoryOf = (assetId: string) => {

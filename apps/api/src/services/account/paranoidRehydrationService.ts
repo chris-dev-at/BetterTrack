@@ -6,6 +6,7 @@ import type {
 import {
   customTaxParamsSchema,
   paranoidDisableRehydrationRequestSchema,
+  SOURCE_TAG_SYNC_MIRRORCHAIN,
   taxSettingsResponseSchema,
   updateTaxSettingsRequestSchema,
 } from '@bettertrack/contracts';
@@ -112,6 +113,12 @@ interface ExactDecimal {
 
 const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
 const pow10 = (scale: number): bigint => 10n ** BigInt(scale);
+/**
+ * Normal batch validation runs against the unrounded client quantities with a
+ * 1e-9 epsilon, then PostgreSQL rounds each row independently to scale 8. Two
+ * epsilon-valid inputs can therefore persist one scale-8 quantum apart.
+ */
+const PERSISTED_QUANTITY_ROUNDING_TOLERANCE = 1n;
 
 function exactDecimal(value: string, label: string): ExactDecimal {
   const match = DECIMAL_PATTERN.exec(value);
@@ -493,7 +500,12 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
  * Database checks remain defense in depth; this reports malformed decrypted vaults
  * as one clean failure and makes the no-write guarantee directly testable.
  */
-function validateGraph(userId: string, entities: readonly Entity[]): void {
+interface ValidatedGraph {
+  /** Sells whose apparent oversell is exactly one scale-8 storage quantum. */
+  storageRoundingSellIds: ReadonlySet<string>;
+}
+
+function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGraph {
   validateUniqueRestoredIds(entities);
   validateOwnedRows(userId, entities);
   validatePersistedNumerics(entities);
@@ -1095,6 +1107,16 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
     (a, b) =>
       Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
   );
+  // Replica application deliberately waives the ordinary solvency gate because
+  // copy-local tax state can skew a source. Once that copy becomes a fork, its
+  // sync-tagged rows are the only durable provenance available in the strict
+  // vault document, so preserve that reachable ledger instead of stranding it.
+  const mirrorReplicaSourceIds = new Set(
+    movements
+      .filter((movement) => movement.data.source === SOURCE_TAG_SYNC_MIRRORCHAIN)
+      .map((movement) => movement.data.sourceId),
+  );
+  const storageRoundingSellIds = new Set<string>();
 
   try {
     const balancesBySource = new Map<string, bigint>();
@@ -1105,7 +1127,9 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
         throw new Error('cash-movement amount has the wrong sign');
       }
       const balance = (balancesBySource.get(movement.data.sourceId) ?? 0n) + amount;
-      if (balance < 0n) throw new Error('cash source would become negative');
+      if (balance < 0n && !mirrorReplicaSourceIds.has(movement.data.sourceId)) {
+        throw new Error('cash source would become negative');
+      }
       balancesBySource.set(movement.data.sourceId, balance);
     }
     const transactionsByPortfolioAsset = new Map<string, EntityOf<'transaction'>[]>();
@@ -1125,13 +1149,22 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
         const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
         if (transaction.data.side === 'buy') {
           held += quantity;
-        } else if (quantity > held) {
-          if (!transaction.data.allowUncovered) {
+        } else {
+          const shortfall = quantity - held;
+          if (
+            shortfall > 0n &&
+            shortfall <= PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
+            !transaction.data.allowUncovered
+          ) {
+            storageRoundingSellIds.add(transaction.id);
+          }
+          if (
+            shortfall > PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
+            !transaction.data.allowUncovered
+          ) {
             throw new Error('transaction would oversell its position');
           }
-          held = 0n;
-        } else {
-          held -= quantity;
+          held = shortfall > 0n ? 0n : held - quantity;
         }
       }
     }
@@ -1142,6 +1175,7 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       error instanceof Error ? error.message : 'cash ledger is invalid',
     );
   }
+  return { storageRoundingSellIds };
 }
 
 interface ReferencedAsset {
@@ -1238,7 +1272,7 @@ export function createParanoidRehydrationService(
       // Tombstones exist for client-side merge convergence only. Construct and
       // validate the restore graph from live facts before any database mutation.
       const entities = liveEntities(normalizedRequest.document);
-      validateGraph(userId, entities);
+      const validatedGraph = validateGraph(userId, entities);
 
       return withParanoidRehydrationTransaction(deps.db, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);
@@ -1305,6 +1339,7 @@ export function createParanoidRehydrationService(
           portfolioIds: rows(entities, 'portfolio').map((portfolio) => portfolio.id),
           now: now(),
           toEur: toCashEur,
+          storageRoundingSellIds: validatedGraph.storageRoundingSellIds,
         });
         await stage('taxReplay');
 
