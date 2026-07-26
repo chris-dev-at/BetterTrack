@@ -39,9 +39,10 @@ import { UserApp } from '../UserApp';
 // when it bounces an anonymous visitor to /login (V4-P2b, §399 §A).
 const OAUTH_FROM =
   '/oauth/authorize?client_id=app&redirect_uri=https%3A%2F%2Fx.example&scope=portfolio%3Aread';
+const USER_ID = '8d7cf3d6-e8b8-4fa4-98a4-8712cddc05bf';
 
 const user: MeResponse = {
-  id: 'user-1',
+  id: USER_ID,
   email: 'jane@bettertrack.test',
   username: 'jane',
   role: 'user',
@@ -105,7 +106,7 @@ const ASKED_KEY = 'bettertrack.oauthRememberAsked';
 function rememberJane() {
   localStorage.setItem(
     REMEMBERED_KEY,
-    JSON.stringify({ userId: 'user-1', username: 'jane', avatarUrl: null }),
+    JSON.stringify({ userId: USER_ID, username: 'jane', avatarUrl: null }),
   );
 }
 
@@ -416,7 +417,7 @@ test('remember-me: an OAuth login on a PIN account offers the one-time remember-
 test('remember-me: ticking it binds the device and stores the local chooser record', async () => {
   vi.mocked(api.login).mockResolvedValue(pinUser);
   vi.mocked(api.rememberDevice).mockResolvedValue({
-    userId: 'user-1',
+    userId: USER_ID,
     username: 'jane',
     avatarUrl: null,
   });
@@ -438,7 +439,7 @@ test('remember-me: ticking it binds the device and stores the local chooser reco
 });
 
 test('remember-me: shown once — hidden after this device already asked the user', async () => {
-  localStorage.setItem(ASKED_KEY, JSON.stringify(['user-1']));
+  localStorage.setItem(ASKED_KEY, JSON.stringify([USER_ID]));
   vi.mocked(api.login).mockResolvedValue(pinUser);
 
   const u = userEvent.setup();
