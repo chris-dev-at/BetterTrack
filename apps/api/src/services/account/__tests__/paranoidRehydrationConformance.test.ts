@@ -1,13 +1,21 @@
 import {
+  CUSTOM_COST_BASIS,
   paranoidDisableRehydrationRequestSchema,
   SOURCE_TAG_SYNC_MIRRORCHAIN,
   STANDING_ORDER_CADENCES,
   STANDING_ORDER_KINDS,
+  STANDING_ORDER_STATUSES,
+  TAX_COUNTRIES,
+  TAX_MODES,
+  transactionInputSchema,
+  transactionSideSchema,
   VAULT_ENTITY_SCHEMAS,
+  VAULT_ENTITY_KINDS,
   type ParanoidDisableRehydrationRequest,
+  type UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
 import { eq, inArray } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { Database } from '../../../data/db';
 import { newId } from '../../../data/ids';
@@ -16,14 +24,19 @@ import {
   assets,
   dividends,
   expenseBudgets,
+  expenseBudgetFires,
   expenseCategories,
   expenseRules,
   expenseTransactions,
+  importBatches,
+  importRows,
   paranoidRehydrationReceipts,
   paranoidVaults,
   portfolioCashMovements,
   portfolioCashSources,
+  portfolioDailySnapshots,
   portfolioSettings,
+  portfolioSnapshotState,
   portfolios,
   priceHistory,
   standingOrderRuns,
@@ -45,7 +58,7 @@ import {
 
 type StrictDocument = ParanoidDisableRehydrationRequest['document'];
 type StrictEntity = StrictDocument['entities'][number];
-type RestorableKind = (typeof PARANOID_REHYDRATION_HANDLERS)[number];
+type StrictKind = StrictEntity['kind'];
 type PersistedRow = Record<string, unknown>;
 
 const DEVICE_ID = '018f0000-0000-7000-8000-000000000001';
@@ -60,7 +73,12 @@ interface FieldValue {
 interface ArrangedReachableState {
   userId: string;
   focus(document: StrictDocument): readonly FieldValue[];
-  requireEveryRestorableKind?: boolean;
+  requireEveryStrictKind?: boolean;
+  variantDimensions?: (document: StrictDocument) => readonly {
+    name: string;
+    expected: readonly string[];
+    actual: readonly string[];
+  }[];
   verifyRestored?: (harness: TestHarness) => Promise<void>;
 }
 
@@ -101,7 +119,7 @@ function displayValue(value: unknown): string {
   return encoded ?? String(value);
 }
 
-function strictEntity<K extends RestorableKind>(
+function strictEntity<K extends StrictKind>(
   kind: K,
   row: PersistedRow,
 ): Extract<StrictEntity, { kind: K }> {
@@ -142,23 +160,29 @@ function persistedRows<T>(rows: readonly T[]): readonly PersistedRow[] {
 }
 
 /**
- * Capture the complete user-owned restore graph from the database after normal
- * services/repositories persisted it. The mapped type is the mechanical
- * enrollment gate: a future restore handler cannot compile until this harness
- * learns how to capture its normal row.
+ * Capture the complete user-owned strict-v1 graph from the database after
+ * normal services/repositories persisted it. The mapped type is the mechanical
+ * enrollment gate: a future vault kind cannot compile until this harness learns
+ * how to capture its normal row. Purge-only rows intentionally participate in
+ * request-schema and preflight conformance even though they are not restored.
  */
-async function loadRestorableRows(
+async function loadStrictRows(
   db: Database,
   userId: string,
-): Promise<{ [K in RestorableKind]: readonly PersistedRow[] }> {
-  const [portfolioRows, customAssetRows, standingOrderRows] = await Promise.all([
-    db.select().from(portfolios).where(eq(portfolios.userId, userId)),
-    db.select().from(assets).where(eq(assets.ownerId, userId)),
-    db.select().from(standingOrders).where(eq(standingOrders.userId, userId)),
-  ]);
+): Promise<{ [K in StrictKind]: readonly PersistedRow[] }> {
+  const [portfolioRows, customAssetRows, standingOrderRows, importBatchRows, expenseBudgetRows] =
+    await Promise.all([
+      db.select().from(portfolios).where(eq(portfolios.userId, userId)),
+      db.select().from(assets).where(eq(assets.ownerId, userId)),
+      db.select().from(standingOrders).where(eq(standingOrders.userId, userId)),
+      db.select().from(importBatches).where(eq(importBatches.ownerId, userId)),
+      db.select().from(expenseBudgets).where(eq(expenseBudgets.userId, userId)),
+    ]);
   const portfolioIds = portfolioRows.map((row) => row.id);
   const customAssetIds = customAssetRows.map((row) => row.id);
   const standingOrderIds = standingOrderRows.map((row) => row.id);
+  const importBatchIds = importBatchRows.map((row) => row.id);
+  const expenseBudgetIds = expenseBudgetRows.map((row) => row.id);
 
   const [
     transactionRows,
@@ -172,7 +196,10 @@ async function loadRestorableRows(
     expenseCategoryRows,
     expenseTransactionRows,
     expenseRuleRows,
-    expenseBudgetRows,
+    importRowRows,
+    portfolioDailySnapshotRows,
+    portfolioSnapshotStateRows,
+    expenseBudgetFireRows,
   ] = await Promise.all([
     whenIds(portfolioIds, (ids) =>
       db.select().from(transactions).where(inArray(transactions.portfolioId, ids)),
@@ -202,7 +229,24 @@ async function loadRestorableRows(
     db.select().from(expenseCategories).where(eq(expenseCategories.userId, userId)),
     db.select().from(expenseTransactions).where(eq(expenseTransactions.userId, userId)),
     db.select().from(expenseRules).where(eq(expenseRules.userId, userId)),
-    db.select().from(expenseBudgets).where(eq(expenseBudgets.userId, userId)),
+    whenIds(importBatchIds, (ids) =>
+      db.select().from(importRows).where(inArray(importRows.batchId, ids)),
+    ),
+    whenIds(portfolioIds, (ids) =>
+      db
+        .select()
+        .from(portfolioDailySnapshots)
+        .where(inArray(portfolioDailySnapshots.portfolioId, ids)),
+    ),
+    whenIds(portfolioIds, (ids) =>
+      db
+        .select()
+        .from(portfolioSnapshotState)
+        .where(inArray(portfolioSnapshotState.portfolioId, ids)),
+    ),
+    whenIds(expenseBudgetIds, (ids) =>
+      db.select().from(expenseBudgetFires).where(inArray(expenseBudgetFires.budgetId, ids)),
+    ),
   ]);
 
   return {
@@ -217,16 +261,21 @@ async function loadRestorableRows(
     customAssetValue: persistedRows(customAssetValueRows),
     standingOrder: persistedRows(standingOrderRows),
     standingOrderRun: persistedRows(standingOrderRunRows),
+    importBatch: persistedRows(importBatchRows),
+    importRow: persistedRows(importRowRows),
+    portfolioDailySnapshot: persistedRows(portfolioDailySnapshotRows),
+    portfolioSnapshotState: persistedRows(portfolioSnapshotStateRows),
     expenseCategory: persistedRows(expenseCategoryRows),
     expenseTransaction: persistedRows(expenseTransactionRows),
     expenseRule: persistedRows(expenseRuleRows),
     expenseBudget: persistedRows(expenseBudgetRows),
+    expenseBudgetFire: persistedRows(expenseBudgetFireRows),
   };
 }
 
 async function captureStrictDocument(db: Database, userId: string): Promise<StrictDocument> {
-  const rowsByKind = await loadRestorableRows(db, userId);
-  const entities = PARANOID_REHYDRATION_HANDLERS.flatMap((kind) =>
+  const rowsByKind = await loadStrictRows(db, userId);
+  const entities = VAULT_ENTITY_KINDS.flatMap((kind) =>
     rowsByKind[kind].map((row) => strictEntity(kind, row)),
   );
   const parsed = paranoidDisableRehydrationRequestSchema.safeParse({
@@ -272,8 +321,11 @@ const ID_BACKED_KINDS = new Set<StrictEntity['kind']>([
   'expenseBudget',
 ]);
 
+const RESTORABLE_KIND_SET = new Set<StrictKind>(PARANOID_REHYDRATION_HANDLERS);
+
 function documentFingerprint(document: StrictDocument): string[] {
   return document.entities
+    .filter((entity) => RESTORABLE_KIND_SET.has(entity.kind))
     .map((entity) =>
       JSON.stringify(
         sortedJson({
@@ -321,7 +373,7 @@ async function expectNoRestorableRows(
   userId: string,
   message: string,
 ): Promise<void> {
-  const rows = await loadRestorableRows(db, userId);
+  const rows = await loadStrictRows(db, userId);
   const present = PARANOID_REHYDRATION_HANDLERS.flatMap((kind) =>
     rows[kind].map((row) => `${kind}=${displayValue(row)}`),
   );
@@ -431,12 +483,21 @@ async function expectReachableStateRoundTrip(testCase: ReachableStateCase): Prom
     `${testCase.name} must name at least one diagnostic field/value`,
   ).toBeGreaterThan(0);
 
-  if (arranged.requireEveryRestorableKind) {
+  if (arranged.requireEveryStrictKind) {
     const populated = [...new Set(sourceDocument.entities.map((entity) => entity.kind))].sort();
     expect(
       populated,
-      `${testCase.name} did not populate every restore handler; captured ${populated.join(', ')}`,
-    ).toEqual([...PARANOID_REHYDRATION_HANDLERS].sort());
+      `${testCase.name} did not populate every strict-v1 kind; captured ${populated.join(', ')}`,
+    ).toEqual([...VAULT_ENTITY_KINDS].sort());
+  }
+
+  for (const dimension of arranged.variantDimensions?.(sourceDocument) ?? []) {
+    const expected = [...new Set(dimension.expected)].sort();
+    const actual = [...new Set(dimension.actual)].sort();
+    expect(
+      actual,
+      `${testCase.name} did not exercise every reachable ${dimension.name} variant`,
+    ).toEqual(expected);
   }
 
   const sourceFingerprint = documentFingerprint(sourceDocument);
@@ -476,9 +537,121 @@ function entities<K extends StrictEntity['kind']>(
   );
 }
 
+interface TransactionValidationVariant {
+  side: (typeof transactionSideSchema.options)[number];
+  allowUncovered: boolean;
+  uncoveredEntryPrice?: number;
+}
+
+/**
+ * Enumerate the finite uncovered-sell branch space from the public normal-write
+ * schema itself. Invalid combinations (acknowledgement on a buy, or an entry
+ * price without acknowledgement) are filtered by that schema; every remaining
+ * combination is then persisted through PortfolioService below. New transaction
+ * sides therefore enter this gate automatically instead of relying on one
+ * representative row per entity kind.
+ */
+const TRANSACTION_VALIDATION_VARIANTS: readonly TransactionValidationVariant[] =
+  transactionSideSchema.options.flatMap((side) =>
+    [false, true].flatMap((allowUncovered) =>
+      ([undefined, 7] as const satisfies readonly (number | undefined)[])
+        .map((uncoveredEntryPrice) => ({
+          side,
+          allowUncovered,
+          ...(uncoveredEntryPrice === undefined ? {} : { uncoveredEntryPrice }),
+        }))
+        .filter(
+          (variant) =>
+            transactionInputSchema.safeParse({
+              assetId: DEVICE_ID,
+              side: variant.side,
+              quantity: 1,
+              price: 10,
+              fee: 0,
+              executedAt: EDITED_AT,
+              allowUncovered: variant.allowUncovered,
+              ...(variant.uncoveredEntryPrice === undefined
+                ? {}
+                : { uncoveredEntryPrice: variant.uncoveredEntryPrice }),
+            }).success,
+        ),
+    ),
+  );
+
+function transactionVariantKey(input: {
+  side: string;
+  allowUncovered: boolean;
+  uncoveredEntryPrice: unknown;
+}): string {
+  return [
+    `side=${input.side}`,
+    `allowUncovered=${String(input.allowUncovered)}`,
+    `uncoveredEntryPrice=${
+      input.uncoveredEntryPrice === null || input.uncoveredEntryPrice === undefined
+        ? 'null'
+        : 'value'
+    }`,
+  ].join(',');
+}
+
+interface TaxSettingVariant {
+  name: string;
+  input: UpdateTaxSettingsRequest;
+}
+
+function taxSettingVariantsFor(mode: (typeof TAX_MODES)[number]): readonly TaxSettingVariant[] {
+  switch (mode) {
+    case 'none':
+      return [{ name: mode, input: { mode } }];
+    case 'manual_per_trade':
+      return [
+        { name: `${mode}:no-default`, input: { mode } },
+        {
+          name: `${mode}:amount-default`,
+          input: { mode, manualDefaultAmountEur: 4.25 },
+        },
+        {
+          name: `${mode}:rate-default`,
+          input: { mode, manualDefaultRatePct: 12.5 },
+        },
+      ];
+    case 'country_specific':
+      return TAX_COUNTRIES.map((country) => ({
+        name: `${mode}:${country}`,
+        input: { mode, country },
+      }));
+    case 'custom':
+      return CUSTOM_COST_BASIS.map((costBasis, index) => ({
+        name: `${mode}:${costBasis}`,
+        input: {
+          mode,
+          custom: {
+            ratePct: 17.5,
+            lossOffset: index % 2 === 0,
+            refund: index % 2 === 1,
+            yearReset: index % 2 === 0,
+            carryForward: index % 2 === 1,
+            costBasis,
+          },
+        },
+      }));
+    default: {
+      const exhaustive: never = mode;
+      return exhaustive;
+    }
+  }
+}
+
+/**
+ * The tax validator has mode-dependent branches. Generate its normal persisted
+ * variants from the exported mode/country/cost-basis vocabularies so adding a
+ * normal capability enrolls it here without a hand-authored vault fixture.
+ */
+const TAX_SETTING_VARIANTS = TAX_MODES.flatMap(taxSettingVariantsFor);
+
 const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
   {
-    name: 'customAssetValue.close plus every restorable normal-write entity',
+    name: 'customAssetValue.close plus every strict-v1 normal-write entity',
     options: {
       taxNow: () => TEST_NOW,
       budgetNow: () => new Date(TEST_NOW),
@@ -554,13 +727,28 @@ const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
       });
       await harness.ctx.expenseBudgets.createBudget(user.id, {
         categoryId: category.id,
-        amount: 100,
+        amount: 10,
         currency: 'EUR',
       });
 
+      await harness.ctx.imports.createBatch(user.id, {
+        portfolioId,
+        filename: 'conformance.csv',
+        brokerId: 'trade_republic',
+        content: [
+          'Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung',
+          '2026-07-24;Einzahlung;;;;;;25,00;EUR',
+        ].join('\n'),
+      });
+
+      // Persist both derived snapshot kinds through the production engine. They
+      // are purge-only on rehydration, but remain part of the strict document
+      // and must survive request-schema + graph preflight validation.
+      await harness.ctx.snapshots.recompute(portfolioId);
+
       return {
         userId: user.id,
-        requireEveryRestorableKind: true,
+        requireEveryStrictKind: true,
         focus(document) {
           return [
             {
@@ -587,19 +775,21 @@ const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
       let index = 0;
       for (const kind of STANDING_ORDER_KINDS) {
         for (const cadence of STANDING_ORDER_CADENCES) {
-          const order = await harness.ctx.standingOrders.create(user.id, {
-            portfolioId,
-            kind,
-            ...(kind === 'buy-asset' ? { assetId: custom.asset.id } : {}),
-            amount: 10 + index,
-            label: `${kind}-${cadence}`,
-            cadence,
-            ...(cadence === 'monthly' ? { anchorDay: 31 } : {}),
-            startDate: '2026-07-01',
-            ...(index % 2 === 0 ? { endDate: '2026-07-31' } : {}),
-          });
-          if (index % 2 === 1) await harness.ctx.standingOrders.pause(user.id, order.id);
-          index += 1;
+          for (const status of STANDING_ORDER_STATUSES) {
+            const order = await harness.ctx.standingOrders.create(user.id, {
+              portfolioId,
+              kind,
+              ...(kind === 'buy-asset' ? { assetId: custom.asset.id } : {}),
+              amount: 10 + index,
+              label: `${kind}-${cadence}-${status}`,
+              cadence,
+              ...(cadence === 'monthly' ? { anchorDay: 31 } : {}),
+              startDate: '2026-07-01',
+              ...(index % 2 === 0 ? { endDate: '2026-07-31' } : {}),
+            });
+            if (status === 'paused') await harness.ctx.standingOrders.pause(user.id, order.id);
+            index += 1;
+          }
         }
       }
 
@@ -618,6 +808,90 @@ const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
                 endDate: entry.data.endDate,
                 status: entry.data.status,
               })),
+            },
+          ];
+        },
+        variantDimensions(document) {
+          return [
+            {
+              name: 'standing-order kind/cadence/status',
+              expected: STANDING_ORDER_KINDS.flatMap((kind) =>
+                STANDING_ORDER_CADENCES.flatMap((cadence) =>
+                  STANDING_ORDER_STATUSES.map(
+                    (status) => `kind=${kind},cadence=${cadence},status=${status}`,
+                  ),
+                ),
+              ),
+              actual: entities(document, 'standingOrder').map(
+                (entry) =>
+                  `kind=${entry.data.kind},cadence=${entry.data.cadence},status=${entry.data.status}`,
+              ),
+            },
+          ];
+        },
+      };
+    },
+  },
+  {
+    name: 'transaction side/allowUncovered/uncoveredEntryPrice schema-valid combinations',
+    options: { taxNow: () => TEST_NOW },
+    async arrange(harness) {
+      const user = await harness.seedUser();
+      const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+      const custom = await harness.ctx.customAssets.create(user.id, {
+        name: 'Uncovered branch matrix',
+        category: 'other',
+        currency: 'EUR',
+        smoothing: false,
+      });
+
+      await harness.ctx.portfolio.createTransactions(
+        user.id,
+        portfolioId,
+        TRANSACTION_VALIDATION_VARIANTS.map((variant, index) => ({
+          assetId: custom.asset.id,
+          side: variant.side,
+          // The covered sell consumes one share. Acknowledged sells deliberately
+          // exceed the remainder (and then sell from zero) so these are genuine
+          // normal-path uncovered states rather than merely true flags.
+          quantity: variant.side === 'buy' ? 10 : variant.allowUncovered ? 20 : 1,
+          price: 10 + index,
+          fee: 0,
+          executedAt: `2026-07-20T10:0${index}:00.000Z`,
+          allowUncovered: variant.allowUncovered,
+          ...(variant.uncoveredEntryPrice === undefined
+            ? {}
+            : { uncoveredEntryPrice: variant.uncoveredEntryPrice }),
+        })),
+      );
+
+      return {
+        userId: user.id,
+        focus(document) {
+          return [
+            {
+              field: 'transaction.{side,allowUncovered,uncoveredEntryPrice}',
+              value: entities(document, 'transaction').map((entry) => ({
+                side: entry.data.side,
+                allowUncovered: entry.data.allowUncovered,
+                uncoveredEntryPrice: entry.data.uncoveredEntryPrice,
+              })),
+            },
+          ];
+        },
+        variantDimensions(document) {
+          return [
+            {
+              name: 'transaction uncovered-field',
+              expected: TRANSACTION_VALIDATION_VARIANTS.map((variant) =>
+                transactionVariantKey({
+                  ...variant,
+                  uncoveredEntryPrice: variant.uncoveredEntryPrice,
+                }),
+              ),
+              actual: entities(document, 'transaction').map((entry) =>
+                transactionVariantKey(entry.data),
+              ),
             },
           ];
         },
@@ -765,6 +1039,36 @@ const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
       };
     },
   },
+  ...TAX_SETTING_VARIANTS.map(
+    (variant): ReachableStateCase => ({
+      name: `taxSetting/portfolioSetting normal mode variant ${variant.name}`,
+      options: { taxNow: () => TEST_NOW },
+      async arrange(harness) {
+        const user = await harness.seedUser();
+        const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+        await harness.ctx.tax.updateSettings(user.id, variant.input);
+        await harness.ctx.tax.setPortfolioTaxOverride(user.id, portfolioId, variant.input);
+
+        return {
+          userId: user.id,
+          focus(document) {
+            return [
+              {
+                field: 'taxSetting mode-dependent fields',
+                value: entities(document, 'taxSetting').map((entry) => entry.data),
+              },
+              {
+                field: 'portfolioSetting[key=tax].value',
+                value: entities(document, 'portfolioSetting')
+                  .filter((entry) => entry.data.key === 'tax')
+                  .map((entry) => entry.data.value),
+              },
+            ];
+          },
+        };
+      },
+    }),
+  ),
 ];
 
 describe('paranoid rehydration normal-write differential conformance', () => {
@@ -792,7 +1096,12 @@ describe('paranoid rehydration normal-write differential conformance', () => {
     const focus = [{ field: 'customAssetValue.close', value: value.data.close }] as const;
 
     await replaceNormalRowsWithServerVault(harness, user.id);
+    // Validation must reject before the mutation transaction is even opened.
+    // Observing this boundary distinguishes "no attempted write" from writes
+    // that happened inside a transaction and disappeared only after rollback.
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
     const stages: ParanoidRehydrationStage[] = [];
+    let rejection: unknown;
     let rejected: Error | undefined;
     try {
       await createParanoidRehydrationService({
@@ -805,12 +1114,21 @@ describe('paranoid rehydration normal-write differential conformance', () => {
         document: sourceDocument,
       });
     } catch (error) {
+      rejection = error;
       rejected = conformanceFailure('invalid complete graph', sourceDocument, focus, error);
     }
 
+    expect(rejection).toMatchObject({
+      code: 'INVALID_REFERENCE',
+      message: expect.stringMatching(/custom-asset close/i),
+    });
     expect(rejected?.message).toMatch(
       /rejected field\/value: .*customAssetValue\[[^\]]+\]\.close="-1"/,
     );
+    expect(
+      mutationTransaction,
+      `invalid graph entered the mutation transaction before rejecting ${focusText(focus)}`,
+    ).not.toHaveBeenCalled();
     expect(stages).toEqual([]);
     await expectNoRestorableRows(
       harness.db,
@@ -823,5 +1141,6 @@ describe('paranoid rehydration normal-write differential conformance', () => {
         .from(paranoidRehydrationReceipts)
         .where(eq(paranoidRehydrationReceipts.userId, user.id)),
     ).toEqual([]);
+    mutationTransaction.mockRestore();
   });
 });
