@@ -956,6 +956,142 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expectPortfolioApiUnused();
   });
 
+  it.each(['country_specific', 'custom'] as const)(
+    'keeps a buy after the final frozen %s sell available across create, update, and delete',
+    async (frozenMode) => {
+      const firstBuyId = GENERATED_IDS[0];
+      const sellId = GENERATED_IDS[1];
+      const laterBuyId = GENERATED_IDS[2];
+      const document = initialDocument();
+      document.entities.transaction = [
+        vaultEntity(firstBuyId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 2,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-25T08:00:00.000Z',
+          note: null,
+          source: 'manual',
+        }),
+        vaultEntity(sellId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'sell',
+          quantity: 1,
+          price: 12,
+          fee: 0,
+          executedAt: '2026-07-25T09:00:00.000Z',
+          note: null,
+          taxMode: frozenMode,
+          taxCountry: frozenMode === 'country_specific' ? 'DE' : null,
+          taxAmountEur: 1,
+          taxParams: frozenMode === 'custom' ? { ratePct: 25 } : null,
+          source: 'manual',
+        }),
+      ];
+      configureEffectiveEngineTaxMode(document, frozenMode);
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, {
+        now: () => AT,
+        newId: () => laterBuyId,
+      });
+
+      await expect(
+        store.createTransactions(PORTFOLIO_ID, [
+          {
+            assetId: ASSET_ID,
+            side: 'buy',
+            quantity: 1,
+            price: 9,
+            fee: 0,
+            executedAt: AT,
+          },
+        ]),
+      ).resolves.toEqual([expect.objectContaining({ id: laterBuyId, price: 9 })]);
+      await expect(
+        store.updateTransaction(PORTFOLIO_ID, laterBuyId, { price: 11 }),
+      ).resolves.toMatchObject({ id: laterBuyId, price: 11 });
+      await expect(store.deleteTransaction(PORTFOLIO_ID, laterBuyId)).resolves.toBeUndefined();
+
+      expect(engine.mutate).toHaveBeenCalledTimes(3);
+      expect(
+        engine.state.active?.document.entities.transaction?.find(
+          (entity) => entity.id === laterBuyId,
+        ),
+      ).toMatchObject({ deletedAt: AT });
+      expectPortfolioApiUnused();
+    },
+  );
+
+  it.each(['country_specific', 'custom'] as const)(
+    'rejects moving a later buy across a frozen %s sell before CAS',
+    async (frozenMode) => {
+      const firstBuyId = GENERATED_IDS[0];
+      const sellId = GENERATED_IDS[1];
+      const laterBuyId = GENERATED_IDS[2];
+      const laterExecutedAt = '2026-07-25T11:00:00.000Z';
+      const document = initialDocument();
+      document.entities.transaction = [
+        vaultEntity(firstBuyId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 2,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-25T08:00:00.000Z',
+          note: null,
+          source: 'manual',
+        }),
+        vaultEntity(sellId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'sell',
+          quantity: 1,
+          price: 12,
+          fee: 0,
+          executedAt: '2026-07-25T09:00:00.000Z',
+          note: null,
+          taxMode: frozenMode,
+          taxCountry: frozenMode === 'country_specific' ? 'DE' : null,
+          taxAmountEur: 1,
+          taxParams: frozenMode === 'custom' ? { ratePct: 25 } : null,
+          source: 'manual',
+        }),
+        vaultEntity(laterBuyId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 1,
+          price: 9,
+          fee: 0,
+          executedAt: laterExecutedAt,
+          note: null,
+          source: 'manual',
+        }),
+      ];
+      configureEffectiveEngineTaxMode(document, frozenMode);
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, { now: () => AT });
+
+      await expect(
+        store.updateTransaction(PORTFOLIO_ID, laterBuyId, {
+          executedAt: '2026-07-25T08:30:00.000Z',
+        }),
+      ).rejects.toMatchObject({ code: 'VAULT_OPERATION_UNAVAILABLE' });
+
+      expect(engine.mutate).not.toHaveBeenCalled();
+      expect(
+        engine.state.active?.document.entities.transaction?.find(
+          (entity) => entity.id === laterBuyId,
+        )?.data.executedAt,
+      ).toBe(laterExecutedAt);
+      expectPortfolioApiUnused();
+    },
+  );
+
   it('rejects frozen-tax reshapes before CAS even after settings change', async () => {
     const buyId = GENERATED_IDS[0];
     const sellId = GENERATED_IDS[1];
