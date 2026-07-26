@@ -16,13 +16,17 @@ import {
   expenseCategories,
   expenseRules,
   expenseTransactions,
+  importBatches,
+  importRows,
   priceHistory,
   paranoidRehydrationReceipts,
   paranoidVaultHistory,
   paranoidVaults,
   portfolioCashMovements,
   portfolioCashSources,
+  portfolioDailySnapshots,
   portfolioSettings,
+  portfolioSnapshotState,
   portfolios,
   standingOrderRuns,
   standingOrders,
@@ -30,9 +34,9 @@ import {
   userTaxSettings,
   users,
 } from '../../../data/schema';
-import { expenseDedupHash } from '../../../data/expenseDedup';
 import { createTestApp } from '../../../testing/createTestApp';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
+import { expenseDedupHash } from '../../expenses/expenseImportService';
 import { createStandingOrderService } from '../../standingOrders/standingOrderService';
 import {
   createParanoidRehydrationService,
@@ -53,6 +57,7 @@ const TRANSFER_ID = '018f0000-0000-7000-8000-00000000000b';
 const TRANSFER_OUT_ID = '018f0000-0000-7000-8000-00000000000c';
 const STANDING_ORDER_ID = '018f0000-0000-7000-8000-000000000020';
 const editedAt = '2026-07-24T10:00:00.000Z';
+let restoreUserId = DEVICE_ID;
 
 function entity<
   K extends ParanoidDisableRehydrationRequest['document']['entities'][number]['kind'],
@@ -77,6 +82,7 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
       schemaVersion: 1,
       entities: [
         entity(PORTFOLIO_ID, 'portfolio', {
+          userId: restoreUserId,
           name: 'Main',
           visibility: 'private',
           sortOrder: 0,
@@ -86,14 +92,14 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
         entity(ASSET_ID, 'customAsset', {
           providerId: 'manual',
           providerRef: ASSET_ID,
+          ownerId: restoreUserId,
           type: 'custom',
           symbol: 'HOME',
           name: 'House',
           exchange: null,
           currency: 'EUR',
-          category: 'other',
-          smoothing: false,
-          recategorize: false,
+          meta: { category: 'other', smoothing: false, recategorize: false },
+          searchText: "'home':1 'house':2",
         }),
         entity(CASH_SOURCE_ID, 'cashSource', {
           portfolioId: PORTFOLIO_ID,
@@ -107,9 +113,9 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
           portfolioId: PORTFOLIO_ID,
           assetId: ASSET_ID,
           side: 'buy',
-          quantity: 1,
-          price: 100,
-          fee: 0,
+          quantity: '1.00000000',
+          price: '100.000000',
+          fee: '0.000000',
           executedAt: editedAt,
           note: null,
           taxMode: null,
@@ -124,7 +130,7 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
           portfolioId: PORTFOLIO_ID,
           sourceId: CASH_SOURCE_ID,
           kind: 'deposit',
-          amountEur: 100,
+          amountEur: '100.000000',
           transactionId: null,
           transferId: null,
           counterpartSourceId: null,
@@ -149,7 +155,7 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
     entity('018f0000-0000-7000-8000-00000000000d', 'customAssetValue', {
       assetId: ASSET_ID,
       date: '2026-07-24',
-      close: 125.1234567,
+      close: '125.1234567',
     }),
     entity('018f0000-0000-7000-8000-00000000000e', 'portfolioSetting', {
       portfolioId: PORTFOLIO_ID,
@@ -158,6 +164,7 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
       updatedAt: editedAt,
     }),
     entity('018f0000-0000-7000-8000-00000000000f', 'taxSetting', {
+      userId: restoreUserId,
       mode: 'country_specific',
       country: 'AT',
       manualDefaultAmountEur: null,
@@ -169,13 +176,13 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
       portfolioId: PORTFOLIO_ID,
       assetId: ASSET_ID,
       cashSourceId: CASH_SOURCE_ID,
-      grossAmountEur: 10,
+      grossAmountEur: '10.000000',
       executedAt: editedAt,
       createdAt: editedAt,
       note: null,
       taxMode: 'country_specific',
       taxCountry: 'AT',
-      taxAmountEur: 0,
+      taxAmountEur: '0.000000',
       taxParams: null,
       source: 'manual',
     }),
@@ -183,7 +190,7 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
       portfolioId: PORTFOLIO_ID,
       sourceId: CASH_SOURCE_ID,
       kind: 'dividend',
-      amountEur: 10,
+      amountEur: '10.000000',
       transactionId: null,
       transferId: null,
       counterpartSourceId: null,
@@ -195,10 +202,11 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
       source: 'manual',
     }),
     entity('018f0000-0000-7000-8000-000000000012', 'standingOrder', {
+      userId: restoreUserId,
       portfolioId: PORTFOLIO_ID,
       kind: 'cash-add',
       assetId: null,
-      amount: 100,
+      amount: '100.00000000',
       currency: 'EUR',
       label: 'Salary',
       cadence: 'daily',
@@ -217,6 +225,7 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
       bookedAt: '2026-07-24T09:59:59.000Z',
     }),
     entity(categoryId, 'expenseCategory', {
+      userId: restoreUserId,
       name: 'Groceries',
       direction: 'expense',
       color: '#22c55e',
@@ -224,17 +233,20 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
       updatedAt: editedAt,
     }),
     entity('018f0000-0000-7000-8000-000000000014', 'expenseTransaction', {
+      userId: restoreUserId,
       categoryId,
       direction: 'expense',
-      amount: 60,
+      amount: '60.00',
       currency: 'EUR',
       bookedOn: '2026-06-15',
       description: 'Restored groceries',
       source: 'manual',
+      dedupHash: null,
       createdAt: editedAt,
       updatedAt: editedAt,
     }),
     entity('018f0000-0000-7000-8000-000000000015', 'expenseRule', {
+      userId: restoreUserId,
       categoryId,
       matchType: 'contains',
       pattern: 'grocery',
@@ -244,8 +256,9 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
       updatedAt: editedAt,
     }),
     entity('018f0000-0000-7000-8000-000000000016', 'expenseBudget', {
+      userId: restoreUserId,
       categoryId,
-      amount: 50,
+      amount: '50.00',
       currency: 'EUR',
       createdAt: editedAt,
       updatedAt: editedAt,
@@ -257,6 +270,7 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
 async function makeParanoid() {
   const harness = await createTestApp();
   const user = await harness.seedUser();
+  restoreUserId = user.id;
   await harness.db
     .update(users)
     .set({
@@ -421,24 +435,31 @@ describe('paranoid rehydration service', () => {
     ).toHaveLength(1);
   });
 
-  it('preserves a custom asset recategorization marker through restoration', async () => {
+  it('preserves custom-asset metadata and its generated search text', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
     const asset = input.document.entities.find((entry) => entry.kind === 'customAsset');
     if (!asset || asset.kind !== 'customAsset') throw new Error('expected custom asset');
-    asset.data.recategorize = true;
+    asset.data.meta = {
+      category: 'other',
+      smoothing: false,
+      recategorize: true,
+      futureMetadata: { retained: true },
+    };
     const service = createParanoidRehydrationService({ db });
 
     await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
     const [restored] = await db
-      .select({ meta: assets.meta })
+      .select({ meta: assets.meta, searchText: assets.searchText })
       .from(assets)
       .where(eq(assets.id, ASSET_ID));
     expect(restored?.meta).toMatchObject({
       category: 'other',
       smoothing: false,
       recategorize: true,
+      futureMetadata: { retained: true },
     });
+    expect(restored?.searchText).toBe(asset.data.searchText);
   });
 
   it('restores a custom-asset value point with precision beyond transaction money', async () => {
@@ -448,7 +469,7 @@ describe('paranoid rehydration service', () => {
       entity('018f0000-0000-7000-8000-00000000000d', 'customAssetValue', {
         assetId: ASSET_ID,
         date: '2026-07-24',
-        close: 0.1234567,
+        close: '0.1234567',
       }),
     );
     const service = createParanoidRehydrationService({ db });
@@ -468,7 +489,7 @@ describe('paranoid rehydration service', () => {
     if (!transaction || transaction.kind !== 'transaction') {
       throw new Error('expected transaction');
     }
-    transaction.data.price = 2_000_000_000_000;
+    transaction.data.price = '2000000000000.000000';
     const service = createParanoidRehydrationService({ db });
 
     await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
@@ -477,6 +498,105 @@ describe('paranoid rehydration service', () => {
       .from(transactions)
       .where(eq(transactions.id, TRANSACTION_ID));
     expect(restored?.price).toBe('2000000000000.000000');
+  });
+
+  it('round-trips transaction decimals beyond IEEE-754 precision byte-for-byte', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const transaction = input.document.entities.find((entry) => entry.kind === 'transaction');
+    if (!transaction || transaction.kind !== 'transaction') {
+      throw new Error('expected transaction');
+    }
+    transaction.data.quantity = '90071992547.12345678';
+    transaction.data.price = '90071992547409.123456';
+    transaction.data.fee = '0.123456';
+
+    await createParanoidRehydrationService({ db }).rehydrate(user.id, input);
+
+    const [restored] = await db
+      .select({
+        quantity: transactions.quantity,
+        price: transactions.price,
+        fee: transactions.fee,
+      })
+      .from(transactions)
+      .where(eq(transactions.id, TRANSACTION_ID));
+    expect(restored).toEqual({
+      quantity: '90071992547.12345678',
+      price: '90071992547409.123456',
+      fee: '0.123456',
+    });
+  });
+
+  it('accepts every strict purge-only entity without restoring its cache or staging row', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const batchId = '018f0000-0000-7000-8000-000000000030';
+    const budgetId = '018f0000-0000-7000-8000-000000000031';
+    input.document.entities.push(
+      entity(batchId, 'importBatch', {
+        ownerId: restoreUserId,
+        portfolioId: PORTFOLIO_ID,
+        brokerId: 'ibkr',
+        filename: 'history.csv',
+        status: 'applied',
+        cashSourceId: CASH_SOURCE_ID,
+        createdAt: editedAt,
+        appliedAt: editedAt,
+      }),
+      entity('018f0000-0000-7000-8000-000000000032', 'importRow', {
+        batchId,
+        rowIndex: 2,
+        raw: '2026-07-24,BUY,HOME',
+        kind: 'buy',
+        flag: 'mapped',
+        message: null,
+        executedAt: editedAt,
+        isin: null,
+        symbol: 'HOME',
+        name: 'House',
+        quantity: '1.00000000',
+        price: '100.000000',
+        fee: '0.000000',
+        amountEur: null,
+        currency: 'EUR',
+        note: null,
+        assetId: ASSET_ID,
+        contentHash: 'a'.repeat(64),
+        result: 'applied',
+        resultMessage: null,
+      }),
+      entity('018f0000-0000-7000-8000-000000000033', 'portfolioDailySnapshot', {
+        portfolioId: PORTFOLIO_ID,
+        date: '2026-07-24',
+        valueEur: '100.000000',
+        costBasisEur: '100.000000',
+        plEur: '0.000000',
+        flowEur: '100.000000',
+        cashBySource: { [CASH_SOURCE_ID]: '100.000000' },
+        assetValues: { [ASSET_ID]: '100.000000' },
+        computedAt: editedAt,
+      }),
+      entity('018f0000-0000-7000-8000-000000000034', 'portfolioSnapshotState', {
+        portfolioId: PORTFOLIO_ID,
+        computedThrough: '2026-07-24',
+        dirtyFrom: null,
+        updatedAt: editedAt,
+      }),
+      entity('018f0000-0000-7000-8000-000000000035', 'expenseBudgetFire', {
+        budgetId,
+        periodKey: '2026-07',
+        firedAt: editedAt,
+      }),
+    );
+
+    await createParanoidRehydrationService({ db }).rehydrate(user.id, input);
+
+    expect(await db.select().from(importBatches)).toEqual([]);
+    expect(await db.select().from(importRows)).toEqual([]);
+    expect(await db.select().from(portfolioDailySnapshots)).toEqual([]);
+    expect(await db.select().from(portfolioSnapshotState)).toEqual([]);
+    expect(await db.select().from(expenseBudgetFires)).toEqual([]);
   });
 
   it('round-trips import-created notes and descriptions beyond manual-entry limits', async () => {
@@ -507,7 +627,7 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         assetId: ASSET_ID,
         cashSourceId: CASH_SOURCE_ID,
-        grossAmountEur: 10,
+        grossAmountEur: '10.000000',
         executedAt: editedAt,
         createdAt: editedAt,
         note: dividendNote,
@@ -521,7 +641,7 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'dividend',
-        amountEur: 10,
+        amountEur: '10.000000',
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,
@@ -533,13 +653,15 @@ describe('paranoid rehydration service', () => {
         source: 'import:flatex',
       }),
       entity(expenseId, 'expenseTransaction', {
+        userId: restoreUserId,
         categoryId: null,
         direction: 'expense',
-        amount: 10,
+        amount: '10.00',
         currency: 'EUR',
         bookedOn: '2026-07-24',
         description: expenseDescription,
         source: 'import:n26',
+        dedupHash: 'imported-text-fixture',
         createdAt: editedAt,
         updatedAt: editedAt,
       }),
@@ -768,6 +890,7 @@ describe('paranoid rehydration service', () => {
     );
     input.document.entities.push(
       entity(SECOND_PORTFOLIO_ID, 'portfolio', {
+        userId: restoreUserId,
         name: 'Live',
         visibility: 'private',
         sortOrder: 1,
@@ -820,7 +943,7 @@ describe('paranoid rehydration service', () => {
     transaction.data.side = 'sell';
     transaction.data.allowUncovered = true;
     transaction.data.taxMode = 'none';
-    transaction.data.taxAmountEur = 1;
+    transaction.data.taxAmountEur = '1.000000';
     const service = createParanoidRehydrationService({ db });
 
     await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
@@ -837,13 +960,13 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         assetId: ASSET_ID,
         cashSourceId: CASH_SOURCE_ID,
-        grossAmountEur: 10,
+        grossAmountEur: '10.000000',
         executedAt: editedAt,
         createdAt: editedAt,
         note: null,
         taxMode: 'none',
         taxCountry: null,
-        taxAmountEur: 1,
+        taxAmountEur: '1.000000',
         taxParams: null,
         source: 'manual',
       }),
@@ -869,10 +992,10 @@ describe('paranoid rehydration service', () => {
     transaction.data.uncoveredEntryPrice = null;
     transaction.data.taxMode = 'country_specific';
     transaction.data.taxCountry = 'AT';
-    transaction.data.taxAmountEur = 0;
+    transaction.data.taxAmountEur = '0.000000';
     movement.data.kind = 'sell_proceeds';
     movement.data.transactionId = TRANSACTION_ID;
-    movement.data.amountEur = 100;
+    movement.data.amountEur = '100.000000';
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'portfolioSetting', {
         portfolioId: PORTFOLIO_ID,
@@ -908,11 +1031,12 @@ describe('paranoid rehydration service', () => {
       transaction.data.allowUncovered = true;
       transaction.data.taxMode = 'country_specific';
       transaction.data.taxCountry = country;
-      transaction.data.taxAmountEur = 0;
+      transaction.data.taxAmountEur = '0.000000';
       movement.data.kind = 'sell_proceeds';
       movement.data.transactionId = TRANSACTION_ID;
       input.document.entities.push(
         entity('018f0000-0000-7000-8000-00000000000d', 'taxSetting', {
+          userId: restoreUserId,
           mode: 'country_specific',
           country,
           manualDefaultAmountEur: null,
@@ -945,13 +1069,13 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         assetId: ASSET_ID,
         cashSourceId: CASH_SOURCE_ID,
-        grossAmountEur: 10,
+        grossAmountEur: '10.000000',
         executedAt: editedAt,
         createdAt: editedAt,
         note: null,
         taxMode: 'custom',
         taxCountry: null,
-        taxAmountEur: 1,
+        taxAmountEur: '1.000000',
         taxParams: customParams,
         source: 'manual',
       }),
@@ -959,7 +1083,7 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'dividend',
-        amountEur: 10,
+        amountEur: '10.000000',
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,
@@ -974,7 +1098,7 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'tax_withholding',
-        amountEur: -1,
+        amountEur: '-1.000000',
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,
@@ -986,6 +1110,7 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
       entity('018f0000-0000-7000-8000-000000000010', 'taxSetting', {
+        userId: restoreUserId,
         mode: 'custom',
         country: null,
         manualDefaultAmountEur: null,
@@ -1045,6 +1170,7 @@ describe('paranoid rehydration service', () => {
     const input = request();
     input.document.entities.push(
       entity(SECOND_PORTFOLIO_ID, 'portfolio', {
+        userId: restoreUserId,
         name: 'Archived',
         visibility: 'private',
         sortOrder: 1,
@@ -1079,6 +1205,7 @@ describe('paranoid rehydration service', () => {
     const input = request();
     input.document.entities.push(
       entity(SECOND_PORTFOLIO_ID, 'portfolio', {
+        userId: restoreUserId,
         name: 'Second',
         visibility: 'private',
         sortOrder: 1,
@@ -1097,9 +1224,9 @@ describe('paranoid rehydration service', () => {
         portfolioId: SECOND_PORTFOLIO_ID,
         assetId: ASSET_ID,
         side: 'sell',
-        quantity: 1,
-        price: 100,
-        fee: 0,
+        quantity: '1.00000000',
+        price: '100.000000',
+        fee: '0.000000',
         executedAt: editedAt,
         note: null,
         taxMode: null,
@@ -1163,7 +1290,7 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         sourceId: SECOND_CASH_SOURCE_ID,
         kind: 'deposit',
-        amountEur: 10,
+        amountEur: '10.000000',
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,
@@ -1183,18 +1310,27 @@ describe('paranoid rehydration service', () => {
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
 
-  it('rebuilds imported expense deduplication markers from restored facts', async () => {
+  it('preserves an imported expense deduplication marker exactly', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
+    const dedupHash = expenseDedupHash({
+      bookedOn: '2026-07-23',
+      direction: 'expense',
+      amount: 12.5,
+      currency: 'EUR',
+      description: 'Coffee Shop',
+    });
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'expenseTransaction', {
+        userId: restoreUserId,
         categoryId: null,
         direction: 'expense',
-        amount: 12.5,
+        amount: '12.50',
         currency: 'EUR',
         bookedOn: '2026-07-23',
         description: 'Coffee Shop',
         source: 'import:n26',
+        dedupHash,
         createdAt: editedAt,
         updatedAt: editedAt,
       }),
@@ -1206,13 +1342,6 @@ describe('paranoid rehydration service', () => {
     const [expense] = await db
       .select({ dedupHash: expenseTransactions.dedupHash })
       .from(expenseTransactions);
-    const dedupHash = expenseDedupHash({
-      bookedOn: '2026-07-23',
-      direction: 'expense',
-      amount: 12.5,
-      currency: 'EUR',
-      description: 'Coffee Shop',
-    });
     expect(expense?.dedupHash).toBe(dedupHash);
     expect(
       await db
@@ -1241,6 +1370,7 @@ describe('paranoid rehydration service', () => {
     const budgetId = '018f0000-0000-7000-8000-000000000012';
     input.document.entities.push(
       entity(categoryId, 'expenseCategory', {
+        userId: restoreUserId,
         name: 'Groceries',
         direction: 'expense',
         color: '#22c55e',
@@ -1248,20 +1378,23 @@ describe('paranoid rehydration service', () => {
         updatedAt: editedAt,
       }),
       entity(budgetId, 'expenseBudget', {
+        userId: restoreUserId,
         categoryId,
-        amount: 50,
+        amount: '50.00',
         currency: 'EUR',
         createdAt: editedAt,
         updatedAt: editedAt,
       }),
       entity('018f0000-0000-7000-8000-000000000013', 'expenseTransaction', {
+        userId: restoreUserId,
         categoryId,
         direction: 'expense',
-        amount: 60,
+        amount: '60.00',
         currency: 'EUR',
         bookedOn: '2026-06-15',
         description: 'Restored groceries',
         source: 'manual',
+        dedupHash: null,
         createdAt: editedAt,
         updatedAt: editedAt,
       }),
@@ -1284,10 +1417,11 @@ describe('paranoid rehydration service', () => {
     const input = request();
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'standingOrder', {
+        userId: restoreUserId,
         portfolioId: PORTFOLIO_ID,
         kind: 'cash-add',
         assetId: null,
-        amount: 100,
+        amount: '100.00000000',
         currency: 'EUR',
         label: 'Salary',
         cadence: 'daily',
@@ -1336,10 +1470,11 @@ describe('paranoid rehydration service', () => {
       const input = request();
       input.document.entities.push(
         entity(STANDING_ORDER_ID, 'standingOrder', {
+          userId: restoreUserId,
           portfolioId: PORTFOLIO_ID,
           kind: captured.order.kind,
           assetId: captured.order.assetId,
-          amount: Number(captured.order.amount),
+          amount: captured.order.amount,
           currency: 'EUR',
           label: captured.order.label,
           cadence: captured.order.cadence,
@@ -1362,7 +1497,7 @@ describe('paranoid rehydration service', () => {
             portfolioId: movement.portfolioId,
             sourceId: movement.sourceId,
             kind: movement.kind,
-            amountEur: Number(movement.amountEur),
+            amountEur: movement.amountEur,
             transactionId: movement.transactionId,
             transferId: movement.transferId,
             counterpartSourceId: movement.counterpartSourceId,
@@ -1432,10 +1567,11 @@ describe('paranoid rehydration service', () => {
     const input = request();
     input.document.entities.push(
       entity(STANDING_ORDER_ID, 'standingOrder', {
+        userId: restoreUserId,
         portfolioId: PORTFOLIO_ID,
         kind: 'cash-add',
         assetId: null,
-        amount: 100,
+        amount: '100.00000000',
         currency: 'EUR',
         label: 'Salary',
         cadence: 'daily',
@@ -1475,10 +1611,11 @@ describe('paranoid rehydration service', () => {
     const input = request();
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'standingOrder', {
+        userId: restoreUserId,
         portfolioId: PORTFOLIO_ID,
         kind: order.kind,
         assetId: order.assetId,
-        amount: 100,
+        amount: '100.00000000',
         currency: order.currency,
         label: null,
         cadence: 'daily',
@@ -1508,7 +1645,7 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         assetId: ASSET_ID,
         cashSourceId: CASH_SOURCE_ID,
-        grossAmountEur: 10,
+        grossAmountEur: '10.000000',
         executedAt: editedAt,
         createdAt: editedAt,
         note: null,
@@ -1531,6 +1668,7 @@ describe('paranoid rehydration service', () => {
     const { db, user } = await makeParanoid();
     const input = request();
     const taxSetting = {
+      userId: restoreUserId,
       mode: 'none' as const,
       country: null,
       manualDefaultAmountEur: null,
@@ -1556,14 +1694,14 @@ describe('paranoid rehydration service', () => {
     const movement = input.document.entities.find((entry) => entry.kind === 'cashMovement')!;
     if (movement.kind !== 'cashMovement') throw new Error('expected cash movement');
     movement.data.kind = 'buy';
-    movement.data.amountEur = -1;
+    movement.data.amountEur = '-1.000000';
     movement.data.transactionId = TRANSACTION_ID;
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
-        amountEur: 1,
+        amountEur: '1.000000',
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,
@@ -1593,14 +1731,14 @@ describe('paranoid rehydration service', () => {
     }
     asset.data.currency = 'USD';
     movement.data.kind = 'buy';
-    movement.data.amountEur = -75;
+    movement.data.amountEur = '-75.000000';
     movement.data.transactionId = TRANSACTION_ID;
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
-        amountEur: 75,
+        amountEur: '75.000000',
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,
@@ -1635,14 +1773,14 @@ describe('paranoid rehydration service', () => {
     }
     asset.data.currency = 'USD';
     movement.data.kind = 'buy';
-    movement.data.amountEur = -75;
+    movement.data.amountEur = '-75.000000';
     movement.data.transactionId = TRANSACTION_ID;
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
-        amountEur: 75,
+        amountEur: '75.000000',
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,
@@ -1673,7 +1811,7 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
-        amountEur: 100,
+        amountEur: '100.000000',
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,
@@ -1688,7 +1826,7 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'withdrawal',
-        amountEur: -100,
+        amountEur: '-100.000000',
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,
@@ -1719,9 +1857,9 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         assetId: ASSET_ID,
         side: 'buy',
-        quantity: 1,
-        price: 100,
-        fee: 0,
+        quantity: '1.00000000',
+        price: '100.000000',
+        fee: '0.000000',
         executedAt: editedAt,
         note: null,
         taxMode: null,
@@ -1736,9 +1874,9 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         assetId: ASSET_ID,
         side: 'sell',
-        quantity: 1,
-        price: 100,
-        fee: 0,
+        quantity: '1.00000000',
+        price: '100.000000',
+        fee: '0.000000',
         executedAt: editedAt,
         note: null,
         taxMode: null,
@@ -1783,6 +1921,7 @@ describe('paranoid rehydration service', () => {
     const input = request();
     input.document.entities.push(
       entity(SECOND_PORTFOLIO_ID, 'portfolio', {
+        userId: restoreUserId,
         name: 'Second',
         visibility: 'private',
         sortOrder: 1,
@@ -1801,7 +1940,7 @@ describe('paranoid rehydration service', () => {
         portfolioId: SECOND_PORTFOLIO_ID,
         sourceId: SECOND_CASH_SOURCE_ID,
         kind: 'buy',
-        amountEur: -100,
+        amountEur: '-100.000000',
         transactionId: TRANSACTION_ID,
         transferId: null,
         counterpartSourceId: null,
@@ -1837,7 +1976,7 @@ describe('paranoid rehydration service', () => {
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'transfer_out',
-        amountEur: -100,
+        amountEur: '-100.000000',
         transactionId: null,
         transferId: TRANSFER_ID,
         counterpartSourceId: SECOND_CASH_SOURCE_ID,

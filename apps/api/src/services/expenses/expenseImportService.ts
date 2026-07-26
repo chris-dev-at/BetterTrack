@@ -1,5 +1,8 @@
+import { createHash } from 'node:crypto';
+
 import type {
   ExpenseBankListResponse,
+  ExpenseDirection,
   ExpenseImportApplyResponse,
   ExpenseImportApplyRow,
   ExpenseImportCounts,
@@ -9,7 +12,6 @@ import type {
 } from '@bettertrack/contracts';
 import { IMPORT_MAX_ROWS, importSourceTag } from '@bettertrack/contracts';
 
-import { expenseDedupHash } from '../../data/expenseDedup';
 import { badRequest } from '../../errors';
 import type {
   ExpenseCategoryRepository,
@@ -70,6 +72,47 @@ export interface ExpenseImportService {
 
 const CATEGORY_REF_INVALID = () =>
   badRequest('Referenced category not found.', 'EXPENSE_CATEGORY_REF_NOT_FOUND');
+
+/**
+ * Cent-canonical decimal so `5`, `5.0` and `5.00` hash identically (mirrors the
+ * broker `contentHash.canonicalAmount`, kept LOCAL so the strictly-separate
+ * expense area never imports the domain money-math `contentHash.ts` pulls in).
+ */
+function canonicalAmount(value: number): string {
+  const fixed = value.toFixed(2);
+  const trimmed = fixed.includes('.') ? fixed.replace(/0+$/, '').replace(/\.$/, '') : fixed;
+  return trimmed === '-0' ? '0' : trimmed;
+}
+
+/** Trim + collapse whitespace + lowercase so trivial memo reformatting still dedupes. */
+function normalizeDescription(description: string): string {
+  return description.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * The idempotency key for one imported bank row: `date+direction+amount+currency+
+ * description`, sha-256 hex. Deterministic from the file, so a re-import produces
+ * the same hash and the UNIQUE(user, dedup_hash) key skips it. (Two genuinely
+ * distinct rows identical on all five fields — e.g. two same-day identical coffees
+ * — collide and the second is treated as a duplicate; the same accepted trade-off
+ * as the broker `contentHash`.)
+ */
+export function expenseDedupHash(row: {
+  bookedOn: string;
+  direction: ExpenseDirection;
+  amount: number;
+  currency: string;
+  description: string;
+}): string {
+  const key = [
+    row.bookedOn,
+    row.direction,
+    canonicalAmount(row.amount),
+    row.currency.toUpperCase(),
+    normalizeDescription(row.description),
+  ].join('|');
+  return createHash('sha256').update(key).digest('hex');
+}
 
 export function createExpenseImportService(deps: ExpenseImportServiceDeps): ExpenseImportService {
   const { categories, transactions, rules, onApply } = deps;

@@ -105,7 +105,7 @@ describe('strict vault-payload completeness', () => {
   });
 
   it('requires every restorable table to name a strict payload schema and restore handler', () => {
-    const handlers = new Set(PARANOID_REHYDRATION_HANDLERS);
+    const handlers = new Set<string>(PARANOID_REHYDRATION_HANDLERS);
     for (const [table, policy] of Object.entries(PARANOID_REHYDRATION_POLICY)) {
       if (policy.kind !== 'restore') continue;
       expect(

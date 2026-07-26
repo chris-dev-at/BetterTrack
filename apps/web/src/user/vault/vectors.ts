@@ -1,8 +1,4 @@
-import type {
-  LegacyVaultDocumentV1,
-  VaultEnvelopeHeader,
-  VaultKdfParams,
-} from '@bettertrack/contracts';
+import type { VaultDocumentV1, VaultEnvelopeHeader, VaultKdfParams } from '@bettertrack/contracts';
 
 import fixture from './vectors.fixture.json';
 
@@ -13,7 +9,7 @@ export const VECTOR_DEVICE_ID = '018f0000-0000-7000-8000-00000000000b';
 export const VECTOR_WRITE_ID = '018f0000-0000-7000-8000-00000000000c';
 export const VECTOR_NEXT_KEY_ID = '018f0000-0000-7000-8000-00000000000d';
 
-export const vaultVectorDocument: LegacyVaultDocumentV1 = {
+export const vaultVectorDocument: VaultDocumentV1 = {
   schemaVersion: 1,
   entities: {
     portfolio: [

@@ -1,7 +1,6 @@
-import type { VaultDocumentV1 } from '@bettertrack/contracts';
+import type { VaultStrictDocumentV1 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import { expenseDedupHash } from '../expenseDedup';
 
 import {
   assets,
@@ -28,58 +27,47 @@ import {
  * partial document or emit the normal write-path's effects before the batch does.
  */
 
-type Entity = VaultDocumentV1['entities'][number];
+type Entity = VaultStrictDocumentV1['entities'][number];
 type EntityOf<K extends Entity['kind']> = Extract<Entity, { kind: K }>;
 
 export interface ParanoidRehydrationSourceRepository {
-  restoreCustomAssets(userId: string, rows: readonly EntityOf<'customAsset'>[]): Promise<void>;
+  restoreCustomAssets(rows: readonly EntityOf<'customAsset'>[]): Promise<void>;
   restoreCustomAssetValues(rows: readonly EntityOf<'customAssetValue'>[]): Promise<void>;
-  restorePortfolios(userId: string, rows: readonly EntityOf<'portfolio'>[]): Promise<void>;
+  restorePortfolios(rows: readonly EntityOf<'portfolio'>[]): Promise<void>;
   restoreCashSources(rows: readonly EntityOf<'cashSource'>[]): Promise<void>;
-  restoreTaxSettings(userId: string, row: EntityOf<'taxSetting'> | undefined): Promise<void>;
+  restoreTaxSettings(row: EntityOf<'taxSetting'> | undefined): Promise<void>;
   restorePortfolioSettings(rows: readonly EntityOf<'portfolioSetting'>[]): Promise<void>;
   restoreTransactions(rows: readonly EntityOf<'transaction'>[]): Promise<void>;
   restoreDividends(rows: readonly EntityOf<'dividend'>[]): Promise<void>;
   restoreCashMovements(rows: readonly EntityOf<'cashMovement'>[]): Promise<void>;
-  restoreStandingOrders(userId: string, rows: readonly EntityOf<'standingOrder'>[]): Promise<void>;
+  restoreStandingOrders(rows: readonly EntityOf<'standingOrder'>[]): Promise<void>;
   restoreStandingOrderRuns(rows: readonly EntityOf<'standingOrderRun'>[]): Promise<void>;
-  restoreExpenseCategories(
-    userId: string,
-    rows: readonly EntityOf<'expenseCategory'>[],
-  ): Promise<void>;
-  restoreExpenseTransactions(
-    userId: string,
-    rows: readonly EntityOf<'expenseTransaction'>[],
-  ): Promise<void>;
-  restoreExpenseRules(userId: string, rows: readonly EntityOf<'expenseRule'>[]): Promise<void>;
-  restoreExpenseBudgets(userId: string, rows: readonly EntityOf<'expenseBudget'>[]): Promise<void>;
+  restoreExpenseCategories(rows: readonly EntityOf<'expenseCategory'>[]): Promise<void>;
+  restoreExpenseTransactions(rows: readonly EntityOf<'expenseTransaction'>[]): Promise<void>;
+  restoreExpenseRules(rows: readonly EntityOf<'expenseRule'>[]): Promise<void>;
+  restoreExpenseBudgets(rows: readonly EntityOf<'expenseBudget'>[]): Promise<void>;
 }
 
 export function createParanoidRehydrationSourceRepository(
   tx: Database,
 ): ParanoidRehydrationSourceRepository {
   return {
-    async restoreCustomAssets(userId, rows) {
+    async restoreCustomAssets(rows) {
       if (!rows.length) return;
       await tx.insert(assets).values(
         rows.map((entity) => ({
           id: entity.id,
-          ownerId: userId,
+          ownerId: entity.data.ownerId,
           providerId: entity.data.providerId,
-          // Manual-provider lookup is globally keyed by this ref. Keep the
-          // normal custom-asset invariant even if a future caller bypasses
-          // restore-graph validation.
-          providerRef: entity.id,
+          providerRef: entity.data.providerRef,
           type: entity.data.type,
           symbol: entity.data.symbol,
           name: entity.data.name,
           exchange: entity.data.exchange,
           currency: entity.data.currency,
-          meta: {
-            category: entity.data.category,
-            smoothing: entity.data.smoothing,
-            ...(entity.data.recategorize ? { recategorize: true } : {}),
-          },
+          meta: entity.data.meta,
+          // `search_text` is GENERATED ALWAYS from symbol + name. PostgreSQL
+          // reproduces the carried value; generated columns cannot be inserted.
         })),
       );
     },
@@ -90,17 +78,17 @@ export function createParanoidRehydrationSourceRepository(
         rows.map((entity) => ({
           assetId: entity.data.assetId,
           date: entity.data.date,
-          close: String(entity.data.close),
+          close: entity.data.close,
         })),
       );
     },
 
-    async restorePortfolios(userId, rows) {
+    async restorePortfolios(rows) {
       if (!rows.length) return;
       await tx.insert(portfolios).values(
         rows.map((entity) => ({
           id: entity.id,
-          userId,
+          userId: entity.data.userId,
           name: entity.data.name,
           visibility: entity.data.visibility,
           sortOrder: entity.data.sortOrder,
@@ -125,16 +113,14 @@ export function createParanoidRehydrationSourceRepository(
       );
     },
 
-    async restoreTaxSettings(userId, row) {
+    async restoreTaxSettings(row) {
       if (!row) return;
       await tx.insert(userTaxSettings).values({
-        userId,
+        userId: row.data.userId,
         mode: row.data.mode,
         country: row.data.country,
-        manualDefaultAmountEur:
-          row.data.manualDefaultAmountEur === null ? null : String(row.data.manualDefaultAmountEur),
-        manualDefaultRatePct:
-          row.data.manualDefaultRatePct === null ? null : String(row.data.manualDefaultRatePct),
+        manualDefaultAmountEur: row.data.manualDefaultAmountEur,
+        manualDefaultRatePct: row.data.manualDefaultRatePct,
         customParams: row.data.customParams,
         updatedAt: new Date(row.data.updatedAt),
       });
@@ -160,20 +146,17 @@ export function createParanoidRehydrationSourceRepository(
           portfolioId: entity.data.portfolioId,
           assetId: entity.data.assetId,
           side: entity.data.side,
-          quantity: String(entity.data.quantity),
-          price: String(entity.data.price),
-          fee: String(entity.data.fee),
+          quantity: entity.data.quantity,
+          price: entity.data.price,
+          fee: entity.data.fee,
           executedAt: new Date(entity.data.executedAt),
           note: entity.data.note,
           taxMode: entity.data.taxMode,
           taxCountry: entity.data.taxCountry,
-          taxAmountEur: entity.data.taxAmountEur === null ? null : String(entity.data.taxAmountEur),
+          taxAmountEur: entity.data.taxAmountEur,
           taxParams: entity.data.taxParams,
           allowUncovered: entity.data.allowUncovered,
-          uncoveredEntryPrice:
-            entity.data.uncoveredEntryPrice === null
-              ? null
-              : String(entity.data.uncoveredEntryPrice),
+          uncoveredEntryPrice: entity.data.uncoveredEntryPrice,
           source: entity.data.source,
         })),
       );
@@ -187,12 +170,12 @@ export function createParanoidRehydrationSourceRepository(
           portfolioId: entity.data.portfolioId,
           assetId: entity.data.assetId,
           cashSourceId: entity.data.cashSourceId,
-          grossAmountEur: String(entity.data.grossAmountEur),
+          grossAmountEur: entity.data.grossAmountEur,
           executedAt: new Date(entity.data.executedAt),
           note: entity.data.note,
           taxMode: entity.data.taxMode,
           taxCountry: entity.data.taxCountry,
-          taxAmountEur: entity.data.taxAmountEur === null ? null : String(entity.data.taxAmountEur),
+          taxAmountEur: entity.data.taxAmountEur,
           taxParams: entity.data.taxParams,
           source: entity.data.source,
           createdAt: new Date(entity.data.createdAt),
@@ -208,7 +191,7 @@ export function createParanoidRehydrationSourceRepository(
           portfolioId: entity.data.portfolioId,
           sourceId: entity.data.sourceId,
           kind: entity.data.kind,
-          amountEur: String(entity.data.amountEur),
+          amountEur: entity.data.amountEur,
           transactionId: entity.data.transactionId,
           transferId: entity.data.transferId,
           counterpartSourceId: entity.data.counterpartSourceId,
@@ -222,16 +205,16 @@ export function createParanoidRehydrationSourceRepository(
       );
     },
 
-    async restoreStandingOrders(userId, rows) {
+    async restoreStandingOrders(rows) {
       if (!rows.length) return;
       await tx.insert(standingOrders).values(
         rows.map((entity) => ({
           id: entity.id,
-          userId,
+          userId: entity.data.userId,
           portfolioId: entity.data.portfolioId,
           kind: entity.data.kind,
           assetId: entity.data.assetId,
-          amount: String(entity.data.amount),
+          amount: entity.data.amount,
           currency: entity.data.currency,
           label: entity.data.label,
           cadence: entity.data.cadence,
@@ -261,12 +244,12 @@ export function createParanoidRehydrationSourceRepository(
       );
     },
 
-    async restoreExpenseCategories(userId, rows) {
+    async restoreExpenseCategories(rows) {
       if (!rows.length) return;
       await tx.insert(expenseCategories).values(
         rows.map((entity) => ({
           id: entity.id,
-          userId,
+          userId: entity.data.userId,
           name: entity.data.name,
           direction: entity.data.direction,
           color: entity.data.color,
@@ -276,34 +259,32 @@ export function createParanoidRehydrationSourceRepository(
       );
     },
 
-    async restoreExpenseTransactions(userId, rows) {
+    async restoreExpenseTransactions(rows) {
       if (!rows.length) return;
       await tx.insert(expenseTransactions).values(
         rows.map((entity) => ({
           id: entity.id,
-          userId,
+          userId: entity.data.userId,
           categoryId: entity.data.categoryId,
           direction: entity.data.direction,
-          amount: String(entity.data.amount),
+          amount: entity.data.amount,
           currency: entity.data.currency,
           bookedOn: entity.data.bookedOn,
           description: entity.data.description,
           source: entity.data.source,
-          dedupHash: entity.data.source.startsWith('import:')
-            ? expenseDedupHash(entity.data)
-            : null,
+          dedupHash: entity.data.dedupHash,
           createdAt: new Date(entity.data.createdAt),
           updatedAt: new Date(entity.data.updatedAt),
         })),
       );
     },
 
-    async restoreExpenseRules(userId, rows) {
+    async restoreExpenseRules(rows) {
       if (!rows.length) return;
       await tx.insert(expenseRules).values(
         rows.map((entity) => ({
           id: entity.id,
-          userId,
+          userId: entity.data.userId,
           categoryId: entity.data.categoryId,
           matchType: entity.data.matchType,
           pattern: entity.data.pattern,
@@ -315,14 +296,14 @@ export function createParanoidRehydrationSourceRepository(
       );
     },
 
-    async restoreExpenseBudgets(userId, rows) {
+    async restoreExpenseBudgets(rows) {
       if (!rows.length) return;
       await tx.insert(expenseBudgets).values(
         rows.map((entity) => ({
           id: entity.id,
-          userId,
+          userId: entity.data.userId,
           categoryId: entity.data.categoryId,
-          amount: String(entity.data.amount),
+          amount: entity.data.amount,
           currency: entity.data.currency,
           createdAt: new Date(entity.data.createdAt),
           updatedAt: new Date(entity.data.updatedAt),

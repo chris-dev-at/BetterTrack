@@ -4,20 +4,16 @@ import type {
   ParanoidRehydrationPostCommitPlan,
 } from '@bettertrack/contracts';
 import {
+  customTaxParamsSchema,
   paranoidDisableRehydrationRequestSchema,
   taxSettingsResponseSchema,
   updateTaxSettingsRequestSchema,
 } from '@bettertrack/contracts';
-import {
-  cashBalancesBySource,
-  floorCents,
-  projectCashLedgerBySource,
-} from '@bettertrack/domain/cashLedger';
+import { CASH_MOVEMENT_SIGN, floorCents } from '@bettertrack/domain/cashLedger';
 import { viennaYearOf } from '@bettertrack/domain/tax';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '../../data/db';
-import { expenseDedupHash } from '../../data/expenseDedup';
 import {
   createExpenseBudgetRepository,
   createExpenseCategoryRepository,
@@ -37,7 +33,6 @@ import {
   standingOrders,
   userTaxSettings,
 } from '../../data/schema';
-import { reducePosition } from '../../domain/holdings';
 import { createExpenseBudgetService } from '../expenses/budgetService';
 import { createExpenseService } from '../expenses/expenseService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -116,6 +111,76 @@ export interface ParanoidRehydrationService {
 type Entity = ParanoidDisableRehydrationRequest['document']['entities'][number];
 type EntityOf<K extends Entity['kind']> = Extract<Entity, { kind: K }>;
 
+interface ExactDecimal {
+  coefficient: bigint;
+  scale: number;
+}
+
+const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
+const pow10 = (scale: number): bigint => 10n ** BigInt(scale);
+
+function exactDecimal(value: string, label: string): ExactDecimal {
+  const match = DECIMAL_PATTERN.exec(value);
+  if (!match) {
+    throw new ParanoidRehydrationError('INVALID_REFERENCE', `${label} is not a decimal`);
+  }
+  const fraction = match[3] ?? '';
+  const magnitude = BigInt(`${match[2]}${fraction}`);
+  return {
+    coefficient: match[1] === '-' ? -magnitude : magnitude,
+    scale: fraction.length,
+  };
+}
+
+/**
+ * Convert one persisted PostgreSQL numeric to a fixed-scale integer without
+ * crossing IEEE-754. Values that PostgreSQL would round or overflow are
+ * rejected before the restore transaction instead of being silently changed.
+ */
+function persistedNumeric(value: string, precision: number, scale: number, label: string): bigint {
+  const decimal = exactDecimal(value, label);
+  if (decimal.scale > scale) {
+    throw new ParanoidRehydrationError('INVALID_REFERENCE', `${label} exceeds its persisted scale`);
+  }
+  const integerDigits = value.replace(/^-/, '').split('.')[0]!.replace(/^0+/, '');
+  if (integerDigits.length > precision - scale) {
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      `${label} exceeds its persisted precision`,
+    );
+  }
+  return decimal.coefficient * pow10(scale - decimal.scale);
+}
+
+function decimalAtScale(value: string, scale: number, label: string): bigint {
+  const decimal = exactDecimal(value, label);
+  if (decimal.scale > scale) {
+    throw new ParanoidRehydrationError('INVALID_REFERENCE', `${label} has excess precision`);
+  }
+  return decimal.coefficient * pow10(scale - decimal.scale);
+}
+
+function scaledDecimalText(value: bigint, scale: number): string {
+  const sign = value < 0 ? '-' : '';
+  const magnitude = value < 0 ? -value : value;
+  if (scale === 0) return `${sign}${magnitude}`;
+  const digits = magnitude.toString().padStart(scale + 1, '0');
+  const split = digits.length - scale;
+  return `${sign}${digits.slice(0, split)}.${digits.slice(split)}`;
+}
+
+function requirePositive(value: bigint, label: string): void {
+  if (value <= 0n) {
+    throw new ParanoidRehydrationError('INVALID_REFERENCE', `${label} must be positive`);
+  }
+}
+
+function requireNonnegative(value: bigint, label: string): void {
+  if (value < 0n) {
+    throw new ParanoidRehydrationError('INVALID_REFERENCE', `${label} must not be negative`);
+  }
+}
+
 function rows<K extends Entity['kind']>(
   entities: readonly Entity[],
   kind: K,
@@ -161,12 +226,244 @@ function validTaxOverride(value: unknown): boolean {
   return updateTaxSettingsRequestSchema.safeParse(normalized).success;
 }
 
+function validateOwnedRows(userId: string, entities: readonly Entity[]): void {
+  for (const portfolio of rows(entities, 'portfolio')) {
+    if (portfolio.data.userId !== userId) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'portfolio owner does not match the rehydrated account',
+      );
+    }
+  }
+  for (const asset of rows(entities, 'customAsset')) {
+    if (
+      asset.data.ownerId !== userId ||
+      asset.data.providerId !== 'manual' ||
+      asset.data.providerRef !== asset.id
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'custom asset ownership or manual-provider identity is invalid',
+      );
+    }
+  }
+  for (const setting of rows(entities, 'taxSetting')) {
+    if (setting.data.userId !== userId) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'tax-setting owner does not match the rehydrated account',
+      );
+    }
+  }
+  for (const order of rows(entities, 'standingOrder')) {
+    if (order.data.userId !== userId) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'standing-order owner does not match the rehydrated account',
+      );
+    }
+  }
+  for (const batch of rows(entities, 'importBatch')) {
+    if (batch.data.ownerId !== userId) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'import-batch owner does not match the rehydrated account',
+      );
+    }
+  }
+  for (const kind of [
+    'expenseCategory',
+    'expenseTransaction',
+    'expenseRule',
+    'expenseBudget',
+  ] as const) {
+    for (const entity of rows(entities, kind)) {
+      if (entity.data.userId !== userId) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          `${kind} owner does not match the rehydrated account`,
+        );
+      }
+    }
+  }
+}
+
+function validFrozenTaxShape(
+  mode: EntityOf<'transaction'>['data']['taxMode'] | EntityOf<'dividend'>['data']['taxMode'],
+  country: EntityOf<'transaction'>['data']['taxCountry'],
+  params: EntityOf<'transaction'>['data']['taxParams'],
+): boolean {
+  if (mode === null) return country === null && params === null;
+  if (mode === 'country_specific') return country !== null && params === null;
+  if (mode === 'custom') return country === null && customTaxParamsSchema.safeParse(params).success;
+  return country === null && params === null;
+}
+
+function validatePersistedNumerics(entities: readonly Entity[]): void {
+  for (const transaction of rows(entities, 'transaction')) {
+    const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+    const price = persistedNumeric(transaction.data.price, 20, 6, 'transaction price');
+    const fee = persistedNumeric(transaction.data.fee, 20, 6, 'transaction fee');
+    requirePositive(quantity, 'transaction quantity');
+    requireNonnegative(price, 'transaction price');
+    requireNonnegative(fee, 'transaction fee');
+    if (transaction.data.taxAmountEur !== null) {
+      persistedNumeric(transaction.data.taxAmountEur, 20, 6, 'transaction tax amount');
+    }
+    if (transaction.data.uncoveredEntryPrice !== null) {
+      requireNonnegative(
+        persistedNumeric(
+          transaction.data.uncoveredEntryPrice,
+          20,
+          6,
+          'transaction uncovered entry price',
+        ),
+        'transaction uncovered entry price',
+      );
+    }
+    if (
+      (transaction.data.allowUncovered || transaction.data.uncoveredEntryPrice !== null) &&
+      transaction.data.side !== 'sell'
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'uncovered transaction fields apply only to sells',
+      );
+    }
+    if (transaction.data.uncoveredEntryPrice !== null && !transaction.data.allowUncovered) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'an uncovered entry price requires the uncovered-sell acknowledgement',
+      );
+    }
+    if (
+      transaction.data.side === 'buy' &&
+      (transaction.data.taxMode !== null ||
+        transaction.data.taxCountry !== null ||
+        transaction.data.taxAmountEur !== null ||
+        transaction.data.taxParams !== null)
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'buy transactions cannot carry frozen tax facts',
+      );
+    }
+    if (
+      !validFrozenTaxShape(
+        transaction.data.taxMode,
+        transaction.data.taxCountry,
+        transaction.data.taxParams,
+      )
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'transaction frozen tax facts are inconsistent',
+      );
+    }
+    if (
+      transaction.data.taxMode === 'none' &&
+      transaction.data.taxAmountEur !== null &&
+      persistedNumeric(transaction.data.taxAmountEur, 20, 6, 'transaction tax amount') !== 0n
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'none-mode transactions cannot carry a frozen tax amount',
+      );
+    }
+  }
+
+  for (const dividend of rows(entities, 'dividend')) {
+    requirePositive(
+      persistedNumeric(dividend.data.grossAmountEur, 20, 6, 'dividend gross amount'),
+      'dividend gross amount',
+    );
+    if (dividend.data.taxAmountEur !== null) {
+      persistedNumeric(dividend.data.taxAmountEur, 20, 6, 'dividend tax amount');
+    }
+    if (
+      !validFrozenTaxShape(dividend.data.taxMode, dividend.data.taxCountry, dividend.data.taxParams)
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'dividend frozen tax facts are inconsistent',
+      );
+    }
+    if (
+      dividend.data.taxMode === 'none' &&
+      dividend.data.taxAmountEur !== null &&
+      persistedNumeric(dividend.data.taxAmountEur, 20, 6, 'dividend tax amount') !== 0n
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'none-mode dividends cannot carry a frozen tax amount',
+      );
+    }
+  }
+
+  for (const movement of rows(entities, 'cashMovement')) {
+    persistedNumeric(movement.data.amountEur, 20, 6, 'cash-movement amount');
+  }
+
+  for (const setting of rows(entities, 'taxSetting')) {
+    const amount =
+      setting.data.manualDefaultAmountEur === null
+        ? null
+        : persistedNumeric(setting.data.manualDefaultAmountEur, 20, 6, 'manual tax default');
+    const rate =
+      setting.data.manualDefaultRatePct === null
+        ? null
+        : persistedNumeric(setting.data.manualDefaultRatePct, 9, 6, 'manual tax rate');
+    if (amount !== null) requireNonnegative(amount, 'manual tax default');
+    if (rate !== null && (rate < 0n || rate > 100n * pow10(6))) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'manual tax rate must be between zero and 100',
+      );
+    }
+    const modeFieldsValid =
+      (setting.data.mode === 'country_specific') === (setting.data.country !== null) &&
+      (setting.data.mode === 'custom') === (setting.data.customParams !== null) &&
+      (setting.data.mode === 'manual_per_trade' ||
+        (setting.data.manualDefaultAmountEur === null &&
+          setting.data.manualDefaultRatePct === null)) &&
+      (setting.data.manualDefaultAmountEur === null ||
+        setting.data.manualDefaultRatePct === null) &&
+      (setting.data.mode !== 'custom' ||
+        customTaxParamsSchema.safeParse(setting.data.customParams).success);
+    if (!modeFieldsValid) {
+      throw new ParanoidRehydrationError('INVALID_REFERENCE', 'tax setting is inconsistent');
+    }
+  }
+
+  for (const order of rows(entities, 'standingOrder')) {
+    requirePositive(
+      persistedNumeric(order.data.amount, 20, 8, 'standing-order amount'),
+      'standing-order amount',
+    );
+  }
+  for (const expense of rows(entities, 'expenseTransaction')) {
+    requirePositive(
+      persistedNumeric(expense.data.amount, 20, 2, 'expense amount'),
+      'expense amount',
+    );
+  }
+  for (const budget of rows(entities, 'expenseBudget')) {
+    requirePositive(
+      persistedNumeric(budget.data.amount, 20, 2, 'expense budget amount'),
+      'expense budget amount',
+    );
+  }
+}
+
 /**
  * Validate every foreign-key and unique-source graph before the first insert.
  * Database checks remain defense in depth; this reports malformed decrypted vaults
  * as one clean failure and makes the no-write guarantee directly testable.
  */
 function validateGraph(userId: string, entities: readonly Entity[]): void {
+  validateOwnedRows(userId, entities);
+  validatePersistedNumerics(entities);
+
   const portfolioRows = rows(entities, 'portfolio');
   if (!portfolioRows.some((portfolio) => portfolio.data.archivedAt === null)) {
     throw new ParanoidRehydrationError(
@@ -228,17 +525,17 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
     expenseCategoryNames.add(key);
   }
 
-  const importedExpenseHashes = new Set<string>();
+  const expenseHashes = new Set<string>();
   for (const expense of rows(entities, 'expenseTransaction')) {
-    if (!expense.data.source.startsWith('import:')) continue;
-    const hash = expenseDedupHash(expense.data);
-    if (importedExpenseHashes.has(hash)) {
+    const hash = expense.data.dedupHash;
+    if (hash === null) continue;
+    if (expenseHashes.has(hash)) {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
-        'imported expense rows must have unique deduplication facts',
+        'expense rows must have unique persisted deduplication hashes',
       );
     }
-    importedExpenseHashes.add(hash);
+    expenseHashes.add(hash);
   }
 
   const sourcesById = new Map(rows(entities, 'cashSource').map((entity) => [entity.id, entity]));
@@ -539,7 +836,9 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       out.data.sourceId === inbound.data.sourceId ||
       out.data.counterpartSourceId !== inbound.data.sourceId ||
       inbound.data.counterpartSourceId !== out.data.sourceId ||
-      out.data.amountEur + inbound.data.amountEur !== 0 ||
+      persistedNumeric(out.data.amountEur, 20, 6, 'transfer amount') +
+        persistedNumeric(inbound.data.amountEur, 20, 6, 'transfer amount') !==
+        0n ||
       Date.parse(out.data.executedAt) !== Date.parse(inbound.data.executedAt)
     ) {
       throw new ParanoidRehydrationError(
@@ -584,11 +883,14 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       );
     }
     const frozenTax = transaction.data.taxAmountEur;
-    if (frozenTax !== null && frozenTax !== 0) {
+    const frozenTaxAmount =
+      frozenTax === null ? null : persistedNumeric(frozenTax, 20, 6, 'transaction tax amount');
+    if (frozenTaxAmount !== null && frozenTaxAmount !== 0n) {
       const [movement] = settlement;
       if (
         !movement ||
-        movement.data.amountEur !== -frozenTax ||
+        persistedNumeric(movement.data.amountEur, 20, 6, 'tax settlement amount') !==
+          -frozenTaxAmount ||
         movement.data.taxYear !== viennaYearOf(transaction.data.executedAt)
       ) {
         throw new ParanoidRehydrationError(
@@ -609,7 +911,8 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
     const gross = linked.filter((movement) => movement.data.kind === 'dividend');
     if (
       gross.length !== 1 ||
-      gross[0]!.data.amountEur !== dividend.data.grossAmountEur ||
+      persistedNumeric(gross[0]!.data.amountEur, 20, 6, 'dividend cash amount') !==
+        persistedNumeric(dividend.data.grossAmountEur, 20, 6, 'dividend gross amount') ||
       gross[0]!.data.sourceId !== dividend.data.cashSourceId ||
       Date.parse(gross[0]!.data.executedAt) !== Date.parse(dividend.data.executedAt)
     ) {
@@ -628,11 +931,14 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       );
     }
     const frozenTax = dividend.data.taxAmountEur;
-    if (frozenTax !== null && frozenTax !== 0) {
+    const frozenTaxAmount =
+      frozenTax === null ? null : persistedNumeric(frozenTax, 20, 6, 'dividend tax amount');
+    if (frozenTaxAmount !== null && frozenTaxAmount !== 0n) {
       const [movement] = settlement;
       if (
         !movement ||
-        movement.data.amountEur !== -frozenTax ||
+        persistedNumeric(movement.data.amountEur, 20, 6, 'tax settlement amount') !==
+          -frozenTaxAmount ||
         movement.data.taxYear !== viennaYearOf(dividend.data.executedAt)
       ) {
         throw new ParanoidRehydrationError(
@@ -666,18 +972,21 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
     (a, b) =>
       Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
   );
-  const ledgerMovements = orderedMovements.map((entity) => ({
-    sourceId: entity.data.sourceId,
-    kind: entity.data.kind,
-    amountEur: entity.data.amountEur,
-    occurredAt: entity.data.executedAt,
-  }));
 
   try {
-    projectCashLedgerBySource(ledgerMovements);
-    const balancesBySource = cashBalancesBySource(ledgerMovements);
+    const balancesBySource = new Map<string, bigint>();
+    for (const movement of orderedMovements) {
+      const amount = persistedNumeric(movement.data.amountEur, 20, 6, 'cash-movement amount');
+      const requiredSign = CASH_MOVEMENT_SIGN[movement.data.kind];
+      if (amount === 0n || (requiredSign === 1 ? amount < 0n : amount > 0n)) {
+        throw new Error('cash-movement amount has the wrong sign');
+      }
+      const balance = (balancesBySource.get(movement.data.sourceId) ?? 0n) + amount;
+      if (balance < 0n) throw new Error('cash source would become negative');
+      balancesBySource.set(movement.data.sourceId, balance);
+    }
     for (const source of rows(entities, 'cashSource')) {
-      if (source.data.archivedAt !== null && (balancesBySource.get(source.id) ?? 0) !== 0) {
+      if (source.data.archivedAt !== null && (balancesBySource.get(source.id) ?? 0n) !== 0n) {
         throw new ParanoidRehydrationError(
           'INVALID_REFERENCE',
           'an archived cash source must have an exactly zero balance',
@@ -696,18 +1005,20 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
         (a, b) =>
           Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
       );
-      reducePosition(
-        orderedTransactions.map((transaction) => ({
-          assetId: transaction.data.assetId,
-          side: transaction.data.side,
-          quantity: transaction.data.quantity,
-          price: transaction.data.price,
-          fee: transaction.data.fee,
-          executedAt: transaction.data.executedAt,
-          allowUncovered: transaction.data.allowUncovered,
-          uncoveredEntryPrice: transaction.data.uncoveredEntryPrice,
-        })),
-      );
+      let held = 0n;
+      for (const transaction of orderedTransactions) {
+        const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+        if (transaction.data.side === 'buy') {
+          held += quantity;
+        } else if (quantity > held) {
+          if (!transaction.data.allowUncovered) {
+            throw new Error('transaction would oversell its position');
+          }
+          held = 0n;
+        } else {
+          held -= quantity;
+        }
+      }
     }
   } catch (error) {
     if (error instanceof ParanoidRehydrationError) throw error;
@@ -782,17 +1093,46 @@ async function validateTradeCashLinks(
     if (!asset) {
       throw new ParanoidRehydrationError('INVALID_REFERENCE', 'transaction asset is unavailable');
     }
-    const nativeAmount =
+    const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+    const price = persistedNumeric(transaction.data.price, 20, 6, 'transaction price');
+    const fee = persistedNumeric(transaction.data.fee, 20, 6, 'transaction fee');
+    const productAtScale14 = quantity * price;
+    const feeAtScale14 = fee * pow10(8);
+    const nativeAtScale14 =
       transaction.data.side === 'buy'
-        ? transaction.data.quantity * transaction.data.price + transaction.data.fee
-        : transaction.data.quantity * transaction.data.price - transaction.data.fee;
+        ? productAtScale14 + feeAtScale14
+        : productAtScale14 - feeAtScale14;
     const day = new Date(transaction.data.executedAt).toISOString().slice(0, 10);
-    const expectedMagnitude = floorCents(await toCashEur(nativeAmount, asset.currency, day));
-    const expectedAmount = transaction.data.side === 'buy' ? -expectedMagnitude : expectedMagnitude;
+    let expectedMagnitudeAtScale6: bigint;
+    if (asset.currency === 'EUR') {
+      // Normal booking floors money to cents after exact quantity × price ± fee.
+      expectedMagnitudeAtScale6 = (nativeAtScale14 / pow10(12)) * pow10(4);
+    } else {
+      // The historical FX adapter is number-based today. Keep the persisted
+      // operands and all native arithmetic exact, crossing that boundary only
+      // for the external conversion, then return immediately to fixed decimals.
+      const nativeAmount = Number(scaledDecimalText(nativeAtScale14, 14));
+      if (!Number.isFinite(nativeAmount)) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'foreign-currency trade magnitude cannot be converted safely',
+        );
+      }
+      const converted = floorCents(await toCashEur(nativeAmount, asset.currency, day));
+      expectedMagnitudeAtScale6 = decimalAtScale(converted.toFixed(2), 6, 'converted trade amount');
+    }
+    const expectedAmountAtScale6 =
+      transaction.data.side === 'buy' ? -expectedMagnitudeAtScale6 : expectedMagnitudeAtScale6;
+    const restoredAmountAtScale6 = persistedNumeric(
+      gross[0]!.data.amountEur,
+      20,
+      6,
+      'linked trade cash amount',
+    );
     if (
-      expectedMagnitude <= 0 ||
+      expectedMagnitudeAtScale6 <= 0n ||
       gross.length !== 1 ||
-      gross[0]!.data.amountEur !== expectedAmount
+      restoredAmountAtScale6 !== expectedAmountAtScale6
     ) {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
@@ -940,11 +1280,11 @@ export function createParanoidRehydrationService(
         await validateTradeCashLinks(entities, referencedAssets, toCashEur);
 
         const sourceRows = createParanoidRehydrationSourceRepository(tx);
-        await sourceRows.restoreCustomAssets(userId, rows(entities, 'customAsset'));
+        await sourceRows.restoreCustomAssets(rows(entities, 'customAsset'));
         await sourceRows.restoreCustomAssetValues(rows(entities, 'customAssetValue'));
         await stage('customAssets');
 
-        await sourceRows.restorePortfolios(userId, rows(entities, 'portfolio'));
+        await sourceRows.restorePortfolios(rows(entities, 'portfolio'));
         await stage('portfolios');
 
         await sourceRows.restoreCashSources(rows(entities, 'cashSource'));
@@ -957,7 +1297,7 @@ export function createParanoidRehydrationService(
             'only one tax setting may be restored',
           );
         }
-        await sourceRows.restoreTaxSettings(userId, taxSettings[0]);
+        await sourceRows.restoreTaxSettings(taxSettings[0]);
         await stage('taxSettings');
 
         await sourceRows.restorePortfolioSettings(rows(entities, 'portfolioSetting'));
@@ -981,7 +1321,7 @@ export function createParanoidRehydrationService(
         await stage('taxReplay');
 
         const standingOrderRows = rows(entities, 'standingOrder');
-        await sourceRows.restoreStandingOrders(userId, standingOrderRows);
+        await sourceRows.restoreStandingOrders(standingOrderRows);
         await sourceRows.restoreStandingOrderRuns(rows(entities, 'standingOrderRun'));
         await stage('standingOrders');
 
@@ -1002,13 +1342,13 @@ export function createParanoidRehydrationService(
           now,
         });
 
-        await sourceRows.restoreExpenseCategories(userId, rows(entities, 'expenseCategory'));
+        await sourceRows.restoreExpenseCategories(rows(entities, 'expenseCategory'));
         await stage('expenseCategories');
 
-        await sourceRows.restoreExpenseRules(userId, rows(entities, 'expenseRule'));
+        await sourceRows.restoreExpenseRules(rows(entities, 'expenseRule'));
         await stage('expenseRules');
 
-        await sourceRows.restoreExpenseBudgets(userId, rows(entities, 'expenseBudget'));
+        await sourceRows.restoreExpenseBudgets(rows(entities, 'expenseBudget'));
         await stage('expenseBudgets');
 
         const restoredExpenseTransactions = rows(entities, 'expenseTransaction').map((entity) => ({
@@ -1018,8 +1358,8 @@ export function createParanoidRehydrationService(
         }));
         await expenseService.restoreTransactions(userId, restoredExpenseTransactions, {
           ownsCategory: (ownerId, categoryId) => categoryRepo.ownsCategory(ownerId, categoryId),
-          insertTransactions: (ownerId, restoredRows) =>
-            sourceRows.restoreExpenseTransactions(ownerId, restoredRows),
+          insertTransactions: (_ownerId, restoredRows) =>
+            sourceRows.restoreExpenseTransactions(restoredRows),
           reconcileBudgets: (ownerId, periods) =>
             expenseBudgetService.reconcileRestore(ownerId, periods).then(() => undefined),
         });

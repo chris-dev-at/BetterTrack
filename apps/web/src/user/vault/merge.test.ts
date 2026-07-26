@@ -17,37 +17,22 @@ const DEVICE_B = '018f0000-0000-7000-8000-00000000000b';
 const MERGE_DEVICE = '018f0000-0000-7000-8000-00000000000c';
 const MERGED_AT = '2026-07-25T12:00:00.000Z';
 
-type PortfolioVaultEntity = Extract<VaultEntity, { kind: 'portfolio' }>;
-
-function entity(
-  overrides: Omit<Partial<PortfolioVaultEntity>, 'data'> & {
-    data?: Partial<PortfolioVaultEntity['data']>;
-  } = {},
-): PortfolioVaultEntity {
-  const { data, ...entityOverrides } = overrides;
+function entity(overrides: Partial<VaultEntity> = {}): VaultEntity {
   return {
     id: ENTITY_A,
-    kind: 'portfolio',
     rev: 1,
     editedAt: '2026-07-25T10:00:00Z',
     editedBy: DEVICE_A,
     deletedAt: null,
-    data: {
-      name: 'Portfolio 1',
-      visibility: 'private',
-      sortOrder: 0,
-      defaultPayFromCash: false,
-      archivedAt: null,
-      ...data,
-    },
-    ...entityOverrides,
+    data: { amount: 1 },
+    ...overrides,
   };
 }
 
 function document(entities: VaultEntity[], mergeLog: VaultMergeRecord[] = []): VaultDocumentV1 {
   return {
     schemaVersion: 1,
-    entities,
+    entities: { transaction: entities },
     mergeLog,
   };
 }
@@ -72,14 +57,14 @@ const mergeMatrix: { name: string; left: VaultEntity; right: VaultEntity; winner
   [
     {
       name: 'higher revision',
-      left: entity({ rev: 2, data: { name: 'Portfolio 2' } }),
+      left: entity({ rev: 2, data: { amount: 2 } }),
       right: entity({
         rev: 1,
         editedAt: '2026-07-25T11:00:00Z',
         editedBy: DEVICE_B,
-        data: { name: 'Portfolio 3' },
+        data: { amount: 3 },
       }),
-      winner: entity({ rev: 2, data: { name: 'Portfolio 2' } }),
+      winner: entity({ rev: 2, data: { amount: 2 } }),
     },
     {
       name: 'later tombstone among tombstones',
@@ -87,19 +72,19 @@ const mergeMatrix: { name: string; left: VaultEntity; right: VaultEntity; winner
         rev: 2,
         editedAt: '2026-07-25T10:00:00Z',
         deletedAt: '2026-07-25T10:00:00Z',
-        data: { name: 'Deleted first' },
+        data: {},
       }),
       right: entity({
         rev: 2,
         editedAt: '2026-07-25T10:01:00Z',
         deletedAt: '2026-07-25T10:01:00Z',
-        data: { name: 'Deleted later' },
+        data: {},
       }),
       winner: entity({
         rev: 2,
         editedAt: '2026-07-25T10:01:00Z',
         deletedAt: '2026-07-25T10:01:00Z',
-        data: { name: 'Deleted later' },
+        data: {},
       }),
     },
     {
@@ -109,19 +94,19 @@ const mergeMatrix: { name: string; left: VaultEntity; right: VaultEntity; winner
         editedAt: '2026-07-25T11:00:00Z',
         editedBy: DEVICE_B,
         deletedAt: '2026-07-25T11:00:00Z',
-        data: { name: 'Deleted' },
+        data: {},
       }),
       right: entity({
         rev: 2,
         editedAt: '2026-07-25T10:00:00Z',
         editedBy: DEVICE_A,
-        data: { name: 'Live' },
+        data: { amount: 2 },
       }),
       winner: entity({
         rev: 2,
         editedAt: '2026-07-25T10:00:00Z',
         editedBy: DEVICE_A,
-        data: { name: 'Live' },
+        data: { amount: 2 },
       }),
     },
     {
@@ -130,21 +115,21 @@ const mergeMatrix: { name: string; left: VaultEntity; right: VaultEntity; winner
         rev: 2,
         editedAt: '2026-07-25T10:00:00Z',
         editedBy: DEVICE_B,
-        data: { name: 'Resurrected' },
+        data: { amount: 2 },
       }),
       right: entity({
         rev: 3,
         editedAt: '2026-07-25T11:00:00Z',
         editedBy: DEVICE_A,
         deletedAt: '2026-07-25T11:00:00Z',
-        data: { name: 'Deleted again' },
+        data: {},
       }),
       winner: entity({
         rev: 3,
         editedAt: '2026-07-25T11:00:00Z',
         editedBy: DEVICE_A,
         deletedAt: '2026-07-25T11:00:00Z',
-        data: { name: 'Deleted again' },
+        data: {},
       }),
     },
     {
@@ -152,17 +137,17 @@ const mergeMatrix: { name: string; left: VaultEntity; right: VaultEntity; winner
       left: entity({
         rev: 2,
         editedAt: '2026-07-25T10:00:00Z',
-        data: { name: 'Whole second' },
+        data: { amount: 1 },
       }),
       right: entity({
         rev: 2,
         editedAt: '2026-07-25T10:00:00.001Z',
-        data: { name: 'Millisecond later' },
+        data: { amount: 2 },
       }),
       winner: entity({
         rev: 2,
         editedAt: '2026-07-25T10:00:00.001Z',
-        data: { name: 'Millisecond later' },
+        data: { amount: 2 },
       }),
     },
     {
@@ -170,36 +155,36 @@ const mergeMatrix: { name: string; left: VaultEntity; right: VaultEntity; winner
       left: entity({
         rev: 2,
         editedAt: '2026-07-25T10:00Z',
-        data: { name: 'Whole minute' },
+        data: { amount: 1 },
       }),
       right: entity({
         rev: 2,
         editedAt: '2026-07-25T10:00:00.001Z',
-        data: { name: 'Millisecond later' },
+        data: { amount: 2 },
       }),
       winner: entity({
         rev: 2,
         editedAt: '2026-07-25T10:00:00.001Z',
-        data: { name: 'Millisecond later' },
+        data: { amount: 2 },
       }),
     },
     {
       name: 'lexicographically higher device at the same instant',
-      left: entity({ rev: 2, editedBy: DEVICE_A, data: { name: 'Device A' } }),
-      right: entity({ rev: 2, editedBy: DEVICE_B, data: { name: 'Device B' } }),
-      winner: entity({ rev: 2, editedBy: DEVICE_B, data: { name: 'Device B' } }),
+      left: entity({ rev: 2, editedBy: DEVICE_A, data: { amount: 1 } }),
+      right: entity({ rev: 2, editedBy: DEVICE_B, data: { amount: 2 } }),
+      winner: entity({ rev: 2, editedBy: DEVICE_B, data: { amount: 2 } }),
     },
     {
       name: 'canonical whole-entity tie-break for differing payloads',
-      left: entity({ rev: 2, data: { name: 'Portfolio 1' } }),
-      right: entity({ rev: 2, data: { name: 'Portfolio 2' } }),
-      winner: entity({ rev: 2, data: { name: 'Portfolio 2' } }),
+      left: entity({ rev: 2, data: { amount: 1 } }),
+      right: entity({ rev: 2, data: { amount: 2 } }),
+      winner: entity({ rev: 2, data: { amount: 2 } }),
     },
     {
       name: 'canonical whole-entity tie-break for signed zero',
-      left: entity({ rev: 2, data: { sortOrder: -0 } }),
-      right: entity({ rev: 2, data: { sortOrder: 0 } }),
-      winner: entity({ rev: 2, data: { sortOrder: 0 } }),
+      left: entity({ rev: 2, data: { amount: -0 } }),
+      right: entity({ rev: 2, data: { amount: 0 } }),
+      winner: entity({ rev: 2, data: { amount: 0 } }),
     },
   ];
 
@@ -208,8 +193,8 @@ describe.each(mergeMatrix)('deterministic merge: $name', ({ left, right, winner 
     const forward = merge(document([left]), document([right]));
     const backward = merge(document([right]), document([left]));
 
-    expect(forward.document.entities).toEqual([winner]);
-    expect(backward.document.entities).toEqual([winner]);
+    expect(forward.document.entities.transaction).toEqual([winner]);
+    expect(backward.document.entities.transaction).toEqual([winner]);
     expect(backward).toEqual(forward);
     expect(forward).toMatchObject({ vaultVersion: 5, divergent: true });
     expect(forward.document.mergeLog).toEqual([
@@ -256,37 +241,12 @@ describe.each(mergeMatrix)('deterministic merge: $name', ({ left, right, winner 
 });
 
 describe('vault merge metadata and validation', () => {
-  it('merges strict discriminated entities into one deterministically ordered array', () => {
-    const portfolio = entity({ id: ENTITY_B });
-    const expenseCategory: Extract<VaultEntity, { kind: 'expenseCategory' }> = {
-      id: ENTITY_A,
-      kind: 'expenseCategory',
-      rev: 1,
-      editedAt: '2026-07-25T10:00:00Z',
-      editedBy: DEVICE_A,
-      deletedAt: null,
-      data: {
-        name: 'Groceries',
-        direction: 'expense',
-        color: '#112233',
-        createdAt: '2026-07-25T09:00:00Z',
-        updatedAt: '2026-07-25T10:00:00Z',
-      },
-    };
-
-    const forward = merge(document([portfolio]), document([expenseCategory]));
-    const backward = merge(document([expenseCategory]), document([portfolio]));
-
-    expect(forward.document.entities).toEqual([expenseCategory, portfolio]);
-    expect(backward).toEqual(forward);
-  });
-
   it('recognizes the sub-second instant as later instead of comparing Z against dot', () => {
     const wholeSecond = entity({ rev: 2, editedAt: '2026-07-25T10:00:00Z' });
     const millisecondLater = entity({
       rev: 2,
       editedAt: '2026-07-25T10:00:00.001Z',
-      data: { name: 'Millisecond later' },
+      data: { amount: 2 },
     });
 
     expect(chooseVaultEntity(wholeSecond, millisecondLater)).toEqual(millisecondLater);
@@ -373,10 +333,8 @@ describe('vault merge metadata and validation', () => {
 
   it('fails closed for sparse arrays in both candidate and document orders', () => {
     const sparseValues = new Array<unknown>(1);
-    const sparse = entity({ rev: 2 });
-    const dense = entity({ rev: 2 });
-    (sparse.data as Record<string, unknown>).values = sparseValues;
-    (dense.data as Record<string, unknown>).values = [];
+    const sparse = entity({ rev: 2, data: { values: sparseValues } });
+    const dense = entity({ rev: 2, data: { values: [] } });
     const attempts = [
       () => chooseVaultEntity(sparse, dense),
       () => chooseVaultEntity(dense, sparse),
@@ -407,10 +365,8 @@ describe('vault merge metadata and validation', () => {
       },
     });
 
-    const accessor = entity({ rev: 2 });
-    const plain = entity({ rev: 2 });
-    (accessor.data as Record<string, unknown>).values = accessorValues;
-    (plain.data as Record<string, unknown>).values = [1];
+    const accessor = entity({ rev: 2, data: { values: accessorValues } });
+    const plain = entity({ rev: 2, data: { values: [1] } });
     const attempts = [
       () => chooseVaultEntity(accessor, plain),
       () => chooseVaultEntity(plain, accessor),
@@ -452,10 +408,8 @@ describe('vault merge metadata and validation', () => {
     });
 
     for (const invalidObject of [nonEnumerable, symbolKeyed, accessor]) {
-      const invalid = entity({ rev: 2 });
-      const plain = entity({ rev: 2 });
-      (invalid.data as Record<string, unknown>).nested = invalidObject;
-      (plain.data as Record<string, unknown>).nested = {};
+      const invalid = entity({ rev: 2, data: { nested: invalidObject } });
+      const plain = entity({ rev: 2, data: { nested: {} } });
       const attempts = [
         () => chooseVaultEntity(invalid, plain),
         () => chooseVaultEntity(plain, invalid),

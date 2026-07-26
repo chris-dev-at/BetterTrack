@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  paranoidDisableRehydrationRequestSchema,
+  paranoidDisableRehydrationResultSchema,
   VAULT_DOCUMENT_VERSION,
   VAULT_ENTITY_KINDS,
   type VaultStrictEntity,
@@ -393,6 +395,44 @@ describe('strict vault document v1', () => {
     expect(parsed.data.description).toBe('Edited merchant description');
     expect(parsed.data.direction).toBe('income');
     expect(parsed.data.dedupHash).toBe(ORIGINAL_EXPENSE_HASH);
+  });
+
+  it('binds the internal disable request to the strict graph, not the shipped client map', () => {
+    const request = {
+      rehydrationId: uuid(98),
+      document: {
+        schemaVersion: VAULT_DOCUMENT_VERSION,
+        entities: fixtures,
+        mergeLog: [],
+      },
+    };
+    expect(paranoidDisableRehydrationRequestSchema.parse(request)).toEqual(request);
+    expect(
+      paranoidDisableRehydrationRequestSchema.safeParse({
+        ...request,
+        document: {
+          schemaVersion: VAULT_DOCUMENT_VERSION,
+          entities: { portfolio: [] },
+          mergeLog: [],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps the completion receipt non-sensitive and strict', () => {
+    const result = {
+      rehydrationId: uuid(98),
+      completedAt: AT,
+      idempotent: false,
+      postCommit: {
+        invalidate: ['account', 'portfolio', 'expenses', 'standingOrders', 'tax'] as const,
+      },
+    };
+    expect(paranoidDisableRehydrationResultSchema.parse(result)).toEqual(result);
+    expect(
+      paranoidDisableRehydrationResultSchema.safeParse({ ...result, restoredRows: fixtures.length })
+        .success,
+    ).toBe(false);
   });
 });
 
