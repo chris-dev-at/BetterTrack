@@ -49,6 +49,35 @@ test('wraps Tab and Shift+Tab within the dialog', async () => {
   expect(save).toHaveFocus();
 });
 
+test('follows positive tabindex order when focusing and wrapping', async () => {
+  const user = userEvent.setup();
+  render(
+    <Modal title="Edit user" onClose={vi.fn()}>
+      <button>Normal tab stop</button>
+      <button tabIndex={2}>Second tab stop</button>
+      <button tabIndex={1}>First tab stop</button>
+    </Modal>,
+  );
+
+  const normal = screen.getByRole('button', { name: 'Normal tab stop' });
+  const second = screen.getByRole('button', { name: 'Second tab stop' });
+  const first = screen.getByRole('button', { name: 'First tab stop' });
+
+  expect(first).toHaveFocus();
+
+  await user.tab({ shift: true });
+  expect(normal).toHaveFocus();
+
+  await user.tab();
+  expect(first).toHaveFocus();
+
+  await user.tab();
+  expect(second).toHaveFocus();
+
+  await user.tab();
+  expect(normal).toHaveFocus();
+});
+
 test('excludes tabindex=-1 controls when wrapping Tab and Shift+Tab', async () => {
   const user = userEvent.setup();
   render(

@@ -22,13 +22,23 @@ function isInClosedDetails(element: HTMLElement) {
 }
 
 function focusableDescendants(container: HTMLElement) {
-  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (element) =>
-      element.tabIndex >= 0 &&
-      !element.matches(':disabled') &&
-      element.getAttribute('aria-hidden') !== 'true' &&
-      !isInClosedDetails(element),
-  );
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+    .filter(
+      (element) =>
+        element.tabIndex >= 0 &&
+        !element.matches(':disabled') &&
+        element.getAttribute('aria-hidden') !== 'true' &&
+        !isInClosedDetails(element),
+    )
+    .sort((left, right) => {
+      const leftTabIndex = left.tabIndex;
+      const rightTabIndex = right.tabIndex;
+
+      if (leftTabIndex === rightTabIndex) return 0;
+      if (leftTabIndex === 0) return 1;
+      if (rightTabIndex === 0) return -1;
+      return leftTabIndex - rightTabIndex;
+    });
 }
 
 /**
