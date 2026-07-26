@@ -170,6 +170,49 @@ describe('realizedSellsEur', () => {
     ]);
   });
 
+  it.each(['moving-average', 'fifo'] as const)(
+    'preserves a positive storage-proven uncovered suffix under %s',
+    (strategy) => {
+      const rows = [
+        T('b1', 'buy', 1, 10, '2026-01-01T10:00:00Z'),
+        {
+          ...T('s1', 'sell', 1.00000001, 20, '2026-01-02T10:00:00Z'),
+          allowUncovered: true,
+          storageRoundingUncovered: true,
+        },
+      ];
+
+      const [sell] = realizedSellsEur(rows, strategy);
+      expect(sell!.uncoveredQuantity).toBeCloseTo(0.00000001, 15);
+      expect(sell!.costBasisEur).toBeCloseTo(10.0000002, 12);
+    },
+  );
+
+  it.each(['moving-average', 'fifo'] as const)(
+    'closes a storage-proven %s position when readback float aggregation exceeds the sell',
+    (strategy) => {
+      const rows = [
+        T('b1', 'buy', 54_357_657.32258169, 1_000_000_000, '2026-01-01T10:00:00Z'),
+        T('b2', 'buy', 101_960_493.7435252, 2_000_000_000, '2026-01-02T10:00:00Z'),
+        {
+          ...T('s1', 'sell', 156_318_151.0661069, 1_652_262_664.624316, '2026-01-03T10:00:00Z'),
+          allowUncovered: true,
+          storageRoundingUncovered: true,
+        },
+      ];
+
+      const [sell] = realizedSellsEur(rows, strategy);
+      expect(sell).toMatchObject({
+        id: 's1',
+        uncoveredQuantity: 0,
+        realizedPnlEur: 32,
+      });
+      expect(sell!.costBasisEur).toBe(
+        rows[0]!.quantity * rows[0]!.priceEur + rows[1]!.quantity * rows[1]!.priceEur,
+      );
+    },
+  );
+
   it('tracks assets independently', () => {
     const sells = realizedSellsEur([
       T('b1', 'buy', 1, 100, '2026-01-01T10:00:00Z', 0, 'A'),

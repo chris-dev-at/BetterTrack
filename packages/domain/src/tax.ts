@@ -425,7 +425,13 @@ export function realizedSellsEur(
       // given (→ 0 gain, no phantom acquisition to tax). No shorts: the position
       // closes at 0 on an uncovered sell.
       const covered = oversell ? heldUnits : t.quantity;
-      const uncovered = oversell ? t.quantity - heldUnits : 0;
+      // A restore-only storage proof means the exact scale-8 ledger closes the
+      // position, but IEEE-754 readback can land on either side of the sell:
+      // aggregate `heldUnits` may be a few ulps above `t.quantity` even though
+      // the persisted decimals show a shortfall. Release the complete position
+      // basis in that full-close path, but never manufacture a negative
+      // uncovered suffix from the reversed floating-point comparison.
+      const uncovered = oversell ? Math.max(0, t.quantity - heldUnits) : 0;
       if (uncovered > 0 && t.uncoveredEntryPriceEur != null) {
         assertFiniteNonNegative(
           t.uncoveredEntryPriceEur,

@@ -1,6 +1,16 @@
 import {
+  CASH_SOURCE_TYPES,
+  cashMovementKindSchema,
   CUSTOM_COST_BASIS,
+  CUSTOM_ASSET_CATEGORIES,
+  EXPENSE_DIRECTIONS,
+  EXPENSE_RULE_MATCH_TYPES,
+  IMPORT_BATCH_STATUSES,
+  IMPORT_ROW_FLAGS,
+  IMPORT_ROW_KINDS,
+  IMPORT_ROW_RESULTS,
   paranoidDisableRehydrationRequestSchema,
+  portfolioVisibilitySchema,
   SOURCE_TAG_SYNC_MIRRORCHAIN,
   STANDING_ORDER_CADENCES,
   STANDING_ORDER_KINDS,
@@ -15,6 +25,7 @@ import {
   type UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
 import { reducePosition } from '@bettertrack/domain/holdings';
+import { costBasisStrategyForCountry } from '@bettertrack/domain/tax';
 import { eq, inArray } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -602,6 +613,17 @@ const QUANTITY_ROUNDING_VARIANTS = [
   { buyCount: 8, expectedStoredShortfallQuanta: 4n },
 ] as const;
 
+const QUANTITY_FLOAT_DIRECTION_REVERSAL = {
+  name: 'readback direction reversal',
+  rows: [
+    { side: 'buy', quantity: 54_357_657.322581686 },
+    { side: 'buy', quantity: 101_960_493.7435252 },
+    { side: 'sell', quantity: 156_318_151.0661069 },
+  ],
+  expectedRawRemaining: 0,
+  expectedStored: ['buy:54357657.32258169', 'buy:101960493.74352520', 'sell:156318151.06610690'],
+} as const;
+
 const QUANTITY_FLOAT_VARIANTS = [
   {
     name: 'high-magnitude cancellation',
@@ -633,7 +655,23 @@ const QUANTITY_FLOAT_VARIANTS = [
       'sell:600000000000.01300000',
     ],
   },
+  QUANTITY_FLOAT_DIRECTION_REVERSAL,
 ] as const;
+
+const TAX_REPLAY_DIRECTION_REVERSAL_PRICES = [
+  1_000_000_000, 2_000_000_000, 1_652_262_664.624316,
+] as const;
+
+// Prefer FI for the FIFO integration regression: unlike DE, its normal engine
+// has no saver-allowance that would mask this deliberately small €32 gain.
+const TAX_REPLAY_COUNTRY_PREFERENCE = ['AT', 'FI', 'DE'] as const;
+const TAX_REPLAY_COUNTRY_BY_STRATEGY = CUSTOM_COST_BASIS.map((strategy) => {
+  const country = TAX_REPLAY_COUNTRY_PREFERENCE.find(
+    (candidate) => costBasisStrategyForCountry(candidate) === strategy,
+  );
+  if (!country) throw new Error(`expected a country-specific ${strategy} tax strategy`);
+  return { strategy, country };
+});
 
 function scale8Integer(value: string): bigint {
   const [whole = '0', fraction = ''] = value.split('.');
@@ -698,6 +736,59 @@ function taxSettingVariantsFor(mode: (typeof TAX_MODES)[number]): readonly TaxSe
  * normal capability enrolls it here without a hand-authored vault fixture.
  */
 const TAX_SETTING_VARIANTS = TAX_MODES.flatMap(taxSettingVariantsFor);
+
+const BOOLEAN_VARIANTS = [false, true] as const;
+const ROW_LIFECYCLES = ['active', 'archived'] as const;
+
+function portfolioVariantKey(
+  visibility: string,
+  defaultPayFromCash: boolean,
+  lifecycle: (typeof ROW_LIFECYCLES)[number],
+): string {
+  return `visibility=${visibility},defaultPayFromCash=${defaultPayFromCash},lifecycle=${lifecycle}`;
+}
+
+function cashSourceVariantKey(type: string, lifecycle: (typeof ROW_LIFECYCLES)[number]): string {
+  return `type=${type},lifecycle=${lifecycle}`;
+}
+
+function customAssetVariantKey(category: string, smoothing: boolean): string {
+  return `category=${category},smoothing=${smoothing}`;
+}
+
+function expenseRuleVariantKey(matchType: string, enabled: boolean): string {
+  return `matchType=${matchType},enabled=${enabled}`;
+}
+
+function objectField(value: unknown, key: string): unknown {
+  if (value === null || Array.isArray(value) || typeof value !== 'object') return undefined;
+  return (value as Record<string, unknown>)[key];
+}
+
+function frozenTaxVariantKey(
+  name: string,
+  data: {
+    taxMode: string | null;
+    taxCountry: string | null;
+    taxParams: unknown;
+  },
+): string {
+  return [
+    name,
+    `mode=${data.taxMode ?? 'null'}`,
+    `country=${data.taxCountry ?? 'null'}`,
+    `customCostBasis=${String(objectField(data.taxParams, 'costBasis') ?? 'null')}`,
+  ].join(',');
+}
+
+function expectedFrozenTaxVariantKey(variant: TaxSettingVariant): string {
+  const { input } = variant;
+  return frozenTaxVariantKey(variant.name, {
+    taxMode: input.mode,
+    taxCountry: input.mode === 'country_specific' ? (input.country ?? null) : null,
+    taxParams: input.mode === 'custom' ? input.custom : null,
+  });
+}
 
 const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
   {
@@ -804,6 +895,344 @@ const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
             {
               field: 'customAssetValue.close',
               value: entities(document, 'customAssetValue').map((entry) => entry.data.close),
+            },
+          ];
+        },
+      };
+    },
+  },
+  {
+    name: 'finite portfolio, cash, custom-asset, expense, and import vocabularies',
+    options: {
+      taxNow: () => TEST_NOW,
+      budgetNow: () => new Date(TEST_NOW),
+    },
+    async arrange(harness) {
+      const user = await harness.seedUser();
+      const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+
+      const portfolioVariantIds = new Set<string>();
+      let variantIndex = 0;
+      for (const visibility of portfolioVisibilitySchema.options) {
+        for (const defaultPayFromCash of BOOLEAN_VARIANTS) {
+          for (const lifecycle of ROW_LIFECYCLES) {
+            const row = await harness.ctx.portfolio.createPortfolio(user.id, {
+              name: `Portfolio variant ${variantIndex}`,
+            });
+            portfolioVariantIds.add(row.id);
+            await harness.ctx.portfolio.updatePortfolio(user.id, row.id, {
+              visibility,
+              defaultPayFromCash,
+            });
+            if (lifecycle === 'archived') {
+              await harness.ctx.portfolio.archivePortfolio(user.id, row.id);
+            }
+            variantIndex += 1;
+          }
+        }
+      }
+
+      const cashSourceVariantIds = new Set<string>();
+      const activeCashSourceIds: string[] = [];
+      for (const type of CASH_SOURCE_TYPES) {
+        for (const lifecycle of ROW_LIFECYCLES) {
+          const source = await harness.ctx.portfolio.createCashSource(user.id, portfolioId, {
+            name: `Cash source ${type} ${lifecycle}`,
+            type,
+          });
+          cashSourceVariantIds.add(source.id);
+          if (lifecycle === 'archived') {
+            await harness.ctx.portfolio.archiveCashSource(user.id, portfolioId, source.id);
+          } else {
+            activeCashSourceIds.push(source.id);
+          }
+        }
+      }
+
+      const customAssetVariantIds = new Set<string>();
+      let importAsset:
+        | Awaited<ReturnType<typeof harness.ctx.customAssets.create>>['asset']
+        | undefined;
+      for (const category of CUSTOM_ASSET_CATEGORIES) {
+        for (const smoothing of BOOLEAN_VARIANTS) {
+          const created = await harness.ctx.customAssets.create(user.id, {
+            name: `Custom ${category} ${smoothing ? 'smooth' : 'raw'}`,
+            category,
+            currency: 'EUR',
+            smoothing,
+          });
+          customAssetVariantIds.add(created.asset.id);
+          importAsset ??= created.asset;
+        }
+      }
+      if (!importAsset) throw new Error('expected a custom asset for finite-vocabulary writes');
+
+      const categoryIdsByDirection = new Map<string, string>();
+      for (const direction of EXPENSE_DIRECTIONS) {
+        const { category } = await harness.ctx.expenses.createCategory(user.id, {
+          name: `Expense direction ${direction}`,
+          direction,
+          color: direction === 'expense' ? '#ef4444' : '#22c55e',
+        });
+        categoryIdsByDirection.set(direction, category.id);
+        await harness.ctx.expenses.createTransaction(user.id, {
+          categoryId: category.id,
+          direction,
+          amount: 10,
+          currency: 'EUR',
+          bookedOn: '2026-07-20',
+          description: `Categorized ${direction}`,
+        });
+        await harness.ctx.expenses.createTransaction(user.id, {
+          direction,
+          amount: 11,
+          currency: 'EUR',
+          bookedOn: '2026-07-21',
+          description: `Uncategorized ${direction}`,
+        });
+      }
+      const expenseCategoryId = categoryIdsByDirection.get('expense');
+      if (!expenseCategoryId) throw new Error('expected an expense category');
+      let ruleIndex = 0;
+      for (const matchType of EXPENSE_RULE_MATCH_TYPES) {
+        for (const enabled of BOOLEAN_VARIANTS) {
+          await harness.ctx.expenses.createRule(user.id, {
+            categoryId: expenseCategoryId,
+            matchType,
+            pattern: matchType === 'regex' ? '^market(?: place)?$' : 'market',
+            priority: ruleIndex,
+            enabled,
+          });
+          ruleIndex += 1;
+        }
+      }
+
+      const main = (await harness.ctx.portfolio.listCashSources(user.id, portfolioId)).sources.find(
+        (source) => source.isMain,
+      );
+      if (!main) throw new Error('expected the default Main cash source');
+      const transferTargetId = activeCashSourceIds[0];
+      if (!transferTargetId) throw new Error('expected an active secondary cash source');
+
+      await harness.ctx.tax.updateSettings(user.id, {
+        mode: 'country_specific',
+        country: 'AT',
+      });
+      await harness.ctx.portfolio.depositCash(user.id, portfolioId, {
+        sourceId: main.id,
+        amountEur: 5_000,
+        executedAt: '2026-01-01T10:00:00.000Z',
+      });
+      await harness.ctx.portfolio.withdrawCash(user.id, portfolioId, {
+        sourceId: main.id,
+        amountEur: 25,
+        executedAt: '2026-01-02T10:00:00.000Z',
+      });
+      await harness.ctx.portfolio.transferCash(user.id, portfolioId, {
+        fromSourceId: main.id,
+        toSourceId: transferTargetId,
+        amountEur: 100,
+        executedAt: '2026-01-03T10:00:00.000Z',
+      });
+      await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+        {
+          assetId: importAsset.id,
+          side: 'buy',
+          quantity: 100,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-01-04T10:00:00.000Z',
+          payFromCash: true,
+          cashSourceId: main.id,
+        },
+      ]);
+      await harness.ctx.tax.recordDividend(user.id, portfolioId, {
+        assetId: importAsset.id,
+        grossAmountEur: 10,
+        cashSourceId: main.id,
+        executedAt: '2026-01-05T10:00:00.000Z',
+      });
+      await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+        {
+          assetId: importAsset.id,
+          side: 'sell',
+          quantity: 50,
+          price: 19,
+          fee: 0,
+          executedAt: '2026-01-06T10:00:00.000Z',
+          addProceedsToCash: true,
+          cashSourceId: main.id,
+        },
+      ]);
+      await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+        {
+          assetId: importAsset.id,
+          side: 'sell',
+          quantity: 50,
+          price: 8,
+          fee: 0,
+          executedAt: '2026-01-07T10:00:00.000Z',
+          addProceedsToCash: true,
+          cashSourceId: main.id,
+        },
+      ]);
+
+      const importCsv = [
+        'Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung',
+        '2026-06-01;Einzahlung;;;;;;2000,00;EUR',
+        '2026-06-01;Einzahlung;;;;;;2000,00;EUR',
+        `2026-06-02;Kauf;${importAsset.name};;10;10,00;0,00;-100,00;EUR`,
+        `2026-06-03;Verkauf;${importAsset.name};;5;20,00;0,00;100,00;EUR`,
+        `2026-06-04;Dividende;${importAsset.name};;;;;10,00;EUR`,
+        '2026-06-05;Auszahlung;;;;;;50,00;EUR',
+        '2026-06-06;Auszahlung;;;;;;999999,00;EUR',
+        '2026-06-07;Kauf;Unknown Conformance Asset;;1;10,00;0,00;-10,00;EUR',
+        '2026-06-08;Mystery;;;;;;10,00;EUR',
+      ].join('\n');
+      const appliedImport = await harness.ctx.imports.createBatch(user.id, {
+        portfolioId,
+        filename: 'finite-vocabularies.csv',
+        brokerId: 'trade_republic',
+        content: importCsv,
+      });
+      await harness.ctx.imports.applyBatch(user.id, appliedImport.batch.id, {});
+      await harness.ctx.imports.createBatch(user.id, {
+        portfolioId,
+        filename: 'pending-vocabulary.csv',
+        brokerId: 'trade_republic',
+        content: [
+          'Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung',
+          '2026-06-09;Zinsen;;;;;;1,00;EUR',
+        ].join('\n'),
+      });
+
+      return {
+        userId: user.id,
+        focus(document) {
+          return [
+            {
+              field: 'finite portfolio/cash/custom/expense/import fields',
+              value: document.entities
+                .filter((entry) =>
+                  [
+                    'portfolio',
+                    'cashSource',
+                    'cashMovement',
+                    'customAsset',
+                    'expenseCategory',
+                    'expenseTransaction',
+                    'expenseRule',
+                    'importBatch',
+                    'importRow',
+                  ].includes(entry.kind),
+                )
+                .map((entry) => ({ kind: entry.kind, data: entry.data })),
+            },
+          ];
+        },
+        variantDimensions(document) {
+          return [
+            {
+              name: 'portfolio visibility/default/archive',
+              expected: portfolioVisibilitySchema.options.flatMap((visibility) =>
+                BOOLEAN_VARIANTS.flatMap((defaultPayFromCash) =>
+                  ROW_LIFECYCLES.map((lifecycle) =>
+                    portfolioVariantKey(visibility, defaultPayFromCash, lifecycle),
+                  ),
+                ),
+              ),
+              actual: entities(document, 'portfolio')
+                .filter((entry) => portfolioVariantIds.has(entry.id))
+                .map((entry) =>
+                  portfolioVariantKey(
+                    entry.data.visibility,
+                    entry.data.defaultPayFromCash,
+                    entry.data.archivedAt === null ? 'active' : 'archived',
+                  ),
+                ),
+            },
+            {
+              name: 'cash-source type/archive',
+              expected: CASH_SOURCE_TYPES.flatMap((type) =>
+                ROW_LIFECYCLES.map((lifecycle) => cashSourceVariantKey(type, lifecycle)),
+              ),
+              actual: entities(document, 'cashSource')
+                .filter((entry) => cashSourceVariantIds.has(entry.id))
+                .map((entry) =>
+                  cashSourceVariantKey(
+                    entry.data.type,
+                    entry.data.archivedAt === null ? 'active' : 'archived',
+                  ),
+                ),
+            },
+            {
+              name: 'cash-movement kind',
+              expected: cashMovementKindSchema.options,
+              actual: entities(document, 'cashMovement').map((entry) => entry.data.kind),
+            },
+            {
+              name: 'custom-asset category/smoothing',
+              expected: CUSTOM_ASSET_CATEGORIES.flatMap((category) =>
+                BOOLEAN_VARIANTS.map((smoothing) => customAssetVariantKey(category, smoothing)),
+              ),
+              actual: entities(document, 'customAsset')
+                .filter((entry) => customAssetVariantIds.has(entry.id))
+                .map((entry) =>
+                  customAssetVariantKey(
+                    String(objectField(entry.data.meta, 'category')),
+                    objectField(entry.data.meta, 'smoothing') === true,
+                  ),
+                ),
+            },
+            {
+              name: 'expense category direction',
+              expected: EXPENSE_DIRECTIONS,
+              actual: entities(document, 'expenseCategory').map((entry) => entry.data.direction),
+            },
+            {
+              name: 'expense transaction direction',
+              expected: EXPENSE_DIRECTIONS,
+              actual: entities(document, 'expenseTransaction').map((entry) => entry.data.direction),
+            },
+            {
+              name: 'expense transaction category nullable branch',
+              expected: ['categorized', 'uncategorized'],
+              actual: entities(document, 'expenseTransaction').map((entry) =>
+                entry.data.categoryId === null ? 'uncategorized' : 'categorized',
+              ),
+            },
+            {
+              name: 'expense-rule match-type/enabled',
+              expected: EXPENSE_RULE_MATCH_TYPES.flatMap((matchType) =>
+                BOOLEAN_VARIANTS.map((enabled) => expenseRuleVariantKey(matchType, enabled)),
+              ),
+              actual: entities(document, 'expenseRule').map((entry) =>
+                expenseRuleVariantKey(entry.data.matchType, entry.data.enabled),
+              ),
+            },
+            {
+              name: 'import-batch status',
+              expected: IMPORT_BATCH_STATUSES,
+              actual: entities(document, 'importBatch').map((entry) => entry.data.status),
+            },
+            {
+              name: 'import-row kind',
+              expected: IMPORT_ROW_KINDS,
+              actual: entities(document, 'importRow').flatMap((entry) =>
+                entry.data.kind === null ? [] : [entry.data.kind],
+              ),
+            },
+            {
+              name: 'import-row flag',
+              expected: IMPORT_ROW_FLAGS,
+              actual: entities(document, 'importRow').map((entry) => entry.data.flag),
+            },
+            {
+              name: 'import-row apply result',
+              expected: IMPORT_ROW_RESULTS,
+              actual: entities(document, 'importRow').flatMap((entry) =>
+                entry.data.result === null ? [] : [entry.data.result],
+              ),
             },
           ];
         },
@@ -1310,6 +1739,146 @@ const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
             (await restoredHarness.ctx.portfolio.getCashMovements(bob.id, bobForkId)).balanceEur,
           ).toBe(-7.5);
           await expect(restoredHarness.ctx.mirror.syncedMembership(bobForkId)).resolves.toBeNull();
+        },
+      };
+    },
+  },
+  {
+    name: 'frozen tax facts plus float/storage reversal through moving-average and FIFO replay',
+    options: { taxNow: () => TEST_NOW },
+    async arrange(harness) {
+      const user = await harness.seedUser();
+      await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+      const custom = await harness.ctx.customAssets.create(user.id, {
+        name: 'Frozen-tax conformance asset',
+        category: 'stock',
+        currency: 'EUR',
+        smoothing: false,
+      });
+      const portfolioByVariant = new Map<string, string>();
+      const strategyByPortfolio = new Map<string, (typeof CUSTOM_COST_BASIS)[number]>();
+
+      for (const [index, variant] of TAX_SETTING_VARIANTS.entries()) {
+        const portfolio = await harness.ctx.portfolio.createPortfolio(user.id, {
+          name: `Frozen tax ${index}`,
+        });
+        portfolioByVariant.set(variant.name, portfolio.id);
+        await harness.ctx.tax.setPortfolioTaxOverride(user.id, portfolio.id, variant.input);
+        await harness.ctx.portfolio.depositCash(user.id, portfolio.id, {
+          amountEur: 1_000,
+          executedAt: '2025-02-01T09:00:00.000Z',
+        });
+
+        const replayStrategy = TAX_REPLAY_COUNTRY_BY_STRATEGY.find(
+          ({ country }) =>
+            variant.input.mode === 'country_specific' && variant.input.country === country,
+        )?.strategy;
+        if (replayStrategy) {
+          strategyByPortfolio.set(portfolio.id, replayStrategy);
+          const inputs = QUANTITY_FLOAT_DIRECTION_REVERSAL.rows.map((row, rowIndex) => ({
+            assetId: custom.asset.id,
+            side: row.side,
+            quantity: row.quantity,
+            price: TAX_REPLAY_DIRECTION_REVERSAL_PRICES[rowIndex]!,
+            fee: 0,
+            executedAt: `2025-02-0${rowIndex + 2}T10:00:00.000Z`,
+          }));
+          expect(
+            reducePosition(inputs).quantity,
+            `${replayStrategy} tax-replay case must be reachable under the normal reducer`,
+          ).toBe(0);
+          await harness.ctx.portfolio.createTransactions(user.id, portfolio.id, inputs);
+        } else {
+          await harness.ctx.portfolio.createTransactions(user.id, portfolio.id, [
+            {
+              assetId: custom.asset.id,
+              side: 'buy',
+              quantity: 10,
+              price: 10,
+              fee: 0,
+              executedAt: '2026-02-02T10:00:00.000Z',
+            },
+          ]);
+          await harness.ctx.portfolio.createTransactions(user.id, portfolio.id, [
+            {
+              assetId: custom.asset.id,
+              side: 'sell',
+              quantity: 5,
+              price: 20,
+              fee: 0,
+              executedAt: '2026-02-03T10:00:00.000Z',
+            },
+          ]);
+        }
+        await harness.ctx.tax.recordDividend(user.id, portfolio.id, {
+          assetId: custom.asset.id,
+          grossAmountEur: 10,
+          executedAt: replayStrategy ? '2025-02-05T10:00:00.000Z' : '2026-02-05T10:00:00.000Z',
+        });
+      }
+
+      return {
+        userId: user.id,
+        focus(document) {
+          return [
+            {
+              field: 'transaction/dividend frozen tax facts',
+              value: [...portfolioByVariant].map(([name, portfolioId]) => ({
+                name,
+                transactions: entities(document, 'transaction')
+                  .filter((entry) => entry.data.portfolioId === portfolioId)
+                  .map((entry) => entry.data),
+                dividends: entities(document, 'dividend')
+                  .filter((entry) => entry.data.portfolioId === portfolioId)
+                  .map((entry) => entry.data),
+              })),
+            },
+          ];
+        },
+        variantDimensions(document) {
+          const expectedFrozenVariants = TAX_SETTING_VARIANTS.map(expectedFrozenTaxVariantKey);
+          return [
+            {
+              name: 'transaction frozen-tax mode/country/custom-cost-basis',
+              expected: expectedFrozenVariants,
+              actual: [...portfolioByVariant].map(([name, portfolioId]) => {
+                const sell = entities(document, 'transaction').find(
+                  (entry) => entry.data.portfolioId === portfolioId && entry.data.side === 'sell',
+                );
+                if (!sell) throw new Error(`expected a frozen-tax sell for ${name}`);
+                return frozenTaxVariantKey(name, sell.data);
+              }),
+            },
+            {
+              name: 'dividend frozen-tax mode/country/custom-cost-basis',
+              expected: expectedFrozenVariants,
+              actual: [...portfolioByVariant].map(([name, portfolioId]) => {
+                const dividend = entities(document, 'dividend').find(
+                  (entry) => entry.data.portfolioId === portfolioId,
+                );
+                if (!dividend) throw new Error(`expected a frozen-tax dividend for ${name}`);
+                return frozenTaxVariantKey(name, dividend.data);
+              }),
+            },
+            {
+              name: 'float/storage direction reversal in every cost-basis replay strategy',
+              expected: TAX_REPLAY_COUNTRY_BY_STRATEGY.map(
+                ({ strategy }) =>
+                  `${strategy}:${QUANTITY_FLOAT_DIRECTION_REVERSAL.expectedStored.join('|')}`,
+              ),
+              actual: [...strategyByPortfolio].map(([portfolioId, strategy]) => {
+                const persisted = entities(document, 'transaction')
+                  .filter((entry) => entry.data.portfolioId === portfolioId)
+                  .sort(
+                    (a, b) =>
+                      Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) ||
+                      a.id.localeCompare(b.id),
+                  )
+                  .map((entry) => `${entry.data.side}:${entry.data.quantity}`);
+                return `${strategy}:${persisted.join('|')}`;
+              }),
+            },
+          ];
         },
       };
     },
