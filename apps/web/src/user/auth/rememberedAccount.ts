@@ -1,4 +1,7 @@
-import type { RememberedDeviceResponse } from '@bettertrack/contracts';
+import {
+  rememberedDeviceResponseSchema,
+  type RememberedDeviceResponse,
+} from '@bettertrack/contracts';
 
 /**
  * Device-level "remember me" record for the OAuth account chooser (PROJECTPLAN.md
@@ -55,29 +58,17 @@ function safeRemove(key: string): void {
   }
 }
 
-function isRememberedAccount(value: unknown): value is RememberedAccount {
-  if (value == null || typeof value !== 'object') return false;
-  const v = value as Record<string, unknown>;
-  return (
-    typeof v.userId === 'string' &&
-    typeof v.username === 'string' &&
-    (v.avatarUrl === null || typeof v.avatarUrl === 'string')
-  );
-}
-
 /** The remembered identity for this device, or `null` when nobody is remembered. */
 export function readRememberedAccount(): RememberedAccount | null {
   const raw = safeGet(REMEMBERED_KEY);
   if (raw == null) return null;
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    // Keep only the three allowed fields — never let an extra field (a stray
-    // token) survive a round-trip, even if one were somehow written.
-    if (!isRememberedAccount(parsed)) {
+    const result = rememberedDeviceResponseSchema.safeParse(JSON.parse(raw));
+    if (!result.success) {
       safeRemove(REMEMBERED_KEY);
       return null;
     }
-    return { userId: parsed.userId, username: parsed.username, avatarUrl: parsed.avatarUrl };
+    return result.data;
   } catch {
     safeRemove(REMEMBERED_KEY);
     return null;
