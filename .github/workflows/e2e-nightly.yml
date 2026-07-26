@@ -10,18 +10,18 @@ permissions:
 
 jobs:
   e2e:
-    name: Playwright shard ${{ matrix.shard }}/3
+    name: Playwright shard ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     # Run 30146369738 reached 49 project tests in 45 minutes, or about 55 seconds
-    # per test. The current three-way split is 34, 35, and 31 test instances, so
-    # the largest shard needs about 32 minutes before service boot and retries;
-    # 45 minutes leaves a realistic 13-minute setup/diagnostic margin while the
-    # suite's wall-clock budget is now one parallel shard, not all 100 instances.
-    timeout-minutes: 45
+    # per test. A three-shard dispatch still exhausted 45 minutes when retries
+    # doubled failing specs, so four shards cap the load at about 25 tests each.
+    # Sixty minutes covers two 55-second attempts per test plus service boot and
+    # report uploads; the suite's wall-clock budget is one parallel shard.
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:17
@@ -67,7 +67,7 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Run e2e happy path
-        run: pnpm test:e2e -- --shard=${{ matrix.shard }}/3
+        run: pnpm test:e2e -- --shard=${{ matrix.shard }}/4
 
       - name: Upload Playwright diagnostics
         # A job reaching timeout is cancelled rather than failed. Preserve the
