@@ -597,14 +597,10 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
         'a standing-order run watermark requires both its timestamp and period key',
       );
     }
-    if (
-      order.data.lastPeriodKey !== null &&
-      (order.data.lastPeriodKey < order.data.startDate ||
-        (order.data.endDate !== null && order.data.lastPeriodKey > order.data.endDate))
-    ) {
+    if (order.data.lastPeriodKey !== null && order.data.lastPeriodKey < order.data.startDate) {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
-        'a standing-order run watermark must fall within its schedule window',
+        'a standing-order run watermark must not precede its schedule start',
       );
     }
     if (
@@ -855,6 +851,21 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
         'INVALID_REFERENCE',
         'a transaction may have at most one linked gross cash movement',
       );
+    }
+    const [grossMovement] = gross;
+    if (grossMovement) {
+      const transactionAt = Date.parse(transaction.data.executedAt);
+      const movementAt = Date.parse(grossMovement.data.executedAt);
+      const invalidTimestamp =
+        grossKind === 'sell_proceeds' ? movementAt !== transactionAt : movementAt < transactionAt;
+      if (invalidTimestamp) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          grossKind === 'sell_proceeds'
+            ? 'a sell-proceeds cash movement must share its transaction timestamp'
+            : 'a buy cash movement must not precede its transaction',
+        );
+      }
     }
     // The persisted cash amount is authoritative. Normal writes calculate it
     // from the accepted client numbers (and, for foreign assets, that moment's

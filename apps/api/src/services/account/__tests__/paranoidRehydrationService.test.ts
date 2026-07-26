@@ -75,6 +75,97 @@ function entity<
   >;
 }
 
+function strictPortfolioEntity(row: typeof portfolios.$inferSelect) {
+  return entity(row.id, 'portfolio', {
+    userId: row.userId,
+    name: row.name,
+    visibility: row.visibility,
+    sortOrder: row.sortOrder,
+    defaultPayFromCash: row.defaultPayFromCash,
+    archivedAt: row.archivedAt?.toISOString() ?? null,
+  });
+}
+
+function strictCashSourceEntity(row: typeof portfolioCashSources.$inferSelect) {
+  return entity(row.id, 'cashSource', {
+    portfolioId: row.portfolioId,
+    name: row.name,
+    type: row.type,
+    isMain: row.isMain,
+    archivedAt: row.archivedAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+  });
+}
+
+function strictCashMovementEntity(row: typeof portfolioCashMovements.$inferSelect) {
+  return entity(row.id, 'cashMovement', {
+    portfolioId: row.portfolioId,
+    sourceId: row.sourceId,
+    kind: row.kind,
+    amountEur: row.amountEur,
+    transactionId: row.transactionId,
+    transferId: row.transferId,
+    counterpartSourceId: row.counterpartSourceId,
+    dividendId: row.dividendId,
+    taxYear: row.taxYear,
+    executedAt: row.executedAt.toISOString(),
+    createdAt: row.createdAt.toISOString(),
+    note: row.note,
+    source: row.source,
+  });
+}
+
+function strictStandingOrderEntity(row: typeof standingOrders.$inferSelect) {
+  return entity(row.id, 'standingOrder', {
+    userId: row.userId,
+    portfolioId: row.portfolioId,
+    kind: row.kind,
+    assetId: row.assetId,
+    amount: row.amount,
+    currency: row.currency,
+    label: row.label,
+    cadence: row.cadence,
+    anchorDay: row.anchorDay,
+    startDate: row.startDate,
+    endDate: row.endDate,
+    status: row.status,
+    lastRunAt: row.lastRunAt?.toISOString() ?? null,
+    lastPeriodKey: row.lastPeriodKey,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  });
+}
+
+function strictStandingOrderRunEntity(row: typeof standingOrderRuns.$inferSelect) {
+  return entity(row.id, 'standingOrderRun', {
+    standingOrderId: row.standingOrderId,
+    periodKey: row.periodKey,
+    bookedAt: row.bookedAt.toISOString(),
+  });
+}
+
+async function replaceNormalPortfolioGraphWithServerVault(
+  harness: Awaited<ReturnType<typeof createTestApp>>,
+  userId: string,
+) {
+  await harness.db.delete(portfolios).where(eq(portfolios.userId, userId));
+  await harness.db
+    .update(users)
+    .set({
+      privacyMode: 'paranoid',
+      paranoidMediaSet: ['server'],
+      paranoidDriveAttestedVersion: null,
+    })
+    .where(eq(users.id, userId));
+  await harness.db.insert(paranoidVaults).values({
+    userId,
+    version: 1,
+    formatVersion: 1,
+    sizeBytes: 10,
+    blob: Buffer.from('ciphertext'),
+  });
+}
+
 function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequest {
   return {
     rehydrationId,
@@ -528,7 +619,7 @@ describe('paranoid rehydration service', () => {
     });
   });
 
-  it('round-trips the cash amount booked before transaction numeric coercion', async () => {
+  it('round-trips a settle-as-of-today buy leg and its pre-coercion cash amount', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
@@ -558,8 +649,9 @@ describe('paranoid rehydration service', () => {
         quantity: 1,
         price: 1.9999999,
         fee: 0,
-        executedAt: editedAt,
+        executedAt: '2026-07-01T10:00:00.000Z',
         payFromCash: true,
+        settleCashAsOfToday: true,
       },
     ]);
     if (!created) throw new Error('expected normal transaction');
@@ -591,31 +683,22 @@ describe('paranoid rehydration service', () => {
     }
 
     // The cash leg is calculated from the accepted client numbers, then the
-    // transaction columns are independently coerced to PostgreSQL scale.
+    // transaction columns are independently coerced to PostgreSQL scale. Cash
+    // arrived only after the backdated trade, so the normal service also moves
+    // the buy leg later under settleCashAsOfToday.
     expect(sourceTransaction.price).toBe('2.000000');
     expect(sourceGross.amountEur).toBe('-1.990000');
+    expect(sourceGross.executedAt.getTime()).toBeGreaterThan(
+      sourceTransaction.executedAt.getTime(),
+    );
 
     const input: ParanoidDisableRehydrationRequest = {
       rehydrationId: REHYDRATION_ID,
       document: {
         schemaVersion: 1,
         entities: [
-          entity(sourcePortfolio.id, 'portfolio', {
-            userId: sourcePortfolio.userId,
-            name: sourcePortfolio.name,
-            visibility: sourcePortfolio.visibility,
-            sortOrder: sourcePortfolio.sortOrder,
-            defaultPayFromCash: sourcePortfolio.defaultPayFromCash,
-            archivedAt: sourcePortfolio.archivedAt?.toISOString() ?? null,
-          }),
-          entity(sourceCashSource.id, 'cashSource', {
-            portfolioId: sourceCashSource.portfolioId,
-            name: sourceCashSource.name,
-            type: sourceCashSource.type,
-            isMain: sourceCashSource.isMain,
-            archivedAt: sourceCashSource.archivedAt?.toISOString() ?? null,
-            createdAt: sourceCashSource.createdAt.toISOString(),
-          }),
+          strictPortfolioEntity(sourcePortfolio),
+          strictCashSourceEntity(sourceCashSource),
           entity(sourceTransaction.id, 'transaction', {
             portfolioId: sourceTransaction.portfolioId,
             assetId: sourceTransaction.assetId,
@@ -633,23 +716,7 @@ describe('paranoid rehydration service', () => {
             uncoveredEntryPrice: sourceTransaction.uncoveredEntryPrice,
             source: sourceTransaction.source,
           }),
-          ...sourceMovements.map((movement) =>
-            entity(movement.id, 'cashMovement', {
-              portfolioId: movement.portfolioId,
-              sourceId: movement.sourceId,
-              kind: movement.kind,
-              amountEur: movement.amountEur,
-              transactionId: movement.transactionId,
-              transferId: movement.transferId,
-              counterpartSourceId: movement.counterpartSourceId,
-              dividendId: movement.dividendId,
-              taxYear: movement.taxYear,
-              executedAt: movement.executedAt.toISOString(),
-              createdAt: movement.createdAt.toISOString(),
-              note: movement.note,
-              source: movement.source,
-            }),
-          ),
+          ...sourceMovements.map(strictCashMovementEntity),
         ],
         mergeLog: [],
       },
@@ -657,22 +724,7 @@ describe('paranoid rehydration service', () => {
 
     // Model the encrypted interval: the strict source document survives while
     // its normal rows are absent and a server vault is the active data home.
-    await harness.db.delete(portfolios).where(eq(portfolios.userId, user.id));
-    await harness.db
-      .update(users)
-      .set({
-        privacyMode: 'paranoid',
-        paranoidMediaSet: ['server'],
-        paranoidDriveAttestedVersion: null,
-      })
-      .where(eq(users.id, user.id));
-    await harness.db.insert(paranoidVaults).values({
-      userId: user.id,
-      version: 1,
-      formatVersion: 1,
-      sizeBytes: 10,
-      blob: Buffer.from('ciphertext'),
-    });
+    await replaceNormalPortfolioGraphWithServerVault(harness, user.id);
 
     await expect(
       createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
@@ -683,11 +735,17 @@ describe('paranoid rehydration service', () => {
       .from(transactions)
       .where(eq(transactions.id, sourceTransaction.id));
     const [restoredGross] = await harness.db
-      .select({ amountEur: portfolioCashMovements.amountEur })
+      .select({
+        amountEur: portfolioCashMovements.amountEur,
+        executedAt: portfolioCashMovements.executedAt,
+      })
       .from(portfolioCashMovements)
       .where(eq(portfolioCashMovements.id, sourceGross.id));
     expect(restoredTransaction?.price).toBe('2.000000');
-    expect(restoredGross?.amountEur).toBe('-1.990000');
+    expect(restoredGross).toEqual({
+      amountEur: '-1.990000',
+      executedAt: sourceGross.executedAt,
+    });
   });
 
   it('accepts every strict purge-only entity without restoring its cache or staging row', async () => {
@@ -1621,6 +1679,95 @@ describe('paranoid rehydration service', () => {
     ]);
   });
 
+  it('round-trips a historical run after the normal API shortens its end date', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const created = await harness.ctx.standingOrders.create(user.id, {
+      portfolioId,
+      kind: 'cash-add',
+      amount: 100,
+      label: 'Daily income',
+      cadence: 'daily',
+      startDate: '2026-07-01',
+    });
+
+    await expect(
+      harness.ctx.standingOrders.processDueOrders({
+        now: Date.parse('2026-07-24T10:00:00.000Z'),
+      }),
+    ).resolves.toMatchObject({ booked: 1 });
+    await expect(
+      harness.ctx.standingOrders.update(user.id, created.id, {
+        endDate: '2026-07-10',
+      }),
+    ).resolves.toMatchObject({
+      endDate: '2026-07-10',
+      lastPeriodKey: '2026-07-24',
+    });
+
+    const [sourcePortfolio] = await harness.db
+      .select()
+      .from(portfolios)
+      .where(eq(portfolios.id, portfolioId));
+    const [sourceCashSource] = await harness.db
+      .select()
+      .from(portfolioCashSources)
+      .where(eq(portfolioCashSources.portfolioId, portfolioId));
+    const [sourceOrder] = await harness.db
+      .select()
+      .from(standingOrders)
+      .where(eq(standingOrders.id, created.id));
+    const [sourceRun] = await harness.db
+      .select()
+      .from(standingOrderRuns)
+      .where(eq(standingOrderRuns.standingOrderId, created.id));
+    const sourceMovements = await harness.db
+      .select()
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.portfolioId, portfolioId));
+    if (!sourcePortfolio || !sourceCashSource || !sourceOrder || !sourceRun) {
+      throw new Error('expected complete shortened standing-order state');
+    }
+    expect(sourceOrder).toMatchObject({
+      startDate: '2026-07-01',
+      endDate: '2026-07-10',
+      lastPeriodKey: '2026-07-24',
+    });
+    expect(sourceRun.periodKey).toBe('2026-07-24');
+
+    const input: ParanoidDisableRehydrationRequest = {
+      rehydrationId: REHYDRATION_ID,
+      document: {
+        schemaVersion: 1,
+        entities: [
+          strictPortfolioEntity(sourcePortfolio),
+          strictCashSourceEntity(sourceCashSource),
+          strictStandingOrderEntity(sourceOrder),
+          strictStandingOrderRunEntity(sourceRun),
+          ...sourceMovements.map(strictCashMovementEntity),
+        ],
+        mergeLog: [],
+      },
+    };
+
+    await replaceNormalPortfolioGraphWithServerVault(harness, user.id);
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    const [restoredOrder] = await harness.db
+      .select()
+      .from(standingOrders)
+      .where(eq(standingOrders.id, sourceOrder.id));
+    const [restoredRun] = await harness.db
+      .select()
+      .from(standingOrderRuns)
+      .where(eq(standingOrderRuns.id, sourceRun.id));
+    expect(restoredOrder).toEqual(sourceOrder);
+    expect(restoredRun).toEqual(sourceRun);
+  });
+
   it.each([
     { window: 'booking-failed' as const, expectedBookedRows: 0 },
     { window: 'mark-booked-failed' as const, expectedBookedRows: 1 },
@@ -1848,6 +1995,90 @@ describe('paranoid rehydration service', () => {
       code: 'INVALID_REFERENCE',
     });
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('rejects a sell-proceeds leg dated apart from its transaction before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity(SECOND_TRANSACTION_ID, 'transaction', {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'sell',
+        quantity: '1.00000000',
+        price: '100.000000',
+        fee: '0.000000',
+        executedAt: '2026-07-24T10:01:00.000Z',
+        note: null,
+        taxMode: null,
+        taxCountry: null,
+        taxAmountEur: null,
+        taxParams: null,
+        allowUncovered: false,
+        uncoveredEntryPrice: null,
+        source: 'manual',
+      }),
+      entity(TRANSFER_OUT_ID, 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'sell_proceeds',
+        amountEur: '100.000000',
+        transactionId: SECOND_TRANSACTION_ID,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-24T10:02:00.000Z',
+        createdAt: '2026-07-24T10:02:00.000Z',
+        note: null,
+        source: 'manual',
+      }),
+    );
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    expect(await db.select().from(transactions)).toEqual([]);
+    expect(await db.select().from(portfolioCashMovements)).toEqual([]);
+  });
+
+  it('rejects a buy cash leg dated before its transaction before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const movement = input.document.entities.find((entry) => entry.kind === 'cashMovement');
+    if (!movement || movement.kind !== 'cashMovement') {
+      throw new Error('expected cash movement');
+    }
+    movement.data.kind = 'buy';
+    movement.data.amountEur = '-100.000000';
+    movement.data.transactionId = TRANSACTION_ID;
+    movement.data.executedAt = '2026-07-24T09:59:00.000Z';
+    movement.data.createdAt = '2026-07-24T09:59:00.000Z';
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'deposit',
+        amountEur: '100.000000',
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-24T09:58:00.000Z',
+        createdAt: '2026-07-24T09:58:00.000Z',
+        note: null,
+        source: 'manual',
+      }),
+    );
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    expect(await db.select().from(transactions)).toEqual([]);
+    expect(await db.select().from(portfolioCashMovements)).toEqual([]);
   });
 
   it('preserves a structurally valid linked trade cash amount without re-deriving it', async () => {
