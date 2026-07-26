@@ -7,7 +7,7 @@ import type { AdminUser, AuditLogEntry, ResetPasswordResponse } from '@bettertra
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { isAdminTwoFactorSetupRequired, useAuth } from '../AuthContext';
-import { formatDateTime } from '../format';
+import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
 import { EmailLogTable } from '../components/EmailLogTable';
 import { Modal } from '../components/Modal';

@@ -5,7 +5,7 @@ import type { MonitoringStatusResponse } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { apiBaseUrl } from '../../lib/runtimeConfig';
-import { formatDateTime } from '../format';
+import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
