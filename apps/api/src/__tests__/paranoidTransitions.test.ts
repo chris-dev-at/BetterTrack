@@ -23,6 +23,7 @@ import {
   friendGroups,
   friendships,
   importBatches,
+  importRows,
   itemComments,
   itemFollows,
   itemReactions,
@@ -43,7 +44,6 @@ import {
   watchlists,
   workboardItems,
 } from '../data/schema';
-import { PARANOID_SEALED_ASSET_PROVIDER_ID } from '../data/paranoidAssets';
 import type { ParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
 import { createParanoidTransitionService } from '../services/account/paranoidTransitionService';
 import type { AuditService } from '../services/audit/auditService';
@@ -69,9 +69,13 @@ const KEPT_VALUE_IDS = [
 ] as const;
 
 let harness: TestHarness;
+let importAfterApplyClaim: ((userId: string, batchId: string) => void | Promise<void>) | undefined;
 
 beforeEach(async () => {
-  harness = await createTestApp();
+  importAfterApplyClaim = undefined;
+  harness = await createTestApp({
+    importAfterApplyClaim: (userId, batchId) => importAfterApplyClaim?.(userId, batchId),
+  });
 });
 
 type Agent = ReturnType<typeof request.agent>;
@@ -136,6 +140,14 @@ async function putServerVault(agent: Agent, version = 1) {
     .send(blob);
   expect(response.status).toBe(204);
   return blob;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 describe('public paranoid transitions', () => {
@@ -254,7 +266,7 @@ describe('public paranoid transitions', () => {
     expect((await agent.get(`/api/v1/portfolios/${portfolio.id}`)).status).not.toBe(403);
   });
 
-  it('seals and losslessly restores custom assets referenced by every kept FK surface', async () => {
+  it('hard-deletes and losslessly restores custom assets referenced by every kept surface', async () => {
     const { user, portfolio, agent } = await seedNormalAccount();
     await putServerVault(agent);
     const customAssets = await harness.db
@@ -344,23 +356,12 @@ describe('public paranoid transitions', () => {
         .where(eq(conglomeratePositions.id, position!.id)),
     ).toEqual([position]);
     expect(await harness.db.select().from(alerts).where(eq(alerts.id, alert!.id))).toEqual([alert]);
-    const sealed = await harness.db
-      .select()
-      .from(assets)
-      .where(inArray(assets.id, [...KEPT_ASSET_IDS]));
-    expect(sealed).toHaveLength(3);
-    for (const row of sealed) {
-      expect(row).toMatchObject({
-        ownerId: user.id,
-        providerId: PARANOID_SEALED_ASSET_PROVIDER_ID,
-        providerRef: row.id,
-        symbol: '',
-        name: '',
-        exchange: null,
-        currency: 'EUR',
-        meta: null,
-      });
-    }
+    expect(
+      await harness.db
+        .select()
+        .from(assets)
+        .where(inArray(assets.id, [...KEPT_ASSET_IDS])),
+    ).toEqual([]);
     expect(
       await harness.db
         .select()
@@ -459,6 +460,77 @@ describe('public paranoid transitions', () => {
         .from(priceHistory)
         .where(inArray(priceHistory.assetId, [...KEPT_ASSET_IDS])),
     ).toHaveLength(3);
+  });
+
+  it('accepts a complete disable document above the regular 100 KiB JSON limit', async () => {
+    const { user, portfolio, agent } = await seedNormalAccount();
+    await putServerVault(agent);
+    const enabled = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send({ mediaSet: ['server'], vaultVersion: 1 });
+    expect(enabled.status).toBe(200);
+
+    const customAssets = Array.from({ length: 160 }, (_, index) => {
+      const id = `018f1000-0000-7000-8000-${String(index + 1000).padStart(12, '0')}`;
+      return {
+        id,
+        kind: 'customAsset' as const,
+        rev: 1,
+        editedAt: '2026-07-26T10:00:00.000Z',
+        editedBy: DEVICE_ID,
+        deletedAt: null,
+        data: {
+          providerId: 'manual',
+          providerRef: id,
+          ownerId: user.id,
+          type: 'custom' as const,
+          symbol: `BULK${index}`,
+          name: `Bulk restore asset ${index}`,
+          exchange: null,
+          currency: 'EUR',
+          meta: { padding: 'x'.repeat(900) },
+          searchText: null,
+        },
+      };
+    });
+    const requestBody = {
+      confirm: true,
+      rehydrationId: REHYDRATION_ID,
+      document: {
+        schemaVersion: 1 as const,
+        entities: [
+          {
+            id: portfolio.id,
+            kind: 'portfolio' as const,
+            rev: 1,
+            editedAt: '2026-07-26T10:00:00.000Z',
+            editedBy: DEVICE_ID,
+            deletedAt: null,
+            data: {
+              userId: user.id,
+              name: 'Main',
+              visibility: 'private' as const,
+              sortOrder: 0,
+              defaultPayFromCash: false,
+              archivedAt: null,
+            },
+          },
+          ...customAssets,
+        ],
+        mergeLog: [],
+      },
+    };
+    expect(Buffer.byteLength(JSON.stringify(requestBody))).toBeGreaterThan(100 * 1024);
+
+    const disabled = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send(requestBody);
+    expect(disabled.status, JSON.stringify(disabled.body)).toBe(200);
+    expect(await harness.db.select().from(assets).where(eq(assets.ownerId, user.id))).toHaveLength(
+      customAssets.length,
+    );
   });
 
   it('accepts exact Drive-only evidence and removes all BetterTrack vault bytes', async () => {
@@ -726,6 +798,64 @@ describe('public paranoid transitions', () => {
     });
   });
 
+  it('serializes an already-claimed import apply before enable purges its writes', async () => {
+    const { user, portfolio, agent } = await seedNormalAccount();
+    await putServerVault(agent);
+    const [batch] = await harness.db
+      .insert(importBatches)
+      .values({
+        ownerId: user.id,
+        portfolioId: portfolio.id,
+        brokerId: 'test',
+        filename: 'applying.csv',
+        status: 'pending',
+      })
+      .returning();
+    await harness.db.insert(importRows).values({
+      batchId: batch!.id,
+      rowIndex: 1,
+      raw: '2026-07-25,deposit,42',
+      kind: 'deposit',
+      flag: 'mapped',
+      executedAt: new Date('2026-07-25T10:00:00.000Z'),
+      amountEur: '42',
+      currency: 'EUR',
+      contentHash: 'applying-deposit',
+    });
+
+    const claimed = deferred();
+    const releaseApply = deferred();
+    importAfterApplyClaim = async (_userId, batchId) => {
+      expect(batchId).toBe(batch!.id);
+      const [row] = await harness.db
+        .select({ status: importBatches.status })
+        .from(importBatches)
+        .where(eq(importBatches.id, batchId));
+      expect(row?.status).toBe('applied');
+      claimed.resolve();
+      await releaseApply.promise;
+    };
+
+    const applying = harness.ctx.imports.applyBatch(user.id, batch!.id, {});
+    await claimed.promise;
+    const enabling = harness.ctx.paranoidTransitions.enable(user.id, {
+      mediaSet: ['server'],
+      vaultVersion: 1,
+      driveAttestation: null,
+    });
+    releaseApply.resolve();
+
+    const [applied, enabled] = await Promise.all([applying, enabling]);
+    expect(applied.rows).toEqual([expect.objectContaining({ rowIndex: 1, result: 'applied' })]);
+    expect(enabled.mode).toBe('paranoid');
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db.select().from(importBatches).where(eq(importBatches.ownerId, user.id)),
+    ).toEqual([]);
+  });
+
   it('retires a ready normal-account cleartext export before enable can commit', async () => {
     const { user, agent } = await seedNormalAccount();
     await putServerVault(agent);
@@ -856,6 +986,45 @@ describe('public paranoid transitions', () => {
       }),
     ]);
     expect(results.map((result) => result.idempotent).sort()).toEqual([false, true]);
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+    ).toEqual([]);
+  });
+
+  it('rejects a portfolio write that was waiting behind the enable lock', async () => {
+    const { user, agent } = await seedNormalAccount();
+    await putServerVault(agent);
+    const locked = deferred();
+    const releaseEnable = deferred();
+    const transition = createParanoidTransitionService({
+      db: harness.db,
+      rehydration: {} as ParanoidRehydrationService,
+      audit: { record: vi.fn(async () => {}) } as unknown as AuditService,
+      async afterEnableStage(stage) {
+        if (stage !== 'locked') return;
+        locked.resolve();
+        await releaseEnable.promise;
+      },
+    });
+
+    const enabling = transition.enable(user.id, {
+      mediaSet: ['server'],
+      vaultVersion: 1,
+      driveAttestation: null,
+    });
+    await locked.promise;
+    const writeResult = harness.ctx.portfolio
+      .createPortfolio(user.id, { name: 'Must not land' })
+      .then(
+        (value) => ({ value, error: null }),
+        (error: unknown) => ({ value: null, error }),
+      );
+    releaseEnable.resolve();
+
+    await expect(enabling).resolves.toMatchObject({ mode: 'paranoid' });
+    expect((await writeResult).error).toMatchObject({
+      code: 'PARANOID_MODE',
+    });
     expect(
       await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
     ).toEqual([]);

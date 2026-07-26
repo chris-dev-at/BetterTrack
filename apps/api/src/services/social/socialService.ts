@@ -94,7 +94,7 @@ export interface SocialServiceDeps {
   /** The central notification pipeline (#368) — friend.request/accepted enter here. */
   notify: NotificationCenter;
   logger?: Logger;
-  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'runAllowedMany'>;
 }
 
 export interface SocialService {
@@ -554,8 +554,13 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // reaches a non-friend (§6.9). Idempotent: re-adding is a no-op.
       if (!(await groups.ownsGroup(userId, groupId))) throw GROUP_NOT_FOUND();
       if (!(await groups.isFriend(userId, memberId))) throw NOT_A_FRIEND();
-      await groups.addMember(groupId, memberId);
-      return groupOrThrow(userId, groupId);
+      const add = async () => {
+        await groups.addMember(groupId, memberId);
+        return groupOrThrow(userId, groupId);
+      };
+      return deps.paranoid
+        ? deps.paranoid.runAllowedMany([userId, memberId], 'sharing', add)
+        : add();
     },
 
     async removeGroupMember(userId, groupId, memberId) {
@@ -565,30 +570,36 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async followUser(userId, targetId, opts) {
-      await deps.paranoid?.assertAllowed(targetId, 'sharing');
-      if (userId === targetId) throw CANNOT_FOLLOW_SELF();
-      // The target must be a real, active, non-admin account. Validating first
-      // turns an unknown/admin/disabled id into a uniform 404 (never an FK crash),
-      // and keeps admins out of the social graph like friend requests do.
-      const target = await follows.findFollowTarget(targetId);
-      if (!target) throw FOLLOW_TARGET_NOT_FOUND();
-      // Follow eligibility (V4-P0b): a person is followable when they are the
-      // caller's FRIEND — the Friends-tab follow path, no public profile needed —
-      // OR they expose a public profile (the follow path for non-friends). A
-      // non-friend without a public profile has no follow surface and 404s here,
-      // with the same opaque "not a follow target" code as an unknown user so the
-      // check can't be used to probe friendships or profiles.
-      const followable =
-        (await repo.areFriends(userId, targetId)) || (await profile.isProfilePublic(targetId));
-      if (!followable) throw FOLLOW_TARGET_NOT_FOUND();
-      // Idempotent: a repeat follow is a silent no-op — following grants no access
-      // and emits nothing on its own, so there is nothing to re-fire. A repeat
-      // follow also never flips prefs; changing those is PATCH's job (#439/#455).
-      await follows.follow(userId, targetId, {
-        autoFollowItems: opts?.autoFollowItems,
-        notifyOnAlertCreate: opts?.notifyOnAlertCreate,
-        notifyOnAlertFire: opts?.notifyOnAlertFire,
-      });
+      const follow = async () => {
+        if (userId === targetId) throw CANNOT_FOLLOW_SELF();
+        // The target must be a real, active, non-admin account. Validating first
+        // turns an unknown/admin/disabled id into a uniform 404 (never an FK crash),
+        // and keeps admins out of the social graph like friend requests do.
+        const target = await follows.findFollowTarget(targetId);
+        if (!target) throw FOLLOW_TARGET_NOT_FOUND();
+        // Follow eligibility (V4-P0b): a person is followable when they are the
+        // caller's FRIEND — the Friends-tab follow path, no public profile needed —
+        // OR they expose a public profile (the follow path for non-friends). A
+        // non-friend without a public profile has no follow surface and 404s here,
+        // with the same opaque "not a follow target" code as an unknown user so the
+        // check can't be used to probe friendships or profiles.
+        const followable =
+          (await repo.areFriends(userId, targetId)) || (await profile.isProfilePublic(targetId));
+        if (!followable) throw FOLLOW_TARGET_NOT_FOUND();
+        // Idempotent: a repeat follow is a silent no-op — following grants no access
+        // and emits nothing on its own, so there is nothing to re-fire. A repeat
+        // follow also never flips prefs; changing those is PATCH's job (#439/#455).
+        await follows.follow(userId, targetId, {
+          autoFollowItems: opts?.autoFollowItems,
+          notifyOnAlertCreate: opts?.notifyOnAlertCreate,
+          notifyOnAlertFire: opts?.notifyOnAlertFire,
+        });
+      };
+      if (deps.paranoid) {
+        await deps.paranoid.runAllowedMany([userId, targetId], 'sharing', follow);
+      } else {
+        await follow();
+      }
     },
 
     async unfollowUser(userId, targetId) {

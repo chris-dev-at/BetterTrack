@@ -1,6 +1,7 @@
 import type { DomainEvent } from '../events';
 import {
   isPortfolioContentWebhookEvent,
+  ParanoidModeError,
   paranoidJobPolicy,
   PARANOID_JOB_POLICIES,
   type ParanoidModeGuard,
@@ -13,16 +14,17 @@ const PARANOID_USER_FILTER_JOB = Symbol('paranoid-user-filter-job');
 
 export type ParanoidUserJobFilter = ((userId: string) => Promise<boolean>) & {
   readonly [PARANOID_USER_FILTER_JOB]: string;
+  runAllowed(userId: string, action: () => Promise<void>): Promise<boolean>;
 };
 
 export type ParanoidJobBinding =
   | {
       readonly mode: 'portfolio';
-      readonly isBlockedPortfolio: (portfolioId: string) => Promise<boolean>;
+      readonly runIfAllowed: (portfolioId: string, action: () => Promise<void>) => Promise<boolean>;
     }
   | {
       readonly mode: 'event';
-      readonly isParanoid: (userId: string) => Promise<boolean>;
+      readonly runIfAllowed: (userId: string, action: () => Promise<void>) => Promise<boolean>;
     }
   | {
       readonly mode: 'perUser';
@@ -33,13 +35,22 @@ export type ParanoidJobBinding =
 
 export function createParanoidUserJobFilter(
   jobName: string,
-  guard: Pick<ParanoidModeGuard, 'isParanoid'>,
+  guard: Pick<ParanoidModeGuard, 'isParanoid' | 'runAllowed'>,
 ): ParanoidUserJobFilter {
   const policy = paranoidJobPolicy(jobName);
-  if (policy.mode !== 'perUser') {
-    throw new Error(`paranoid job ${jobName} is ${policy.mode}, not perUser`);
+  if (policy.mode !== 'perUser' || !policy.capability) {
+    throw new Error(`paranoid job ${jobName} is not a killed perUser job`);
   }
   const filter = ((userId: string) => guard.isParanoid(userId)) as ParanoidUserJobFilter;
+  filter.runAllowed = async (userId, action) => {
+    try {
+      await guard.runAllowed(userId, policy.capability!, action);
+      return true;
+    } catch (error) {
+      if (error instanceof ParanoidModeError) return false;
+      throw error;
+    }
+  };
   Object.defineProperty(filter, PARANOID_USER_FILTER_JOB, { value: jobName });
   return filter;
 }
@@ -80,11 +91,10 @@ export function bindParanoidJob<N extends QueueName>(
         if (typeof portfolioId !== 'string') {
           throw new Error(`${definition.name} paranoid binding requires portfolioId`);
         }
-        if (await binding.isBlockedPortfolio(portfolioId)) {
+        const ran = await binding.runIfAllowed(portfolioId, () => handler(job, ctx));
+        if (!ran) {
           ctx.logger.info({ portfolioId }, `${definition.name} skipped by paranoid registry`);
-          return;
         }
-        await handler(job, ctx);
       },
     };
   } else if (binding.mode === 'event') {
@@ -95,11 +105,14 @@ export function bindParanoidJob<N extends QueueName>(
         const event = (job.data as { event?: DomainEvent }).event;
         if (event && isPortfolioContentWebhookEvent(event)) {
           const userId = eventUserId(event);
-          if (userId && (await binding.isParanoid(userId))) {
-            ctx.logger.info(
-              { userId, type: event.type },
-              `${definition.name} skipped by paranoid registry`,
-            );
+          if (userId) {
+            const ran = await binding.runIfAllowed(userId, () => handler(job, ctx));
+            if (!ran) {
+              ctx.logger.info(
+                { userId, type: event.type },
+                `${definition.name} skipped by paranoid registry`,
+              );
+            }
             return;
           }
         }

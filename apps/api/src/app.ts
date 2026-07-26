@@ -2,6 +2,8 @@ import cookieParser from 'cookie-parser';
 import express from 'express';
 import helmet from 'helmet';
 
+import { VAULT_MAX_BYTES_DEFAULT } from '@bettertrack/contracts';
+
 import { createBullBoardRouter } from './http/bullBoard';
 import { createErrorHandler } from './http/errorHandler';
 import { createFeatureFlagsRouter } from './http/routes/featureFlagsRoutes';
@@ -56,6 +58,14 @@ import { createParanoidRouteGuard } from './services/account/paranoidEnforcement
 import './http/types';
 
 /**
+ * A decrypted restore document came from a vault envelope capped at 16 MiB.
+ * Leave bounded room for the public request wrapper (`confirm` +
+ * `rehydrationId`) while keeping every other JSON endpoint on the 100 KiB
+ * application-wide limit.
+ */
+export const PARANOID_DISABLE_JSON_LIMIT_BYTES = VAULT_MAX_BYTES_DEFAULT + 64 * 1024;
+
+/**
  * Builds the Express application from a wired context. Kept separate from
  * `server.ts` (and the test harness) so the app can be mounted without binding
  * a port or real infrastructure.
@@ -76,7 +86,15 @@ export function createApp(ctx: AppContext) {
   // session/rate-limit work and cross-origin web/admin callers get their headers
   // (§4.6, §10). The allowlist is the derived web+admin origins.
   app.use(createCorsMiddleware(ctx.config.corsOrigins));
-  app.use(express.json({ limit: '100kb' }));
+  const regularJson = express.json({ limit: '100kb' });
+  const paranoidDisableJson = express.json({ limit: PARANOID_DISABLE_JSON_LIMIT_BYTES });
+  app.use((req, res, next) => {
+    const parser =
+      req.method === 'POST' && req.path === '/api/v1/account/paranoid/disable'
+        ? paranoidDisableJson
+        : regularJson;
+    parser(req, res, next);
+  });
   app.use(cookieParser(ctx.config.sessionSecrets));
 
   // Public API docs (§5 Meta, §6.13): mounted at the origin root, BEFORE the

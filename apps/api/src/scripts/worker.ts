@@ -19,7 +19,10 @@ import { createMarketIntelRepository } from '../data/repositories/marketIntelRep
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
 import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
-import { createParanoidEnforcementRepository } from '../data/repositories/paranoidEnforcementRepository';
+import {
+  createParanoidEnforcementRepository,
+  withLockedPrivacyModes,
+} from '../data/repositories/paranoidEnforcementRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
 import {
@@ -115,6 +118,8 @@ import { createWebPushChannel } from '../services/notifications/webPush';
 import {
   createParanoidModeGuard,
   isParanoidOwnedSubjectBlocked,
+  ParanoidModeError,
+  runIfParanoidOwnedSubjectAllowed,
 } from '../services/account/paranoidEnforcement';
 
 const config = loadConfig();
@@ -139,13 +144,22 @@ const registry = createQueueRegistry(createConnection());
 // The market-data jobs read/write Postgres and reach providers through the same
 // caching/resilience service the API uses.
 const { db, client } = createDatabase(config.databaseUrl);
+const { db: lockDb, client: lockClient } = createDatabase(config.databaseUrl);
 const workerUserRepo = createUserRepository(db);
 const paranoidGuard = createParanoidModeGuard({
   privacyModeFor: async (userId) => (await workerUserRepo.findById(userId))?.privacyMode ?? null,
+  withLockedPrivacyModes: (userIds, run) => withLockedPrivacyModes(lockDb, userIds, run),
 });
 const paranoidSubjects = createParanoidEnforcementRepository(db);
 const isBlockedPortfolio = async (portfolioId: string) =>
   isParanoidOwnedSubjectBlocked(await paranoidSubjects.portfolioOwner(portfolioId), paranoidGuard);
+const runPortfolioJobIfAllowed = async (portfolioId: string, action: () => Promise<void>) =>
+  runIfParanoidOwnedSubjectAllowed(
+    await paranoidSubjects.portfolioOwner(portfolioId),
+    paranoidGuard,
+    'portfolioJobs',
+    action,
+  );
 const earningsParanoidFilter = createParanoidUserJobFilter(
   'notifications.earningsRemind',
   paranoidGuard,
@@ -299,6 +313,7 @@ const snapshots = createPortfolioSnapshotService({
   marketData,
   currencyService: createCurrencyService({ source: createMarketDataFxSource(marketData) }),
   isParanoidPortfolio: isBlockedPortfolio,
+  runIfAllowedPortfolio: runPortfolioJobIfAllowed,
   logger,
 });
 
@@ -400,6 +415,7 @@ const standingOrders = createStandingOrderService({
   snapshots,
   paranoid: paranoidGuard,
   isParanoidForProcessing: standingOrderParanoidFilter,
+  runIfAllowedForProcessing: standingOrderParanoidFilter.runAllowed,
   logger,
 });
 
@@ -454,7 +470,7 @@ const definitions = [
   createExportCleanupJob({ exportService: dataExportService }),
   bindParanoidJob(createSnapshotsRecomputeJob({ snapshots }), {
     mode: 'portfolio',
-    isBlockedPortfolio,
+    runIfAllowed: runPortfolioJobIfAllowed,
   }),
   bindParanoidJob(createSnapshotsBackfillJob({ snapshots }), { mode: 'serviceFiltered' }),
   createUsageRollupJob({ usageAnalytics }),
@@ -468,6 +484,7 @@ const definitions = [
       notify,
       enabled: config.marketIntel.enabled,
       isParanoid: earningsParanoidFilter,
+      runIfAllowed: earningsParanoidFilter.runAllowed,
     }),
     { mode: 'perUser', filter: earningsParanoidFilter },
   ),
@@ -481,6 +498,7 @@ const definitions = [
       isEnabled: dividendNotifyGate(notificationRepo),
       enabled: config.marketIntel.enabled,
       isParanoid: dividendParanoidFilter,
+      runIfAllowed: dividendParanoidFilter.runAllowed,
     }),
     { mode: 'perUser', filter: dividendParanoidFilter },
   ),
@@ -506,7 +524,15 @@ const definitions = [
   // job options + auto-disable) and the daily delivery-log retention sweep.
   bindParanoidJob(createWebhookDeliverJob({ dispatcher: webhookDispatcher }), {
     mode: 'event',
-    isParanoid: (userId) => paranoidGuard.isParanoid(userId),
+    runIfAllowed: async (userId, action) => {
+      try {
+        await paranoidGuard.runAllowed(userId, 'portfolioWebhooks', action);
+        return true;
+      } catch (error) {
+        if (error instanceof ParanoidModeError) return false;
+        throw error;
+      }
+    },
   }),
   createWebhookDeliveryCleanupJob({ deliveries: webhookDeliveryRepo }),
   // V5-P10 API-key governance (issue 2/2): the daily retention sweep over the
@@ -563,6 +589,7 @@ async function shutdown(signal: string): Promise<void> {
     await events.close();
     await deadLetterConnection.quit();
     await marketDataConnection.quit();
+    await lockClient.end();
     await client.end();
     // Flush any buffered Sentry events before the process exits.
     await observability.close();

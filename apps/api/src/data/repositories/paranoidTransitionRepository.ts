@@ -1,13 +1,11 @@
-import { and, count, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
+import { and, count, eq, inArray, or } from 'drizzle-orm';
 
 import { VAULT_FORMAT_VERSION, type VaultMediaSet } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import { PARANOID_SEALED_ASSET_PROVIDER_ID } from '../paranoidAssets';
+import { withExclusiveParanoidTransitionTestLock } from './paranoidEnforcementRepository';
 import {
-  alerts,
   assets,
-  conglomeratePositions,
   conglomerates,
   dividends,
   expenseBudgetFires,
@@ -45,7 +43,6 @@ import {
   users,
   userTaxSettings,
   watchlists,
-  workboardItems,
 } from '../schema';
 import { PARANOID_VAULT_TABLE_NAMES } from '../../services/export/manifest';
 
@@ -97,7 +94,6 @@ interface PurgeScope {
   userId: string;
   portfolioIds: string[];
   customAssetIds: string[];
-  sealedCustomAssetIds: string[];
   standingOrderIds: string[];
   importBatchIds: string[];
   expenseBudgetIds: string[];
@@ -125,32 +121,10 @@ const probe = async (query: PromiseLike<Array<{ value: number }>>): Promise<numb
  * manifest before a destructive transition can start.
  */
 const PURGE_HANDLERS: Record<string, PurgeHandler> = {
-  assets: ({ customAssetIds, sealedCustomAssetIds, ...scope }) => {
-    const sealed = new Set(sealedCustomAssetIds);
-    const removableIds = customAssetIds.filter((id) => !sealed.has(id));
-    return Promise.all([
-      ifIds(removableIds, (ids) =>
-        scope.tx
-          .delete(assets)
-          .where(and(eq(assets.ownerId, scope.userId), inArray(assets.id, ids))),
-      ),
-      ifIds(sealedCustomAssetIds, (ids) =>
-        scope.tx
-          .update(assets)
-          .set({
-            providerId: PARANOID_SEALED_ASSET_PROVIDER_ID,
-            providerRef: sql`${assets.id}::text`,
-            type: 'custom',
-            symbol: '',
-            name: '',
-            exchange: null,
-            currency: 'EUR',
-            meta: null,
-          })
-          .where(and(eq(assets.ownerId, scope.userId), inArray(assets.id, ids))),
-      ),
-    ]);
-  },
+  assets: ({ customAssetIds, tx, userId }) =>
+    ifIds(customAssetIds, (ids) =>
+      tx.delete(assets).where(and(eq(assets.ownerId, userId), inArray(assets.id, ids))),
+    ),
   dividends: ({ portfolioIds, tx }) =>
     ifIds(portfolioIds, (ids) => tx.delete(dividends).where(inArray(dividends.portfolioId, ids))),
   expense_budget_fires: ({ expenseBudgetIds, tx }) =>
@@ -243,14 +217,7 @@ const PARANOID_PURGE_ORDER = [
  */
 const PROBE_HANDLERS: Record<string, ProbeHandler> = {
   assets: ({ userId, tx }) =>
-    probe(
-      tx
-        .select({ value: count() })
-        .from(assets)
-        .where(
-          and(eq(assets.ownerId, userId), ne(assets.providerId, PARANOID_SEALED_ASSET_PROVIDER_ID)),
-        ),
-    ),
+    probe(tx.select({ value: count() }).from(assets).where(eq(assets.ownerId, userId))),
   dividends: ({ portfolioIds, tx }) =>
     probeIds(portfolioIds, (ids) =>
       tx.select({ value: count() }).from(dividends).where(inArray(dividends.portfolioId, ids)),
@@ -588,37 +555,11 @@ export function createParanoidTransitionTransactionRepository(
               .where(eq(expenseBudgets.userId, userId)),
           ),
         ]);
-      const sealedCustomAssetIds = new Set<string>();
-      if (customAssetIds.length > 0) {
-        const [watchlistRefs, conglomerateRefs, alertRefs] = await Promise.all([
-          tx
-            .select({ assetId: workboardItems.assetId })
-            .from(workboardItems)
-            .where(inArray(workboardItems.assetId, customAssetIds)),
-          tx
-            .select({ assetId: conglomeratePositions.assetId })
-            .from(conglomeratePositions)
-            .where(
-              and(
-                isNotNull(conglomeratePositions.assetId),
-                inArray(conglomeratePositions.assetId, customAssetIds),
-              ),
-            ),
-          tx
-            .select({ assetId: alerts.assetId })
-            .from(alerts)
-            .where(inArray(alerts.assetId, customAssetIds)),
-        ]);
-        for (const row of [...watchlistRefs, ...conglomerateRefs, ...alertRefs]) {
-          if (row.assetId) sealedCustomAssetIds.add(row.assetId);
-        }
-      }
       const scope: PurgeScope = {
         tx,
         userId,
         portfolioIds,
         customAssetIds,
-        sealedCustomAssetIds: [...sealedCustomAssetIds],
         standingOrderIds,
         importBatchIds,
         expenseBudgetIds,
@@ -661,9 +602,12 @@ export function createParanoidTransitionTransactionRepository(
 
 export async function withParanoidTransitionTransaction<T>(
   db: Database,
+  userId: string,
   run: (tx: Database) => Promise<T>,
 ): Promise<T> {
-  return db.transaction((tx) => run(tx as unknown as Database));
+  return withExclusiveParanoidTransitionTestLock(db, userId, () =>
+    db.transaction((tx) => run(tx as unknown as Database)),
+  );
 }
 
 export async function getParanoidAdminMetadata(
