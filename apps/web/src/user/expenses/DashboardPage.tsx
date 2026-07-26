@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 
-import { useT } from '../../i18n';
+import { LOCALES, useI18n, useT } from '../../i18n';
 import { formatMoney } from '../../lib/format';
 import {
   EXPENSE_SUMMARY_QUERY_KEY,
@@ -11,7 +11,7 @@ import {
 } from '../../lib/expensesApi';
 import { EmptyState, Skeleton, StatCard } from '../../ui';
 import { AllocationDonut } from '../../ui/charts';
-import { Alert, cx } from '../components/ui';
+import { Alert, Button, cx } from '../components/ui';
 
 /**
  * Expense dashboard (PROJECTPLAN.md §13.5 V5-P9, issue 3/3): spend by category
@@ -30,11 +30,11 @@ function currentMonth(): string {
 }
 
 /** A short localized month label for a `YYYY-MM` key (e.g. "Jul"). */
-function shortMonthLabel(month: string): string {
+function shortMonthLabel(month: string, locale: string): string {
   const parts = month.split('-');
   const year = Number(parts[0]);
   const monthIndex = Number(parts[1]) - 1;
-  return new Date(Date.UTC(year, monthIndex, 1)).toLocaleDateString(undefined, {
+  return new Date(Date.UTC(year, monthIndex, 1)).toLocaleDateString(locale, {
     month: 'short',
     timeZone: 'UTC',
   });
@@ -42,7 +42,9 @@ function shortMonthLabel(month: string): string {
 
 export function DashboardPage() {
   const t = useT();
+  const { locale } = useI18n();
   const [month, setMonth] = useState(currentMonth());
+  const intlLocale = LOCALES[locale].intlLocale;
 
   const summaryQuery = useQuery({
     queryKey: [...EXPENSE_SUMMARY_QUERY_KEY, month],
@@ -96,7 +98,14 @@ export function DashboardPage() {
           <Skeleton height="h-20" />
         </div>
       ) : summaryQuery.isError ? (
-        <Alert tone="error">{t('expenses.dashboard.loadError')}</Alert>
+        <div className="flex flex-col gap-3">
+          <Alert tone="error">{t('expenses.dashboard.loadError')}</Alert>
+          <div>
+            <Button variant="secondary" onClick={() => void summaryQuery.refetch()}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        </div>
       ) : (
         <>
           {/* Income vs spend headline. */}
@@ -157,7 +166,14 @@ export function DashboardPage() {
         {trendsQuery.isLoading ? (
           <Skeleton height="h-32" />
         ) : trendsQuery.isError ? (
-          <Alert tone="error">{t('expenses.dashboard.loadError')}</Alert>
+          <div className="flex flex-col gap-3">
+            <Alert tone="error">{t('expenses.dashboard.loadError')}</Alert>
+            <div>
+              <Button variant="secondary" onClick={() => void trendsQuery.refetch()}>
+                {t('common.retry')}
+              </Button>
+            </div>
+          </div>
         ) : trendEmpty ? (
           <EmptyState
             icon="📊"
@@ -166,23 +182,33 @@ export function DashboardPage() {
           />
         ) : (
           <ul className="flex h-36 items-end gap-2" aria-label={t('expenses.dashboard.trend')}>
-            {trendPoints.map((p) => (
-              <li key={p.month} className="flex flex-1 flex-col items-center gap-1">
-                <div className="flex w-full flex-1 items-end justify-center gap-1">
-                  <span
-                    className="w-2.5 rounded-t bg-rose-500/80"
-                    style={{ height: `${(p.expense / trendMax) * 100}%` }}
-                    title={`${shortMonthLabel(p.month)} · ${t('expenses.dashboard.spend')}: ${formatMoney(p.expense, DISPLAY_CURRENCY)}`}
-                  />
-                  <span
-                    className="w-2.5 rounded-t bg-emerald-500/80"
-                    style={{ height: `${(p.income / trendMax) * 100}%` }}
-                    title={`${shortMonthLabel(p.month)} · ${t('expenses.dashboard.income')}: ${formatMoney(p.income, DISPLAY_CURRENCY)}`}
-                  />
-                </div>
-                <span className="text-[10px] text-neutral-500">{shortMonthLabel(p.month)}</span>
-              </li>
-            ))}
+            {trendPoints.map((p) => {
+              const monthLabel = shortMonthLabel(p.month, intlLocale);
+              const expenseLabel = `${monthLabel} · ${t('expenses.dashboard.spend')}: ${formatMoney(p.expense, DISPLAY_CURRENCY)}`;
+              const incomeLabel = `${monthLabel} · ${t('expenses.dashboard.income')}: ${formatMoney(p.income, DISPLAY_CURRENCY)}`;
+
+              return (
+                <li key={p.month} className="flex flex-1 flex-col items-center gap-1">
+                  <div className="flex w-full flex-1 items-end justify-center gap-1">
+                    <span
+                      role="img"
+                      aria-label={expenseLabel}
+                      className="w-2.5 rounded-t bg-rose-500/80"
+                      style={{ height: `${(p.expense / trendMax) * 100}%` }}
+                      title={expenseLabel}
+                    />
+                    <span
+                      role="img"
+                      aria-label={incomeLabel}
+                      className="w-2.5 rounded-t bg-emerald-500/80"
+                      style={{ height: `${(p.income / trendMax) * 100}%` }}
+                      title={incomeLabel}
+                    />
+                  </div>
+                  <span className="text-[10px] text-neutral-500">{monthLabel}</span>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
