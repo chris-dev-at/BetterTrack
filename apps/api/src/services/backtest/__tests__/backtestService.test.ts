@@ -1,4 +1,8 @@
-import { backtestComparisonResponseSchema, backtestResponseSchema } from '@bettertrack/contracts';
+import {
+  backtestComparisonResponseSchema,
+  backtestResponseSchema,
+  MAX_NESTING_DEPTH,
+} from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
 
@@ -90,6 +94,9 @@ const CONG_ID = '018f0000-0000-7000-8000-000000000001';
 const NESTED_ID = '018f0000-0000-7000-8000-000000000002';
 /** A u1-owned conglomerate holding a PRIVATE custom asset (arc-c sandbox tests). */
 const CUSTOM_CONG_ID = '018f0000-0000-7000-8000-000000000003';
+/** The middle and root baskets of a valid root → child → grandchild depth-3 chain. */
+const DEEP_MID_ID = '018f0000-0000-7000-8000-000000000004';
+const DEEP_ROOT_ID = '018f0000-0000-7000-8000-000000000005';
 /** The friend viewing u1's shared baskets in the arc-c sandbox tests. */
 const VIEWER_ID = 'v1';
 
@@ -146,6 +153,20 @@ function createHarness() {
           ],
         };
       }
+      if (id === DEEP_MID_ID) {
+        return {
+          id: DEEP_MID_ID,
+          name: 'Deep Mid',
+          positions: [{ kind: 'conglomerate', childId: CONG_ID, weightPct: 100 }],
+        };
+      }
+      if (id === DEEP_ROOT_ID) {
+        return {
+          id: DEEP_ROOT_ID,
+          name: 'Deep Root',
+          positions: [{ kind: 'conglomerate', childId: DEEP_MID_ID, weightPct: 100 }],
+        };
+      }
       return null;
     },
   } as unknown as ConglomerateRepository;
@@ -183,7 +204,8 @@ function createHarness() {
     // Model the §6.9 share guard for the arc-c sandbox: viewer `v1` may read
     // u1's shared baskets; everyone/everything else is a 404.
     authorizeConglomerateRead: async (viewerId: string, conglomerateId: string) =>
-      viewerId === VIEWER_ID && [CONG_ID, NESTED_ID, CUSTOM_CONG_ID].includes(conglomerateId)
+      viewerId === VIEWER_ID &&
+      [CONG_ID, NESTED_ID, CUSTOM_CONG_ID, DEEP_ROOT_ID].includes(conglomerateId)
         ? { ownerId: 'u1' }
         : undefined,
     // Fixed clock: the 1Y window ends 2026-01-05 and the engine clips to the
@@ -601,18 +623,58 @@ describe('backtestService.runSharedSandboxPreview', () => {
     ).rejects.toMatchObject({ statusCode: 422, code: 'SANDBOX_POSITIONS_MISMATCH' });
   });
 
-  it('refuses a nested basket (recursive re-weighting is out of arc-c scope)', async () => {
+  it('re-weights a nested top-level constituent and resolves its effective assets recursively', async () => {
+    const { service } = createHarness();
+    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: NESTED_ID,
+      positions: [
+        { id: CONG_ID, weight: 80 },
+        { id: 'A', weight: 20 },
+      ],
+      range: '1Y',
+    });
+
+    // The child keeps its stored 60/40 A/B split: an 80% child plus 20% direct A
+    // resolves to exactly 68/32 A/B.
+    const handFlattened = await service.runPreview('u1', {
+      positions: [
+        { assetId: 'A', weight: 68 },
+        { assetId: 'B', weight: 32 },
+      ],
+      range: '1Y',
+    });
+    expect(sandbox.series).toHaveLength(handFlattened.series.length);
+    for (let index = 0; index < sandbox.series.length; index += 1) {
+      expect(sandbox.series[index]!.date).toBe(handFlattened.series[index]!.date);
+      expect(sandbox.series[index]!.value).toBeCloseTo(handFlattened.series[index]!.value, 10);
+    }
+  });
+
+  it('runs a valid nest at the planner-set maximum depth', async () => {
+    expect(MAX_NESTING_DEPTH).toBe(3);
+    const { service } = createHarness();
+    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: DEEP_ROOT_ID,
+      positions: [{ id: DEEP_MID_ID, weight: 100 }],
+      range: '1Y',
+    });
+    const handFlattened = await service.runPreview('u1', PREVIEW);
+    expect(sandbox.series).toEqual(handFlattened.series);
+    expect(sandbox.stats).toEqual(handFlattened.stats);
+  });
+
+  it('cannot introduce a self-cycle by substituting the shared root id', async () => {
     const { service } = createHarness();
     await expect(
       service.runSharedSandboxPreview(VIEWER_ID, {
         conglomerateId: NESTED_ID,
         positions: [
-          { id: CONG_ID, weight: 50 },
-          { id: 'A', weight: 50 },
+          { id: NESTED_ID, weight: 80 },
+          { id: 'A', weight: 20 },
         ],
         range: '1Y',
       }),
-    ).rejects.toMatchObject({ statusCode: 422, code: 'SANDBOX_NESTED_UNSUPPORTED' });
+    ).rejects.toMatchObject({ statusCode: 422, code: 'SANDBOX_POSITIONS_MISMATCH' });
   });
 
   it('refuses a basket with a private custom asset — a viewer never sees the owner’s manual valuations', async () => {

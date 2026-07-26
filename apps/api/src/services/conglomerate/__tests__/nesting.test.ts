@@ -136,6 +136,23 @@ describe('flattenConglomerate', () => {
     expect(byId.get('z')).toBeCloseTo(24, 12);
   });
 
+  it('applies local root weights while preserving a nested child’s internal allocation', async () => {
+    const load = loaderOf([
+      row('parent', [assetPos('x', 50), childPos('child', 50)]),
+      row('child', [assetPos('y', 40), assetPos('z', 60)]),
+    ]);
+    const flat = await flattenConglomerate(load, 'parent', {
+      rootWeights: new Map([
+        ['x', 20],
+        ['child', 80],
+      ]),
+    });
+    const byId = new Map(flat!.positions.map((position) => [position.assetId, position.weightPct]));
+    expect(byId.get('x')).toBeCloseTo(20, 12);
+    expect(byId.get('y')).toBeCloseTo(32, 12);
+    expect(byId.get('z')).toBeCloseTo(48, 12);
+  });
+
   it('merges an asset reachable both directly and through a child', async () => {
     const load = loaderOf([
       row('parent', [assetPos('x', 50), childPos('child', 50)]),

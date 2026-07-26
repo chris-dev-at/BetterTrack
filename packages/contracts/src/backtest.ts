@@ -241,12 +241,13 @@ export type BacktestResponse = z.infer<typeof backtestResponseSchema>;
 
 /**
  * One re-weighted constituent in a shared-conglomerate what-if sandbox (§13.5
- * V5-P6 arc c): the constituent's own id — an asset's `assetId`, exactly as the
- * read-only shared view surfaces it — plus the viewer's locally-tweaked relative
- * weight (normalised by the engine, so any positive number is valid, as in the
- * Builder). The server pins the id SET to the shared basket's real constituents,
- * so the sandbox can only re-weight what the share already exposes — never inject
- * a foreign asset id (the §6.9 privacy boundary).
+ * V5-P6 arc c): the constituent's own id — an asset's `assetId` or a nested
+ * basket's `childId`, exactly as the read-only shared view surfaces it — plus the
+ * viewer's locally-tweaked relative weight (normalised by the engine, so any
+ * positive number is valid, as in the Builder). The server pins the id SET to the
+ * shared basket's real top-level constituents, so the sandbox can only re-weight
+ * what the share already exposes — never inject a foreign id (the §6.9 privacy
+ * boundary).
  */
 export const sharedSandboxPositionSchema = z
   .object({
@@ -264,8 +265,8 @@ export type SharedSandboxPosition = z.infer<typeof sharedSandboxPositionSchema>;
  * basket (owner-scoped, catalog-assets only), so nothing beyond the share's
  * existing exposure is reachable and no write is ever issued. Deliberately has no
  * benchmark axis — a viewer must not overlay their own baskets on someone else's
- * share. Nested constituents are out of arc-c scope (recursive re-weighting is
- * #592): a basket containing one is not sandboxable and the server refuses it.
+ * share. A nested constituent remains one top-level tweak row; its stored internal
+ * weights resolve recursively through the canonical depth-bounded flattener.
  */
 export const sharedSandboxPreviewRequestSchema = z
   .object({

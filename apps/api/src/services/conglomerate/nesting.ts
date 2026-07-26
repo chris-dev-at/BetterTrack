@@ -120,6 +120,21 @@ export interface FlattenedConglomerate {
   nested: boolean;
 }
 
+export interface FlattenConglomerateOptions {
+  /**
+   * Optional local overrides for the ROOT basket only, keyed by an asset
+   * constituent's `assetId` or a nested constituent's `childId`. Child baskets
+   * keep their stored internal weights and are resolved through the same
+   * recursive walk. Callers that accept untrusted ids must pin the map to the
+   * root's exact constituent set before flattening.
+   */
+  rootWeights?: ReadonlyMap<string, number>;
+}
+
+function constituentId(position: ConglomerateConstituentRow): string {
+  return position.kind === 'asset' ? position.assetId : position.childId;
+}
+
 /**
  * Flatten a conglomerate to effective asset weights (the shared resolution
  * function — see the module doc for the math). `load` is the owner-scoped
@@ -128,10 +143,14 @@ export interface FlattenedConglomerate {
  * nothing — its slice is redistributed by the final normalization. The
  * recursion is bounded by {@link MAX_NESTING_DEPTH}; deeper data would violate
  * the write-time invariant and throws rather than resolving silently wrong.
+ * {@link FlattenConglomerateOptions.rootWeights} lets read-only what-if callers
+ * change only the root allocation while retaining the stored recursive
+ * structure and internal child weights.
  */
 export async function flattenConglomerate(
   load: (id: string) => Promise<ConglomerateDetailRow | null>,
   rootId: string,
+  options?: FlattenConglomerateOptions,
 ): Promise<FlattenedConglomerate | null> {
   const cache = new Map<string, ConglomerateDetailRow | null>();
   async function loadOnce(id: string): Promise<ConglomerateDetailRow | null> {
@@ -152,10 +171,14 @@ export async function flattenConglomerate(
         `Conglomerate nesting exceeds the depth cap of ${MAX_NESTING_DEPTH} — write-time invariant violated.`,
       );
     }
-    const sum = row.positions.reduce((acc, p) => acc + p.weightPct, 0);
+    const weightOf = (position: ConglomerateConstituentRow): number =>
+      depth === 1
+        ? (options?.rootWeights?.get(constituentId(position)) ?? position.weightPct)
+        : position.weightPct;
+    const sum = row.positions.reduce((acc, position) => acc + weightOf(position), 0);
     if (sum <= 0) return;
     for (const pos of row.positions) {
-      const share = fraction * (pos.weightPct / sum);
+      const share = fraction * (weightOf(pos) / sum);
       if (pos.kind === 'asset') {
         const existing = shareByAsset.get(pos.assetId);
         if (existing) existing.share += share;

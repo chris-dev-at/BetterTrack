@@ -133,9 +133,9 @@ export interface BacktestComparisonInput {
 /**
  * Shared-conglomerate what-if sandbox input (§13.5 V5-P6 arc c): the shared
  * conglomerate the viewer is looking at plus their locally-tweaked TOP-LEVEL
- * weights keyed by each asset constituent's `assetId`. Same window/late-listing/
- * rebalance knobs a single preview takes; no benchmark and no nested tweaking
- * (recursive re-weighting is #592, out of scope here).
+ * weights keyed by an asset constituent's `assetId` or a nested constituent's
+ * `childId`. Same window/late-listing/rebalance knobs a single preview takes;
+ * no benchmark and no changes to a nested child's internal weights.
  */
 export interface BacktestSharedSandboxInput {
   conglomerateId: string;
@@ -215,13 +215,13 @@ export interface BacktestService {
    * for the read-only "what-if" sandbox (§13.5 V5-P6 arc c). Authorized through
    * the exact same share guard the shared view uses (`authorizeConglomerateRead`)
    * — an unauthorized viewer gets a 404, never data. The tweak set is pinned to
-   * the shared basket's real asset constituents (a foreign / missing id is a
-   * 422), and every constituent is resolved as a PUBLIC catalog asset: a private
-   * custom asset (its manual valuations are absent from the share) and a nested
-   * child (arc-c tweaks no recursion) both make the basket un-sandboxable (422),
-   * so the curve leaks nothing beyond the share's existing exposure. Purely a
-   * read: no state is ever written. `reset to shared` is just this call with the
-   * original weights, so it reproduces the shared curve exactly.
+   * the shared basket's real top-level constituents (a foreign / missing id is
+   * a 422). Nested children retain their stored internal weights and resolve
+   * through the shared depth-bounded flattener; every resulting asset is then
+   * resolved as a PUBLIC catalog asset, so a private custom asset's manual
+   * valuations remain unavailable. Purely a read: no state is ever written.
+   * `reset to shared` is just this call with the original weights, so it
+   * reproduces the shared curve exactly.
    */
   runSharedSandboxPreview(
     viewerId: string,
@@ -645,19 +645,12 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       const detail = await conglomerateRepo.findByIdForOwner(owner.ownerId, input.conglomerateId);
       if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
 
-      // Arc c re-weights TOP-LEVEL asset constituents only. A nested child would
-      // need recursive re-weighting (#592, out of scope) and flattening it would
-      // fold in the child's own (unshared) internal weights — so any nested
-      // constituent makes the basket un-sandboxable.
-      const constituents = detail.positions.filter(
-        (p): p is Extract<ConglomerateConstituentRow, { kind: 'asset' }> => p.kind === 'asset',
-      );
-      if (constituents.length !== detail.positions.length) {
-        throw unprocessable(
-          'This conglomerate contains a nested basket and can’t be used in a what-if sandbox.',
-          'SANDBOX_NESTED_UNSUPPORTED',
-        );
-      }
+      // Arc c re-weights TOP-LEVEL constituents as opaque rows. A nested child
+      // keeps its stored internal weights; the shared flattener resolves those
+      // recursively after applying the viewer's local root allocation.
+      const constituents = detail.positions;
+      const constituentId = (position: ConglomerateConstituentRow): string =>
+        position.kind === 'asset' ? position.assetId : position.childId;
 
       // Pin the tweak set to the shared basket's real constituents: the viewer may
       // re-weight only what the share already exposes, never add or drop an id. An
@@ -665,7 +658,8 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       // that changed under the viewer) is a 422 — the client refetches and resets.
       const tweak = new Map(input.positions.map((p) => [p.id, p.weight]));
       const idSetMatches =
-        tweak.size === constituents.length && constituents.every((p) => tweak.has(p.assetId));
+        tweak.size === constituents.length &&
+        constituents.every((position) => tweak.has(constituentId(position)));
       if (!idSetMatches) {
         throw unprocessable(
           'Sandbox weights must cover exactly the shared basket’s constituents.',
@@ -679,12 +673,27 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           : currencyService.withBase(opts.baseCurrency);
       const providerRange = PROVIDER_RANGE[input.range];
 
-      // The tweaked basket: each shared constituent at the viewer's new weight,
-      // resolved as a PUBLIC catalog asset (globalOnly) so no private valuation
-      // history is ever pulled into the curve.
-      const positions = constituents.map((p) => ({
-        assetId: p.assetId,
-        weight: tweak.get(p.assetId)!,
+      // Apply only the root overrides, then reuse the canonical recursive
+      // resolver. This preserves the stored child structure, cycle/depth
+      // invariants and effective-weight semantics instead of reimplementing
+      // nesting in the sandbox.
+      const flat = await flattenConglomerate(
+        (conglomerateId) =>
+          conglomerateId === detail.id
+            ? Promise.resolve(detail)
+            : conglomerateRepo.findByIdForOwner(owner.ownerId, conglomerateId),
+        detail.id,
+        { rootWeights: tweak },
+      );
+      if (!flat || flat.positions.length === 0) {
+        throw unprocessable(
+          `Conglomerate ${detail.name} has no positions to backtest.`,
+          'BACKTEST_UNAVAILABLE',
+        );
+      }
+      const positions = flat.positions.map((position) => ({
+        assetId: position.assetId,
+        weight: position.weightPct,
       }));
       const assets: BacktestAsset[] = [];
       for (const pos of positions) {
