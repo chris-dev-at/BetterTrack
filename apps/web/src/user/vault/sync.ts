@@ -49,9 +49,24 @@ export interface VaultMutationContext {
   currentVersion: number;
 }
 
+export interface VaultDocumentReconcileContext {
+  /** The locally pending/in-memory branch whose changes are being considered. */
+  local: VaultDocumentV1;
+  /** The already-observed durable branch that forms the reconciliation baseline. */
+  remote: VaultDocumentV1;
+  deviceId: string;
+  reconciledAt: string;
+}
+
+export type VaultDocumentReconciler = (
+  document: VaultDocumentV1,
+  context: VaultDocumentReconcileContext,
+) => VaultDocumentV1;
+
 export interface VaultSyncEngine {
   readonly deviceId: string;
   readonly state: VaultSyncState;
+  setDocumentReconciler(reconciler: VaultDocumentReconciler): void;
   start(): Promise<VaultSyncState>;
   reconnect(): Promise<VaultSyncState>;
   mutate(mutator: (context: VaultMutationContext) => VaultDocumentV1): Promise<VaultSyncState>;
@@ -84,6 +99,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   let remoteObserved: RemoteObservation = { known: false, version: null };
   let operationTail = Promise.resolve();
   let rollbackPersistenceFailure: string | undefined;
+  let documentReconciler: VaultDocumentReconciler = (document) => document;
 
   return {
     get deviceId() {
@@ -92,6 +108,10 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
 
     get state() {
       return cloneState(state);
+    },
+
+    setDocumentReconciler(reconciler) {
+      documentReconciler = reconciler;
     },
 
     start() {
@@ -299,6 +319,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       return installRemoteOrPromote(remote, localCurrent, expectedLocalVersion);
     }
 
+    const reconciledAt = now();
     const merged = mergeVaultDocuments({
       left: localReadable.document,
       leftVersion: localReadable.header.vaultVersion,
@@ -306,7 +327,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       rightVersion: remote.header.vaultVersion,
       forceDivergent: localPending != null,
       deviceId: options.deviceId,
-      mergedAt: now(),
+      mergedAt: reconciledAt,
     });
 
     const highestObserved = Math.max(expectedLocalVersion ?? 0, remote.header.vaultVersion);
@@ -337,8 +358,14 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     }
 
     const version = Math.max(merged.vaultVersion, highestObserved + 1);
+    const reconciledDocument = documentReconciler(merged.document, {
+      local: localReadable.document,
+      remote: remote.document,
+      deviceId: options.deviceId,
+      reconciledAt,
+    });
     const candidate = await encryptCandidate(
-      merged.document,
+      reconciledDocument,
       version,
       newestHeader(localReadable, remote),
     );
@@ -494,6 +521,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         return cloneState(state);
       }
 
+      const reconciledAt = now();
       const merged = mergeVaultDocuments({
         left: pending.document,
         leftVersion: pending.header.vaultVersion,
@@ -501,10 +529,16 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         rightVersion: remote.header.vaultVersion,
         forceDivergent: true,
         deviceId: options.deviceId,
-        mergedAt: now(),
+        mergedAt: reconciledAt,
+      });
+      const reconciledDocument = documentReconciler(merged.document, {
+        local: pending.document,
+        remote: remote.document,
+        deviceId: options.deviceId,
+        reconciledAt,
       });
       const reconciled = await encryptCandidate(
-        merged.document,
+        reconciledDocument,
         merged.vaultVersion,
         newestHeader(pending, remote),
       );
@@ -648,13 +682,14 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       return { candidate: persisted, activeContributed: false };
     }
 
+    const reconciledAt = now();
     const merged = mergeVaultDocuments({
       left: persisted.document,
       leftVersion: persisted.header.vaultVersion,
       right: active.document,
       rightVersion: active.header.vaultVersion,
       deviceId: options.deviceId,
-      mergedAt: now(),
+      mergedAt: reconciledAt,
     });
     if (!merged.divergent) {
       if (persisted.header.vaultVersion > active.header.vaultVersion) {
@@ -666,9 +701,15 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       return { candidate: selectHighest(persisted, active), activeContributed: false };
     }
 
+    const reconciledDocument = documentReconciler(merged.document, {
+      local: active.document,
+      remote: persisted.document,
+      deviceId: options.deviceId,
+      reconciledAt,
+    });
     return {
       candidate: await encryptCandidate(
-        merged.document,
+        reconciledDocument,
         merged.vaultVersion,
         newestHeader(persisted, active),
       ),
