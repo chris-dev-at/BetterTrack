@@ -706,6 +706,49 @@ export const vaultDocumentV1Schema = z.object({
 });
 export type VaultDocumentV1 = z.infer<typeof vaultDocumentV1Schema>;
 
+// ── Internal disable / rehydration DTOs ──────────────────────────────────────
+
+/** Deterministic, repeat-safe post-commit work. It must never run in the transaction. */
+export const PARANOID_REHYDRATION_INVALIDATIONS = [
+  'account',
+  'portfolio',
+  'expenses',
+  'standingOrders',
+  'tax',
+] as const;
+export const paranoidRehydrationPostCommitPlanSchema = z
+  .object({
+    invalidate: z.array(z.enum(PARANOID_REHYDRATION_INVALIDATIONS)),
+  })
+  .strict();
+export type ParanoidRehydrationPostCommitPlan = z.infer<
+  typeof paranoidRehydrationPostCommitPlanSchema
+>;
+
+/** Internal request supplied only after the client has decrypted its strict restore graph. */
+export const paranoidDisableRehydrationRequestSchema = z
+  .object({
+    rehydrationId: z.string().uuid(),
+    document: vaultStrictDocumentV1Schema,
+  })
+  .strict();
+export type ParanoidDisableRehydrationRequest = z.infer<
+  typeof paranoidDisableRehydrationRequestSchema
+>;
+
+/** Non-sensitive receipt: no row counts, hashes, keys, or cleartext metadata. */
+export const paranoidDisableRehydrationResultSchema = z
+  .object({
+    rehydrationId: z.string().uuid(),
+    completedAt: z.string().datetime(),
+    idempotent: z.boolean(),
+    postCommit: paranoidRehydrationPostCommitPlanSchema,
+  })
+  .strict();
+export type ParanoidDisableRehydrationResult = z.infer<
+  typeof paranoidDisableRehydrationResultSchema
+>;
+
 // ── Endpoint DTOs + metadata ─────────────────────────────────────────────────
 
 /**

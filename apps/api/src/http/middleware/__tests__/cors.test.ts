@@ -100,7 +100,14 @@ describe('CORS allowlist', () => {
       email: 'vault-cors@bt.test',
       username: 'vault-cors',
     });
-    await harness.db.update(users).set({ privacyMode: 'paranoid' }).where(eq(users.id, user.id));
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(users.id, user.id));
 
     const agent = request.agent(harness.app);
     const login = await agent

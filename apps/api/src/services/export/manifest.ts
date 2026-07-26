@@ -1,3 +1,4 @@
+import type { VaultEntityKind } from '@bettertrack/contracts';
 import { getTableName, is } from 'drizzle-orm';
 import { PgTable } from 'drizzle-orm/pg-core';
 
@@ -138,15 +139,14 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
     'Broker-import staging bookkeeping — applied rows are exported as transactions/dividends/cash movements.',
   ),
   // V5-P6b standing orders (#593): the rows an order books (transactions / cash
-  // movements) are exported above; the recurring-action DEFINITIONS are
-  // user-owned config whose own export coverage lands with a later export sweep
-  // (mirrors notification_cadences), and the per-period runs ledger is internal
-  // idempotency bookkeeping, not user data to carry out.
+  // movements) are exported above; the recurring-action definitions and their
+  // authoritative per-period exactly-once ledger are user-owned state whose
+  // general account-export coverage lands with a later export sweep.
   standing_orders: skipped(
     'Standing-order definitions (user-owned recurring-action config); the rows they book are exported as transactions/cash movements, and definition export lands with a later export sweep.',
   ),
   standing_order_runs: skipped(
-    'Standing-order per-period exactly-once ledger — internal idempotency bookkeeping, not user data.',
+    'Standing-order authoritative exactly-once ledger; general account-export coverage lands with the standing-order definition export sweep.',
   ),
   // V5-P8 comments + reactions: social interaction content ON OTHER users' shared
   // items, visible only through that item's audience — not the caller's own
@@ -240,6 +240,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   paranoid_vault_history: skipped(
     'Paranoid-vault bounded ciphertext history (V5-P13) — the corruption/bad-write safety net; opaque superseded blobs, not user data to carry out.',
   ),
+  paranoid_rehydration_receipts: skipped(
+    'Paranoid-disable idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */
@@ -288,6 +291,22 @@ export function schemaTableNames(): string[] {
  * durable as the schema grows.
  */
 export type ParanoidClassification = 'vault' | 'server';
+
+/**
+ * The second compulsory policy for each `vault` table. `restore` means an entity
+ * schema and an insert branch must exist in the rehydration service; `purge-only`
+ * means the table is derived, staging, or operational state and is deliberately
+ * rebuilt/discarded rather than trusting it as encrypted source data.
+ */
+export type ParanoidRehydrationPolicy =
+  | { readonly kind: 'restore'; readonly entity: VaultEntityKind }
+  | { readonly kind: 'purge-only' };
+
+const restore = (entity: VaultEntityKind): ParanoidRehydrationPolicy => ({
+  kind: 'restore',
+  entity,
+});
+const purgeOnly = (): ParanoidRehydrationPolicy => ({ kind: 'purge-only' });
 
 export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassification> = {
   // ── vault: portfolio / money content (client-encrypted, purged at enable) ──
@@ -401,7 +420,60 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   // explicitly server-classified (§1).
   paranoid_vaults: 'server',
   paranoid_vault_history: 'server',
+  // PD3a completion receipt + non-sensitive data-home metadata remain server-side.
+  paranoid_rehydration_receipts: 'server',
 };
+
+/**
+ * Explicit restore policy for every table on the encrypted vault axis. This map
+ * intentionally keys table names (not entity kinds), so a future vault table
+ * cannot enter the enable/disable sweep without choosing restore or discard.
+ */
+export const PARANOID_REHYDRATION_POLICY: Record<string, ParanoidRehydrationPolicy> = {
+  portfolios: restore('portfolio'),
+  transactions: restore('transaction'),
+  dividends: restore('dividend'),
+  portfolio_cash_sources: restore('cashSource'),
+  portfolio_cash_movements: restore('cashMovement'),
+  portfolio_settings: restore('portfolioSetting'),
+  user_tax_settings: restore('taxSetting'),
+  assets: restore('customAsset'),
+  price_history: restore('customAssetValue'),
+  standing_orders: restore('standingOrder'),
+  standing_order_runs: restore('standingOrderRun'),
+  expense_categories: restore('expenseCategory'),
+  expense_transactions: restore('expenseTransaction'),
+  expense_rules: restore('expenseRule'),
+  expense_budgets: restore('expenseBudget'),
+  import_batches: purgeOnly(),
+  import_rows: purgeOnly(),
+  portfolio_daily_snapshots: purgeOnly(),
+  portfolio_snapshot_state: purgeOnly(),
+  expense_budget_fires: purgeOnly(),
+};
+
+/**
+ * Rehydration branches intentionally mirror the table-to-entity restore policy.
+ * Keep this as an exportable contract so the completeness gate proves that every
+ * future `restore` table has an insertion branch as well as a payload schema.
+ */
+export const PARANOID_REHYDRATION_HANDLERS = [
+  'portfolio',
+  'transaction',
+  'dividend',
+  'cashSource',
+  'cashMovement',
+  'portfolioSetting',
+  'taxSetting',
+  'customAsset',
+  'customAssetValue',
+  'standingOrder',
+  'standingOrderRun',
+  'expenseCategory',
+  'expenseTransaction',
+  'expenseRule',
+  'expenseBudget',
+] as const satisfies readonly VaultEntityKind[];
 
 /** The `vault`-classified table names (purge/probe/rehydration iterate these). */
 export const PARANOID_VAULT_TABLE_NAMES: readonly string[] = Object.entries(

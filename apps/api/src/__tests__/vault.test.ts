@@ -71,7 +71,14 @@ async function seedAndLogin(
 ): Promise<Agent> {
   const user = await harness.seedUser({ email, username, password: 'user-strong-password-1' });
   if (privacyMode === 'paranoid') {
-    await harness.db.update(users).set({ privacyMode: 'paranoid' }).where(eq(users.id, user.id));
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(users.id, user.id));
   }
   return loginAgent(harness.app, user.email, 'user-strong-password-1');
 }

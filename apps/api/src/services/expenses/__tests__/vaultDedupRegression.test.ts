@@ -3,8 +3,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { VAULT_DOCUMENT_VERSION, vaultStrictDocumentV1Schema } from '@bettertrack/contracts';
 
-import { expenseTransactions } from '../../../data/schema';
+import { expenseTransactions, paranoidVaults, users } from '../../../data/schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
+import { createParanoidRehydrationService } from '../../account/paranoidRehydrationService';
 import { expenseDedupHash } from '../expenseImportService';
 
 const CSV = [
@@ -73,6 +74,22 @@ describe('strict vault expense dedup regression', () => {
           schemaVersion: VAULT_DOCUMENT_VERSION,
           entities: [
             {
+              id: '018f0000-0000-7000-8000-000000000100',
+              kind: 'portfolio',
+              rev: 1,
+              editedAt: edited!.updatedAt.toISOString(),
+              editedBy: user.id,
+              deletedAt: null,
+              data: {
+                userId: user.id,
+                name: 'Main',
+                visibility: 'private',
+                sortOrder: 0,
+                defaultPayFromCash: false,
+                archivedAt: null,
+              },
+            },
+            {
               id: edited!.id,
               kind: 'expenseTransaction',
               rev: 2,
@@ -98,33 +115,30 @@ describe('strict vault expense dedup regression', () => {
         }),
       ),
     );
-    const restoredEntity = restoredDocument.entities[0];
+    const restoredEntity = restoredDocument.entities.find(
+      (entity) => entity.kind === 'expenseTransaction',
+    );
     if (restoredEntity?.kind !== 'expenseTransaction') throw new Error('expense kind changed');
     expect(restoredEntity.data.dedupHash).toBe(originalHash);
 
     await harness.db
       .delete(expenseTransactions)
       .where(eq(expenseTransactions.id, restoredEntity.id));
-    await harness.ctx.expenses.restoreTransactions(
-      user.id,
-      [{ id: restoredEntity.id, ...restoredEntity.data }],
-      {
-        async ownsCategory() {
-          return false;
-        },
-        async insertTransactions(userId, rows) {
-          expect(userId).toBe(user.id);
-          await harness.db.insert(expenseTransactions).values(
-            rows.map((row) => ({
-              ...row,
-              createdAt: new Date(row.createdAt),
-              updatedAt: new Date(row.updatedAt),
-            })),
-          );
-        },
-        async reconcileBudgets() {},
-      },
-    );
+    await harness.db
+      .update(users)
+      .set({ privacyMode: 'paranoid', paranoidMediaSet: ['server'] })
+      .where(eq(users.id, user.id));
+    await harness.db.insert(paranoidVaults).values({
+      userId: user.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 10,
+      blob: Buffer.from('ciphertext'),
+    });
+    await createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
+      rehydrationId: '018f0000-0000-7000-8000-000000000101',
+      document: restoredDocument,
+    });
 
     const reimportPreview = await harness.ctx.expenseImports.preview(user.id, importInput);
     expect(reimportPreview.counts).toEqual({ total: 1, new: 0, duplicate: 1, error: 0 });
