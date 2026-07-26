@@ -11,6 +11,7 @@ import {
 
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
+import { I18nProvider } from '../../i18n';
 import { AuthProvider, useAuth } from '../AuthContext';
 import { AuditPage } from './AuditPage';
 
@@ -55,12 +56,14 @@ function AuthStatus() {
   return <div data-testid="auth-status">{status}</div>;
 }
 
-function renderPage() {
+function renderPage(locale = 'en') {
   return render(
-    <AuthProvider>
-      <AuthStatus />
-      <AuditPage />
-    </AuthProvider>,
+    <I18nProvider initialLocale={locale}>
+      <AuthProvider>
+        <AuthStatus />
+        <AuditPage />
+      </AuthProvider>
+    </I18nProvider>,
   );
 }
 
@@ -108,11 +111,21 @@ test('retries an initial API failure and clears the stale error', async () => {
   renderPage();
 
   expect(await screen.findByRole('alert')).toHaveTextContent('Audit log is unavailable.');
-  await user.click(screen.getByRole('button', { name: 'Retry' }));
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
 
   expect(await screen.findByText('audit.first')).toBeInTheDocument();
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(api.listAudit).toHaveBeenCalledTimes(2);
+});
+
+test('localizes the retry action', async () => {
+  vi.mocked(api.listAudit).mockRejectedValueOnce(
+    new ApiError(500, 'INTERNAL', 'Audit-Protokoll ist nicht verfügbar.'),
+  );
+
+  renderPage('de');
+
+  expect(await screen.findByRole('button', { name: 'Erneut versuchen' })).toBeInTheDocument();
 });
 
 test('appends the next page, disables the control while pending, and hides it at the end', async () => {
@@ -155,7 +168,7 @@ test('keeps loaded rows and retries the same cursor after a pagination failure',
   expect(screen.getByText('audit.first')).toBeInTheDocument();
   expect(api.listAudit).toHaveBeenLastCalledWith({ cursor: nextCursor }, undefined);
 
-  await user.click(screen.getByRole('button', { name: 'Retry' }));
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
 
   expect(await screen.findByText('audit.second')).toBeInTheDocument();
   expect(screen.getAllByText('audit.first')).toHaveLength(1);

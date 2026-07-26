@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { AuditLogEntry } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { isAdminTwoFactorSetupRequired, useAuth } from '../AuthContext';
@@ -20,6 +21,7 @@ function metaSummary(meta: unknown): string {
 }
 
 export function AuditPage() {
+  const t = useT();
   const { clearSession, requireTwoFactorSetup } = useAuth();
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -87,7 +89,7 @@ export function AuditPage() {
 
   const retryAction = (onClick: () => Promise<void>) => (
     <Button variant="secondary" onClick={() => void onClick()}>
-      Retry
+      {t('common.retry')}
     </Button>
   );
 
