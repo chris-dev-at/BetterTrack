@@ -143,6 +143,7 @@ export function createPortfolioMarketIntelService(
       const held = await repo.listHeldPositionsForUser(userId);
 
       const holdings: ProjectedDividendHolding[] = [];
+      let hasUnavailableConversion = false;
       await Promise.all(
         held.map(async (row) => {
           const ref = refOf(row);
@@ -160,7 +161,17 @@ export function createPortfolioMarketIntelService(
           if (annualPerShare == null || annualPerShare <= 0) return;
           const divCurrency = events.currency ?? row.currency;
           const annualNative = row.quantity * annualPerShare;
-          const annualEur = await currency.convert(annualNative, divCurrency, 'EUR');
+          let annualEur: number;
+          try {
+            annualEur = await currency.convert(annualNative, divCurrency, 'EUR');
+          } catch (err) {
+            hasUnavailableConversion = true;
+            logger?.debug?.(
+              { err, assetId: row.assetId, currency: divCurrency },
+              'dividend projection FX conversion failed',
+            );
+            return;
+          }
           holdings.push({
             assetId: row.assetId,
             symbol: row.symbol,
@@ -172,6 +183,11 @@ export function createPortfolioMarketIntelService(
           });
         }),
       );
+
+      // The response has no partial-completeness state. Resolve every holding,
+      // but make the entire projection unavailable when any conversion fails so
+      // a smaller total is never presented as complete income.
+      if (hasUnavailableConversion) return UNAVAILABLE_PROJECTION;
 
       holdings.sort((a, b) => b.annualIncomeEur - a.annualIncomeEur);
       const yearlyTotalEur = round2(holdings.reduce((sum, h) => sum + h.annualIncomeEur, 0));
