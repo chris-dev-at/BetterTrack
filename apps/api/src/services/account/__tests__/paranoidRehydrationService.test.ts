@@ -4,7 +4,7 @@ import {
   type ParanoidDisableRehydrationRequest,
 } from '@bettertrack/contracts';
 import { and, eq, inArray } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createAssetRepository } from '../../../data/repositories/assetRepository';
 import { createCashMovementRepository } from '../../../data/repositories/cashMovementRepository';
@@ -3122,6 +3122,158 @@ describe('paranoid rehydration service', () => {
       code: 'INVALID_CASH_LEDGER',
     });
     expect(await db.select().from(portfolioCashMovements)).toEqual([]);
+  });
+
+  it.each([
+    {
+      position: 'before',
+      rejectedId: '018f0000-0000-7000-8000-0000000000a1',
+      rejectedAmountEur: '-10.000000',
+      movements: [
+        {
+          id: '018f0000-0000-7000-8000-0000000000a1',
+          amountEur: '-10.000000',
+          executedAt: '2026-07-24T08:00:00.000Z',
+          source: 'manual',
+        },
+        {
+          id: '018f0000-0000-7000-8000-0000000000a2',
+          amountEur: '-20.000000',
+          executedAt: '2026-07-24T09:00:00.000Z',
+          source: SOURCE_TAG_SYNC_MIRRORCHAIN,
+        },
+      ],
+    },
+    {
+      position: 'after',
+      rejectedId: '018f0000-0000-7000-8000-0000000000a4',
+      rejectedAmountEur: '-10.000000',
+      movements: [
+        {
+          id: '018f0000-0000-7000-8000-0000000000a3',
+          amountEur: '-20.000000',
+          executedAt: '2026-07-24T08:00:00.000Z',
+          source: SOURCE_TAG_SYNC_MIRRORCHAIN,
+        },
+        {
+          id: '018f0000-0000-7000-8000-0000000000a4',
+          amountEur: '-10.000000',
+          executedAt: '2026-07-24T09:00:00.000Z',
+          source: 'manual',
+        },
+      ],
+    },
+  ] as const)(
+    'rejects a manual debit $position a legitimate MIRRORCHAIN overdraft row before writing',
+    async ({ rejectedId, rejectedAmountEur, movements }) => {
+      const { db, user } = await makeParanoid();
+      const input = request();
+      input.document.entities = input.document.entities.filter(
+        (entry) => entry.kind !== 'cashMovement',
+      );
+      input.document.entities.push(
+        ...movements.map((movement) =>
+          entity(movement.id, 'cashMovement', {
+            portfolioId: PORTFOLIO_ID,
+            sourceId: CASH_SOURCE_ID,
+            kind: 'withdrawal',
+            amountEur: movement.amountEur,
+            transactionId: null,
+            transferId: null,
+            counterpartSourceId: null,
+            dividendId: null,
+            taxYear: null,
+            executedAt: movement.executedAt,
+            createdAt: movement.executedAt,
+            note: null,
+            source: movement.source,
+          }),
+        ),
+      );
+      const rejectedField = `cashMovement[${rejectedId}].amountEur`;
+      const mutationTransaction = vi.spyOn(db, 'transaction');
+
+      try {
+        await expect(
+          createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+        ).rejects.toMatchObject({
+          code: 'INVALID_CASH_LEDGER',
+          message: `cash source would become negative or deepen at ${rejectedField}=${JSON.stringify(
+            rejectedAmountEur,
+          )}`,
+        });
+        expect(input.document.entities.find((entry) => entry.id === rejectedId)).toMatchObject({
+          kind: 'cashMovement',
+          data: { amountEur: rejectedAmountEur },
+        });
+        expect(
+          mutationTransaction,
+          `${rejectedField}=${JSON.stringify(rejectedAmountEur)} entered the mutation transaction`,
+        ).not.toHaveBeenCalled();
+        expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual(
+          [],
+        );
+        expect(await db.select().from(portfolioCashMovements)).toEqual([]);
+      } finally {
+        mutationTransaction.mockRestore();
+      }
+    },
+  );
+
+  it('allows a manual deposit to repair an inherited MIRRORCHAIN deficit', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities = input.document.entities.filter(
+      (entry) => entry.kind !== 'cashMovement',
+    );
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-0000000000a5', 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'withdrawal',
+        amountEur: '-100.000000',
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-24T08:00:00.000Z',
+        createdAt: '2026-07-24T08:00:00.000Z',
+        note: null,
+        source: SOURCE_TAG_SYNC_MIRRORCHAIN,
+      }),
+      entity('018f0000-0000-7000-8000-0000000000a6', 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'deposit',
+        amountEur: '40.000000',
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-24T09:00:00.000Z',
+        createdAt: '2026-07-24T09:00:00.000Z',
+        note: null,
+        source: 'manual',
+      }),
+    );
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+    expect(
+      await db
+        .select({
+          amountEur: portfolioCashMovements.amountEur,
+          source: portfolioCashMovements.source,
+        })
+        .from(portfolioCashMovements)
+        .orderBy(portfolioCashMovements.executedAt, portfolioCashMovements.id),
+    ).toEqual([
+      { amountEur: '-100.000000', source: SOURCE_TAG_SYNC_MIRRORCHAIN },
+      { amountEur: '40.000000', source: 'manual' },
+    ]);
   });
 
   it('replays equal-time transactions in persisted id order before writing', async () => {

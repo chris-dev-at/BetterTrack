@@ -1170,15 +1170,10 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
     (a, b) =>
       Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
   );
-  // Replica application deliberately waives the ordinary solvency gate because
-  // copy-local tax state can skew a source. Once that copy becomes a fork, its
-  // sync-tagged rows are the only durable provenance available in the strict
-  // vault document, so preserve that reachable ledger instead of stranding it.
-  const mirrorReplicaSourceIds = new Set(
-    movements
-      .filter((movement) => movement.data.source === SOURCE_TAG_SYNC_MIRRORCHAIN)
-      .map((movement) => movement.data.sourceId),
-  );
+  // Replica application deliberately waives the ordinary solvency gate only
+  // for the operation being force-applied. Preserve that row-level provenance:
+  // a later normal credit may repair an inherited replica deficit, but a normal
+  // debit must not borrow the exemption from another movement on the source.
   const storageRoundingSellIds = new Set<string>();
 
   try {
@@ -1189,9 +1184,17 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
       if (amount === 0n || (requiredSign === 1 ? amount < 0n : amount > 0n)) {
         throw new Error('cash-movement amount has the wrong sign');
       }
-      const balance = (balancesBySource.get(movement.data.sourceId) ?? 0n) + amount;
-      if (balance < 0n && !mirrorReplicaSourceIds.has(movement.data.sourceId)) {
-        throw new Error('cash source would become negative');
+      const previousBalance = balancesBySource.get(movement.data.sourceId) ?? 0n;
+      const balance = previousBalance + amount;
+      const isMirrorReplicaMovement = movement.data.source === SOURCE_TAG_SYNC_MIRRORCHAIN;
+      const repairsInheritedDeficit =
+        previousBalance < 0n && amount > 0n && balance > previousBalance;
+      if (balance < 0n && !isMirrorReplicaMovement && !repairsInheritedDeficit) {
+        throw new Error(
+          `cash source would become negative or deepen at cashMovement[${movement.id}].amountEur=${JSON.stringify(
+            movement.data.amountEur,
+          )}`,
+        );
       }
       balancesBySource.set(movement.data.sourceId, balance);
     }
