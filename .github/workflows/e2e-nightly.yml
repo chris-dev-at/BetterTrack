@@ -19,9 +19,10 @@ jobs:
     # Run 30146369738 reached 49 project tests in 45 minutes, or about 55 seconds
     # per test. A three-shard dispatch still exhausted 45 minutes when retries
     # doubled failing specs, so four shards cap the load at about 25 tests each.
-    # Sixty minutes covers two 55-second attempts per test plus service boot and
-    # report uploads; the suite's wall-clock budget is one parallel shard.
-    timeout-minutes: 60
+    # The suite has a 60-minute execution budget. Keep ten minutes outside that
+    # budget for Playwright to flush its blob report and for artifact uploads.
+    # A GitHub job timeout cancels the runner before those cleanup steps can run.
+    timeout-minutes: 70
     services:
       postgres:
         image: postgres:17
@@ -67,29 +68,23 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Run e2e happy path
-        run: pnpm test:e2e -- --shard=${{ matrix.shard }}/4
+        # Fail the test step before the job deadline so Playwright receives an
+        # interrupt, flushes the blob reporter, and the report upload below runs.
+        run: timeout --signal=INT --kill-after=2m 60m pnpm test:e2e -- --shard=${{ matrix.shard }}/4
 
-      - name: Upload Playwright diagnostics
-        # A job reaching timeout is cancelled rather than failed. Preserve the
-        # traces and the shard's blob report for both outcomes so it is diagnosable.
-        if: ${{ failure() || cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-diagnostics-${{ matrix.shard }}
-          path: |
-            test-results/
-            blob-report/
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: Upload Playwright blob report
-        if: ${{ success() || failure() || cancelled() }}
+      - name: Upload Playwright shard report
+        # This single upload is deliberately after the soft timeout above. A
+        # timed-out shard is a failed step rather than a cancelled runner, so
+        # its partial blob report and traces remain available to the merge job.
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: playwright-blob-${{ matrix.shard }}
-          path: blob-report/
+          path: |
+            blob-report/
+            test-results/
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   merge-report:
     name: Merge Playwright reports
@@ -118,17 +113,25 @@ jobs:
           path: all-blob-reports
           merge-multiple: true
 
+      - name: Verify shard blob reports
+        shell: bash
+        run: |
+          shopt -s nullglob
+          reports=(all-blob-reports/blob-report/*.zip)
+          if (( ${#reports[@]} == 0 )); then
+            echo '::error::No Playwright blob reports were uploaded by the E2E shards.'
+            exit 1
+          fi
+          printf 'Merging %s Playwright blob report(s).\n' "${#reports[@]}"
+
       - name: Merge Playwright reports
-        run: pnpm exec playwright merge-reports --reporter=html,github,list ./all-blob-reports
-        # A failed spec must not hide the merged HTML report; the shard remains
-        # authoritative for the suite result.
-        continue-on-error: true
+        run: pnpm exec playwright merge-reports --reporter=html,github,list ./all-blob-reports/blob-report
 
       - name: Upload merged Playwright report
-        if: ${{ success() || failure() || cancelled() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error
