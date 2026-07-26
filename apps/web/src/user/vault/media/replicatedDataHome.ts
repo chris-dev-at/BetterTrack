@@ -2,12 +2,17 @@ import { equalBytes } from '../bytes';
 import type { VaultMediaState } from '@bettertrack/contracts';
 import type { DataHome, DataHomeReadResult, DataHomeWriteResult } from '../dataHome';
 import type { DriveDataHome } from '../drive/driveDataHome';
-import type { VaultMediaStateApi } from './switcher';
+import type {
+  AuthenticatedEnvelope,
+  VaultEnvelopeAuthenticator,
+  VaultMediaStateApi,
+} from './switcher';
 
 export interface ReplicatedVaultDataHomeOptions {
   state: VaultMediaStateApi;
   server: DataHome;
   drive: DriveDataHome;
+  authenticate: VaultEnvelopeAuthenticator;
 }
 
 /**
@@ -17,7 +22,8 @@ export interface ReplicatedVaultDataHomeOptions {
  * identical Drive bytes are read back and the durable Drive attestation is
  * refreshed. A secondary failure is therefore returned as indeterminate, which
  * keeps the encrypted local candidate pending; the next reconnect repairs the
- * stale secondary before reporting synced.
+ * stale secondary before reporting synced. Reads authenticate every divergent
+ * candidate before either live medium can be repaired.
  */
 export function createReplicatedVaultDataHome(options: ReplicatedVaultDataHomeOptions): DataHome {
   return {
@@ -80,12 +86,25 @@ export function createReplicatedVaultDataHome(options: ReplicatedVaultDataHomeOp
     const [server, drive] = await Promise.all([options.server.read(), options.drive.read()]);
     if (server.status === 'ok' && drive.status === 'ok') {
       if (equalBytes(server.envelope, drive.envelope)) {
+        const authenticated = await authenticateRead(server);
+        if (authenticated.status === 'corrupt') return authenticated;
         return (await attestRead(media, server)) ?? server;
       }
-      if (server.info.version === drive.info.version) {
+
+      const [authenticatedServer, authenticatedDrive] = await Promise.all([
+        authenticateRead(server),
+        authenticateRead(drive),
+      ]);
+      if (authenticatedServer.status === 'corrupt') return authenticatedServer;
+      if (authenticatedDrive.status === 'corrupt') return authenticatedDrive;
+      if (authenticatedServer.authenticated.version === authenticatedDrive.authenticated.version) {
         return corruptDivergence(server);
       }
-      const source = server.info.version > drive.info.version ? server : drive;
+
+      const source =
+        authenticatedServer.authenticated.version > authenticatedDrive.authenticated.version
+          ? server
+          : drive;
       const target = source === server ? options.drive : options.server;
       const targetVersion = source === server ? drive.info.version : server.info.version;
       const repaired = await target.write(source.envelope, {
@@ -100,6 +119,8 @@ export function createReplicatedVaultDataHome(options: ReplicatedVaultDataHomeOp
             : failureMessage(roundTrip),
         );
       }
+      const authenticatedRoundTrip = await authenticateRead(roundTrip);
+      if (authenticatedRoundTrip.status === 'corrupt') return authenticatedRoundTrip;
       return (await attestRead(media, source)) ?? source;
     }
 
@@ -120,6 +141,8 @@ export function createReplicatedVaultDataHome(options: ReplicatedVaultDataHomeOp
     source: Extract<DataHomeReadResult, { status: 'ok' }>,
     target: DataHome,
   ): Promise<DataHomeReadResult> {
+    const authenticatedSource = await authenticateRead(source);
+    if (authenticatedSource.status === 'corrupt') return authenticatedSource;
     const written = await target.write(source.envelope, { ifVersion: null });
     if (written.status !== 'ok') return readFailure(failureMessage(written));
     const roundTrip = await target.read();
@@ -130,7 +153,32 @@ export function createReplicatedVaultDataHome(options: ReplicatedVaultDataHomeOp
           : failureMessage(roundTrip),
       );
     }
+    const authenticatedRoundTrip = await authenticateRead(roundTrip);
+    if (authenticatedRoundTrip.status === 'corrupt') return authenticatedRoundTrip;
     return (await attestRead(media, source)) ?? source;
+  }
+
+  async function authenticateRead(
+    read: Extract<DataHomeReadResult, { status: 'ok' }>,
+  ): Promise<
+    | { status: 'ok'; authenticated: AuthenticatedEnvelope }
+    | Extract<DataHomeReadResult, { status: 'corrupt' }>
+  > {
+    try {
+      const authenticated = await options.authenticate(read.envelope);
+      if (authenticated.version !== read.info.version) {
+        return corruptCandidate(
+          read,
+          `The authenticated vault version does not match the ${read.medium} medium metadata.`,
+        );
+      }
+      return { status: 'ok', authenticated };
+    } catch {
+      return corruptCandidate(
+        read,
+        `The ${read.medium} vault candidate failed authenticated decryption.`,
+      );
+    }
   }
 
   async function attestRead(
@@ -195,14 +243,24 @@ async function mediaState(
 function corruptDivergence(
   server: Extract<DataHomeReadResult, { status: 'ok' }>,
 ): Extract<DataHomeReadResult, { status: 'corrupt' }> {
+  return corruptCandidate(
+    server,
+    'Server and Drive contain different ciphertext at the same vault version.',
+  );
+}
+
+function corruptCandidate(
+  candidate: Extract<DataHomeReadResult, { status: 'ok' }>,
+  message: string,
+): Extract<DataHomeReadResult, { status: 'corrupt' }> {
   return {
     status: 'corrupt',
-    medium: 'server',
-    envelope: server.envelope,
-    version: server.info.version,
-    updatedAt: server.info.updatedAt,
+    medium: candidate.medium,
+    envelope: candidate.envelope,
+    version: candidate.info.version,
+    updatedAt: candidate.info.updatedAt,
     reason: 'corrupt-bytes',
-    message: 'Server and Drive contain different ciphertext at the same vault version.',
+    message,
   };
 }
 

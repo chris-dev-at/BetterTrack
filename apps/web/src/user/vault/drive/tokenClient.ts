@@ -29,13 +29,18 @@ interface GisTokenResponse {
 }
 
 interface GisTokenClient {
-  requestAccessToken(options?: { prompt?: string }): void;
+  requestAccessToken(options?: {
+    prompt?: string;
+    scope?: string;
+    include_granted_scopes?: boolean;
+  }): void;
 }
 
 interface GisOAuth2 {
   initTokenClient(config: {
     client_id: string;
     scope: string;
+    include_granted_scopes: boolean;
     callback(response: GisTokenResponse): void;
     error_callback?(error: { type?: string }): void;
   }): GisTokenClient;
@@ -110,6 +115,7 @@ export function createGoogleDriveTokenClient(
     client = gis.accounts.oauth2.initTokenClient({
       client_id: options.clientId,
       scope: DRIVE_APPDATA_SCOPE,
+      include_granted_scopes: false,
       callback(response) {
         const request = pending;
         pending = undefined;
@@ -208,7 +214,11 @@ export function createGoogleDriveTokenClient(
       }
       return new Promise<DriveAccessTokenResult>((resolve) => {
         pending = { resolve };
-        client!.requestAccessToken({ prompt: everGranted ? '' : 'consent' });
+        client!.requestAccessToken({
+          prompt: everGranted ? '' : 'consent',
+          scope: DRIVE_APPDATA_SCOPE,
+          include_granted_scopes: false,
+        });
       });
     },
 
@@ -226,6 +236,7 @@ export function createGoogleDriveTokenClient(
     },
 
     status() {
+      if (!online()) return { status: 'offline' };
       const current = liveToken();
       return current
         ? { status: 'ready', expiresAt: current.expiresAt }

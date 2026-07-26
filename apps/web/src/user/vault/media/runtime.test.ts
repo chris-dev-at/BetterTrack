@@ -15,14 +15,19 @@ import type {
   DataHomeWriteResult,
 } from '../dataHome';
 import type { DriveDataHome } from '../drive/driveDataHome';
-import type { GoogleDriveTokenClient } from '../drive/tokenClient';
+import {
+  createGoogleDriveTokenClient,
+  type GoogleDriveTokenClient,
+  type GoogleIdentityServices,
+} from '../drive/tokenClient';
 import { vaultInteroperabilityFixture } from '../vectors';
 import {
   connectDriveConnection,
+  createVaultDriveConnectionController,
   driveSyncStatus,
   installUnlockedVaultDriveRuntime,
 } from './runtime';
-import type { VaultMediaStateApi } from './switcher';
+import type { VaultMediaStateApi, VaultMediaSwitcher } from './switcher';
 
 function memoryHome<M extends 'server' | 'drive'>(
   medium: M,
@@ -73,6 +78,73 @@ function memoryHome<M extends 'server' | 'drive'>(
 }
 
 describe('unlocked Drive runtime composition', () => {
+  it('projects live GIS connectivity through the controller and sync chip', async () => {
+    let online = true;
+    let callback: ((response: Record<string, unknown>) => void) | undefined;
+    const requestAccessToken = vi.fn();
+    const google: GoogleIdentityServices = {
+      accounts: {
+        oauth2: {
+          initTokenClient: vi.fn((config) => {
+            callback = config.callback;
+            return { requestAccessToken };
+          }),
+          revoke: vi.fn(),
+        },
+      },
+    };
+    const tokens = createGoogleDriveTokenClient({
+      clientId: 'browser-client-id',
+      google,
+      online: () => online,
+    });
+    const authorization = tokens.authorize();
+    await vi.waitFor(() => expect(requestAccessToken).toHaveBeenCalledOnce());
+    callback?.({ access_token: 'memory-only-token', expires_in: 3600 });
+    await expect(authorization).resolves.toMatchObject({ status: 'ok' });
+
+    const failedSwitch = async () => ({
+      status: 'failed' as const,
+      reason: 'source-unavailable' as const,
+      authoritativeState: null,
+    });
+    const switcher: VaultMediaSwitcher = {
+      switchTo: failedSwitch,
+      add: failedSwitch,
+      remove: failedSwitch,
+    };
+    const controller = createVaultDriveConnectionController({
+      tokens,
+      switcher,
+      sync: {
+        reconnect: vi.fn(async () => undefined),
+        snapshot: () => ({
+          pendingLocalWrite: true,
+          syncing: false,
+          lastWriteAt: '2026-07-26T10:00:00.000Z',
+        }),
+      },
+    });
+    const media: VaultMediaState = {
+      mediaSet: ['server', 'drive'],
+      driveAttestedVersion: 1,
+    };
+
+    expect(controller.state(media)).toBe('connected');
+    online = false;
+    expect(tokens.status()).toEqual({ status: 'offline' });
+    expect(controller.state(media)).toBe('offline');
+    expect(controller.syncStatus(media)).toMatchObject({
+      state: 'offline',
+      messageKey: 'vault.sync.offline',
+      media: expect.arrayContaining([{ medium: 'drive', state: 'offline' }]),
+    });
+
+    online = true;
+    expect(controller.state(media)).toBe('connected');
+    expect(controller.syncStatus(media).state).toBe('syncing');
+  });
+
   it('installs the real switcher boundary and resumes pending sync after consent', async () => {
     const fixture = vaultInteroperabilityFixture;
     const envelope = base64ToBytes(fixture.initial.envelopeBase64, 'envelope-invalid');

@@ -55,12 +55,17 @@ describe('Google Drive GIS token client', () => {
       expect.objectContaining({
         client_id: 'browser-client-id',
         scope: DRIVE_APPDATA_SCOPE,
+        include_granted_scopes: false,
       }),
     );
 
     const authorization = client.authorize();
     await vi.waitFor(() =>
-      expect(gis.requestAccessToken).toHaveBeenCalledWith({ prompt: 'consent' }),
+      expect(gis.requestAccessToken).toHaveBeenCalledWith({
+        prompt: 'consent',
+        scope: DRIVE_APPDATA_SCOPE,
+        include_granted_scopes: false,
+      }),
     );
     gis.respond({ access_token: 'memory-only-token', expires_in: 3600 });
     await expect(authorization).resolves.toEqual({

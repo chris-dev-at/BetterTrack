@@ -12,9 +12,16 @@ import type {
   DataHomeWriteOptions,
   DataHomeWriteResult,
 } from '../dataHome';
+import { base64ToBytes } from '../bytes';
 import type { DriveDataHome } from '../drive/driveDataHome';
+import { decodeVaultEnvelope, encodeVaultEnvelope } from '../envelope';
+import { vaultInteroperabilityFixture } from '../vectors';
 import { createReplicatedVaultDataHome } from './replicatedDataHome';
-import type { VaultMediaStateApi } from './switcher';
+import {
+  createVaultEnvelopeAuthenticator,
+  type VaultEnvelopeAuthenticator,
+  type VaultMediaStateApi,
+} from './switcher';
 
 function bytes(version: number, marker = version): Uint8Array {
   return new Uint8Array([version, marker]);
@@ -23,6 +30,7 @@ function bytes(version: number, marker = version): Uint8Array {
 function memoryHome<M extends 'server' | 'drive'>(
   medium: M,
   initial: Uint8Array | null,
+  versionOf: (envelope: Uint8Array) => number = (envelope) => envelope[0]!,
 ): DataHome & {
   readonly medium: M;
   value: Uint8Array | null;
@@ -40,7 +48,7 @@ function memoryHome<M extends 'server' | 'drive'>(
         envelope: this.value.slice(),
         info: {
           medium,
-          version: this.value[0]!,
+          version: versionOf(this.value),
           sizeBytes: this.value.byteLength,
           updatedAt: '2026-07-26T10:00:00.000Z',
         },
@@ -58,7 +66,7 @@ function memoryHome<M extends 'server' | 'drive'>(
           failure: { kind: 'offline', message: 'offline' },
         };
       }
-      const currentVersion = this.value?.[0] ?? null;
+      const currentVersion = this.value === null ? null : versionOf(this.value);
       if (currentVersion !== ifVersion) {
         return { status: 'conflict', medium, currentVersion };
       }
@@ -68,7 +76,7 @@ function memoryHome<M extends 'server' | 'drive'>(
         medium,
         info: {
           medium,
-          version: envelope[0]!,
+          version: versionOf(envelope),
           sizeBytes: envelope.byteLength,
           updatedAt: '2026-07-26T10:01:00.000Z',
         },
@@ -80,6 +88,12 @@ function memoryHome<M extends 'server' | 'drive'>(
     },
   };
 }
+
+const authenticateBytes: VaultEnvelopeAuthenticator = async (envelope) => ({
+  version: envelope[0]!,
+  writeId: `write-${envelope[1] ?? 0}`,
+  sha256: Array.from(envelope).join('-'),
+});
 
 function harness(initial: VaultMediaState) {
   let durable = structuredClone(initial);
@@ -127,6 +141,7 @@ describe('replicated paranoid DataHome', () => {
       state: h.state,
       server,
       drive,
+      authenticate: authenticateBytes,
     });
 
     drive.failNextWrite = true;
@@ -160,7 +175,12 @@ describe('replicated paranoid DataHome', () => {
     });
 
     await expect(
-      createReplicatedVaultDataHome({ state: h.state, server, drive }).read(),
+      createReplicatedVaultDataHome({
+        state: h.state,
+        server,
+        drive,
+        authenticate: authenticateBytes,
+      }).read(),
     ).resolves.toMatchObject({
       status: 'corrupt',
       reason: 'corrupt-bytes',
@@ -168,5 +188,49 @@ describe('replicated paranoid DataHome', () => {
     });
     expect(server.value).toEqual(bytes(3, 1));
     expect(drive.value).toEqual(bytes(3, 2));
+  });
+
+  it('quarantines a higher-version invalid-AEAD candidate without repairing either medium', async () => {
+    const fixture = vaultInteroperabilityFixture;
+    const vaultKey = base64ToBytes(fixture.vaultKeyBase64, 'envelope-invalid');
+    const validEnvelope = base64ToBytes(fixture.initial.envelopeBase64, 'envelope-invalid');
+    const decoded = decodeVaultEnvelope(validEnvelope);
+    const tamperedEnvelope = encodeVaultEnvelope(
+      {
+        ...decoded.header,
+        vaultVersion: decoded.header.vaultVersion + 1,
+      },
+      decoded.ciphertext,
+    );
+    const envelopeVersion = (envelope: Uint8Array) =>
+      decodeVaultEnvelope(envelope).header.vaultVersion;
+    const server = memoryHome('server', validEnvelope, envelopeVersion);
+    const driveBase = memoryHome('drive', tamperedEnvelope, envelopeVersion);
+    const drive: DriveDataHome & typeof driveBase = Object.assign(driveBase, {
+      async delete() {
+        return { status: 'ok' as const, medium: 'drive' as const };
+      },
+    });
+    const h = harness({
+      mediaSet: ['server', 'drive'],
+      driveAttestedVersion: decoded.header.vaultVersion,
+    });
+
+    await expect(
+      createReplicatedVaultDataHome({
+        state: h.state,
+        server,
+        drive,
+        authenticate: createVaultEnvelopeAuthenticator(vaultKey),
+      }).read(),
+    ).resolves.toMatchObject({
+      status: 'corrupt',
+      medium: 'drive',
+      reason: 'corrupt-bytes',
+      version: decoded.header.vaultVersion + 1,
+    });
+    expect(server.value).toEqual(validEnvelope);
+    expect(drive.value).toEqual(tamperedEnvelope);
+    expect(h.durable.driveAttestedVersion).toBe(decoded.header.vaultVersion);
   });
 });

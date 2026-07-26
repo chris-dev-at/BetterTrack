@@ -243,7 +243,10 @@ function createDefaultSyncBridge(options: {
 }): VaultDriveSyncBridge {
   const scope = `vault:${options.keyId}`;
   const local = createLocalDataHome({ scope });
-  const primary = createReplicatedVaultDataHome(options);
+  const primary = createReplicatedVaultDataHome({
+    ...options,
+    authenticate: createVaultEnvelopeAuthenticator(options.vaultKey),
+  });
   const engine = createVaultSyncEngine({
     local,
     primary,
