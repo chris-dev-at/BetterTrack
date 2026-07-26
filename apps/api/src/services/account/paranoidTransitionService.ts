@@ -1,3 +1,5 @@
+import { unlink } from 'node:fs/promises';
+
 import {
   paranoidDisableRequestSchema,
   paranoidEnableRequestSchema,
@@ -54,6 +56,8 @@ export interface ParanoidTransitionServiceDeps {
   runPostCommit?: (userId: string, plan: ParanoidRehydrationPostCommitPlan) => void | Promise<void>;
   /** Test-only failure injection proving enable's database transaction rolls back. */
   afterEnableStage?: (stage: ParanoidEnableStage) => void | Promise<void>;
+  /** Test seam for the synchronous pre-enable retirement of cleartext export ZIPs. */
+  retireExportFile?: (filePath: string) => Promise<void>;
 }
 
 export interface ParanoidTransitionService {
@@ -108,6 +112,22 @@ export function createParanoidTransitionService(
 ): ParanoidTransitionService {
   const now = deps.now ?? (() => new Date());
   const stage = async (value: ParanoidEnableStage) => deps.afterEnableStage?.(value);
+  const retireExportFile =
+    deps.retireExportFile ??
+    (async (filePath: string) => {
+      try {
+        await unlink(filePath);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          'code' in error &&
+          (error as NodeJS.ErrnoException).code === 'ENOENT'
+        ) {
+          return;
+        }
+        throw error;
+      }
+    });
 
   return {
     adminMetadata: (userId) => getParanoidAdminMetadata(deps.db, userId),
@@ -178,6 +198,25 @@ export function createParanoidTransitionService(
             'The server vault does not contain the attested version.',
           );
         }
+
+        // A completed normal-account export is a cleartext ZIP outside the
+        // database. Unlink it while the account lock is held, then invalidate
+        // its token rows in this same transaction. The mode flip cannot commit
+        // with a downloadable or on-disk predecessor artifact.
+        try {
+          for (const artifact of state.cleartextExports) {
+            await retireExportFile(artifact.filePath);
+          }
+        } catch {
+          throw new ParanoidTransitionError(
+            'TRANSITION_CONFLICT',
+            'An existing account export could not be retired safely.',
+          );
+        }
+        await transition.retireCleartextExports(
+          userId,
+          state.cleartextExports.map((artifact) => artifact.id),
+        );
 
         await transition.revokeSharing(userId);
         await stage('sharingRevoked');

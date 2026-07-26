@@ -321,7 +321,10 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   portfolio_settings: 'vault',
   user_tax_settings: 'vault',
   // Shared with the global catalog — purge/probe scope to owner_id rows (the
-  // user's house/car/unlisted-stock ARE portfolio data, §1).
+  // user's house/car/unlisted-stock ARE portfolio data, §1). A content-free
+  // `paranoid-sealed` FK anchor may remain when a kept watchlist/conglomerate/
+  // alert row references the id; every user-entered field + value point is
+  // purged, and disable restores that anchor in place from the vault.
   assets: 'vault',
   price_history: 'vault',
   standing_orders: 'vault',

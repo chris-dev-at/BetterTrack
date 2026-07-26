@@ -1,9 +1,7 @@
 import type { Redis } from 'ioredis';
-import { eq } from 'drizzle-orm';
 
 import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
-import { portfolios, users } from '../data/schema';
 import { createAlertRepository } from '../data/repositories/alertRepository';
 import { createAnnouncementRepository } from '../data/repositories/announcementRepository';
 import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
@@ -178,6 +176,7 @@ import {
   type WebhookDeliveryJob,
 } from '../services/webhooks';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
+import { createParanoidEnforcementRepository } from '../data/repositories/paranoidEnforcementRepository';
 import {
   createParanoidVaultService,
   type ParanoidVaultService,
@@ -192,7 +191,8 @@ import {
 } from '../services/account/paranoidTransitionService';
 import {
   createParanoidModeGuard,
-  guardUserService,
+  guardRegisteredServices,
+  isParanoidOwnedSubjectBlocked,
   type ParanoidModeGuard,
 } from '../services/account/paranoidEnforcement';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
@@ -610,6 +610,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const paranoidGuard = createParanoidModeGuard({
     privacyModeFor: async (userId) => (await userRepo.findById(userId))?.privacyMode ?? null,
   });
+  const paranoidSubjects = createParanoidEnforcementRepository(db);
   const inviteRepo = createInviteRepository(db);
   const registrationTokenRepo = createRegistrationTokenRepository(db);
   const registrationRequestRepo = createRegistrationRequestRepository(db);
@@ -1162,15 +1163,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashMovementRepo,
     marketData,
     currencyService: currency,
-    isParanoidPortfolio: async (portfolioId) => {
-      const [row] = await db
-        .select({ privacyMode: users.privacyMode })
-        .from(portfolios)
-        .innerJoin(users, eq(portfolios.userId, users.id))
-        .where(eq(portfolios.id, portfolioId))
-        .limit(1);
-      return row?.privacyMode === 'paranoid';
-    },
+    isParanoidPortfolio: async (portfolioId) =>
+      isParanoidOwnedSubjectBlocked(
+        await paranoidSubjects.portfolioOwner(portfolioId),
+        paranoidGuard,
+      ),
     ...(queues
       ? {
           requestRecompute: async (portfolioId: string) => {
@@ -1668,90 +1665,34 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     gateway: realtime,
   });
 
-  // Defense below HTTP: the route registry is the first rail, while these
-  // wrappers protect direct context/service entry calls. Internal orchestration
-  // keeps its raw dependencies and has dedicated guards where a kept surface
-  // legitimately composes with a killed service (AI, sharing, Mirrorchain).
-  const guardedPortfolio = guardUserService(
-    portfolio,
+  // Defense below HTTP: production consumes the same executable service
+  // bindings the matrix iterates. Internal orchestration keeps its raw
+  // dependencies; only the AppContext exposure is proxied.
+  const guarded = guardRegisteredServices(
+    {
+      workboard,
+      ideas,
+      backtest: backtestPreview,
+      comments,
+      social,
+      mirror,
+      portfolio,
+      customAssets,
+      analytics,
+      portfolioMarketIntel,
+      marketIntel,
+      tax,
+      expenses,
+      expenseBudgets,
+      aiFeatures,
+      snapshots,
+      imports,
+      expenseImports,
+      standingOrders,
+      webhookBridge,
+    },
     paranoidGuard,
-    'portfolioServer',
-    Object.keys(portfolio) as (keyof PortfolioService & string)[],
-  );
-  const guardedCustomAssets = guardUserService(
-    customAssets,
-    paranoidGuard,
-    'portfolioServer',
-    Object.keys(customAssets) as (keyof CustomAssetService & string)[],
-  );
-  const guardedAnalytics = guardUserService(analytics, paranoidGuard, 'portfolioServer', [
-    'getSeries',
-  ]);
-  const guardedPortfolioMarketIntel = guardUserService(
-    portfolioMarketIntel,
-    paranoidGuard,
-    'portfolioServer',
-    ['dividendCalendar', 'projectedIncome'],
-  );
-  const guardedMarketIntel = guardUserService(marketIntel, paranoidGuard, 'portfolioServer', [
-    'newsDigest',
-  ]);
-  const guardedTax = guardUserService(tax, paranoidGuard, 'portfolioServer', [
-    'getSettings',
-    'updateSettings',
-    'getEffectiveSettings',
-    'getPortfolioTaxSettings',
-    'setPortfolioTaxOverride',
-    'clearPortfolioTaxOverride',
-    'planTransactionDeleteCorrections',
-    'recordDividend',
-    'listDividends',
-    'deleteDividend',
-    'getYearReports',
-    'getYearReport',
-  ]);
-  const guardedExpenses = guardUserService(
-    expenses,
-    paranoidGuard,
-    'portfolioServer',
-    Object.keys(expenses) as (keyof ExpenseService & string)[],
-  );
-  const guardedExpenseBudgets = guardUserService(
-    expenseBudgets,
-    paranoidGuard,
-    'portfolioServer',
-    Object.keys(expenseBudgets) as (keyof ExpenseBudgetService & string)[],
-  );
-  const guardedSocial = guardUserService(social, paranoidGuard, 'sharing', [
-    'listGroups',
-    'createGroup',
-    'renameGroup',
-    'deleteGroup',
-    'addGroupMember',
-    'removeGroupMember',
-    'followUser',
-    'unfollowUser',
-    'updateFollow',
-    'listFollowing',
-    'listFollowers',
-    'followItem',
-    'unfollowItem',
-    'listItemFollows',
-    'listSharedWithMe',
-    'getSharedPortfolio',
-    'getSharedConglomerate',
-    'getSharedWatchlist',
-    'listMyShared',
-    'getAudience',
-    'setAudience',
-    'applyAudienceVisibility',
-    'setActivityAlert',
-  ]);
-  const guardedComments = guardUserService(
-    comments,
-    paranoidGuard,
-    'sharing',
-    Object.keys(comments) as (keyof CommentService & string)[],
+    paranoidSubjects,
   );
 
   return {
@@ -1766,34 +1707,34 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     admin,
     apiKeys,
     oauth,
-    workboard,
+    workboard: guarded.workboard,
     marketData,
     assets,
-    marketIntel: guardedMarketIntel,
-    portfolioMarketIntel: guardedPortfolioMarketIntel,
+    marketIntel: guarded.marketIntel,
+    portfolioMarketIntel: guarded.portfolioMarketIntel,
     search,
-    portfolio: guardedPortfolio,
-    snapshots,
-    tax: guardedTax,
-    mirror,
-    customAssets: guardedCustomAssets,
+    portfolio: guarded.portfolio,
+    snapshots: guarded.snapshots,
+    tax: guarded.tax,
+    mirror: guarded.mirror,
+    customAssets: guarded.customAssets,
     conglomerate,
-    backtest: backtestPreview,
-    ideas,
-    imports,
-    standingOrders,
-    expenses: guardedExpenses,
-    expenseImports,
-    expenseBudgets: guardedExpenseBudgets,
+    backtest: guarded.backtest,
+    ideas: guarded.ideas,
+    imports: guarded.imports,
+    standingOrders: guarded.standingOrders,
+    expenses: guarded.expenses,
+    expenseImports: guarded.expenseImports,
+    expenseBudgets: guarded.expenseBudgets,
     paranoidVault,
     paranoidRehydration,
     paranoidTransitions,
     paranoidGuard,
     webhooks,
-    webhookBridge,
-    analytics: guardedAnalytics,
-    social: guardedSocial,
-    comments: guardedComments,
+    webhookBridge: guarded.webhookBridge,
+    analytics: guarded.analytics,
+    social: guarded.social,
+    comments: guarded.comments,
     chat,
     notifications,
     notificationSettings,
@@ -1820,6 +1761,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     usageAnalytics,
     featureFlags,
     ai,
-    aiFeatures,
+    aiFeatures: guarded.aiFeatures,
   };
 }

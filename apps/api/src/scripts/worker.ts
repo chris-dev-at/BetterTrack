@@ -11,8 +11,6 @@
  */
 import { loadConfig } from '../config/env';
 import { createDatabase } from '../data/db';
-import { portfolios, users } from '../data/schema';
-import { eq } from 'drizzle-orm';
 import { createAlertRepository } from '../data/repositories/alertRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
@@ -21,15 +19,20 @@ import { createMarketIntelRepository } from '../data/repositories/marketIntelRep
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
 import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
+import { createParanoidEnforcementRepository } from '../data/repositories/paranoidEnforcementRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
 import {
+  ALL_QUEUE_NAMES,
+  assertParanoidJobBindings,
+  bindParanoidJob,
   createBackfillScheduler,
   createDeadLetter,
   createExportBuildJob,
   createExportCleanupJob,
   createJobDefinitions,
   createJobWorkers,
+  createParanoidUserJobFilter,
   createMirrorReplicateJob,
   createMirrorInviteCleanupJob,
   createMirrorConsistencySweepJob,
@@ -109,7 +112,10 @@ import { createNotificationDispatcher } from '../services/notifications/notifica
 import { createDigestService } from '../services/notifications/digestService';
 import { createPresenceStore } from '../services/notifications/presence';
 import { createWebPushChannel } from '../services/notifications/webPush';
-import { createParanoidModeGuard } from '../services/account/paranoidEnforcement';
+import {
+  createParanoidModeGuard,
+  isParanoidOwnedSubjectBlocked,
+} from '../services/account/paranoidEnforcement';
 
 const config = loadConfig();
 const logger = createLogger(config);
@@ -137,6 +143,21 @@ const workerUserRepo = createUserRepository(db);
 const paranoidGuard = createParanoidModeGuard({
   privacyModeFor: async (userId) => (await workerUserRepo.findById(userId))?.privacyMode ?? null,
 });
+const paranoidSubjects = createParanoidEnforcementRepository(db);
+const isBlockedPortfolio = async (portfolioId: string) =>
+  isParanoidOwnedSubjectBlocked(await paranoidSubjects.portfolioOwner(portfolioId), paranoidGuard);
+const earningsParanoidFilter = createParanoidUserJobFilter(
+  'notifications.earningsRemind',
+  paranoidGuard,
+);
+const dividendParanoidFilter = createParanoidUserJobFilter(
+  'marketIntel.dividendScan',
+  paranoidGuard,
+);
+const standingOrderParanoidFilter = createParanoidUserJobFilter(
+  'standingOrders.process',
+  paranoidGuard,
+);
 // DB-backed problem capture (§13.5 V5-P2 arc (d), the Sentry replacement): the
 // worker captures its own permanently-failed jobs and provider failures into
 // the shared `problems` table. No audit sink here — resolve/reopen is admin-only.
@@ -277,15 +298,7 @@ const snapshots = createPortfolioSnapshotService({
   cashMovementRepo: createCashMovementRepository(db),
   marketData,
   currencyService: createCurrencyService({ source: createMarketDataFxSource(marketData) }),
-  isParanoidPortfolio: async (portfolioId) => {
-    const [row] = await db
-      .select({ privacyMode: users.privacyMode })
-      .from(portfolios)
-      .innerJoin(users, eq(portfolios.userId, users.id))
-      .where(eq(portfolios.id, portfolioId))
-      .limit(1);
-    return row?.privacyMode === 'paranoid';
-  },
+  isParanoidPortfolio: isBlockedPortfolio,
   logger,
 });
 
@@ -386,6 +399,7 @@ const standingOrders = createStandingOrderService({
   marketData,
   snapshots,
   paranoid: paranoidGuard,
+  isParanoidForProcessing: standingOrderParanoidFilter,
   logger,
 });
 
@@ -438,46 +452,49 @@ const definitions = [
   createDeferredDeliveryJob({ digest: digestService }),
   createExportBuildJob({ exportService: dataExportService }),
   createExportCleanupJob({ exportService: dataExportService }),
-  createSnapshotsRecomputeJob({
-    snapshots,
-    isParanoidPortfolio: async (portfolioId) => {
-      const [row] = await db
-        .select({ privacyMode: users.privacyMode })
-        .from(portfolios)
-        .innerJoin(users, eq(portfolios.userId, users.id))
-        .where(eq(portfolios.id, portfolioId))
-        .limit(1);
-      return row?.privacyMode === 'paranoid';
-    },
+  bindParanoidJob(createSnapshotsRecomputeJob({ snapshots }), {
+    mode: 'portfolio',
+    isBlockedPortfolio,
   }),
-  createSnapshotsBackfillJob({ snapshots }),
+  bindParanoidJob(createSnapshotsBackfillJob({ snapshots }), { mode: 'serviceFiltered' }),
   createUsageRollupJob({ usageAnalytics }),
   // V5-P5 market intelligence (#582): the daily opt-in earnings-reminder scan
   // over every user's held + watched assets. Gated by MARKET_INTEL_ENABLED — a
   // no-op scan when the arc is unconfigured. Idempotency store = ctx.redis.
-  createEarningsReminderJob({
-    intelRepo: createMarketIntelRepository(db),
-    marketData,
-    notify,
-    enabled: config.marketIntel.enabled,
-    isParanoid: (userId) => paranoidGuard.isParanoid(userId),
-  }),
+  bindParanoidJob(
+    createEarningsReminderJob({
+      intelRepo: createMarketIntelRepository(db),
+      marketData,
+      notify,
+      enabled: config.marketIntel.enabled,
+      isParanoid: earningsParanoidFilter,
+    }),
+    { mode: 'perUser', filter: earningsParanoidFilter },
+  ),
   // V5-P5 dividend-event scan (#581): fires opt-in ex-date reminders for held
   // assets. Gated by MARKET_INTEL_ENABLED; per-user opt-in read from the matrix.
-  createDividendEventsScanJob({
-    repo: createMarketIntelRepository(db),
-    marketData,
-    notify,
-    isEnabled: dividendNotifyGate(notificationRepo),
-    enabled: config.marketIntel.enabled,
-    isParanoid: (userId) => paranoidGuard.isParanoid(userId),
-  }),
+  bindParanoidJob(
+    createDividendEventsScanJob({
+      repo: createMarketIntelRepository(db),
+      marketData,
+      notify,
+      isEnabled: dividendNotifyGate(notificationRepo),
+      enabled: config.marketIntel.enabled,
+      isParanoid: dividendParanoidFilter,
+    }),
+    { mode: 'perUser', filter: dividendParanoidFilter },
+  ),
   // V5-P6b standing orders (#593): the daily scan that books each active order's
   // newest due occurrence exactly once.
-  createStandingOrdersJob({ standingOrders }),
+  bindParanoidJob(createStandingOrdersJob({ standingOrders }), {
+    mode: 'perUser',
+    filter: standingOrderParanoidFilter,
+  }),
   // V5-P7 MIRRORCHAIN (#644): per-chain replication — strictly ordered,
   // idempotent, watermark-resumed; permanent failure dead-letters → Problems.
-  createMirrorReplicateJob({ mirror, enqueue: enqueueMirrorReplicate }),
+  bindParanoidJob(createMirrorReplicateJob({ mirror, enqueue: enqueueMirrorReplicate }), {
+    mode: 'transitionPrecondition',
+  }),
   // V5-P7 MIRRORCHAIN (#680): the daily sweep that retires pending invites past
   // the 30-day token-hygiene horizon (frees the pending-unique slot).
   createMirrorInviteCleanupJob({ repo: mirrorchainRepo }),
@@ -487,12 +504,17 @@ const definitions = [
   createMirrorConsistencySweepJob({ mirror, problems }),
   // V5-P10 outbound webhooks (#648): the signed delivery job (retry/backoff via
   // job options + auto-disable) and the daily delivery-log retention sweep.
-  createWebhookDeliverJob({ dispatcher: webhookDispatcher }),
+  bindParanoidJob(createWebhookDeliverJob({ dispatcher: webhookDispatcher }), {
+    mode: 'event',
+    isParanoid: (userId) => paranoidGuard.isParanoid(userId),
+  }),
   createWebhookDeliveryCleanupJob({ deliveries: webhookDeliveryRepo }),
   // V5-P10 API-key governance (issue 2/2): the daily retention sweep over the
   // bounded per-key request-log audit trail.
   createApiKeyRequestLogCleanupJob({ requestLog: createApiKeyRequestLogRepository(db) }),
 ];
+
+assertParanoidJobBindings(definitions, ALL_QUEUE_NAMES);
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };
 

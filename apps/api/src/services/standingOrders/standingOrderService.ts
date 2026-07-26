@@ -75,6 +75,8 @@ export interface StandingOrderServiceDeps {
   timezone?: string;
   logger?: Logger;
   paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'isParanoid'>;
+  /** Registry-branded worker filter for the `standingOrders.process` scan. */
+  isParanoidForProcessing?: (userId: string) => Promise<boolean>;
 }
 
 /** Outcome tallies for one scan, surfaced to the job log. */
@@ -129,6 +131,9 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
   } = deps;
   const now = deps.now ?? Date.now;
   const timezone = deps.timezone ?? STANDING_ORDERS_SCAN_TZ;
+  const isParanoidForProcessing =
+    deps.isParanoidForProcessing ??
+    (deps.paranoid ? (userId: string) => deps.paranoid!.isParanoid(userId) : undefined);
 
   function toDto(record: StandingOrderWithAsset, today: string): StandingOrder {
     return {
@@ -278,7 +283,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
         // Definitions are vault-owned in paranoid mode. A row seen by a stale
         // worker around the enable transaction is skipped before quote, claim,
         // ledger write, or snapshot invalidation.
-        if (await deps.paranoid?.isParanoid(order.userId)) continue;
+        if (await isParanoidForProcessing?.(order.userId)) continue;
         const due = dueOccurrence(specOf(order), today);
         if (due === null) continue;
         // Fast path: this exact period (or a later one) is already booked. The

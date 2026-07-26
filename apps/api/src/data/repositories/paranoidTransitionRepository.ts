@@ -1,10 +1,13 @@
-import { and, count, eq, inArray, or } from 'drizzle-orm';
+import { and, count, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
 
 import { VAULT_FORMAT_VERSION, type VaultMediaSet } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
+import { PARANOID_SEALED_ASSET_PROVIDER_ID } from '../paranoidAssets';
 import {
+  alerts,
   assets,
+  conglomeratePositions,
   conglomerates,
   dividends,
   expenseBudgetFires,
@@ -42,6 +45,7 @@ import {
   users,
   userTaxSettings,
   watchlists,
+  workboardItems,
 } from '../schema';
 import { PARANOID_VAULT_TABLE_NAMES } from '../../services/export/manifest';
 
@@ -58,6 +62,7 @@ export interface LockedParanoidTransitionState {
   activeMirrorchain: boolean;
   pendingImport: boolean;
   pendingExport: boolean;
+  cleartextExports: Array<{ id: string; filePath: string }>;
 }
 
 export interface ParanoidAdminMetadata {
@@ -74,6 +79,7 @@ export interface ParanoidAdminMetadata {
 export interface ParanoidTransitionTransactionRepository {
   lockState(userId: string): Promise<LockedParanoidTransitionState | null>;
   revokeSharing(userId: string): Promise<void>;
+  retireCleartextExports(userId: string, exportIds: readonly string[]): Promise<void>;
   purgeVaultRows(userId: string): Promise<void>;
   completeEnable(input: {
     userId: string;
@@ -91,6 +97,7 @@ interface PurgeScope {
   userId: string;
   portfolioIds: string[];
   customAssetIds: string[];
+  sealedCustomAssetIds: string[];
   standingOrderIds: string[];
   importBatchIds: string[];
   expenseBudgetIds: string[];
@@ -118,10 +125,32 @@ const probe = async (query: PromiseLike<Array<{ value: number }>>): Promise<numb
  * manifest before a destructive transition can start.
  */
 const PURGE_HANDLERS: Record<string, PurgeHandler> = {
-  assets: ({ customAssetIds, ...scope }) =>
-    ifIds(customAssetIds, (ids) =>
-      scope.tx.delete(assets).where(and(eq(assets.ownerId, scope.userId), inArray(assets.id, ids))),
-    ),
+  assets: ({ customAssetIds, sealedCustomAssetIds, ...scope }) => {
+    const sealed = new Set(sealedCustomAssetIds);
+    const removableIds = customAssetIds.filter((id) => !sealed.has(id));
+    return Promise.all([
+      ifIds(removableIds, (ids) =>
+        scope.tx
+          .delete(assets)
+          .where(and(eq(assets.ownerId, scope.userId), inArray(assets.id, ids))),
+      ),
+      ifIds(sealedCustomAssetIds, (ids) =>
+        scope.tx
+          .update(assets)
+          .set({
+            providerId: PARANOID_SEALED_ASSET_PROVIDER_ID,
+            providerRef: sql`${assets.id}::text`,
+            type: 'custom',
+            symbol: '',
+            name: '',
+            exchange: null,
+            currency: 'EUR',
+            meta: null,
+          })
+          .where(and(eq(assets.ownerId, scope.userId), inArray(assets.id, ids))),
+      ),
+    ]);
+  },
   dividends: ({ portfolioIds, tx }) =>
     ifIds(portfolioIds, (ids) => tx.delete(dividends).where(inArray(dividends.portfolioId, ids))),
   expense_budget_fires: ({ expenseBudgetIds, tx }) =>
@@ -214,7 +243,14 @@ const PARANOID_PURGE_ORDER = [
  */
 const PROBE_HANDLERS: Record<string, ProbeHandler> = {
   assets: ({ userId, tx }) =>
-    probe(tx.select({ value: count() }).from(assets).where(eq(assets.ownerId, userId))),
+    probe(
+      tx
+        .select({ value: count() })
+        .from(assets)
+        .where(
+          and(eq(assets.ownerId, userId), ne(assets.providerId, PARANOID_SEALED_ASSET_PROVIDER_ID)),
+        ),
+    ),
   dividends: ({ portfolioIds, tx }) =>
     probeIds(portfolioIds, (ids) =>
       tx.select({ value: count() }).from(dividends).where(inArray(dividends.portfolioId, ids)),
@@ -387,7 +423,7 @@ export function createParanoidTransitionTransactionRepository(
         .for('update');
       if (!user) return null;
 
-      const [[vault], [membership], [pendingImport], [pendingExport]] = await Promise.all([
+      const [[vault], [membership], [pendingImport], accountExports] = await Promise.all([
         tx
           .select({
             version: paranoidVaults.version,
@@ -411,10 +447,14 @@ export function createParanoidTransitionTransactionRepository(
           .where(and(eq(importBatches.ownerId, userId), eq(importBatches.status, 'pending')))
           .limit(1),
         tx
-          .select({ id: exportJobs.id })
+          .select({
+            id: exportJobs.id,
+            status: exportJobs.status,
+            filePath: exportJobs.filePath,
+          })
           .from(exportJobs)
-          .where(and(eq(exportJobs.userId, userId), eq(exportJobs.status, 'pending')))
-          .limit(1),
+          .where(eq(exportJobs.userId, userId))
+          .for('update'),
       ]);
 
       return {
@@ -424,7 +464,13 @@ export function createParanoidTransitionTransactionRepository(
         currentServerVault: vault ?? null,
         activeMirrorchain: Boolean(membership),
         pendingImport: Boolean(pendingImport),
-        pendingExport: Boolean(pendingExport),
+        pendingExport: accountExports.some((row) => row.status === 'pending'),
+        cleartextExports: accountExports
+          .filter((row): row is typeof row & { filePath: string } => row.filePath !== null)
+          .map((row) => ({
+            id: row.id,
+            filePath: row.filePath,
+          })),
       };
     },
 
@@ -499,6 +545,22 @@ export function createParanoidTransitionTransactionRepository(
         .where(eq(conglomerates.ownerId, userId));
     },
 
+    async retireCleartextExports(userId, exportIds) {
+      await ifIds(exportIds, (ids) =>
+        tx
+          .update(exportJobs)
+          .set({
+            status: 'failed',
+            filePath: null,
+            fileSize: null,
+            expiresAt: null,
+            readyAt: null,
+            error: 'RETIRED_FOR_PARANOID_MODE',
+          })
+          .where(and(eq(exportJobs.userId, userId), inArray(exportJobs.id, ids))),
+      );
+    },
+
     async purgeVaultRows(userId) {
       assertPurgeCompleteness();
       const [portfolioIds, customAssetIds, standingOrderIds, importBatchIds, expenseBudgetIds] =
@@ -526,11 +588,37 @@ export function createParanoidTransitionTransactionRepository(
               .where(eq(expenseBudgets.userId, userId)),
           ),
         ]);
+      const sealedCustomAssetIds = new Set<string>();
+      if (customAssetIds.length > 0) {
+        const [watchlistRefs, conglomerateRefs, alertRefs] = await Promise.all([
+          tx
+            .select({ assetId: workboardItems.assetId })
+            .from(workboardItems)
+            .where(inArray(workboardItems.assetId, customAssetIds)),
+          tx
+            .select({ assetId: conglomeratePositions.assetId })
+            .from(conglomeratePositions)
+            .where(
+              and(
+                isNotNull(conglomeratePositions.assetId),
+                inArray(conglomeratePositions.assetId, customAssetIds),
+              ),
+            ),
+          tx
+            .select({ assetId: alerts.assetId })
+            .from(alerts)
+            .where(inArray(alerts.assetId, customAssetIds)),
+        ]);
+        for (const row of [...watchlistRefs, ...conglomerateRefs, ...alertRefs]) {
+          if (row.assetId) sealedCustomAssetIds.add(row.assetId);
+        }
+      }
       const scope: PurgeScope = {
         tx,
         userId,
         portfolioIds,
         customAssetIds,
+        sealedCustomAssetIds: [...sealedCustomAssetIds],
         standingOrderIds,
         importBatchIds,
         expenseBudgetIds,

@@ -36,6 +36,13 @@ export {
 } from './scheduler';
 export { createJobWorkers, type RunningWorkers, type CreateJobWorkersDeps } from './worker';
 export {
+  assertParanoidJobBindings,
+  bindParanoidJob,
+  createParanoidUserJobFilter,
+  type ParanoidJobBinding,
+  type ParanoidUserJobFilter,
+} from './paranoidJobs';
+export {
   createJobDefinitions,
   heartbeatJob,
   HEARTBEAT_SCHEDULER_ID,

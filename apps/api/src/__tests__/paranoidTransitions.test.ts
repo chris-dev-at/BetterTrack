@@ -1,17 +1,23 @@
-import { eq } from 'drizzle-orm';
+import { existsSync } from 'node:fs';
+
+import { eq, inArray } from 'drizzle-orm';
 import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   encodeVaultEnvelope,
+  exportRequestResponseSchema,
   paranoidDisableResponseSchema,
   paranoidEnableResponseSchema,
   VAULT_CONTENT_CIPHER,
 } from '@bettertrack/contracts';
 
 import {
+  alerts,
   assets,
+  conglomeratePositions,
+  conglomerates,
   exportJobs,
   friendGroupMembers,
   friendGroups,
@@ -34,7 +40,10 @@ import {
   transactions,
   userFollows,
   users,
+  watchlists,
+  workboardItems,
 } from '../data/schema';
+import { PARANOID_SEALED_ASSET_PROVIDER_ID } from '../data/paranoidAssets';
 import type { ParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
 import { createParanoidTransitionService } from '../services/account/paranoidTransitionService';
 import type { AuditService } from '../services/audit/auditService';
@@ -48,6 +57,16 @@ const WRITE_ID = '018f0000-0000-7000-8000-00000000000c';
 const REHYDRATION_ID = '018f0000-0000-7000-8000-00000000000d';
 const CHAIN_ID = '018f0000-0000-7000-8000-00000000000e';
 const MEMBER_ID = '018f0000-0000-7000-8000-00000000000f';
+const KEPT_ASSET_IDS = [
+  '018f0000-0000-7000-8000-000000000020',
+  '018f0000-0000-7000-8000-000000000022',
+  '018f0000-0000-7000-8000-000000000024',
+] as const;
+const KEPT_VALUE_IDS = [
+  '018f0000-0000-7000-8000-000000000021',
+  '018f0000-0000-7000-8000-000000000023',
+  '018f0000-0000-7000-8000-000000000025',
+] as const;
 
 let harness: TestHarness;
 
@@ -233,6 +252,213 @@ describe('public paranoid transitions', () => {
       .send(disableRequest);
     expect(paranoidDisableResponseSchema.parse(retryDisable.body).idempotent).toBe(true);
     expect((await agent.get(`/api/v1/portfolios/${portfolio.id}`)).status).not.toBe(403);
+  });
+
+  it('seals and losslessly restores custom assets referenced by every kept FK surface', async () => {
+    const { user, portfolio, agent } = await seedNormalAccount();
+    await putServerVault(agent);
+    const customAssets = await harness.db
+      .insert(assets)
+      .values(
+        KEPT_ASSET_IDS.map((id, index) => ({
+          id,
+          providerId: 'manual',
+          providerRef: id,
+          ownerId: user.id,
+          type: 'custom' as const,
+          symbol: ['HOME', 'IDEA', 'ALERT'][index]!,
+          name: ['Private home', 'Private hypothesis', 'Private alert asset'][index]!,
+          exchange: null,
+          currency: 'EUR',
+          meta: { category: 'other', smoothing: false },
+        })),
+      )
+      .returning();
+    await harness.db.insert(priceHistory).values(
+      KEPT_ASSET_IDS.map((assetId, index) => ({
+        assetId,
+        date: '2026-07-25',
+        close: String((index + 1) * 100),
+      })),
+    );
+    const [watchlist] = await harness.db
+      .insert(watchlists)
+      .values({ userId: user.id, name: 'Private assets', isDefault: false })
+      .returning();
+    const [conglomerate] = await harness.db
+      .insert(conglomerates)
+      .values({
+        ownerId: user.id,
+        name: 'Hypothetical',
+        status: 'draft',
+        visibility: 'private',
+      })
+      .returning();
+    const [workboardItem] = await harness.db
+      .insert(workboardItems)
+      .values({
+        userId: user.id,
+        watchlistId: watchlist!.id,
+        assetId: KEPT_ASSET_IDS[0],
+        sortOrder: 0,
+        note: 'kept watchlist note',
+      })
+      .returning();
+    const [position] = await harness.db
+      .insert(conglomeratePositions)
+      .values({
+        conglomerateId: conglomerate!.id,
+        assetId: KEPT_ASSET_IDS[1],
+        weightPct: '100',
+        sortOrder: 0,
+      })
+      .returning();
+    const [alert] = await harness.db
+      .insert(alerts)
+      .values({
+        userId: user.id,
+        assetId: KEPT_ASSET_IDS[2],
+        kind: 'price_above',
+        threshold: '120',
+        repeat: false,
+        status: 'active',
+      })
+      .returning();
+
+    const enabled = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send({ mediaSet: ['server'], vaultVersion: 1 });
+    expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
+
+    expect(
+      await harness.db
+        .select()
+        .from(workboardItems)
+        .where(eq(workboardItems.id, workboardItem!.id)),
+    ).toEqual([workboardItem]);
+    expect(
+      await harness.db
+        .select()
+        .from(conglomeratePositions)
+        .where(eq(conglomeratePositions.id, position!.id)),
+    ).toEqual([position]);
+    expect(await harness.db.select().from(alerts).where(eq(alerts.id, alert!.id))).toEqual([alert]);
+    const sealed = await harness.db
+      .select()
+      .from(assets)
+      .where(inArray(assets.id, [...KEPT_ASSET_IDS]));
+    expect(sealed).toHaveLength(3);
+    for (const row of sealed) {
+      expect(row).toMatchObject({
+        ownerId: user.id,
+        providerId: PARANOID_SEALED_ASSET_PROVIDER_ID,
+        providerRef: row.id,
+        symbol: '',
+        name: '',
+        exchange: null,
+        currency: 'EUR',
+        meta: null,
+      });
+    }
+    expect(
+      await harness.db
+        .select()
+        .from(priceHistory)
+        .where(inArray(priceHistory.assetId, [...KEPT_ASSET_IDS])),
+    ).toEqual([]);
+
+    const disabled = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send({
+        confirm: true,
+        rehydrationId: REHYDRATION_ID,
+        document: {
+          schemaVersion: 1,
+          entities: [
+            {
+              id: portfolio.id,
+              kind: 'portfolio',
+              rev: 1,
+              editedAt: '2026-07-26T10:00:00.000Z',
+              editedBy: DEVICE_ID,
+              deletedAt: null,
+              data: {
+                userId: user.id,
+                name: 'Main',
+                visibility: 'private',
+                sortOrder: 0,
+                defaultPayFromCash: false,
+                archivedAt: null,
+              },
+            },
+            ...customAssets.map((customAsset) => ({
+              id: customAsset.id,
+              kind: 'customAsset',
+              rev: 1,
+              editedAt: '2026-07-26T10:00:00.000Z',
+              editedBy: DEVICE_ID,
+              deletedAt: null,
+              data: {
+                providerId: customAsset.providerId,
+                providerRef: customAsset.providerRef,
+                ownerId: customAsset.ownerId,
+                type: customAsset.type,
+                symbol: customAsset.symbol,
+                name: customAsset.name,
+                exchange: customAsset.exchange,
+                currency: customAsset.currency,
+                meta: customAsset.meta,
+                searchText: customAsset.searchText,
+              },
+            })),
+            ...customAssets.map((customAsset, index) => ({
+              id: KEPT_VALUE_IDS[index]!,
+              kind: 'customAssetValue',
+              rev: 1,
+              editedAt: '2026-07-26T10:00:00.000Z',
+              editedBy: DEVICE_ID,
+              deletedAt: null,
+              data: {
+                assetId: customAsset.id,
+                date: '2026-07-25',
+                close: String((index + 1) * 100),
+              },
+            })),
+          ],
+          mergeLog: [],
+        },
+      });
+    expect(disabled.status, JSON.stringify(disabled.body)).toBe(200);
+
+    const restored = await harness.db
+      .select()
+      .from(assets)
+      .where(inArray(assets.id, [...KEPT_ASSET_IDS]));
+    expect(restored).toHaveLength(3);
+    for (const customAsset of customAssets) {
+      expect(restored).toContainEqual(customAsset);
+    }
+    expect(
+      await harness.db
+        .select()
+        .from(workboardItems)
+        .where(eq(workboardItems.id, workboardItem!.id)),
+    ).toEqual([workboardItem]);
+    expect(
+      await harness.db
+        .select()
+        .from(conglomeratePositions)
+        .where(eq(conglomeratePositions.id, position!.id)),
+    ).toEqual([position]);
+    expect(await harness.db.select().from(alerts).where(eq(alerts.id, alert!.id))).toEqual([alert]);
+    expect(
+      await harness.db
+        .select()
+        .from(priceHistory)
+        .where(inArray(priceHistory.assetId, [...KEPT_ASSET_IDS])),
+    ).toHaveLength(3);
   });
 
   it('accepts exact Drive-only evidence and removes all BetterTrack vault bytes', async () => {
@@ -498,6 +724,78 @@ describe('public paranoid transitions', () => {
     expect((await harness.db.select().from(users).where(eq(users.id, user.id)))[0]).toMatchObject({
       privacyMode: 'normal',
     });
+  });
+
+  it('retires a ready normal-account cleartext export before enable can commit', async () => {
+    const { user, agent } = await seedNormalAccount();
+    await putServerVault(agent);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(requested.status, JSON.stringify(requested.body)).toBe(200);
+    const { jobId, downloadToken } = exportRequestResponseSchema.parse(requested.body);
+    const [before] = await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId));
+    expect(before).toMatchObject({ status: 'ready' });
+    expect(before!.filePath).toBeTruthy();
+    expect(existsSync(before!.filePath!)).toBe(true);
+
+    const enabled = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send({ mediaSet: ['server'], vaultVersion: 1 });
+    expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
+
+    expect(existsSync(before!.filePath!)).toBe(false);
+    const [after] = await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId));
+    expect(after).toMatchObject({
+      status: 'failed',
+      filePath: null,
+      fileSize: null,
+      expiresAt: null,
+      readyAt: null,
+      error: 'RETIRED_FOR_PARANOID_MODE',
+    });
+    const download = await agent.get(
+      `/api/v1/account/export/download?token=${encodeURIComponent(downloadToken)}`,
+    );
+    expect(download.status).toBe(404);
+    expect(download.body.error.code).toBe('EXPORT_NOT_FOUND');
+  });
+
+  it('keeps the account normal when a cleartext export artifact cannot be retired', async () => {
+    const { user, agent } = await seedNormalAccount();
+    await putServerVault(agent);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { jobId } = exportRequestResponseSchema.parse(requested.body);
+    const [before] = await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId));
+    expect(before).toMatchObject({ status: 'ready' });
+
+    const transition = createParanoidTransitionService({
+      db: harness.db,
+      rehydration: {} as ParanoidRehydrationService,
+      audit: { record: vi.fn(async () => {}) } as unknown as AuditService,
+      retireExportFile: vi.fn(async () => {
+        throw new Error('injected unlink failure');
+      }),
+    });
+    await expect(
+      transition.enable(user.id, {
+        mediaSet: ['server'],
+        vaultVersion: 1,
+        driveAttestation: null,
+      }),
+    ).rejects.toMatchObject({ code: 'TRANSITION_CONFLICT' });
+
+    const [account] = await harness.db.select().from(users).where(eq(users.id, user.id));
+    expect(account).toMatchObject({ privacyMode: 'normal' });
+    expect((await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId)))[0]).toEqual(
+      before,
+    );
+    expect(existsSync(before!.filePath!)).toBe(true);
   });
 
   it.each(['locked', 'sharingRevoked', 'vaultPurged', 'modeEnabled'] as const)(
