@@ -163,6 +163,32 @@ test('excludes tabindex=-1 controls when wrapping Tab and Shift+Tab', async () =
   expect(save).toHaveFocus();
 });
 
+test('excludes controls hidden directly or by an ancestor from the tab order', async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <Modal title="Edit user" onClose={vi.fn()}>
+        <div hidden>
+          <button>Hidden by ancestor</button>
+        </div>
+        <button>Save changes</button>
+        <button style={{ display: 'none' }}>Hidden directly</button>
+      </Modal>
+      <button>Outside modal</button>
+    </>,
+  );
+
+  const save = screen.getByRole('button', { name: 'Save changes' });
+
+  expect(save).toHaveFocus();
+
+  await user.tab();
+  expect(save).toHaveFocus();
+
+  await user.tab({ shift: true });
+  expect(save).toHaveFocus();
+});
+
 test('treats a summary as a focusable control and skips closed details content', async () => {
   const user = userEvent.setup();
   render(

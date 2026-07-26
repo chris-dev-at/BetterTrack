@@ -21,6 +21,22 @@ function isInClosedDetails(element: HTMLElement) {
   );
 }
 
+function isRendered(element: HTMLElement) {
+  for (let current: HTMLElement | null = element; current; current = current.parentElement) {
+    const style = getComputedStyle(current);
+    if (
+      current.hidden ||
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      style.visibility === 'collapse'
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function isGroupedRadio(element: HTMLElement): element is HTMLInputElement {
   return element instanceof HTMLInputElement && element.type === 'radio' && element.name !== '';
 }
@@ -68,6 +84,7 @@ function focusableDescendants(container: HTMLElement) {
       element.tabIndex >= 0 &&
       !element.matches(':disabled') &&
       element.getAttribute('aria-hidden') !== 'true' &&
+      isRendered(element) &&
       !isInClosedDetails(element),
   );
 
