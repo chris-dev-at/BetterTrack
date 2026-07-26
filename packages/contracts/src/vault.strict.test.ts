@@ -376,21 +376,6 @@ describe('strict vault document v1', () => {
     );
   });
 
-  it.each([
-    { kind: 'portfolio', field: 'sortOrder', value: 2_147_483_648 },
-    { kind: 'cashMovement', field: 'taxYear', value: 2_147_483_648 },
-    { kind: 'expenseRule', field: 'priority', value: -2_147_483_649 },
-  ])('bounds $kind.$field to a PostgreSQL integer', ({ kind, field, value }) => {
-    const fixture = fixtures.find((candidate) => candidate.kind === kind);
-    if (!fixture) throw new Error(`${kind} fixture missing`);
-    expect(
-      vaultStrictEntitySchema.safeParse({
-        ...fixture,
-        data: { ...fixture.data, [field]: value },
-      }).success,
-    ).toBe(false);
-  });
-
   it('keeps assets.meta.recategorize and every sibling metadata field', () => {
     const asset = fixtures.find((fixture) => fixture.kind === 'customAsset');
     if (asset?.kind !== 'customAsset') throw new Error('asset fixture missing');

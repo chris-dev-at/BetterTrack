@@ -1,4 +1,7 @@
-import type { ParanoidDisableRehydrationRequest } from '@bettertrack/contracts';
+import {
+  paranoidDisableRehydrationRequestSchema,
+  type ParanoidDisableRehydrationRequest,
+} from '@bettertrack/contracts';
 import { and, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
@@ -716,6 +719,7 @@ describe('paranoid rehydration service', () => {
       const input = exhaustiveRequest();
       const stages: string[] = [];
       mutate(input);
+      expect(paranoidDisableRehydrationRequestSchema.safeParse(input).success).toBe(true);
 
       await expect(
         createParanoidRehydrationService({
@@ -2408,6 +2412,146 @@ describe('paranoid rehydration service', () => {
     ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
     expect(await db.select().from(transactions)).toEqual([]);
+    expect(await db.select().from(portfolioCashMovements)).toEqual([]);
+  });
+
+  it('rejects a transaction-linked tax settlement dated apart from its parent before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const stages: string[] = [];
+    const transaction = input.document.entities.find((entry) => entry.kind === 'transaction');
+    const gross = input.document.entities.find((entry) => entry.kind === 'cashMovement');
+    if (
+      !transaction ||
+      transaction.kind !== 'transaction' ||
+      !gross ||
+      gross.kind !== 'cashMovement'
+    ) {
+      throw new Error('expected transaction and cash movement');
+    }
+    transaction.data.side = 'sell';
+    transaction.data.allowUncovered = true;
+    transaction.data.taxMode = 'country_specific';
+    transaction.data.taxCountry = 'AT';
+    transaction.data.taxAmountEur = '1.000000';
+    gross.data.kind = 'sell_proceeds';
+    gross.data.transactionId = TRANSACTION_ID;
+    const settlement = entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+      portfolioId: PORTFOLIO_ID,
+      sourceId: CASH_SOURCE_ID,
+      kind: 'tax_withholding',
+      amountEur: '-1.000000',
+      transactionId: TRANSACTION_ID,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId: null,
+      taxYear: 2026,
+      executedAt: editedAt,
+      createdAt: editedAt,
+      note: null,
+      source: 'manual',
+    });
+    settlement.data.executedAt = '2026-07-24T10:01:00.000Z';
+    input.document.entities.push(settlement);
+
+    await expect(
+      createParanoidRehydrationService({
+        db,
+        afterStage(stage) {
+          stages.push(stage);
+        },
+      }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+    expect(stages).toEqual([]);
+    expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    expect(await db.select().from(transactions)).toEqual([]);
+    expect(await db.select().from(portfolioCashMovements)).toEqual([]);
+  });
+
+  it('rejects a dividend-linked tax settlement dated apart from its parent before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const stages: string[] = [];
+    const dividendId = '018f0000-0000-7000-8000-00000000000d';
+    const customParams = {
+      ratePct: 10,
+      lossOffset: true,
+      refund: true,
+      yearReset: true,
+      carryForward: false,
+      costBasis: 'moving-average' as const,
+    };
+    const settlement = entity('018f0000-0000-7000-8000-00000000000f', 'cashMovement', {
+      portfolioId: PORTFOLIO_ID,
+      sourceId: CASH_SOURCE_ID,
+      kind: 'tax_withholding',
+      amountEur: '-1.000000',
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId,
+      taxYear: 2026,
+      executedAt: editedAt,
+      createdAt: editedAt,
+      note: null,
+      source: 'manual',
+    });
+    settlement.data.executedAt = '2026-07-24T10:01:00.000Z';
+    input.document.entities.push(
+      entity(dividendId, 'dividend', {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        cashSourceId: CASH_SOURCE_ID,
+        grossAmountEur: '10.000000',
+        executedAt: editedAt,
+        createdAt: editedAt,
+        note: null,
+        taxMode: 'custom',
+        taxCountry: null,
+        taxAmountEur: '1.000000',
+        taxParams: customParams,
+        source: 'manual',
+      }),
+      entity('018f0000-0000-7000-8000-00000000000e', 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'dividend',
+        amountEur: '10.000000',
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId,
+        taxYear: null,
+        executedAt: editedAt,
+        createdAt: editedAt,
+        note: null,
+        source: 'manual',
+      }),
+      settlement,
+      entity('018f0000-0000-7000-8000-000000000010', 'taxSetting', {
+        userId: restoreUserId,
+        mode: 'custom',
+        country: null,
+        manualDefaultAmountEur: null,
+        manualDefaultRatePct: null,
+        customParams,
+        updatedAt: editedAt,
+      }),
+    );
+
+    await expect(
+      createParanoidRehydrationService({
+        db,
+        afterStage(stage) {
+          stages.push(stage);
+        },
+      }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+    expect(stages).toEqual([]);
+    expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    expect(await db.select().from(dividends)).toEqual([]);
     expect(await db.select().from(portfolioCashMovements)).toEqual([]);
   });
 

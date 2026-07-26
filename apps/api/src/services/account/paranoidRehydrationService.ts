@@ -158,6 +158,15 @@ function requireNonnegative(value: bigint, label: string): void {
   }
 }
 
+function requirePostgresInteger(value: number, label: string): void {
+  if (!Number.isInteger(value) || value < -2_147_483_648 || value > 2_147_483_647) {
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      `${label} exceeds the PostgreSQL integer range`,
+    );
+  }
+}
+
 function rows<K extends Entity['kind']>(
   entities: readonly Entity[],
   kind: K,
@@ -307,6 +316,10 @@ function validFrozenTaxShape(
 }
 
 function validatePersistedNumerics(entities: readonly Entity[]): void {
+  for (const portfolio of rows(entities, 'portfolio')) {
+    requirePostgresInteger(portfolio.data.sortOrder, 'portfolio sort order');
+  }
+
   for (const value of rows(entities, 'customAssetValue')) {
     requireNonnegative(
       exactDecimal(value.data.close, 'custom-asset close').coefficient,
@@ -416,6 +429,9 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
 
   for (const movement of rows(entities, 'cashMovement')) {
     persistedNumeric(movement.data.amountEur, 20, 6, 'cash-movement amount');
+    if (movement.data.taxYear !== null) {
+      requirePostgresInteger(movement.data.taxYear, 'cash-movement tax year');
+    }
   }
 
   for (const setting of rows(entities, 'taxSetting')) {
@@ -460,6 +476,9 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
       persistedNumeric(expense.data.amount, 20, 2, 'expense amount'),
       'expense amount',
     );
+  }
+  for (const rule of rows(entities, 'expenseRule')) {
+    requirePostgresInteger(rule.data.priority, 'expense-rule priority');
   }
   for (const budget of rows(entities, 'expenseBudget')) {
     requirePositive(
@@ -965,6 +984,17 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
         'a transaction may have at most one linked tax settlement',
       );
     }
+    if (
+      settlement.some(
+        (movement) =>
+          Date.parse(movement.data.executedAt) !== Date.parse(transaction.data.executedAt),
+      )
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a transaction tax settlement must share its transaction timestamp',
+      );
+    }
     const frozenTax = transaction.data.taxAmountEur;
     const frozenTaxAmount =
       frozenTax === null ? null : persistedNumeric(frozenTax, 20, 6, 'transaction tax amount');
@@ -1011,6 +1041,16 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
         'a dividend may have at most one linked tax settlement',
+      );
+    }
+    if (
+      settlement.some(
+        (movement) => Date.parse(movement.data.executedAt) !== Date.parse(dividend.data.executedAt),
+      )
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a dividend tax settlement must share its dividend timestamp',
       );
     }
     const frozenTax = dividend.data.taxAmountEur;
