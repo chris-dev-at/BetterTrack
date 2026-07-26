@@ -1,4 +1,4 @@
-import type { ProfileIconId, Role, UserStatus } from '@bettertrack/contracts';
+import type { PrivacyMode, ProfileIconId, Role, UserStatus } from '@bettertrack/contracts';
 
 /** The session user attached to a request (never carries the password hash). */
 export interface AuthUser {
@@ -16,6 +16,8 @@ export interface AuthUser {
   profileIcon: ProfileIconId | null;
   /** Discreet mode (§13.5 V5-P13 arc (a)) — masks every absolute money amount in the SPA. */
   discreetMode: boolean;
+  /** Current account mode, refreshed from the user row on every authenticated request. */
+  privacyMode: PrivacyMode;
   lastLoginAt: Date | string | null;
   createdAt: Date | string;
 }

@@ -378,6 +378,7 @@
         "pattern": "Muster",
         "patternPlaceholder": "z. B. SPOTIFY",
         "patternRequired": "Gib ein Muster ein.",
+        "regexUnsupported": "Dieses Regex-Muster verwendet nicht unterstützte Syntax. Verwende ein einfacheres Muster ohne Lookarounds oder Rückverweise.",
         "priority": "Priorität",
         "enabled": "Aktiv",
         "saveError": "Regel konnte nicht gespeichert werden. Bitte versuche es erneut."

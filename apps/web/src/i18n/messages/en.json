@@ -378,6 +378,7 @@
         "pattern": "Pattern",
         "patternPlaceholder": "e.g. SPOTIFY",
         "patternRequired": "Enter a pattern.",
+        "regexUnsupported": "This regex uses unsupported syntax. Try a simpler pattern without lookarounds or backreferences.",
         "priority": "Priority",
         "enabled": "Enabled",
         "saveError": "Couldn't save the rule. Please try again."
