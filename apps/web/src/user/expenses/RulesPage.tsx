@@ -52,7 +52,7 @@ export function RulesPage() {
   });
 
   const rules = rulesQuery.data?.rules ?? [];
-  const isLoading = rulesQuery.isLoading || categoriesQuery.isLoading;
+  const isLoading = rulesQuery.isPending || categoriesQuery.isPending;
   const hasLoadError = rulesQuery.isError || categoriesQuery.isError;
 
   function retryPrerequisites() {

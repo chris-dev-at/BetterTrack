@@ -1,8 +1,8 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { ExpenseCategory, ExpenseRule } from '@bettertrack/contracts';
 
@@ -73,7 +73,20 @@ beforeEach(() => {
   vi.mocked(expensesApi.deleteExpenseRule).mockResolvedValue(undefined);
 });
 
+afterEach(() => {
+  onlineManager.setOnline(true);
+});
+
 describe('RulesPage', () => {
+  test('keeps the loading boundary while an initial prerequisite is paused offline', () => {
+    onlineManager.setOnline(false);
+    renderPage();
+
+    expect(screen.getAllByRole('status', { name: 'Loading' })).not.toHaveLength(0);
+    expect(screen.queryByText('No rules yet')).not.toBeInTheDocument();
+    expect(expensesApi.listExpenseCategories).not.toHaveBeenCalled();
+  });
+
   test('keeps loading accessibly until categories resolve and never labels a pending category unknown', async () => {
     const categories = deferred<{ categories: ExpenseCategory[] }>();
     vi.mocked(expensesApi.listExpenseCategories).mockImplementation(() => categories.promise);
