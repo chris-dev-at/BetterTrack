@@ -15,6 +15,16 @@ test('focuses the first enabled descendant when it opens', () => {
   expect(screen.getByRole('button', { name: 'Save changes' })).toHaveFocus();
 });
 
+test('focuses an iframe when it is the only focusable descendant', () => {
+  render(
+    <Modal title="Preview" onClose={vi.fn()}>
+      <iframe title="Preview frame" />
+    </Modal>,
+  );
+
+  expect(screen.getByTitle('Preview frame')).toHaveFocus();
+});
+
 test('focuses the dialog when it has no focusable descendants', () => {
   render(
     <Modal title="Details" onClose={vi.fn()}>
