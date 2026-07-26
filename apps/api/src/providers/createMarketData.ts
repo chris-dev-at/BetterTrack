@@ -24,6 +24,8 @@ import { createYahooProvider } from './yahooProvider';
  * here plus registering the provider — config-only, no architecture change.
  */
 export const STOOQ_FAILOVER_CHAINS: FailoverChains = {
+  // PROJECTPLAN.md §16 (2026-07-26): crypto, FX and commodities stay
+  // single-source in v5; no CoinGecko adapter is built.
   byClass: { crypto: [], fx: [], commodity: [] },
   default: ['stooq'],
 };
