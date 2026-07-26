@@ -15,6 +15,8 @@ import type {
   HistoryRange,
   PricePoint as ProviderPricePoint,
   RebalanceFrequency,
+  SharedSandboxAggregateResponse,
+  SharedSandboxPreviewResponse,
 } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
@@ -66,6 +68,8 @@ import { FxRateUnavailableError, type CurrencyService } from '../currency/curren
  */
 
 const PREVIEW_TTL_SECONDS = 3600; // 1 h (§6.6).
+const SHARED_SANDBOX_UNAVAILABLE_MESSAGE =
+  'This shared basket can’t be backtested with the selected settings.';
 
 /** Calendar years back for each finite preview range. */
 const RANGE_YEARS: Record<Exclude<BacktestPreviewRange, 'MAX'>, number> = {
@@ -133,9 +137,9 @@ export interface BacktestComparisonInput {
 /**
  * Shared-conglomerate what-if sandbox input (§13.5 V5-P6 arc c): the shared
  * conglomerate the viewer is looking at plus their locally-tweaked TOP-LEVEL
- * weights keyed by each asset constituent's `assetId`. Same window/late-listing/
- * rebalance knobs a single preview takes; no benchmark and no nested tweaking
- * (recursive re-weighting is #592, out of scope here).
+ * weights keyed by an asset constituent's `assetId` or a nested constituent's
+ * `childId`. Same window/late-listing/rebalance knobs a single preview takes;
+ * no benchmark and no changes to a nested child's internal weights.
  */
 export interface BacktestSharedSandboxInput {
   conglomerateId: string;
@@ -215,19 +219,22 @@ export interface BacktestService {
    * for the read-only "what-if" sandbox (§13.5 V5-P6 arc c). Authorized through
    * the exact same share guard the shared view uses (`authorizeConglomerateRead`)
    * — an unauthorized viewer gets a 404, never data. The tweak set is pinned to
-   * the shared basket's real asset constituents (a foreign / missing id is a
-   * 422), and every constituent is resolved as a PUBLIC catalog asset: a private
-   * custom asset (its manual valuations are absent from the share) and a nested
-   * child (arc-c tweaks no recursion) both make the basket un-sandboxable (422),
-   * so the curve leaks nothing beyond the share's existing exposure. Purely a
-   * read: no state is ever written. `reset to shared` is just this call with the
-   * original weights, so it reproduces the shared curve exactly.
+   * the shared basket's real top-level constituents (a foreign / missing id is
+   * a 422). Nested children retain their stored internal weights and resolve
+   * through the shared depth-bounded flattener; every resulting asset is then
+   * resolved as a PUBLIC catalog asset, so a private custom asset's manual
+   * valuations remain unavailable. Flat baskets keep the original full
+   * backtest response; nested baskets return aggregate curve/stat data only,
+   * and descendant identities and identity-bearing errors never widen the
+   * share. Purely a read: no state is ever written. `reset to shared` is just
+   * this call with the original weights, so it reproduces the shared curve
+   * exactly.
    */
   runSharedSandboxPreview(
     viewerId: string,
     input: BacktestSharedSandboxInput,
     opts?: { baseCurrency?: string },
-  ): Promise<BacktestResponse>;
+  ): Promise<SharedSandboxPreviewResponse>;
 }
 
 /**
@@ -320,15 +327,19 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     userId: string,
     assetId: string,
     providerRange: HistoryRange,
-    opts?: { globalOnly?: boolean },
+    opts?: { globalOnly?: boolean; redactIdentity?: boolean },
   ): Promise<BacktestAsset> {
     const row = await assetRepo.findByIdForUser(assetId, userId);
-    if (!row) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
+    if (!row) {
+      if (opts?.redactIdentity) throw sharedSandboxUnavailable();
+      throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
+    }
     // Share-scoped sandbox (V5-P6 arc c): a custom asset's price history is the
     // owner's private manual valuations — absent from the read-only share — so a
     // viewer's backtest must never surface it. The existence is already exposed
     // (its symbol/name are in the shared view), so this is a plain 422, not a 404.
     if (opts?.globalOnly && row.ownerId !== null) {
+      if (opts.redactIdentity) throw sharedSandboxUnavailable();
       throw unprocessable(
         `${row.symbol} is a private custom asset and can’t be backtested in a shared sandbox.`,
         'SANDBOX_PRIVATE_ASSET',
@@ -339,6 +350,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       providerRange,
     );
     if (prices.length === 0) {
+      if (opts?.redactIdentity) throw sharedSandboxUnavailable();
       throw unprocessable(
         `No price history available for ${row.symbol} to backtest.`,
         'NO_PRICE_HISTORY',
@@ -645,19 +657,17 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       const detail = await conglomerateRepo.findByIdForOwner(owner.ownerId, input.conglomerateId);
       if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
 
-      // Arc c re-weights TOP-LEVEL asset constituents only. A nested child would
-      // need recursive re-weighting (#592, out of scope) and flattening it would
-      // fold in the child's own (unshared) internal weights — so any nested
-      // constituent makes the basket un-sandboxable.
-      const constituents = detail.positions.filter(
-        (p): p is Extract<ConglomerateConstituentRow, { kind: 'asset' }> => p.kind === 'asset',
+      // Arc c re-weights TOP-LEVEL constituents as opaque rows. A nested child
+      // keeps its stored internal weights; the shared flattener resolves those
+      // recursively after applying the viewer's local root allocation.
+      const constituents = detail.positions;
+      const assetConstituents = constituents.filter(
+        (position): position is Extract<ConglomerateConstituentRow, { kind: 'asset' }> =>
+          position.kind === 'asset',
       );
-      if (constituents.length !== detail.positions.length) {
-        throw unprocessable(
-          'This conglomerate contains a nested basket and can’t be used in a what-if sandbox.',
-          'SANDBOX_NESTED_UNSUPPORTED',
-        );
-      }
+      const hasNestedConstituents = assetConstituents.length !== constituents.length;
+      const constituentId = (position: ConglomerateConstituentRow): string =>
+        position.kind === 'asset' ? position.assetId : position.childId;
 
       // Pin the tweak set to the shared basket's real constituents: the viewer may
       // re-weight only what the share already exposes, never add or drop an id. An
@@ -665,7 +675,8 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       // that changed under the viewer) is a 422 — the client refetches and resets.
       const tweak = new Map(input.positions.map((p) => [p.id, p.weight]));
       const idSetMatches =
-        tweak.size === constituents.length && constituents.every((p) => tweak.has(p.assetId));
+        tweak.size === constituents.length &&
+        constituents.every((position) => tweak.has(constituentId(position)));
       if (!idSetMatches) {
         throw unprocessable(
           'Sandbox weights must cover exactly the shared basket’s constituents.',
@@ -679,17 +690,57 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           : currencyService.withBase(opts.baseCurrency);
       const providerRange = PROVIDER_RANGE[input.range];
 
-      // The tweaked basket: each shared constituent at the viewer's new weight,
-      // resolved as a PUBLIC catalog asset (globalOnly) so no private valuation
-      // history is ever pulled into the curve.
-      const positions = constituents.map((p) => ({
-        assetId: p.assetId,
-        weight: tweak.get(p.assetId)!,
-      }));
+      let positions: Array<{ assetId: string; weight: number }>;
+      if (hasNestedConstituents) {
+        // Apply only the root overrides, then reuse the canonical recursive
+        // resolver. This preserves the stored child structure, cycle/depth
+        // invariants and effective-weight semantics instead of reimplementing
+        // nesting in the sandbox.
+        const flat = await flattenConglomerate(
+          (conglomerateId) =>
+            conglomerateId === detail.id
+              ? Promise.resolve(detail)
+              : conglomerateRepo.findByIdForOwner(owner.ownerId, conglomerateId),
+          detail.id,
+          { rootWeights: tweak },
+        );
+        positions =
+          flat?.positions.map((position) => ({
+            assetId: position.assetId,
+            weight: position.weightPct,
+          })) ?? [];
+      } else {
+        // Preserve the original flat-sandbox path exactly: pass raw top-level
+        // tweak weights to the engine without the flattener's percentage
+        // normalization round trip.
+        positions = assetConstituents.map((position) => ({
+          assetId: position.assetId,
+          weight: tweak.get(position.assetId)!,
+        }));
+      }
+      if (positions.length === 0) {
+        throw unprocessable(
+          `Conglomerate ${detail.name} has no positions to backtest.`,
+          'BACKTEST_UNAVAILABLE',
+        );
+      }
+      // A nested row hides both descendant identities and its internal
+      // allocation. Even when every flattened asset also happens to be exposed
+      // directly at the root, a full contribution response could reveal the
+      // child's effective weights. Therefore response/error redaction is keyed
+      // to the presence of nesting itself, not to whether flattening introduced
+      // a previously unseen asset id.
+      // Asset rows at the shared root already expose their identity. Assets
+      // reachable only through a nested child remain opaque and must never be
+      // named by load failures.
+      const exposedAssetIds = new Set(assetConstituents.map((position) => position.assetId));
       const assets: BacktestAsset[] = [];
       for (const pos of positions) {
         assets.push(
-          await loadBasketAsset(owner.ownerId, pos.assetId, providerRange, { globalOnly: true }),
+          await loadBasketAsset(owner.ownerId, pos.assetId, providerRange, {
+            globalOnly: true,
+            redactIdentity: !exposedAssetIds.has(pos.assetId),
+          }),
         );
       }
 
@@ -716,11 +767,14 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           rebalance: input.rebalance,
         });
       } catch (err) {
-        throw mapEngineError(err);
+        throw hasNestedConstituents ? mapSharedSandboxEngineError(err) : mapEngineError(err);
       }
       // No Redis memo and no writes: a viewer's slider-wiggle recomputes off the
       // already-warm provider history, and the sandbox never persists a thing.
-      return toResponse(result, null);
+      // Preserve the original full wire shape for flat baskets. Nested baskets
+      // use the aggregate DTO so descendant identities and effective internal
+      // weights cannot escape through contributions, entry events or notices.
+      return hasNestedConstituents ? toSharedSandboxResponse(result) : toResponse(result, null);
     },
   };
 
@@ -864,6 +918,23 @@ function mapEngineError(err: unknown): unknown {
   return err;
 }
 
+/** One identity-free data-state outcome for errors involving opaque descendants. */
+function sharedSandboxUnavailable() {
+  return unprocessable(SHARED_SANDBOX_UNAVAILABLE_MESSAGE, 'BACKTEST_UNAVAILABLE');
+}
+
+/**
+ * The pure engine includes asset symbols in several data-state errors. When a
+ * shared nested sandbox resolves opaque descendants, those messages collapse
+ * to one identity-free outcome.
+ */
+function mapSharedSandboxEngineError(err: unknown): unknown {
+  if (err instanceof BacktestError || err instanceof FxRateUnavailableError) {
+    return sharedSandboxUnavailable();
+  }
+  return err;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -962,6 +1033,20 @@ function toResponse(
       symbol: e.symbol,
       date: e.date,
     })),
+    rebalanceEvents: r.rebalanceEvents.map((e) => ({ date: e.date })),
+    idleCashAvgPct: r.idleCashAvgPct,
+  };
+}
+
+/** Shape a shared sandbox result without any descendant-level identity fields. */
+function toSharedSandboxResponse(r: BacktestResult): SharedSandboxAggregateResponse {
+  return {
+    startDate: r.startDate,
+    endDate: r.endDate,
+    series: r.series.map((p) => ({ date: p.date, value: p.value })),
+    stats: toStats(r.stats),
+    mode: r.mode,
+    rebalance: r.rebalance,
     rebalanceEvents: r.rebalanceEvents.map((e) => ({ date: e.date })),
     idleCashAvgPct: r.idleCashAvgPct,
   };

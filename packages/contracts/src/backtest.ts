@@ -241,12 +241,13 @@ export type BacktestResponse = z.infer<typeof backtestResponseSchema>;
 
 /**
  * One re-weighted constituent in a shared-conglomerate what-if sandbox (§13.5
- * V5-P6 arc c): the constituent's own id — an asset's `assetId`, exactly as the
- * read-only shared view surfaces it — plus the viewer's locally-tweaked relative
- * weight (normalised by the engine, so any positive number is valid, as in the
- * Builder). The server pins the id SET to the shared basket's real constituents,
- * so the sandbox can only re-weight what the share already exposes — never inject
- * a foreign asset id (the §6.9 privacy boundary).
+ * V5-P6 arc c): the constituent's own id — an asset's `assetId` or a nested
+ * basket's `childId`, exactly as the read-only shared view surfaces it — plus the
+ * viewer's locally-tweaked relative weight (normalised by the engine, so any
+ * positive number is valid, as in the Builder). The server pins the id SET to the
+ * shared basket's real top-level constituents, so the sandbox can only re-weight
+ * what the share already exposes — never inject a foreign id (the §6.9 privacy
+ * boundary).
  */
 export const sharedSandboxPositionSchema = z
   .object({
@@ -260,12 +261,13 @@ export type SharedSandboxPosition = z.infer<typeof sharedSandboxPositionSchema>;
  * `POST /backtest/shared/:conglomerateId/preview` body (§13.5 V5-P6 arc c): a
  * viewer's local weight tweaks over a FRIEND-SHARED conglomerate, run through the
  * exact same engine as the Builder preview. Only the top-level weights travel;
- * the constituent identities and prices are resolved server-side from the shared
- * basket (owner-scoped, catalog-assets only), so nothing beyond the share's
- * existing exposure is reachable and no write is ever issued. Deliberately has no
- * benchmark axis — a viewer must not overlay their own baskets on someone else's
- * share. Nested constituents are out of arc-c scope (recursive re-weighting is
- * #592): a basket containing one is not sandboxable and the server refuses it.
+ * prices are resolved server-side from the owner-scoped basket, and a nested
+ * constituent remains an opaque top-level tweak row while its stored internal
+ * weights resolve recursively. Flat baskets retain the existing full backtest
+ * response; baskets with nested constituents return aggregate results only, so
+ * descendant identities never widen the share. No write is ever issued and
+ * there is deliberately no benchmark axis — a viewer must not overlay their own
+ * baskets on someone else's share.
  */
 export const sharedSandboxPreviewRequestSchema = z
   .object({
@@ -278,6 +280,34 @@ export const sharedSandboxPreviewRequestSchema = z
   })
   .strict();
 export type SharedSandboxPreviewRequest = z.infer<typeof sharedSandboxPreviewRequestSchema>;
+
+/**
+ * Aggregate-only response shape for a shared what-if sandbox. A nested child is
+ * exposed by the shared-conglomerate DTO only as an opaque top-level row, so
+ * this endpoint must not return the engine's descendant-level contributions,
+ * entry-event identities, benchmark identity, or symbol-bearing notice text.
+ * The curve, aggregate statistics and identity-free rebalance dates remain
+ * useful for the sandbox without widening the share.
+ */
+export const sharedSandboxAggregateResponseSchema = backtestResponseSchema.omit({
+  contributions: true,
+  notice: true,
+  benchmark: true,
+  entryEvents: true,
+});
+export type SharedSandboxAggregateResponse = z.infer<typeof sharedSandboxAggregateResponseSchema>;
+
+/**
+ * Shared-sandbox response contract. Flat baskets preserve the original full
+ * `BacktestResponse` shape exactly. Only baskets containing nested constituents
+ * use the aggregate-only variant above. Keeping both variants strict rejects a
+ * partially-redacted hybrid response.
+ */
+export const sharedSandboxPreviewResponseSchema = z.union([
+  backtestResponseSchema,
+  sharedSandboxAggregateResponseSchema,
+]);
+export type SharedSandboxPreviewResponse = z.infer<typeof sharedSandboxPreviewResponseSchema>;
 
 // --- N-way conglomerate comparison (§13.5 V5-P6 arc a) ---------------------
 

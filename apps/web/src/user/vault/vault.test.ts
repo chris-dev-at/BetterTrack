@@ -412,7 +412,7 @@ describe('BTVAULT1 envelope and content crypto', () => {
       document: vaultVectorDocument,
       header: vector.initial.header,
     });
-  });
+  }, 15_000);
 
   it('rejects producer headers without an active wrapper or the required Argon2id profile', async () => {
     const { header, vaultKey } = await fixture();

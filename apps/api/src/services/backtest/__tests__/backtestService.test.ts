@@ -1,4 +1,10 @@
-import { backtestComparisonResponseSchema, backtestResponseSchema } from '@bettertrack/contracts';
+import {
+  backtestComparisonResponseSchema,
+  backtestResponseSchema,
+  MAX_NESTING_DEPTH,
+  sharedSandboxAggregateResponseSchema,
+  sharedSandboxPreviewResponseSchema,
+} from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
 
@@ -72,6 +78,21 @@ const CLOSES: Record<string, Array<{ date: string; close: number }>> = {
     { date: '2026-01-02', close: 10 },
     { date: '2026-01-05', close: 11 },
   ],
+  D: [
+    { date: '2025-12-30', close: 100 },
+    { date: '2025-12-31', close: 105 },
+    { date: '2026-01-02', close: 95 },
+    { date: '2026-01-05', close: 110 },
+  ],
+  HIDDEN_EARLY: [
+    { date: '2025-12-30', close: 20 },
+    { date: '2026-01-02', close: 22 },
+    { date: '2026-01-05', close: 24 },
+  ],
+  HIDDEN_LATE: [
+    { date: '2026-01-02', close: 30 },
+    { date: '2026-01-05', close: 33 },
+  ],
   // Preset fallback identity (unseeded catalog): +10 % over the window.
   '^GSPC': [
     { date: '2025-12-30', close: 5000 },
@@ -90,6 +111,18 @@ const CONG_ID = '018f0000-0000-7000-8000-000000000001';
 const NESTED_ID = '018f0000-0000-7000-8000-000000000002';
 /** A u1-owned conglomerate holding a PRIVATE custom asset (arc-c sandbox tests). */
 const CUSTOM_CONG_ID = '018f0000-0000-7000-8000-000000000003';
+/** The middle and root baskets of a valid root → child → grandchild depth-3 chain. */
+const DEEP_MID_ID = '018f0000-0000-7000-8000-000000000004';
+const DEEP_ROOT_ID = '018f0000-0000-7000-8000-000000000005';
+/** Opaque nested fixtures used to prove the shared response never names descendants. */
+const HIDDEN_CHILD_ID = '018f0000-0000-7000-8000-000000000006';
+const HIDDEN_ROOT_ID = '018f0000-0000-7000-8000-000000000007';
+/** Opaque nested fixtures for private/no-history descendant error redaction. */
+const HIDDEN_CUSTOM_ROOT_ID = '018f0000-0000-7000-8000-000000000008';
+const HIDDEN_NO_HISTORY_CHILD_ID = '018f0000-0000-7000-8000-000000000009';
+const HIDDEN_NO_HISTORY_ROOT_ID = '018f0000-0000-7000-8000-00000000000a';
+/** Flat fixture whose valid three-decimal weights expose redundant normalization drift. */
+const PRECISE_FLAT_ID = '018f0000-0000-7000-8000-00000000000b';
 /** The friend viewing u1's shared baskets in the arc-c sandbox tests. */
 const VIEWER_ID = 'v1';
 
@@ -146,6 +179,71 @@ function createHarness() {
           ],
         };
       }
+      if (id === DEEP_MID_ID) {
+        return {
+          id: DEEP_MID_ID,
+          name: 'Deep Mid',
+          positions: [{ kind: 'conglomerate', childId: CONG_ID, weightPct: 100 }],
+        };
+      }
+      if (id === DEEP_ROOT_ID) {
+        return {
+          id: DEEP_ROOT_ID,
+          name: 'Deep Root',
+          positions: [{ kind: 'conglomerate', childId: DEEP_MID_ID, weightPct: 100 }],
+        };
+      }
+      if (id === HIDDEN_CHILD_ID) {
+        return {
+          id: HIDDEN_CHILD_ID,
+          name: 'Opaque Child',
+          positions: [
+            { kind: 'asset', assetId: 'HIDDEN_EARLY', weightPct: 50 },
+            { kind: 'asset', assetId: 'HIDDEN_LATE', weightPct: 50 },
+          ],
+        };
+      }
+      if (id === HIDDEN_ROOT_ID) {
+        return {
+          id: HIDDEN_ROOT_ID,
+          name: 'Opaque Root',
+          positions: [{ kind: 'conglomerate', childId: HIDDEN_CHILD_ID, weightPct: 100 }],
+        };
+      }
+      if (id === HIDDEN_CUSTOM_ROOT_ID) {
+        return {
+          id: HIDDEN_CUSTOM_ROOT_ID,
+          name: 'Opaque Custom Root',
+          positions: [{ kind: 'conglomerate', childId: CUSTOM_CONG_ID, weightPct: 100 }],
+        };
+      }
+      if (id === HIDDEN_NO_HISTORY_CHILD_ID) {
+        return {
+          id: HIDDEN_NO_HISTORY_CHILD_ID,
+          name: 'Opaque No-history Child',
+          positions: [{ kind: 'asset', assetId: 'SECRET_NO_HISTORY', weightPct: 100 }],
+        };
+      }
+      if (id === HIDDEN_NO_HISTORY_ROOT_ID) {
+        return {
+          id: HIDDEN_NO_HISTORY_ROOT_ID,
+          name: 'Opaque No-history Root',
+          positions: [
+            { kind: 'conglomerate', childId: HIDDEN_NO_HISTORY_CHILD_ID, weightPct: 100 },
+          ],
+        };
+      }
+      if (id === PRECISE_FLAT_ID) {
+        return {
+          id: PRECISE_FLAT_ID,
+          name: 'Precise Flat Mix',
+          positions: [
+            { kind: 'asset', assetId: 'A', weightPct: 0.001 },
+            { kind: 'asset', assetId: 'B', weightPct: 0.61 },
+            { kind: 'asset', assetId: 'D', weightPct: 99.389 },
+          ],
+        };
+      }
       return null;
     },
   } as unknown as ConglomerateRepository;
@@ -183,7 +281,17 @@ function createHarness() {
     // Model the §6.9 share guard for the arc-c sandbox: viewer `v1` may read
     // u1's shared baskets; everyone/everything else is a 404.
     authorizeConglomerateRead: async (viewerId: string, conglomerateId: string) =>
-      viewerId === VIEWER_ID && [CONG_ID, NESTED_ID, CUSTOM_CONG_ID].includes(conglomerateId)
+      viewerId === VIEWER_ID &&
+      [
+        CONG_ID,
+        NESTED_ID,
+        CUSTOM_CONG_ID,
+        DEEP_ROOT_ID,
+        HIDDEN_ROOT_ID,
+        HIDDEN_CUSTOM_ROOT_ID,
+        HIDDEN_NO_HISTORY_ROOT_ID,
+        PRECISE_FLAT_ID,
+      ].includes(conglomerateId)
         ? { ownerId: 'u1' }
         : undefined,
     // Fixed clock: the 1Y window ends 2026-01-05 and the engine clips to the
@@ -548,16 +656,26 @@ describe('backtestService.runSharedSandboxPreview', () => {
     range: '1Y' as const,
   };
 
-  it('at the shared weights it reproduces the owner’s own backtest exactly (reset-to-shared curve)', async () => {
+  it('keeps a valid three-decimal flat vector bit-identical to the legacy direct-position preview', async () => {
     const { service } = createHarness();
-    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, ORIGINAL);
-    // The owner backtesting the same 60/40 A/B basket inline is the ground-truth
-    // shared curve; the viewer's sandbox at the shared weights must equal it.
-    const ownerPreview = await service.runPreview('u1', PREVIEW);
+    const positions = [
+      { assetId: 'A', weight: 0.001 },
+      { assetId: 'B', weight: 0.61 },
+      { assetId: 'D', weight: 99.389 },
+    ];
+    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: PRECISE_FLAT_ID,
+      positions: positions.map((position) => ({
+        id: position.assetId,
+        weight: position.weight,
+      })),
+      range: '1Y',
+    });
+    // The owner inline preview is the pre-nesting direct-position path. Pin the
+    // complete response, including exact normalized contribution weights.
+    const ownerPreview = await service.runPreview('u1', { positions, range: '1Y' });
     expect(() => backtestResponseSchema.parse(sandbox)).not.toThrow();
-    expect(sandbox.benchmark).toBeNull();
-    expect(sandbox.series).toEqual(ownerPreview.series);
-    expect(sandbox.stats).toEqual(ownerPreview.stats);
+    expect(sandbox).toEqual(ownerPreview);
   });
 
   it('a weight tweak changes the curve; re-running at the original weights restores it exactly', async () => {
@@ -601,18 +719,118 @@ describe('backtestService.runSharedSandboxPreview', () => {
     ).rejects.toMatchObject({ statusCode: 422, code: 'SANDBOX_POSITIONS_MISMATCH' });
   });
 
-  it('refuses a nested basket (recursive re-weighting is out of arc-c scope)', async () => {
+  it('re-weights a nested top-level constituent and resolves its effective assets recursively', async () => {
+    const { service } = createHarness();
+    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: NESTED_ID,
+      positions: [
+        { id: CONG_ID, weight: 80 },
+        { id: 'A', weight: 20 },
+      ],
+      range: '1Y',
+    });
+
+    // The child keeps its stored 60/40 A/B split: an 80% child plus 20% direct A
+    // resolves to exactly 68/32 A/B.
+    const handFlattened = await service.runPreview('u1', {
+      positions: [
+        { assetId: 'A', weight: 68 },
+        { assetId: 'B', weight: 32 },
+      ],
+      range: '1Y',
+    });
+    expect(sandbox.series).toHaveLength(handFlattened.series.length);
+    for (let index = 0; index < sandbox.series.length; index += 1) {
+      expect(sandbox.series[index]!.date).toBe(handFlattened.series[index]!.date);
+      expect(sandbox.series[index]!.value).toBeCloseTo(handFlattened.series[index]!.value, 10);
+    }
+  });
+
+  it('never serializes hidden descendant identities through contributions, notices or entry events', async () => {
+    const { service } = createHarness();
+    const input = {
+      conglomerateId: HIDDEN_ROOT_ID,
+      positions: [{ id: HIDDEN_CHILD_ID, weight: 100 }],
+      range: '1Y' as const,
+    };
+
+    // Clip would normally name HIDDEN_LATE in its limiting notice; cash would
+    // normally name HIDDEN_EARLY in its notice and HIDDEN_LATE in an entry event.
+    for (const response of [
+      await service.runSharedSandboxPreview(VIEWER_ID, input),
+      await service.runSharedSandboxPreview(VIEWER_ID, { ...input, mode: 'cash' }),
+    ]) {
+      expect(sharedSandboxAggregateResponseSchema.safeParse(response).success).toBe(true);
+      expect(sharedSandboxPreviewResponseSchema.safeParse(response).success).toBe(true);
+      expect(response).not.toHaveProperty('contributions');
+      expect(response).not.toHaveProperty('notice');
+      expect(response).not.toHaveProperty('benchmark');
+      expect(response).not.toHaveProperty('entryEvents');
+      const wire = JSON.stringify(response);
+      expect(wire).not.toContain('"HIDDEN_EARLY"');
+      expect(wire).not.toContain('"HIDDEN_LATE"');
+    }
+  });
+
+  it.each([
+    {
+      label: 'private custom asset',
+      conglomerateId: HIDDEN_CUSTOM_ROOT_ID,
+      childId: CUSTOM_CONG_ID,
+      hiddenIdentity: 'CUSTOM',
+    },
+    {
+      label: 'asset with no price history',
+      conglomerateId: HIDDEN_NO_HISTORY_ROOT_ID,
+      childId: HIDDEN_NO_HISTORY_CHILD_ID,
+      hiddenIdentity: 'SECRET_NO_HISTORY',
+    },
+  ])('redacts a hidden descendant $label from errors', async (fixture) => {
+    const { service } = createHarness();
+    const caught: unknown = await service
+      .runSharedSandboxPreview(VIEWER_ID, {
+        conglomerateId: fixture.conglomerateId,
+        positions: [{ id: fixture.childId, weight: 100 }],
+        range: '1Y',
+      })
+      .catch((error: unknown) => error);
+
+    expect(caught).toMatchObject({
+      statusCode: 422,
+      code: 'BACKTEST_UNAVAILABLE',
+      message: 'This shared basket can’t be backtested with the selected settings.',
+    });
+    expect(caught).toBeInstanceOf(Error);
+    if (caught instanceof Error) {
+      expect(caught.message).not.toContain(fixture.hiddenIdentity);
+    }
+  });
+
+  it('runs a valid nest at the planner-set maximum depth', async () => {
+    expect(MAX_NESTING_DEPTH).toBe(3);
+    const { service } = createHarness();
+    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, {
+      conglomerateId: DEEP_ROOT_ID,
+      positions: [{ id: DEEP_MID_ID, weight: 100 }],
+      range: '1Y',
+    });
+    const handFlattened = await service.runPreview('u1', PREVIEW);
+    expect(sandbox.series).toEqual(handFlattened.series);
+    expect(sandbox.stats).toEqual(handFlattened.stats);
+  });
+
+  it('cannot introduce a self-cycle by substituting the shared root id', async () => {
     const { service } = createHarness();
     await expect(
       service.runSharedSandboxPreview(VIEWER_ID, {
         conglomerateId: NESTED_ID,
         positions: [
-          { id: CONG_ID, weight: 50 },
-          { id: 'A', weight: 50 },
+          { id: NESTED_ID, weight: 80 },
+          { id: 'A', weight: 20 },
         ],
         range: '1Y',
       }),
-    ).rejects.toMatchObject({ statusCode: 422, code: 'SANDBOX_NESTED_UNSUPPORTED' });
+    ).rejects.toMatchObject({ statusCode: 422, code: 'SANDBOX_POSITIONS_MISMATCH' });
   });
 
   it('refuses a basket with a private custom asset — a viewer never sees the owner’s manual valuations', async () => {
