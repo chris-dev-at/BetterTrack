@@ -482,6 +482,15 @@
     "label": "Anzeigesprache",
     "saveError": "Deine Sprache konnte nicht gespeichert werden. Bitte versuche es erneut."
   },
+  "vault": {
+    "sync": {
+      "synced": "Synchronisiert",
+      "syncing": "Wird synchronisiert",
+      "offline": "Offline",
+      "signInToGoogle": "Bei Google anmelden, um zu synchronisieren",
+      "needsAttention": "Synchronisierung erfordert Aufmerksamkeit"
+    }
+  },
   "settings": {
     "saveError": "Diese Änderung konnte nicht gespeichert werden. Bitte versuche es erneut.",
     "retryHint": "Bitte versuche es gleich noch einmal.",
@@ -498,10 +507,33 @@
     },
     "connections": {
       "title": "Verbindungen",
-      "subtitle": "Alles, was BetterTrack mit der Außenwelt verbindet — dein Google-Login und die bald verfügbaren Connectors.",
+      "subtitle": "Alles, was BetterTrack mit der Außenwelt verbindet — dein Google-Login, verschlüsselter Drive-Speicher und kommende Connectors.",
       "comingSoon": "Bald verfügbar",
       "slotsTitle": "Connectors",
       "slotsSubtitle": "Synchronisiere deine Daten mit externen Diensten. Sie sind in Arbeit — noch nichts einzurichten.",
+      "drive": {
+        "title": "Google-Drive-App-Daten",
+        "description": "Speichere deinen verschlüsselten Tresor im ausgeblendeten App-Daten-Ordner von Drive. BetterTrack kann nicht auf deine normalen Drive-Dateien zugreifen.",
+        "loadError": "Dein Drive-Speicherstatus konnte nicht geladen werden",
+        "connect": "Drive verbinden",
+        "signIn": "Bei Google anmelden",
+        "disconnect": "Drive trennen",
+        "lastMedium": "Drive ist dein einziger Tresor-Speicherort. Füge Server-Speicher hinzu, bevor du Drive trennst.",
+        "unconfigured": "Google-Drive-Speicher ist in dieser Installation nicht konfiguriert.",
+        "status": {
+          "disconnected": "Nicht verbunden",
+          "connected": "Verbunden",
+          "needs-sign-in": "Anmeldung erforderlich",
+          "offline": "Offline",
+          "unavailable": "Nicht verfügbar"
+        },
+        "notice": {
+          "connected": "Google-Drive-Speicher wurde verbunden.",
+          "disconnected": "Google-Drive-Speicher wurde getrennt.",
+          "leftover": "Der Speicher wurde sicher umgestellt, aber die verschlüsselte Drive-Datei konnte nicht gelöscht werden. Sie bleibt in deinem eigenen Drive.",
+          "error": "Der Google-Drive-Speicher konnte nicht geändert werden. Dein bisheriger Tresor-Speicherort bleibt aktiv."
+        }
+      },
       "sync": {
         "oneTime": "Einmaliger Import — läuft einmal beim Verbinden.",
         "stayConnected": "Bleibt verbunden — synchronisiert automatisch."

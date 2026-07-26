@@ -41,6 +41,9 @@ const componentSchemas = {
   HealthResponse: contracts.healthResponseSchema,
   VersionResponse: contracts.versionResponseSchema,
   VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
+  ParanoidMediaStatusResponse: contracts.paranoidMediaStatusResponseSchema,
+  PatchParanoidMediaRequest: contracts.patchParanoidMediaRequestSchema,
+  PatchParanoidMediaResponse: contracts.patchParanoidMediaResponseSchema,
 
   // Auth (§6.1)
   LoginRequest: contracts.loginRequestSchema,
@@ -661,6 +664,25 @@ const endpoints: EndpointDef[] = [
     body: R.ExportRequest,
     status: 200,
     response: R.ExportRequestResponse,
+  },
+  {
+    method: 'get',
+    path: '/account/paranoid/media',
+    tag: 'Account',
+    summary:
+      'Read portfolio-free paranoid vault media metadata. Drive credentials and file ids never reach this endpoint.',
+    status: 200,
+    response: R.ParanoidMediaStatusResponse,
+  },
+  {
+    method: 'patch',
+    path: '/account/paranoid/media',
+    tag: 'Account',
+    summary:
+      'Commit one verified media-set transition; switching to Drive-only atomically deletes current and retained server ciphertext.',
+    body: R.PatchParanoidMediaRequest,
+    status: 200,
+    response: R.PatchParanoidMediaResponse,
   },
   {
     method: 'get',

@@ -2,6 +2,8 @@ import { encodeVaultEnvelope, VAULT_CONTENT_CIPHER } from '@bettertrack/contract
 import { describe, expect, it } from 'vitest';
 
 import type {
+  ParanoidMediaPatchInput,
+  ParanoidMediaPatchResult,
   ParanoidVaultCasInput,
   ParanoidVaultCasResult,
   ParanoidVaultRepository,
@@ -38,13 +40,21 @@ function envelope(vaultVersion: number, ciphertext: Uint8Array): Buffer {
 interface FakeRepoOptions {
   current?: ParanoidVaultRow | null;
   casResult?: ParanoidVaultCasResult;
+  mediaResult?: ParanoidMediaPatchResult;
 }
 
 function fakeRepo(options: FakeRepoOptions = {}) {
   const calls: ParanoidVaultCasInput[] = [];
+  const mediaCalls: ParanoidMediaPatchInput[] = [];
   const repo: ParanoidVaultRepository = {
     async getCurrent() {
       return options.current ?? null;
+    },
+    async getMediaState() {
+      return {
+        privacyMode: 'paranoid',
+        mediaState: { mediaSet: ['server'], driveAttestedVersion: null },
+      };
     },
     async listHistory() {
       return { items: [], nextCursor: null };
@@ -62,8 +72,18 @@ function fakeRepo(options: FakeRepoOptions = {}) {
         }
       );
     },
+    async patchMedia(input) {
+      mediaCalls.push(input);
+      return (
+        options.mediaResult ?? {
+          status: 'ok',
+          state: { mediaSet: ['server', 'drive'], driveAttestedVersion: 3 },
+          idempotent: false,
+        }
+      );
+    },
   };
-  return { repo, calls };
+  return { repo, calls, mediaCalls };
 }
 
 const retention = { maxVersions: 10, maxAgeMs: 30 * 24 * 60 * 60 * 1000 };
@@ -167,5 +187,31 @@ describe('paranoid vault service', () => {
       retention,
     });
     expect(await emptyService.getMetadata(UUID_A)).toBeNull();
+  });
+
+  it('delegates media switching with a deterministic transaction timestamp', async () => {
+    const { repo, mediaCalls } = fakeRepo();
+    const service = createParanoidVaultService({
+      vaults: repo,
+      maxBytes: 1_000_000,
+      retention,
+      now: () => new Date('2026-07-26T12:00:00.000Z'),
+    });
+    const request = {
+      expected: {
+        mediaSet: ['server'] as ('server' | 'drive')[],
+        driveAttestedVersion: null,
+      },
+      nextMediaSet: ['server', 'drive'] as ('server' | 'drive')[],
+      verification: { medium: 'drive' as const, version: 3 },
+    };
+    await expect(service.patchMedia(UUID_A, request)).resolves.toMatchObject({ status: 'ok' });
+    expect(mediaCalls).toEqual([
+      {
+        userId: UUID_A,
+        ...request,
+        now: new Date('2026-07-26T12:00:00.000Z'),
+      },
+    ]);
   });
 });

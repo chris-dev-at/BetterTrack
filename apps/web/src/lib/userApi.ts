@@ -9,6 +9,8 @@ import {
   passkeyRegisterOptionsResponseSchema,
   passkeySchema,
   pinQuickAuthResponseSchema,
+  paranoidMediaStatusResponseSchema,
+  patchParanoidMediaResponseSchema,
   publicRegistrationInfoResponseSchema,
   registerResponseSchema,
   rememberedDeviceResponseSchema,
@@ -38,6 +40,9 @@ import {
   type PasskeyRegisterVerifyRequest,
   type PasswordResetComplete,
   type PasswordResetRequest,
+  type ParanoidMediaStatusResponse,
+  type PatchParanoidMediaRequest,
+  type PatchParanoidMediaResponse,
   type PublicRegistrationInfoResponse,
   type RegisterRequest,
   type RegisterResponse,
@@ -403,6 +408,29 @@ export async function deleteAccount(body: DeleteAccountRequest): Promise<void> {
     body,
     suppressAuthRedirect: true,
   });
+}
+
+/** Portfolio-free durable state for the browser-owned paranoid data homes. */
+export async function getParanoidMediaState(
+  signal?: AbortSignal,
+): Promise<ParanoidMediaStatusResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/media', { signal });
+  return paranoidMediaStatusResponseSchema.parse(data);
+}
+
+/**
+ * Commit one client-verified media switch. Drive credentials and file metadata
+ * never enter this request; it carries only durable state plus an envelope
+ * version the API checks against its locked blind server head.
+ */
+export async function patchParanoidMedia(
+  body: PatchParanoidMediaRequest,
+): Promise<PatchParanoidMediaResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/media', {
+    method: 'PATCH',
+    body,
+  });
+  return patchParanoidMediaResponseSchema.parse(data);
 }
 
 /**

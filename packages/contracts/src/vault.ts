@@ -115,6 +115,57 @@ export const vaultMediaStateSchema = z
   });
 export type VaultMediaState = z.infer<typeof vaultMediaStateSchema>;
 
+/**
+ * The one medium whose freshly round-tripped ciphertext authorizes a media-set
+ * transition. Only the opaque envelope version crosses this boundary: Drive
+ * tokens, file ids, document hashes and decrypted metadata stay in the browser.
+ */
+export const vaultMediaVerificationSchema = z
+  .object({
+    medium: vaultMediumSchema,
+    version: z.number().int().min(1).max(VAULT_VERSION_MAX),
+  })
+  .strict();
+export type VaultMediaVerification = z.infer<typeof vaultMediaVerificationSchema>;
+
+/**
+ * Durable account metadata returned by `GET /account/paranoid/media`. Normal
+ * accounts deliberately have no media state.
+ */
+export const paranoidMediaStatusResponseSchema = z
+  .object({
+    privacyMode: privacyModeSchema,
+    mediaState: vaultMediaStateSchema.nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if ((value.privacyMode === 'normal') !== (value.mediaState === null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mediaState'],
+        message: 'only a paranoid account may have vault media state',
+      });
+    }
+  });
+export type ParanoidMediaStatusResponse = z.infer<typeof paranoidMediaStatusResponseSchema>;
+
+/**
+ * Safe media-set switch. `expected` is the caller's last durable observation;
+ * `verification` identifies the copy it authenticated immediately before this
+ * request. The server re-checks that version against its locked blind blob.
+ */
+export const patchParanoidMediaRequestSchema = z
+  .object({
+    expected: vaultMediaStateSchema,
+    nextMediaSet: vaultMediaSetSchema,
+    verification: vaultMediaVerificationSchema,
+  })
+  .strict();
+export type PatchParanoidMediaRequest = z.infer<typeof patchParanoidMediaRequestSchema>;
+
+export const patchParanoidMediaResponseSchema = vaultMediaStateSchema;
+export type PatchParanoidMediaResponse = z.infer<typeof patchParanoidMediaResponseSchema>;
+
 // ── Version + envelope header ────────────────────────────────────────────────
 
 /** The monotonic CAS token (`vaultVersion`). The first stored blob is 1. */
@@ -780,6 +831,8 @@ export type VaultMetadata = z.infer<typeof vaultMetadataSchema>;
 export const VAULT_ERROR_CODES = {
   notFound: 'VAULT_NOT_FOUND',
   modeRequired: 'VAULT_PARANOID_MODE_REQUIRED',
+  mediaStateConflict: 'VAULT_MEDIA_STATE_CONFLICT',
+  mediaVerificationFailed: 'VAULT_MEDIA_VERIFICATION_FAILED',
   preconditionRequired: 'VAULT_PRECONDITION_REQUIRED',
   preconditionFailed: 'VAULT_PRECONDITION_FAILED',
   tooLarge: 'VAULT_TOO_LARGE',

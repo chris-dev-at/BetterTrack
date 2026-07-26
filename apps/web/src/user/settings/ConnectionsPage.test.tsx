@@ -6,12 +6,26 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../../lib/userApi', () => ({
   getGoogleLinkStatus: vi.fn(),
+  getParanoidMediaState: vi.fn(),
   unlinkGoogle: vi.fn(),
   googleStartUrl: vi.fn(() => 'http://api.test/api/v1/auth/google/start'),
 }));
 
+vi.mock('../vault/media/runtime', () => ({
+  connectDriveConnection: vi.fn(),
+  disconnectDriveConnection: vi.fn(),
+  driveConnectionConfigured: vi.fn(() => true),
+  driveConnectionState: vi.fn(() => 'disconnected'),
+  prepareDriveConnection: vi.fn(async () => undefined),
+}));
+
 import { ApiError } from '../../lib/apiClient';
-import { getGoogleLinkStatus, unlinkGoogle } from '../../lib/userApi';
+import { getGoogleLinkStatus, getParanoidMediaState, unlinkGoogle } from '../../lib/userApi';
+import {
+  connectDriveConnection,
+  disconnectDriveConnection,
+  driveConnectionState,
+} from '../vault/media/runtime';
 import { ConnectionsPage } from './ConnectionsPage';
 
 const GOOGLE_OFF = {
@@ -45,7 +59,22 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Google off by default so the section stays hidden unless a test opts in.
   vi.mocked(getGoogleLinkStatus).mockResolvedValue(GOOGLE_OFF);
+  vi.mocked(getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   vi.mocked(unlinkGoogle).mockResolvedValue(undefined);
+  vi.mocked(connectDriveConnection).mockResolvedValue({
+    status: 'ok',
+    state: { mediaSet: ['server', 'drive'], driveAttestedVersion: 4 },
+    recoveredAfterPatchFailure: false,
+  });
+  vi.mocked(disconnectDriveConnection).mockResolvedValue({
+    status: 'ok',
+    state: { mediaSet: ['server'], driveAttestedVersion: null },
+    recoveredAfterPatchFailure: false,
+  });
+  vi.mocked(driveConnectionState).mockReturnValue('disconnected');
 });
 
 describe('ConnectionsPage — connector slots (V5-P0c)', () => {
@@ -56,10 +85,10 @@ describe('ConnectionsPage — connector slots (V5-P0c)', () => {
     expect(await screen.findByRole('heading', { name: 'Connections' })).toBeInTheDocument();
 
     // Each designed slot is present with a "coming soon" chip and no dead button.
-    expect(screen.getByText('Google Drive backup')).toBeInTheDocument();
+    expect(screen.queryByText('Google Drive backup')).not.toBeInTheDocument();
     expect(screen.getByText('Bank & broker cash sync')).toBeInTheDocument();
     expect(screen.getByText('Parqet')).toBeInTheDocument();
-    expect(screen.getAllByText('Coming soon').length).toBe(3);
+    expect(screen.getAllByText('Coming soon').length).toBe(2);
     // Both sync-semantics variants are surfaced.
     expect(screen.getAllByText(/Stays connected/).length).toBeGreaterThan(0);
     expect(screen.getByText(/One-time import/)).toBeInTheDocument();
@@ -73,7 +102,7 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
     renderPage();
     // The connectors still render; the Google section resolves to nothing once
     // the disabled status arrives (a transient skeleton clears on settle).
-    expect(await screen.findByText('Google Drive backup')).toBeInTheDocument();
+    expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('Google account')).not.toBeInTheDocument());
   });
 
@@ -150,5 +179,59 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
     expect(await screen.findByText(/doesn't match your account email/i)).toBeInTheDocument();
     // The connect affordance is still offered — nothing was linked.
     expect(screen.getByRole('link', { name: 'Connect Google' })).toBeInTheDocument();
+  });
+});
+
+describe('ConnectionsPage — paranoid Google Drive app-data card', () => {
+  test('offers a real connect action for a disconnected paranoid account', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: { mediaSet: ['server'], driveAttestedVersion: null },
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText('Disconnected')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Connect Drive' }));
+    await waitFor(() => expect(connectDriveConnection).toHaveBeenCalledOnce());
+    expect(await screen.findByText('Google Drive storage connected.')).toBeInTheDocument();
+  });
+
+  test('shows needs-sign-in honestly and routes the gesture through the controller', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: { mediaSet: ['server', 'drive'], driveAttestedVersion: 4 },
+    });
+    vi.mocked(driveConnectionState).mockReturnValue('needs-sign-in');
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText('Needs sign-in')).toBeInTheDocument();
+    expect(screen.getByText('Sign in to Google to sync')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Sign in to Google' }));
+    await waitFor(() => expect(connectDriveConnection).toHaveBeenCalledOnce());
+  });
+
+  test('disconnects through the safe media flow and never offers removal of Drive-only', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: { mediaSet: ['server', 'drive'], driveAttestedVersion: 4 },
+    });
+    vi.mocked(driveConnectionState).mockReturnValue('connected');
+    const user = userEvent.setup();
+    const view = renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Disconnect Drive' }));
+    await waitFor(() => expect(disconnectDriveConnection).toHaveBeenCalledOnce());
+    expect(await screen.findByText('Google Drive storage disconnected.')).toBeInTheDocument();
+
+    view.unmount();
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: { mediaSet: ['drive'], driveAttestedVersion: 4 },
+    });
+    renderPage();
+    expect(await screen.findByText(/Drive is your only vault location/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Disconnect Drive' })).not.toBeInTheDocument();
   });
 });

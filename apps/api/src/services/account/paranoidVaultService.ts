@@ -1,6 +1,8 @@
 import {
   readVaultServerHeader,
   VaultEnvelopeError,
+  type ParanoidMediaStatusResponse,
+  type PatchParanoidMediaRequest,
   type VaultHistoryListQuery,
   type VaultHistoryListResponse,
   type VaultMetadata,
@@ -59,6 +61,16 @@ export interface ParanoidVaultService {
   getHistory(userId: string, version: number): Promise<ParanoidVaultHistoryRow | null>;
   /** Compare-and-swap write. Never overwrites newer ciphertext. */
   put(input: ParanoidVaultPutInput): Promise<ParanoidVaultPutResult>;
+  /** Portfolio-free durable media metadata for the caller's account. */
+  getMediaState(userId: string): Promise<ParanoidMediaStatusResponse | null>;
+  /**
+   * One verified media-set transition. Removing server ciphertext is delegated
+   * to the repository's account-row transaction.
+   */
+  patchMedia(
+    userId: string,
+    input: PatchParanoidMediaRequest,
+  ): ReturnType<ParanoidVaultRepository['patchMedia']>;
 }
 
 function metadataOf(row: ParanoidVaultRow): VaultMetadata {
@@ -139,6 +151,18 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
         now: now(),
       });
       return result;
+    },
+
+    async getMediaState(userId) {
+      return deps.vaults.getMediaState(userId);
+    },
+
+    async patchMedia(userId, input) {
+      return deps.vaults.patchMedia({
+        userId,
+        ...input,
+        now: now(),
+      });
     },
   };
 }

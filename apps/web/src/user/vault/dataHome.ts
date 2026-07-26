@@ -17,6 +17,13 @@ export interface DataHomeInfo {
 export interface DataHomeTransportFailure {
   message: string;
   httpStatus?: number;
+  kind?:
+    | 'offline'
+    | 'consent-required'
+    | 'token-expired'
+    | 'gesture-required'
+    | 'authorization-failed'
+    | 'api-failure';
   /** The remote may have committed before the response was lost. */
   indeterminate?: boolean;
   cause?: unknown;
@@ -27,6 +34,8 @@ export type DataHomeCorruptionReason =
   | 'missing-version'
   | 'version-mismatch'
   | 'unsupported-version'
+  | 'malformed-metadata'
+  | 'corrupt-bytes'
   | 'invalid-response';
 
 export interface DataHomeCorruptCandidate {

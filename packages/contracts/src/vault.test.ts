@@ -4,6 +4,8 @@ import {
   decodeVaultEnvelope,
   encodeVaultEnvelope,
   parseVaultEtag,
+  paranoidMediaStatusResponseSchema,
+  patchParanoidMediaRequestSchema,
   privacyModeSchema,
   readVaultServerHeader,
   VAULT_CONTENT_CIPHER,
@@ -21,6 +23,7 @@ import {
   vaultHistoryMetadataSchema,
   vaultHistoryVersionParamSchema,
   vaultMediaSetSchema,
+  vaultMediaStateSchema,
   vaultServerHeaderSchema,
   vaultVersionSchema,
 } from './vault';
@@ -70,6 +73,53 @@ describe('media set', () => {
     expect(vaultMediaSetSchema.safeParse([]).success).toBe(false);
     expect(vaultMediaSetSchema.safeParse(['icloud']).success).toBe(false);
     expect(vaultMediaSetSchema.safeParse(['server', 'server']).success).toBe(false);
+  });
+
+  it('pins strict, portfolio-free media status and PATCH shapes', () => {
+    const mediaState = {
+      mediaSet: ['server', 'drive'] as const,
+      driveAttestedVersion: 7,
+    };
+    expect(
+      paranoidMediaStatusResponseSchema.parse({
+        privacyMode: 'paranoid',
+        mediaState,
+      }),
+    ).toEqual({ privacyMode: 'paranoid', mediaState });
+    expect(
+      paranoidMediaStatusResponseSchema.safeParse({
+        privacyMode: 'normal',
+        mediaState,
+      }).success,
+    ).toBe(false);
+    expect(
+      paranoidMediaStatusResponseSchema.parse({
+        privacyMode: 'normal',
+        mediaState: null,
+      }),
+    ).toEqual({ privacyMode: 'normal', mediaState: null });
+
+    const request = {
+      expected: { mediaSet: ['server'], driveAttestedVersion: null },
+      nextMediaSet: ['server', 'drive'],
+      verification: { medium: 'drive', version: 7 },
+    };
+    expect(patchParanoidMediaRequestSchema.parse(request)).toEqual(request);
+    expect(
+      patchParanoidMediaRequestSchema.safeParse({ ...request, nextMediaSet: [] }).success,
+    ).toBe(false);
+    expect(
+      patchParanoidMediaRequestSchema.safeParse({
+        ...request,
+        accessToken: 'must-never-cross-the-server-boundary',
+      }).success,
+    ).toBe(false);
+    expect(
+      vaultMediaStateSchema.safeParse({
+        mediaSet: ['server'],
+        driveAttestedVersion: 7,
+      }).success,
+    ).toBe(false);
   });
 });
 

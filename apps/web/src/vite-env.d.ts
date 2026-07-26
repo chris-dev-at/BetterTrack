@@ -14,6 +14,11 @@ interface ImportMetaEnv {
   readonly VITE_SENTRY_DSN?: string;
   /** 0..1 fraction of transactions traced; defaults to 0 when unset. */
   readonly VITE_SENTRY_TRACES_SAMPLE_RATE?: string;
+  /**
+   * Browser OAuth client for the client-only Google Drive app-data medium.
+   * Access tokens minted from it never cross into the BetterTrack API.
+   */
+  readonly VITE_GOOGLE_DRIVE_CLIENT_ID?: string;
 }
 
 interface ImportMeta {

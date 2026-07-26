@@ -4,10 +4,17 @@ import {
   deleteAccountRequestSchema,
   exportDownloadQuerySchema,
   exportRequestSchema,
+  paranoidMediaStatusResponseSchema,
+  patchParanoidMediaRequestSchema,
+  patchParanoidMediaResponseSchema,
+  VAULT_ERROR_CODES,
   type DeleteAccountRequest,
   type ExportDownloadQuery,
   type ExportRequest,
+  type PatchParanoidMediaRequest,
 } from '@bettertrack/contracts';
+
+import { ApiError, forbidden, notFound } from '../../errors';
 
 import { clearSessionCookie } from '../cookies';
 import { requireUser } from '../middleware/session';
@@ -31,6 +38,50 @@ import type { AppContext } from '../context';
  */
 export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
+
+  router.get('/paranoid/media', requireUser, async (req, res) => {
+    const state = await ctx.paranoidVault.getMediaState(req.authUser!.id);
+    if (!state) throw notFound('Account not found.');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json(paranoidMediaStatusResponseSchema.parse(state));
+  });
+
+  router.patch(
+    '/paranoid/media',
+    requireUser,
+    validateBody(patchParanoidMediaRequestSchema),
+    async (req, res) => {
+      const result = await ctx.paranoidVault.patchMedia(
+        req.authUser!.id,
+        req.valid?.body as PatchParanoidMediaRequest,
+      );
+      switch (result.status) {
+        case 'ok':
+          res.setHeader('Cache-Control', 'private, no-store');
+          res.json(patchParanoidMediaResponseSchema.parse(result.state));
+          return;
+        case 'not_found':
+          throw notFound('Account not found.');
+        case 'mode_required':
+          throw forbidden(
+            'Vault media can be changed only while paranoid mode is active.',
+            VAULT_ERROR_CODES.modeRequired,
+          );
+        case 'state_conflict':
+          throw new ApiError(
+            409,
+            VAULT_ERROR_CODES.mediaStateConflict,
+            'Vault media changed after the client last read it.',
+          );
+        case 'verification_failed':
+          throw new ApiError(
+            412,
+            VAULT_ERROR_CODES.mediaVerificationFailed,
+            'The verified copy is not fresh enough for this media change.',
+          );
+      }
+    },
+  );
 
   router.delete(
     '/',

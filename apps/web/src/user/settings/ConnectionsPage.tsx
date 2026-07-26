@@ -7,11 +7,24 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { formatDateTime } from '../../lib/format';
-import { getGoogleLinkStatus, googleStartUrl, unlinkGoogle } from '../../lib/userApi';
+import {
+  getGoogleLinkStatus,
+  getParanoidMediaState,
+  googleStartUrl,
+  unlinkGoogle,
+} from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert, Button, TextField, cx } from '../components/ui';
+import {
+  connectDriveConnection,
+  disconnectDriveConnection,
+  driveConnectionConfigured,
+  driveConnectionState,
+  prepareDriveConnection,
+} from '../vault/media/runtime';
 
 const GOOGLE_KEY = ['auth', 'google', 'link-status'] as const;
+const PARANOID_MEDIA_KEY = ['account', 'paranoid', 'media'] as const;
 
 /**
  * Map a Settings-connect failure the callback bounced back as `?error=google_*`
@@ -218,6 +231,148 @@ function GoogleSection() {
   );
 }
 
+function GoogleDriveSection() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [notice, setNotice] = useState<'connected' | 'disconnected' | 'leftover' | 'error' | null>(
+    null,
+  );
+  const query = useQuery({
+    queryKey: PARANOID_MEDIA_KEY,
+    queryFn: ({ signal }) => getParanoidMediaState(signal),
+    staleTime: 10_000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    void prepareDriveConnection();
+  }, []);
+
+  const refresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: PARANOID_MEDIA_KEY });
+  };
+  const connect = useMutation({
+    mutationFn: connectDriveConnection,
+    onSuccess: async (result) => {
+      if (result.status === 'failed') {
+        setNotice('error');
+        return;
+      }
+      setNotice(result.status === 'ok-with-drive-leftover' ? 'leftover' : 'connected');
+      await refresh();
+    },
+    onError: () => setNotice('error'),
+  });
+  const disconnect = useMutation({
+    mutationFn: disconnectDriveConnection,
+    onSuccess: async (result) => {
+      if (result.status === 'failed') {
+        setNotice('error');
+        return;
+      }
+      setNotice(result.status === 'ok-with-drive-leftover' ? 'leftover' : 'disconnected');
+      await refresh();
+    },
+    onError: () => setNotice('error'),
+  });
+
+  if (query.isPending) {
+    return (
+      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.connections.drive.title')}
+        </h3>
+        <Skeleton height="h-6" />
+      </section>
+    );
+  }
+  if (query.isError) {
+    return (
+      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.connections.drive.title')}
+        </h3>
+        <EmptyState
+          title={t('settings.connections.drive.loadError')}
+          description={t('settings.retryHint')}
+        />
+      </section>
+    );
+  }
+  if (query.data.privacyMode !== 'paranoid' || query.data.mediaState === null) return null;
+
+  const media = query.data.mediaState;
+  const configured = driveConnectionConfigured();
+  const state = configured ? driveConnectionState(media) : 'unavailable';
+  const driveSelected = media.mediaSet.includes('drive');
+  const canDisconnect = driveSelected && media.mediaSet.length > 1;
+  const busy = connect.isPending || disconnect.isPending;
+  const statusKey = `settings.connections.drive.status.${state}`;
+
+  return (
+    <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <h3 className="text-sm font-semibold text-neutral-100">
+            {t('settings.connections.drive.title')}
+          </h3>
+          <p className="text-xs text-neutral-500">{t('settings.connections.drive.description')}</p>
+        </div>
+        <span className="rounded-full bg-neutral-800 px-2 py-1 text-xs font-medium text-neutral-300">
+          {t(statusKey)}
+        </span>
+      </div>
+
+      {notice ? (
+        <Alert tone={notice === 'error' || notice === 'leftover' ? 'error' : 'success'}>
+          {t(`settings.connections.drive.notice.${notice}`)}
+        </Alert>
+      ) : null}
+
+      {!configured ? (
+        <p className="text-xs text-amber-300">{t('settings.connections.drive.unconfigured')}</p>
+      ) : null}
+      {driveSelected && state === 'needs-sign-in' ? (
+        <p className="text-xs text-amber-300">{t('vault.sync.signInToGoogle')}</p>
+      ) : null}
+      {driveSelected && !canDisconnect ? (
+        <p className="text-xs text-neutral-500">{t('settings.connections.drive.lastMedium')}</p>
+      ) : null}
+
+      <div className="flex flex-wrap gap-2">
+        {configured && (!driveSelected || state === 'needs-sign-in') ? (
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() => {
+              setNotice(null);
+              connect.mutate();
+            }}
+          >
+            {t(
+              driveSelected
+                ? 'settings.connections.drive.signIn'
+                : 'settings.connections.drive.connect',
+            )}
+          </Button>
+        ) : null}
+        {configured && canDisconnect ? (
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() => {
+              setNotice(null);
+              disconnect.mutate();
+            }}
+          >
+            {t('settings.connections.drive.disconnect')}
+          </Button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 /**
  * The v6 connectors, as designed-but-inert slots (V5-P0c). Each names itself,
  * says what it does in one line, states its sync semantics (a one-time import
@@ -226,7 +381,6 @@ function GoogleSection() {
  * collapsed `<details>` so the live Google identity stays the visible thing.
  */
 const CONNECTOR_SLOTS = [
-  { key: 'drive', sync: 'stayConnected' },
   { key: 'bankCash', sync: 'stayConnected' },
   { key: 'parqet', sync: 'oneTime' },
 ] as const;
@@ -307,6 +461,8 @@ export function ConnectionsPage() {
       </div>
 
       <GoogleSection />
+
+      <GoogleDriveSection />
 
       <ConnectorSlots />
     </div>

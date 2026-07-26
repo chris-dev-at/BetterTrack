@@ -482,6 +482,15 @@
     "label": "Display language",
     "saveError": "Couldn't save your language. Please try again."
   },
+  "vault": {
+    "sync": {
+      "synced": "Synced",
+      "syncing": "Syncing",
+      "offline": "Offline",
+      "signInToGoogle": "Sign in to Google to sync",
+      "needsAttention": "Sync needs attention"
+    }
+  },
   "settings": {
     "saveError": "Couldn't save that change. Please try again.",
     "retryHint": "Please try again in a moment.",
@@ -498,10 +507,33 @@
     },
     "connections": {
       "title": "Connections",
-      "subtitle": "Everything linking BetterTrack to the outside — your Google sign-in, and the connectors coming soon.",
+      "subtitle": "Everything linking BetterTrack to the outside — your Google sign-in, encrypted Drive storage, and upcoming connectors.",
       "comingSoon": "Coming soon",
       "slotsTitle": "Connectors",
       "slotsSubtitle": "Sync your data with outside services. These are on the way — nothing to set up yet.",
+      "drive": {
+        "title": "Google Drive app data",
+        "description": "Keep your encrypted vault in Drive's hidden app-data folder. BetterTrack cannot access your ordinary Drive files.",
+        "loadError": "Couldn't load your Drive storage status",
+        "connect": "Connect Drive",
+        "signIn": "Sign in to Google",
+        "disconnect": "Disconnect Drive",
+        "lastMedium": "Drive is your only vault location. Add server storage before disconnecting it.",
+        "unconfigured": "Google Drive storage isn't configured on this deployment.",
+        "status": {
+          "disconnected": "Disconnected",
+          "connected": "Connected",
+          "needs-sign-in": "Needs sign-in",
+          "offline": "Offline",
+          "unavailable": "Unavailable"
+        },
+        "notice": {
+          "connected": "Google Drive storage connected.",
+          "disconnected": "Google Drive storage disconnected.",
+          "leftover": "Storage switched safely, but the encrypted Drive file couldn't be deleted. It remains in your own Drive.",
+          "error": "Google Drive storage couldn't be changed. Your existing vault location remains active."
+        }
+      },
       "sync": {
         "oneTime": "One-time import — runs once when you connect.",
         "stayConnected": "Stays connected — syncs automatically."

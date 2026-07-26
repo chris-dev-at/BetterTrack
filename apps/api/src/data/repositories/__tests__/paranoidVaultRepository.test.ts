@@ -1,6 +1,8 @@
+import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Database } from '../../db';
+import { users } from '../../schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import {
   createParanoidVaultRepository,
@@ -261,5 +263,133 @@ describe('paranoid vault repository CAS', () => {
     });
     const history = await repo.listHistory(userId);
     expect(history.items.map((h) => h.version)).toEqual([2]);
+  });
+});
+
+describe('paranoid vault repository media transaction', () => {
+  async function makeParanoid(): Promise<void> {
+    await db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(users.id, userId));
+  }
+
+  async function seedCurrentWithHistory(): Promise<void> {
+    await repo.compareAndSwap({
+      userId,
+      expectedVersion: null,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 2,
+      blob: blob('v1'),
+      retention: RETENTION,
+      now: T0,
+    });
+    await repo.compareAndSwap({
+      userId,
+      expectedVersion: 1,
+      version: 2,
+      formatVersion: 1,
+      sizeBytes: 2,
+      blob: blob('v2'),
+      retention: RETENTION,
+      now: T0,
+    });
+  }
+
+  it('commits server → both → Drive-only with zero current/history ciphertext bytes', async () => {
+    await makeParanoid();
+    await seedCurrentWithHistory();
+
+    const added = await repo.patchMedia({
+      userId,
+      expected: { mediaSet: ['server'], driveAttestedVersion: null },
+      nextMediaSet: ['server', 'drive'],
+      verification: { medium: 'drive', version: 2 },
+      now: new Date('2026-07-26T10:00:00.000Z'),
+    });
+    expect(added).toEqual({
+      status: 'ok',
+      state: { mediaSet: ['server', 'drive'], driveAttestedVersion: 2 },
+      idempotent: false,
+    });
+    expect((await repo.getCurrent(userId))?.version).toBe(2);
+    expect((await repo.listHistory(userId)).items.map((row) => row.version)).toEqual([1]);
+
+    const driveOnly = await repo.patchMedia({
+      userId,
+      expected: { mediaSet: ['server', 'drive'], driveAttestedVersion: 2 },
+      nextMediaSet: ['drive'],
+      verification: { medium: 'drive', version: 2 },
+      now: new Date('2026-07-26T10:01:00.000Z'),
+    });
+    expect(driveOnly).toEqual({
+      status: 'ok',
+      state: { mediaSet: ['drive'], driveAttestedVersion: 2 },
+      idempotent: false,
+    });
+    expect(await repo.getCurrent(userId)).toBeNull();
+    expect((await repo.listHistory(userId)).items).toEqual([]);
+    expect(await repo.getMediaState(userId)).toEqual({
+      privacyMode: 'paranoid',
+      mediaState: { mediaSet: ['drive'], driveAttestedVersion: 2 },
+    });
+  });
+
+  it('fails closed on normal mode, stale state, fabricated verification, and an empty target', async () => {
+    expect(
+      await repo.patchMedia({
+        userId,
+        expected: { mediaSet: ['server'], driveAttestedVersion: null },
+        nextMediaSet: ['server', 'drive'],
+        verification: { medium: 'drive', version: 1 },
+        now: T0,
+      }),
+    ).toEqual({ status: 'mode_required' });
+
+    await makeParanoid();
+    await seedCurrentWithHistory();
+    expect(
+      await repo.patchMedia({
+        userId,
+        expected: { mediaSet: ['server', 'drive'], driveAttestedVersion: 2 },
+        nextMediaSet: ['drive'],
+        verification: { medium: 'drive', version: 2 },
+        now: T0,
+      }),
+    ).toMatchObject({ status: 'state_conflict' });
+    expect(
+      await repo.patchMedia({
+        userId,
+        expected: { mediaSet: ['server'], driveAttestedVersion: null },
+        nextMediaSet: ['server', 'drive'],
+        verification: { medium: 'server', version: 2 },
+        now: T0,
+      }),
+    ).toMatchObject({ status: 'verification_failed' });
+    expect(
+      await repo.patchMedia({
+        userId,
+        expected: { mediaSet: ['server'], driveAttestedVersion: null },
+        nextMediaSet: ['server', 'drive'],
+        verification: { medium: 'drive', version: 99 },
+        now: T0,
+      }),
+    ).toMatchObject({ status: 'verification_failed' });
+    expect(
+      await repo.patchMedia({
+        userId,
+        expected: { mediaSet: ['server'], driveAttestedVersion: null },
+        nextMediaSet: [],
+        verification: { medium: 'server', version: 2 },
+        now: T0,
+      }),
+    ).toMatchObject({ status: 'verification_failed' });
+    expect((await repo.getCurrent(userId))?.blob.equals(blob('v2'))).toBe(true);
+    expect((await repo.listHistory(userId)).items).toHaveLength(1);
   });
 });

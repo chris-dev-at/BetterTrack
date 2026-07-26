@@ -1,6 +1,12 @@
 import { and, desc, eq, lt, lte } from 'drizzle-orm';
 
-import { VAULT_HISTORY_PAGE_DEFAULT, VAULT_HISTORY_PAGE_MAX } from '@bettertrack/contracts';
+import {
+  VAULT_HISTORY_PAGE_DEFAULT,
+  VAULT_HISTORY_PAGE_MAX,
+  type PatchParanoidMediaRequest,
+  type VaultMediaState,
+  type VaultMedium,
+} from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import {
@@ -151,14 +157,33 @@ export interface ParanoidVaultHistoryPage {
   nextCursor: number | null;
 }
 
+export interface ParanoidMediaAccountState {
+  privacyMode: 'normal' | 'paranoid';
+  mediaState: VaultMediaState | null;
+}
+
+export type ParanoidMediaPatchResult =
+  | { status: 'ok'; state: VaultMediaState; idempotent: boolean }
+  | { status: 'not_found' }
+  | { status: 'mode_required' }
+  | { status: 'state_conflict'; current: VaultMediaState }
+  | { status: 'verification_failed'; current: VaultMediaState };
+
+export interface ParanoidMediaPatchInput extends PatchParanoidMediaRequest {
+  userId: string;
+  now: Date;
+}
+
 export interface ParanoidVaultRepository {
   getCurrent(userId: string): Promise<ParanoidVaultRow | null>;
+  getMediaState(userId: string): Promise<ParanoidMediaAccountState | null>;
   listHistory(
     userId: string,
     input?: ParanoidVaultHistoryListInput,
   ): Promise<ParanoidVaultHistoryPage>;
   getHistory(userId: string, version: number): Promise<ParanoidVaultHistoryRow | null>;
   compareAndSwap(input: ParanoidVaultCasInput): Promise<ParanoidVaultCasResult>;
+  patchMedia(input: ParanoidMediaPatchInput): Promise<ParanoidMediaPatchResult>;
 }
 
 function historyPageSize(requested: number | undefined): number {
@@ -172,6 +197,18 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
     async getCurrent(userId) {
       const [row] = await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, userId));
       return row ?? null;
+    },
+
+    async getMediaState(userId) {
+      const [row] = await db
+        .select({
+          privacyMode: users.privacyMode,
+          mediaSet: users.paranoidMediaSet,
+          driveAttestedVersion: users.paranoidDriveAttestedVersion,
+        })
+        .from(users)
+        .where(eq(users.id, userId));
+      return row ? accountMediaState(row) : null;
     },
 
     async listHistory(userId, input = {}) {
@@ -307,5 +344,140 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
         return { status: 'ok', version: row!.version, updatedAt: row!.updatedAt };
       });
     },
+
+    async patchMedia(input) {
+      return db.transaction(async (tx) => {
+        const [user] = await tx
+          .select({
+            privacyMode: users.privacyMode,
+            mediaSet: users.paranoidMediaSet,
+            driveAttestedVersion: users.paranoidDriveAttestedVersion,
+          })
+          .from(users)
+          .where(eq(users.id, input.userId))
+          .for('update');
+        if (!user) return { status: 'not_found' } as const;
+        const account = accountMediaState(user);
+        if (account.privacyMode !== 'paranoid' || account.mediaState === null) {
+          return { status: 'mode_required' } as const;
+        }
+        const current = account.mediaState;
+
+        // A retried request whose first response was lost is harmless: once the
+        // exact target is durable, report it without performing another purge.
+        if (sameMediaSet(current.mediaSet, input.nextMediaSet)) {
+          return { status: 'ok', state: current, idempotent: true } as const;
+        }
+        if (!sameMediaState(current, input.expected)) {
+          return { status: 'state_conflict', current } as const;
+        }
+
+        const transition = oneMediumTransition(current.mediaSet, input.nextMediaSet);
+        if (transition === null || transition.verifiedMedium !== input.verification.medium) {
+          return { status: 'verification_failed', current } as const;
+        }
+
+        // Lock the blind server head alongside the account row. Every legal
+        // transition has a server copy at verification time: it is the source
+        // when adding/removing Drive, or the just-round-tripped target when
+        // adding/removing server. This is the authoritative anti-stale check.
+        const [serverHead] = await tx
+          .select({ version: paranoidVaults.version })
+          .from(paranoidVaults)
+          .where(eq(paranoidVaults.userId, input.userId))
+          .for('update');
+        if (!serverHead || serverHead.version !== input.verification.version) {
+          return { status: 'verification_failed', current } as const;
+        }
+        if (
+          current.mediaSet.includes('drive') &&
+          current.driveAttestedVersion !== input.verification.version
+        ) {
+          return { status: 'verification_failed', current } as const;
+        }
+
+        const next: VaultMediaState = {
+          mediaSet: canonicalMediaSet(input.nextMediaSet),
+          driveAttestedVersion: input.nextMediaSet.includes('drive')
+            ? input.verification.version
+            : null,
+        };
+
+        // Removing the server medium is the exact Drive-only boundary. Current
+        // and retained ciphertext are deleted in this same transaction as the
+        // durable media update, so any SQL failure rolls the entire switch back.
+        if (transition.removed === 'server') {
+          await tx
+            .delete(paranoidVaultHistory)
+            .where(eq(paranoidVaultHistory.userId, input.userId));
+          await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, input.userId));
+        }
+        await tx
+          .update(users)
+          .set({
+            paranoidMediaSet: next.mediaSet,
+            paranoidDriveAttestedVersion: next.driveAttestedVersion,
+            updatedAt: input.now,
+          })
+          .where(eq(users.id, input.userId));
+
+        return { status: 'ok', state: next, idempotent: false } as const;
+      });
+    },
+  };
+}
+
+function accountMediaState(row: {
+  privacyMode: 'normal' | 'paranoid';
+  mediaSet: string[] | null;
+  driveAttestedVersion: number | null;
+}): ParanoidMediaAccountState {
+  if (row.privacyMode === 'normal') return { privacyMode: 'normal', mediaState: null };
+  const mediaSet = canonicalMediaSet(
+    (row.mediaSet ?? []).filter((medium): medium is VaultMedium =>
+      (['server', 'drive'] as const).includes(medium as VaultMedium),
+    ),
+  );
+  return {
+    privacyMode: 'paranoid',
+    mediaState: {
+      mediaSet,
+      driveAttestedVersion: row.driveAttestedVersion,
+    },
+  };
+}
+
+function canonicalMediaSet(mediaSet: readonly VaultMedium[]): VaultMediaState['mediaSet'] {
+  return (['server', 'drive'] as const).filter((medium) => mediaSet.includes(medium));
+}
+
+function sameMediaSet(left: readonly VaultMedium[], right: readonly VaultMedium[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((medium) => right.includes(medium)) &&
+    right.every((medium) => left.includes(medium))
+  );
+}
+
+function sameMediaState(left: VaultMediaState, right: VaultMediaState): boolean {
+  return (
+    sameMediaSet(left.mediaSet, right.mediaSet) &&
+    left.driveAttestedVersion === right.driveAttestedVersion
+  );
+}
+
+function oneMediumTransition(
+  current: readonly VaultMedium[],
+  next: readonly VaultMedium[],
+): { added: VaultMedium | null; removed: VaultMedium | null; verifiedMedium: VaultMedium } | null {
+  const added = next.filter((medium) => !current.includes(medium));
+  const removed = current.filter((medium) => !next.includes(medium));
+  if (added.length + removed.length !== 1) return null;
+  const verifiedMedium = added[0] ?? next[0];
+  if (verifiedMedium === undefined) return null;
+  return {
+    added: added[0] ?? null,
+    removed: removed[0] ?? null,
+    verifiedMedium,
   };
 }

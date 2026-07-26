@@ -369,3 +369,121 @@ describe('vault blob store', () => {
     expect(over.headers['retry-after']).toBeDefined();
   });
 });
+
+describe('paranoid media endpoint', () => {
+  it('returns portfolio-free state and rejects normal-mode or empty-set PATCHes', async () => {
+    const normal = await seedAndLogin('normal-media@bt.test', 'normal-media');
+    expect((await normal.get('/api/v1/account/paranoid/media')).body).toEqual({
+      privacyMode: 'normal',
+      mediaState: null,
+    });
+    const normalPatch = await normal
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expected: { mediaSet: ['server'], driveAttestedVersion: null },
+        nextMediaSet: ['server', 'drive'],
+        verification: { medium: 'drive', version: 1 },
+      });
+    expect(normalPatch.status).toBe(403);
+    expect(normalPatch.body.error.code).toBe('VAULT_PARANOID_MODE_REQUIRED');
+
+    const paranoid = await seedAndLogin('empty-media@bt.test', 'empty-media', 'paranoid');
+    const empty = await paranoid
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expected: { mediaSet: ['server'], driveAttestedVersion: null },
+        nextMediaSet: [],
+        verification: { medium: 'server', version: 1 },
+      });
+    expect(empty.status).toBe(400);
+    expect(empty.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('atomically reaches Drive-only and leaves zero current/history server bytes', async () => {
+    const agent = await seedAndLogin('drive-only@bt.test', 'drive-only', 'paranoid');
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(envelope(1, new Uint8Array([1])));
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(envelope(2, new Uint8Array([2])));
+
+    const add = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expected: { mediaSet: ['server'], driveAttestedVersion: null },
+        nextMediaSet: ['server', 'drive'],
+        verification: { medium: 'drive', version: 2 },
+      });
+    expect(add.status).toBe(200);
+    expect(add.body).toEqual({
+      mediaSet: ['server', 'drive'],
+      driveAttestedVersion: 2,
+    });
+
+    const remove = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expected: { mediaSet: ['server', 'drive'], driveAttestedVersion: 2 },
+        nextMediaSet: ['drive'],
+        verification: { medium: 'drive', version: 2 },
+      });
+    expect(remove.status).toBe(200);
+    expect(remove.body).toEqual({ mediaSet: ['drive'], driveAttestedVersion: 2 });
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+    expect((await agent.get('/api/v1/vault/history')).body).toEqual({
+      items: [],
+      nextCursor: null,
+    });
+    expect((await agent.get('/api/v1/account/paranoid/media')).body).toEqual({
+      privacyMode: 'paranoid',
+      mediaState: { mediaSet: ['drive'], driveAttestedVersion: 2 },
+    });
+  });
+
+  it('rejects stale or fabricated verification without deleting ciphertext', async () => {
+    const agent = await seedAndLogin('stale-media@bt.test', 'stale-media', 'paranoid');
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(envelope(1, new Uint8Array([1])));
+
+    const fabricated = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expected: { mediaSet: ['server'], driveAttestedVersion: null },
+        nextMediaSet: ['server', 'drive'],
+        verification: { medium: 'server', version: 1 },
+      });
+    expect(fabricated.status).toBe(412);
+    expect(fabricated.body.error.code).toBe('VAULT_MEDIA_VERIFICATION_FAILED');
+
+    const stale = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expected: { mediaSet: ['server'], driveAttestedVersion: null },
+        nextMediaSet: ['server', 'drive'],
+        verification: { medium: 'drive', version: 99 },
+      });
+    expect(stale.status).toBe(412);
+    expect((await agent.get('/api/v1/vault')).status).toBe(200);
+    expect((await agent.get('/api/v1/account/paranoid/media')).body.mediaState).toEqual({
+      mediaSet: ['server'],
+      driveAttestedVersion: null,
+    });
+  });
+});
