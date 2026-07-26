@@ -11,6 +11,7 @@ import {
   updateTaxSettingsRequestSchema,
 } from '@bettertrack/contracts';
 import { CASH_MOVEMENT_SIGN } from '@bettertrack/domain/cashLedger';
+import { OversellError, QTY_EPSILON, reducePosition } from '@bettertrack/domain/holdings';
 import { viennaYearOf } from '@bettertrack/domain/tax';
 
 import type { Database } from '../../data/db';
@@ -112,13 +113,114 @@ interface ExactDecimal {
 }
 
 const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
+const NUMBER_DECIMAL_PATTERN = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i;
 const pow10 = (scale: number): bigint => 10n ** BigInt(scale);
+
 /**
- * Normal batch validation runs against the unrounded client quantities with a
- * 1e-9 epsilon, then PostgreSQL rounds each row independently to scale 8. Two
- * epsilon-valid inputs can therefore persist one scale-8 quantum apart.
+ * Repository writes serialize public `number` inputs with `String(value)` and
+ * PostgreSQL then rounds that decimal to the column scale. Reproduce the same
+ * conversion without multiplying a binary float at numeric(20,8) magnitudes.
  */
-const PERSISTED_QUANTITY_ROUNDING_TOLERANCE = 1n;
+function persistedNumber(value: number, scale: number, label: string): bigint {
+  if (!Number.isFinite(value)) {
+    throw new Error(`${label} has no finite normal-write number`);
+  }
+  const negative = value < 0;
+  const match = NUMBER_DECIMAL_PATTERN.exec(String(Math.abs(value)));
+  if (!match) {
+    throw new Error(`${label} has no normal-write decimal representation`);
+  }
+  const fraction = match[2] ?? '';
+  const exponent = Number(match[3] ?? 0);
+  let coefficient = BigInt(`${match[1]}${fraction}`);
+  let decimalScale = fraction.length - exponent;
+  if (decimalScale < 0) {
+    coefficient *= pow10(-decimalScale);
+    decimalScale = 0;
+  }
+  if (decimalScale <= scale) {
+    coefficient *= pow10(scale - decimalScale);
+  } else {
+    const divisor = pow10(decimalScale - scale);
+    const quotient = coefficient / divisor;
+    const remainder = coefficient % divisor;
+    coefficient = quotient + (remainder * 2n >= divisor ? 1n : 0n);
+  }
+  return negative ? -coefficient : coefficient;
+}
+
+function fixedScaleDecimal(value: bigint, scale: number): string {
+  const negative = value < 0n;
+  const digits = (negative ? -value : value).toString().padStart(scale + 1, '0');
+  const whole = scale === 0 ? digits : digits.slice(0, -scale);
+  const fraction = scale === 0 ? '' : `.${digits.slice(-scale)}`;
+  return `${negative ? '-' : ''}${whole}${fraction}`;
+}
+
+const FLOAT64_BYTES = new ArrayBuffer(8);
+const FLOAT64_VIEW = new DataView(FLOAT64_BYTES);
+
+function positiveFloatBits(value: number): bigint {
+  FLOAT64_VIEW.setFloat64(0, value);
+  return FLOAT64_VIEW.getBigUint64(0);
+}
+
+function positiveFloatFromBits(bits: bigint): number {
+  FLOAT64_VIEW.setBigUint64(0, bits);
+  return FLOAT64_VIEW.getFloat64(0);
+}
+
+// numeric(20,8) admits at most twelve integer digits. This first overflowing
+// public value is a finite upper sentinel for both binary searches below.
+const QUANTITY_FLOAT_SEARCH_MAX = positiveFloatBits(1_000_000_000_000);
+
+function firstQuantityFloatBits(predicate: (persisted: bigint) => boolean, label: string): bigint {
+  let low = 1n;
+  let high = QUANTITY_FLOAT_SEARCH_MAX;
+  while (low < high) {
+    const middle = (low + high) / 2n;
+    const persisted = persistedNumber(positiveFloatFromBits(middle), 8, label);
+    if (predicate(persisted)) high = middle;
+    else low = middle + 1n;
+  }
+  return low;
+}
+
+/**
+ * Return the outermost JavaScript numbers whose repository serialization lands
+ * on one persisted numeric(20,8) quantity. The mapping is monotonic, so an
+ * exact binary search covers both sub-quantum rounding and coarse ULPs around
+ * 1e12. Byte-exact legacy/internal rows without a public-number preimage retain
+ * the Number readback semantics used by every normal repository replay.
+ */
+function quantityNumberPreimages(
+  persistedQuantity: bigint,
+  label: string,
+): { lower: number; upper: number } {
+  const lowerBits = firstQuantityFloatBits((persisted) => persisted >= persistedQuantity, label);
+  const lower = positiveFloatFromBits(lowerBits);
+  if (persistedNumber(lower, 8, label) !== persistedQuantity) {
+    // Older/internal repository paths can contain a byte-exact scale-8 decimal
+    // that no JavaScript number serializes back to at this magnitude. Normal
+    // readers still replay it through Number, so retain that established
+    // persisted semantic while using exact public preimages whenever they exist.
+    const readback = Number(fixedScaleDecimal(persistedQuantity, 8));
+    return { lower: readback, upper: readback };
+  }
+
+  const firstGreaterBits = firstQuantityFloatBits(
+    (persisted) => persisted > persistedQuantity,
+    label,
+  );
+  const upper = positiveFloatFromBits(firstGreaterBits - 1n);
+  if (persistedNumber(upper, 8, label) !== persistedQuantity) {
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      `${label} has no normal-write number preimage`,
+    );
+  }
+  return { lower, upper };
+}
 
 function exactDecimal(value: string, label: string): ExactDecimal {
   const match = DECIMAL_PATTERN.exec(value);
@@ -547,7 +649,7 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
  * as one clean failure and makes the no-write guarantee directly testable.
  */
 interface ValidatedGraph {
-  /** Sells whose apparent oversell is exactly one scale-8 storage quantum. */
+  /** Apparent persisted oversells proven reachable under normal Number + storage semantics. */
   storageRoundingSellIds: ReadonlySet<string>;
 }
 
@@ -1191,27 +1293,80 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
         (a, b) =>
           Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
       );
-      let held = 0n;
+      const preimagesByQuantity = new Map<bigint, { lower: number; upper: number }>();
+      const normalWriteTransactions = orderedTransactions.map((transaction) => {
+        const quantity = persistedNumeric(
+          transaction.data.quantity,
+          20,
+          8,
+          `transaction[${transaction.id}].quantity=${JSON.stringify(transaction.data.quantity)}`,
+        );
+        let preimages = preimagesByQuantity.get(quantity);
+        if (!preimages) {
+          preimages = quantityNumberPreimages(
+            quantity,
+            `transaction[${transaction.id}].quantity=${JSON.stringify(transaction.data.quantity)}`,
+          );
+          preimagesByQuantity.set(quantity, preimages);
+        }
+        return {
+          transaction,
+          domain: {
+            assetId: transaction.data.assetId,
+            side: transaction.data.side,
+            // Maximizing buys and minimizing sells proves whether any public
+            // number preimage of the persisted sequence can pass normal
+            // admission. IEEE-754 arithmetic is monotonic for these finite,
+            // positive operands, and reducePosition supplies the exact reducer.
+            quantity: transaction.data.side === 'buy' ? preimages.upper : preimages.lower,
+            price: 0,
+            fee: 0,
+            executedAt: transaction.data.executedAt,
+            allowUncovered: transaction.data.allowUncovered,
+          },
+        };
+      });
+
+      try {
+        reducePosition(normalWriteTransactions.map(({ domain }) => domain));
+      } catch (error) {
+        if (error instanceof OversellError) {
+          let held = 0;
+          const rejected = normalWriteTransactions.find(({ domain }) => {
+            if (domain.side === 'buy') {
+              held += domain.quantity;
+              return false;
+            }
+            if (domain.quantity > held + QTY_EPSILON) {
+              if (!domain.allowUncovered) return true;
+              held = 0;
+              return false;
+            }
+            held -= domain.quantity;
+            if (Math.abs(held) <= QTY_EPSILON) held = 0;
+            return false;
+          });
+          const field = rejected
+            ? `transaction[${rejected.transaction.id}].quantity=${JSON.stringify(
+                rejected.transaction.data.quantity,
+              )}`
+            : 'transaction quantity';
+          throw new Error(`${field} would oversell its position`);
+        }
+        throw error;
+      }
+
+      let persistedHeld = 0n;
       for (const transaction of orderedTransactions) {
         const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
         if (transaction.data.side === 'buy') {
-          held += quantity;
+          persistedHeld += quantity;
         } else {
-          const shortfall = quantity - held;
-          if (
-            shortfall > 0n &&
-            shortfall <= PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
-            !transaction.data.allowUncovered
-          ) {
+          const persistedShortfall = quantity - persistedHeld;
+          if (persistedShortfall > 0n && !transaction.data.allowUncovered) {
             storageRoundingSellIds.add(transaction.id);
           }
-          if (
-            shortfall > PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
-            !transaction.data.allowUncovered
-          ) {
-            throw new Error('transaction would oversell its position');
-          }
-          held = shortfall > 0n ? 0n : held - quantity;
+          persistedHeld = persistedShortfall > 0n ? 0n : -persistedShortfall;
         }
       }
     }
