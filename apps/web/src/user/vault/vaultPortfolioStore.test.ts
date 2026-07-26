@@ -678,6 +678,182 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(engine.state.active?.document.entities.transaction).toHaveLength(1);
   });
 
+  it.each([
+    ['none', 'country_specific'],
+    ['legacy null', 'country_specific'],
+    ['none', 'custom'],
+    ['legacy null', 'custom'],
+  ] as const)(
+    'rejects an open-year sell frozen as %s after switching to %s across every transaction mutation',
+    async (frozenLabel, effectiveMode) => {
+      const buyId = GENERATED_IDS[0];
+      const sellId = GENERATED_IDS[1];
+      const document = initialDocument();
+      document.entities.transaction = [
+        vaultEntity(buyId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 2,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-25T08:00:00.000Z',
+          note: null,
+          source: 'manual',
+        }),
+        vaultEntity(sellId, {
+          portfolioId: PORTFOLIO_ID,
+          assetId: ASSET_ID,
+          side: 'sell',
+          quantity: 1,
+          price: 12,
+          fee: 0,
+          executedAt: '2026-07-25T09:00:00.000Z',
+          note: null,
+          taxMode: frozenLabel === 'none' ? 'none' : null,
+          source: 'manual',
+        }),
+      ];
+      if (effectiveMode === 'country_specific') {
+        document.entities.taxSetting = [
+          vaultEntity(GENERATED_IDS[2], {
+            userId: GENERATED_IDS[3],
+            mode: 'country_specific',
+            country: 'DE',
+            manualDefaultAmountEur: null,
+            manualDefaultRatePct: null,
+            customParams: null,
+            updatedAt: AT,
+          }),
+        ];
+      } else {
+        document.entities.portfolioSetting = [
+          vaultEntity(GENERATED_IDS[2], {
+            portfolioId: PORTFOLIO_ID,
+            key: 'tax',
+            value: {
+              mode: 'custom',
+              custom: {
+                ratePct: 25,
+                lossOffset: true,
+                refund: true,
+                yearReset: true,
+                carryForward: false,
+                costBasis: 'fifo',
+              },
+            },
+            updatedAt: AT,
+          }),
+        ];
+      }
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, {
+        now: () => AT,
+        newId: () => GENERATED_IDS[4],
+      });
+      const unavailable = { code: 'VAULT_OPERATION_UNAVAILABLE' };
+
+      await expect(
+        store.createTransactions(PORTFOLIO_ID, [
+          {
+            assetId: ASSET_ID,
+            side: 'buy',
+            quantity: 1,
+            price: 9,
+            fee: 0,
+            executedAt: '2026-07-25T07:00:00.000Z',
+          },
+        ]),
+      ).rejects.toMatchObject(unavailable);
+      await expect(
+        store.updateTransaction(PORTFOLIO_ID, buyId, { price: 11 }),
+      ).rejects.toMatchObject(unavailable);
+      await expect(store.deleteTransaction(PORTFOLIO_ID, sellId)).rejects.toMatchObject(
+        unavailable,
+      );
+
+      expect(engine.mutate).not.toHaveBeenCalled();
+      expect(engine.state.active?.header.vaultVersion).toBe(1);
+      expect(engine.state.active?.document.entities.transaction).toEqual(
+        document.entities.transaction,
+      );
+    },
+  );
+
+  it('keeps closed pre-engine rows available after switching to an engine tax mode', async () => {
+    const buyId = GENERATED_IDS[0];
+    const sellId = GENERATED_IDS[1];
+    const document = initialDocument();
+    document.entities.transaction = [
+      vaultEntity(buyId, {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 2,
+        price: 10,
+        fee: 0,
+        executedAt: '2025-07-25T08:00:00.000Z',
+        note: null,
+        source: 'manual',
+      }),
+      vaultEntity(sellId, {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'sell',
+        quantity: 1,
+        price: 12,
+        fee: 0,
+        executedAt: '2025-07-25T09:00:00.000Z',
+        note: null,
+        taxMode: null,
+        source: 'manual',
+      }),
+    ];
+    document.entities.portfolioSetting = [
+      vaultEntity(GENERATED_IDS[2], {
+        portfolioId: PORTFOLIO_ID,
+        key: 'tax',
+        value: {
+          mode: 'custom',
+          custom: {
+            ratePct: 25,
+            lossOffset: true,
+            refund: true,
+            yearReset: true,
+            carryForward: false,
+            costBasis: 'fifo',
+          },
+        },
+        updatedAt: AT,
+      }),
+    ];
+    const engine = createMutableEngine(document);
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: () => GENERATED_IDS[3],
+    });
+
+    await expect(
+      store.createTransactions(PORTFOLIO_ID, [
+        {
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 1,
+          price: 9,
+          fee: 0,
+          executedAt: '2025-07-25T07:00:00.000Z',
+        },
+      ]),
+    ).resolves.toHaveLength(1);
+    await expect(
+      store.updateTransaction(PORTFOLIO_ID, buyId, { price: 11 }),
+    ).resolves.toMatchObject({ id: buyId, price: 11 });
+    await expect(store.deleteTransaction(PORTFOLIO_ID, sellId)).resolves.toBeUndefined();
+
+    expect(engine.mutate).toHaveBeenCalledTimes(3);
+    expectPortfolioApiUnused();
+  });
+
   it('rejects frozen-tax reshapes before CAS even after settings change', async () => {
     const buyId = GENERATED_IDS[0];
     const sellId = GENERATED_IDS[1];
