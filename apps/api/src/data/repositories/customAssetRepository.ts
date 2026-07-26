@@ -2,7 +2,7 @@ import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { newId } from '../ids';
-import { assets, priceHistory } from '../schema';
+import { alerts, assets, conglomeratePositions, priceHistory, workboardItems } from '../schema';
 import type { AssetRow } from '../schema';
 
 /**
@@ -142,19 +142,27 @@ export function createCustomAssetRepository(db: Database) {
       return rows[0] ?? null;
     },
 
-    /** Delete a custom asset scoped to its owner. Cascades to value points + txns. */
+    /**
+     * Delete a custom asset scoped to its owner. The three kept paranoid
+     * reference tables intentionally have no asset FK, so normal deletion
+     * removes those references explicitly in the same transaction; value
+     * points and transactions still cascade from the asset row.
+     */
     async deleteForUser(userId: string, id: string): Promise<boolean> {
-      const rows = await db
-        .delete(assets)
-        .where(
-          and(
-            eq(assets.id, id),
-            eq(assets.ownerId, userId),
-            eq(assets.providerId, MANUAL_PROVIDER_ID),
-          ),
-        )
-        .returning({ id: assets.id });
-      return rows.length > 0;
+      return db.transaction(async (tx) => {
+        const owned = and(
+          eq(assets.id, id),
+          eq(assets.ownerId, userId),
+          eq(assets.providerId, MANUAL_PROVIDER_ID),
+        );
+        const [asset] = await tx.select({ id: assets.id }).from(assets).where(owned).for('update');
+        if (!asset) return false;
+        await tx.delete(workboardItems).where(eq(workboardItems.assetId, id));
+        await tx.delete(conglomeratePositions).where(eq(conglomeratePositions.assetId, id));
+        await tx.delete(alerts).where(eq(alerts.assetId, id));
+        await tx.delete(assets).where(owned);
+        return true;
+      });
     },
 
     /**

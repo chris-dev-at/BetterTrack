@@ -498,6 +498,13 @@
       "when": 1784490240290,
       "tag": "0070_paranoid_rehydration_seam",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1784490300290,
+      "tag": "0071_paranoid_transition_guards",
+      "breakpoints": true
     }
   ]
 }

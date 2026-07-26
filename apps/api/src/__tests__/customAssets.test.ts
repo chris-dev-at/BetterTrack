@@ -10,7 +10,14 @@ import {
   valuePointsResponseSchema,
 } from '@bettertrack/contracts';
 
-import { assets } from '../data/schema';
+import {
+  alerts,
+  assets,
+  conglomeratePositions,
+  conglomerates,
+  watchlists,
+  workboardItems,
+} from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -146,12 +153,51 @@ describe('PATCH/DELETE /api/v1/custom-assets/:id', () => {
       .set(...XRW)
       .send({ name: 'Boat', category: 'commodity', currency: 'EUR' });
     const id = created.body.asset.id;
+    const [watchlist] = await harness.db
+      .insert(watchlists)
+      .values({ userId: user.id, name: 'Tracked boats', sortOrder: 0 })
+      .returning();
+    const [conglomerate] = await harness.db
+      .insert(conglomerates)
+      .values({ ownerId: user.id, name: 'Boat basket', status: 'draft' })
+      .returning();
+    await Promise.all([
+      harness.db.insert(workboardItems).values({
+        userId: user.id,
+        watchlistId: watchlist!.id,
+        assetId: id,
+        sortOrder: 0,
+      }),
+      harness.db.insert(conglomeratePositions).values({
+        conglomerateId: conglomerate!.id,
+        assetId: id,
+        weightPct: '100',
+        sortOrder: 0,
+      }),
+      harness.db.insert(alerts).values({
+        userId: user.id,
+        assetId: id,
+        kind: 'price_above',
+        threshold: '1',
+        status: 'active',
+      }),
+    ]);
 
     const del = await agent.delete(`/api/v1/custom-assets/${id}`).set(...XRW);
     expect(del.status).toBe(204);
 
     const after = await agent.get(`/api/v1/custom-assets/${id}/value-points`);
     expect(after.status).toBe(404);
+    expect(
+      await harness.db.select().from(workboardItems).where(eq(workboardItems.assetId, id)),
+    ).toEqual([]);
+    expect(
+      await harness.db
+        .select()
+        .from(conglomeratePositions)
+        .where(eq(conglomeratePositions.assetId, id)),
+    ).toEqual([]);
+    expect(await harness.db.select().from(alerts).where(eq(alerts.assetId, id))).toEqual([]);
   });
 
   it('does not expose another user’s custom asset (IDOR)', async () => {

@@ -16,9 +16,10 @@ const config = loadConfig();
 const logger = createLogger(config);
 
 const { db, client } = createDatabase(config.databaseUrl);
+const { db: lockDb, client: lockClient } = createDatabase(config.databaseUrl);
 const redis = createRedis(config.redisUrl);
 
-const ctx = buildContext({ config, db, redis, logger });
+const ctx = buildContext({ config, db, lockDb, redis, logger });
 const app = createApp(ctx);
 
 // Notification delivery is owned by the WORKER's durable `notifications.dispatch`
@@ -79,6 +80,7 @@ async function shutdown(signal: string): Promise<void> {
     await ctx.marketData.settled();
     await ctx.events.close();
     await redis.quit();
+    await lockClient.end();
     await client.end();
     // Flush any buffered Sentry events before the process exits (§13.4 V4-P5a).
     await ctx.observability.close();

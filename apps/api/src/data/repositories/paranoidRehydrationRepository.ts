@@ -2,7 +2,6 @@ import type { VaultStrictDocumentV1 } from '@bettertrack/contracts';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { PARANOID_SEALED_ASSET_PROVIDER_ID } from '../paranoidAssets';
 
 import {
   assets,
@@ -50,7 +49,6 @@ export interface ParanoidRehydrationSourceRepository {
   findExistingCustomAssets(
     assetIds: readonly string[],
   ): Promise<readonly ParanoidRehydrationExistingCustomAsset[]>;
-  listSealedCustomAssetIds(userId: string): Promise<readonly string[]>;
   hasExistingRestorableRows(userId: string): Promise<boolean>;
   restoreCustomAssets(rows: readonly EntityOf<'customAsset'>[]): Promise<void>;
   restoreCustomAssetValues(rows: readonly EntityOf<'customAssetValue'>[]): Promise<void>;
@@ -112,20 +110,6 @@ export function createParanoidRehydrationSourceRepository(
       return found;
     },
 
-    async listSealedCustomAssetIds(userId) {
-      return (
-        await tx
-          .select({ id: assets.id })
-          .from(assets)
-          .where(
-            and(
-              eq(assets.ownerId, userId),
-              eq(assets.providerId, PARANOID_SEALED_ASSET_PROVIDER_ID),
-            ),
-          )
-      ).map((row) => row.id);
-    },
-
     async hasExistingRestorableRows(userId) {
       const present = await Promise.all([
         tx
@@ -168,7 +152,7 @@ export function createParanoidRehydrationSourceRepository(
         if (ownerId === null) {
           throw new Error(`custom asset ${entity.id} is missing its owner`);
         }
-        const restored = {
+        await tx.insert(assets).values({
           id: entity.id,
           ownerId,
           providerId: entity.data.providerId,
@@ -181,34 +165,7 @@ export function createParanoidRehydrationSourceRepository(
           meta: entity.data.meta,
           // `search_text` is GENERATED ALWAYS from symbol + name. PostgreSQL
           // reproduces the carried value; generated columns cannot be inserted.
-        };
-        const updated = await tx
-          .update(assets)
-          .set(restored)
-          .where(
-            and(
-              eq(assets.id, entity.id),
-              eq(assets.ownerId, ownerId),
-              eq(assets.providerId, PARANOID_SEALED_ASSET_PROVIDER_ID),
-            ),
-          )
-          .returning({ id: assets.id });
-        if (updated.length === 0) {
-          await tx.insert(assets).values({
-            id: entity.id,
-            ownerId,
-            providerId: entity.data.providerId,
-            providerRef: entity.data.providerRef,
-            type: entity.data.type,
-            symbol: entity.data.symbol,
-            name: entity.data.name,
-            exchange: entity.data.exchange,
-            currency: entity.data.currency,
-            meta: entity.data.meta,
-            // `search_text` is GENERATED ALWAYS from symbol + name. PostgreSQL
-            // reproduces the carried value; generated columns cannot be inserted.
-          });
-        }
+        });
       }
     },
 

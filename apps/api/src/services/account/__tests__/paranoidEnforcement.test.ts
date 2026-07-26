@@ -6,7 +6,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PARANOID_TRANSITION_ERROR_CODES } from '@bettertrack/contracts';
 
 import { createParanoidEnforcementRepository } from '../../../data/repositories/paranoidEnforcementRepository';
-import { portfolios, users } from '../../../data/schema';
+import {
+  conglomerates,
+  friendGroupMembers,
+  friendGroups,
+  friendships,
+  portfolios,
+  shareAudiences,
+  users,
+} from '../../../data/schema';
 import type { DomainEvent } from '../../../events';
 import {
   ALL_QUEUE_NAMES,
@@ -21,6 +29,7 @@ import {
   isParanoidKilledScope,
   isParanoidOwnedSubjectBlocked,
   isPortfolioContentWebhookEvent,
+  ParanoidModeError,
   paranoidClassificationsForRoute,
   paranoidCapabilityForRoute,
   PARANOID_JOB_POLICIES,
@@ -219,7 +228,18 @@ describe('paranoid kill registry', () => {
   it('classifies every queue and requires an executable binding for every killed job', async () => {
     expect(Object.keys(PARANOID_JOB_POLICIES).sort()).toEqual([...ALL_QUEUE_NAMES].sort());
 
-    const alwaysParanoid = { isParanoid: vi.fn(async () => true) };
+    const alwaysParanoid = {
+      isParanoid: vi.fn(async () => true),
+      runAllowed: vi.fn(
+        async (
+          _userId: string,
+          capability: ConstructorParameters<typeof ParanoidModeError>[0],
+          _action: () => Promise<unknown>,
+        ) => {
+          throw new ParanoidModeError(capability);
+        },
+      ),
+    };
     const handlers = new Map<string, ReturnType<typeof vi.fn>>();
     const definitions: JobDefinition[] = [];
     for (const [name, policy] of Object.entries(PARANOID_JOB_POLICIES)) {
@@ -235,14 +255,14 @@ describe('paranoid kill registry', () => {
         definitions.push(
           bindParanoidJob(definition, {
             mode: 'portfolio',
-            isBlockedPortfolio: async () => true,
+            runIfAllowed: async () => false,
           }),
         );
       } else if (policy.mode === 'event') {
         definitions.push(
           bindParanoidJob(definition, {
             mode: 'event',
-            isParanoid: alwaysParanoid.isParanoid,
+            runIfAllowed: async () => false,
           }),
         );
       } else if (policy.mode === 'perUser') {
@@ -437,5 +457,82 @@ describe('paranoid kill registry', () => {
     await expect(
       harness.ctx.workboard.renameWatchlist(user.id, watchlist.id, 'Still private'),
     ).resolves.toMatchObject({ name: 'Still private', audience: 'private' });
+  });
+
+  it('rejects group and all-friends targeting of paranoid accounts before any write', async () => {
+    const { user: paranoid } = await paranoidAccount();
+    const normal = await harness.seedUser({
+      email: 'social-owner@bettertrack.test',
+      username: 'social_owner',
+    });
+    const [userA, userB] = [normal.id, paranoid.id].sort();
+    await harness.db.insert(friendships).values({ userA: userA!, userB: userB! });
+    const [group] = await harness.db
+      .insert(friendGroups)
+      .values({ ownerId: normal.id, name: 'Private circle' })
+      .returning();
+
+    await expect(
+      harness.ctx.social.addGroupMember(normal.id, group!.id, paranoid.id),
+    ).rejects.toMatchObject({ code: PARANOID_TRANSITION_ERROR_CODES.mode });
+    expect(
+      await harness.db
+        .select()
+        .from(friendGroupMembers)
+        .where(eq(friendGroupMembers.groupId, group!.id)),
+    ).toEqual([]);
+
+    const [conglomerate] = await harness.db
+      .insert(conglomerates)
+      .values({ ownerId: normal.id, name: 'Normal basket', status: 'draft' })
+      .returning();
+    await expect(
+      harness.ctx.conglomerate.updateWithVisibility(normal.id, conglomerate!.id, {
+        visibility: 'friends',
+      }),
+    ).rejects.toMatchObject({ code: PARANOID_TRANSITION_ERROR_CODES.mode });
+    expect(
+      (
+        await harness.db
+          .select({ visibility: conglomerates.visibility })
+          .from(conglomerates)
+          .where(eq(conglomerates.id, conglomerate!.id))
+      )[0]?.visibility,
+    ).toBe('private');
+    expect(
+      await harness.db
+        .select()
+        .from(shareAudiences)
+        .where(eq(shareAudiences.subjectId, conglomerate!.id)),
+    ).toEqual([]);
+  });
+
+  it('rejects a paranoid conglomerate visibility patch before changing either model', async () => {
+    const { user, agent } = await paranoidAccount();
+    const [conglomerate] = await harness.db
+      .insert(conglomerates)
+      .values({ ownerId: user.id, name: 'Private basket', status: 'draft' })
+      .returning();
+
+    const response = await agent
+      .patch(`/api/v1/conglomerates/${conglomerate!.id}`)
+      .set(...XRW)
+      .send({ name: 'Must stay private', visibility: 'friends' });
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe(PARANOID_TRANSITION_ERROR_CODES.mode);
+    expect(
+      (
+        await harness.db
+          .select({ name: conglomerates.name, visibility: conglomerates.visibility })
+          .from(conglomerates)
+          .where(eq(conglomerates.id, conglomerate!.id))
+      )[0],
+    ).toEqual({ name: 'Private basket', visibility: 'private' });
+    expect(
+      await harness.db
+        .select()
+        .from(shareAudiences)
+        .where(eq(shareAudiences.subjectId, conglomerate!.id)),
+    ).toEqual([]);
   });
 });

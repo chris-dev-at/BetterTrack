@@ -14,7 +14,6 @@ import { CASH_MOVEMENT_SIGN } from '@bettertrack/domain/cashLedger';
 import { viennaYearOf } from '@bettertrack/domain/tax';
 
 import type { Database } from '../../data/db';
-import { PARANOID_SEALED_ASSET_PROVIDER_ID } from '../../data/paranoidAssets';
 import {
   createExpenseBudgetRepository,
   createExpenseCategoryRepository,
@@ -1293,23 +1292,14 @@ async function ensureNoExistingRestorableRows(
 
 async function validateCustomAssetRestoreSlots(
   sourceRows: ParanoidRehydrationSourceRepository,
-  userId: string,
   entities: readonly Entity[],
 ): Promise<void> {
   const customAssetIds = ids(entities, 'customAsset');
-  const customAssetIdSet = new Set(customAssetIds);
-  const sealedIds = await sourceRows.listSealedCustomAssetIds(userId);
-  requireSubset(sealedIds, customAssetIdSet, 'sealed custom asset');
-
   const existing = await sourceRows.findExistingCustomAssets([...customAssetIds]);
-  if (
-    existing.some(
-      (asset) => asset.ownerId !== userId || asset.providerId !== PARANOID_SEALED_ASSET_PROVIDER_ID,
-    )
-  ) {
+  if (existing.length > 0) {
     throw new ParanoidRehydrationError(
       'INVALID_REFERENCE',
-      'a custom asset id conflicts with a non-sealed server asset',
+      'a custom asset id conflicts with an existing server asset',
     );
   }
 }
@@ -1370,7 +1360,7 @@ export function createParanoidRehydrationService(
 
         const sourceRows = createParanoidRehydrationSourceRepository(tx);
         await ensureNoExistingRestorableRows(sourceRows, userId);
-        await validateCustomAssetRestoreSlots(sourceRows, userId, entities);
+        await validateCustomAssetRestoreSlots(sourceRows, entities);
         const referencedAssets = await resolveReferencedAssets(sourceRows, entities);
         validateStandingOrderCurrencies(entities, referencedAssets);
 

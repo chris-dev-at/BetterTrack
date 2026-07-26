@@ -143,7 +143,7 @@ export function createParanoidTransitionService(
       const input = parsed.data;
       const completedAt = now();
 
-      const result = await withParanoidTransitionTransaction(deps.db, async (tx) => {
+      const result = await withParanoidTransitionTransaction(deps.db, userId, async (tx) => {
         const transition = createParanoidTransitionTransactionRepository(tx);
         const state = await transition.lockState(userId);
         if (!state) {

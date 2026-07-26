@@ -176,7 +176,10 @@ import {
   type WebhookDeliveryJob,
 } from '../services/webhooks';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
-import { createParanoidEnforcementRepository } from '../data/repositories/paranoidEnforcementRepository';
+import {
+  createParanoidEnforcementRepository,
+  withLockedPrivacyModes,
+} from '../data/repositories/paranoidEnforcementRepository';
 import {
   createParanoidVaultService,
   type ParanoidVaultService,
@@ -193,6 +196,7 @@ import {
   createParanoidModeGuard,
   guardRegisteredServices,
   isParanoidOwnedSubjectBlocked,
+  runIfParanoidOwnedSubjectAllowed,
   type ParanoidModeGuard,
 } from '../services/account/paranoidEnforcement';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
@@ -520,6 +524,13 @@ export interface AppContext {
 export interface BuildContextDeps {
   config: AppConfig;
   db: Database;
+  /**
+   * Dedicated production pool for transition locks. Keeping it separate means
+   * guarded actions never wait for a main-pool connection while holding every
+   * main-pool connection themselves. Tests default to `db` and use the
+   * in-process equivalent because PGlite has one physical connection.
+   */
+  lockDb?: Database;
   redis: Redis;
   logger: Logger;
   /** Test seam: inject a fake transport instead of a real SMTP connection. */
@@ -576,6 +587,8 @@ export interface BuildContextDeps {
    * clock. Defaults to the real time.
    */
   budgetNow?: () => Date;
+  /** Test seam: pause a broker apply after its claim to prove transition serialization. */
+  importAfterApplyClaim?: (userId: string, batchId: string) => void | Promise<void>;
   /**
    * Test seam (§13.5 V5-P10): the webhook delivery HTTP transport. Defaults to a
    * `fetch`-based POST; tests inject a recording fake to assert the signed
@@ -609,6 +622,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const userRepo = createUserRepository(db);
   const paranoidGuard = createParanoidModeGuard({
     privacyModeFor: async (userId) => (await userRepo.findById(userId))?.privacyMode ?? null,
+    withLockedPrivacyModes: (userIds, run) =>
+      withLockedPrivacyModes(deps.lockDb ?? db, userIds, run),
   });
   const paranoidSubjects = createParanoidEnforcementRepository(db);
   const inviteRepo = createInviteRepository(db);
@@ -1168,6 +1183,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
         await paranoidSubjects.portfolioOwner(portfolioId),
         paranoidGuard,
       ),
+    runIfAllowedPortfolio: async (portfolioId, action) =>
+      runIfParanoidOwnedSubjectAllowed(
+        await paranoidSubjects.portfolioOwner(portfolioId),
+        paranoidGuard,
+        'portfolioJobs',
+        action,
+      ),
     ...(queues
       ? {
           requestRecompute: async (portfolioId: string) => {
@@ -1362,6 +1384,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     mappers: ALL_MAPPERS,
     logger,
     paranoid: paranoidGuard,
+    afterApplyClaim: deps.importAfterApplyClaim,
   });
 
   // Standing orders (§13.5 V5-P6b arc a, #593): scheduled recurring buys / cash
@@ -1671,6 +1694,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const guarded = guardRegisteredServices(
     {
       workboard,
+      conglomerate,
       ideas,
       backtest: backtestPreview,
       comments,
@@ -1718,7 +1742,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     tax: guarded.tax,
     mirror: guarded.mirror,
     customAssets: guarded.customAssets,
-    conglomerate,
+    conglomerate: guarded.conglomerate,
     backtest: guarded.backtest,
     ideas: guarded.ideas,
     imports: guarded.imports,

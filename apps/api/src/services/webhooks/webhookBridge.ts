@@ -7,6 +7,7 @@ import type { DomainEvent } from '../../events';
 import type { Logger } from '../../logger';
 import {
   isPortfolioContentWebhookEvent,
+  ParanoidModeError,
   type ParanoidModeGuard,
 } from '../account/paranoidEnforcement';
 
@@ -79,7 +80,7 @@ export interface WebhookBridgeDeps {
   /** Enqueue one delivery (durable BullMQ in prod; synchronous under test). */
   enqueue: (job: WebhookDeliveryJob) => Promise<void>;
   logger: Logger;
-  paranoid?: Pick<ParanoidModeGuard, 'isParanoid'>;
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowed'>;
 }
 
 export interface WebhookBridge {
@@ -94,33 +95,42 @@ export function createWebhookBridge(deps: WebhookBridgeDeps): WebhookBridge {
       if (!isWebhookEventType(event.type)) return;
       const userId = eventUserId(event);
       if (!userId) return;
-      if (isPortfolioContentWebhookEvent(event) && (await deps.paranoid?.isParanoid(userId))) {
-        return;
-      }
+      const enqueueDeliveries = async () => {
+        const subs = await subscriptions.findEnabledForUserEvent(userId, event.type);
+        let failedEnqueues = 0;
 
-      const subs = await subscriptions.findEnabledForUserEvent(userId, event.type);
-      let failedEnqueues = 0;
+        for (const sub of subs) {
+          try {
+            await enqueue({
+              subscriptionId: sub.id,
+              deliveryId: webhookDeliveryId(sub.id, event),
+              event,
+            });
+          } catch (err) {
+            failedEnqueues += 1;
+            logger.error(
+              { subscriptionId: sub.id, type: event.type, err },
+              'webhook bridge: delivery enqueue failed',
+            );
+          }
+        }
 
-      for (const sub of subs) {
-        try {
-          await enqueue({
-            subscriptionId: sub.id,
-            deliveryId: webhookDeliveryId(sub.id, event),
-            event,
-          });
-        } catch (err) {
-          failedEnqueues += 1;
-          logger.error(
-            { subscriptionId: sub.id, type: event.type, err },
-            'webhook bridge: delivery enqueue failed',
+        if (failedEnqueues > 0) {
+          throw new Error(
+            `webhook bridge: ${failedEnqueues} delivery ${failedEnqueues === 1 ? 'enqueue' : 'enqueues'} failed`,
           );
         }
-      }
+      };
 
-      if (failedEnqueues > 0) {
-        throw new Error(
-          `webhook bridge: ${failedEnqueues} delivery ${failedEnqueues === 1 ? 'enqueue' : 'enqueues'} failed`,
-        );
+      if (!isPortfolioContentWebhookEvent(event) || !deps.paranoid) {
+        await enqueueDeliveries();
+        return;
+      }
+      try {
+        await deps.paranoid.runAllowed(userId, 'portfolioWebhooks', enqueueDeliveries);
+      } catch (error) {
+        if (error instanceof ParanoidModeError) return;
+        throw error;
       }
     },
   };

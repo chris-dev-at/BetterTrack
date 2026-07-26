@@ -21,7 +21,7 @@ import type { FriendshipRepository } from '../../data/repositories/friendshipRep
 import type { ItemFollowsRepository } from '../../data/repositories/itemFollowsRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type { UserFollowsRepository } from '../../data/repositories/userFollowsRepository';
-import { ApiError, badRequest } from '../../errors';
+import { badRequest } from '../../errors';
 import type { Logger } from '../../logger';
 import { generateToken, hashToken } from '../crypto/tokens';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -76,7 +76,7 @@ export interface AudienceServiceDeps {
   /** The central notification pipeline (#368) — `*.shared` + `follow.published` enter here. */
   notify?: NotificationCenter;
   logger?: Logger;
-  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'isParanoid'>;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'isParanoid' | 'runAllowedMany'>;
 }
 
 export interface AudienceService {
@@ -118,6 +118,15 @@ export interface AudienceService {
     subjectId: string,
     visibility: 'private' | 'friends',
   ): Promise<void>;
+  /**
+   * Hold owner + prospective-recipient transition locks around a legacy mixed
+   * mutation (currently Conglomerate PATCH visibility + metadata).
+   */
+  withVisibilityMutation<T>(
+    ownerId: string,
+    visibility: 'private' | 'friends',
+    action: () => Promise<T>,
+  ): Promise<T>;
   /** Current audience per subject for a same-kind batch (missing = private) — list views. */
   audiencesForSubjects(
     kind: ShareKind,
@@ -194,6 +203,19 @@ function linkPath(token: string): string {
 export function createAudienceService(deps: AudienceServiceDeps): AudienceService {
   const { repo, friendship, groups, follows, itemFollows, profile, notify, logger, paranoid } =
     deps;
+
+  async function allFriendRecipients(ownerId: string): Promise<string[]> {
+    return friendship ? (await friendship.listFriends(ownerId)).map((friend) => friend.id) : [];
+  }
+
+  async function withNormalRecipients<T>(
+    ownerId: string,
+    recipientIds: readonly string[],
+    action: () => Promise<T>,
+  ): Promise<T> {
+    if (!paranoid) return action();
+    return paranoid.runAllowedMany([ownerId, ...recipientIds], 'sharing', action);
+  }
 
   /**
    * Tell each friend the picker just admitted that the item is shared with them
@@ -440,64 +462,63 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
           : [];
       const prospectiveRecipients =
         input.audience === 'all_friends' && friendship
-          ? (await friendship.listFriends(ownerId)).map((friend) => friend.id)
+          ? await allFriendRecipients(ownerId)
           : input.audience === 'group' && groupId && groups
             ? await groups.listMemberIds(groupId)
             : memberIds;
-      for (const recipientId of prospectiveRecipients) {
-        if (await paranoid?.isParanoid(recipientId)) {
-          throw new ApiError(
-            403,
-            'PARANOID_MODE',
-            'A paranoid account cannot receive shared items.',
-          );
+      return withNormalRecipients(ownerId, prospectiveRecipients, async () => {
+        const audienceId = await repo.setAudience(
+          ownerId,
+          kind,
+          subjectId,
+          input.audience,
+          memberIds,
+          groupId,
+        );
+
+        // The recipients to notify (#368): the validated friend set for
+        // specific-friends, or the group's live roster for a group share.
+        const directRecipientIds =
+          input.audience === 'group' && groupId && groups
+            ? await groups.listMemberIds(groupId)
+            : memberIds;
+
+        let link: ShareLinkSecret | undefined;
+        if (input.audience === 'public_link' && !(await repo.hasActiveLink(audienceId))) {
+          // ≥128-bit CSPRNG token (256-bit here); only its hash is persisted (§14).
+          const minted = generateToken();
+          await repo.insertLink(audienceId, minted.tokenHash);
+          link = { token: minted.token, url: linkPath(minted.token) };
         }
-      }
 
-      const audienceId = await repo.setAudience(
-        ownerId,
-        kind,
-        subjectId,
-        input.audience,
-        memberIds,
-        groupId,
-      );
+        // Notify the newly admitted friends (#368) — after the audience committed,
+        // so a recipient acting on the bell is already authorized.
+        await emitShared(ownerId, kind, subjectId, input.audience, directRecipientIds);
+        // Notify the owner's followers if the item just became public (#438).
+        await emitFollowPublished(
+          ownerId,
+          kind,
+          subjectId,
+          { audience: prior.audience, memberIds: prior.friendIds, groupId: prior.groupId },
+          input.audience,
+        );
 
-      // The recipients to notify (#368): the validated friend set for
-      // specific-friends, or the group's live roster for a group share.
-      const directRecipientIds =
-        input.audience === 'group' && groupId && groups
-          ? await groups.listMemberIds(groupId)
-          : memberIds;
-
-      let link: ShareLinkSecret | undefined;
-      if (input.audience === 'public_link' && !(await repo.hasActiveLink(audienceId))) {
-        // ≥128-bit CSPRNG token (256-bit here); only its hash is persisted (§14).
-        const minted = generateToken();
-        await repo.insertLink(audienceId, minted.tokenHash);
-        link = { token: minted.token, url: linkPath(minted.token) };
-      }
-
-      // Notify the newly admitted friends (#368) — after the audience committed,
-      // so a recipient acting on the bell is already authorized.
-      await emitShared(ownerId, kind, subjectId, input.audience, directRecipientIds);
-      // Notify the owner's followers if the item just became public (#438).
-      await emitFollowPublished(
-        ownerId,
-        kind,
-        subjectId,
-        { audience: prior.audience, memberIds: prior.friendIds, groupId: prior.groupId },
-        input.audience,
-      );
-
-      const owned = await repo.getOwnedState(kind, subjectId);
-      return { state: toState(kind, subjectId, owned), link };
+        const owned = await repo.getOwnedState(kind, subjectId);
+        return { state: toState(kind, subjectId, owned), link };
+      });
     },
 
     async applyVisibility(ownerId, kind, subjectId, visibility) {
-      await paranoid?.assertAllowed(ownerId, 'sharing');
       const audience: ShareAudience = visibility === 'friends' ? 'all_friends' : 'private';
-      await repo.setAudience(ownerId, kind, subjectId, audience, []);
+      const recipients = visibility === 'friends' ? await allFriendRecipients(ownerId) : [];
+      await withNormalRecipients(ownerId, recipients, async () => {
+        await repo.setAudience(ownerId, kind, subjectId, audience, []);
+      });
+    },
+
+    async withVisibilityMutation(ownerId, visibility, action) {
+      const recipients = visibility === 'friends' ? await allFriendRecipients(ownerId) : [];
+      return withNormalRecipients(ownerId, recipients, action);
     },
 
     audiencesForSubjects: (kind, subjectIds) => repo.audiencesForSubjects(kind, subjectIds),

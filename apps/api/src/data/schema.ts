@@ -770,9 +770,9 @@ export const workboardItems = pgTable(
     watchlistId: uuid('watchlist_id')
       .notNull()
       .references(() => watchlists.id, { onDelete: 'cascade' }),
-    assetId: uuid('asset_id')
-      .notNull()
-      .references(() => assets.id, { onDelete: 'cascade' }),
+    // Deliberately not an FK: paranoid enable hard-deletes owner assets while
+    // retaining this server-classified watchlist reference for lossless disable.
+    assetId: uuid('asset_id').notNull(),
     sortOrder: integer('sort_order').notNull(),
     note: text('note'),
   },
@@ -794,9 +794,8 @@ export const alerts = pgTable('alerts', {
   userId: uuid('user_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
-  assetId: uuid('asset_id')
-    .notNull()
-    .references(() => assets.id, { onDelete: 'cascade' }),
+  // See workboardItems.assetId: the opaque id survives a paranoid asset purge.
+  assetId: uuid('asset_id').notNull(),
   kind: alertKindEnum('kind').notNull(),
   threshold: numeric('threshold').notNull(),
   // Captured at creation for the *_from_ref kinds.
@@ -1064,7 +1063,9 @@ export const conglomeratePositions = pgTable(
     conglomerateId: uuid('conglomerate_id')
       .notNull()
       .references(() => conglomerates.id, { onDelete: 'cascade' }),
-    assetId: uuid('asset_id').references(() => assets.id, { onDelete: 'cascade' }),
+    // Nullable nested-position discriminator; intentionally no asset FK so the
+    // opaque reference survives paranoid hard deletion and reconnects on restore.
+    assetId: uuid('asset_id'),
     childConglomerateId: uuid('child_conglomerate_id').references(() => conglomerates.id),
     weightPct: numeric('weight_pct', { precision: 6, scale: 3 }).notNull(),
     sortOrder: integer('sort_order').notNull(),

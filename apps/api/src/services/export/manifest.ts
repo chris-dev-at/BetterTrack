@@ -275,10 +275,9 @@ export function schemaTableNames(): string[] {
  *  - `vault` — client-only, client-encrypted. Hard-deleted server-side (for the
  *    owning user) when paranoid mode is enabled and never rebuilt there; the
  *    enable-time purge sweep, the zero-cleartext probe test and disable
- *    rehydration all iterate this set (PD3). Some `vault` tables (`assets`,
- *    `price_history`) are SHARED with the global market catalog — the purge/probe
- *    are scoped to the owner's own rows exactly like the export collector, but
- *    the TABLE is classified `vault` because it holds the user's portfolio data.
+ *    rehydration all iterate this set (PD3). The `assets` table is shared with
+ *    the global market catalog, so purge/probe scope to owner rows exactly like
+ *    the export collector; deleting an owned asset cascades its value history.
  *  - `server` — kept unchanged (identity/auth, friends + chat, private
  *    watchlists/conglomerates/ideas, price alerts, notifications, and the vault
  *    ciphertext rows themselves).
@@ -318,10 +317,9 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   portfolio_settings: 'vault',
   user_tax_settings: 'vault',
   // Shared with the global catalog — purge/probe scope to owner_id rows (the
-  // user's house/car/unlisted-stock ARE portfolio data, §1). A content-free
-  // `paranoid-sealed` FK anchor may remain when a kept watchlist/conglomerate/
-  // alert row references the id; every user-entered field + value point is
-  // purged, and disable restores that anchor in place from the vault.
+  // user's house/car/unlisted-stock ARE portfolio data, §1). Kept watchlist,
+  // conglomerate, and alert rows retain only the opaque asset id while paranoid;
+  // disable restores the asset with that same id so those references reconnect.
   assets: 'vault',
   price_history: 'vault',
   standing_orders: 'vault',
@@ -383,8 +381,8 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   conglomerate_positions: 'server',
   share_links: 'server',
   ideas: 'server',
-  // Price alerts stay ordinary server rows — asset-price predicates with zero
-  // portfolio reference (§9).
+  // Price alerts stay ordinary server rows. Their asset id is an opaque dangling
+  // reference while an owned asset is vaulted and reconnects on restore (§9).
   alerts: 'server',
   notifications: 'server',
   notification_settings: 'server',

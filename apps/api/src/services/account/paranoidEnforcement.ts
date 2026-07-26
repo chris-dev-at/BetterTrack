@@ -79,6 +79,7 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'getPublicProfileItem',
   ]),
   serviceBinding('sharing', 'workboard', 'userIdFirst', ['getSharing', 'setSharing']),
+  serviceBinding('sharing', 'conglomerate', 'userIdFirst', ['updateWithVisibility']),
   serviceBinding('sharing', 'ideas', 'userIdFirst', ['clone']),
   serviceBinding('sharing', 'backtest', 'userIdFirst', ['runSharedSandboxPreview']),
   serviceBinding('sharing', 'comments', 'userIdFirst', ['*']),
@@ -193,6 +194,21 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
  * real method, so a new method cannot silently default open.
  */
 export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = [
+  {
+    service: 'conglomerate',
+    methods: [
+      'list',
+      'get',
+      'create',
+      'update',
+      'replacePositions',
+      'activate',
+      'remove',
+      'resolved',
+      'allocate',
+    ],
+    handling: 'kept',
+  },
   {
     service: 'workboard',
     methods: [
@@ -627,10 +643,24 @@ export class ParanoidModeError extends ApiError {
 export interface ParanoidModeGuard {
   isParanoid(userId: string): Promise<boolean>;
   assertAllowed(userId: string, capability: ParanoidKilledCapability): Promise<void>;
+  runAllowed<T>(
+    userId: string,
+    capability: ParanoidKilledCapability,
+    action: () => Promise<T>,
+  ): Promise<T>;
+  runAllowedMany<T>(
+    userIds: readonly string[],
+    capability: ParanoidKilledCapability,
+    action: () => Promise<T>,
+  ): Promise<T>;
 }
 
 export function createParanoidModeGuard(input: {
   privacyModeFor(userId: string): Promise<'normal' | 'paranoid' | null>;
+  withLockedPrivacyModes<T>(
+    userIds: readonly string[],
+    run: (modes: ReadonlyMap<string, 'normal' | 'paranoid' | null>) => Promise<T>,
+  ): Promise<T>;
 }): ParanoidModeGuard {
   return {
     async isParanoid(userId) {
@@ -638,6 +668,17 @@ export function createParanoidModeGuard(input: {
     },
     async assertAllowed(userId, capability) {
       if (await this.isParanoid(userId)) throw new ParanoidModeError(capability);
+    },
+    async runAllowed(userId, capability, action) {
+      return this.runAllowedMany([userId], capability, action);
+    },
+    async runAllowedMany(userIds, capability, action) {
+      return input.withLockedPrivacyModes(userIds, async (modes) => {
+        for (const userId of userIds) {
+          if (modes.get(userId) !== 'normal') throw new ParanoidModeError(capability);
+        }
+        return action();
+      });
     },
   };
 }
@@ -665,8 +706,7 @@ export function guardUserService<T extends object>(
         if (typeof userId !== 'string') {
           throw new Error(`paranoid guard ${String(property)} requires a user id`);
         }
-        await guard.assertAllowed(userId, capability);
-        return Reflect.apply(value, target, args);
+        return guard.runAllowed(userId, capability, () => Reflect.apply(value, target, args));
       };
     },
   });
@@ -712,13 +752,35 @@ export async function isParanoidOwnedSubjectBlocked(
   return !subject.exists || (subject.userId !== null && (await guard.isParanoid(subject.userId)));
 }
 
-async function assertServiceSubject(
+/** Transition-serialized action for a portfolio/asset-owned subject. */
+export async function runIfParanoidOwnedSubjectAllowed(
+  subject: { exists: boolean; userId: string | null },
+  guard: Pick<ParanoidModeGuard, 'runAllowed'>,
+  capability: ParanoidKilledCapability,
+  action: () => Promise<void>,
+): Promise<boolean> {
+  if (!subject.exists) return false;
+  if (subject.userId === null) {
+    await action();
+    return true;
+  }
+  try {
+    await guard.runAllowed(subject.userId, capability, action);
+    return true;
+  } catch (error) {
+    if (error instanceof ParanoidModeError) return false;
+    throw error;
+  }
+}
+
+async function invokeServiceSubject<T>(
   binding: ParanoidServiceBinding,
   args: readonly unknown[],
   guard: ParanoidModeGuard,
   resolvers: ParanoidServiceGuardResolvers,
-): Promise<'allow' | 'skip'> {
-  if (binding.subject === 'intrinsic') return 'allow';
+  invoke: () => Promise<T>,
+): Promise<T | undefined> {
+  if (binding.subject === 'intrinsic') return invoke();
 
   if (binding.subject === 'portfolioEventUser') {
     const event = args[0];
@@ -728,12 +790,16 @@ async function assertServiceSubject(
       !('type' in event) ||
       !isPortfolioContentWebhookEvent(event as DomainEvent)
     ) {
-      return 'allow';
+      return invoke();
     }
     const userId = 'userId' in event && typeof event.userId === 'string' ? event.userId : undefined;
-    if (!userId || !(await guard.isParanoid(userId))) return 'allow';
-    if (binding.action === 'skip') return 'skip';
-    throw new ParanoidModeError(binding.capability);
+    if (!userId) return invoke();
+    try {
+      return await guard.runAllowed(userId, binding.capability, invoke);
+    } catch (error) {
+      if (binding.action === 'skip' && error instanceof ParanoidModeError) return undefined;
+      throw error;
+    }
   }
 
   if (binding.subject === 'userIdField') {
@@ -743,8 +809,7 @@ async function assertServiceSubject(
         ? input.userId
         : null;
     if (!userId) throw new Error(`paranoid guard ${binding.service} requires input.userId`);
-    await guard.assertAllowed(userId, binding.capability);
-    return 'allow';
+    return guard.runAllowed(userId, binding.capability, invoke);
   }
 
   const subjectId = args[0];
@@ -752,8 +817,7 @@ async function assertServiceSubject(
     throw new Error(`paranoid guard ${binding.service} requires a string subject id`);
   }
   if (binding.subject === 'userIdFirst') {
-    await guard.assertAllowed(subjectId, binding.capability);
-    return 'allow';
+    return guard.runAllowed(subjectId, binding.capability, invoke);
   }
 
   const owner =
@@ -764,9 +828,8 @@ async function assertServiceSubject(
   // portfolio is gone, so absence must not turn into "normal account".
   if (!owner.exists) throw new ParanoidModeError(binding.capability);
   // Global market assets have no owner and are valid for asset-level kept paths.
-  if (owner.userId === null) return 'allow';
-  await guard.assertAllowed(owner.userId, binding.capability);
-  return 'allow';
+  if (owner.userId === null) return invoke();
+  return guard.runAllowed(owner.userId, binding.capability, invoke);
 }
 
 /**
@@ -834,9 +897,9 @@ export function guardRegisteredServices<T extends Record<string, object>>(
         const binding = typeof property === 'string' ? methods.get(property) : undefined;
         if (!binding || typeof value !== 'function') return value;
         return async (...args: unknown[]) => {
-          const decision = await assertServiceSubject(binding, args, guard, resolvers);
-          if (decision === 'skip') return undefined;
-          return Reflect.apply(value, target, args);
+          return invokeServiceSubject(binding, args, guard, resolvers, async () =>
+            Reflect.apply(value, target, args),
+          );
         };
       },
     }) as T[keyof T];

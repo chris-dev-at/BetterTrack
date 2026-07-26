@@ -220,6 +220,8 @@ export interface CreateTestAppOptions {
    * blown-budget alert and a month's aggregates are provable deterministically.
    */
   budgetNow?: () => Date;
+  /** Pause a broker apply after its pending→applied claim. */
+  importAfterApplyClaim?: (userId: string, batchId: string) => void | Promise<void>;
   /**
    * Recording webhook transport (§13.5 V5-P10) in place of the real `fetch`
    * POST, so a delivery's signed payload is assertable without a network
@@ -282,6 +284,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     notificationNow: options.notificationNow,
     taxNow: options.taxNow,
     budgetNow: options.budgetNow,
+    importAfterApplyClaim: options.importAfterApplyClaim,
     webhookTransport: options.webhookTransport,
     aiFetch: options.aiFetch,
   });
