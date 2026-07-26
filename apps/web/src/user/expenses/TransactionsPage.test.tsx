@@ -117,6 +117,34 @@ describe('TransactionsPage', () => {
     expect(await screen.findByText('No transactions yet')).toBeInTheDocument();
   });
 
+  test('keeps empty-state create controls unavailable while categories load', async () => {
+    const categories = deferred<{ categories: ExpenseCategory[] }>();
+    vi.mocked(expensesApi.listExpenseCategories).mockImplementation(() => categories.promise);
+    renderPage();
+
+    expect(await screen.findByText('No transactions yet')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New transaction' })).toBeDisabled();
+    const emptyCreate = screen.getByRole('button', { name: 'Add a transaction' });
+    expect(emptyCreate).toBeDisabled();
+    await userEvent.click(emptyCreate);
+    expect(screen.queryByRole('dialog', { name: 'New transaction' })).not.toBeInTheDocument();
+  });
+
+  test('keeps empty-state create controls unavailable after a category failure', async () => {
+    vi.mocked(expensesApi.listExpenseCategories).mockRejectedValue(
+      new Error('categories unavailable'),
+    );
+    renderPage();
+
+    expect(await screen.findByText('No transactions yet')).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load your categories.");
+    expect(screen.getByRole('button', { name: 'New transaction' })).toBeDisabled();
+    const emptyCreate = screen.getByRole('button', { name: 'Add a transaction' });
+    expect(emptyCreate).toBeDisabled();
+    await userEvent.click(emptyCreate);
+    expect(screen.queryByRole('dialog', { name: 'New transaction' })).not.toBeInTheDocument();
+  });
+
   test('keeps transaction rows visible and category controls unavailable while categories load', async () => {
     const categories = deferred<{ categories: ExpenseCategory[] }>();
     vi.mocked(expensesApi.listExpenseCategories).mockImplementation(() => categories.promise);

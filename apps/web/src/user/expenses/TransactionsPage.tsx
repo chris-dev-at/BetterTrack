@@ -105,6 +105,7 @@ export function TransactionsPage() {
             <button
               type="button"
               onClick={() => setCreating(true)}
+              disabled={!categoriesReady}
               className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
               {t('expenses.transactions.emptyCta')}
