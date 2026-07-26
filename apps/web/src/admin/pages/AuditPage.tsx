@@ -25,9 +25,10 @@ export function AuditPage() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [initialError, setInitialError] = useState<string | null>(null);
+  const [paginationError, setPaginationError] = useState<string | null>(null);
 
-  const load = useCallback(
+  const loadPage = useCallback(
     async (after: string | null, signal?: AbortSignal) => {
       try {
         const page = await api.listAudit(after ? { cursor: after } : {}, signal);
@@ -45,29 +46,59 @@ export function AuditPage() {
           requireTwoFactorSetup();
           return;
         }
-        setError(err instanceof ApiError ? err.message : 'Something went wrong.');
+        const message = err instanceof ApiError ? err.message : 'Something went wrong.';
+        if (after) {
+          setPaginationError(message);
+        } else {
+          setInitialError(message);
+        }
       }
     },
     [clearSession, requireTwoFactorSetup],
   );
 
+  const loadInitial = useCallback(
+    async (signal?: AbortSignal) => {
+      setLoading(true);
+      setInitialError(null);
+      await loadPage(null, signal);
+      if (!signal?.aborted) setLoading(false);
+    },
+    [loadPage],
+  );
+
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
-    setError(null);
-    void load(null, controller.signal).finally(() => {
-      if (!controller.signal.aborted) setLoading(false);
-    });
+    void loadInitial(controller.signal);
     return () => controller.abort();
-  }, [load]);
+  }, [loadInitial]);
+
+  async function retryInitial() {
+    await loadInitial();
+  }
 
   async function loadMore() {
-    if (!cursor) return;
+    if (!cursor || loadingMore) return;
     setLoadingMore(true);
-    setError(null);
-    await load(cursor);
+    setPaginationError(null);
+    await loadPage(cursor);
     setLoadingMore(false);
   }
+
+  const retryAction = (onClick: () => Promise<void>) => (
+    <Button variant="secondary" onClick={() => void onClick()}>
+      Retry
+    </Button>
+  );
+
+  const errorMessage = (message: string, onRetry: () => Promise<void>) => (
+    <Alert tone="error">
+      <div className="flex items-center justify-between gap-3">
+        <span>{message}</span>
+        {retryAction(onRetry)}
+      </div>
+    </Alert>
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -76,14 +107,15 @@ export function AuditPage() {
         description="Every administrative and security-relevant action."
       />
 
-      {error ? <Alert tone="error">{error}</Alert> : null}
-
       {loading ? (
         <Spinner label="Loading audit log…" />
+      ) : initialError ? (
+        errorMessage(initialError, retryInitial)
       ) : entries.length === 0 ? (
         <EmptyState>No audit entries yet.</EmptyState>
       ) : (
         <>
+          {paginationError ? errorMessage(paginationError, loadMore) : null}
           <div className="overflow-x-auto rounded-lg border border-neutral-800">
             <table className="w-full min-w-[48rem] text-left text-sm">
               <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
