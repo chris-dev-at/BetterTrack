@@ -177,6 +177,26 @@ describe('apiPortfolioStore compatibility', () => {
     );
   });
 
+  it('omits explicitly undefined optional patch members from normal-account JSON writes', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', fetchMock);
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ portfolio: summary }, 200));
+    await apiPortfolioStore.updatePortfolio(PORTFOLIO_ID, {
+      name: undefined,
+      visibility: undefined,
+      defaultPayFromCash: undefined,
+    });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ transaction }, 200));
+    await apiPortfolioStore.updateTransaction(PORTFOLIO_ID, TRANSACTION_ID, {
+      fee: undefined,
+      note: undefined,
+    });
+
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe('{}');
+    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe('{}');
+  });
+
   it('preserves the existing typed API error without translation', async () => {
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal('fetch', fetchMock);
