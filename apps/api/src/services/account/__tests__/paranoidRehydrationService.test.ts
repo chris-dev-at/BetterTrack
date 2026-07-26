@@ -62,6 +62,7 @@ let restoreUserId = DEVICE_ID;
 type StrictEntity = ParanoidDisableRehydrationRequest['document']['entities'][number];
 type StrictStandingOrderEntity = Extract<StrictEntity, { kind: 'standingOrder' }>;
 type StrictCashMovementEntity = Extract<StrictEntity, { kind: 'cashMovement' }>;
+type StrictExpenseRuleEntity = Extract<StrictEntity, { kind: 'expenseRule' }>;
 
 const INVALID_STANDING_ORDER_MUTATIONS: readonly {
   name: string;
@@ -131,6 +132,42 @@ const INVALID_CASH_MOVEMENT_MUTATIONS: readonly {
     name: 'a dividend movement without its dividend link',
     mutate(movement) {
       movement.data.kind = 'dividend';
+    },
+  },
+];
+
+const OUT_OF_RANGE_PERSISTED_INTEGER_MUTATIONS: readonly {
+  name: string;
+  mutate: (input: ParanoidDisableRehydrationRequest) => void;
+}[] = [
+  {
+    name: 'portfolio sort order',
+    mutate(input) {
+      const portfolio = input.document.entities.find((entry) => entry.kind === 'portfolio');
+      if (!portfolio || portfolio.kind !== 'portfolio') throw new Error('expected portfolio');
+      portfolio.data.sortOrder = 2_147_483_648;
+    },
+  },
+  {
+    name: 'cash-movement tax year',
+    mutate(input) {
+      const movement = input.document.entities.find(
+        (entry): entry is StrictCashMovementEntity =>
+          entry.kind === 'cashMovement' && entry.id === MOVEMENT_ID,
+      );
+      if (!movement) throw new Error('expected cash movement');
+      movement.data.kind = 'tax_refund';
+      movement.data.taxYear = 2_147_483_648;
+    },
+  },
+  {
+    name: 'expense-rule priority',
+    mutate(input) {
+      const rule = input.document.entities.find(
+        (entry): entry is StrictExpenseRuleEntity => entry.kind === 'expenseRule',
+      );
+      if (!rule) throw new Error('expected expense rule');
+      rule.data.priority = -2_147_483_649;
     },
   },
 ];
@@ -671,6 +708,37 @@ describe('paranoid rehydration service', () => {
     expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
+
+  it.each(OUT_OF_RANGE_PERSISTED_INTEGER_MUTATIONS)(
+    'rejects an out-of-range $name before any restore stage',
+    async ({ mutate }) => {
+      const { db, user } = await makeParanoid();
+      const input = exhaustiveRequest();
+      const stages: string[] = [];
+      mutate(input);
+
+      await expect(
+        createParanoidRehydrationService({
+          db,
+          afterStage(stage) {
+            stages.push(stage);
+          },
+        }).rehydrate(user.id, input),
+      ).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+      expect(stages).toEqual([]);
+      expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+      expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(portfolioCashMovements)
+          .where(eq(portfolioCashMovements.portfolioId, PORTFOLIO_ID)),
+      ).toEqual([]);
+      expect(await db.select().from(expenseRules).where(eq(expenseRules.userId, user.id))).toEqual(
+        [],
+      );
+    },
+  );
 
   it('round-trips a valid scale-6 transaction value above the normal cash cap', async () => {
     const { db, user } = await makeParanoid();
@@ -1619,40 +1687,117 @@ describe('paranoid rehydration service', () => {
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
 
-  it('rejects an archived non-Main source with a nonzero balance before it can write', async () => {
-    const { db, user } = await makeParanoid();
-    const input = request();
-    input.document.entities.push(
-      entity(SECOND_CASH_SOURCE_ID, 'cashSource', {
-        portfolioId: PORTFOLIO_ID,
-        name: 'Archived savings',
-        type: 'cash',
-        isMain: false,
-        archivedAt: editedAt,
-        createdAt: editedAt,
-      }),
-      entity(TRANSFER_OUT_ID, 'cashMovement', {
-        portfolioId: PORTFOLIO_ID,
-        sourceId: SECOND_CASH_SOURCE_ID,
-        kind: 'deposit',
-        amountEur: '10.000000',
-        transactionId: null,
-        transferId: null,
-        counterpartSourceId: null,
-        dividendId: null,
-        taxYear: null,
-        executedAt: editedAt,
-        createdAt: editedAt,
-        note: null,
-        source: 'manual',
-      }),
-    );
-    const service = createParanoidRehydrationService({ db });
+  it('round-trips a nonzero archived source reachable after deleting its funded buy', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const [asset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'test',
+        providerRef: 'ARCHIVED-CASH.EUR',
+        ownerId: null,
+        type: 'stock',
+        symbol: 'CASH',
+        name: 'Archived cash source boundary',
+        exchange: null,
+        currency: 'EUR',
+      })
+      .returning();
+    if (!asset) throw new Error('expected market asset');
 
-    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
-      code: 'INVALID_REFERENCE',
+    const secondary = await harness.ctx.portfolio.createCashSource(user.id, portfolioId, {
+      name: 'Broker',
+      type: 'bank',
     });
-    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    const deposit = await harness.ctx.portfolio.depositCash(user.id, portfolioId, {
+      sourceId: secondary.id,
+      amountEur: 100,
+      executedAt: '2026-07-01T10:00:00.000Z',
+    });
+    const [buy] = await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 1,
+        price: 100,
+        fee: 0,
+        executedAt: '2026-07-02T10:00:00.000Z',
+        payFromCash: true,
+        cashSourceId: secondary.id,
+      },
+    ]);
+    if (!buy) throw new Error('expected funded buy');
+
+    await expect(
+      harness.ctx.portfolio.archiveCashSource(user.id, portfolioId, secondary.id),
+    ).resolves.toMatchObject({ balanceEur: 0, archivedAt: expect.any(String) });
+    await harness.ctx.portfolio.deleteTransaction(user.id, portfolioId, buy.id);
+
+    const [sourcePortfolio] = await harness.db
+      .select()
+      .from(portfolios)
+      .where(eq(portfolios.id, portfolioId));
+    const sourceCashSources = await harness.db
+      .select()
+      .from(portfolioCashSources)
+      .where(eq(portfolioCashSources.portfolioId, portfolioId));
+    const sourceMovements = await harness.db
+      .select()
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.portfolioId, portfolioId));
+    const sourceArchived = sourceCashSources.find((source) => source.id === secondary.id);
+    if (!sourcePortfolio || !sourceArchived) {
+      throw new Error('expected complete archived-source state');
+    }
+    expect(sourceArchived.archivedAt).not.toBeNull();
+    expect(sourceMovements).toMatchObject([{ id: deposit.movement.id, amountEur: '100.000000' }]);
+    expect(await harness.db.select().from(transactions).where(eq(transactions.id, buy.id))).toEqual(
+      [],
+    );
+    expect(
+      (
+        await harness.ctx.portfolio.listCashSources(user.id, portfolioId, {
+          includeArchived: true,
+        })
+      ).sources.find((source) => source.id === secondary.id),
+    ).toMatchObject({ balanceEur: 100, archivedAt: expect.any(String) });
+
+    const input: ParanoidDisableRehydrationRequest = {
+      rehydrationId: REHYDRATION_ID,
+      document: {
+        schemaVersion: 1,
+        entities: [
+          strictPortfolioEntity(sourcePortfolio),
+          ...sourceCashSources.map(strictCashSourceEntity),
+          ...sourceMovements.map(strictCashMovementEntity),
+        ],
+        mergeLog: [],
+      },
+    };
+
+    await replaceNormalPortfolioGraphWithServerVault(harness, user.id);
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    const [restoredArchived] = await harness.db
+      .select()
+      .from(portfolioCashSources)
+      .where(eq(portfolioCashSources.id, secondary.id));
+    const [restoredDeposit] = await harness.db
+      .select()
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.id, deposit.movement.id));
+    expect(restoredArchived).toEqual(sourceArchived);
+    expect(restoredDeposit).toEqual(sourceMovements[0]);
+    expect(
+      (
+        await harness.ctx.portfolio.listCashSources(user.id, portfolioId, {
+          includeArchived: true,
+        })
+      ).sources.find((source) => source.id === secondary.id),
+    ).toMatchObject({ balanceEur: 100, archivedAt: sourceArchived.archivedAt?.toISOString() });
   });
 
   it('preserves an imported expense deduplication marker exactly', async () => {

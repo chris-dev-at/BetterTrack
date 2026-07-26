@@ -287,6 +287,7 @@ const timestampSchema = z.string().datetime();
 const daySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const monthSchema = z.string().regex(/^\d{4}-\d{2}$/);
 const decimalStringSchema = z.string().regex(/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/);
+const postgresIntegerSchema = z.number().int().min(-2_147_483_648).max(2_147_483_647);
 
 type VaultJson = null | boolean | number | string | VaultJson[] | { [key: string]: VaultJson };
 const vaultJsonSchema: z.ZodType<VaultJson> = z.lazy(() =>
@@ -305,7 +306,7 @@ const portfolioRowSchema = z
     userId: uuidSchema,
     name: z.string(),
     visibility: portfolioVisibilitySchema,
-    sortOrder: z.number().int(),
+    sortOrder: postgresIntegerSchema,
     defaultPayFromCash: z.boolean(),
     archivedAt: timestampSchema.nullable(),
   })
@@ -369,7 +370,7 @@ const cashMovementRowSchema = z
     transferId: uuidSchema.nullable(),
     counterpartSourceId: uuidSchema.nullable(),
     dividendId: uuidSchema.nullable(),
-    taxYear: z.number().int().nullable(),
+    taxYear: postgresIntegerSchema.nullable(),
     executedAt: timestampSchema,
     note: z.string().nullable(),
     source: z.string(),
@@ -544,7 +545,7 @@ const expenseRuleRowSchema = z
     categoryId: uuidSchema,
     matchType: expenseRuleMatchTypeSchema,
     pattern: z.string(),
-    priority: z.number().int(),
+    priority: postgresIntegerSchema,
     enabled: z.boolean(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,

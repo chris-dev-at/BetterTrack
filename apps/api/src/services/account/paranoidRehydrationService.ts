@@ -1068,14 +1068,6 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       if (balance < 0n) throw new Error('cash source would become negative');
       balancesBySource.set(movement.data.sourceId, balance);
     }
-    for (const source of rows(entities, 'cashSource')) {
-      if (source.data.archivedAt !== null && (balancesBySource.get(source.id) ?? 0n) !== 0n) {
-        throw new ParanoidRehydrationError(
-          'INVALID_REFERENCE',
-          'an archived cash source must have an exactly zero balance',
-        );
-      }
-    }
     const transactionsByPortfolioAsset = new Map<string, EntityOf<'transaction'>[]>();
     for (const transaction of rows(entities, 'transaction')) {
       const key = `${transaction.data.portfolioId}\u0000${transaction.data.assetId}`;
