@@ -308,4 +308,78 @@ describe('quiet hours — digest deferral + local-day bucketing (§13.5 V5-P3)',
     expect(fcmCalls).toHaveLength(1);
     expect(fcmCalls[0]!.message.body).toContain('2');
   });
+
+  it('records a failed digest defer and continues with the next claimed group', async () => {
+    const firstUser = await harness.seedUser({ email: 'first@bt.test', username: 'firstdigest' });
+    const secondUser = await harness.seedUser({
+      email: 'second@bt.test',
+      username: 'seconddigest',
+    });
+    await enableQuietHours(firstUser.id);
+    await enableQuietHours(secondUser.id);
+    await digestRepo.setCadences(firstUser.id, { 'friend.request': 'daily' });
+    await digestRepo.setCadences(secondUser.id, { 'friend.request': 'daily' });
+
+    // Queue one daily push digest for each user, then advance into the following
+    // local day while both users are in quiet hours.
+    clock = new Date('2026-07-18T12:00:00.000Z');
+    const dispatcher = makeDispatcher();
+    await dispatcher.dispatch(friendRequestEvent(firstUser.id, 'first'));
+    await dispatcher.dispatch(friendRequestEvent(secondUser.id, 'second'));
+
+    const groups = await digestRepo.pendingGroups('daily');
+    const firstGroup = groups.find((group) => group.userId === firstUser.id)!;
+    const secondGroup = groups.find((group) => group.userId === secondUser.id)!;
+    const deferredAttempts: string[] = [];
+    const warnings: { context: Record<string, unknown>; message: string }[] = [];
+    const digestService = createDigestService({
+      repo: {
+        ...digestRepo,
+        pendingGroups: async () => [firstGroup, secondGroup],
+      },
+      users: userRepo,
+      fcm: {
+        async deliver(userId: string, message: PushMessage) {
+          fcmCalls.push({ userId, message });
+        },
+      },
+      quietHours: {
+        async enqueueDeferred(item) {
+          deferredAttempts.push(item.userId);
+          if (item.userId === firstUser.id) throw new Error('transient defer failure');
+          await digestRepo.enqueueDeferred(item);
+        },
+      },
+      now: () => clock,
+      logger: {
+        warn(context: Record<string, unknown>, message: string) {
+          warnings.push({ context, message });
+        },
+      } as never,
+    });
+
+    clock = new Date('2026-07-19T23:00:00.000Z');
+    await expect(digestService.deliverDue('daily')).resolves.toEqual({
+      groups: 2,
+      sent: 0,
+      deferred: 1,
+    });
+
+    // The claimed first group failed to enter the deferred queue, but the
+    // following group is still processed rather than being skipped by the run.
+    expect(deferredAttempts).toEqual([firstUser.id, secondUser.id]);
+    expect(await deferredRows(firstUser.id)).toHaveLength(0);
+    expect(await deferredRows(secondUser.id)).toHaveLength(1);
+    expect(warnings).toEqual([
+      {
+        context: expect.objectContaining({
+          cadence: 'daily',
+          userId: firstUser.id,
+          period: firstGroup.period,
+          channel: 'push',
+        }),
+        message: 'quiet-hours digest defer failed',
+      },
+    ]);
+  });
 });
