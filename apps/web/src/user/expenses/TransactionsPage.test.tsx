@@ -245,7 +245,7 @@ describe('TransactionsPage', () => {
     await user.selectOptions(select, 'c2');
     expect(expensesApi.recategorizeExpenseTransaction).toHaveBeenCalledWith('t1', 'c2');
     expect(select).toBeDisabled();
-    await user.selectOptions(select, 'c1');
+    await user.selectOptions(select, '');
     expect(expensesApi.recategorizeExpenseTransaction).toHaveBeenCalledTimes(1);
 
     recategorization.resolve({ transaction: { ...transaction, categoryId: 'c2' } });
