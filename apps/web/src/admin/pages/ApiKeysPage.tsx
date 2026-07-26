@@ -5,7 +5,7 @@ import type { AdminApiKey, ApiKeyAuditResponse, ApiKeyTier } from '@bettertrack/
 
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
-import { formatDateTime } from '../format';
+import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
 import { Modal } from '../components/Modal';
 import { Alert, Badge, Button, EmptyState, PageHeader, Spinner, TextField } from '../components/ui';
