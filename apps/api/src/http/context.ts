@@ -180,7 +180,6 @@ import {
   createParanoidVaultService,
   type ParanoidVaultService,
 } from '../services/account/paranoidVaultService';
-import { newId } from '../data/ids';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
 import {
@@ -888,7 +887,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const webhookBridge = createWebhookBridge({
     subscriptions: webhookSubscriptionRepo,
     enqueue: webhookDeliveryEnqueue,
-    generateId: newId,
     logger,
   });
 

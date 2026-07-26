@@ -27,8 +27,10 @@ import type { AuditService } from '../services/audit/auditService';
 import { decryptSecret } from '../services/crypto/secretBox';
 import { DISPATCHABLE_EVENT_TYPES } from '../services/notifications/notificationDispatcher';
 import {
+  createWebhookBridge,
   createWebhookDispatcher,
   verifyWebhookSignature,
+  type WebhookDeliveryJob,
   type WebhookTransport,
 } from '../services/webhooks';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -251,6 +253,59 @@ describe('signed delivery', () => {
     expect(log.deliveries).toHaveLength(0);
   });
 
+  it('isolates a failed enqueue, exposes it for retry, and preserves replay delivery ids', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const ids: string[] = [];
+
+    for (let index = 0; index < 3; index += 1) {
+      const created = await agent
+        .post('/api/v1/settings/webhooks')
+        .set(...XRW)
+        .send({ url: `https://receiver.test/hook-${index}`, eventTypes: ['alert.triggered'] });
+      expect(created.status).toBe(201);
+      ids.push(createWebhookSubscriptionResponseSchema.parse(created.body).subscription.id);
+    }
+
+    const failedId = ids[1]!;
+    const enqueued: WebhookDeliveryJob[] = [];
+    const bridge = createWebhookBridge({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      enqueue: async (job) => {
+        if (job.subscriptionId === failedId) throw new Error('queue unavailable');
+        enqueued.push(job);
+      },
+      logger: harness.ctx.logger,
+    });
+    const event = alertEvent(user.id);
+
+    await expect(bridge.handleEvent(event)).rejects.toThrow(
+      'webhook bridge: 1 delivery enqueue failed',
+    );
+    expect(enqueued).toHaveLength(2);
+    expect(enqueued.map((job) => job.subscriptionId)).toEqual(
+      expect.arrayContaining([ids[0], ids[2]]),
+    );
+
+    const replayed: WebhookDeliveryJob[] = [];
+    const replayBridge = createWebhookBridge({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      enqueue: async (job) => {
+        replayed.push(job);
+      },
+      logger: harness.ctx.logger,
+    });
+    await replayBridge.handleEvent(event);
+    await replayBridge.handleEvent(event);
+
+    expect(replayed).toHaveLength(6);
+    for (const id of ids) {
+      const deliveries = replayed.filter((job) => job.subscriptionId === id);
+      expect(deliveries).toHaveLength(2);
+      expect(deliveries[0]!.deliveryId).toBe(deliveries[1]!.deliveryId);
+    }
+  });
+
   /** Read the delivery log for a subscription through its owner. */
   async function deliveriesFor(id: string): Promise<unknown> {
     const owner = await harness.db
@@ -355,6 +410,44 @@ describe('failure handling: retry decision, auto-disable, re-enable', () => {
     // And it delivers again.
     await h.ctx.webhookBridge.handleEvent(alertEvent(user.id));
     expect(failing.requests).toHaveLength(1);
+  });
+
+  it('counts an undecryptable secret toward auto-disable', async () => {
+    const { agent, id, userId } = await createSubscription(['alert.triggered']);
+    const deliveries = createWebhookDeliveryRepository(harness.db);
+    const dispatcher = createWebhookDispatcher({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      deliveries,
+      transport: recorder.transport,
+      encryptionKey: Buffer.alloc(32, 0xff),
+      audit: noopAudit,
+      logger: harness.ctx.logger,
+    });
+
+    for (let index = 0; index < WEBHOOK_AUTO_DISABLE_THRESHOLD; index += 1) {
+      const result = await dispatcher.deliver(
+        {
+          subscriptionId: id,
+          deliveryId: `00000000-0000-8000-8000-${String(index + 1).padStart(12, '0')}`,
+          event: alertEvent(userId),
+        },
+        { attempt: 1, maxAttempts: 1 },
+      );
+      expect(result.outcome).toBe(
+        index === WEBHOOK_AUTO_DISABLE_THRESHOLD - 1 ? 'disabled' : 'failed',
+      );
+    }
+
+    const afterList = webhookSubscriptionListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/webhooks')).body,
+    );
+    expect(afterList.subscriptions[0]!.enabled).toBe(false);
+    expect(afterList.subscriptions[0]!.disabledReason).toBe('auto');
+    expect(afterList.subscriptions[0]!.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD);
+
+    const log = await deliveries.listForSubscription(id, WEBHOOK_AUTO_DISABLE_THRESHOLD);
+    expect(log).toHaveLength(WEBHOOK_AUTO_DISABLE_THRESHOLD);
+    expect(log.every((delivery) => delivery.error === 'secret unavailable')).toBe(true);
   });
 });
 
