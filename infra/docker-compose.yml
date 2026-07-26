@@ -112,6 +112,8 @@ services:
       ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
       RATE_LIMIT_BURST_WINDOW_SEC: '${RATE_LIMIT_BURST_WINDOW_SEC:-10}'
       RATE_LIMIT_BURST_LIMIT: '${RATE_LIMIT_BURST_LIMIT:-60}'
+      # Opt-in Yahoo → Stooq failover for supported equities/ETFs (§13.5 V5-P1c).
+      MARKET_FAILOVER_ENABLED: '${MARKET_FAILOVER_ENABLED:-false}'
       # Push channels (#368) — both optional, SMTP-style gating: unset ⇒ the
       # channel is disabled with one boot warn, nothing crashes. The FCM path
       # points at a MOUNTED service-account JSON (compose.override.yml adds the
@@ -195,6 +197,8 @@ services:
       ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
       RATE_LIMIT_BURST_WINDOW_SEC: '${RATE_LIMIT_BURST_WINDOW_SEC:-10}'
       RATE_LIMIT_BURST_LIMIT: '${RATE_LIMIT_BURST_LIMIT:-60}'
+      # Keep worker market-data jobs on the same provider chain as the api.
+      MARKET_FAILOVER_ENABLED: '${MARKET_FAILOVER_ENABLED:-false}'
       # Push channels (#368) — both optional, SMTP-style gating: unset ⇒ the
       # channel is disabled with one boot warn, nothing crashes. The FCM path
       # points at a MOUNTED service-account JSON (compose.override.yml adds the
