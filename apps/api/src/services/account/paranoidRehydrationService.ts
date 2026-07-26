@@ -5,12 +5,14 @@ import type {
 } from '@bettertrack/contracts';
 import {
   customTaxParamsSchema,
+  mirrorOpPayloadSchema,
   paranoidDisableRehydrationRequestSchema,
   SOURCE_TAG_SYNC_MIRRORCHAIN,
   taxSettingsResponseSchema,
   updateTaxSettingsRequestSchema,
 } from '@bettertrack/contracts';
 import { CASH_MOVEMENT_SIGN } from '@bettertrack/domain/cashLedger';
+import { OversellError, reducePosition } from '@bettertrack/domain/holdings';
 import { viennaYearOf } from '@bettertrack/domain/tax';
 
 import type { Database } from '../../data/db';
@@ -22,6 +24,7 @@ import {
 } from '../../data/repositories/expenseRepository';
 import {
   createParanoidRehydrationSourceRepository,
+  type ParanoidRehydrationMirrorOriginOp,
   type ParanoidRehydrationSourceRepository,
 } from '../../data/repositories/paranoidRehydrationRepository';
 import {
@@ -112,28 +115,96 @@ interface ExactDecimal {
 }
 
 const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
+const NUMBER_DECIMAL_PATTERN = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i;
 const pow10 = (scale: number): bigint => 10n ** BigInt(scale);
-/**
- * Normal batch validation runs against unrounded client quantities with a
- * 1e-9 epsilon, then PostgreSQL rounds every quantity independently to scale 8.
- * Rehydration therefore tracks the raw-input upper envelope at scale 9: one
- * persisted unit is ten envelope units, every row can contribute another
- * half-quantum (five units), and the normal reducer's epsilon is one unit.
- *
- * The envelope is cumulative. A fixed one-quantum allowance is insufficient:
- * several buys that each round down can fund a sell that rounds up by several
- * persisted quanta while still passing normal validation.
- */
-const PERSISTED_TO_RAW_QUANTITY_SCALE = 10n;
-const PERSISTED_QUANTITY_HALF_QUANTUM = 5n;
-const NORMAL_QUANTITY_EPSILON = 1n;
 
-function rawQuantityLowerBound(persistedQuantity: bigint): bigint {
-  return persistedQuantity * PERSISTED_TO_RAW_QUANTITY_SCALE - PERSISTED_QUANTITY_HALF_QUANTUM;
+/**
+ * Repository writes serialize public `number` inputs with `String(value)` before
+ * PostgreSQL rounds them to a fixed-scale numeric. Reproduce that coercion
+ * without crossing through binary multiplication at the column's magnitude.
+ */
+function persistedNumber(value: number, scale: number, label: string): bigint {
+  if (!Number.isFinite(value)) {
+    throw new Error(`${label} has no finite normal-write number`);
+  }
+  const negative = value < 0;
+  const match = NUMBER_DECIMAL_PATTERN.exec(String(Math.abs(value)));
+  if (!match) {
+    throw new Error(`${label} has no normal-write decimal representation`);
+  }
+  const fraction = match[2] ?? '';
+  const exponent = Number(match[3] ?? 0);
+  let coefficient = BigInt(`${match[1]}${fraction}`);
+  let decimalScale = fraction.length - exponent;
+  if (decimalScale < 0) {
+    coefficient *= pow10(-decimalScale);
+    decimalScale = 0;
+  }
+  if (decimalScale <= scale) {
+    coefficient *= pow10(scale - decimalScale);
+  } else {
+    const divisor = pow10(decimalScale - scale);
+    const quotient = coefficient / divisor;
+    const remainder = coefficient % divisor;
+    coefficient = quotient + (remainder * 2n >= divisor ? 1n : 0n);
+  }
+  return negative ? -coefficient : coefficient;
 }
 
-function rawQuantityUpperBound(persistedQuantity: bigint): bigint {
-  return persistedQuantity * PERSISTED_TO_RAW_QUANTITY_SCALE + PERSISTED_QUANTITY_HALF_QUANTUM;
+function fixedScaleDecimal(value: bigint, scale: number): string {
+  const negative = value < 0n;
+  const digits = (negative ? -value : value).toString().padStart(scale + 1, '0');
+  const whole = scale === 0 ? digits : digits.slice(0, -scale);
+  const fraction = scale === 0 ? '' : `.${digits.slice(-scale)}`;
+  return `${negative ? '-' : ''}${whole}${fraction}`;
+}
+
+const FLOAT64_BYTES = new ArrayBuffer(8);
+const FLOAT64_VIEW = new DataView(FLOAT64_BYTES);
+
+function nextPositiveFloat(value: number, direction: 'up' | 'down'): number {
+  if (!(value > 0) || !Number.isFinite(value)) {
+    throw new Error(`cannot step non-positive or non-finite quantity ${value}`);
+  }
+  FLOAT64_VIEW.setFloat64(0, value);
+  const bits = FLOAT64_VIEW.getBigUint64(0);
+  FLOAT64_VIEW.setBigUint64(0, direction === 'up' ? bits + 1n : bits - 1n);
+  return FLOAT64_VIEW.getFloat64(0);
+}
+
+/**
+ * Find the outermost IEEE-754 input whose `String(number)` PostgreSQL rounds to
+ * this persisted scale-8 quantity. Normal admission runs on those numbers, not
+ * ideal decimal intervals: at ~1e12 one ULP is already much wider than a
+ * storage quantum, so exact-decimal accumulation can reject reachable rows.
+ */
+function quantityNumberPreimage(persistedQuantity: bigint, direction: 'upper' | 'lower'): number {
+  const halfQuantumBoundary = persistedQuantity * 10n + (direction === 'upper' ? 5n : -5n);
+  let candidate = Number(fixedScaleDecimal(halfQuantumBoundary, 9));
+  const outward = direction === 'upper' ? 'up' : 'down';
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const stored = persistedNumber(candidate, 8, 'transaction quantity');
+    if (stored === persistedQuantity) break;
+    candidate = nextPositiveFloat(candidate, stored > persistedQuantity ? 'down' : 'up');
+  }
+  if (persistedNumber(candidate, 8, 'transaction quantity') !== persistedQuantity) {
+    // Older/direct repository rows may contain a scale-8 decimal no JavaScript
+    // number serializes back to exactly at this magnitude. Preserve those
+    // byte-exact rows and replay them with the same Number conversion normal
+    // reads use; the differential boundary logic still applies whenever a
+    // public-number preimage exists.
+    return Number(fixedScaleDecimal(persistedQuantity, 8));
+  }
+
+  // The decimal boundary rounds to a neighboring float. Usually the first
+  // matching candidate is already outermost; check its adjacent value so this
+  // remains correct if a runtime chooses the other side of an exact midpoint.
+  const adjacent = nextPositiveFloat(candidate, outward);
+  if (persistedNumber(adjacent, 8, 'transaction quantity') === persistedQuantity) {
+    candidate = adjacent;
+  }
+  return candidate;
 }
 
 function exactDecimal(value: string, label: string): ExactDecimal {
@@ -563,11 +634,171 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
  * as one clean failure and makes the no-write guarantee directly testable.
  */
 interface ValidatedGraph {
-  /** Apparent oversells proven reachable within cumulative scale-8 storage rounding. */
+  /** Apparent persisted oversells proven reachable under normal Number + storage semantics. */
   storageRoundingSellIds: ReadonlySet<string>;
 }
 
-function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGraph {
+function mirrorOriginLookupIds(entities: readonly Entity[]): string[] {
+  return [
+    ...new Set(
+      rows(entities, 'cashMovement').flatMap((movement) => [
+        movement.id,
+        ...(movement.data.transactionId ? [movement.data.transactionId] : []),
+        ...(movement.data.dividendId ? [movement.data.dividendId] : []),
+      ]),
+    ),
+  ];
+}
+
+/**
+ * A surviving local-origin row can be the first negative prefix after a later
+ * MIRRORCHAIN force-delete removes an earlier credit. Its `manual` source tag is
+ * intentionally unchanged, so row provenance alone cannot prove the exception.
+ * The append-only chain oplog can: origin row ids equal their mirror ids, and
+ * ended membership watermarks survive the portfolio purge. Only exact direct
+ * cash rows, or cash rows linked to an op-proven transaction/dividend, inherit
+ * that trusted force-history exception.
+ */
+function mirrorOriginMovementIds(
+  entities: readonly Entity[],
+  originOps: readonly ParanoidRehydrationMirrorOriginOp[],
+): ReadonlySet<string> {
+  const movementsById = new Map(
+    rows(entities, 'cashMovement').map((movement) => [movement.id, movement]),
+  );
+  const transactionsById = new Map(
+    rows(entities, 'transaction').map((transaction) => [transaction.id, transaction]),
+  );
+  const dividendsById = new Map(
+    rows(entities, 'dividend').map((dividend) => [dividend.id, dividend]),
+  );
+  const directMovementIds = new Set<string>();
+  const transactionIds = new Set<string>();
+  const dividendIds = new Set<string>();
+
+  const directMovementMatches = (
+    id: string,
+    expected: {
+      kind: EntityOf<'cashMovement'>['data']['kind'];
+      amountEur: number;
+      executedAt: string;
+      note: string | null;
+      source: string;
+    },
+  ): boolean => {
+    const movement = movementsById.get(id);
+    return (
+      movement !== undefined &&
+      movement.data.kind === expected.kind &&
+      persistedNumeric(movement.data.amountEur, 20, 6, 'cash-movement amount') ===
+        persistedNumber(expected.amountEur, 6, 'mirror cash amount') &&
+      Date.parse(movement.data.executedAt) === Date.parse(expected.executedAt) &&
+      movement.data.note === expected.note &&
+      movement.data.source === expected.source &&
+      movement.data.transactionId === null &&
+      movement.data.dividendId === null
+    );
+  };
+
+  for (const originOp of originOps) {
+    const parsed = mirrorOpPayloadSchema.safeParse(originOp.payload);
+    if (!parsed.success) continue;
+    const payload = parsed.data;
+    const payloadMirrorId =
+      'mirrorId' in payload
+        ? payload.mirrorId
+        : payload.kind === 'cash.transfer'
+          ? payload.outMirrorId
+          : null;
+    if (payloadMirrorId !== originOp.mirrorId) continue;
+    switch (payload.kind) {
+      case 'cash.withdraw':
+        if (
+          directMovementMatches(payload.mirrorId, {
+            kind: 'withdrawal',
+            amountEur: -payload.amountEur,
+            executedAt: payload.executedAt,
+            note: payload.note,
+            source: payload.originSource,
+          })
+        ) {
+          directMovementIds.add(payload.mirrorId);
+        }
+        break;
+      case 'cash.setBalance':
+        if (
+          directMovementMatches(payload.mirrorId, {
+            kind: payload.deltaEur < 0 ? 'withdrawal' : 'deposit',
+            amountEur: payload.deltaEur,
+            executedAt: payload.executedAt,
+            note: payload.note,
+            source: payload.originSource,
+          })
+        ) {
+          directMovementIds.add(payload.mirrorId);
+        }
+        break;
+      case 'cash.transfer':
+        if (
+          directMovementMatches(payload.outMirrorId, {
+            kind: 'transfer_out',
+            amountEur: -payload.amountEur,
+            executedAt: payload.executedAt,
+            note: payload.note,
+            source: payload.originSource,
+          })
+        ) {
+          directMovementIds.add(payload.outMirrorId);
+        }
+        break;
+      case 'tx.create': {
+        const transaction = transactionsById.get(payload.mirrorId);
+        if (
+          transaction &&
+          transaction.data.assetId === payload.assetId &&
+          transaction.data.source === payload.originSource
+        ) {
+          transactionIds.add(payload.mirrorId);
+        }
+        break;
+      }
+      case 'dividend.record': {
+        const dividend = dividendsById.get(payload.mirrorId);
+        if (
+          dividend &&
+          dividend.data.assetId === payload.assetId &&
+          dividend.data.source === payload.originSource &&
+          persistedNumeric(dividend.data.grossAmountEur, 20, 6, 'dividend gross amount') ===
+            persistedNumber(payload.grossAmountEur, 6, 'mirror dividend amount') &&
+          Date.parse(dividend.data.executedAt) === Date.parse(payload.executedAt)
+        ) {
+          dividendIds.add(payload.mirrorId);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  return new Set(
+    rows(entities, 'cashMovement')
+      .filter(
+        (movement) =>
+          directMovementIds.has(movement.id) ||
+          (movement.data.transactionId !== null &&
+            transactionIds.has(movement.data.transactionId)) ||
+          (movement.data.dividendId !== null && dividendIds.has(movement.data.dividendId)),
+      )
+      .map((movement) => movement.id),
+  );
+}
+
+function validateGraph(
+  userId: string,
+  entities: readonly Entity[],
+  mirrorOriginOps: readonly ParanoidRehydrationMirrorOriginOp[],
+): ValidatedGraph {
   validateUniqueRestoredIds(entities);
   validateOwnedRows(userId, entities);
   validatePersistedDates(entities);
@@ -1170,10 +1401,13 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
     (a, b) =>
       Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
   );
-  // Replica application deliberately waives the ordinary solvency gate only
-  // for the operation being force-applied. Preserve that row-level provenance:
-  // a later normal credit may repair an inherited replica deficit, but a normal
-  // debit must not borrow the exemption from another movement on the source.
+  const provenMirrorOriginMovementIds = mirrorOriginMovementIds(entities, mirrorOriginOps);
+  // Replica application waives the ordinary solvency gate for both additive
+  // replica rows and force-deletes/updates. The former retain a sync tag; the
+  // latter can leave a local-origin row as the first negative prefix, so they
+  // require immutable oplog proof. A later ordinary credit may still repair an
+  // inherited deficit, while an unrelated manual debit cannot borrow either
+  // exception from another movement on the source.
   const storageRoundingSellIds = new Set<string>();
 
   try {
@@ -1187,9 +1421,15 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
       const previousBalance = balancesBySource.get(movement.data.sourceId) ?? 0n;
       const balance = previousBalance + amount;
       const isMirrorReplicaMovement = movement.data.source === SOURCE_TAG_SYNC_MIRRORCHAIN;
+      const hasMirrorForceHistory = provenMirrorOriginMovementIds.has(movement.id);
       const repairsInheritedDeficit =
         previousBalance < 0n && amount > 0n && balance > previousBalance;
-      if (balance < 0n && !isMirrorReplicaMovement && !repairsInheritedDeficit) {
+      if (
+        balance < 0n &&
+        !isMirrorReplicaMovement &&
+        !hasMirrorForceHistory &&
+        !repairsInheritedDeficit
+      ) {
         throw new Error(
           `cash source would become negative or deepen at cashMovement[${movement.id}].amountEur=${JSON.stringify(
             movement.data.amountEur,
@@ -1210,35 +1450,45 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
         (a, b) =>
           Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
       );
+      // Maximize every chronological position with the outermost public-number
+      // preimage for each stored quantity, then replay the exact normal-domain
+      // reducer. This captures both independent PostgreSQL rounding and the
+      // reducer's IEEE-754 addition/subtraction (including high-magnitude
+      // cancellation), instead of approximating either with decimal arithmetic.
+      try {
+        reducePosition(
+          orderedTransactions.map((transaction) => ({
+            assetId: transaction.data.assetId,
+            side: transaction.data.side,
+            quantity: quantityNumberPreimage(
+              persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity'),
+              transaction.data.side === 'buy' ? 'upper' : 'lower',
+            ),
+            price: 0,
+            fee: 0,
+            executedAt: transaction.data.executedAt,
+            allowUncovered: transaction.data.allowUncovered,
+          })),
+        );
+      } catch (error) {
+        if (error instanceof OversellError) {
+          throw new Error('transaction would oversell its position');
+        }
+        throw error;
+      }
+
       let persistedHeld = 0n;
-      // Maximum holding the normal reducer could have seen before PostgreSQL
-      // rounded this sequence. Choosing every buy at its upper preimage and
-      // every sell at its lower preimage maximizes every chronological prefix,
-      // so one running bound covers arbitrary batch lengths without accepting
-      // a genuine oversell. Once even that remainder is inside QTY_EPSILON, the
-      // normal reducer clamps it to zero and the rounding envelope resets.
-      let rawHeldUpperBound = 0n;
       for (const transaction of orderedTransactions) {
         const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
         if (transaction.data.side === 'buy') {
           persistedHeld += quantity;
-          rawHeldUpperBound += rawQuantityUpperBound(quantity);
         } else {
           const persistedShortfall = quantity - persistedHeld;
-          const rawSellLowerBound = rawQuantityLowerBound(quantity);
-          const rawSellCanBeCovered =
-            rawSellLowerBound <= rawHeldUpperBound + NORMAL_QUANTITY_EPSILON;
-          if (!rawSellCanBeCovered && !transaction.data.allowUncovered) {
-            throw new Error('transaction would oversell its position');
-          }
           if (persistedShortfall > 0n && !transaction.data.allowUncovered) {
             storageRoundingSellIds.add(transaction.id);
           }
 
           persistedHeld = persistedShortfall > 0n ? 0n : -persistedShortfall;
-          const rawRemainderUpperBound = rawHeldUpperBound - rawSellLowerBound;
-          rawHeldUpperBound =
-            rawRemainderUpperBound > NORMAL_QUANTITY_EPSILON ? rawRemainderUpperBound : 0n;
         }
       }
     }
@@ -1346,7 +1596,12 @@ export function createParanoidRehydrationService(
       // Tombstones exist for client-side merge convergence only. Construct and
       // validate the restore graph from live facts before any database mutation.
       const entities = liveEntities(normalizedRequest.document);
-      const validatedGraph = validateGraph(userId, entities);
+      const preflightRows = createParanoidRehydrationSourceRepository(deps.db);
+      const mirrorOriginOps = await preflightRows.findMirrorOriginOps(
+        userId,
+        mirrorOriginLookupIds(entities),
+      );
+      const validatedGraph = validateGraph(userId, entities, mirrorOriginOps);
 
       return withParanoidRehydrationTransaction(deps.db, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);

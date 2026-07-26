@@ -1,5 +1,5 @@
 import type { VaultStrictDocumentV1 } from '@bettertrack/contracts';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lte } from 'drizzle-orm';
 
 import type { Database } from '../db';
 
@@ -10,6 +10,8 @@ import {
   expenseCategories,
   expenseRules,
   expenseTransactions,
+  mirrorChainMembers,
+  mirrorChainOps,
   portfolioCashMovements,
   portfolioCashSources,
   portfolios,
@@ -23,9 +25,10 @@ import {
 
 /**
  * Transaction-bound source-row primitives for paranoid disable rehydration. This
- * is deliberately not a public write repository: callers receive an executor
- * only from the dedicated rehydration transaction, so no method can commit a
- * partial document or emit the normal write-path's effects before the batch does.
+ * is deliberately not a public write repository. The MIRRORCHAIN provenance
+ * lookup is a preflight-only read on the root executor; every restore method
+ * receives the dedicated rehydration transaction, so none can commit a partial
+ * document or emit normal write-path effects before the batch does.
  */
 
 type Entity = VaultStrictDocumentV1['entities'][number];
@@ -36,7 +39,16 @@ export interface ParanoidRehydrationReferencedAsset {
   currency: string;
 }
 
+export interface ParanoidRehydrationMirrorOriginOp {
+  mirrorId: string;
+  payload: unknown;
+}
+
 export interface ParanoidRehydrationSourceRepository {
+  findMirrorOriginOps(
+    userId: string,
+    mirrorIds: readonly string[],
+  ): Promise<readonly ParanoidRehydrationMirrorOriginOp[]>;
   findReferencedGlobalAssets(
     assetIds: readonly string[],
   ): Promise<readonly ParanoidRehydrationReferencedAsset[]>;
@@ -73,6 +85,38 @@ export function createParanoidRehydrationSourceRepository(
   tx: Database,
 ): ParanoidRehydrationSourceRepository {
   return {
+    async findMirrorOriginOps(userId, mirrorIds) {
+      if (!mirrorIds.length) return [];
+      const found: ParanoidRehydrationMirrorOriginOp[] = [];
+      await forEachChunk([...new Set(mirrorIds)], async (chunk) => {
+        const rows = await tx
+          .select({
+            mirrorId: mirrorChainOps.mirrorId,
+            payload: mirrorChainOps.payload,
+          })
+          .from(mirrorChainOps)
+          .innerJoin(
+            mirrorChainMembers,
+            and(
+              eq(mirrorChainMembers.chainId, mirrorChainOps.chainId),
+              eq(mirrorChainMembers.userId, userId),
+              lte(mirrorChainOps.seq, mirrorChainMembers.appliedSeq),
+            ),
+          )
+          .where(
+            and(
+              eq(mirrorChainOps.actorUserId, userId),
+              isNotNull(mirrorChainOps.mirrorId),
+              inArray(mirrorChainOps.mirrorId, [...chunk]),
+            ),
+          );
+        for (const row of rows) {
+          if (row.mirrorId) found.push({ mirrorId: row.mirrorId, payload: row.payload });
+        }
+      });
+      return found;
+    },
+
     async findReferencedGlobalAssets(assetIds) {
       if (!assetIds.length) return [];
       const found: ParanoidRehydrationReferencedAsset[] = [];

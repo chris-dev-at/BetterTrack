@@ -70,10 +70,10 @@ export interface ReplayRestoredTaxStateInput {
   toEur: TaxReplayToEur;
   /**
    * Sells proven by exact strict-document preflight to exceed their persisted
-   * holding only within the cumulative scale-8 storage-rounding envelope.
-   * Normal batch validation accepted the raw values before PostgreSQL rounded
-   * the rows apart; replay treats only that rounding suffix as uncovered at
-   * sale-price basis.
+   * holding only within the normal write path's IEEE-754 plus scale-8 storage
+   * envelope. Replay treats only that proven persistence suffix as uncovered at
+   * sale-price basis and forces FIFO through its full-close path when aggregate
+   * float addition masks the exact stored shortfall.
    */
   storageRoundingSellIds?: ReadonlySet<string>;
 }
@@ -185,6 +185,7 @@ async function taxableTransactions(
           feeEur: await toEur(row.fee, asset.currency, day),
           executedAt: row.executedAt.toISOString(),
           allowUncovered: row.allowUncovered || storageRoundingSellIds.has(row.id),
+          storageRoundingUncovered: storageRoundingSellIds.has(row.id),
           uncoveredEntryPriceEur:
             row.uncoveredEntryPrice === null
               ? null

@@ -151,6 +151,25 @@ describe('realizedSellsEur', () => {
     expect(sells[1]!.realizedPnlEur).toBe(10);
   });
 
+  it('forces a proven storage-rounding sell through the FIFO full-close path', () => {
+    const rows = [
+      T('b1', 'buy', 300_000_000_000.0004, 1, '2026-01-01T10:00:00Z'),
+      T('b2', 'buy', 300_000_000_000.01245, 1, '2026-01-02T10:00:00Z'),
+      {
+        ...T('s1', 'sell', 600_000_000_000.013, 1, '2026-01-03T10:00:00Z'),
+        allowUncovered: true,
+        storageRoundingUncovered: true,
+      },
+    ];
+
+    expect(realizedSellsEur(rows, 'fifo')).toMatchObject([
+      {
+        id: 's1',
+        uncoveredQuantity: 0,
+      },
+    ]);
+  });
+
   it('tracks assets independently', () => {
     const sells = realizedSellsEur([
       T('b1', 'buy', 1, 100, '2026-01-01T10:00:00Z', 0, 'A'),

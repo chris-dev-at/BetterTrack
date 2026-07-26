@@ -231,6 +231,13 @@ export interface TaxableTransaction {
    */
   allowUncovered?: boolean;
   /**
+   * Internal restore-only proof that fixed-scale persistence made this sell an
+   * apparent oversell even when IEEE-754 aggregation masks the shortfall. It
+   * forces the same full-close path as an acknowledged uncovered sell so FIFO
+   * lot subtraction cannot exhaust after the aggregate comparison said equal.
+   */
+  storageRoundingUncovered?: boolean;
+  /**
    * EUR per-unit basis for the uncovered portion of an {@link allowUncovered}
    * SELL (issue #369; the service converts the user-supplied native price at the
    * sell's trade date). `null`/absent → the uncovered shares take the sale price
@@ -403,7 +410,7 @@ export function realizedSellsEur(
       }
     } else if (t.side === 'sell') {
       const heldUnits = pos.strategy === 'moving-average' ? pos.held : fifoHeld(pos.lots);
-      const oversell = t.quantity > heldUnits + QTY_EPSILON;
+      const oversell = t.storageRoundingUncovered === true || t.quantity > heldUnits + QTY_EPSILON;
       if (oversell && !t.allowUncovered) {
         // Not an acknowledged uncovered sell (issue #369): a genuine oversell in
         // the replay means the caller fed an inconsistent log, and a silently

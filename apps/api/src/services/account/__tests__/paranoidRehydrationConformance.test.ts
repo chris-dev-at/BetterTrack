@@ -14,6 +14,7 @@ import {
   type ParanoidDisableRehydrationRequest,
   type UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
+import { reducePosition } from '@bettertrack/domain/holdings';
 import { eq, inArray } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -601,6 +602,39 @@ const QUANTITY_ROUNDING_VARIANTS = [
   { buyCount: 8, expectedStoredShortfallQuanta: 4n },
 ] as const;
 
+const QUANTITY_FLOAT_VARIANTS = [
+  {
+    name: 'high-magnitude cancellation',
+    rows: [
+      { side: 'buy', quantity: 999_999_999_999 },
+      { side: 'buy', quantity: 0.00007 },
+      { side: 'sell', quantity: 999_999_999_999 },
+      { side: 'sell', quantity: 0.0001 },
+    ],
+    expectedRawRemaining: 0.000022070312499999995,
+    expectedStored: [
+      'buy:999999999999.00000000',
+      'buy:0.00007000',
+      'sell:999999999999.00000000',
+      'sell:0.00010000',
+    ],
+  },
+  {
+    name: 'high-magnitude addition',
+    rows: [
+      { side: 'buy', quantity: 300_000_000_000.0004 },
+      { side: 'buy', quantity: 300_000_000_000.01245 },
+      { side: 'sell', quantity: 600_000_000_000.013 },
+    ],
+    expectedRawRemaining: 0,
+    expectedStored: [
+      'buy:300000000000.00040000',
+      'buy:300000000000.01245000',
+      'sell:600000000000.01300000',
+    ],
+  },
+] as const;
+
 function scale8Integer(value: string): bigint {
   const [whole = '0', fraction = ''] = value.split('.');
   return BigInt(whole) * 100_000_000n + BigInt(fraction.padEnd(8, '0'));
@@ -999,6 +1033,70 @@ const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
       };
     },
   },
+  ...QUANTITY_FLOAT_VARIANTS.map(
+    (variant): ReachableStateCase => ({
+      name: `transaction.quantity IEEE-754 ${variant.name}`,
+      options: { taxNow: () => TEST_NOW },
+      async arrange(harness) {
+        const user = await harness.seedUser();
+        const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+        const custom = await harness.ctx.customAssets.create(user.id, {
+          name: `Quantity ${variant.name}`,
+          category: 'other',
+          currency: 'EUR',
+          smoothing: false,
+        });
+        const inputs = variant.rows.map((row, index) => ({
+          assetId: custom.asset.id,
+          side: row.side,
+          quantity: row.quantity,
+          price: 10,
+          fee: 0,
+          executedAt: `2026-07-23T11:${index.toString().padStart(2, '0')}:00.000Z`,
+        }));
+
+        expect(
+          reducePosition(inputs).quantity,
+          `${variant.name} must remain reachable under the normal IEEE-754 reducer`,
+        ).toBe(variant.expectedRawRemaining);
+        await harness.ctx.portfolio.createTransactions(user.id, portfolioId, inputs);
+
+        return {
+          userId: user.id,
+          focus(document) {
+            return [
+              {
+                field: 'transaction.quantity',
+                value: entities(document, 'transaction')
+                  .filter((entry) => entry.data.assetId === custom.asset.id)
+                  .map((entry) => ({
+                    side: entry.data.side,
+                    quantity: entry.data.quantity,
+                  })),
+              },
+            ];
+          },
+          variantDimensions(document) {
+            const actual = entities(document, 'transaction')
+              .filter((entry) => entry.data.assetId === custom.asset.id)
+              .sort(
+                (a, b) =>
+                  Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) ||
+                  a.id.localeCompare(b.id),
+              )
+              .map((entry) => `${entry.data.side}:${entry.data.quantity}`);
+            return [
+              {
+                name: `${variant.name} persisted quantity`,
+                expected: variant.expectedStored,
+                actual,
+              },
+            ];
+          },
+        };
+      },
+    }),
+  ),
   {
     name: 'cashMovement.amountEur on a detached MIRRORCHAIN overdrawn fork',
     options: { taxNow: () => TEST_NOW },
@@ -1088,6 +1186,129 @@ const REACHABLE_STATE_CASES: readonly ReachableStateCase[] = [
           expect(
             (await restoredHarness.ctx.portfolio.getCashMovements(bob.id, bobForkId)).balanceEur,
           ).toBe(-27.5);
+          await expect(restoredHarness.ctx.mirror.syncedMembership(bobForkId)).resolves.toBeNull();
+        },
+      };
+    },
+  },
+  {
+    name: 'cashMovement manual debit exposed by a MIRRORCHAIN force-delete',
+    options: { taxNow: () => TEST_NOW },
+    async arrange(harness) {
+      const alice = await harness.seedUser({
+        email: 'conformance-mirror-delete-owner@bettertrack.test',
+        username: 'conformance-mirror-delete-owner',
+      });
+      const bob = await harness.seedUser({
+        email: 'conformance-mirror-delete-member@bettertrack.test',
+        username: 'conformance-mirror-delete-member',
+      });
+      const { row: asset } = await createAssetRepository(harness.db).upsertGlobal({
+        providerId: 'test',
+        providerRef: 'CONFORMANCE-MIRROR-DELETE.EUR',
+        type: 'stock',
+        symbol: 'CMRD',
+        name: 'Conformance mirror delete asset',
+        exchange: null,
+        currency: 'EUR',
+      });
+      const alicePortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(alice.id);
+      const { chain } = await harness.ctx.mirror.convertToChain(alice.id, alicePortfolioId, {
+        name: 'Conformance delete family',
+      });
+      const { portfolioId: bobForkId } = await harness.ctx.mirror.attachMemberCopy(
+        chain.id,
+        bob.id,
+      );
+      await harness.ctx.mirror.replicateChain(chain.id);
+      await harness.ctx.tax.updateSettings(bob.id, {
+        mode: 'country_specific',
+        country: 'AT',
+      });
+      await harness.ctx.mirror.submitTransactionsCreate(alice.id, alicePortfolioId, [
+        {
+          assetId: asset.id,
+          side: 'buy',
+          quantity: 1,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-20T10:00:00.000Z',
+        },
+      ]);
+      await harness.ctx.mirror.replicateChain(chain.id);
+
+      const aliceMain = (
+        await harness.ctx.portfolio.listCashSources(alice.id, alicePortfolioId)
+      ).sources.find((source) => source.isMain);
+      if (!aliceMain) throw new Error('expected owner Main cash source');
+      const firstDividend = await harness.ctx.mirror.submitDividendRecord(
+        alice.id,
+        alicePortfolioId,
+        {
+          assetId: asset.id,
+          grossAmountEur: 100,
+          cashSourceId: aliceMain.id,
+          executedAt: '2026-07-21T10:00:00.000Z',
+        },
+      );
+      await harness.ctx.mirror.submitDividendRecord(alice.id, alicePortfolioId, {
+        assetId: asset.id,
+        grossAmountEur: 100,
+        cashSourceId: aliceMain.id,
+        executedAt: '2026-07-22T10:00:00.000Z',
+      });
+      await harness.ctx.mirror.replicateChain(chain.id);
+
+      const bobMain = (await harness.ctx.portfolio.listCashSources(bob.id, bobForkId)).sources.find(
+        (source) => source.isMain,
+      );
+      if (!bobMain) throw new Error('expected member Main cash source');
+      const withdrawal = await harness.ctx.mirror.submitCashWithdraw(bob.id, bobForkId, {
+        sourceId: bobMain.id,
+        amountEur: 80,
+        executedAt: '2026-07-23T10:00:00.000Z',
+      });
+      await harness.ctx.mirror.replicateChain(chain.id);
+      expect((await harness.ctx.portfolio.getCashMovements(bob.id, bobForkId)).balanceEur).toBe(65);
+
+      // Alice's untaxed copy can delete one EUR 100 dividend and remain at EUR
+      // 20. Replica force mode applies that deletion to Bob's Austrian copy,
+      // where the surviving local-origin withdrawal becomes the first negative
+      // prefix (EUR 72.50 - EUR 80 = EUR -7.50).
+      await harness.ctx.mirror.submitDividendDelete(
+        alice.id,
+        alicePortfolioId,
+        firstDividend.dividend.id,
+      );
+      await harness.ctx.mirror.replicateChain(chain.id);
+      expect(
+        (await harness.ctx.portfolio.getCashMovements(alice.id, alicePortfolioId)).balanceEur,
+      ).toBe(20);
+      expect((await harness.ctx.portfolio.getCashMovements(bob.id, bobForkId)).balanceEur).toBe(
+        -7.5,
+      );
+
+      await harness.ctx.mirror.removeMember(alice.id, chain.id, bob.id);
+      await expect(harness.ctx.mirror.syncedMembership(bobForkId)).resolves.toBeNull();
+
+      return {
+        userId: bob.id,
+        focus(document) {
+          const restoredWithdrawal = entities(document, 'cashMovement').find(
+            (entry) => entry.id === withdrawal.movement.id,
+          );
+          return [
+            {
+              field: `cashMovement[${withdrawal.movement.id}].amountEur`,
+              value: restoredWithdrawal?.data.amountEur,
+            },
+            { field: 'cashSource.balanceEur', value: -7.5 },
+          ];
+        },
+        async verifyRestored(restoredHarness) {
+          expect(
+            (await restoredHarness.ctx.portfolio.getCashMovements(bob.id, bobForkId)).balanceEur,
+          ).toBe(-7.5);
           await expect(restoredHarness.ctx.mirror.syncedMembership(bobForkId)).resolves.toBeNull();
         },
       };
