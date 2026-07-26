@@ -164,17 +164,20 @@ export function Modal({
       return;
     }
 
-    const first = focusable[0]!;
-    const last = focusable.at(-1)!;
-    const activeElement = document.activeElement;
+    // Positive tabindex values are ordered across the entire document, not just
+    // this dialog. Drive every Tab transition from the dialog's own sequence so
+    // a background positive-tabindex control cannot become the next stop.
+    const activeIndex = focusable.indexOf(document.activeElement as HTMLElement);
+    const nextIndex = event.shiftKey
+      ? activeIndex <= 0
+        ? focusable.length - 1
+        : activeIndex - 1
+      : activeIndex === -1 || activeIndex === focusable.length - 1
+        ? 0
+        : activeIndex + 1;
 
-    if (event.shiftKey && (activeElement === first || activeElement === dialog)) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && (activeElement === last || activeElement === dialog)) {
-      event.preventDefault();
-      first.focus();
-    }
+    event.preventDefault();
+    focusable[nextIndex]!.focus();
   };
 
   return (

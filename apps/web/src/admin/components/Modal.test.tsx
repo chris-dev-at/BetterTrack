@@ -78,6 +78,34 @@ test('follows positive tabindex order when focusing and wrapping', async () => {
   expect(normal).toHaveFocus();
 });
 
+test('keeps Tab navigation inside the dialog ahead of outside positive tabindex controls', async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <button tabIndex={2}>Outside priority</button>
+      <Modal title="Edit user" onClose={vi.fn()}>
+        <button tabIndex={1}>First local stop</button>
+        <button>Last local stop</button>
+      </Modal>
+      <button>Outside normal</button>
+    </>,
+  );
+
+  const first = screen.getByRole('button', { name: 'First local stop' });
+  const last = screen.getByRole('button', { name: 'Last local stop' });
+
+  expect(first).toHaveFocus();
+
+  await user.tab();
+  expect(last).toHaveFocus();
+
+  await user.tab();
+  expect(first).toHaveFocus();
+
+  await user.tab({ shift: true });
+  expect(last).toHaveFocus();
+});
+
 test('wraps around a checked radio before unchecked group members', async () => {
   const user = userEvent.setup();
   render(
