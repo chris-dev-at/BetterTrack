@@ -242,6 +242,31 @@ test('excludes controls beneath an inert ancestor from the tab order', async () 
   expect(save).toHaveFocus();
 });
 
+test('excludes controls beneath an aria-hidden ancestor from the tab order', async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <Modal title="Edit user" onClose={vi.fn()}>
+        <div aria-hidden="true">
+          <button>Hidden from assistive technology</button>
+        </div>
+        <button>Save changes</button>
+      </Modal>
+      <button>Outside modal</button>
+    </>,
+  );
+
+  const save = screen.getByRole('button', { name: 'Save changes' });
+
+  expect(save).toHaveFocus();
+
+  await user.tab();
+  expect(save).toHaveFocus();
+
+  await user.tab({ shift: true });
+  expect(save).toHaveFocus();
+});
+
 test('treats a summary as a focusable control and skips closed details content', async () => {
   const user = userEvent.setup();
   render(
