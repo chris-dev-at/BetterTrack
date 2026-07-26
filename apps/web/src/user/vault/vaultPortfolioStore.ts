@@ -727,7 +727,7 @@ function reconcilePortfolioDocument(
     reconciled = setEntity(reconciled, change.kind, change.local.id, change.remote);
   }
 
-  reconciled = enforceDeletionCascades(reconciled, context);
+  reconciled = normalizeReconciledStructure(reconciled, context);
   assertPortfolioDocumentInvariants(reconciled);
 
   for (const group of reconcileGroups(changes)) {
@@ -735,7 +735,7 @@ function reconcilePortfolioDocument(
     for (const change of group.changes) {
       candidate = setEntity(candidate, change.kind, change.local.id, change.local);
     }
-    candidate = enforceDeletionCascades(candidate, context);
+    candidate = normalizeReconciledStructure(candidate, context);
 
     try {
       assertPortfolioDocumentInvariants(candidate);
@@ -751,7 +751,7 @@ function reconcilePortfolioDocument(
           compensationEntity(change.local, desired, context),
         );
       }
-      reconciled = enforceDeletionCascades(reconciled, context);
+      reconciled = normalizeReconciledStructure(reconciled, context);
       assertPortfolioDocumentInvariants(reconciled);
     }
   }
@@ -835,6 +835,15 @@ function setEntity(
   };
 }
 
+function normalizeReconciledStructure(
+  document: VaultDocumentV1,
+  context: VaultDocumentReconcileContext,
+): VaultDocumentV1 {
+  const cascaded = enforceDeletionCascades(document, context);
+  const withDefault = normalizeDefaultPortfolio(cascaded, context);
+  return normalizeMainCashSources(withDefault, context);
+}
+
 function enforceDeletionCascades(
   document: VaultDocumentV1,
   context: VaultDocumentReconcileContext,
@@ -875,6 +884,113 @@ function enforceDeletionCascades(
   return next;
 }
 
+function normalizeDefaultPortfolio(
+  document: VaultDocumentV1,
+  context: VaultDocumentReconcileContext,
+): VaultDocumentV1 {
+  const portfolios = liveEntities(document, 'portfolio');
+  const defaultId =
+    portfolios
+      .filter((entity) => nullableStringField(entity.data, 'archivedAt') === null)
+      .sort(
+        (left, right) =>
+          numberField(left.data, 'sortOrder', 0) - numberField(right.data, 'sortOrder', 0) ||
+          left.id.localeCompare(right.id),
+      )[0]?.id ?? null;
+  let next = document;
+
+  for (const portfolio of portfolios) {
+    const shouldBeDefault = portfolio.id === defaultId;
+    if (booleanField(portfolio.data, 'isDefault', false) === shouldBeDefault) continue;
+    next = replaceEntity(
+      next,
+      'portfolio',
+      rewriteEntityData(portfolio, { ...portfolio.data, isDefault: shouldBeDefault }, context),
+    );
+  }
+  return next;
+}
+
+function normalizeMainCashSources(
+  document: VaultDocumentV1,
+  context: VaultDocumentReconcileContext,
+): VaultDocumentV1 {
+  const mainsByPortfolio = new Map<string, VaultEntity[]>();
+  for (const source of liveEntities(document, 'cashSource')) {
+    if (!booleanField(source.data, 'isMain', false)) continue;
+    const portfolioId = stringField(source.data, 'portfolioId');
+    const mains = mainsByPortfolio.get(portfolioId);
+    if (mains == null) {
+      mainsByPortfolio.set(portfolioId, [source]);
+    } else {
+      mains.push(source);
+    }
+  }
+
+  const replacementSourceIds = new Map<string, string>();
+  let next = document;
+  for (const [, mains] of [...mainsByPortfolio].sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    if (mains.length <= 1) continue;
+    const [canonical, ...duplicates] = mains.sort(
+      (left, right) =>
+        Number(nullableStringField(left.data, 'archivedAt') !== null) -
+          Number(nullableStringField(right.data, 'archivedAt') !== null) ||
+        left.id.localeCompare(right.id),
+    );
+    if (canonical == null) continue;
+    for (const duplicate of duplicates) {
+      replacementSourceIds.set(duplicate.id, canonical.id);
+      next = replaceEntity(
+        next,
+        'cashSource',
+        tombstoneEntity(duplicate, context.deviceId, context.reconciledAt),
+      );
+    }
+  }
+
+  if (replacementSourceIds.size === 0) return next;
+  for (const [kind, fields] of CASH_SOURCE_REFERENCE_FIELDS) {
+    for (const entity of liveEntities(next, kind)) {
+      let changed = false;
+      const data = { ...entity.data };
+      for (const field of fields) {
+        const current = nullableStringField(data, field);
+        const replacement = current == null ? null : replacementSourceIds.get(current);
+        if (replacement != null && replacement !== current) {
+          data[field] = replacement;
+          changed = true;
+        }
+      }
+      if (changed) {
+        next = replaceEntity(next, kind, rewriteEntityData(entity, data, context));
+      }
+    }
+  }
+  return next;
+}
+
+const CASH_SOURCE_REFERENCE_FIELDS = [
+  ['transaction', ['cashSourceId']],
+  ['dividend', ['cashSourceId']],
+  ['cashMovement', ['sourceId', 'counterpartSourceId']],
+] as const satisfies readonly [VaultEntityKind, readonly string[]][];
+
+function rewriteEntityData(
+  entity: VaultEntity,
+  data: Record<string, unknown>,
+  context: VaultDocumentReconcileContext,
+): VaultEntity {
+  return {
+    ...entity,
+    rev: entity.rev + 1,
+    editedAt: context.reconciledAt,
+    editedBy: context.deviceId,
+    data,
+  };
+}
+
 function compensationEntity(
   rejected: VaultEntity,
   desired: VaultEntity | undefined,
@@ -903,6 +1019,37 @@ function assertPortfolioDocumentInvariants(document: VaultDocumentV1): void {
   ) {
     throw new VaultAggregateConflictError(
       'A reconciled vault must retain at least one active portfolio.',
+    );
+  }
+  const livePortfolios = liveEntities(document, 'portfolio');
+  const expectedDefaultId =
+    livePortfolios
+      .filter((entity) => nullableStringField(entity.data, 'archivedAt') === null)
+      .sort(
+        (left, right) =>
+          numberField(left.data, 'sortOrder', 0) - numberField(right.data, 'sortOrder', 0) ||
+          left.id.localeCompare(right.id),
+      )[0]?.id ?? null;
+  if (
+    livePortfolios.some(
+      (entity) =>
+        booleanField(entity.data, 'isDefault', false) !== (entity.id === expectedDefaultId),
+    )
+  ) {
+    throw new VaultAggregateConflictError(
+      'A reconciled vault must have exactly one deterministic active default portfolio.',
+    );
+  }
+
+  const mainCounts = new Map<string, number>();
+  for (const source of liveEntities(document, 'cashSource')) {
+    if (!booleanField(source.data, 'isMain', false)) continue;
+    const portfolioId = stringField(source.data, 'portfolioId');
+    mainCounts.set(portfolioId, (mainCounts.get(portfolioId) ?? 0) + 1);
+  }
+  if ([...mainCounts.values()].some((count) => count > 1)) {
+    throw new VaultAggregateConflictError(
+      'A reconciled vault must have at most one live Main cash source per portfolio.',
     );
   }
 
