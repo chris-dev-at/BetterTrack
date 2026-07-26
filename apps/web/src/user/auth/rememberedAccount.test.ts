@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   clearLastLoginIdentifier,
@@ -13,22 +13,28 @@ import {
 
 const REMEMBERED_KEY = 'bettertrack.oauthRemembered';
 const LAST_IDENTIFIER_KEY = 'bettertrack.lastLoginIdentifier';
+const rememberedAccount = {
+  userId: '8d7cf3d6-e8b8-4fa4-98a4-8712cddc05bf',
+  username: 'jane',
+  avatarUrl: null,
+};
 
 beforeEach(() => localStorage.clear());
-afterEach(() => localStorage.clear());
+afterEach(() => {
+  vi.restoreAllMocks();
+  localStorage.clear();
+});
 
 describe('rememberedAccount — the client-side chooser record', () => {
   it('round-trips the remembered identity', () => {
-    writeRememberedAccount({ userId: 'u1', username: 'jane', avatarUrl: null });
-    expect(readRememberedAccount()).toEqual({ userId: 'u1', username: 'jane', avatarUrl: null });
+    writeRememberedAccount(rememberedAccount);
+    expect(readRememberedAccount()).toEqual(rememberedAccount);
   });
 
   it('stores AT MOST user id + username + avatar — never a token or scope', () => {
     // A caller (or a compromised earlier write) tries to smuggle secrets in.
     writeRememberedAccount({
-      userId: 'u1',
-      username: 'jane',
-      avatarUrl: null,
+      ...rememberedAccount,
       // @ts-expect-error — extra fields must never be persisted.
       token: 'super-secret',
       scopes: ['portfolio:read'],
@@ -37,27 +43,39 @@ describe('rememberedAccount — the client-side chooser record', () => {
     expect(Object.keys(JSON.parse(raw)).sort()).toEqual(['avatarUrl', 'userId', 'username']);
     expect(raw).not.toContain('super-secret');
     expect(raw).not.toContain('portfolio:read');
+    expect(readRememberedAccount()).toEqual(rememberedAccount);
   });
 
-  it('strips stray fields on read, even if something wrote them directly', () => {
+  it('rejects and clears a contract-invalid stored record', () => {
     localStorage.setItem(
       REMEMBERED_KEY,
-      JSON.stringify({ userId: 'u1', username: 'jane', avatarUrl: null, token: 'leak' }),
+      JSON.stringify({ ...rememberedAccount, userId: 'not-a-uuid' }),
     );
-    const record = readRememberedAccount();
-    expect(record).toEqual({ userId: 'u1', username: 'jane', avatarUrl: null });
-    expect(record && 'token' in record).toBe(false);
+    expect(readRememberedAccount()).toBeNull();
+    expect(localStorage.getItem(REMEMBERED_KEY)).toBeNull();
   });
 
-  it('returns null (and clears) for a malformed record', () => {
+  it('rejects and clears extra stored fields required by the strict contract', () => {
+    localStorage.setItem(REMEMBERED_KEY, JSON.stringify({ ...rememberedAccount, token: 'leak' }));
+    expect(readRememberedAccount()).toBeNull();
+    expect(localStorage.getItem(REMEMBERED_KEY)).toBeNull();
+  });
+
+  it('returns null and clears corrupt storage', () => {
     localStorage.setItem(REMEMBERED_KEY, '{not json');
     expect(readRememberedAccount()).toBeNull();
-    localStorage.setItem(REMEMBERED_KEY, JSON.stringify({ userId: 42 }));
+    expect(localStorage.getItem(REMEMBERED_KEY)).toBeNull();
+  });
+
+  it('fails closed when local storage is unavailable', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage unavailable');
+    });
     expect(readRememberedAccount()).toBeNull();
   });
 
   it('clears the remembered identity', () => {
-    writeRememberedAccount({ userId: 'u1', username: 'jane', avatarUrl: null });
+    writeRememberedAccount(rememberedAccount);
     clearRememberedAccount();
     expect(readRememberedAccount()).toBeNull();
   });
@@ -96,7 +114,7 @@ describe('lastLoginIdentifier — username-only prefill after a successful login
 
   it('is stored under a key separate from the OAuth device binding (#419)', () => {
     writeLastLoginIdentifier('jane');
-    writeRememberedAccount({ userId: 'u1', username: 'jane', avatarUrl: null });
+    writeRememberedAccount(rememberedAccount);
     // The two records are independent — clearing one leaves the other alone.
     clearLastLoginIdentifier();
     expect(localStorage.getItem(LAST_IDENTIFIER_KEY)).toBeNull();
