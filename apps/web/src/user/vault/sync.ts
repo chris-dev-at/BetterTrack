@@ -42,6 +42,11 @@ export interface VaultSyncEngineOptions {
   writeId: () => string;
   now?: () => string;
   quarantine: VaultQuarantineStore;
+  /**
+   * Installed at engine construction so startup can never publish a pending
+   * branch before its domain invariants have been reconciled.
+   */
+  documentReconciler: VaultDocumentReconciler;
 }
 
 export interface VaultMutationContext {
@@ -66,7 +71,6 @@ export type VaultDocumentReconciler = (
 export interface VaultSyncEngine {
   readonly deviceId: string;
   readonly state: VaultSyncState;
-  setDocumentReconciler(reconciler: VaultDocumentReconciler): void;
   start(): Promise<VaultSyncState>;
   reconnect(): Promise<VaultSyncState>;
   mutate(mutator: (context: VaultMutationContext) => VaultDocumentV1): Promise<VaultSyncState>;
@@ -99,7 +103,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   let remoteObserved: RemoteObservation = { known: false, version: null };
   let operationTail = Promise.resolve();
   let rollbackPersistenceFailure: string | undefined;
-  let documentReconciler: VaultDocumentReconciler = (document) => document;
+  const documentReconciler = options.documentReconciler;
 
   return {
     get deviceId() {
@@ -108,10 +112,6 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
 
     get state() {
       return cloneState(state);
-    },
-
-    setDocumentReconciler(reconciler) {
-      documentReconciler = reconciler;
     },
 
     start() {

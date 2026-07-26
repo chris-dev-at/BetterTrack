@@ -210,6 +210,8 @@ describe('vault document v1', () => {
             editedAt: '2026-07-24T10:00:00.000Z',
             editedBy: UUID_B,
             deletedAt: null,
+            mutationId: UUID_C,
+            atomicMutationIds: [UUID_C],
             data: { name: 'Main' },
           },
         ],
@@ -217,6 +219,10 @@ describe('vault document v1', () => {
     });
     expect(doc.mergeLog).toEqual([]);
     expect(doc.entities.portfolio?.[0]?.data.name).toBe('Main');
+    expect(doc.entities.portfolio?.[0]).toMatchObject({
+      mutationId: UUID_C,
+      atomicMutationIds: [UUID_C],
+    });
   });
 
   it('rejects an unknown entity kind and a wrong schema version', () => {

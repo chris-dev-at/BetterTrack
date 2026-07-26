@@ -250,7 +250,10 @@ export type VaultEntityKind = z.infer<typeof vaultEntityKindSchema>;
  * Per-entity sync metadata (`§2`/`§4`): a uuidv7 id, a monotonic `rev` bumped on
  * every edit, an `editedAt` instant + the writing `editedBy` deviceId, and a
  * `deletedAt` tombstone (kept ≥ 180 days) so long-offline merges stay correct.
- * The entity-granularity merge rules (`§4`) key off exactly these fields.
+ * Newer clients also retain the current mutation id and the stable ids of every
+ * multi-entity mutation that included this entity. Those optional fields keep
+ * old v1 documents readable while preserving atomic membership across later
+ * edits and offline reconciliation.
  */
 export const vaultEntityMetaSchema = z.object({
   id: z.string().uuid(),
@@ -258,6 +261,8 @@ export const vaultEntityMetaSchema = z.object({
   editedAt: z.string().datetime(),
   editedBy: z.string().uuid(),
   deletedAt: z.string().datetime().nullable(),
+  mutationId: z.string().uuid().optional(),
+  atomicMutationIds: z.array(z.string().uuid()).optional(),
 });
 export type VaultEntityMeta = z.infer<typeof vaultEntityMetaSchema>;
 
