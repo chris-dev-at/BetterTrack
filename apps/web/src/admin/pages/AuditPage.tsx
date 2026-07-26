@@ -5,7 +5,7 @@ import type { AuditLogEntry } from '@bettertrack/contracts';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { isAdminTwoFactorSetupRequired, useAuth } from '../AuthContext';
-import { formatDateTime } from '../format';
+import { formatDateTime } from '../../lib/format';
 import { Alert, Button, EmptyState, PageHeader, Spinner } from '../components/ui';
 
 /** Compact one-line rendering of an audit entry's freeform metadata. */

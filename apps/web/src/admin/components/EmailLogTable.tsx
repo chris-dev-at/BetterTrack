@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { EmailLogEntry, EmailLogListResponse } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
-import { formatDateTime } from '../format';
+import { formatDateTime } from '../../lib/format';
 import { Alert, Badge, Button, EmptyState, Spinner } from './ui';
 
 type StatusTone = 'green' | 'red' | 'neutral';
