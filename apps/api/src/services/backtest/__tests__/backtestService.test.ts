@@ -2,6 +2,7 @@ import {
   backtestComparisonResponseSchema,
   backtestResponseSchema,
   MAX_NESTING_DEPTH,
+  sharedSandboxAggregateResponseSchema,
   sharedSandboxPreviewResponseSchema,
 } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
@@ -641,10 +642,8 @@ describe('backtestService.runSharedSandboxPreview', () => {
     // The owner backtesting the same 60/40 A/B basket inline is the ground-truth
     // shared curve; the viewer's sandbox at the shared weights must equal it.
     const ownerPreview = await service.runPreview('u1', PREVIEW);
-    expect(() => sharedSandboxPreviewResponseSchema.parse(sandbox)).not.toThrow();
-    expect(sandbox).not.toHaveProperty('benchmark');
-    expect(sandbox.series).toEqual(ownerPreview.series);
-    expect(sandbox.stats).toEqual(ownerPreview.stats);
+    expect(() => backtestResponseSchema.parse(sandbox)).not.toThrow();
+    expect(sandbox).toEqual(ownerPreview);
   });
 
   it('a weight tweak changes the curve; re-running at the original weights restores it exactly', async () => {
@@ -729,6 +728,7 @@ describe('backtestService.runSharedSandboxPreview', () => {
       await service.runSharedSandboxPreview(VIEWER_ID, input),
       await service.runSharedSandboxPreview(VIEWER_ID, { ...input, mode: 'cash' }),
     ]) {
+      expect(sharedSandboxAggregateResponseSchema.safeParse(response).success).toBe(true);
       expect(sharedSandboxPreviewResponseSchema.safeParse(response).success).toBe(true);
       expect(response).not.toHaveProperty('contributions');
       expect(response).not.toHaveProperty('notice');

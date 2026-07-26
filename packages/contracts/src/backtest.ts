@@ -263,7 +263,8 @@ export type SharedSandboxPosition = z.infer<typeof sharedSandboxPositionSchema>;
  * exact same engine as the Builder preview. Only the top-level weights travel;
  * prices are resolved server-side from the owner-scoped basket, and a nested
  * constituent remains an opaque top-level tweak row while its stored internal
- * weights resolve recursively. The response exposes aggregate results only, so
+ * weights resolve recursively. Flat baskets retain the existing full backtest
+ * response; baskets with nested constituents return aggregate results only, so
  * descendant identities never widen the share. No write is ever issued and
  * there is deliberately no benchmark axis — a viewer must not overlay their own
  * baskets on someone else's share.
@@ -281,19 +282,31 @@ export const sharedSandboxPreviewRequestSchema = z
 export type SharedSandboxPreviewRequest = z.infer<typeof sharedSandboxPreviewRequestSchema>;
 
 /**
- * Aggregate-only response for a shared what-if sandbox. A nested child is
+ * Aggregate-only response shape for a shared what-if sandbox. A nested child is
  * exposed by the shared-conglomerate DTO only as an opaque top-level row, so
  * this endpoint must not return the engine's descendant-level contributions,
  * entry-event identities, benchmark identity, or symbol-bearing notice text.
  * The curve, aggregate statistics and identity-free rebalance dates remain
  * useful for the sandbox without widening the share.
  */
-export const sharedSandboxPreviewResponseSchema = backtestResponseSchema.omit({
+export const sharedSandboxAggregateResponseSchema = backtestResponseSchema.omit({
   contributions: true,
   notice: true,
   benchmark: true,
   entryEvents: true,
 });
+export type SharedSandboxAggregateResponse = z.infer<typeof sharedSandboxAggregateResponseSchema>;
+
+/**
+ * Shared-sandbox response contract. Flat baskets preserve the original full
+ * `BacktestResponse` shape exactly. Only baskets containing nested constituents
+ * use the aggregate-only variant above. Keeping both variants strict rejects a
+ * partially-redacted hybrid response.
+ */
+export const sharedSandboxPreviewResponseSchema = z.union([
+  backtestResponseSchema,
+  sharedSandboxAggregateResponseSchema,
+]);
 export type SharedSandboxPreviewResponse = z.infer<typeof sharedSandboxPreviewResponseSchema>;
 
 // --- N-way conglomerate comparison (§13.5 V5-P6 arc a) ---------------------

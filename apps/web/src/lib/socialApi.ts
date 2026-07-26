@@ -287,8 +287,9 @@ export interface SharedSandboxPreviewParams {
  * tweaks, through the same engine as the Builder preview. Guarded server-side by
  * the same share authorization as {@link getSharedConglomerate} (an unauthorized
  * viewer 404s), and it persists nothing — "reset to shared" is simply this call
- * with the original weights. Nested descendants are resolved server-side but
- * remain opaque: the response carries aggregate curve/stat data only.
+ * with the original weights. Flat baskets retain the original full response;
+ * nested descendants are resolved server-side but remain opaque behind an
+ * aggregate curve/stat response.
  */
 export async function previewSharedConglomerateSandbox(
   conglomerateId: string,

@@ -7,6 +7,7 @@ import {
   backtestPreviewRequestSchema,
   backtestResponseSchema,
   COMPARISON_MAX_SERIES,
+  sharedSandboxAggregateResponseSchema,
   sharedSandboxPreviewResponseSchema,
 } from './backtest';
 
@@ -125,7 +126,7 @@ describe('backtestResponseSchema — benchmark result block (V4-P7)', () => {
   });
 });
 
-describe('sharedSandboxPreviewResponseSchema — descendant-safe aggregate response', () => {
+describe('sharedSandboxPreviewResponseSchema — flat compatibility and nested privacy', () => {
   const aggregateResponse = {
     startDate: '2021-01-04',
     endDate: '2026-01-05',
@@ -144,9 +145,22 @@ describe('sharedSandboxPreviewResponseSchema — descendant-safe aggregate respo
     idleCashAvgPct: null,
   };
 
-  it('accepts aggregate curve/stat data and rejects every identity-bearing engine field', () => {
-    expect(sharedSandboxPreviewResponseSchema.safeParse(aggregateResponse).success).toBe(true);
+  const fullResponse = {
+    ...aggregateResponse,
+    contributions: [],
+    notice: null,
+    benchmark: null,
+    entryEvents: [],
+  };
 
+  it('accepts both complete variants and preserves the legacy flat response fields', () => {
+    expect(sharedSandboxAggregateResponseSchema.safeParse(aggregateResponse).success).toBe(true);
+    expect(sharedSandboxPreviewResponseSchema.safeParse(aggregateResponse).success).toBe(true);
+    expect(sharedSandboxPreviewResponseSchema.parse(fullResponse)).toEqual(fullResponse);
+    expect(backtestResponseSchema.safeParse(fullResponse).success).toBe(true);
+  });
+
+  it('rejects partially-redacted hybrids', () => {
     for (const identityField of [
       { contributions: [] },
       { notice: 'Limited by SECRET' },

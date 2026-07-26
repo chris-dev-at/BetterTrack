@@ -15,6 +15,7 @@ import type {
   HistoryRange,
   PricePoint as ProviderPricePoint,
   RebalanceFrequency,
+  SharedSandboxAggregateResponse,
   SharedSandboxPreviewResponse,
 } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
@@ -222,11 +223,12 @@ export interface BacktestService {
    * a 422). Nested children retain their stored internal weights and resolve
    * through the shared depth-bounded flattener; every resulting asset is then
    * resolved as a PUBLIC catalog asset, so a private custom asset's manual
-   * valuations remain unavailable. The wire result contains aggregate
-   * curve/stat data only; descendant identities and identity-bearing errors
-   * never widen the share. Purely a read: no state is ever written. `reset to
-   * shared` is just this call with the original weights, so it reproduces the
-   * shared curve exactly.
+   * valuations remain unavailable. Flat baskets keep the original full
+   * backtest response; nested baskets return aggregate curve/stat data only,
+   * and descendant identities and identity-bearing errors never widen the
+   * share. Purely a read: no state is ever written. `reset to shared` is just
+   * this call with the original weights, so it reproduces the shared curve
+   * exactly.
    */
   runSharedSandboxPreview(
     viewerId: string,
@@ -705,14 +707,20 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         assetId: position.assetId,
         weight: position.weightPct,
       }));
+      // A nested row hides both descendant identities and its internal
+      // allocation. Even when every flattened asset also happens to be exposed
+      // directly at the root, a full contribution response could reveal the
+      // child's effective weights. Therefore response/error redaction is keyed
+      // to the presence of nesting itself, not to whether flattening introduced
+      // a previously unseen asset id.
+      const hasNestedConstituents = constituents.some(
+        (position) => position.kind === 'conglomerate',
+      );
       // Asset rows at the shared root already expose their identity. Assets
       // reachable only through a nested child remain opaque and must never be
       // named by load failures.
       const exposedAssetIds = new Set(
         constituents.flatMap((position) => (position.kind === 'asset' ? [position.assetId] : [])),
-      );
-      const hasOpaqueDescendants = positions.some(
-        (position) => !exposedAssetIds.has(position.assetId),
       );
       const assets: BacktestAsset[] = [];
       for (const pos of positions) {
@@ -747,13 +755,14 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           rebalance: input.rebalance,
         });
       } catch (err) {
-        throw hasOpaqueDescendants ? mapSharedSandboxEngineError(err) : mapEngineError(err);
+        throw hasNestedConstituents ? mapSharedSandboxEngineError(err) : mapEngineError(err);
       }
       // No Redis memo and no writes: a viewer's slider-wiggle recomputes off the
       // already-warm provider history, and the sandbox never persists a thing.
-      // Shape an aggregate-only DTO: descendant identities in contributions,
-      // entry events and notice text are deliberately absent.
-      return toSharedSandboxResponse(result);
+      // Preserve the original full wire shape for flat baskets. Nested baskets
+      // use the aggregate DTO so descendant identities and effective internal
+      // weights cannot escape through contributions, entry events or notices.
+      return hasNestedConstituents ? toSharedSandboxResponse(result) : toResponse(result, null);
     },
   };
 
@@ -1018,7 +1027,7 @@ function toResponse(
 }
 
 /** Shape a shared sandbox result without any descendant-level identity fields. */
-function toSharedSandboxResponse(r: BacktestResult): SharedSandboxPreviewResponse {
+function toSharedSandboxResponse(r: BacktestResult): SharedSandboxAggregateResponse {
   return {
     startDate: r.startDate,
     endDate: r.endDate,

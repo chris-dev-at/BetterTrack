@@ -70,9 +70,10 @@ export function createBacktestRouter(ctx: AppContext): Router {
   // sandbox: backtest a FRIEND-SHARED conglomerate with the viewer's local weight
   // tweaks. Guarded by the SAME share authorization the shared view uses (inside
   // the service), so an unauthorized viewer gets a 404; the tweak set is pinned
-  // to the shared basket's top-level constituents and the aggregate-only
-  // response never exposes recursively-resolved descendant identities. A pure
-  // read — no writes.
+  // to the shared basket's top-level constituents. Flat baskets keep their
+  // original full response, while nested baskets use an aggregate response that
+  // never exposes recursively-resolved descendant identities. A pure read — no
+  // writes.
   router.post(
     '/shared/:conglomerateId/preview',
     validateParams(conglomerateIdParamSchema),
