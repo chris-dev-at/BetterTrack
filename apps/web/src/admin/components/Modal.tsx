@@ -8,13 +8,26 @@ const FOCUSABLE_SELECTOR = [
   'input:not([disabled]):not([type="hidden"])',
   'select:not([disabled])',
   'textarea:not([disabled])',
+  'summary',
   '[contenteditable="true"]',
-  '[tabindex]:not([tabindex="-1"])',
+  '[tabindex]',
 ].join(',');
+
+function isInClosedDetails(element: HTMLElement) {
+  const closedDetails = element.closest('details:not([open])');
+  return (
+    closedDetails !== null &&
+    !(element.tagName === 'SUMMARY' && element.parentElement === closedDetails)
+  );
+}
 
 function focusableDescendants(container: HTMLElement) {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    (element) => !element.matches(':disabled') && element.getAttribute('aria-hidden') !== 'true',
+    (element) =>
+      element.tabIndex >= 0 &&
+      !element.matches(':disabled') &&
+      element.getAttribute('aria-hidden') !== 'true' &&
+      !isInClosedDetails(element),
   );
 }
 

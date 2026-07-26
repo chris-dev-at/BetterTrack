@@ -49,6 +49,49 @@ test('wraps Tab and Shift+Tab within the dialog', async () => {
   expect(save).toHaveFocus();
 });
 
+test('excludes tabindex=-1 controls when wrapping Tab and Shift+Tab', async () => {
+  const user = userEvent.setup();
+  render(
+    <Modal title="Edit user" onClose={vi.fn()}>
+      <button tabIndex={-1}>Programmatic first</button>
+      <button>Save changes</button>
+      <button tabIndex={-1}>Programmatic last</button>
+    </Modal>,
+  );
+
+  const save = screen.getByRole('button', { name: 'Save changes' });
+
+  expect(save).toHaveFocus();
+
+  await user.tab();
+  expect(save).toHaveFocus();
+
+  await user.tab({ shift: true });
+  expect(save).toHaveFocus();
+});
+
+test('treats a summary as a focusable control and skips closed details content', async () => {
+  const user = userEvent.setup();
+  render(
+    <Modal title="Details" onClose={vi.fn()}>
+      <details>
+        <summary>More details</summary>
+        <button>Hidden detail action</button>
+      </details>
+    </Modal>,
+  );
+
+  const summary = screen.getByText('More details');
+
+  expect(summary).toHaveFocus();
+
+  await user.tab();
+  expect(summary).toHaveFocus();
+
+  await user.tab({ shift: true });
+  expect(summary).toHaveFocus();
+});
+
 test('keeps Escape handling and its accessible title', async () => {
   const user = userEvent.setup();
   const onClose = vi.fn();
