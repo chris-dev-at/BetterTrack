@@ -207,10 +207,17 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
 
         if (emailItems.length > 0 && email && recipient.email) {
           if (deferUntil && quietHours) {
-            await quietHours.enqueueDeferred(
-              deferredSummaryRow(cadence, 'email', emailItems, locale, recipient.id, deferUntil),
-            );
-            deferred += 1;
+            try {
+              await quietHours.enqueueDeferred(
+                deferredSummaryRow(cadence, 'email', emailItems, locale, recipient.id, deferUntil),
+              );
+              deferred += 1;
+            } catch (err) {
+              logger?.warn(
+                { err, cadence, userId: recipient.id, period: group.period, channel: 'email' },
+                'quiet-hours digest defer failed',
+              );
+            }
           } else {
             try {
               await email.sendDigest({
@@ -228,10 +235,17 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
         }
         if (pushItems.length > 0 && fcm) {
           if (deferUntil && quietHours) {
-            await quietHours.enqueueDeferred(
-              deferredSummaryRow(cadence, 'push', pushItems, locale, recipient.id, deferUntil),
-            );
-            deferred += 1;
+            try {
+              await quietHours.enqueueDeferred(
+                deferredSummaryRow(cadence, 'push', pushItems, locale, recipient.id, deferUntil),
+              );
+              deferred += 1;
+            } catch (err) {
+              logger?.warn(
+                { err, cadence, userId: recipient.id, period: group.period, channel: 'push' },
+                'quiet-hours digest defer failed',
+              );
+            }
           } else {
             try {
               await fcm.deliver(recipient.id, pushDigest(cadence, pushItems, locale));
@@ -243,17 +257,24 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
         }
         if (webpushItems.length > 0 && webPush) {
           if (deferUntil && quietHours) {
-            await quietHours.enqueueDeferred(
-              deferredSummaryRow(
-                cadence,
-                'webpush',
-                webpushItems,
-                locale,
-                recipient.id,
-                deferUntil,
-              ),
-            );
-            deferred += 1;
+            try {
+              await quietHours.enqueueDeferred(
+                deferredSummaryRow(
+                  cadence,
+                  'webpush',
+                  webpushItems,
+                  locale,
+                  recipient.id,
+                  deferUntil,
+                ),
+              );
+              deferred += 1;
+            } catch (err) {
+              logger?.warn(
+                { err, cadence, userId: recipient.id, period: group.period, channel: 'webpush' },
+                'quiet-hours digest defer failed',
+              );
+            }
           } else {
             try {
               await webPush.deliver(recipient.id, pushDigest(cadence, webpushItems, locale));
