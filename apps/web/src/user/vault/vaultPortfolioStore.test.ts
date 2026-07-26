@@ -27,7 +27,7 @@ import {
   type VaultEnvelopeHeader,
 } from '@bettertrack/contracts';
 import { InsufficientCashError } from '@bettertrack/domain/cashLedger';
-import { reducePosition } from '@bettertrack/domain/holdings';
+import { OversellError, reducePosition } from '@bettertrack/domain/holdings';
 
 import * as portfolioApi from '../../lib/portfolioApi';
 import { apiPortfolioStore, type PortfolioStore } from '../../lib/portfolioStore';
@@ -180,6 +180,50 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       movement: { kind: 'withdrawal', amountEur: -35 },
       sourceBalanceEur: 65,
       balanceEur: 65,
+    });
+  });
+
+  it('orders equal-time cash writes by UUID before validating solvency', async () => {
+    const withdrawalId = GENERATED_IDS[0];
+    const depositId = GENERATED_IDS[5];
+    const document = initialDocument();
+    document.entities.cashMovement = [
+      vaultEntity(depositId, {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'deposit',
+        amountEur: 100,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: AT,
+        note: null,
+        source: 'manual',
+        createdAt: AT,
+      }),
+    ];
+    const engine = createMutableEngine(document);
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: () => withdrawalId,
+    });
+
+    await expect(
+      store.withdrawCash(PORTFOLIO_ID, {
+        amountEur: 50,
+        sourceId: CASH_SOURCE_ID,
+        executedAt: AT,
+      }),
+    ).rejects.toBeInstanceOf(InsufficientCashError);
+
+    expect(engine.state.active?.header.vaultVersion).toBe(1);
+    expect(engine.state.active?.document.entities.cashMovement).toEqual([
+      expect.objectContaining({ id: depositId, deletedAt: null }),
+    ]);
+    await expect(store.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
+      totals: { cashEur: 100, totalValueEur: 100 },
     });
   });
 
@@ -595,6 +639,51 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     ).rejects.toMatchObject({ code: 'VAULT_OPERATION_UNAVAILABLE' });
     expect(engine.state.active?.document.entities.transaction).toBeUndefined();
     expect(engine.state.active?.header.vaultVersion).toBe(1);
+  });
+
+  it('orders equal-time transactions by UUID before validating holdings', async () => {
+    const sellId = GENERATED_IDS[0];
+    const buyId = GENERATED_IDS[5];
+    const document = initialDocument();
+    document.entities.transaction = [
+      vaultEntity(buyId, {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 1,
+        price: 10,
+        fee: 0,
+        executedAt: AT,
+        note: null,
+        source: 'manual',
+      }),
+    ];
+    const engine = createMutableEngine(document);
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: () => sellId,
+    });
+
+    await expect(
+      store.createTransactions(PORTFOLIO_ID, [
+        {
+          assetId: ASSET_ID,
+          side: 'sell',
+          quantity: 1,
+          price: 12,
+          fee: 0,
+          executedAt: AT,
+        },
+      ]),
+    ).rejects.toBeInstanceOf(OversellError);
+
+    expect(engine.state.active?.header.vaultVersion).toBe(1);
+    expect(engine.state.active?.document.entities.transaction).toEqual([
+      expect.objectContaining({ id: buyId, deletedAt: null }),
+    ]);
+    await expect(store.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
+      holdings: [expect.objectContaining({ quantity: 1 })],
+    });
   });
 
   it.each([

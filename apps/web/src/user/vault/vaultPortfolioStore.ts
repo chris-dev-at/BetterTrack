@@ -544,12 +544,10 @@ async function createCashMovement(
       dividendId: null,
       taxYear: null,
     });
-    projectCashLedgerBySource([
-      ...domainCashMovements(resolved.document, portfolioId),
-      domainCashMovement(entity),
-    ]);
+    const next = appendEntities(resolved.document, 'cashMovement', [entity]);
+    projectCashLedgerBySource(domainCashMovements(next, portfolioId));
     createdId = id;
-    return appendEntities(resolved.document, 'cashMovement', [entity]);
+    return next;
   });
 
   const committedDocument = requireDocument(context.engine);
@@ -1544,6 +1542,7 @@ function domainCashMovements(
 ): SourcedCashMovement[] {
   return liveEntities(document, 'cashMovement')
     .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
+    .sort(compareExecutionOrder)
     .map(domainCashMovement);
 }
 
@@ -1568,8 +1567,28 @@ function assertValidAssetTimeline(
         stringField(entity.data, 'portfolioId') === portfolioId &&
         stringField(entity.data, 'assetId') === assetId,
     )
+    .sort(compareExecutionOrder)
     .map((entity) => transactionFromEntity(document, entity));
   reducePosition(transactions);
+}
+
+/**
+ * Canonical money replay order shared with the persisted API repositories:
+ * normalized execution instant first, then UUIDv7 id for equal instants.
+ */
+function compareExecutionOrder(left: VaultEntity, right: VaultEntity): number {
+  const leftAt = executionTime(left);
+  const rightAt = executionTime(right);
+  return leftAt - rightAt || left.id.localeCompare(right.id);
+}
+
+function executionTime(entity: VaultEntity): number {
+  const executedAt = stringField(entity.data, 'executedAt', entity.editedAt);
+  const parsed = Date.parse(executedAt);
+  if (!Number.isFinite(parsed)) {
+    throw storeError('VAULT_DATA_INVALID', 'A vault money row has an invalid execution date.');
+  }
+  return parsed;
 }
 
 function hasFinancialTransactionPatch(patch: TransactionDataPatch): boolean {
