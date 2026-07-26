@@ -2,7 +2,6 @@ import {
   activityAlertStateSchema,
   audienceMutationResponseSchema,
   audienceStateSchema,
-  backtestResponseSchema,
   followersListResponseSchema,
   followingEntrySchema,
   commentThreadResponseSchema,
@@ -19,6 +18,7 @@ import {
   profileSettingsResponseSchema,
   publicProfileResponseSchema,
   sharedConglomerateDetailResponseSchema,
+  sharedSandboxPreviewResponseSchema,
   sharedLinkResponseSchema,
   sharedPortfolioDetailResponseSchema,
   sharedWatchlistDetailResponseSchema,
@@ -28,7 +28,6 @@ import {
   type AudienceState,
   type BacktestMode,
   type BacktestPreviewRange,
-  type BacktestResponse,
   type CommentThreadResponse,
   type CreateCommentResponse,
   type CreateFriendRequestRequest,
@@ -50,6 +49,7 @@ import {
   type ShareKind,
   type SharedConglomerateDetailResponse,
   type SharedSandboxPosition,
+  type SharedSandboxPreviewResponse,
   type SharedLinkResponse,
   type SharedPortfolioDetailResponse,
   type SharedWatchlistDetailResponse,
@@ -287,14 +287,14 @@ export interface SharedSandboxPreviewParams {
  * tweaks, through the same engine as the Builder preview. Guarded server-side by
  * the same share authorization as {@link getSharedConglomerate} (an unauthorized
  * viewer 404s), and it persists nothing — "reset to shared" is simply this call
- * with the original weights. Only the assets the share already exposes are
- * priced, so nothing leaks beyond the shared view.
+ * with the original weights. Nested descendants are resolved server-side but
+ * remain opaque: the response carries aggregate curve/stat data only.
  */
 export async function previewSharedConglomerateSandbox(
   conglomerateId: string,
   params: SharedSandboxPreviewParams,
   signal?: AbortSignal,
-): Promise<BacktestResponse> {
+): Promise<SharedSandboxPreviewResponse> {
   const data = await apiRequest<unknown>(
     `/backtest/shared/${encodeURIComponent(conglomerateId)}/preview`,
     {
@@ -308,7 +308,7 @@ export async function previewSharedConglomerateSandbox(
       signal,
     },
   );
-  return backtestResponseSchema.parse(data);
+  return sharedSandboxPreviewResponseSchema.parse(data);
 }
 
 /**

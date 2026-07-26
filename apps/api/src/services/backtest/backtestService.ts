@@ -15,6 +15,7 @@ import type {
   HistoryRange,
   PricePoint as ProviderPricePoint,
   RebalanceFrequency,
+  SharedSandboxPreviewResponse,
 } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
@@ -66,6 +67,8 @@ import { FxRateUnavailableError, type CurrencyService } from '../currency/curren
  */
 
 const PREVIEW_TTL_SECONDS = 3600; // 1 h (§6.6).
+const SHARED_SANDBOX_UNAVAILABLE_MESSAGE =
+  'This shared basket can’t be backtested with the selected settings.';
 
 /** Calendar years back for each finite preview range. */
 const RANGE_YEARS: Record<Exclude<BacktestPreviewRange, 'MAX'>, number> = {
@@ -219,15 +222,17 @@ export interface BacktestService {
    * a 422). Nested children retain their stored internal weights and resolve
    * through the shared depth-bounded flattener; every resulting asset is then
    * resolved as a PUBLIC catalog asset, so a private custom asset's manual
-   * valuations remain unavailable. Purely a read: no state is ever written.
-   * `reset to shared` is just this call with the original weights, so it
-   * reproduces the shared curve exactly.
+   * valuations remain unavailable. The wire result contains aggregate
+   * curve/stat data only; descendant identities and identity-bearing errors
+   * never widen the share. Purely a read: no state is ever written. `reset to
+   * shared` is just this call with the original weights, so it reproduces the
+   * shared curve exactly.
    */
   runSharedSandboxPreview(
     viewerId: string,
     input: BacktestSharedSandboxInput,
     opts?: { baseCurrency?: string },
-  ): Promise<BacktestResponse>;
+  ): Promise<SharedSandboxPreviewResponse>;
 }
 
 /**
@@ -320,15 +325,19 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     userId: string,
     assetId: string,
     providerRange: HistoryRange,
-    opts?: { globalOnly?: boolean },
+    opts?: { globalOnly?: boolean; redactIdentity?: boolean },
   ): Promise<BacktestAsset> {
     const row = await assetRepo.findByIdForUser(assetId, userId);
-    if (!row) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
+    if (!row) {
+      if (opts?.redactIdentity) throw sharedSandboxUnavailable();
+      throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
+    }
     // Share-scoped sandbox (V5-P6 arc c): a custom asset's price history is the
     // owner's private manual valuations — absent from the read-only share — so a
     // viewer's backtest must never surface it. The existence is already exposed
     // (its symbol/name are in the shared view), so this is a plain 422, not a 404.
     if (opts?.globalOnly && row.ownerId !== null) {
+      if (opts.redactIdentity) throw sharedSandboxUnavailable();
       throw unprocessable(
         `${row.symbol} is a private custom asset and can’t be backtested in a shared sandbox.`,
         'SANDBOX_PRIVATE_ASSET',
@@ -339,6 +348,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       providerRange,
     );
     if (prices.length === 0) {
+      if (opts?.redactIdentity) throw sharedSandboxUnavailable();
       throw unprocessable(
         `No price history available for ${row.symbol} to backtest.`,
         'NO_PRICE_HISTORY',
@@ -695,10 +705,22 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         assetId: position.assetId,
         weight: position.weightPct,
       }));
+      // Asset rows at the shared root already expose their identity. Assets
+      // reachable only through a nested child remain opaque and must never be
+      // named by load failures.
+      const exposedAssetIds = new Set(
+        constituents.flatMap((position) => (position.kind === 'asset' ? [position.assetId] : [])),
+      );
+      const hasOpaqueDescendants = positions.some(
+        (position) => !exposedAssetIds.has(position.assetId),
+      );
       const assets: BacktestAsset[] = [];
       for (const pos of positions) {
         assets.push(
-          await loadBasketAsset(owner.ownerId, pos.assetId, providerRange, { globalOnly: true }),
+          await loadBasketAsset(owner.ownerId, pos.assetId, providerRange, {
+            globalOnly: true,
+            redactIdentity: !exposedAssetIds.has(pos.assetId),
+          }),
         );
       }
 
@@ -725,11 +747,13 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           rebalance: input.rebalance,
         });
       } catch (err) {
-        throw mapEngineError(err);
+        throw hasOpaqueDescendants ? mapSharedSandboxEngineError(err) : mapEngineError(err);
       }
       // No Redis memo and no writes: a viewer's slider-wiggle recomputes off the
       // already-warm provider history, and the sandbox never persists a thing.
-      return toResponse(result, null);
+      // Shape an aggregate-only DTO: descendant identities in contributions,
+      // entry events and notice text are deliberately absent.
+      return toSharedSandboxResponse(result);
     },
   };
 
@@ -873,6 +897,23 @@ function mapEngineError(err: unknown): unknown {
   return err;
 }
 
+/** One identity-free data-state outcome for errors involving opaque descendants. */
+function sharedSandboxUnavailable() {
+  return unprocessable(SHARED_SANDBOX_UNAVAILABLE_MESSAGE, 'BACKTEST_UNAVAILABLE');
+}
+
+/**
+ * The pure engine includes asset symbols in several data-state errors. When a
+ * shared nested sandbox resolves opaque descendants, those messages collapse
+ * to one identity-free outcome.
+ */
+function mapSharedSandboxEngineError(err: unknown): unknown {
+  if (err instanceof BacktestError || err instanceof FxRateUnavailableError) {
+    return sharedSandboxUnavailable();
+  }
+  return err;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -971,6 +1012,20 @@ function toResponse(
       symbol: e.symbol,
       date: e.date,
     })),
+    rebalanceEvents: r.rebalanceEvents.map((e) => ({ date: e.date })),
+    idleCashAvgPct: r.idleCashAvgPct,
+  };
+}
+
+/** Shape a shared sandbox result without any descendant-level identity fields. */
+function toSharedSandboxResponse(r: BacktestResult): SharedSandboxPreviewResponse {
+  return {
+    startDate: r.startDate,
+    endDate: r.endDate,
+    series: r.series.map((p) => ({ date: p.date, value: p.value })),
+    stats: toStats(r.stats),
+    mode: r.mode,
+    rebalance: r.rebalance,
     rebalanceEvents: r.rebalanceEvents.map((e) => ({ date: e.date })),
     idleCashAvgPct: r.idleCashAvgPct,
   };

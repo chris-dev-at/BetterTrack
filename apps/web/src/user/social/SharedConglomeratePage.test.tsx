@@ -4,7 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi, type Mock } from 'vitest';
 
-import type { BacktestResponse, SharedConglomerateDetailResponse } from '@bettertrack/contracts';
+import type {
+  SharedConglomerateDetailResponse,
+  SharedSandboxPreviewResponse,
+} from '@bettertrack/contracts';
 
 vi.mock('../../lib/socialApi', () => ({
   getSharedConglomerate: vi.fn(),
@@ -93,7 +96,7 @@ const nestedDetail: SharedConglomerateDetailResponse = {
   ],
 };
 
-const previewResponse: BacktestResponse = {
+const previewResponse: SharedSandboxPreviewResponse = {
   startDate: '2020-01-01',
   endDate: '2021-01-01',
   series: [
@@ -108,12 +111,8 @@ const previewResponse: BacktestResponse = {
     bestDay: null,
     worstDay: null,
   },
-  contributions: [],
-  notice: null,
-  benchmark: null,
   mode: 'clip',
   rebalance: 'none',
-  entryEvents: [],
   rebalanceEvents: [],
   idleCashAvgPct: null,
 };

@@ -2,6 +2,7 @@ import {
   backtestComparisonResponseSchema,
   backtestResponseSchema,
   MAX_NESTING_DEPTH,
+  sharedSandboxPreviewResponseSchema,
 } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
@@ -76,6 +77,15 @@ const CLOSES: Record<string, Array<{ date: string; close: number }>> = {
     { date: '2026-01-02', close: 10 },
     { date: '2026-01-05', close: 11 },
   ],
+  HIDDEN_EARLY: [
+    { date: '2025-12-30', close: 20 },
+    { date: '2026-01-02', close: 22 },
+    { date: '2026-01-05', close: 24 },
+  ],
+  HIDDEN_LATE: [
+    { date: '2026-01-02', close: 30 },
+    { date: '2026-01-05', close: 33 },
+  ],
   // Preset fallback identity (unseeded catalog): +10 % over the window.
   '^GSPC': [
     { date: '2025-12-30', close: 5000 },
@@ -97,6 +107,13 @@ const CUSTOM_CONG_ID = '018f0000-0000-7000-8000-000000000003';
 /** The middle and root baskets of a valid root → child → grandchild depth-3 chain. */
 const DEEP_MID_ID = '018f0000-0000-7000-8000-000000000004';
 const DEEP_ROOT_ID = '018f0000-0000-7000-8000-000000000005';
+/** Opaque nested fixtures used to prove the shared response never names descendants. */
+const HIDDEN_CHILD_ID = '018f0000-0000-7000-8000-000000000006';
+const HIDDEN_ROOT_ID = '018f0000-0000-7000-8000-000000000007';
+/** Opaque nested fixtures for private/no-history descendant error redaction. */
+const HIDDEN_CUSTOM_ROOT_ID = '018f0000-0000-7000-8000-000000000008';
+const HIDDEN_NO_HISTORY_CHILD_ID = '018f0000-0000-7000-8000-000000000009';
+const HIDDEN_NO_HISTORY_ROOT_ID = '018f0000-0000-7000-8000-00000000000a';
 /** The friend viewing u1's shared baskets in the arc-c sandbox tests. */
 const VIEWER_ID = 'v1';
 
@@ -167,6 +184,46 @@ function createHarness() {
           positions: [{ kind: 'conglomerate', childId: DEEP_MID_ID, weightPct: 100 }],
         };
       }
+      if (id === HIDDEN_CHILD_ID) {
+        return {
+          id: HIDDEN_CHILD_ID,
+          name: 'Opaque Child',
+          positions: [
+            { kind: 'asset', assetId: 'HIDDEN_EARLY', weightPct: 50 },
+            { kind: 'asset', assetId: 'HIDDEN_LATE', weightPct: 50 },
+          ],
+        };
+      }
+      if (id === HIDDEN_ROOT_ID) {
+        return {
+          id: HIDDEN_ROOT_ID,
+          name: 'Opaque Root',
+          positions: [{ kind: 'conglomerate', childId: HIDDEN_CHILD_ID, weightPct: 100 }],
+        };
+      }
+      if (id === HIDDEN_CUSTOM_ROOT_ID) {
+        return {
+          id: HIDDEN_CUSTOM_ROOT_ID,
+          name: 'Opaque Custom Root',
+          positions: [{ kind: 'conglomerate', childId: CUSTOM_CONG_ID, weightPct: 100 }],
+        };
+      }
+      if (id === HIDDEN_NO_HISTORY_CHILD_ID) {
+        return {
+          id: HIDDEN_NO_HISTORY_CHILD_ID,
+          name: 'Opaque No-history Child',
+          positions: [{ kind: 'asset', assetId: 'SECRET_NO_HISTORY', weightPct: 100 }],
+        };
+      }
+      if (id === HIDDEN_NO_HISTORY_ROOT_ID) {
+        return {
+          id: HIDDEN_NO_HISTORY_ROOT_ID,
+          name: 'Opaque No-history Root',
+          positions: [
+            { kind: 'conglomerate', childId: HIDDEN_NO_HISTORY_CHILD_ID, weightPct: 100 },
+          ],
+        };
+      }
       return null;
     },
   } as unknown as ConglomerateRepository;
@@ -205,7 +262,15 @@ function createHarness() {
     // u1's shared baskets; everyone/everything else is a 404.
     authorizeConglomerateRead: async (viewerId: string, conglomerateId: string) =>
       viewerId === VIEWER_ID &&
-      [CONG_ID, NESTED_ID, CUSTOM_CONG_ID, DEEP_ROOT_ID].includes(conglomerateId)
+      [
+        CONG_ID,
+        NESTED_ID,
+        CUSTOM_CONG_ID,
+        DEEP_ROOT_ID,
+        HIDDEN_ROOT_ID,
+        HIDDEN_CUSTOM_ROOT_ID,
+        HIDDEN_NO_HISTORY_ROOT_ID,
+      ].includes(conglomerateId)
         ? { ownerId: 'u1' }
         : undefined,
     // Fixed clock: the 1Y window ends 2026-01-05 and the engine clips to the
@@ -576,8 +641,8 @@ describe('backtestService.runSharedSandboxPreview', () => {
     // The owner backtesting the same 60/40 A/B basket inline is the ground-truth
     // shared curve; the viewer's sandbox at the shared weights must equal it.
     const ownerPreview = await service.runPreview('u1', PREVIEW);
-    expect(() => backtestResponseSchema.parse(sandbox)).not.toThrow();
-    expect(sandbox.benchmark).toBeNull();
+    expect(() => sharedSandboxPreviewResponseSchema.parse(sandbox)).not.toThrow();
+    expect(sandbox).not.toHaveProperty('benchmark');
     expect(sandbox.series).toEqual(ownerPreview.series);
     expect(sandbox.stats).toEqual(ownerPreview.stats);
   });
@@ -647,6 +712,65 @@ describe('backtestService.runSharedSandboxPreview', () => {
     for (let index = 0; index < sandbox.series.length; index += 1) {
       expect(sandbox.series[index]!.date).toBe(handFlattened.series[index]!.date);
       expect(sandbox.series[index]!.value).toBeCloseTo(handFlattened.series[index]!.value, 10);
+    }
+  });
+
+  it('never serializes hidden descendant identities through contributions, notices or entry events', async () => {
+    const { service } = createHarness();
+    const input = {
+      conglomerateId: HIDDEN_ROOT_ID,
+      positions: [{ id: HIDDEN_CHILD_ID, weight: 100 }],
+      range: '1Y' as const,
+    };
+
+    // Clip would normally name HIDDEN_LATE in its limiting notice; cash would
+    // normally name HIDDEN_EARLY in its notice and HIDDEN_LATE in an entry event.
+    for (const response of [
+      await service.runSharedSandboxPreview(VIEWER_ID, input),
+      await service.runSharedSandboxPreview(VIEWER_ID, { ...input, mode: 'cash' }),
+    ]) {
+      expect(sharedSandboxPreviewResponseSchema.safeParse(response).success).toBe(true);
+      expect(response).not.toHaveProperty('contributions');
+      expect(response).not.toHaveProperty('notice');
+      expect(response).not.toHaveProperty('benchmark');
+      expect(response).not.toHaveProperty('entryEvents');
+      const wire = JSON.stringify(response);
+      expect(wire).not.toContain('"HIDDEN_EARLY"');
+      expect(wire).not.toContain('"HIDDEN_LATE"');
+    }
+  });
+
+  it.each([
+    {
+      label: 'private custom asset',
+      conglomerateId: HIDDEN_CUSTOM_ROOT_ID,
+      childId: CUSTOM_CONG_ID,
+      hiddenIdentity: 'CUSTOM',
+    },
+    {
+      label: 'asset with no price history',
+      conglomerateId: HIDDEN_NO_HISTORY_ROOT_ID,
+      childId: HIDDEN_NO_HISTORY_CHILD_ID,
+      hiddenIdentity: 'SECRET_NO_HISTORY',
+    },
+  ])('redacts a hidden descendant $label from errors', async (fixture) => {
+    const { service } = createHarness();
+    const caught: unknown = await service
+      .runSharedSandboxPreview(VIEWER_ID, {
+        conglomerateId: fixture.conglomerateId,
+        positions: [{ id: fixture.childId, weight: 100 }],
+        range: '1Y',
+      })
+      .catch((error: unknown) => error);
+
+    expect(caught).toMatchObject({
+      statusCode: 422,
+      code: 'BACKTEST_UNAVAILABLE',
+      message: 'This shared basket can’t be backtested with the selected settings.',
+    });
+    expect(caught).toBeInstanceOf(Error);
+    if (caught instanceof Error) {
+      expect(caught.message).not.toContain(fixture.hiddenIdentity);
     }
   });
 

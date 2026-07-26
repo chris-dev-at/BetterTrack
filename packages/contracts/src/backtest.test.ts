@@ -7,6 +7,7 @@ import {
   backtestPreviewRequestSchema,
   backtestResponseSchema,
   COMPARISON_MAX_SERIES,
+  sharedSandboxPreviewResponseSchema,
 } from './backtest';
 
 const UUID_A = '018f0000-0000-7000-8000-00000000000a';
@@ -121,6 +122,44 @@ describe('backtestResponseSchema — benchmark result block (V4-P7)', () => {
       idleCashAvgPct: null,
     };
     expect(backtestResponseSchema.safeParse(response).success).toBe(true);
+  });
+});
+
+describe('sharedSandboxPreviewResponseSchema — descendant-safe aggregate response', () => {
+  const aggregateResponse = {
+    startDate: '2021-01-04',
+    endDate: '2026-01-05',
+    series: [{ date: '2021-01-04', value: 100 }],
+    stats: {
+      totalReturnPct: 12.5,
+      cagrPct: 2.4,
+      maxDrawdownPct: -8,
+      volatilityPct: 14,
+      bestDay: { date: '2022-03-01', returnPct: 3 },
+      worstDay: { date: '2022-03-02', returnPct: -3 },
+    },
+    mode: 'clip',
+    rebalance: 'quarterly',
+    rebalanceEvents: [{ date: '2021-04-01' }],
+    idleCashAvgPct: null,
+  };
+
+  it('accepts aggregate curve/stat data and rejects every identity-bearing engine field', () => {
+    expect(sharedSandboxPreviewResponseSchema.safeParse(aggregateResponse).success).toBe(true);
+
+    for (const identityField of [
+      { contributions: [] },
+      { notice: 'Limited by SECRET' },
+      { benchmark: null },
+      { entryEvents: [] },
+    ]) {
+      expect(
+        sharedSandboxPreviewResponseSchema.safeParse({
+          ...aggregateResponse,
+          ...identityField,
+        }).success,
+      ).toBe(false);
+    }
   });
 });
 

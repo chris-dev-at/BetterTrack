@@ -4,9 +4,9 @@ import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  backtestResponseSchema,
   mySharedResponseSchema,
   sharedConglomerateDetailResponseSchema,
+  sharedSandboxPreviewResponseSchema,
   sharedPortfolioDetailResponseSchema,
   sharedWatchlistDetailResponseSchema,
   sharedWithMeResponseSchema,
@@ -622,8 +622,11 @@ describe('shared conglomerate what-if sandbox', () => {
       });
 
     expect(res.status).toBe(200);
-    expect(backtestResponseSchema.safeParse(res.body).success).toBe(true);
-    expect(res.body.benchmark).toBeNull();
+    expect(sharedSandboxPreviewResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body).not.toHaveProperty('contributions');
+    expect(res.body).not.toHaveProperty('notice');
+    expect(res.body).not.toHaveProperty('benchmark');
+    expect(res.body).not.toHaveProperty('entryEvents');
     expect(res.body.series.length).toBeGreaterThan(0);
   });
 

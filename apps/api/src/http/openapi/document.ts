@@ -256,6 +256,7 @@ const componentSchemas = {
   BacktestComparisonRequest: contracts.backtestComparisonRequestSchema,
   BacktestComparisonResponse: contracts.backtestComparisonResponseSchema,
   SharedSandboxPreviewRequest: contracts.sharedSandboxPreviewRequestSchema,
+  SharedSandboxPreviewResponse: contracts.sharedSandboxPreviewResponseSchema,
 
   // Ideas (§13.4 V4-P9)
   IdeaListResponse: contracts.ideaListResponseSchema,
@@ -2349,7 +2350,7 @@ const endpoints: EndpointDef[] = [
     params: contracts.conglomerateIdParamSchema,
     body: R.SharedSandboxPreviewRequest,
     status: 200,
-    response: R.BacktestResponse,
+    response: R.SharedSandboxPreviewResponse,
   },
 
   // Ideas (§13.4 V4-P9) — saved & shareable Workboard analyses
