@@ -47,6 +47,7 @@ const componentSchemas = {
     contracts.prepareParanoidMediaVerificationResponseSchema,
   PatchParanoidMediaRequest: contracts.patchParanoidMediaRequestSchema,
   PatchParanoidMediaResponse: contracts.patchParanoidMediaResponseSchema,
+  ParanoidServerCandidateMetadata: contracts.paranoidServerCandidateMetadataSchema,
 
   // Auth (§6.1)
   LoginRequest: contracts.loginRequestSchema,
@@ -699,10 +700,10 @@ const endpoints: EndpointDef[] = [
   },
   {
     method: 'put',
-    path: '/account/paranoid/media/server',
+    path: '/account/paranoid/media/server-candidate',
     tag: 'Account',
     summary:
-      'Atomically store an opaque Drive-source envelope and activate the server medium. Drive-only state and server bytes change in one transaction.',
+      'Stage an expiring inactive server candidate. This does not activate the server medium.',
     body: z.string().openapi({
       type: 'string',
       format: 'binary',
@@ -710,7 +711,31 @@ const endpoints: EndpointDef[] = [
     }),
     bodyContentType: 'application/octet-stream',
     status: 200,
-    response: R.PatchParanoidMediaResponse,
+    response: R.ParanoidServerCandidateMetadata,
+  },
+  {
+    method: 'get',
+    path: '/account/paranoid/media/server-candidate/{candidateId}',
+    tag: 'Account',
+    summary:
+      'Read one exact owner-scoped inactive server candidate for browser authentication before promotion.',
+    params: contracts.paranoidServerCandidateParamSchema,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'The exact staged opaque AES-256-GCM vault envelope.',
+    }),
+    responseContentType: 'application/octet-stream',
+  },
+  {
+    method: 'delete',
+    path: '/account/paranoid/media/server-candidate/{candidateId}',
+    tag: 'Account',
+    summary: 'Discard an inactive server candidate after failed verification or abandonment.',
+    params: contracts.paranoidServerCandidateParamSchema,
+    status: 200,
+    response: R.OkResponse,
   },
   {
     method: 'get',

@@ -65,6 +65,7 @@ describe('paranoid table classification completeness', () => {
       // The ciphertext rows are ciphertext + version metadata only (§1).
       'paranoid_vaults',
       'paranoid_vault_history',
+      'paranoid_vault_server_candidates',
     ]) {
       expect(PARANOID_TABLE_CLASSIFICATION[table], `${table} should be server`).toBe('server');
     }

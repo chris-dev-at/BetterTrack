@@ -5,6 +5,7 @@ import {
   encodeVaultEnvelope,
   parseVaultEtag,
   paranoidMediaStatusResponseSchema,
+  paranoidServerCandidateMetadataSchema,
   patchParanoidMediaRequestSchema,
   prepareParanoidMediaVerificationRequestSchema,
   privacyModeSchema,
@@ -128,6 +129,26 @@ describe('media set', () => {
         driveAttestedVersion: 7,
       }).success,
     ).toBe(false);
+
+    const candidate = {
+      candidateId: UUID_A,
+      version: 7,
+      formatVersion: 1,
+      sizeBytes: 4096,
+      expiresAt: '2026-07-24T10:10:00.000Z',
+    };
+    expect(paranoidServerCandidateMetadataSchema.parse(candidate)).toEqual(candidate);
+    expect(
+      prepareParanoidMediaVerificationRequestSchema.parse({
+        expected: { mediaSet: ['drive'], driveAttestedVersion: 7 },
+        nextMediaSet: ['server', 'drive'],
+        verification: {
+          medium: 'server',
+          version: 7,
+          serverCandidateId: candidate.candidateId,
+        },
+      }),
+    ).toMatchObject({ verification: { serverCandidateId: candidate.candidateId } });
   });
 });
 

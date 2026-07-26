@@ -63,6 +63,11 @@ export const VAULT_HISTORY_PAGE_DEFAULT = 10;
 export const VAULT_HISTORY_PAGE_MAX = 10;
 /** PostgreSQL `integer` ceiling shared by live and retained vault versions. */
 export const VAULT_VERSION_MAX = 2_147_483_647;
+/** Browser-visible lifetime of one inactive server-medium staging candidate. */
+export const VAULT_SERVER_CANDIDATE_TTL_MS = 10 * 60 * 1000;
+/** Safe response headers binding a raw staged-candidate read to its metadata. */
+export const VAULT_SERVER_CANDIDATE_ID_HEADER = 'X-BetterTrack-Vault-Candidate-Id';
+export const VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER = 'X-BetterTrack-Vault-Candidate-Expires-At';
 
 // ── Privacy mode + media set ─────────────────────────────────────────────────
 
@@ -124,6 +129,12 @@ export const vaultMediaVerificationClaimSchema = z
   .object({
     medium: vaultMediumSchema,
     version: z.number().int().min(1).max(VAULT_VERSION_MAX),
+    /**
+     * Present only while promoting an inactive server candidate. Binding this
+     * opaque id into the signed proof prevents a different staged blob with the
+     * same structural version from being activated after browser verification.
+     */
+    serverCandidateId: z.string().uuid().optional(),
   })
   .strict();
 export type VaultMediaVerificationClaim = z.infer<typeof vaultMediaVerificationClaimSchema>;
@@ -206,6 +217,29 @@ export type PatchParanoidMediaRequest = z.infer<typeof patchParanoidMediaRequest
 
 export const patchParanoidMediaResponseSchema = vaultMediaStateSchema;
 export type PatchParanoidMediaResponse = z.infer<typeof patchParanoidMediaResponseSchema>;
+
+/**
+ * Portfolio-free receipt for an inactive server candidate. The ciphertext is
+ * read separately as raw bytes so the browser can decrypt/authenticate the
+ * exact staged object before it is promoted into the live DataHome.
+ */
+export const paranoidServerCandidateMetadataSchema = z
+  .object({
+    candidateId: z.string().uuid(),
+    version: z.number().int().min(1).max(VAULT_VERSION_MAX),
+    formatVersion: z.number().int().positive(),
+    sizeBytes: z.number().int().positive(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type ParanoidServerCandidateMetadata = z.infer<typeof paranoidServerCandidateMetadataSchema>;
+
+export const paranoidServerCandidateParamSchema = z
+  .object({
+    candidateId: z.string().uuid(),
+  })
+  .strict();
+export type ParanoidServerCandidateParam = z.infer<typeof paranoidServerCandidateParamSchema>;
 
 // ── Version + envelope header ────────────────────────────────────────────────
 

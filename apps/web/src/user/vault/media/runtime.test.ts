@@ -78,6 +78,56 @@ function memoryHome<M extends 'server' | 'drive'>(
 }
 
 describe('unlocked Drive runtime composition', () => {
+  it('keeps the token until a persisted Drive cleanup retry completes', async () => {
+    let cleanupPending = true;
+    const remove = vi
+      .fn<VaultMediaSwitcher['remove']>()
+      .mockResolvedValueOnce({
+        status: 'ok-with-drive-leftover',
+        state: { mediaSet: ['server'], driveAttestedVersion: null },
+        deleteResult: {
+          status: 'transport-failure',
+          medium: 'drive',
+          failure: { kind: 'api-failure', message: 'delete failed' },
+        },
+      })
+      .mockImplementationOnce(async () => {
+        cleanupPending = false;
+        return {
+          status: 'no-op',
+          state: { mediaSet: ['server'], driveAttestedVersion: null },
+        };
+      });
+    const switcher: VaultMediaSwitcher = {
+      switchTo: vi.fn(),
+      add: vi.fn(),
+      remove,
+      needsDriveCleanup: () => cleanupPending,
+    };
+    const disconnect = vi.fn(async () => undefined);
+    const tokens: GoogleDriveTokenClient = {
+      prepare: vi.fn(async () => undefined),
+      token: vi.fn(),
+      authorize: vi.fn(),
+      disconnect,
+      invalidate: vi.fn(),
+      status: () => ({ status: 'ready', expiresAt: Date.now() + 60_000 }),
+    };
+    const controller = createVaultDriveConnectionController({ tokens, switcher });
+    const media: VaultMediaState = { mediaSet: ['server'], driveAttestedVersion: null };
+
+    expect(controller.state(media)).toBe('needs-attention');
+    await expect(controller.disconnect()).resolves.toMatchObject({
+      status: 'ok-with-drive-leftover',
+    });
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(controller.state(media)).toBe('needs-attention');
+
+    await expect(controller.disconnect()).resolves.toMatchObject({ status: 'no-op' });
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(controller.state(media)).toBe('disconnected');
+  });
+
   it('projects live GIS connectivity through the controller and sync chip', async () => {
     let online = true;
     let callback: ((response: Record<string, unknown>) => void) | undefined;
@@ -112,6 +162,7 @@ describe('unlocked Drive runtime composition', () => {
       switchTo: failedSwitch,
       add: failedSwitch,
       remove: failedSwitch,
+      needsDriveCleanup: () => false,
     };
     const controller = createVaultDriveConnectionController({
       tokens,
@@ -179,13 +230,14 @@ describe('unlocked Drive runtime composition', () => {
         };
         return structuredClone(durable);
       },
-      async addServer(nextEnvelope) {
-        server.value = nextEnvelope.slice();
-        durable = {
-          mediaSet: ['server', 'drive'],
-          driveAttestedVersion: fixture.initial.header.vaultVersion,
-        };
-        return structuredClone(durable);
+      async stageServer() {
+        throw new Error('not used');
+      },
+      async readServerCandidate() {
+        throw new Error('not used');
+      },
+      async discardServerCandidate() {
+        throw new Error('not used');
       },
     };
     const tokens: GoogleDriveTokenClient = {

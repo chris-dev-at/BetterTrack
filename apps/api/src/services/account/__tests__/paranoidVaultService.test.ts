@@ -91,16 +91,26 @@ function fakeRepo(options: FakeRepoOptions = {}) {
         }
       );
     },
-    async addServerMedium(input) {
+    async stageServerCandidate(input) {
       return {
         status: 'ok',
-        state: {
-          mediaSet: ['server', 'drive'],
-          driveAttestedVersion: input.version,
+        candidate: {
+          id: UUID_B,
+          userId: input.userId,
+          version: input.version,
+          formatVersion: input.formatVersion,
+          sizeBytes: input.sizeBytes,
+          blob: input.blob,
+          createdAt: input.now,
+          expiresAt: input.expiresAt,
         },
         idempotent: false,
       };
     },
+    async getServerCandidate() {
+      return null;
+    },
+    async discardServerCandidate() {},
   };
   return { repo, calls, mediaCalls, verificationCalls };
 }

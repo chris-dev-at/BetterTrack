@@ -518,6 +518,8 @@
         "connect": "Connect Drive",
         "signIn": "Sign in to Google",
         "disconnect": "Disconnect Drive",
+        "retryCleanup": "Retry Drive cleanup",
+        "cleanupRequired": "Drive removal still needs attention. Retry to finish deleting the encrypted Drive file safely.",
         "lastMedium": "Drive is your only vault location. Add server storage before disconnecting it.",
         "unconfigured": "Google Drive storage isn't configured on this deployment.",
         "unlockRequired": "Unlock your encrypted vault to manage its Drive storage.",
@@ -525,6 +527,7 @@
           "disconnected": "Disconnected",
           "connected": "Connected",
           "needs-sign-in": "Needs sign-in",
+          "needs-attention": "Needs attention",
           "offline": "Offline",
           "unavailable": "Unavailable"
         },

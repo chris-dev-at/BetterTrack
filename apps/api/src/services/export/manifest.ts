@@ -240,6 +240,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   paranoid_vault_history: skipped(
     'Paranoid-vault bounded ciphertext history (V5-P13) — the corruption/bad-write safety net; opaque superseded blobs, not user data to carry out.',
   ),
+  paranoid_vault_server_candidates: skipped(
+    'Inactive paranoid-vault server candidates — short-lived opaque transition bytes, never an authoritative DataHome or export entity.',
+  ),
   paranoid_rehydration_receipts: skipped(
     'Paranoid-disable idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
   ),
@@ -420,6 +423,7 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   // explicitly server-classified (§1).
   paranoid_vaults: 'server',
   paranoid_vault_history: 'server',
+  paranoid_vault_server_candidates: 'server',
   // PD3a completion receipt + non-sensitive data-home metadata remain server-side.
   paranoid_rehydration_receipts: 'server',
 };

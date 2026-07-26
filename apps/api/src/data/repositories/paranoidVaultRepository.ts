@@ -14,10 +14,12 @@ import type { Database } from '../db';
 import {
   paranoidRehydrationReceipts,
   paranoidVaultHistory,
+  paranoidVaultServerCandidates,
   paranoidVaults,
   users,
   type ParanoidVaultHistoryRow,
   type ParanoidVaultRow,
+  type ParanoidVaultServerCandidateRow,
 } from '../schema';
 
 /**
@@ -75,6 +77,9 @@ export function createParanoidRehydrationTransactionRepository(
     },
 
     async deleteServerCiphertext(userId) {
+      await executor
+        .delete(paranoidVaultServerCandidates)
+        .where(eq(paranoidVaultServerCandidates.userId, userId));
       await executor.delete(paranoidVaultHistory).where(eq(paranoidVaultHistory.userId, userId));
       await executor.delete(paranoidVaults).where(eq(paranoidVaults.userId, userId));
     },
@@ -182,19 +187,21 @@ export interface ParanoidMediaPatchInput extends Omit<PatchParanoidMediaRequest,
 
 export interface ParanoidMediaVerificationInput extends PrepareParanoidMediaVerificationRequest {
   userId: string;
+  now: Date;
 }
 
 export type ParanoidMediaVerificationResult =
   | { status: 'ok'; current: VaultMediaState }
   | Exclude<ParanoidMediaPatchResult, { status: 'ok' }>;
 
-export interface ParanoidAddServerMediumInput extends ParanoidVaultBlobInput {
+export interface ParanoidStageServerCandidateInput extends ParanoidVaultBlobInput {
   userId: string;
+  expiresAt: Date;
   now: Date;
 }
 
-export type ParanoidAddServerMediumResult =
-  | { status: 'ok'; state: VaultMediaState; idempotent: boolean }
+export type ParanoidStageServerCandidateResult =
+  | { status: 'ok'; candidate: ParanoidVaultServerCandidateRow; idempotent: boolean }
   | { status: 'not_found' }
   | { status: 'mode_required' }
   | { status: 'state_conflict'; current: VaultMediaState }
@@ -213,7 +220,15 @@ export interface ParanoidVaultRepository {
     input: ParanoidMediaVerificationInput,
   ): Promise<ParanoidMediaVerificationResult>;
   patchMedia(input: ParanoidMediaPatchInput): Promise<ParanoidMediaPatchResult>;
-  addServerMedium(input: ParanoidAddServerMediumInput): Promise<ParanoidAddServerMediumResult>;
+  stageServerCandidate(
+    input: ParanoidStageServerCandidateInput,
+  ): Promise<ParanoidStageServerCandidateResult>;
+  getServerCandidate(
+    userId: string,
+    candidateId: string,
+    now: Date,
+  ): Promise<ParanoidVaultServerCandidateRow | null>;
+  discardServerCandidate(userId: string, candidateId: string): Promise<void>;
 }
 
 function historyPageSize(requested: number | undefined): number {
@@ -429,17 +444,52 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           return { status: 'verification_failed', current } as const;
         }
 
-        // The API-issued proof is server-verifiable transition authorization,
-        // not a bare PATCH claim. Drive remains client-attested by binding
-        // design, while the proof can only be minted against this locked
-        // current server head and exact durable state.
-        const [serverHead] = await tx
-          .select({ version: paranoidVaults.version })
-          .from(paranoidVaults)
-          .where(eq(paranoidVaults.userId, input.userId))
-          .for('update');
-        if (!serverHead || serverHead.version !== input.verification.version) {
-          return { status: 'verification_failed', current } as const;
+        // Adding server is the one transition whose authenticated target is not
+        // live yet. Bind the proof to the exact unexpired staged row the browser
+        // read back; every other transition remains bound to the locked live
+        // server head. A candidate id is invalid outside that one transition.
+        if (transition?.added === 'server') {
+          const candidateId = input.verification.serverCandidateId;
+          if (!candidateId) return { status: 'verification_failed', current } as const;
+          const [candidate] = await tx
+            .select()
+            .from(paranoidVaultServerCandidates)
+            .where(
+              and(
+                eq(paranoidVaultServerCandidates.userId, input.userId),
+                eq(paranoidVaultServerCandidates.id, candidateId),
+              ),
+            )
+            .for('update');
+          if (candidate && candidate.expiresAt.getTime() <= input.now.getTime()) {
+            await tx
+              .delete(paranoidVaultServerCandidates)
+              .where(eq(paranoidVaultServerCandidates.id, candidate.id));
+            return { status: 'verification_failed', current } as const;
+          }
+          const [serverHead] = await tx
+            .select({ version: paranoidVaults.version })
+            .from(paranoidVaults)
+            .where(eq(paranoidVaults.userId, input.userId))
+            .for('update');
+          if (serverHead || !candidate || candidate.version !== input.verification.version) {
+            return { status: 'verification_failed', current } as const;
+          }
+        } else {
+          if (input.verification.serverCandidateId !== undefined) {
+            return { status: 'verification_failed', current } as const;
+          }
+          // The API-issued proof is server-verifiable transition
+          // authorization, not a bare PATCH claim. Drive remains
+          // client-attested by binding design.
+          const [serverHead] = await tx
+            .select({ version: paranoidVaults.version })
+            .from(paranoidVaults)
+            .where(eq(paranoidVaults.userId, input.userId))
+            .for('update');
+          if (!serverHead || serverHead.version !== input.verification.version) {
+            return { status: 'verification_failed', current } as const;
+          }
         }
         return { status: 'ok', current } as const;
       });
@@ -490,17 +540,53 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           return { status: 'verification_failed', current } as const;
         }
 
-        // Lock the blind server head alongside the account row. Every legal
-        // transition has a server copy at verification time: it is the source
-        // when adding/removing Drive, or the just-round-tripped target when
-        // adding/removing server. This is the authoritative anti-stale check.
-        const [serverHead] = await tx
-          .select({ version: paranoidVaults.version })
-          .from(paranoidVaults)
-          .where(eq(paranoidVaults.userId, input.userId))
-          .for('update');
-        if (!serverHead || serverHead.version !== input.verification.version) {
-          return { status: 'verification_failed', current } as const;
+        let serverCandidate: ParanoidVaultServerCandidateRow | undefined;
+        if (transition?.added === 'server') {
+          const candidateId = input.verification.serverCandidateId;
+          if (!candidateId) return { status: 'verification_failed', current } as const;
+          [serverCandidate] = await tx
+            .select()
+            .from(paranoidVaultServerCandidates)
+            .where(
+              and(
+                eq(paranoidVaultServerCandidates.userId, input.userId),
+                eq(paranoidVaultServerCandidates.id, candidateId),
+              ),
+            )
+            .for('update');
+          if (serverCandidate && serverCandidate.expiresAt.getTime() <= input.now.getTime()) {
+            await tx
+              .delete(paranoidVaultServerCandidates)
+              .where(eq(paranoidVaultServerCandidates.id, serverCandidate.id));
+            return { status: 'verification_failed', current } as const;
+          }
+          const [liveServerHead] = await tx
+            .select({ version: paranoidVaults.version })
+            .from(paranoidVaults)
+            .where(eq(paranoidVaults.userId, input.userId))
+            .for('update');
+          if (
+            liveServerHead ||
+            !serverCandidate ||
+            serverCandidate.version !== input.verification.version
+          ) {
+            return { status: 'verification_failed', current } as const;
+          }
+        } else {
+          if (input.verification.serverCandidateId !== undefined) {
+            return { status: 'verification_failed', current } as const;
+          }
+          // Every other legal transition is bound to the locked live server
+          // head: it is the source when adding Drive and the freshly verified
+          // copy when removing either medium.
+          const [serverHead] = await tx
+            .select({ version: paranoidVaults.version })
+            .from(paranoidVaults)
+            .where(eq(paranoidVaults.userId, input.userId))
+            .for('update');
+          if (!serverHead || serverHead.version !== input.verification.version) {
+            return { status: 'verification_failed', current } as const;
+          }
         }
         if (
           transition?.removed === 'server' &&
@@ -527,6 +613,20 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
             .where(eq(paranoidVaultHistory.userId, input.userId));
           await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, input.userId));
         }
+        if (serverCandidate) {
+          await tx.insert(paranoidVaults).values({
+            userId: input.userId,
+            version: serverCandidate.version,
+            formatVersion: serverCandidate.formatVersion,
+            sizeBytes: serverCandidate.sizeBytes,
+            blob: serverCandidate.blob,
+            createdAt: input.now,
+            updatedAt: input.now,
+          });
+          await tx
+            .delete(paranoidVaultServerCandidates)
+            .where(eq(paranoidVaultServerCandidates.id, serverCandidate.id));
+        }
         await tx
           .update(users)
           .set({
@@ -540,7 +640,7 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
       });
     },
 
-    async addServerMedium(input) {
+    async stageServerCandidate(input) {
       return db.transaction(async (tx) => {
         const [user] = await tx
           .select({
@@ -558,23 +658,10 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
         }
         const current = account.mediaState;
         const [serverHead] = await tx
-          .select()
+          .select({ version: paranoidVaults.version })
           .from(paranoidVaults)
           .where(eq(paranoidVaults.userId, input.userId))
           .for('update');
-
-        // Lost-response retry: the exact bytes and durable state already landed
-        // together, so reporting success is safe and does not create history.
-        if (
-          sameMediaSet(current.mediaSet, ['server', 'drive']) &&
-          current.driveAttestedVersion === input.version &&
-          serverHead?.version === input.version &&
-          serverHead.formatVersion === input.formatVersion &&
-          serverHead.sizeBytes === input.sizeBytes &&
-          serverHead.blob.equals(input.blob)
-        ) {
-          return { status: 'ok', state: current, idempotent: true } as const;
-        }
         if (!sameMediaSet(current.mediaSet, ['drive'])) {
           return { status: 'state_conflict', current } as const;
         }
@@ -585,29 +672,79 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           return { status: 'verification_failed', current } as const;
         }
 
-        const next: VaultMediaState = {
-          mediaSet: ['server', 'drive'],
-          driveAttestedVersion: input.version,
-        };
-        await tx.insert(paranoidVaults).values({
-          userId: input.userId,
-          version: input.version,
-          formatVersion: input.formatVersion,
-          sizeBytes: input.sizeBytes,
-          blob: input.blob,
-          createdAt: input.now,
-          updatedAt: input.now,
-        });
-        await tx
-          .update(users)
-          .set({
-            paranoidMediaSet: next.mediaSet,
-            paranoidDriveAttestedVersion: next.driveAttestedVersion,
-            updatedAt: input.now,
+        let [candidate] = await tx
+          .select()
+          .from(paranoidVaultServerCandidates)
+          .where(eq(paranoidVaultServerCandidates.userId, input.userId))
+          .for('update');
+        if (candidate && candidate.expiresAt.getTime() <= input.now.getTime()) {
+          await tx
+            .delete(paranoidVaultServerCandidates)
+            .where(eq(paranoidVaultServerCandidates.id, candidate.id));
+          candidate = undefined;
+        }
+        if (
+          candidate &&
+          candidate.version === input.version &&
+          candidate.formatVersion === input.formatVersion &&
+          candidate.sizeBytes === input.sizeBytes &&
+          candidate.blob.equals(input.blob)
+        ) {
+          return { status: 'ok', candidate, idempotent: true } as const;
+        }
+        if (candidate) {
+          await tx
+            .delete(paranoidVaultServerCandidates)
+            .where(eq(paranoidVaultServerCandidates.id, candidate.id));
+        }
+        const [staged] = await tx
+          .insert(paranoidVaultServerCandidates)
+          .values({
+            userId: input.userId,
+            version: input.version,
+            formatVersion: input.formatVersion,
+            sizeBytes: input.sizeBytes,
+            blob: input.blob,
+            createdAt: input.now,
+            expiresAt: input.expiresAt,
           })
-          .where(eq(users.id, input.userId));
-        return { status: 'ok', state: next, idempotent: false } as const;
+          .returning();
+        return { status: 'ok', candidate: staged!, idempotent: false } as const;
       });
+    },
+
+    async getServerCandidate(userId, candidateId, now) {
+      return db.transaction(async (tx) => {
+        const [candidate] = await tx
+          .select()
+          .from(paranoidVaultServerCandidates)
+          .where(
+            and(
+              eq(paranoidVaultServerCandidates.userId, userId),
+              eq(paranoidVaultServerCandidates.id, candidateId),
+            ),
+          )
+          .for('update');
+        if (!candidate) return null;
+        if (candidate.expiresAt.getTime() <= now.getTime()) {
+          await tx
+            .delete(paranoidVaultServerCandidates)
+            .where(eq(paranoidVaultServerCandidates.id, candidate.id));
+          return null;
+        }
+        return candidate;
+      });
+    },
+
+    async discardServerCandidate(userId, candidateId) {
+      await db
+        .delete(paranoidVaultServerCandidates)
+        .where(
+          and(
+            eq(paranoidVaultServerCandidates.userId, userId),
+            eq(paranoidVaultServerCandidates.id, candidateId),
+          ),
+        );
     },
   };
 }

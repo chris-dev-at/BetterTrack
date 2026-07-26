@@ -308,6 +308,7 @@ function GoogleDriveSection() {
   const state = configured ? driveConnectionState(media) : 'unavailable';
   const driveSelected = media.mediaSet.includes('drive');
   const canDisconnect = driveSelected && media.mediaSet.length > 1;
+  const canRetryCleanup = state === 'needs-attention';
   const busy = connect.isPending || disconnect.isPending;
   const statusKey = `settings.connections.drive.status.${state}`;
 
@@ -343,9 +344,15 @@ function GoogleDriveSection() {
       {driveSelected && !canDisconnect ? (
         <p className="text-xs text-neutral-500">{t('settings.connections.drive.lastMedium')}</p>
       ) : null}
+      {canRetryCleanup ? (
+        <p className="text-xs text-amber-300">{t('settings.connections.drive.cleanupRequired')}</p>
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
-        {configured && runtimeReady && (!driveSelected || state === 'needs-sign-in') ? (
+        {configured &&
+        runtimeReady &&
+        !canRetryCleanup &&
+        (!driveSelected || state === 'needs-sign-in') ? (
           <Button
             variant="secondary"
             disabled={busy}
@@ -361,7 +368,7 @@ function GoogleDriveSection() {
             )}
           </Button>
         ) : null}
-        {configured && runtimeReady && canDisconnect ? (
+        {configured && runtimeReady && (canDisconnect || canRetryCleanup) ? (
           <Button
             variant="secondary"
             disabled={busy}
@@ -370,7 +377,11 @@ function GoogleDriveSection() {
               disconnect.mutate();
             }}
           >
-            {t('settings.connections.drive.disconnect')}
+            {t(
+              canRetryCleanup
+                ? 'settings.connections.drive.retryCleanup'
+                : 'settings.connections.drive.disconnect',
+            )}
           </Button>
         ) : null}
       </div>

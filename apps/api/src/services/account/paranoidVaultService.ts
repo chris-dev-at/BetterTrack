@@ -1,7 +1,9 @@
 import {
   readVaultServerHeader,
+  VAULT_SERVER_CANDIDATE_TTL_MS,
   VaultEnvelopeError,
   type ParanoidMediaStatusResponse,
+  type ParanoidServerCandidateMetadata,
   type PatchParanoidMediaRequest,
   type PrepareParanoidMediaVerificationRequest,
   type PrepareParanoidMediaVerificationResponse,
@@ -14,7 +16,11 @@ import type {
   ParanoidVaultRepository,
   ParanoidVaultRetention,
 } from '../../data/repositories/paranoidVaultRepository';
-import type { ParanoidVaultHistoryRow, ParanoidVaultRow } from '../../data/schema';
+import type {
+  ParanoidVaultHistoryRow,
+  ParanoidVaultRow,
+  ParanoidVaultServerCandidateRow,
+} from '../../data/schema';
 import {
   PARANOID_MEDIA_PROOF_TTL_MS,
   proofMatchesRequest,
@@ -93,15 +99,26 @@ export interface ParanoidVaultService {
     userId: string,
     input: PatchParanoidMediaRequest,
   ): ReturnType<ParanoidVaultRepository['patchMedia']>;
-  /** Atomically store the Drive source bytes and activate the server medium. */
-  addServerMedium(
+  /** Store one inactive Drive-source candidate without activating server. */
+  stageServerCandidate(
     userId: string,
     blob: Buffer,
   ): Promise<
-    | Awaited<ReturnType<ParanoidVaultRepository['addServerMedium']>>
+    | { status: 'ok'; candidate: ParanoidServerCandidateMetadata; idempotent: boolean }
+    | Exclude<
+        Awaited<ReturnType<ParanoidVaultRepository['stageServerCandidate']>>,
+        { status: 'ok' }
+      >
     | { status: 'too_large'; sizeBytes: number; maxBytes: number }
     | { status: 'malformed'; reason: string }
   >;
+  /** Read the exact inactive opaque candidate for browser authentication. */
+  getServerCandidate(
+    userId: string,
+    candidateId: string,
+  ): Promise<ParanoidVaultServerCandidateRow | null>;
+  /** Best-effort cleanup after failed authentication or an abandoned switch. */
+  discardServerCandidate(userId: string, candidateId: string): Promise<void>;
 }
 
 function metadataOf(row: ParanoidVaultRow): VaultMetadata {
@@ -110,6 +127,18 @@ function metadataOf(row: ParanoidVaultRow): VaultMetadata {
     formatVersion: row.formatVersion,
     sizeBytes: row.sizeBytes,
     updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function candidateMetadataOf(
+  row: ParanoidVaultServerCandidateRow,
+): ParanoidServerCandidateMetadata {
+  return {
+    candidateId: row.id,
+    version: row.version,
+    formatVersion: row.formatVersion,
+    sizeBytes: row.sizeBytes,
+    expiresAt: row.expiresAt.toISOString(),
   };
 }
 
@@ -178,7 +207,7 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
     },
 
     async prepareMediaVerification(userId, input) {
-      const verified = await deps.vaults.verifyMediaTransition({ userId, ...input });
+      const verified = await deps.vaults.verifyMediaTransition({ userId, ...input, now: now() });
       if (verified.status !== 'ok') return verified;
       if (!deps.proofSecret) {
         return { status: 'verification_failed', current: verified.current };
@@ -212,6 +241,9 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
         verification: {
           medium: input.verification.medium,
           version: input.verification.version,
+          ...(input.verification.serverCandidateId
+            ? { serverCandidateId: input.verification.serverCandidateId }
+            : {}),
         },
       };
       const proof = deps.proofSecret
@@ -230,17 +262,34 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
       });
     },
 
-    async addServerMedium(userId, blob) {
+    async stageServerCandidate(userId, blob) {
       const inspected = inspectBlob(blob, deps.maxBytes);
       if ('status' in inspected) return inspected;
-      return deps.vaults.addServerMedium({
+      const stagedAt = now();
+      const result = await deps.vaults.stageServerCandidate({
         userId,
         version: inspected.header.vaultVersion,
         formatVersion: inspected.header.formatVersion,
         sizeBytes: blob.length,
         blob,
-        now: now(),
+        now: stagedAt,
+        expiresAt: new Date(stagedAt.getTime() + VAULT_SERVER_CANDIDATE_TTL_MS),
       });
+      return result.status === 'ok'
+        ? {
+            status: 'ok',
+            candidate: candidateMetadataOf(result.candidate),
+            idempotent: result.idempotent,
+          }
+        : result;
+    },
+
+    async getServerCandidate(userId, candidateId) {
+      return deps.vaults.getServerCandidate(userId, candidateId, now());
+    },
+
+    async discardServerCandidate(userId, candidateId) {
+      await deps.vaults.discardServerCandidate(userId, candidateId);
     },
   };
 }

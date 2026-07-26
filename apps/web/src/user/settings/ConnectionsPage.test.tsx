@@ -250,4 +250,32 @@ describe('ConnectionsPage — paranoid Google Drive app-data card', () => {
     expect(await screen.findByText(/Drive is your only vault location/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Disconnect Drive' })).not.toBeInTheDocument();
   });
+
+  test('offers an explicit retry while post-switch Drive cleanup remains pending', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: { mediaSet: ['server'], driveAttestedVersion: null },
+    });
+    vi.mocked(driveConnectionState).mockReturnValue('needs-attention');
+    vi.mocked(disconnectDriveConnection).mockResolvedValue({
+      status: 'ok-with-drive-leftover',
+      state: { mediaSet: ['server'], driveAttestedVersion: null },
+      deleteResult: {
+        status: 'transport-failure',
+        medium: 'drive',
+        failure: { kind: 'api-failure', message: 'delete failed' },
+      },
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText('Needs attention')).toBeInTheDocument();
+    expect(screen.getByText(/Drive removal still needs attention/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry Drive cleanup' }));
+    await waitFor(() => expect(disconnectDriveConnection).toHaveBeenCalledOnce());
+    expect(
+      await screen.findByText(/encrypted Drive file couldn't be deleted/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect Drive' })).not.toBeInTheDocument();
+  });
 });

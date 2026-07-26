@@ -11,6 +11,8 @@ import {
   passkeySchema,
   pinQuickAuthResponseSchema,
   paranoidMediaStatusResponseSchema,
+  paranoidServerCandidateMetadataSchema,
+  parseVaultEtag,
   patchParanoidMediaResponseSchema,
   prepareParanoidMediaVerificationResponseSchema,
   publicRegistrationInfoResponseSchema,
@@ -43,6 +45,7 @@ import {
   type PasswordResetComplete,
   type PasswordResetRequest,
   type ParanoidMediaStatusResponse,
+  type ParanoidServerCandidateMetadata,
   type PatchParanoidMediaRequest,
   type PatchParanoidMediaResponse,
   type PrepareParanoidMediaVerificationRequest,
@@ -62,6 +65,8 @@ import {
   type TwoFactorEmailCodeRequest,
   type TwoFactorVerifyRequest,
   VAULT_CONTENT_TYPE,
+  VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER,
+  VAULT_SERVER_CANDIDATE_ID_HEADER,
 } from '@bettertrack/contracts';
 
 import { ApiError, apiRequest } from './apiClient';
@@ -450,16 +455,15 @@ export async function patchParanoidMedia(
 }
 
 /**
- * Drive-only → both atomic commit. The opaque envelope and media metadata land
- * in one API transaction, so an interrupted request cannot leave inactive
- * server ciphertext behind.
+ * Stage the Drive source as an inactive, expiring server candidate. This call
+ * never changes the durable media set or the live server DataHome.
  */
-export async function addParanoidServerMedium(
+export async function stageParanoidServerCandidate(
   envelope: Uint8Array,
-): Promise<PatchParanoidMediaResponse> {
+): Promise<ParanoidServerCandidateMetadata> {
   let response: Response;
   try {
-    response = await fetch(`${apiBaseUrl()}/account/paranoid/media/server`, {
+    response = await fetch(`${apiBaseUrl()}/account/paranoid/media/server-candidate`, {
       method: 'PUT',
       headers: {
         'Content-Type': VAULT_CONTENT_TYPE,
@@ -473,17 +477,71 @@ export async function addParanoidServerMedium(
   }
   const payload: unknown = await response.json().catch(() => undefined);
   if (!response.ok) {
-    const parsed = apiErrorSchema.safeParse(payload);
-    throw parsed.success
-      ? new ApiError(
-          response.status,
-          parsed.data.error.code,
-          parsed.data.error.message,
-          parsed.data.error.details,
-        )
-      : new ApiError(response.status, 'UNKNOWN_ERROR', 'The server returned an invalid response.');
+    throwApiResponseError(response.status, payload);
   }
-  return patchParanoidMediaResponseSchema.parse(payload);
+  return paranoidServerCandidateMetadataSchema.parse(payload);
+}
+
+/** Read the exact raw candidate back before the browser authorizes promotion. */
+export async function readParanoidServerCandidate(
+  candidate: ParanoidServerCandidateMetadata,
+): Promise<Uint8Array> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${apiBaseUrl()}/account/paranoid/media/server-candidate/${encodeURIComponent(candidate.candidateId)}`,
+      { credentials: 'include' },
+    );
+  } catch {
+    throw new ApiError(0, 'NETWORK_ERROR', 'Unable to reach the server. Check your connection.');
+  }
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => undefined);
+    throwApiResponseError(response.status, payload);
+  }
+  const responseId = response.headers.get(VAULT_SERVER_CANDIDATE_ID_HEADER);
+  const responseVersion = parseVaultEtag(response.headers.get('ETag'));
+  const responseExpiry = response.headers.get(VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER);
+  if (
+    responseId !== candidate.candidateId ||
+    responseVersion !== candidate.version ||
+    responseExpiry !== candidate.expiresAt
+  ) {
+    throw new ApiError(
+      response.status,
+      'INVALID_SERVER_CANDIDATE',
+      'The server candidate read did not match the staged receipt.',
+    );
+  }
+  const envelope = new Uint8Array(await response.arrayBuffer());
+  if (envelope.byteLength !== candidate.sizeBytes) {
+    throw new ApiError(
+      response.status,
+      'INVALID_SERVER_CANDIDATE',
+      'The server candidate size did not match the staged receipt.',
+    );
+  }
+  return envelope;
+}
+
+/** Remove a staged candidate that failed browser authentication. */
+export async function discardParanoidServerCandidate(candidateId: string): Promise<void> {
+  await apiRequest<unknown>(
+    `/account/paranoid/media/server-candidate/${encodeURIComponent(candidateId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+function throwApiResponseError(status: number, payload: unknown): never {
+  const parsed = apiErrorSchema.safeParse(payload);
+  throw parsed.success
+    ? new ApiError(
+        status,
+        parsed.data.error.code,
+        parsed.data.error.message,
+        parsed.data.error.details,
+      )
+    : new ApiError(status, 'UNKNOWN_ERROR', 'The server returned an invalid response.');
 }
 
 /**

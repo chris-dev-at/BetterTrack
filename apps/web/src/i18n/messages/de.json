@@ -518,6 +518,8 @@
         "connect": "Drive verbinden",
         "signIn": "Bei Google anmelden",
         "disconnect": "Drive trennen",
+        "retryCleanup": "Drive-Bereinigung wiederholen",
+        "cleanupRequired": "Das Entfernen von Drive braucht noch Aufmerksamkeit. Wiederhole den Vorgang, um die verschlüsselte Drive-Datei sicher zu löschen.",
         "lastMedium": "Drive ist dein einziger Tresor-Speicherort. Füge Server-Speicher hinzu, bevor du Drive trennst.",
         "unconfigured": "Google-Drive-Speicher ist in dieser Installation nicht konfiguriert.",
         "unlockRequired": "Entsperre deinen verschlüsselten Tresor, um den Drive-Speicher zu verwalten.",
@@ -525,6 +527,7 @@
           "disconnected": "Nicht verbunden",
           "connected": "Verbunden",
           "needs-sign-in": "Anmeldung erforderlich",
+          "needs-attention": "Aktion erforderlich",
           "offline": "Offline",
           "unavailable": "Nicht verfügbar"
         },

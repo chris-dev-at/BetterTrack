@@ -1,6 +1,7 @@
 import type {
   ParanoidMediaStatusResponse,
   PatchParanoidMediaRequest,
+  ParanoidServerCandidateMetadata,
   PrepareParanoidMediaVerificationRequest,
   PrepareParanoidMediaVerificationResponse,
   VaultMediaSet,
@@ -26,8 +27,18 @@ export interface VaultMediaStateApi {
     request: PrepareParanoidMediaVerificationRequest,
   ): Promise<PrepareParanoidMediaVerificationResponse>;
   patch(request: PatchParanoidMediaRequest): Promise<VaultMediaState>;
-  /** Atomic Drive-only → both commit; no inactive server row is ever exposed. */
-  addServer(envelope: Uint8Array): Promise<VaultMediaState>;
+  /** Stage opaque bytes without activating the live server DataHome. */
+  stageServer(envelope: Uint8Array): Promise<ParanoidServerCandidateMetadata>;
+  /** Read the exact staged object back for authenticated browser verification. */
+  readServerCandidate(candidate: ParanoidServerCandidateMetadata): Promise<Uint8Array>;
+  /** Remove a failed/abandoned inactive candidate. */
+  discardServerCandidate(candidateId: string): Promise<void>;
+}
+
+export interface VaultMediaTransitionStore {
+  pendingDriveCleanup(): boolean;
+  markDriveCleanup(): void;
+  clearDriveCleanup(): void;
 }
 
 export interface VaultMediaSwitcherOptions {
@@ -35,6 +46,7 @@ export interface VaultMediaSwitcherOptions {
   server: DataHome;
   drive: DriveDataHome;
   authenticate: VaultEnvelopeAuthenticator;
+  transitions?: VaultMediaTransitionStore;
 }
 
 export type MediaSwitchFailureReason =
@@ -72,6 +84,48 @@ export interface VaultMediaSwitcher {
   switchTo(nextMediaSet: VaultMediaSet): Promise<MediaSwitchResult>;
   add(medium: VaultMedium): Promise<MediaSwitchResult>;
   remove(medium: VaultMedium): Promise<MediaSwitchResult>;
+  needsDriveCleanup(): boolean;
+}
+
+const DRIVE_CLEANUP_RECORD = 'drive-delete-pending-v1';
+
+/**
+ * Persist only the non-sensitive cleanup obligation, scoped by vault key id.
+ * No token, Drive file id, envelope metadata, or portfolio-derived value enters
+ * storage. The in-memory fallback preserves the obligation when storage access
+ * is blocked by the browser.
+ */
+export function createBrowserVaultMediaTransitionStore(
+  scope: string,
+  storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null = safeLocalStorage(),
+): VaultMediaTransitionStore {
+  const key = `bettertrack:vault-media-transition:${scope}`;
+  let fallback = false;
+  return {
+    pendingDriveCleanup() {
+      try {
+        return storage?.getItem(key) === DRIVE_CLEANUP_RECORD || fallback;
+      } catch {
+        return fallback;
+      }
+    },
+    markDriveCleanup() {
+      fallback = true;
+      try {
+        storage?.setItem(key, DRIVE_CLEANUP_RECORD);
+      } catch {
+        // The in-memory fallback remains authoritative for this runtime.
+      }
+    },
+    clearDriveCleanup() {
+      fallback = false;
+      try {
+        storage?.removeItem(key);
+      } catch {
+        // The in-memory state is still cleared for this runtime.
+      }
+    },
+  };
 }
 
 /**
@@ -81,6 +135,7 @@ export interface VaultMediaSwitcher {
  */
 export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): VaultMediaSwitcher {
   let operationTail = Promise.resolve();
+  const transitions = options.transitions ?? createBrowserVaultMediaTransitionStore('memory', null);
 
   return {
     switchTo(nextMediaSet) {
@@ -104,6 +159,10 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
         canonical(current.mediaState.mediaSet.filter((candidate) => candidate !== medium)),
       );
     },
+
+    needsDriveCleanup() {
+      return transitions.pendingDriveCleanup();
+    },
   };
 
   function serialize(operation: () => Promise<MediaSwitchResult>): Promise<MediaSwitchResult> {
@@ -123,7 +182,16 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       return failed('normal-account', null);
     }
     const current = status.mediaState;
-    if (sameSet(current.mediaSet, next)) return { status: 'no-op', state: current };
+    if (next.includes('drive') && transitions.pendingDriveCleanup()) {
+      // Re-adding/retaining Drive cancels an earlier drop intent. The existing
+      // file remains a live medium and must not be deleted by a stale cleanup.
+      transitions.clearDriveCleanup();
+    }
+    if (sameSet(current.mediaSet, next)) {
+      return !next.includes('drive') && transitions.pendingDriveCleanup()
+        ? cleanupDrive(current, true, false)
+        : { status: 'no-op', state: current };
+    }
 
     const added = next.filter((medium) => !current.mediaSet.includes(medium));
     const removed = current.mediaSet.filter((medium) => !next.includes(medium));
@@ -145,32 +213,11 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       const source = await readAuthenticated(comparisonHome);
       if (source.status === 'failed') return { ...source, authoritativeState: current };
 
-      // Drive-only → both cannot pre-write the live server DataHome: even a
-      // PATCH transport failure would then violate Drive-only's physical
-      // zero-server-bytes invariant. The API accepts the authenticated Drive
-      // envelope through one raw-byte transaction that inserts it and activates
-      // the medium atomically.
+      // Drive-only → both uses a proof-bound inactive candidate. The live server
+      // DataHome remains absent until the browser has read and authenticated the
+      // exact staged object and PATCH promotes it atomically.
       if (verifiedMedium === 'server') {
-        let durable: VaultMediaState;
-        let recoveredAfterPatchFailure = false;
-        try {
-          durable = await options.state.addServer(source.envelope);
-        } catch {
-          const observed = await safeGetState();
-          if (observed === null || !sameSet(observed.mediaSet, next)) {
-            return failed('patch-failed', observed ?? current);
-          }
-          durable = observed;
-          recoveredAfterPatchFailure = true;
-        }
-        const serverCopy = await readAuthenticated(options.server);
-        if (
-          serverCopy.status === 'failed' ||
-          !sameAuthenticatedEnvelope(source.authenticated, serverCopy.authenticated)
-        ) {
-          return failed('verification-failed', durable);
-        }
-        return { status: 'ok', state: durable, recoveredAfterPatchFailure };
+        return addServerFromDrive(source, current, next);
       }
 
       const copied = await ensureVerifiedCopy(source, verifiedHome);
@@ -236,6 +283,12 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       },
     };
 
+    if (removed[0] === 'drive') {
+      // Record the post-commit obligation BEFORE the PATCH. If its response and
+      // the immediate state probe are both lost, a later same-target retry can
+      // still finish deletion before the Drive token is revoked.
+      transitions.markDriveCleanup();
+    }
     let durable: VaultMediaState;
     let recoveredAfterPatchFailure = false;
     try {
@@ -262,16 +315,124 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
     }
 
     if (removed[0] === 'drive') {
-      const deleted = await options.drive.delete();
-      if (deleted.status !== 'ok' && deleted.status !== 'absent') {
-        return {
-          status: 'ok-with-drive-leftover',
-          state: durable,
-          deleteResult: deleted,
-        };
-      }
+      return cleanupDrive(durable, false, recoveredAfterPatchFailure);
     }
     return { status: 'ok', state: durable, recoveredAfterPatchFailure };
+  }
+
+  async function addServerFromDrive(
+    source: ReadAuthenticatedSuccess,
+    current: VaultMediaState,
+    next: VaultMediaSet,
+  ): Promise<MediaSwitchResult> {
+    let candidate: ParanoidServerCandidateMetadata;
+    try {
+      candidate = await options.state.stageServer(source.envelope);
+    } catch {
+      return failed('patch-failed', current);
+    }
+
+    let stagedEnvelope: Uint8Array;
+    try {
+      stagedEnvelope = await options.state.readServerCandidate(candidate);
+    } catch {
+      await safeDiscardCandidate(candidate.candidateId);
+      return failed('verification-failed', current);
+    }
+    const staged = await authenticateEnvelope(stagedEnvelope, candidate.version);
+    if (
+      staged.status === 'failed' ||
+      !sameAuthenticatedEnvelope(source.authenticated, staged.authenticated)
+    ) {
+      await safeDiscardCandidate(candidate.candidateId);
+      return failed('verification-failed', current);
+    }
+
+    // Re-read the authoritative Drive source immediately before proof creation.
+    // The candidate is immutable; any intervening Drive change makes this
+    // candidate stale and it is discarded rather than promoted.
+    const freshDrive = await readAuthenticated(options.drive);
+    if (
+      freshDrive.status === 'failed' ||
+      !sameAuthenticatedEnvelope(staged.authenticated, freshDrive.authenticated)
+    ) {
+      await safeDiscardCandidate(candidate.candidateId);
+      return failed('verification-failed', current);
+    }
+
+    const claim: PrepareParanoidMediaVerificationRequest = {
+      expected: current,
+      nextMediaSet: next,
+      verification: {
+        medium: 'server',
+        version: staged.authenticated.version,
+        serverCandidateId: candidate.candidateId,
+      },
+    };
+    let prepared: PrepareParanoidMediaVerificationResponse;
+    try {
+      prepared = await options.state.prepare(claim);
+    } catch {
+      await safeDiscardCandidate(candidate.candidateId);
+      return failed('verification-proof-failed', current);
+    }
+
+    try {
+      const durable = await options.state.patch({
+        ...claim,
+        verification: { ...claim.verification, proof: prepared.proof },
+      });
+      return { status: 'ok', state: durable, recoveredAfterPatchFailure: false };
+    } catch {
+      // Promotion may have committed. If metadata cannot settle that ambiguity,
+      // retain the exact staged id: a retry either discovers the final set or
+      // reuses the still-inactive candidate until it expires.
+      const observed = await safeGetState();
+      return observed !== null && sameSet(observed.mediaSet, next)
+        ? { status: 'ok', state: observed, recoveredAfterPatchFailure: true }
+        : failed('patch-failed', observed ?? current);
+    }
+  }
+
+  async function cleanupDrive(
+    durable: VaultMediaState,
+    resumed: boolean,
+    recoveredAfterPatchFailure: boolean,
+  ): Promise<MediaSwitchResult> {
+    let deleted: DriveDataHomeDeleteResult;
+    try {
+      deleted = await options.drive.delete();
+    } catch (cause) {
+      deleted = {
+        status: 'transport-failure',
+        medium: 'drive',
+        failure: {
+          kind: 'api-failure',
+          message: 'The encrypted Drive file could not be deleted.',
+          cause,
+        },
+      };
+    }
+    if (deleted.status !== 'ok' && deleted.status !== 'absent') {
+      return {
+        status: 'ok-with-drive-leftover',
+        state: durable,
+        deleteResult: deleted,
+      };
+    }
+    transitions.clearDriveCleanup();
+    return resumed
+      ? { status: 'no-op', state: durable }
+      : { status: 'ok', state: durable, recoveredAfterPatchFailure };
+  }
+
+  async function safeDiscardCandidate(candidateId: string): Promise<void> {
+    try {
+      await options.state.discardServerCandidate(candidateId);
+    } catch {
+      // The candidate is inactive and expires server-side. Cleanup failure can
+      // never make it authoritative or change the durable media set.
+    }
   }
 
   function home(medium: VaultMedium): DataHome {
@@ -323,14 +484,21 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
   async function authenticateRead(
     read: Extract<DataHomeReadResult, { status: 'ok' }>,
   ): Promise<ReadAuthenticatedResult> {
+    return authenticateEnvelope(read.envelope, read.info.version);
+  }
+
+  async function authenticateEnvelope(
+    envelope: Uint8Array,
+    expectedVersion: number,
+  ): Promise<ReadAuthenticatedResult> {
     try {
-      const authenticated = await options.authenticate(read.envelope);
-      if (authenticated.version !== read.info.version) {
+      const authenticated = await options.authenticate(envelope);
+      if (authenticated.version !== expectedVersion) {
         return failed('verification-failed', null);
       }
       return {
         status: 'ok',
-        envelope: read.envelope.slice(),
+        envelope: envelope.slice(),
         authenticated,
       };
     } catch {
@@ -488,6 +656,14 @@ function failed(
   authoritativeState: VaultMediaState | null,
 ): Extract<MediaSwitchResult, { status: 'failed' }> {
   return { status: 'failed', reason, authoritativeState };
+}
+
+function safeLocalStorage(): Storage | null {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {

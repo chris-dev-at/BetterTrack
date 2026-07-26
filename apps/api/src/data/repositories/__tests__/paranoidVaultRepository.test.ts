@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Database } from '../../db';
-import { users } from '../../schema';
+import { paranoidVaultServerCandidates, users } from '../../schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import {
   createParanoidVaultRepository,
@@ -365,13 +365,49 @@ describe('paranoid vault repository media transaction', () => {
       mediaState: { mediaSet: ['drive'], driveAttestedVersion: 3 },
     });
 
-    const restored = await repo.addServerMedium({
+    const staged = await repo.stageServerCandidate({
       userId,
       version: 4,
       formatVersion: 1,
       sizeBytes: 2,
       blob: blob('v4'),
       now: new Date('2026-07-26T10:02:00.000Z'),
+      expiresAt: new Date('2026-07-26T10:12:00.000Z'),
+    });
+    expect(staged).toMatchObject({
+      status: 'ok',
+      idempotent: false,
+    });
+    if (staged.status !== 'ok') throw new Error('candidate staging failed');
+    expect(await repo.getCurrent(userId)).toBeNull();
+    expect((await repo.listHistory(userId)).items).toEqual([]);
+    expect(await repo.getMediaState(userId)).toEqual({
+      privacyMode: 'paranoid',
+      mediaState: { mediaSet: ['drive'], driveAttestedVersion: 3 },
+    });
+    const readback = await repo.getServerCandidate(
+      userId,
+      staged.candidate.id,
+      new Date('2026-07-26T10:03:00.000Z'),
+    );
+    expect(readback?.blob.equals(blob('v4'))).toBe(true);
+
+    const claim = {
+      userId,
+      expected: { mediaSet: ['drive'] as ('server' | 'drive')[], driveAttestedVersion: 3 },
+      nextMediaSet: ['server', 'drive'] as ('server' | 'drive')[],
+      verification: {
+        medium: 'server' as const,
+        version: 4,
+        serverCandidateId: staged.candidate.id,
+      },
+      now: new Date('2026-07-26T10:03:30.000Z'),
+    };
+    expect(await repo.verifyMediaTransition(claim)).toMatchObject({ status: 'ok' });
+    const restored = await repo.patchMedia({
+      ...claim,
+      proofVerified: true,
+      now: new Date('2026-07-26T10:04:00.000Z'),
     });
     expect(restored).toEqual({
       status: 'ok',
@@ -380,6 +416,58 @@ describe('paranoid vault repository media transaction', () => {
     });
     expect((await repo.getCurrent(userId))?.blob.equals(blob('v4'))).toBe(true);
     expect((await repo.listHistory(userId)).items).toEqual([]);
+    expect(
+      await repo.getServerCandidate(
+        userId,
+        staged.candidate.id,
+        new Date('2026-07-26T10:04:01.000Z'),
+      ),
+    ).toBeNull();
+  });
+
+  it('cleans failed or expired inactive candidates without activating server', async () => {
+    await makeParanoid();
+    await db
+      .update(users)
+      .set({
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 4,
+      })
+      .where(eq(users.id, userId));
+
+    const first = await repo.stageServerCandidate({
+      userId,
+      version: 4,
+      formatVersion: 1,
+      sizeBytes: 2,
+      blob: blob('v4'),
+      now: T0,
+      expiresAt: new Date(T0.getTime() + 1_000),
+    });
+    if (first.status !== 'ok') throw new Error('candidate staging failed');
+    await repo.discardServerCandidate(userId, first.candidate.id);
+    expect(await repo.getCurrent(userId)).toBeNull();
+    expect(await db.select().from(paranoidVaultServerCandidates)).toEqual([]);
+
+    const second = await repo.stageServerCandidate({
+      userId,
+      version: 5,
+      formatVersion: 1,
+      sizeBytes: 2,
+      blob: blob('v5'),
+      now: T0,
+      expiresAt: new Date(T0.getTime() + 1_000),
+    });
+    if (second.status !== 'ok') throw new Error('candidate staging failed');
+    expect(
+      await repo.getServerCandidate(userId, second.candidate.id, new Date(T0.getTime() + 1_001)),
+    ).toBeNull();
+    expect(await db.select().from(paranoidVaultServerCandidates)).toEqual([]);
+    expect(await repo.getCurrent(userId)).toBeNull();
+    expect(await repo.getMediaState(userId)).toEqual({
+      privacyMode: 'paranoid',
+      mediaState: { mediaSet: ['drive'], driveAttestedVersion: 4 },
+    });
   });
 
   it('fails closed on normal mode, stale state, fabricated verification, and an empty target', async () => {

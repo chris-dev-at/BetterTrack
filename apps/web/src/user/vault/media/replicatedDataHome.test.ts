@@ -111,7 +111,13 @@ function harness(initial: VaultMediaState) {
       };
       return structuredClone(durable);
     },
-    async addServer() {
+    async stageServer() {
+      throw new Error('not used');
+    },
+    async readServerCandidate() {
+      throw new Error('not used');
+    },
+    async discardServerCandidate() {
       throw new Error('not used');
     },
   };

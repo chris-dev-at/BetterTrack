@@ -37,6 +37,16 @@ describe('paranoid media transition proof', () => {
           nextMediaSet: ['drive'],
         }),
     ).toBe(false);
+    expect(
+      verified &&
+        proofMatchesRequest(verified, '018f0000-0000-7000-8000-00000000000a', {
+          ...request,
+          verification: {
+            ...request.verification,
+            serverCandidateId: '018f0000-0000-7000-8000-00000000000c',
+          },
+        }),
+    ).toBe(false);
     expect(verifyParanoidMediaProof('secret-a', proof, 20_000)).toBeNull();
   });
 

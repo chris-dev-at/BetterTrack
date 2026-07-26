@@ -73,7 +73,7 @@ const serverMediumInactive = (): ApiError =>
   new ApiError(
     409,
     VAULT_ERROR_CODES.serverMediumInactive,
-    'The server vault medium is inactive. Add it through the atomic media transition.',
+    'The server vault medium is inactive. Add it through the verified staged media transition.',
   );
 
 const requireParanoidHistory: RequestHandler = (req, _res, next) => {

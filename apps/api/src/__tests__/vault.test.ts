@@ -13,7 +13,7 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { users } from '../data/schema';
+import { paranoidVaultServerCandidates, users } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -376,7 +376,11 @@ describe('paranoid media endpoint', () => {
     claim: {
       expected: { mediaSet: ('server' | 'drive')[]; driveAttestedVersion: number | null };
       nextMediaSet: ('server' | 'drive')[];
-      verification: { medium: 'server' | 'drive'; version: number };
+      verification: {
+        medium: 'server' | 'drive';
+        version: number;
+        serverCandidateId?: string;
+      };
     },
   ): Promise<string> {
     const response = await agent
@@ -553,14 +557,85 @@ describe('paranoid media endpoint', () => {
     expect(forbiddenPrewrite.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
     expect((await agent.get('/api/v1/vault')).status).toBe(404);
 
-    // The dedicated raw endpoint stores the exact Drive source and activates
-    // server in one transaction.
+    // Staging is explicitly NOT activation. A failed operation can discard its
+    // inactive bytes without creating a live head or history.
     const driveSource = envelope(4, new Uint8Array([4]));
-    const restoredServer = await agent
-      .put('/api/v1/account/paranoid/media/server')
+    const abandoned = await agent
+      .put('/api/v1/account/paranoid/media/server-candidate')
       .set(...XRW)
       .set(...OCTET)
       .send(driveSource);
+    expect(abandoned.status).toBe(200);
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+    expect((await agent.get('/api/v1/account/paranoid/media')).body.mediaState).toEqual({
+      mediaSet: ['drive'],
+      driveAttestedVersion: 3,
+    });
+    expect(
+      (
+        await agent
+          .delete(
+            `/api/v1/account/paranoid/media/server-candidate/${abandoned.body.candidateId as string}`,
+          )
+          .set(...XRW)
+      ).status,
+    ).toBe(200);
+    expect(await harness.db.select().from(paranoidVaultServerCandidates)).toEqual([]);
+
+    // Expired candidates are deleted on bounded read and can never be promoted.
+    const expiring = await agent
+      .put('/api/v1/account/paranoid/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .send(driveSource);
+    await harness.db
+      .update(paranoidVaultServerCandidates)
+      .set({ expiresAt: new Date('2020-01-01T00:00:00.000Z') })
+      .where(eq(paranoidVaultServerCandidates.id, expiring.body.candidateId as string));
+    expect(
+      (
+        await agent.get(
+          `/api/v1/account/paranoid/media/server-candidate/${expiring.body.candidateId as string}`,
+        )
+      ).status,
+    ).toBe(404);
+    expect(await harness.db.select().from(paranoidVaultServerCandidates)).toEqual([]);
+
+    // Successful order is literal: write inactive candidate → raw readback →
+    // proof-bound PATCH promotion. Only the final step activates server.
+    const staged = await agent
+      .put('/api/v1/account/paranoid/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .send(driveSource);
+    expect(staged.status).toBe(200);
+    const stagedRead = await agent
+      .get(`/api/v1/account/paranoid/media/server-candidate/${staged.body.candidateId as string}`)
+      .responseType('blob');
+    expect(stagedRead.status).toBe(200);
+    expect((stagedRead.body as Buffer).equals(driveSource)).toBe(true);
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+
+    const restoreClaim = {
+      expected: {
+        mediaSet: ['drive'] as ('server' | 'drive')[],
+        driveAttestedVersion: 3,
+      },
+      nextMediaSet: ['server', 'drive'] as ('server' | 'drive')[],
+      verification: {
+        medium: 'server' as const,
+        version: 4,
+        serverCandidateId: staged.body.candidateId as string,
+      },
+    };
+    const restoreProof = await prepareMediaProof(agent, restoreClaim);
+    const restoredServer = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        ...restoreClaim,
+        verification: { ...restoreClaim.verification, proof: restoreProof },
+      });
     expect(restoredServer.status).toBe(200);
     expect(restoredServer.body).toEqual({
       mediaSet: ['server', 'drive'],
@@ -568,6 +643,13 @@ describe('paranoid media endpoint', () => {
     });
     const serverCopy = await agent.get('/api/v1/vault').responseType('blob');
     expect((serverCopy.body as Buffer).equals(driveSource)).toBe(true);
+    expect(
+      (
+        await agent.get(
+          `/api/v1/account/paranoid/media/server-candidate/${staged.body.candidateId as string}`,
+        )
+      ).status,
+    ).toBe(404);
   });
 
   it('rejects stale or fabricated verification without deleting ciphertext', async () => {

@@ -92,7 +92,8 @@ export function proofMatchesRequest(
     sameState(payload.expected, request.expected) &&
     sameSet(payload.nextMediaSet, request.nextMediaSet) &&
     payload.verification.medium === request.verification.medium &&
-    payload.verification.version === request.verification.version
+    payload.verification.version === request.verification.version &&
+    payload.verification.serverCandidateId === request.verification.serverCandidateId
   );
 }
 

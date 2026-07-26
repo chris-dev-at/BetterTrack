@@ -1,10 +1,12 @@
 import type { VaultMediaState } from '@bettertrack/contracts';
 
 import {
-  addParanoidServerMedium,
+  discardParanoidServerCandidate,
   getParanoidMediaState,
   patchParanoidMedia,
   prepareParanoidMediaVerification,
+  readParanoidServerCandidate,
+  stageParanoidServerCandidate,
 } from '../../../lib/userApi';
 import type { VaultKeyMaterial } from '../crypto';
 import type { DriveDataHome } from '../drive/driveDataHome';
@@ -20,6 +22,7 @@ import { createReplicatedVaultDataHome } from './replicatedDataHome';
 import { projectDriveSyncStatus, type ParanoidSyncStatusProjection } from './status';
 import {
   createVaultEnvelopeAuthenticator,
+  createBrowserVaultMediaTransitionStore,
   createVaultMediaSwitcher,
   type MediaSwitchResult,
   type VaultMediaStateApi,
@@ -30,6 +33,7 @@ export type DriveConnectionState =
   | 'disconnected'
   | 'connected'
   | 'needs-sign-in'
+  | 'needs-attention'
   | 'offline'
   | 'unavailable';
 
@@ -128,6 +132,7 @@ export function createVaultDriveConnectionController(options: {
     },
 
     state(media) {
+      if (options.switcher.needsDriveCleanup()) return 'needs-attention';
       if (!media.mediaSet.includes('drive')) return 'disconnected';
       switch (options.tokens.status().status) {
         case 'ready':
@@ -171,6 +176,16 @@ export function createVaultDriveConnectionController(options: {
     },
 
     async disconnect() {
+      if (options.switcher.needsDriveCleanup() && options.tokens.status().status !== 'ready') {
+        const authorized = await options.tokens.authorize();
+        if (authorized.status !== 'ok') {
+          return {
+            status: 'failed',
+            reason: authorized.reason,
+            authoritativeState: null,
+          };
+        }
+      }
       const result = await options.switcher.remove('drive');
       if (result.status === 'ok' || result.status === 'no-op') {
         await options.tokens.disconnect();
@@ -203,13 +218,16 @@ export function installUnlockedVaultDriveRuntime(
     get: getParanoidMediaState,
     prepare: prepareParanoidMediaVerification,
     patch: patchParanoidMedia,
-    addServer: addParanoidServerMedium,
+    stageServer: stageParanoidServerCandidate,
+    readServerCandidate: readParanoidServerCandidate,
+    discardServerCandidate: discardParanoidServerCandidate,
   };
   const switcher = createVaultMediaSwitcher({
     state,
     server,
     drive,
     authenticate: createVaultEnvelopeAuthenticator(vaultKey),
+    transitions: createBrowserVaultMediaTransitionStore(keyId),
   });
   const sync =
     options.sync ??
