@@ -1329,6 +1329,66 @@ describe('paranoid rehydration normal-write differential conformance', () => {
     mutationTransaction.mockRestore();
   });
 
+  it('rejects a high-magnitude oversell with no public-number preimage before its first write', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const { row: asset } = await createAssetRepository(harness.db).upsertGlobal({
+      providerId: 'test',
+      providerRef: 'REHYDRATION-HIGH-MAGNITUDE-NO-PREIMAGE',
+      type: 'stock',
+      symbol: 'NOPRE',
+      name: 'High-magnitude no-preimage oversell',
+      exchange: null,
+      currency: 'EUR',
+    });
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 999_999_999_999,
+        price: 1,
+        fee: 0,
+        executedAt: '2026-07-24T10:00:00.000Z',
+      },
+      {
+        assetId: asset.id,
+        side: 'sell',
+        quantity: 999_999_999_999,
+        price: 1,
+        fee: 0,
+        executedAt: '2026-07-24T10:01:00.000Z',
+      },
+    ]);
+    const sourceDocument = await captureStrictDocument(harness.db, user.id);
+    const sell = entities(sourceDocument, 'transaction').find(
+      (entry) => entry.data.side === 'sell',
+    );
+    if (!sell) throw new Error('expected captured sell');
+    sell.data.quantity = '999999999999.00006000';
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
+        rehydrationId: newId(),
+        document: sourceDocument,
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+      message: `transaction[${sell.id}].quantity=${JSON.stringify(
+        sell.data.quantity,
+      )} has no normal-write number preimage`,
+    });
+    expect(mutationTransaction).not.toHaveBeenCalled();
+    await expectNoRestorableRows(
+      harness.db,
+      user.id,
+      `unreachable transaction[${sell.id}].quantity=${sell.data.quantity} wrote rows`,
+    );
+    mutationTransaction.mockRestore();
+  });
+
   it('reports the rejected field/value and attempts zero writes for an invalid graph', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();

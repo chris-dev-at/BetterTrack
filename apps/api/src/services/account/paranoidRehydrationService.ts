@@ -149,14 +149,6 @@ function persistedNumber(value: number, scale: number, label: string): bigint {
   return negative ? -coefficient : coefficient;
 }
 
-function fixedScaleDecimal(value: bigint, scale: number): string {
-  const negative = value < 0n;
-  const digits = (negative ? -value : value).toString().padStart(scale + 1, '0');
-  const whole = scale === 0 ? digits : digits.slice(0, -scale);
-  const fraction = scale === 0 ? '' : `.${digits.slice(-scale)}`;
-  return `${negative ? '-' : ''}${whole}${fraction}`;
-}
-
 const FLOAT64_BYTES = new ArrayBuffer(8);
 const FLOAT64_VIEW = new DataView(FLOAT64_BYTES);
 
@@ -190,8 +182,8 @@ function firstQuantityFloatBits(predicate: (persisted: bigint) => boolean, label
  * Return the outermost JavaScript numbers whose repository serialization lands
  * on one persisted numeric(20,8) quantity. The mapping is monotonic, so an
  * exact binary search covers both sub-quantum rounding and coarse ULPs around
- * 1e12. Byte-exact legacy/internal rows without a public-number preimage retain
- * the Number readback semantics used by every normal repository replay.
+ * 1e12. A persisted decimal without a public-number preimage is unreachable
+ * through the normal transaction writer and must fail closed.
  */
 function quantityNumberPreimages(
   persistedQuantity: bigint,
@@ -200,12 +192,10 @@ function quantityNumberPreimages(
   const lowerBits = firstQuantityFloatBits((persisted) => persisted >= persistedQuantity, label);
   const lower = positiveFloatFromBits(lowerBits);
   if (persistedNumber(lower, 8, label) !== persistedQuantity) {
-    // Older/internal repository paths can contain a byte-exact scale-8 decimal
-    // that no JavaScript number serializes back to at this magnitude. Normal
-    // readers still replay it through Number, so retain that established
-    // persisted semantic while using exact public preimages whenever they exist.
-    const readback = Number(fixedScaleDecimal(persistedQuantity, 8));
-    return { lower: readback, upper: readback };
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      `${label} has no normal-write number preimage`,
+    );
   }
 
   const firstGreaterBits = firstQuantityFloatBits(
