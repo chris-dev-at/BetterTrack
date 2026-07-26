@@ -2480,7 +2480,8 @@
       },
       "returnWindowLabel": "Sampling window",
       "returnPctLabel": "Return rate (%)",
-      "returnPctHint": "Sampled from your history; edit to explore.",
+      "returnPctHint": "Sampled from your history; edit to explore. Between -100% and 100%.",
+      "returnPctClamped": "The return rate is limited to -100% to 100%. The nearest value is used for this projection.",
       "window": {
         "1Y": "1Y",
         "3Y": "3Y",

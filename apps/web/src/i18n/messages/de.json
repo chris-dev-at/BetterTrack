@@ -2480,7 +2480,8 @@
       },
       "returnWindowLabel": "Stichprobenzeitraum",
       "returnPctLabel": "Renditesatz (%)",
-      "returnPctHint": "Aus deiner Historie ermittelt; zum Ausprobieren anpassbar.",
+      "returnPctHint": "Aus deiner Historie ermittelt; zum Ausprobieren anpassbar. Zwischen -100 % und 100 %.",
+      "returnPctClamped": "Der Renditesatz ist auf -100 % bis 100 % begrenzt. Für diese Prognose wird der nächstgelegene Wert verwendet.",
       "window": {
         "1Y": "1 J",
         "3Y": "3 J",
