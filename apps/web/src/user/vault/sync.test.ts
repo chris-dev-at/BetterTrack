@@ -40,7 +40,10 @@ import {
   type RestoreCandidate,
 } from './restore';
 import { createServerBlobDataHome } from './serverBlobDataHome';
-import { createVaultSyncEngine } from './sync';
+import {
+  createVaultSyncEngine as createVaultSyncEngineBase,
+  type VaultSyncEngineOptions,
+} from './sync';
 import { deterministicRandom, VECTOR_DEVICE_ID, VECTOR_KEY_ID, VECTOR_WRITE_ID } from './vectors';
 
 const DEVICE_A = VECTOR_DEVICE_ID;
@@ -61,6 +64,13 @@ const WRAPPED = {
   },
   wrappedVk: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
 };
+
+function createVaultSyncEngine(options: Omit<VaultSyncEngineOptions, 'documentReconciler'>) {
+  return createVaultSyncEngineBase({
+    ...options,
+    documentReconciler: (document) => document,
+  });
+}
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });

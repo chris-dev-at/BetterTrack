@@ -47,7 +47,11 @@ import {
 } from './localDataHome';
 import { createMemoryVaultQuarantineStore } from './quarantine';
 import { createVaultSyncEngine, type VaultSyncEngine, type VaultSyncState } from './sync';
-import { createVaultPortfolioStore, VaultPortfolioStoreError } from './vaultPortfolioStore';
+import {
+  createVaultPortfolioStore,
+  reconcilePortfolioDocument,
+  VaultPortfolioStoreError,
+} from './vaultPortfolioStore';
 import { deterministicRandom, VECTOR_DEVICE_ID, VECTOR_KEY_ID, VECTOR_WRITE_ID } from './vectors';
 
 const DEVICE_ID = VECTOR_DEVICE_ID;
@@ -289,6 +293,12 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     const secondaryId = GENERATED_IDS[0];
     const transactionId = GENERATED_IDS[1];
     const movementId = GENERATED_IDS[2];
+    const standingOrderId = GENERATED_IDS[3];
+    const standingOrderRunId = GENERATED_IDS[4];
+    const importBatchId = GENERATED_IDS[5];
+    const importRowId = GENERATED_IDS[6];
+    const dailySnapshotId = GENERATED_IDS[7];
+    const snapshotStateId = GENERATED_IDS[8];
     const document = initialDocument();
     document.entities.portfolio = [
       ...(document.entities.portfolio ?? []),
@@ -331,6 +341,36 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
         createdAt: AT,
       }),
     ];
+    document.entities.standingOrder = [
+      vaultEntity(standingOrderId, {
+        portfolioId: secondaryId,
+      }),
+    ];
+    document.entities.standingOrderRun = [
+      vaultEntity(standingOrderRunId, {
+        standingOrderId,
+      }),
+    ];
+    document.entities.importBatch = [
+      vaultEntity(importBatchId, {
+        portfolioId: secondaryId,
+      }),
+    ];
+    document.entities.importRow = [
+      vaultEntity(importRowId, {
+        batchId: importBatchId,
+      }),
+    ];
+    document.entities.portfolioDailySnapshot = [
+      vaultEntity(dailySnapshotId, {
+        portfolioId: secondaryId,
+      }),
+    ];
+    document.entities.portfolioSnapshotState = [
+      vaultEntity(snapshotStateId, {
+        portfolioId: secondaryId,
+      }),
+    ];
     const engine = createMutableEngine(document);
     const store = createVaultPortfolioStore(engine, {
       now: () => AT,
@@ -345,6 +385,20 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     ).toBe(AT);
     expect(engine.state.active?.document.entities.transaction?.[0]?.deletedAt).toBe(AT);
     expect(engine.state.active?.document.entities.cashMovement?.[0]?.deletedAt).toBe(AT);
+    for (const [kind, id] of [
+      ['standingOrder', standingOrderId],
+      ['standingOrderRun', standingOrderRunId],
+      ['importBatch', importBatchId],
+      ['importRow', importRowId],
+      ['portfolioDailySnapshot', dailySnapshotId],
+      ['portfolioSnapshotState', snapshotStateId],
+    ] as const) {
+      expect(
+        engine.state.active?.document.entities[kind]?.find((entity) => entity.id === id),
+      ).toMatchObject({
+        deletedAt: AT,
+      });
+    }
     await expect(store.deletePortfolio(PORTFOLIO_ID)).rejects.toMatchObject({
       code: 'VAULT_LAST_ACTIVE_PORTFOLIO',
     });
@@ -975,6 +1029,193 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     });
   });
 
+  it('reconciles a persisted atomic batch before a restarted engine can publish it', async () => {
+    const buyId = GENERATED_IDS[0];
+    const remoteSellId = GENERATED_IDS[1];
+    const firstOfflineSellId = GENERATED_IDS[2];
+    const secondOfflineSellId = GENERATED_IDS[3];
+    const document = initialDocument();
+    document.entities.transaction = [
+      vaultEntity(buyId, {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 2,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-25T09:00:00.000Z',
+        note: null,
+        source: 'manual',
+      }),
+    ];
+    const envelope = await encrypted(document, 1);
+    const remoteLocal = createLocalDataHome({
+      scope: 'portfolio-store-restart-atomic-remote',
+      storage: memoryLocalStorage(),
+    });
+    const pendingLocal = createLocalDataHome({
+      scope: 'portfolio-store-restart-atomic-pending',
+      storage: memoryLocalStorage(),
+    });
+    await Promise.all([seedLocal(remoteLocal, envelope), seedLocal(pendingLocal, envelope)]);
+    const remote = memoryRemote(envelope, 1);
+    const remoteEngine = createVaultSyncEngine({
+      local: remoteLocal,
+      primary: remote,
+      vaultKey: KEY,
+      deviceId: DEVICE_ID,
+      writeId: writeIdSequence(0x20),
+      now: () => AT,
+      quarantine: createMemoryVaultQuarantineStore(),
+      documentReconciler: reconcilePortfolioDocument,
+    });
+    const offlineEngine = createVaultSyncEngine({
+      local: pendingLocal,
+      primary: remote,
+      vaultKey: KEY,
+      deviceId: REMOTE_DEVICE_ID,
+      writeId: writeIdSequence(0x60),
+      now: () => AT,
+      quarantine: createMemoryVaultQuarantineStore(),
+      documentReconciler: reconcilePortfolioDocument,
+    });
+    await Promise.all([remoteEngine.start(), offlineEngine.start()]);
+    const remoteStore = createVaultPortfolioStore(remoteEngine, {
+      now: () => AT,
+      newId: () => remoteSellId,
+    });
+    let offlineNow = AT;
+    const offlineStore = createVaultPortfolioStore(offlineEngine, {
+      now: () => offlineNow,
+      newId: idSequenceFrom(firstOfflineSellId, secondOfflineSellId),
+    });
+    const sell = {
+      assetId: ASSET_ID,
+      side: 'sell' as const,
+      quantity: 1,
+      price: 12,
+      fee: 0,
+      executedAt: AT,
+    };
+
+    remote.setOnline(false);
+    await expect(
+      offlineStore.createTransactions(PORTFOLIO_ID, [sell, sell]),
+    ).resolves.toMatchObject([{ id: firstOfflineSellId }, { id: secondOfflineSellId }]);
+    offlineNow = COMPETING_AT;
+    await expect(
+      offlineStore.updateTransaction(PORTFOLIO_ID, firstOfflineSellId, {
+        note: 'Edited after the atomic batch',
+      }),
+    ).resolves.toMatchObject({
+      id: firstOfflineSellId,
+      note: 'Edited after the atomic batch',
+    });
+
+    remote.setOnline(true);
+    await expect(remoteStore.createTransactions(PORTFOLIO_ID, [sell])).resolves.toMatchObject([
+      { id: remoteSellId },
+    ]);
+
+    const restarted = createVaultSyncEngine({
+      local: pendingLocal,
+      primary: remote,
+      vaultKey: KEY,
+      deviceId: REMOTE_DEVICE_ID,
+      writeId: writeIdSequence(0xa0),
+      now: () => AT,
+      quarantine: createMemoryVaultQuarantineStore(),
+      documentReconciler: reconcilePortfolioDocument,
+    });
+    await expect(restarted.start()).resolves.toMatchObject({ status: 'synced' });
+
+    const restartedTransactions = restarted.state.active?.document.entities.transaction ?? [];
+    expect(restartedTransactions.find((row) => row.id === firstOfflineSellId)).toMatchObject({
+      deletedAt: AT,
+    });
+    expect(restartedTransactions.find((row) => row.id === secondOfflineSellId)).toMatchObject({
+      deletedAt: AT,
+    });
+    const restartedStore = createVaultPortfolioStore(restarted, { now: () => AT });
+    await expect(restartedStore.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
+      holdings: [expect.objectContaining({ quantity: 1 })],
+    });
+
+    await remoteEngine.reconnect();
+    await expect(remoteStore.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
+      holdings: [expect.objectContaining({ quantity: 1 })],
+    });
+  });
+
+  it('keeps independent same-millisecond mutations in separate reconciliation groups', async () => {
+    const buyId = GENERATED_IDS[0];
+    const remoteSellId = GENERATED_IDS[1];
+    const firstOfflineSellId = GENERATED_IDS[2];
+    const secondOfflineSellId = GENERATED_IDS[3];
+    const document = initialDocument();
+    document.entities.transaction = [
+      vaultEntity(buyId, {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 2,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-25T09:00:00.000Z',
+        note: null,
+        source: 'manual',
+      }),
+    ];
+    const { first, second, remote } = await createConcurrentSyncEngines(
+      document,
+      'portfolio-store-same-millisecond-independent-sells',
+    );
+    const remoteStore = createVaultPortfolioStore(first, {
+      now: () => AT,
+      newId: () => remoteSellId,
+    });
+    const offlineStore = createVaultPortfolioStore(second, {
+      now: () => AT,
+      newId: idSequenceFrom(firstOfflineSellId, secondOfflineSellId),
+    });
+    const sell = {
+      assetId: ASSET_ID,
+      side: 'sell' as const,
+      quantity: 1,
+      price: 12,
+      fee: 0,
+      executedAt: AT,
+    };
+
+    remote.setOnline(false);
+    await expect(offlineStore.createTransactions(PORTFOLIO_ID, [sell])).resolves.toMatchObject([
+      { id: firstOfflineSellId },
+    ]);
+    await expect(offlineStore.createTransactions(PORTFOLIO_ID, [sell])).resolves.toMatchObject([
+      { id: secondOfflineSellId },
+    ]);
+    remote.setOnline(true);
+    await expect(remoteStore.createTransactions(PORTFOLIO_ID, [sell])).resolves.toMatchObject([
+      { id: remoteSellId },
+    ]);
+
+    await expect(second.reconnect()).resolves.toMatchObject({ status: 'synced' });
+    const localRows = second.state.active?.document.entities.transaction ?? [];
+    expect(
+      [firstOfflineSellId, secondOfflineSellId].filter(
+        (id) => localRows.find((row) => row.id === id)?.deletedAt === null,
+      ),
+    ).toHaveLength(1);
+    expect(
+      [firstOfflineSellId, secondOfflineSellId].filter(
+        (id) => localRows.find((row) => row.id === id)?.deletedAt !== null,
+      ),
+    ).toHaveLength(1);
+    await expect(offlineStore.getPortfolio(PORTFOLIO_ID)).resolves.toMatchObject({
+      holdings: [expect.objectContaining({ quantity: 0 })],
+    });
+  });
+
   it('rejects a divergent withdrawal before any negative merged ledger is persisted', async () => {
     const depositId = GENERATED_IDS[0];
     const firstWithdrawalId = GENERATED_IDS[1];
@@ -1264,6 +1505,134 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     });
   });
 
+  it('rejects a portfolio delete when direct or recursive snapshot/import/order descendants win', async () => {
+    const secondaryId = GENERATED_IDS[0];
+    const standingOrderId = GENERATED_IDS[1];
+    const standingOrderRunId = GENERATED_IDS[2];
+    const importBatchId = GENERATED_IDS[3];
+    const importRowId = GENERATED_IDS[4];
+    const dailySnapshotId = GENERATED_IDS[5];
+    const snapshotStateId = GENERATED_IDS[6];
+    const document = initialDocument();
+    document.entities.portfolio = [
+      ...(document.entities.portfolio ?? []),
+      vaultEntity(secondaryId, {
+        name: 'Secondary',
+        visibility: 'private',
+        sortOrder: 1,
+        isDefault: false,
+        defaultPayFromCash: false,
+        archivedAt: null,
+      }),
+    ];
+    document.entities.standingOrder = [
+      vaultEntity(standingOrderId, {
+        portfolioId: secondaryId,
+        marker: 'initial',
+      }),
+    ];
+    document.entities.standingOrderRun = [
+      vaultEntity(standingOrderRunId, {
+        standingOrderId,
+        marker: 'initial',
+      }),
+    ];
+    document.entities.importBatch = [
+      vaultEntity(importBatchId, {
+        portfolioId: secondaryId,
+        marker: 'initial',
+      }),
+    ];
+    document.entities.importRow = [
+      vaultEntity(importRowId, {
+        batchId: importBatchId,
+        marker: 'initial',
+      }),
+    ];
+    document.entities.portfolioDailySnapshot = [
+      vaultEntity(dailySnapshotId, {
+        portfolioId: secondaryId,
+        marker: 'initial',
+      }),
+    ];
+    document.entities.portfolioSnapshotState = [
+      vaultEntity(snapshotStateId, {
+        portfolioId: secondaryId,
+        marker: 'initial',
+      }),
+    ];
+    const { first, second } = await createConcurrentSyncEngines(
+      document,
+      'portfolio-store-complete-descendant-race',
+    );
+    const deletingStore = createVaultPortfolioStore(second, { now: () => AT });
+
+    const descendantIds = new Set<string>([
+      standingOrderId,
+      standingOrderRunId,
+      importBatchId,
+      importRowId,
+      dailySnapshotId,
+      snapshotStateId,
+    ]);
+    await expect(
+      first.mutate(({ document: current }) => ({
+        ...current,
+        entities: Object.fromEntries(
+          Object.entries(current.entities).map(([kind, entities]) => [
+            kind,
+            entities.map((entity) =>
+              descendantIds.has(entity.id)
+                ? {
+                    ...entity,
+                    rev: entity.rev + 1,
+                    editedAt: COMPETING_AT,
+                    editedBy: first.deviceId,
+                    data: { ...entity.data, marker: 'concurrent' },
+                  }
+                : entity,
+            ),
+          ]),
+        ),
+      })),
+    ).resolves.toMatchObject({ status: 'synced' });
+
+    await expect(deletingStore.deletePortfolio(secondaryId)).rejects.toMatchObject({
+      code: 'VAULT_DATA_UNAVAILABLE',
+    });
+    for (const [kind, id] of [
+      ['standingOrder', standingOrderId],
+      ['standingOrderRun', standingOrderRunId],
+      ['importBatch', importBatchId],
+      ['importRow', importRowId],
+      ['portfolioDailySnapshot', dailySnapshotId],
+      ['portfolioSnapshotState', snapshotStateId],
+    ] as const) {
+      expect(
+        second.state.active?.document.entities[kind]?.find((entity) => entity.id === id),
+      ).toMatchObject({
+        deletedAt: null,
+        data: expect.objectContaining({ marker: 'concurrent' }),
+      });
+    }
+
+    await first.reconnect();
+    await second.reconnect();
+    for (const kind of [
+      'portfolio',
+      'standingOrder',
+      'standingOrderRun',
+      'importBatch',
+      'importRow',
+      'portfolioDailySnapshot',
+      'portfolioSnapshotState',
+    ] as const) {
+      expect(first.state.active?.document.entities[kind]).toEqual(
+        second.state.active?.document.entities[kind],
+      );
+    }
+  });
+
   it.each(['transaction', 'cash movement'] as const)(
     'rejects a linked transaction deletion when the concurrent %s member wins',
     async (winner) => {
@@ -1493,6 +1862,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       writeId: writeIdSequence(),
       now: () => AT,
       quarantine: createMemoryVaultQuarantineStore(),
+      documentReconciler: reconcilePortfolioDocument,
     });
     await expect(engine.start()).resolves.toMatchObject({ status: 'synced' });
     const store = createVaultPortfolioStore(engine, {
@@ -2015,7 +2385,6 @@ function createMutableEngine(document: VaultDocumentV1, commit = true): VaultSyn
     get state() {
       return state;
     },
-    setDocumentReconciler: vi.fn(),
     async start() {
       return state;
     },
@@ -2036,7 +2405,6 @@ function createUnavailableEngine(status: 'locked' | 'corrupt'): VaultSyncEngine 
   return {
     deviceId: base.deviceId,
     state,
-    setDocumentReconciler: vi.fn(),
     start: vi.fn(async () => state),
     reconnect: vi.fn(async () => state),
     mutate: vi.fn(async () => state),
@@ -2213,6 +2581,7 @@ async function createRacingSyncEngine(
     writeId: writeIdSequence(),
     now: () => AT,
     quarantine: createMemoryVaultQuarantineStore(),
+    documentReconciler: reconcilePortfolioDocument,
   });
   await engine.start();
   return { engine, remote };
@@ -2241,6 +2610,7 @@ async function createConcurrentSyncEngines(
     writeId: writeIdSequence(0x40),
     now: () => AT,
     quarantine: createMemoryVaultQuarantineStore(),
+    documentReconciler: reconcilePortfolioDocument,
   });
   const second = createVaultSyncEngine({
     local: secondLocal,
@@ -2250,6 +2620,7 @@ async function createConcurrentSyncEngines(
     writeId: writeIdSequence(0x80),
     now: () => AT,
     quarantine: createMemoryVaultQuarantineStore(),
+    documentReconciler: reconcilePortfolioDocument,
   });
   await Promise.all([first.start(), second.start()]);
   return { first, second, remote };

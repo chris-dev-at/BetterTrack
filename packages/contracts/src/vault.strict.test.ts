@@ -26,6 +26,8 @@ const meta = (id: string) => ({
   editedAt: AT,
   editedBy: uuid(99),
   deletedAt: null,
+  mutationId: uuid(98),
+  atomicMutationIds: [uuid(97)],
 });
 
 /**
