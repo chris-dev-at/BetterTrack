@@ -195,7 +195,7 @@ describe('DashboardPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /try again/i }));
 
-    expect((await screen.findAllByRole('img')).length).toBeGreaterThan(0);
+    expect(await screen.findByText('Mar')).toBeInTheDocument();
     expect(expensesApi.getExpenseSummary).toHaveBeenCalledTimes(1);
     expect(expensesApi.getExpenseTrends).toHaveBeenCalledTimes(2);
   });
