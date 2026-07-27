@@ -52,6 +52,15 @@ function fakeRepo(options: FakeRepoOptions = {}) {
     async getHistory() {
       return null;
     },
+    async getMediaSnapshot() {
+      return null;
+    },
+    async transitionMedia() {
+      return { status: 'not_found' };
+    },
+    async purgeRetired() {
+      return { status: 'not_found' };
+    },
     async compareAndSwap(input) {
       calls.push(input);
       return (

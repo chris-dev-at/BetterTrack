@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { eq } from 'drizzle-orm';
 
 import {
@@ -13,7 +15,7 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { users } from '../data/schema';
+import { paranoidVaultHistory, paranoidVaults, users } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -62,6 +64,15 @@ function envelope(vaultVersion: number, ciphertext: Uint8Array): Buffer {
     writtenAt: '2026-07-24T10:00:00.000Z',
   };
   return Buffer.from(encodeVaultEnvelope(header, ciphertext));
+}
+
+function mediaProof(medium: 'server' | 'drive', vaultVersion: number, blob: Buffer) {
+  return {
+    medium,
+    vaultVersion,
+    envelopeSha256: createHash('sha256').update(blob).digest('hex'),
+    verifiedAt: new Date().toISOString(),
+  };
 }
 
 async function seedAndLogin(
@@ -367,5 +378,166 @@ describe('vault blob store', () => {
     const over = await hit();
     expect(over.status).toBe(429);
     expect(over.headers['retry-after']).toBeDefined();
+  });
+
+  it('retires a fabricated Drive assertion non-destructively, gates purge, then removes all bytes', async () => {
+    const agent = await seedAndLogin('media@bt.test', 'media', 'paranoid');
+    const v1 = envelope(1, new Uint8Array([1]));
+    const v2 = envelope(2, new Uint8Array([2, 2]));
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(v1);
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(v2);
+
+    const added = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expectedMediaSet: ['server'],
+        mediaSet: ['server', 'drive'],
+        verification: mediaProof('drive', 2, v2),
+      });
+    expect(added.status).toBe(200);
+    expect(added.body).toMatchObject({
+      mediaSet: ['server', 'drive'],
+      driveAttestedVersion: 2,
+    });
+
+    // This is intentionally only a client assertion (there is no Drive
+    // capability server-side). Even if fabricated from the known server bytes,
+    // the PATCH can only retire: every byte remains owner-restorable.
+    const removed = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expectedMediaSet: ['server', 'drive'],
+        mediaSet: ['drive'],
+        verification: mediaProof('drive', 2, v2),
+      });
+    expect(removed.status).toBe(200);
+    expect(removed.body).toMatchObject({
+      mediaSet: ['drive'],
+      driveAttestedVersion: 2,
+      retiredServer: { latestVersion: 2 },
+    });
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+
+    const retained = await agent.get('/api/v1/vault/history');
+    expect(retained.body.items.map((item: { version: number }) => item.version)).toEqual([2, 1]);
+    const restored = await agent.get('/api/v1/vault/history/2').responseType('blob');
+    expect((restored.body as Buffer).equals(v2)).toBe(true);
+    const [mediaUser] = await harness.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, 'media@bt.test'));
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidVaults)
+        .where(eq(paranoidVaults.userId, mediaUser!.id)),
+    ).toHaveLength(0);
+
+    const tooEarly = await agent
+      .post('/api/v1/account/paranoid/media/server/purge')
+      .set(...XRW)
+      .send({ proof: mediaProof('drive', 2, v2) });
+    expect(tooEarly.status).toBe(409);
+    expect(tooEarly.body.error.code).toBe('VAULT_RETIRED_RETENTION_REQUIRED');
+
+    const oldEnough = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    await harness.db.update(paranoidVaultHistory).set({ retiredAt: oldEnough });
+
+    const badProof = await agent
+      .post('/api/v1/account/paranoid/media/server/purge')
+      .set(...XRW)
+      .send({
+        proof: mediaProof('drive', 2, envelope(2, new Uint8Array([9]))),
+      });
+    expect(badProof.status).toBe(422);
+    expect(badProof.body.error.code).toBe('VAULT_RETIRED_PURGE_PROOF_INVALID');
+    expect((await agent.get('/api/v1/vault/history/2')).status).toBe(200);
+
+    const purged = await agent
+      .post('/api/v1/account/paranoid/media/server/purge')
+      .set(...XRW)
+      .send({ proof: mediaProof('drive', 2, v2) });
+    expect(purged.status).toBe(200);
+    expect(purged.body).toMatchObject({ purgedVersions: 2 });
+    expect((await agent.get('/api/v1/vault/history')).body.items).toEqual([]);
+  });
+
+  it('rejects an empty or two-medium jump without changing the active server vault', async () => {
+    const agent = await seedAndLogin('closed@bt.test', 'closed', 'paranoid');
+    const v1 = envelope(1, new Uint8Array([1]));
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(v1);
+
+    const empty = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({ expectedMediaSet: ['server'], mediaSet: [] });
+    expect(empty.status).toBe(400);
+
+    const direct = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expectedMediaSet: ['server'],
+        mediaSet: ['drive'],
+        verification: mediaProof('drive', 1, v1),
+      });
+    expect(direct.status).toBe(409);
+    expect(direct.body.error.code).toBe('VAULT_MEDIA_TRANSITION_INVALID');
+    expect((await agent.get('/api/v1/vault')).status).toBe(200);
+  });
+
+  it('rejects a stale server staging copy after a newer version was retired to Drive-only', async () => {
+    const agent = await seedAndLogin('staging@bt.test', 'staging', 'paranoid');
+    const v2 = envelope(2, new Uint8Array([2]));
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(v2);
+    await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expectedMediaSet: ['server'],
+        mediaSet: ['server', 'drive'],
+        verification: mediaProof('drive', 2, v2),
+      });
+    await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expectedMediaSet: ['server', 'drive'],
+        mediaSet: ['drive'],
+        verification: mediaProof('drive', 2, v2),
+      });
+
+    const stale = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(envelope(1, new Uint8Array([1])));
+    expect(stale.status).toBe(400);
+    expect(stale.body.error.code).toBe('VAULT_MALFORMED');
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+    expect((await agent.get('/api/v1/vault/history/2')).status).toBe(200);
   });
 });

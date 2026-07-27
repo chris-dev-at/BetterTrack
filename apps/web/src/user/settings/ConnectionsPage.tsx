@@ -7,11 +7,22 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { formatDateTime } from '../../lib/format';
-import { getGoogleLinkStatus, googleStartUrl, unlinkGoogle } from '../../lib/userApi';
+import {
+  getGoogleLinkStatus,
+  getVaultMediaState,
+  googleStartUrl,
+  unlinkGoogle,
+} from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
+import {
+  getDriveConnectionController,
+  type DriveConnectionActionResult,
+  type DriveConnectionController,
+} from '../vault/media';
 import { Alert, Button, TextField, cx } from '../components/ui';
 
 const GOOGLE_KEY = ['auth', 'google', 'link-status'] as const;
+const VAULT_MEDIA_KEY = ['account', 'paranoid', 'media'] as const;
 
 /**
  * Map a Settings-connect failure the callback bounced back as `?error=google_*`
@@ -218,6 +229,158 @@ function GoogleSection() {
   );
 }
 
+function DriveVaultSection({
+  connection,
+  configured,
+}: {
+  connection: DriveConnectionController | null;
+  configured: boolean;
+}) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [working, setWorking] = useState(false);
+  const [message, setMessage] = useState<{
+    tone: 'error' | 'success' | 'info';
+    key: string;
+  } | null>(null);
+  const query = useQuery({
+    queryKey: VAULT_MEDIA_KEY,
+    queryFn: ({ signal }) => getVaultMediaState(signal),
+    retry: false,
+    staleTime: 15_000,
+  });
+
+  if (query.isError) {
+    // Normal-mode accounts have no paranoid media state, so the card is absent.
+    if (
+      query.error instanceof ApiError &&
+      (query.error.status === 403 || query.error.status === 404)
+    ) {
+      return null;
+    }
+    return (
+      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.connections.drive.title')}
+        </h3>
+        <EmptyState
+          title={t('settings.connections.drive.loadError')}
+          description={t('settings.retryHint')}
+        />
+      </section>
+    );
+  }
+  if (query.isPending) {
+    return (
+      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.connections.drive.title')}
+        </h3>
+        <Skeleton height="h-6" />
+      </section>
+    );
+  }
+
+  const media = query.data;
+  const selected = media.mediaSet.includes('drive');
+  const needsSignIn = selected && connection?.authorization !== 'connected';
+  const statusKey = working
+    ? 'working'
+    : selected
+      ? needsSignIn
+        ? 'needsSignIn'
+        : 'connected'
+      : 'disconnected';
+
+  async function refresh(): Promise<void> {
+    await queryClient.invalidateQueries({ queryKey: VAULT_MEDIA_KEY });
+  }
+
+  function unavailable(): boolean {
+    if (connection) return false;
+    setMessage({
+      tone: 'info',
+      key: configured
+        ? 'settings.connections.drive.unlockRequired'
+        : 'settings.connections.drive.configMissing',
+    });
+    return true;
+  }
+
+  async function connect(): Promise<void> {
+    if (unavailable()) return;
+    setWorking(true);
+    setMessage(null);
+    try {
+      const result = await connection!.connect();
+      if (result.status === 'ok' || result.status === 'noop') {
+        setMessage({ tone: 'success', key: 'settings.connections.drive.connectedNotice' });
+        await refresh();
+      } else {
+        setMessage({ tone: 'error', key: 'settings.connections.drive.actionError' });
+      }
+    } catch {
+      setMessage({ tone: 'error', key: 'settings.connections.drive.actionError' });
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function disconnect(): Promise<void> {
+    if (unavailable()) return;
+    setWorking(true);
+    setMessage(null);
+    try {
+      const result: DriveConnectionActionResult = await connection!.disconnect();
+      if (result.status === 'ok' || result.status === 'noop') {
+        setMessage({ tone: 'success', key: 'settings.connections.drive.disconnectedNotice' });
+        await refresh();
+      } else if (result.status === 'drive-leftover') {
+        setMessage({ tone: 'info', key: 'settings.connections.drive.leftover' });
+        await refresh();
+      } else {
+        setMessage({ tone: 'error', key: 'settings.connections.drive.actionError' });
+      }
+    } catch {
+      setMessage({ tone: 'error', key: 'settings.connections.drive.actionError' });
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.connections.drive.title')}
+        </h3>
+        <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-neutral-300">
+          {t(`settings.connections.drive.status.${statusKey}`)}
+        </span>
+      </div>
+      <p className="text-xs text-neutral-500">{t('settings.connections.drive.description')}</p>
+      {message ? <Alert tone={message.tone}>{t(message.key)}</Alert> : null}
+      {selected && media.mediaSet.length === 1 ? (
+        <Alert tone="info">{t('settings.connections.drive.lastMedium')}</Alert>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        {!selected || needsSignIn ? (
+          <Button type="button" variant="secondary" disabled={working} onClick={connect}>
+            {t(
+              selected ? 'settings.connections.drive.signIn' : 'settings.connections.drive.connect',
+            )}
+          </Button>
+        ) : null}
+        {selected && media.mediaSet.length > 1 ? (
+          <Button type="button" variant="ghost" disabled={working} onClick={disconnect}>
+            {t('settings.connections.drive.disconnect')}
+          </Button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 /**
  * The v6 connectors, as designed-but-inert slots (V5-P0c). Each names itself,
  * says what it does in one line, states its sync semantics (a one-time import
@@ -226,7 +389,6 @@ function GoogleSection() {
  * collapsed `<details>` so the live Google identity stays the visible thing.
  */
 const CONNECTOR_SLOTS = [
-  { key: 'drive', sync: 'stayConnected' },
   { key: 'bankCash', sync: 'stayConnected' },
   { key: 'parqet', sync: 'oneTime' },
 ] as const;
@@ -295,7 +457,13 @@ function ConnectorSlots() {
  * (moved here from Security, behaviour unchanged) sits up top as the live thing,
  * and the future connectors fold away below as compact designed placeholders.
  */
-export function ConnectionsPage() {
+export function ConnectionsPage({
+  driveConnection = getDriveConnectionController(),
+  driveConfigured = Boolean(import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID),
+}: {
+  driveConnection?: DriveConnectionController | null;
+  driveConfigured?: boolean;
+} = {}) {
   const t = useT();
   return (
     <div className="flex flex-col gap-8">
@@ -307,6 +475,8 @@ export function ConnectionsPage() {
       </div>
 
       <GoogleSection />
+
+      <DriveVaultSection connection={driveConnection} configured={driveConfigured} />
 
       <ConnectorSlots />
     </div>

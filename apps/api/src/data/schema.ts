@@ -3214,12 +3214,17 @@ export const paranoidVaultHistory = pgTable(
     // When this version was archived (superseded by a newer write) — the age
     // bound and the restore-picker ordering both read it.
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    // Set only when the server medium is removed. Retired ciphertext stays
+    // readable through the bounded-history surface but is excluded from normal
+    // history pruning until the owner completes the separately gated purge.
+    retiredAt: timestamp('retired_at', { withTimezone: true }),
   },
   (t) => [
     // One archived row per (user, version); the pruner and restore picker sort by
     // version desc within a user.
     uniqueIndex('paranoid_vault_history_user_version_unique').on(t.userId, t.version),
     index('paranoid_vault_history_user_created_idx').on(t.userId, t.createdAt),
+    index('paranoid_vault_history_user_retired_idx').on(t.userId, t.retiredAt),
   ],
 );
 

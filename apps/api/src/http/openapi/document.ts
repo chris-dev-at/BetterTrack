@@ -41,6 +41,10 @@ const componentSchemas = {
   HealthResponse: contracts.healthResponseSchema,
   VersionResponse: contracts.versionResponseSchema,
   VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
+  VaultMediaPatchRequest: contracts.vaultMediaPatchRequestSchema,
+  VaultMediaStateResponse: contracts.vaultMediaStateResponseSchema,
+  RetiredServerVaultPurgeRequest: contracts.retiredServerVaultPurgeRequestSchema,
+  RetiredServerVaultPurgeResponse: contracts.retiredServerVaultPurgeResponseSchema,
 
   // Auth (§6.1)
   LoginRequest: contracts.loginRequestSchema,
@@ -3782,6 +3786,35 @@ const endpoints: EndpointDef[] = [
   },
 
   // Paranoid vault (§13.5 V5-P13 arc b) — the BLIND server blob store.
+  {
+    method: 'get',
+    path: '/account/paranoid/media',
+    tag: 'Vault',
+    summary:
+      'Read the paranoid account’s portfolio-free durable media set and retired-server recovery window.',
+    status: 200,
+    response: R.VaultMediaStateResponse,
+  },
+  {
+    method: 'patch',
+    path: '/account/paranoid/media',
+    tag: 'Vault',
+    summary:
+      'Persist one verified migrate-then-drop media transition. A Drive assertion can retire server ciphertext but can never delete it.',
+    body: R.VaultMediaPatchRequest,
+    status: 200,
+    response: R.VaultMediaStateResponse,
+  },
+  {
+    method: 'post',
+    path: '/account/paranoid/media/server/purge',
+    tag: 'Vault',
+    summary:
+      'Explicitly purge retired server ciphertext after the minimum recovery window and a fresh authenticated Drive read-back proof.',
+    body: R.RetiredServerVaultPurgeRequest,
+    status: 200,
+    response: R.RetiredServerVaultPurgeResponse,
+  },
   {
     method: 'get',
     path: '/vault/history',

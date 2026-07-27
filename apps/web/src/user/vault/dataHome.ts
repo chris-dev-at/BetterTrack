@@ -17,6 +17,14 @@ export interface DataHomeInfo {
 export interface DataHomeTransportFailure {
   message: string;
   httpStatus?: number;
+  /** Machine-readable recovery state; Drive uses these to project honest UI. */
+  code?:
+    | 'offline'
+    | 'consent-required'
+    | 'token-expired'
+    | 'gesture-required'
+    | 'permission-denied'
+    | 'api-failure';
   /** The remote may have committed before the response was lost. */
   indeterminate?: boolean;
   cause?: unknown;
@@ -27,7 +35,9 @@ export type DataHomeCorruptionReason =
   | 'missing-version'
   | 'version-mismatch'
   | 'unsupported-version'
-  | 'invalid-response';
+  | 'invalid-response'
+  | 'malformed-metadata'
+  | 'corrupt-bytes';
 
 export interface DataHomeCorruptCandidate {
   status: 'corrupt';

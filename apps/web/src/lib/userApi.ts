@@ -13,8 +13,10 @@ import {
   registerResponseSchema,
   rememberedDeviceResponseSchema,
   revokeSessionsResponseSchema,
+  retiredServerVaultPurgeResponseSchema,
   sessionInfoResponseSchema,
   sessionListResponseSchema,
+  vaultMediaStateResponseSchema,
   exportRequestResponseSchema,
   exportStatusResponseSchema,
   type AcceptInviteRequest,
@@ -46,12 +48,16 @@ import {
   type PinVerifyRequest,
   type RememberedDeviceResponse,
   type RevokeSessionsResponse,
+  type RetiredServerVaultPurgeResponse,
   type SessionInfoResponse,
   type SessionSummary,
   type SetPinLockRequest,
   type SetPinRequest,
   type TwoFactorEmailCodeRequest,
   type TwoFactorVerifyRequest,
+  type VaultMediaPatchRequest,
+  type VaultMediaStateResponse,
+  type VaultMediaVerification,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -112,6 +118,34 @@ export async function logout(): Promise<void> {
 export async function getMe(signal?: AbortSignal): Promise<MeResponse> {
   const data = await apiRequest<unknown>('/auth/me', { signal, suppressAuthRedirect: true });
   return meResponseSchema.parse(data);
+}
+
+/** Portfolio-free paranoid media state; no Drive capability crosses this API. */
+export async function getVaultMediaState(signal?: AbortSignal): Promise<VaultMediaStateResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/media', { signal });
+  return vaultMediaStateResponseSchema.parse(data);
+}
+
+/** Persist one verified migrate-then-drop media transition. */
+export async function patchVaultMedia(
+  body: VaultMediaPatchRequest,
+): Promise<VaultMediaStateResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/media', {
+    method: 'PATCH',
+    body,
+  });
+  return vaultMediaStateResponseSchema.parse(data);
+}
+
+/** Explicitly purge retired server ciphertext after a fresh Drive read-back. */
+export async function purgeRetiredVaultServer(
+  proof: VaultMediaVerification,
+): Promise<RetiredServerVaultPurgeResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/media/server/purge', {
+    method: 'POST',
+    body: { proof },
+  });
+  return retiredServerVaultPurgeResponseSchema.parse(data);
 }
 
 /**

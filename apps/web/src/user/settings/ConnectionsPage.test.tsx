@@ -6,12 +6,18 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../../lib/userApi', () => ({
   getGoogleLinkStatus: vi.fn(),
+  getVaultMediaState: vi.fn(),
   unlinkGoogle: vi.fn(),
   googleStartUrl: vi.fn(() => 'http://api.test/api/v1/auth/google/start'),
 }));
 
 import { ApiError } from '../../lib/apiClient';
-import { getGoogleLinkStatus, unlinkGoogle } from '../../lib/userApi';
+import { getGoogleLinkStatus, getVaultMediaState, unlinkGoogle } from '../../lib/userApi';
+import type {
+  DriveConnectionActionResult,
+  DriveConnectionController,
+  VaultMediaSwitchResult,
+} from '../vault/media';
 import { ConnectionsPage } from './ConnectionsPage';
 
 const GOOGLE_OFF = {
@@ -30,12 +36,15 @@ const LINKED = {
   canUnlink: true,
 } as const;
 
-function renderPage(initialEntry = '/settings/connections') {
+function renderPage(
+  initialEntry = '/settings/connections',
+  driveConnection: DriveConnectionController | null = null,
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={client}>
-        <ConnectionsPage />
+        <ConnectionsPage driveConnection={driveConnection} driveConfigured />
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -45,6 +54,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Google off by default so the section stays hidden unless a test opts in.
   vi.mocked(getGoogleLinkStatus).mockResolvedValue(GOOGLE_OFF);
+  vi.mocked(getVaultMediaState).mockRejectedValue(
+    new ApiError(403, 'VAULT_PARANOID_MODE_REQUIRED', 'normal mode'),
+  );
   vi.mocked(unlinkGoogle).mockResolvedValue(undefined);
 });
 
@@ -56,10 +68,9 @@ describe('ConnectionsPage — connector slots (V5-P0c)', () => {
     expect(await screen.findByRole('heading', { name: 'Connections' })).toBeInTheDocument();
 
     // Each designed slot is present with a "coming soon" chip and no dead button.
-    expect(screen.getByText('Google Drive backup')).toBeInTheDocument();
     expect(screen.getByText('Bank & broker cash sync')).toBeInTheDocument();
     expect(screen.getByText('Parqet')).toBeInTheDocument();
-    expect(screen.getAllByText('Coming soon').length).toBe(3);
+    expect(screen.getAllByText('Coming soon').length).toBe(2);
     // Both sync-semantics variants are surfaced.
     expect(screen.getAllByText(/Stays connected/).length).toBeGreaterThan(0);
     expect(screen.getByText(/One-time import/)).toBeInTheDocument();
@@ -73,7 +84,7 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
     renderPage();
     // The connectors still render; the Google section resolves to nothing once
     // the disabled status arrives (a transient skeleton clears on settle).
-    expect(await screen.findByText('Google Drive backup')).toBeInTheDocument();
+    expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('Google account')).not.toBeInTheDocument());
   });
 
@@ -150,5 +161,115 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
     expect(await screen.findByText(/doesn't match your account email/i)).toBeInTheDocument();
     // The connect affordance is still offered — nothing was linked.
     expect(screen.getByRole('link', { name: 'Connect Google' })).toBeInTheDocument();
+  });
+});
+
+describe('ConnectionsPage — paranoid Google Drive appdata', () => {
+  test('connects through the verified media controller and refreshes durable status', async () => {
+    vi.mocked(getVaultMediaState)
+      .mockResolvedValueOnce({
+        mediaSet: ['server'],
+        driveAttestedVersion: null,
+        retiredServer: null,
+      })
+      .mockResolvedValue({
+        mediaSet: ['server', 'drive'],
+        driveAttestedVersion: 4,
+        retiredServer: null,
+      });
+    let authorization: DriveConnectionController['authorization'] = 'consent-required';
+    const controller: DriveConnectionController = {
+      get authorization() {
+        return authorization;
+      },
+      connect: vi.fn(async (): Promise<DriveConnectionActionResult> => {
+        authorization = 'connected';
+        return {
+          status: 'ok',
+          media: {
+            mediaSet: ['server', 'drive'],
+            driveAttestedVersion: 4,
+            retiredServer: null,
+          },
+          driveLeftover: false,
+        };
+      }),
+      disconnect: vi.fn(),
+      resume: vi.fn(),
+    };
+    const user = userEvent.setup();
+    renderPage('/settings/connections', controller);
+
+    expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
+    expect(await screen.findByText('Disconnected')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Connect Drive' }));
+    await waitFor(() => expect(controller.connect).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText('Google Drive is now a verified vault location.'),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Connected')).toBeInTheDocument());
+  });
+
+  test('routes disconnect through the safe flow and never offers removal of the last medium', async () => {
+    vi.mocked(getVaultMediaState)
+      .mockResolvedValueOnce({
+        mediaSet: ['server', 'drive'],
+        driveAttestedVersion: 4,
+        retiredServer: null,
+      })
+      .mockResolvedValueOnce({
+        mediaSet: ['server'],
+        driveAttestedVersion: null,
+        retiredServer: null,
+      })
+      .mockResolvedValue({
+        mediaSet: ['drive'],
+        driveAttestedVersion: 4,
+        retiredServer: null,
+      });
+    const controller: DriveConnectionController = {
+      authorization: 'connected',
+      connect: vi.fn(),
+      disconnect: vi.fn(
+        async (): Promise<VaultMediaSwitchResult> => ({
+          status: 'ok',
+          media: {
+            mediaSet: ['server'],
+            driveAttestedVersion: null,
+            retiredServer: null,
+          },
+          driveLeftover: false,
+        }),
+      ),
+      resume: vi.fn(),
+    };
+    const user = userEvent.setup();
+    const rendered = renderPage('/settings/connections', controller);
+    await user.click(await screen.findByRole('button', { name: 'Disconnect Drive' }));
+    await waitFor(() => expect(controller.disconnect).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText('Google Drive is no longer a vault location.'),
+    ).toBeInTheDocument();
+
+    rendered.unmount();
+    renderPage('/settings/connections', controller);
+    expect(await screen.findByText(/Drive is your only vault location/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Disconnect Drive' })).not.toBeInTheDocument();
+  });
+
+  test('shows token-expiry honestly and asks for unlock when no controller is installed', async () => {
+    vi.mocked(getVaultMediaState).mockResolvedValue({
+      mediaSet: ['server', 'drive'],
+      driveAttestedVersion: 4,
+      retiredServer: null,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText('Sign in needed')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Sign in to Google' }));
+    expect(
+      await screen.findByText(/Unlock your encrypted vault before changing/i),
+    ).toBeInTheDocument();
   });
 });

@@ -11,15 +11,21 @@ import {
   vaultHistoryListResponseSchema,
   vaultHistoryListQuerySchema,
   vaultHistoryVersionParamSchema,
+  vaultMediaPatchRequestSchema,
+  vaultMediaStateResponseSchema,
+  retiredServerVaultPurgeRequestSchema,
+  retiredServerVaultPurgeResponseSchema,
+  type RetiredServerVaultPurgeRequest,
   type VaultHistoryListQuery,
   type VaultHistoryVersionParam,
+  type VaultMediaPatchRequest,
 } from '@bettertrack/contracts';
 
 import { ApiError, forbidden, notFound } from '../../errors';
 
 import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
-import { validateParams, validateQuery } from '../middleware/validate';
+import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
 
 /**
@@ -69,7 +75,7 @@ const payloadTooLarge = (): ApiError =>
 const malformed = (message: string): ApiError =>
   new ApiError(400, VAULT_ERROR_CODES.malformed, message);
 
-const requireParanoidHistory: RequestHandler = (req, _res, next) => {
+const requireParanoidMode: RequestHandler = (req, _res, next) => {
   if (req.authUser?.privacyMode !== 'paranoid') {
     next(
       forbidden(
@@ -89,7 +95,7 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
 
   // Blind retained-history surface. The account mode comes from the user row
   // freshly resolved for this request; no user id is accepted from the client.
-  router.use('/history', requireParanoidHistory);
+  router.use('/history', requireParanoidMode);
 
   // GET /vault/history?cursor=&limit= — newest-first metadata only. The
   // repository clamps every page independently of the requested limit.
@@ -205,6 +211,118 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
           throw payloadTooLarge();
         case 'malformed':
           throw malformed(result.reason);
+      }
+    },
+  );
+
+  return router;
+}
+
+/**
+ * Account-scoped media controls live at `/api/v1/account/paranoid/media`.
+ * Drive credentials never cross this router: only the non-sensitive media set
+ * and a short-lived opaque-envelope read-back attestation are accepted.
+ */
+export function createParanoidMediaRouter(ctx: AppContext): Router {
+  const router = Router();
+
+  router.use(requireUser, requireParanoidMode);
+
+  router.get('/media', async (req, res) => {
+    const state = await ctx.paranoidVault.getMediaState(req.authUser!.id);
+    if (!state) {
+      throw notFound('No paranoid media state found.', VAULT_ERROR_CODES.notFound);
+    }
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json(vaultMediaStateResponseSchema.parse(state));
+  });
+
+  router.patch('/media', validateBody(vaultMediaPatchRequestSchema), async (req, res) => {
+    const body = req.valid?.body as VaultMediaPatchRequest;
+    const result = await ctx.paranoidVault.patchMedia(req.authUser!.id, body);
+    switch (result.status) {
+      case 'ok':
+        res.setHeader('Cache-Control', 'private, no-store');
+        res.json(vaultMediaStateResponseSchema.parse(result.media));
+        return;
+      case 'not_found':
+        throw notFound('No account found.', VAULT_ERROR_CODES.notFound);
+      case 'mode_required':
+        throw forbidden(
+          'Media switching is available only in paranoid mode.',
+          VAULT_ERROR_CODES.modeRequired,
+        );
+      case 'precondition_failed':
+        throw new ApiError(
+          412,
+          VAULT_ERROR_CODES.mediaPreconditionFailed,
+          'The durable vault media set changed before this transition.',
+          { mediaSet: result.mediaSet },
+        );
+      case 'invalid_transition':
+        throw new ApiError(
+          409,
+          VAULT_ERROR_CODES.mediaTransitionInvalid,
+          'Vault media must be added or removed one medium at a time.',
+        );
+      case 'verification_required':
+        throw new ApiError(
+          422,
+          VAULT_ERROR_CODES.mediaVerificationRequired,
+          'A fresh verified round trip is required before changing vault media.',
+        );
+      case 'verification_invalid':
+        throw new ApiError(
+          422,
+          VAULT_ERROR_CODES.mediaVerificationInvalid,
+          'The vault media verification is stale or does not match the server copy.',
+        );
+    }
+  });
+
+  router.post(
+    '/media/server/purge',
+    validateBody(retiredServerVaultPurgeRequestSchema),
+    async (req, res) => {
+      const { proof } = req.valid?.body as RetiredServerVaultPurgeRequest;
+      const result = await ctx.paranoidVault.purgeRetiredServer(req.authUser!.id, proof);
+      switch (result.status) {
+        case 'ok':
+          res.setHeader('Cache-Control', 'private, no-store');
+          res.json(
+            retiredServerVaultPurgeResponseSchema.parse({
+              media: result.media,
+              purgedVersions: result.purgedVersions,
+              purgedBytes: result.purgedBytes,
+            }),
+          );
+          return;
+        case 'not_found':
+          throw notFound('No account found.', VAULT_ERROR_CODES.notFound);
+        case 'mode_required':
+          throw forbidden(
+            'Retired vault purge is available only in paranoid mode.',
+            VAULT_ERROR_CODES.modeRequired,
+          );
+        case 'media_invalid':
+          throw new ApiError(
+            409,
+            VAULT_ERROR_CODES.mediaTransitionInvalid,
+            'Retired server ciphertext can be purged only while Drive is the sole medium.',
+          );
+        case 'proof_invalid':
+          throw new ApiError(
+            422,
+            VAULT_ERROR_CODES.retiredPurgeProofInvalid,
+            'The fresh Drive read-back proof does not cover the retired server vault.',
+          );
+        case 'retention_not_met':
+          throw new ApiError(
+            409,
+            VAULT_ERROR_CODES.retiredRetentionRequired,
+            'The retired server vault is still inside its minimum recovery window.',
+            { eligibleAt: result.eligibleAt.toISOString() },
+          );
       }
     },
   );

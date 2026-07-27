@@ -45,7 +45,7 @@ import { createPortfolioRouter } from './http/routes/portfolioRoutes';
 import { createSearchRouter } from './http/routes/searchRoutes';
 import { createStandingOrdersRouter } from './http/routes/standingOrdersRoutes';
 import { createSettingsRouter } from './http/routes/settingsRoutes';
-import { createVaultRouter } from './http/routes/vaultRoutes';
+import { createParanoidMediaRouter, createVaultRouter } from './http/routes/vaultRoutes';
 import { createSocialRouter } from './http/routes/socialRoutes';
 import { createWebhooksRouter } from './http/routes/webhooksRoutes';
 import { createWorkboardRouter } from './http/routes/workboardRoutes';
@@ -146,6 +146,10 @@ export function createApp(ctx: AppContext) {
   // special auth beyond the guarded chain above.
   app.use('/api/v1/feature-flags', createFeatureFlagsRouter(ctx));
   app.use('/api/v1/auth', createAuthRouter(ctx, limiters));
+  // Paranoid media-set transitions use the binding account path. The client
+  // sends only media metadata/read-back proofs here; Google credentials remain
+  // entirely in the browser.
+  app.use('/api/v1/account/paranoid', createParanoidMediaRouter(ctx));
   app.use('/api/v1/account', createAccountRouter(ctx, limiters));
   // bull-board queue inspector (§13.4 V4-P5a), mounted admin-only and BEFORE the
   // admin router so `/api/v1/admin/queues` resolves here (a non-admin/anonymous

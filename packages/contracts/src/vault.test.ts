@@ -20,7 +20,10 @@ import {
   vaultHistoryListResponseSchema,
   vaultHistoryMetadataSchema,
   vaultHistoryVersionParamSchema,
+  vaultMediaPatchRequestSchema,
   vaultMediaSetSchema,
+  vaultMediaStateResponseSchema,
+  retiredServerVaultPurgeRequestSchema,
   vaultServerHeaderSchema,
   vaultVersionSchema,
 } from './vault';
@@ -70,6 +73,60 @@ describe('media set', () => {
     expect(vaultMediaSetSchema.safeParse([]).success).toBe(false);
     expect(vaultMediaSetSchema.safeParse(['icloud']).success).toBe(false);
     expect(vaultMediaSetSchema.safeParse(['server', 'server']).success).toBe(false);
+  });
+
+  it('pins verified one-step transitions and rejects empty direct requests', () => {
+    const proof = {
+      medium: 'drive',
+      vaultVersion: 7,
+      envelopeSha256: 'a'.repeat(64),
+      verifiedAt: '2026-07-27T10:00:00.000Z',
+    };
+    expect(
+      vaultMediaPatchRequestSchema.parse({
+        expectedMediaSet: ['server'],
+        mediaSet: ['server', 'drive'],
+        verification: proof,
+      }),
+    ).toMatchObject({ verification: proof });
+    expect(
+      vaultMediaPatchRequestSchema.safeParse({
+        expectedMediaSet: ['server'],
+        mediaSet: [],
+        verification: proof,
+      }).success,
+    ).toBe(false);
+    expect(
+      vaultMediaPatchRequestSchema.safeParse({
+        expectedMediaSet: ['server'],
+        mediaSet: ['server', 'drive'],
+        verification: { ...proof, envelopeSha256: 'not-a-sha256' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('exposes only safe retired-state metadata and Drive-only purge proofs', () => {
+    expect(
+      vaultMediaStateResponseSchema.parse({
+        mediaSet: ['drive'],
+        driveAttestedVersion: 7,
+        retiredServer: {
+          latestVersion: 7,
+          retiredAt: '2026-07-27T10:00:00.000Z',
+          purgeEligibleAt: '2026-08-03T10:00:00.000Z',
+        },
+      }),
+    ).not.toHaveProperty('blob');
+    expect(
+      retiredServerVaultPurgeRequestSchema.safeParse({
+        proof: {
+          medium: 'server',
+          vaultVersion: 7,
+          envelopeSha256: 'a'.repeat(64),
+          verifiedAt: '2026-08-03T10:00:00.000Z',
+        },
+      }).success,
+    ).toBe(false);
   });
 });
 

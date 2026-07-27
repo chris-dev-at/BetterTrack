@@ -486,6 +486,17 @@
     "label": "Anzeigesprache",
     "saveError": "Deine Sprache konnte nicht gespeichert werden. Bitte versuche es erneut."
   },
+  "vault": {
+    "sync": {
+      "synced": "Verschlüsselter Tresor synchronisiert",
+      "syncing": "Verschlüsselter Tresor wird synchronisiert",
+      "offline": "Verschlüsselte Änderungen warten auf eine Verbindung",
+      "needsAttention": "Tresor-Synchronisierung braucht Aufmerksamkeit",
+      "drive": {
+        "signIn": "Bei Google anmelden, um zu synchronisieren"
+      }
+    }
+  },
   "settings": {
     "saveError": "Diese Änderung konnte nicht gespeichert werden. Bitte versuche es erneut.",
     "retryHint": "Bitte versuche es gleich noch einmal.",
@@ -506,15 +517,32 @@
       "comingSoon": "Bald verfügbar",
       "slotsTitle": "Connectors",
       "slotsSubtitle": "Synchronisiere deine Daten mit externen Diensten. Sie sind in Arbeit — noch nichts einzurichten.",
+      "drive": {
+        "title": "Google-Drive-App-Daten",
+        "description": "Speichere deinen verschlüsselten Tresor im verborgenen App-Daten-Ordner von Google. BetterTrack kann deine normalen Drive-Dateien nicht sehen.",
+        "status": {
+          "connected": "Verbunden",
+          "needsSignIn": "Anmeldung erforderlich",
+          "disconnected": "Nicht verbunden",
+          "working": "Wird ausgeführt…"
+        },
+        "connect": "Drive verbinden",
+        "signIn": "Bei Google anmelden",
+        "disconnect": "Drive trennen",
+        "lastMedium": "Drive ist dein einziger Tresor-Speicherort. Füge zuerst den Server als Medium hinzu.",
+        "unlockRequired": "Entsperre deinen verschlüsselten Tresor, bevor du die Drive-Verbindung änderst.",
+        "configMissing": "Google-Drive-App-Daten sind in dieser Installation nicht konfiguriert.",
+        "loadError": "Die Verbindung des verschlüsselten Tresors konnte nicht geladen werden.",
+        "actionError": "Die Drive-Verbindung konnte nicht geändert werden. Dein bisheriger Tresor-Speicherort bleibt aktiv.",
+        "leftover": "Drive wurde getrennt, aber die verschlüsselte Datei konnte nicht gelöscht werden. Sie bleibt in deinem eigenen verborgenen App-Daten-Ordner.",
+        "connectedNotice": "Google Drive ist jetzt ein verifizierter Tresor-Speicherort.",
+        "disconnectedNotice": "Google Drive ist kein Tresor-Speicherort mehr."
+      },
       "sync": {
         "oneTime": "Einmaliger Import — läuft einmal beim Verbinden.",
         "stayConnected": "Bleibt verbunden — synchronisiert automatisch."
       },
       "slots": {
-        "drive": {
-          "name": "Google-Drive-Backup",
-          "purpose": "Halte ein verschlüsseltes Off-site-Backup deines Kontos auf deinem eigenen Drive."
-        },
         "bankCash": {
           "name": "Bank- & Broker-Cash-Sync",
           "purpose": "Halte deine Barbestände mit deinen Bank- und Broker-Konten im Einklang."

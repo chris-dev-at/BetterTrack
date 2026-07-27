@@ -1,6 +1,10 @@
-import { and, desc, eq, lt, lte } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, lt, lte } from 'drizzle-orm';
 
-import { VAULT_HISTORY_PAGE_DEFAULT, VAULT_HISTORY_PAGE_MAX } from '@bettertrack/contracts';
+import {
+  VAULT_HISTORY_PAGE_DEFAULT,
+  VAULT_HISTORY_PAGE_MAX,
+  type VaultMediaSet,
+} from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import {
@@ -151,6 +155,48 @@ export interface ParanoidVaultHistoryPage {
   nextCursor: number | null;
 }
 
+export interface ParanoidVaultMediaSnapshot {
+  privacyMode: 'normal' | 'paranoid';
+  mediaSet: VaultMediaSet | null;
+  driveAttestedVersion: number | null;
+  current: ParanoidVaultRow | null;
+  /** Highest-version retired ciphertext, including its opaque bytes. */
+  retiredHead: ParanoidVaultHistoryRow | null;
+}
+
+export interface ParanoidVaultMediaTransitionInput {
+  userId: string;
+  expectedMediaSet: VaultMediaSet;
+  mediaSet: VaultMediaSet;
+  driveAttestedVersion: number | null;
+  /** The live/staged server version the service verified before this transaction. */
+  expectedServerVersion: number;
+  now: Date;
+}
+
+export type ParanoidVaultMediaTransitionResult =
+  | { status: 'ok'; idempotent: boolean }
+  | { status: 'not_found' }
+  | { status: 'mode_required' }
+  | { status: 'precondition_failed'; mediaSet: VaultMediaSet }
+  | { status: 'server_version_changed'; currentVersion: number | null };
+
+export interface ParanoidVaultRetiredPurgeInput {
+  userId: string;
+  proofVersion: number;
+  now: Date;
+  minRetirementAgeMs: number;
+}
+
+export type ParanoidVaultRetiredPurgeResult =
+  | { status: 'ok'; purgedVersions: number; purgedBytes: number }
+  | { status: 'not_found' }
+  | { status: 'mode_required' }
+  | { status: 'media_invalid'; mediaSet: VaultMediaSet }
+  | { status: 'proof_version_too_old'; latestVersion: number }
+  | { status: 'retention_not_met'; eligibleAt: Date }
+  | { status: 'unretired_history' };
+
 export interface ParanoidVaultRepository {
   getCurrent(userId: string): Promise<ParanoidVaultRow | null>;
   listHistory(
@@ -158,6 +204,11 @@ export interface ParanoidVaultRepository {
     input?: ParanoidVaultHistoryListInput,
   ): Promise<ParanoidVaultHistoryPage>;
   getHistory(userId: string, version: number): Promise<ParanoidVaultHistoryRow | null>;
+  getMediaSnapshot(userId: string): Promise<ParanoidVaultMediaSnapshot | null>;
+  transitionMedia(
+    input: ParanoidVaultMediaTransitionInput,
+  ): Promise<ParanoidVaultMediaTransitionResult>;
+  purgeRetired(input: ParanoidVaultRetiredPurgeInput): Promise<ParanoidVaultRetiredPurgeResult>;
   compareAndSwap(input: ParanoidVaultCasInput): Promise<ParanoidVaultCasResult>;
 }
 
@@ -165,6 +216,14 @@ function historyPageSize(requested: number | undefined): number {
   if (requested === undefined) return VAULT_HISTORY_PAGE_DEFAULT;
   if (!Number.isSafeInteger(requested) || requested < 1) return VAULT_HISTORY_PAGE_DEFAULT;
   return Math.min(requested, VAULT_HISTORY_PAGE_MAX);
+}
+
+function sameMediaSet(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((medium) => right.includes(medium));
+}
+
+function storedMediaSet(value: string[] | null): VaultMediaSet | null {
+  return value as VaultMediaSet | null;
 }
 
 export function createParanoidVaultRepository(db: Database): ParanoidVaultRepository {
@@ -210,6 +269,180 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
         )
         .limit(1);
       return row ?? null;
+    },
+
+    async getMediaSnapshot(userId) {
+      const [user] = await db
+        .select({
+          privacyMode: users.privacyMode,
+          mediaSet: users.paranoidMediaSet,
+          driveAttestedVersion: users.paranoidDriveAttestedVersion,
+        })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      if (!user) return null;
+
+      const [[current], [retiredHead]] = await Promise.all([
+        db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, userId)).limit(1),
+        db
+          .select()
+          .from(paranoidVaultHistory)
+          .where(
+            and(eq(paranoidVaultHistory.userId, userId), isNotNull(paranoidVaultHistory.retiredAt)),
+          )
+          .orderBy(desc(paranoidVaultHistory.version))
+          .limit(1),
+      ]);
+      return {
+        privacyMode: user.privacyMode,
+        mediaSet: storedMediaSet(user.mediaSet),
+        driveAttestedVersion: user.driveAttestedVersion,
+        current: current ?? null,
+        retiredHead: retiredHead ?? null,
+      };
+    },
+
+    async transitionMedia(input) {
+      return db.transaction(async (tx) => {
+        const [user] = await tx
+          .select({
+            privacyMode: users.privacyMode,
+            mediaSet: users.paranoidMediaSet,
+          })
+          .from(users)
+          .where(eq(users.id, input.userId))
+          .for('update');
+        if (!user) return { status: 'not_found' } as const;
+        if (user.privacyMode !== 'paranoid' || user.mediaSet === null) {
+          return { status: 'mode_required' } as const;
+        }
+        const currentMediaSet = storedMediaSet(user.mediaSet)!;
+
+        // A completed transition is an idempotent retry even when the caller
+        // still carries the old expected set.
+        if (sameMediaSet(currentMediaSet, input.mediaSet)) {
+          return { status: 'ok', idempotent: true } as const;
+        }
+        if (!sameMediaSet(currentMediaSet, input.expectedMediaSet)) {
+          return {
+            status: 'precondition_failed',
+            mediaSet: currentMediaSet,
+          } as const;
+        }
+
+        const [current] = await tx
+          .select()
+          .from(paranoidVaults)
+          .where(eq(paranoidVaults.userId, input.userId))
+          .for('update');
+        if (!current || current.version !== input.expectedServerVersion) {
+          return {
+            status: 'server_version_changed',
+            currentVersion: current?.version ?? null,
+          } as const;
+        }
+
+        const removesServer =
+          currentMediaSet.includes('server') && !input.mediaSet.includes('server');
+        if (removesServer) {
+          // The current envelope becomes the newest history candidate, and
+          // every previously bounded row joins the same retired recovery set.
+          // The live row is removed only after its bytes are durably copied, so
+          // this assertion-driven transaction never destroys ciphertext.
+          await tx.insert(paranoidVaultHistory).values({
+            userId: input.userId,
+            version: current.version,
+            formatVersion: current.formatVersion,
+            sizeBytes: current.sizeBytes,
+            blob: current.blob,
+            createdAt: current.updatedAt,
+            retiredAt: input.now,
+          });
+          await tx
+            .update(paranoidVaultHistory)
+            .set({ retiredAt: input.now })
+            .where(
+              and(
+                eq(paranoidVaultHistory.userId, input.userId),
+                isNull(paranoidVaultHistory.retiredAt),
+              ),
+            );
+          await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, input.userId));
+        }
+
+        await tx
+          .update(users)
+          .set({
+            paranoidMediaSet: [...input.mediaSet],
+            paranoidDriveAttestedVersion: input.driveAttestedVersion,
+            updatedAt: input.now,
+          })
+          .where(eq(users.id, input.userId));
+        return { status: 'ok', idempotent: false } as const;
+      });
+    },
+
+    async purgeRetired(input) {
+      return db.transaction(async (tx) => {
+        const [user] = await tx
+          .select({
+            privacyMode: users.privacyMode,
+            mediaSet: users.paranoidMediaSet,
+          })
+          .from(users)
+          .where(eq(users.id, input.userId))
+          .for('update');
+        if (!user) return { status: 'not_found' } as const;
+        if (user.privacyMode !== 'paranoid' || user.mediaSet === null) {
+          return { status: 'mode_required' } as const;
+        }
+        const mediaSet = storedMediaSet(user.mediaSet)!;
+        if (!sameMediaSet(mediaSet, ['drive'])) {
+          return { status: 'media_invalid', mediaSet } as const;
+        }
+
+        const rows = await tx
+          .select()
+          .from(paranoidVaultHistory)
+          .where(eq(paranoidVaultHistory.userId, input.userId))
+          .orderBy(desc(paranoidVaultHistory.version))
+          .for('update');
+        if (rows.length === 0) {
+          return { status: 'ok', purgedVersions: 0, purgedBytes: 0 } as const;
+        }
+        if (rows.some((row) => row.retiredAt === null)) {
+          return { status: 'unretired_history' } as const;
+        }
+
+        const latestVersion = rows[0]!.version;
+        if (input.proofVersion < latestVersion) {
+          return { status: 'proof_version_too_old', latestVersion } as const;
+        }
+        const latestRetiredAt = rows.reduce(
+          (latest, row) => (row.retiredAt! > latest ? row.retiredAt! : latest),
+          rows[0]!.retiredAt!,
+        );
+        const eligibleAt = new Date(latestRetiredAt.getTime() + input.minRetirementAgeMs);
+        if (input.now < eligibleAt) {
+          return { status: 'retention_not_met', eligibleAt } as const;
+        }
+
+        const purgedBytes = rows.reduce((total, row) => total + row.sizeBytes, 0);
+        await tx
+          .delete(paranoidVaultHistory)
+          .where(
+            and(
+              eq(paranoidVaultHistory.userId, input.userId),
+              isNotNull(paranoidVaultHistory.retiredAt),
+            ),
+          );
+        return {
+          status: 'ok',
+          purgedVersions: rows.length,
+          purgedBytes,
+        } as const;
+      });
     },
 
     async compareAndSwap(input) {
@@ -283,6 +516,7 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           .where(
             and(
               eq(paranoidVaultHistory.userId, userId),
+              isNull(paranoidVaultHistory.retiredAt),
               lt(paranoidVaultHistory.createdAt, cutoff),
             ),
           );
@@ -291,7 +525,9 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
         const archived = await tx
           .select({ version: paranoidVaultHistory.version })
           .from(paranoidVaultHistory)
-          .where(eq(paranoidVaultHistory.userId, userId))
+          .where(
+            and(eq(paranoidVaultHistory.userId, userId), isNull(paranoidVaultHistory.retiredAt)),
+          )
           .orderBy(desc(paranoidVaultHistory.version));
         if (archived.length > retention.maxVersions) {
           const highestToDrop = archived[retention.maxVersions]!.version;
@@ -300,6 +536,7 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
             .where(
               and(
                 eq(paranoidVaultHistory.userId, userId),
+                isNull(paranoidVaultHistory.retiredAt),
                 lte(paranoidVaultHistory.version, highestToDrop),
               ),
             );

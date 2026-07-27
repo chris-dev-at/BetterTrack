@@ -486,6 +486,17 @@
     "label": "Display language",
     "saveError": "Couldn't save your language. Please try again."
   },
+  "vault": {
+    "sync": {
+      "synced": "Encrypted vault synced",
+      "syncing": "Syncing encrypted vault",
+      "offline": "Encrypted changes are waiting for a connection",
+      "needsAttention": "Vault sync needs attention",
+      "drive": {
+        "signIn": "Sign in to Google to sync"
+      }
+    }
+  },
   "settings": {
     "saveError": "Couldn't save that change. Please try again.",
     "retryHint": "Please try again in a moment.",
@@ -506,15 +517,32 @@
       "comingSoon": "Coming soon",
       "slotsTitle": "Connectors",
       "slotsSubtitle": "Sync your data with outside services. These are on the way — nothing to set up yet.",
+      "drive": {
+        "title": "Google Drive app data",
+        "description": "Keep your encrypted vault in Google's hidden app-data folder. BetterTrack cannot see your ordinary Drive files.",
+        "status": {
+          "connected": "Connected",
+          "needsSignIn": "Sign in needed",
+          "disconnected": "Disconnected",
+          "working": "Working…"
+        },
+        "connect": "Connect Drive",
+        "signIn": "Sign in to Google",
+        "disconnect": "Disconnect Drive",
+        "lastMedium": "Drive is your only vault location. Add the server medium before disconnecting it.",
+        "unlockRequired": "Unlock your encrypted vault before changing its Drive connection.",
+        "configMissing": "Google Drive app-data access is not configured on this deployment.",
+        "loadError": "Couldn't load the encrypted-vault connection.",
+        "actionError": "The Drive connection could not be changed. Your existing vault location is still active.",
+        "leftover": "Drive was disconnected, but its ciphertext file could not be deleted. It remains in your own hidden app-data folder.",
+        "connectedNotice": "Google Drive is now a verified vault location.",
+        "disconnectedNotice": "Google Drive is no longer a vault location."
+      },
       "sync": {
         "oneTime": "One-time import — runs once when you connect.",
         "stayConnected": "Stays connected — syncs automatically."
       },
       "slots": {
-        "drive": {
-          "name": "Google Drive backup",
-          "purpose": "Keep an encrypted, off-site backup of your account on your own Drive."
-        },
         "bankCash": {
           "name": "Bank & broker cash sync",
           "purpose": "Keep your cash balances in step with your bank and broker accounts."

@@ -14,6 +14,11 @@ interface ImportMetaEnv {
   readonly VITE_SENTRY_DSN?: string;
   /** 0..1 fraction of transactions traced; defaults to 0 when unset. */
   readonly VITE_SENTRY_TRACES_SAMPLE_RATE?: string;
+  /**
+   * Browser OAuth client id used only by the client-side Google Drive appdata
+   * token flow. No Drive secret or token is ever configured on the API.
+   */
+  readonly VITE_GOOGLE_DRIVE_CLIENT_ID?: string;
 }
 
 interface ImportMeta {
@@ -25,3 +30,11 @@ interface ImportMeta {
  * `name@version` the SPA stamps on every Sentry event.
  */
 declare const __APP_RELEASE__: string;
+
+interface Window {
+  google?: {
+    accounts?: {
+      oauth2?: import('./user/vault/drive/gisTokenClient').GoogleOauth2;
+    };
+  };
+}

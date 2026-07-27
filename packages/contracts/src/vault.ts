@@ -63,6 +63,13 @@ export const VAULT_HISTORY_PAGE_DEFAULT = 10;
 export const VAULT_HISTORY_PAGE_MAX = 10;
 /** PostgreSQL `integer` ceiling shared by live and retained vault versions. */
 export const VAULT_VERSION_MAX = 2_147_483_647;
+/**
+ * Retired server ciphertext remains recoverable for at least seven full days
+ * before an explicit Drive read-back purge may remove it.
+ */
+export const VAULT_RETIRED_PURGE_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/** A media proof must describe a round trip completed in the last five minutes. */
+export const VAULT_MEDIA_PROOF_MAX_AGE_MS = 5 * 60 * 1000;
 
 // ── Privacy mode + media set ─────────────────────────────────────────────────
 
@@ -114,6 +121,79 @@ export const vaultMediaStateSchema = z
     }
   });
 export type VaultMediaState = z.infer<typeof vaultMediaStateSchema>;
+
+/** SHA-256 of the exact opaque envelope bytes, encoded as lowercase hex. */
+export const vaultEnvelopeSha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+
+/**
+ * Client-attested result of an authenticated/decrypted round trip. The API
+ * receives no Drive token, file id, key or plaintext; it stores only the Drive
+ * version when Drive remains selected.
+ */
+export const vaultMediaVerificationSchema = z
+  .object({
+    medium: vaultMediumSchema,
+    vaultVersion: z.number().int().min(1).max(VAULT_VERSION_MAX),
+    envelopeSha256: vaultEnvelopeSha256Schema,
+    verifiedAt: z.string().datetime(),
+  })
+  .strict();
+export type VaultMediaVerification = z.infer<typeof vaultMediaVerificationSchema>;
+
+/** Optimistic, one-medium-at-a-time media-set transition request. */
+export const vaultMediaPatchRequestSchema = z
+  .object({
+    expectedMediaSet: vaultMediaSetSchema,
+    mediaSet: vaultMediaSetSchema,
+    verification: vaultMediaVerificationSchema.optional(),
+  })
+  .strict();
+export type VaultMediaPatchRequest = z.infer<typeof vaultMediaPatchRequestSchema>;
+
+export const retiredServerVaultSchema = z
+  .object({
+    latestVersion: z.number().int().min(1).max(VAULT_VERSION_MAX),
+    retiredAt: z.string().datetime(),
+    purgeEligibleAt: z.string().datetime(),
+  })
+  .strict();
+export type RetiredServerVault = z.infer<typeof retiredServerVaultSchema>;
+
+/** Durable media metadata plus safe recovery-window information. */
+export const vaultMediaStateResponseSchema = z
+  .object({
+    mediaSet: vaultMediaSetSchema,
+    driveAttestedVersion: z.number().int().positive().nullable(),
+    retiredServer: retiredServerVaultSchema.nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.driveAttestedVersion !== null && !value.mediaSet.includes('drive')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['driveAttestedVersion'],
+        message: 'a Drive attestation requires the Drive medium',
+      });
+    }
+  });
+export type VaultMediaStateResponse = z.infer<typeof vaultMediaStateResponseSchema>;
+
+/** A purge always proves a freshly read and decrypted Drive copy. */
+export const retiredServerVaultPurgeRequestSchema = z
+  .object({
+    proof: vaultMediaVerificationSchema.extend({ medium: z.literal('drive') }).strict(),
+  })
+  .strict();
+export type RetiredServerVaultPurgeRequest = z.infer<typeof retiredServerVaultPurgeRequestSchema>;
+
+export const retiredServerVaultPurgeResponseSchema = z
+  .object({
+    media: vaultMediaStateResponseSchema,
+    purgedVersions: z.number().int().nonnegative(),
+    purgedBytes: z.number().int().nonnegative(),
+  })
+  .strict();
+export type RetiredServerVaultPurgeResponse = z.infer<typeof retiredServerVaultPurgeResponseSchema>;
 
 // ── Version + envelope header ────────────────────────────────────────────────
 
@@ -782,6 +862,12 @@ export const VAULT_ERROR_CODES = {
   modeRequired: 'VAULT_PARANOID_MODE_REQUIRED',
   preconditionRequired: 'VAULT_PRECONDITION_REQUIRED',
   preconditionFailed: 'VAULT_PRECONDITION_FAILED',
+  mediaPreconditionFailed: 'VAULT_MEDIA_PRECONDITION_FAILED',
+  mediaTransitionInvalid: 'VAULT_MEDIA_TRANSITION_INVALID',
+  mediaVerificationRequired: 'VAULT_MEDIA_VERIFICATION_REQUIRED',
+  mediaVerificationInvalid: 'VAULT_MEDIA_VERIFICATION_INVALID',
+  retiredRetentionRequired: 'VAULT_RETIRED_RETENTION_REQUIRED',
+  retiredPurgeProofInvalid: 'VAULT_RETIRED_PURGE_PROOF_INVALID',
   tooLarge: 'VAULT_TOO_LARGE',
   malformed: 'VAULT_MALFORMED',
 } as const;
