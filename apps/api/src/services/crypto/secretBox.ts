@@ -10,6 +10,24 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 const VERSION = 'v1';
 const IV_BYTES = 12;
 const KEY_BYTES = 32;
+const AUTH_TAG_BYTES = 16;
+const BASE64URL = /^[A-Za-z0-9_-]*$/;
+
+function decodeEnvelopePart(value: string, expectedBytes?: number): Buffer {
+  if (!BASE64URL.test(value)) {
+    throw new Error('secretBox: malformed envelope');
+  }
+
+  const decoded = Buffer.from(value, 'base64url');
+  if (
+    decoded.toString('base64url') !== value ||
+    (expectedBytes !== undefined && decoded.length !== expectedBytes)
+  ) {
+    throw new Error('secretBox: malformed envelope');
+  }
+
+  return decoded;
+}
 
 /** Encrypt `plaintext` with a 32-byte key, returning the serialized envelope. */
 export function encryptSecret(plaintext: string, key: Buffer): string {
@@ -42,11 +60,11 @@ export function decryptSecret(envelope: string, key: Buffer): string {
     throw new Error('secretBox: malformed envelope');
   }
   const [, ivB64, tagB64, dataB64] = parts as [string, string, string, string];
-  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivB64, 'base64url'));
-  decipher.setAuthTag(Buffer.from(tagB64, 'base64url'));
-  const plaintext = Buffer.concat([
-    decipher.update(Buffer.from(dataB64, 'base64url')),
-    decipher.final(),
-  ]);
+  const iv = decodeEnvelopePart(ivB64, IV_BYTES);
+  const authTag = decodeEnvelopePart(tagB64, AUTH_TAG_BYTES);
+  const ciphertext = decodeEnvelopePart(dataB64);
+  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(authTag);
+  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return plaintext.toString('utf8');
 }
