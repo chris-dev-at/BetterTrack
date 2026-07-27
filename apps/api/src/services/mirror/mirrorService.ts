@@ -131,6 +131,8 @@ const REPLICATE_LOCK_WAIT_MS = 30_000;
 const LOCK_POLL_MS = 25;
 /** Renew well inside the TTL — a long apply (join replay) must not outlive it. */
 const LOCK_RENEW_INTERVAL_MS = LOCK_TTL_MS / 3;
+/** A racing ownership transfer is re-discovered before a join is allowed to write. */
+const JOIN_PRINCIPAL_RETRY_LIMIT = 4;
 
 /** Compare-and-delete / compare-and-expire: only ever release or renew OUR lock. */
 const LOCK_RELEASE_SCRIPT =
@@ -1526,6 +1528,148 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     return now() - invite.createdAt.getTime() > MIRROR_INVITE_TTL_MS;
   }
 
+  type JoinPrincipalContext = {
+    chain: MirrorChainRow | null;
+    members: MirrorChainMemberRow[];
+  };
+
+  type JoinPrincipalAttempt<T> = { retry: true; ownerId: string } | { retry: false; value: T };
+
+  /**
+   * A join/invite spans more than the acting account: the recipient, inviter,
+   * and chain owner all control whether server-side MIRRORCHAIN work remains
+   * legal. Discover the owner, acquire every account lock in one sorted guard,
+   * then acquire the chain lock and re-read ownership. If a transfer won in
+   * between, release and retry with the new owner before any write runs.
+   */
+  async function withJoinPrincipalGuards<T>(
+    chainId: string,
+    principalIds: readonly (string | null | undefined)[],
+    action: (context: JoinPrincipalContext) => Promise<T>,
+  ): Promise<T> {
+    const directPrincipalIds = [
+      ...new Set(principalIds.filter((userId): userId is string => typeof userId === 'string')),
+    ];
+    // Fast-fail known principals before any chain lookup. The complete,
+    // transition-serialized check still runs below after owner discovery.
+    await Promise.all(directPrincipalIds.map((userId) => assertMirrorAllowed(userId)));
+    let discoveredOwnerId = ownerOf(await repo.listActiveMembers(chainId))?.userId ?? null;
+
+    for (let attempt = 0; attempt < JOIN_PRINCIPAL_RETRY_LIMIT; attempt += 1) {
+      const guardedIds = [
+        ...new Set(
+          [...directPrincipalIds, discoveredOwnerId].filter(
+            (userId): userId is string => typeof userId === 'string',
+          ),
+        ),
+      ];
+      const guardedSet = new Set(guardedIds);
+      const result = await runMirrorAllowedMany(guardedIds, () =>
+        withChainLock(chainId, async (): Promise<JoinPrincipalAttempt<T>> => {
+          const chain = await repo.getChain(chainId);
+          const members = chain ? await repo.listActiveMembers(chainId) : [];
+          const ownerId = ownerOf(members)?.userId ?? null;
+          if (ownerId && !guardedSet.has(ownerId)) {
+            return { retry: true, ownerId };
+          }
+          return { retry: false, value: await action({ chain, members }) };
+        }),
+      );
+      if (!result.retry) return result.value;
+      discoveredOwnerId = result.ownerId;
+    }
+
+    throw new ApiError(
+      503,
+      'MIRROR_BUSY',
+      'This group portfolio is busy applying another change. Try again shortly.',
+    );
+  }
+
+  async function attachMemberCopyUnderLock(
+    chain: MirrorChainRow,
+    existingMembers: MirrorChainMemberRow[],
+    userId: string,
+    opts?: { role?: 'manager' | 'member'; invitedBy?: string },
+  ): Promise<{ member: MirrorChainMemberRow; portfolioId: string }> {
+    if (existingMembers.some((member) => member.userId === userId)) {
+      throw badRequest('Already a member of this group portfolio.', 'MIRROR_ALREADY_MEMBER');
+    }
+    const username = await usernameOf(userId);
+
+    // The chain's Main identity: every copy's Main is linked to it (§8) —
+    // derive it from any active member's copy (there is always ≥1).
+    const anchor = existingMembers.find((member) => member.portfolioId);
+    if (!anchor?.portfolioId) {
+      throw badRequest('This group portfolio has no active copies to join.', 'MIRROR_NO_MEMBERS');
+    }
+    const anchorMain = await cashSourceRepo.getOrCreateMain(anchor.portfolioId);
+    const mainLink = await repo.findMirrorRowByLocal('cash_source', anchorMain.id);
+    if (!mainLink) throw new Error(`mirror: chain ${chain.id} has no linked Main source`);
+
+    // Auto-created, auto-named copy with the §1 collision suffix (§4).
+    let copyId: string | undefined;
+    for (let attempt = 1; attempt <= NAME_SUFFIX_ATTEMPTS && !copyId; attempt += 1) {
+      const name = attempt === 1 ? chain.name : `${chain.name} (${attempt})`;
+      try {
+        copyId = (await portfolio.createPortfolio(userId, { name })).id;
+      } catch (error) {
+        if (!isApiError(error, 'PORTFOLIO_NAME_TAKEN', 'CONFLICT')) throw error;
+      }
+    }
+    if (!copyId) {
+      throw new Error(`mirror: could not find a free portfolio name for "${chain.name}"`);
+    }
+
+    // Chain Main ↔ copy Main (§8): pre-linked so genesis' Main `source.create`
+    // op replays as an idempotent skip — one code path, no special casing.
+    const copyMain = await cashSourceRepo.getOrCreateMain(copyId);
+    await repo.insertMirrorRow({
+      chainId: chain.id,
+      kind: 'cash_source',
+      mirrorId: mainLink.mirrorId,
+      portfolioId: copyId,
+      localId: copyMain.id,
+      createdBy: chain.createdBy,
+      createdByUsername: chain.createdByUsername,
+    });
+
+    const member = await repo.insertMember({
+      chainId: chain.id,
+      userId,
+      username,
+      portfolioId: copyId,
+      role: opts?.role ?? 'member',
+      invitedBy: opts?.invitedBy ?? null,
+    });
+    const joined = await repo.appendOpsChecked(chain.id, userId, [
+      {
+        kind: 'member.joined',
+        actorUserId: userId,
+        actorUsername: username,
+        payload: {
+          opVersion: MIRROR_OP_VERSION,
+          kind: 'member.joined',
+          userId,
+          username,
+          role: opts?.role ?? 'member',
+        },
+      },
+    ]);
+    if ('refused' in joined) {
+      // The membership row was inserted just above, so any refusal here is a
+      // bug-level inconsistency — fail loudly rather than leave a member whose
+      // join never reached the oplog.
+      throw new Error(
+        `mirror: member.joined append refused (${joined.refused}) for chain ${chain.id}`,
+      );
+    }
+    // Join = plain oplog replay through the joiner's services (§2), driven by
+    // the replicate job; the copy shows its syncing state via the watermark.
+    await scheduleReplicate(chain.id);
+    return { member, portfolioId: copyId };
+  }
+
   /** One activity-feed sentence per op kind (EN — the historical record, §6/§11). */
   function activitySummary(op: MirrorChainOpRow): string {
     const actor = op.actorUsername;
@@ -1974,92 +2118,16 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async attachMemberCopy(chainId, userId, opts) {
-      return runMirrorAllowedMany([userId], async () => {
-        const chain = await repo.getChain(chainId);
-        if (!chain || chain.status !== 'active') {
-          throw notFound('Group portfolio not found.', 'MIRROR_CHAIN_NOT_FOUND');
-        }
-        if (await repo.findActiveMembership(chainId, userId)) {
-          throw badRequest('Already a member of this group portfolio.', 'MIRROR_ALREADY_MEMBER');
-        }
-        const username = await usernameOf(userId);
-
-        // The chain's Main identity: every copy's Main is linked to it (§8) —
-        // derive it from any active member's copy (there is always ≥1).
-        const existingMembers = await repo.listActiveMembers(chainId);
-        const anchor = existingMembers.find((m) => m.portfolioId);
-        if (!anchor?.portfolioId) {
-          throw badRequest(
-            'This group portfolio has no active copies to join.',
-            'MIRROR_NO_MEMBERS',
-          );
-        }
-        const anchorMain = await cashSourceRepo.getOrCreateMain(anchor.portfolioId);
-        const mainLink = await repo.findMirrorRowByLocal('cash_source', anchorMain.id);
-        if (!mainLink) throw new Error(`mirror: chain ${chainId} has no linked Main source`);
-
-        // Auto-created, auto-named copy with the §1 collision suffix (§4).
-        let copyId: string | undefined;
-        for (let attempt = 1; attempt <= NAME_SUFFIX_ATTEMPTS && !copyId; attempt++) {
-          const name = attempt === 1 ? chain.name : `${chain.name} (${attempt})`;
-          try {
-            copyId = (await portfolio.createPortfolio(userId, { name })).id;
-          } catch (err) {
-            if (!isApiError(err, 'PORTFOLIO_NAME_TAKEN', 'CONFLICT')) throw err;
+      return withJoinPrincipalGuards(
+        chainId,
+        [userId, opts?.invitedBy],
+        async ({ chain, members }) => {
+          if (!chain || chain.status !== 'active') {
+            throw chainNotFound();
           }
-        }
-        if (!copyId) {
-          throw new Error(`mirror: could not find a free portfolio name for "${chain.name}"`);
-        }
-
-        // Chain Main ↔ copy Main (§8): pre-linked so genesis' Main `source.create`
-        // op replays as an idempotent skip — one code path, no special casing.
-        const copyMain = await cashSourceRepo.getOrCreateMain(copyId);
-        await repo.insertMirrorRow({
-          chainId,
-          kind: 'cash_source',
-          mirrorId: mainLink.mirrorId,
-          portfolioId: copyId,
-          localId: copyMain.id,
-          createdBy: chain.createdBy,
-          createdByUsername: chain.createdByUsername,
-        });
-
-        const member = await repo.insertMember({
-          chainId,
-          userId,
-          username,
-          portfolioId: copyId,
-          role: opts?.role ?? 'member',
-          invitedBy: opts?.invitedBy ?? null,
-        });
-        const joined = await repo.appendOpsChecked(chainId, userId, [
-          {
-            kind: 'member.joined',
-            actorUserId: userId,
-            actorUsername: username,
-            payload: {
-              opVersion: MIRROR_OP_VERSION,
-              kind: 'member.joined',
-              userId,
-              username,
-              role: opts?.role ?? 'member',
-            },
-          },
-        ]);
-        if ('refused' in joined) {
-          // The membership row was inserted just above, so any refusal here is a
-          // bug-level inconsistency — fail loudly rather than leave a member
-          // whose join never reached the oplog.
-          throw new Error(
-            `mirror: member.joined append refused (${joined.refused}) for chain ${chainId}`,
-          );
-        }
-        // Join = plain oplog replay through the joiner's services (§2), driven by
-        // the replicate job; the copy shows its syncing state via the watermark.
-        await scheduleReplicate(chainId);
-        return { member, portfolioId: copyId };
-      });
+          return attachMemberCopyUnderLock(chain, members, userId, opts);
+        },
+      );
     },
 
     async replicateChain(chainId) {
@@ -2239,60 +2307,52 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async inviteMember(actorId, chainId, inviteeId) {
-      return runMirrorAllowedMany([actorId, inviteeId], async () => {
-        await assertMirrorAllowed(actorId);
-        await assertMirrorAllowed(inviteeId);
+      return withJoinPrincipalGuards(chainId, [actorId, inviteeId], async ({ chain, members }) => {
+        if (!chain || chain.status !== 'active') throw chainNotFound();
         if (actorId === inviteeId) {
           throw badRequest('You cannot invite yourself.', MIRROR_CANNOT_INVITE_SELF);
         }
+        const actor = members.find((member) => member.userId === actorId);
+        if (!actor) throw forbidden('You are not a member of this group portfolio.');
+        if (!roleCan(actor.role, 'invite')) throw mirrorForbidden();
         // Friends-only (design §4) — checked here at send AND again at accept.
         if (!(await friendship.areFriends(actorId, inviteeId))) {
           throw badRequest('You can only invite friends to a group portfolio.', MIRROR_NOT_FRIENDS);
         }
-        const { chain, invite } = await withAuthorizedMember(
+        if (members.some((member) => member.userId === inviteeId)) {
+          throw badRequest(
+            'That user is already a member of this group portfolio.',
+            'MIRROR_ALREADY_MEMBER',
+          );
+        }
+        // Cap enforced at send (design §4) — active members only.
+        if (members.length >= maxMembers) {
+          throw new ApiError(
+            409,
+            MIRROR_MEMBER_CAP_REACHED,
+            `This group portfolio is full (max ${maxMembers} members).`,
+          );
+        }
+        // Pending-unique per (chain, invitee); declining/expiry allows a
+        // re-invite (§4). An expired-but-not-yet-swept pending invite no longer
+        // blocks — retire it so the pending-unique slot frees for a fresh send.
+        const pending = await repo.findPendingInvite(chainId, inviteeId);
+        if (pending) {
+          if (inviteExpired(pending)) {
+            await repo.setInviteStatus(pending.id, 'expired', new Date(now()));
+          } else {
+            throw new ApiError(
+              409,
+              MIRROR_INVITE_EXISTS,
+              'That user already has a pending invite to this group portfolio.',
+            );
+          }
+        }
+        const invite = await repo.createInvite({
           chainId,
-          actorId,
-          (actor) => {
-            if (!roleCan(actor.role, 'invite')) throw mirrorForbidden();
-          },
-          async ({ chain, members }) => {
-            if (members.some((m) => m.userId === inviteeId)) {
-              throw badRequest(
-                'That user is already a member of this group portfolio.',
-                'MIRROR_ALREADY_MEMBER',
-              );
-            }
-            // Cap enforced at send (design §4) — active members only.
-            if (members.length >= maxMembers) {
-              throw new ApiError(
-                409,
-                MIRROR_MEMBER_CAP_REACHED,
-                `This group portfolio is full (max ${maxMembers} members).`,
-              );
-            }
-            // Pending-unique per (chain, invitee); declining/expiry allows a
-            // re-invite (§4). An expired-but-not-yet-swept pending invite no longer
-            // blocks — retire it so the pending-unique slot frees for a fresh send.
-            const pending = await repo.findPendingInvite(chainId, inviteeId);
-            if (pending) {
-              if (inviteExpired(pending)) {
-                await repo.setInviteStatus(pending.id, 'expired', new Date(now()));
-              } else {
-                throw new ApiError(
-                  409,
-                  MIRROR_INVITE_EXISTS,
-                  'That user already has a pending invite to this group portfolio.',
-                );
-              }
-            }
-            const invite = await repo.createInvite({
-              chainId,
-              fromUser: actorId,
-              toUser: inviteeId,
-            });
-            return { chain, invite };
-          },
-        );
+          fromUser: actorId,
+          toUser: inviteeId,
+        });
         const inviterName = await usernameOf(actorId);
         await emitMirror('mirror.invite', inviteeId, chain, inviterName, invite.id);
         await audit.record({
@@ -2307,76 +2367,93 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
 
     async acceptInvite(userId, inviteId) {
       await assertMirrorAllowed(userId);
-      const invite = await repo.getInvite(inviteId);
-      if (!invite || invite.status !== 'pending' || invite.toUser !== userId) {
+      const candidateInvite = await repo.getInvite(inviteId);
+      if (
+        !candidateInvite ||
+        candidateInvite.status !== 'pending' ||
+        candidateInvite.toUser !== userId
+      ) {
         throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
       }
-      // Invites expire with the standard token hygiene (design §4, 30 days): a
-      // stale pending invite is rejected and marked expired at accept, freeing
-      // the (chain, invitee) pending-unique slot for a fresh re-invite.
-      if (inviteExpired(invite)) {
-        await repo.setInviteStatus(inviteId, 'expired', new Date(now()));
-        throw notFound('This invite has expired.', MIRROR_INVITE_NOT_FOUND);
-      }
-      const chain = await repo.getChain(invite.chainId);
-      if (!chain || chain.status !== 'active') {
-        await repo.setInviteStatus(inviteId, 'expired', new Date(now()));
-        throw notFound('That group portfolio is no longer available.', MIRROR_INVITE_NOT_FOUND);
-      }
-      // Friends-only re-checked (design §4): an unfriend between send and accept
-      // voids the invite (revoked), so a later re-invite is a fresh row.
-      if (!invite.fromUser || !(await friendship.areFriends(invite.fromUser, userId))) {
-        await repo.setInviteStatus(inviteId, 'revoked', new Date(now()));
-        throw badRequest(
-          'This invite is no longer valid because you are not friends with the inviter.',
-          MIRROR_NOT_FRIENDS,
-        );
-      }
-      // Idempotent: already a member (a prior accept whose invite update lost a
-      // crash race) — consume the invite and return the existing copy.
-      const existing = await repo.findActiveMembership(invite.chainId, userId);
-      if (existing?.portfolioId) {
-        await repo.setInviteStatus(inviteId, 'accepted', new Date(now()));
-        return { chainId: invite.chainId, portfolioId: existing.portfolioId };
-      }
-      // Cap re-checked at accept (design §4).
-      if ((await repo.countActiveMembers(invite.chainId)) >= maxMembers) {
-        throw new ApiError(
-          409,
-          MIRROR_MEMBER_CAP_REACHED,
-          `This group portfolio is full (max ${maxMembers} members).`,
-        );
-      }
-      // Materialize the copy via the M2 join path (auto-named + Main-linked +
-      // member.joined appended + replicate enqueued) — the member configures
-      // nothing (design §4).
-      const { portfolioId } = await service.attachMemberCopy(invite.chainId, userId, {
-        role: 'member',
-        invitedBy: invite.fromUser,
-      });
-      await repo.setInviteStatus(inviteId, 'accepted', new Date(now()));
-      // Notify the owner a member joined (design §5). The join op advanced the
-      // chain's last_seq, so its value discriminates a re-join occurrence.
-      const chainAfter = (await repo.getChain(invite.chainId)) ?? chain;
-      const owner = ownerOf(await repo.listActiveMembers(invite.chainId));
-      if (owner?.userId && owner.userId !== userId) {
-        const joinerName = await usernameOf(userId);
-        await emitMirror(
-          'mirror.member_joined',
-          owner.userId,
-          chainAfter,
-          joinerName,
-          `${userId}:${chainAfter.lastSeq}`,
-        );
-      }
-      await audit.record({
-        actorId: userId,
-        action: AuditAction.MirrorMemberJoined,
-        targetType: 'mirror_chain',
-        targetId: invite.chainId,
-        meta: { chainId: invite.chainId, inviteId },
-      });
-      return { chainId: invite.chainId, portfolioId };
+      return withJoinPrincipalGuards(
+        candidateInvite.chainId,
+        [userId, candidateInvite.fromUser],
+        async ({ chain, members }) => {
+          const invite = await repo.getInvite(inviteId);
+          if (
+            !invite ||
+            invite.status !== 'pending' ||
+            invite.toUser !== userId ||
+            invite.chainId !== candidateInvite.chainId
+          ) {
+            throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
+          }
+          // Invites expire with the standard token hygiene (design §4, 30 days):
+          // reject and retire the stale row while every relevant account remains
+          // guarded, freeing the pending-unique slot for a fresh re-invite.
+          if (inviteExpired(invite)) {
+            await repo.setInviteStatus(inviteId, 'expired', new Date(now()));
+            throw notFound('This invite has expired.', MIRROR_INVITE_NOT_FOUND);
+          }
+          if (!chain || chain.status !== 'active') {
+            await repo.setInviteStatus(inviteId, 'expired', new Date(now()));
+            throw notFound('That group portfolio is no longer available.', MIRROR_INVITE_NOT_FOUND);
+          }
+          // Friends-only re-checked (design §4): an unfriend between send and
+          // accept voids the invite, so a later re-invite is a fresh row.
+          if (!invite.fromUser || !(await friendship.areFriends(invite.fromUser, userId))) {
+            await repo.setInviteStatus(inviteId, 'revoked', new Date(now()));
+            throw badRequest(
+              'This invite is no longer valid because you are not friends with the inviter.',
+              MIRROR_NOT_FRIENDS,
+            );
+          }
+          // Idempotent: already a member (a prior accept whose invite update lost
+          // a crash race) — consume the invite and return the existing copy.
+          const existing = members.find((member) => member.userId === userId);
+          if (existing?.portfolioId) {
+            await repo.setInviteStatus(inviteId, 'accepted', new Date(now()));
+            return { chainId: invite.chainId, portfolioId: existing.portfolioId };
+          }
+          // Cap re-checked at accept under the same chain lock as insertion.
+          if (members.length >= maxMembers) {
+            throw new ApiError(
+              409,
+              MIRROR_MEMBER_CAP_REACHED,
+              `This group portfolio is full (max ${maxMembers} members).`,
+            );
+          }
+          // Materialize the zero-config copy while recipient, inviter, current
+          // owner, and chain remain locked through every write and enqueue.
+          const { portfolioId } = await attachMemberCopyUnderLock(chain, members, userId, {
+            role: 'member',
+            invitedBy: invite.fromUser,
+          });
+          await repo.setInviteStatus(inviteId, 'accepted', new Date(now()));
+          // Notify the owner a member joined. The join op advanced last_seq, so
+          // its value discriminates a re-join occurrence.
+          const chainAfter = (await repo.getChain(invite.chainId)) ?? chain;
+          const owner = ownerOf(members);
+          if (owner?.userId && owner.userId !== userId) {
+            const joinerName = await usernameOf(userId);
+            await emitMirror(
+              'mirror.member_joined',
+              owner.userId,
+              chainAfter,
+              joinerName,
+              `${userId}:${chainAfter.lastSeq}`,
+            );
+          }
+          await audit.record({
+            actorId: userId,
+            action: AuditAction.MirrorMemberJoined,
+            targetType: 'mirror_chain',
+            targetId: invite.chainId,
+            meta: { chainId: invite.chainId, inviteId },
+          });
+          return { chainId: invite.chainId, portfolioId };
+        },
+      );
     },
 
     async declineInvite(userId, inviteId) {

@@ -144,6 +144,22 @@ export async function withLockedPrivacyModes<T>(
   });
 }
 
+/**
+ * Start a genuinely new privacy-lock scope. Detached work spawned while a
+ * guarded action is running (for example a live poll timer) inherits Node's
+ * AsyncLocalStorage context even after the action releases its database lock;
+ * reusing that inherited map would treat a stale mode as still locked. Event
+ * consumers use this entry point to discard inherited state and re-read the
+ * account under a fresh lock.
+ */
+export function withFreshLockedPrivacyModes<T>(
+  db: Database,
+  userIds: readonly string[],
+  run: (modes: ReadonlyMap<string, LockedPrivacyMode>) => Promise<T>,
+): Promise<T> {
+  return heldPrivacyModes.run(new Map(), () => withLockedPrivacyModes(db, userIds, run));
+}
+
 export interface ParanoidOwnedSubject {
   /** False means the id no longer resolves; privacy guards treat that fail-closed. */
   exists: boolean;

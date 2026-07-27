@@ -95,8 +95,6 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'followUser',
     'unfollowUser',
     'updateFollow',
-    'listFollowing',
-    'listFollowers',
     'unfollowItem',
     'listItemFollows',
     'listMyShared',
@@ -114,8 +112,6 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'getMemberList',
     'getActivity',
     'listInvites',
-    'inviteMember',
-    'acceptInvite',
     'declineInvite',
     'revokeInvite',
     'setMemberRole',
@@ -251,6 +247,8 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
       'listFriends',
       'removeFriend',
       'followItem',
+      'listFollowing',
+      'listFollowers',
       'setActivityAlert',
       'listSharedWithMe',
       'getSharedPortfolio',
@@ -265,6 +263,8 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     service: 'mirror',
     methods: [
       'attachMemberCopy',
+      'inviteMember',
+      'acceptInvite',
       'replicateChain',
       'notifyChainStalled',
       'handleAccountDeletion',
@@ -680,6 +680,19 @@ export interface ParanoidModeGuard {
     capability: ParanoidKilledCapability,
     action: () => Promise<T>,
   ): Promise<T>;
+  /**
+   * Hold every required and optional account lock together, rejecting when a
+   * required account is not normal while handing the action only the optional
+   * accounts that are normal. This is the list-read primitive: a paranoid
+   * counterpart is filtered without making the caller's whole list fail, and
+   * no counterpart can change mode between filtering and response construction.
+   */
+  runAllowedWithOptional<T>(
+    requiredUserIds: readonly string[],
+    optionalUserIds: readonly string[],
+    capability: ParanoidKilledCapability,
+    action: (allowedOptionalUserIds: ReadonlySet<string>) => Promise<T>,
+  ): Promise<T>;
 }
 
 export function createParanoidModeGuard(input: {
@@ -705,6 +718,15 @@ export function createParanoidModeGuard(input: {
           if (modes.get(userId) !== 'normal') throw new ParanoidModeError(capability);
         }
         return action();
+      });
+    },
+    async runAllowedWithOptional(requiredUserIds, optionalUserIds, capability, action) {
+      const allUserIds = [...new Set([...requiredUserIds, ...optionalUserIds])];
+      return input.withLockedPrivacyModes(allUserIds, async (modes) => {
+        for (const userId of requiredUserIds) {
+          if (modes.get(userId) !== 'normal') throw new ParanoidModeError(capability);
+        }
+        return action(new Set(optionalUserIds.filter((userId) => modes.get(userId) === 'normal')));
       });
     },
   };

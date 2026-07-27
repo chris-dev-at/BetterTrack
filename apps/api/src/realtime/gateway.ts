@@ -17,6 +17,7 @@ import {
   type FeatureFlagKey,
   type PresenceSurface,
   type RealtimeChatMessage,
+  type RealtimeLiveFrame,
   type RealtimeLiveWatchAck,
   type RealtimeNotificationNew,
   type RealtimePortfolioChanged,
@@ -74,6 +75,12 @@ export const userRoom = (userId: string): string => `user:${userId}`;
 export const assetRoom = (assetId: string): string => `asset:${assetId}`;
 export const portfolioRoom = (portfolioId: string): string => `portfolio:${portfolioId}`;
 
+export interface WatchableAsset {
+  ref: AssetRef;
+  /** Null for global market assets; set for account-owned custom assets. */
+  ownerId: string | null;
+}
+
 function roomName(room: RealtimeRoom): string {
   return room.kind === 'asset' ? assetRoom(room.id) : portfolioRoom(room.id);
 }
@@ -123,7 +130,7 @@ export interface RealtimeGatewayDeps {
    * §10) to its provider ref for the poll loop; null when missing/foreign —
    * indistinguishable, exactly like the HTTP 404 (§10 no-leak rule).
    */
-  resolveWatchableAsset(userId: string, assetId: string): Promise<AssetRef | null>;
+  resolveWatchableAsset(userId: string, assetId: string): Promise<WatchableAsset | null>;
   /** Hold the account privacy lock across live-watch authorization and ring reads. */
   withAccountPrivacyLock?<T>(userId: string, action: () => Promise<T>): Promise<T>;
   /**
@@ -281,7 +288,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    * the account transition lock. An unwatch must release exactly the rate it
    * registered (#372).
    */
-  type LiveWatchEntry = { rateMs: number | undefined };
+  type LiveWatchEntry = { rateMs: number | undefined; ownerId: string | null };
   const liveAssetsOf = (socket: Socket): Map<string, LiveWatchEntry> =>
     (socket.data.liveAssets as Map<string, LiveWatchEntry> | undefined) ??
     (socket.data.liveAssets = new Map<string, LiveWatchEntry>());
@@ -343,8 +350,8 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       // Re-resolve on EVERY watch, including a window/rate switch. A paranoid
       // transition detaches an owned custom asset while an existing socket may
       // still hold its old provider ref; that stale ref must never reach backfill.
-      const ref = await deps.resolveWatchableAsset(userId, assetId).catch(() => null);
-      if (!ref) {
+      const resolved = await deps.resolveWatchableAsset(userId, assetId).catch(() => null);
+      if (!resolved) {
         // Missing and someone-else's-custom look identical (§10). Fails closed.
         respond({ ok: false, error: 'NOT_FOUND' });
         return;
@@ -362,18 +369,19 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           respond({ ok: false, error: 'GONE' });
           return;
         }
-        liveMode.watch(assetId, ref, rateMs);
-        entry = { rateMs };
+        liveMode.watch(assetId, resolved.ref, rateMs);
+        entry = { rateMs, ownerId: resolved.ownerId };
         watched.set(assetId, entry);
         await socket.join(assetRoom(assetId));
       } else {
         if (entry.rateMs !== rateMs) {
-          liveMode.watch(assetId, ref, rateMs);
+          liveMode.watch(assetId, resolved.ref, rateMs);
           liveMode.unwatch(assetId, entry.rateMs);
           entry.rateMs = rateMs;
         }
+        entry.ownerId = resolved.ownerId;
       }
-      const frames = await liveMode.backfill(assetId, ref, window);
+      const frames = await liveMode.backfill(assetId, resolved.ref, window);
       // The oldest frame is the earliest instant the backfill honestly covers
       // (§13.5 V5-P1 §5): when the seed reaches the window start it is ~now−window,
       // when history is genuinely short (new listing, market just opened) it is
@@ -448,6 +456,58 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       await socket.leave(assetRoom(assetId));
     }
     respond({ ok: true });
+  }
+
+  /**
+   * Reauthorize every established private watch before its next frame. The
+   * account lock linearizes this with paranoid enable: a frame lock that wins
+   * emits before the transition, while a transition that wins makes the
+   * resolver fail closed, evicts the socket, and releases its shared-loop ref
+   * without emitting. Global market assets remain available in paranoid mode
+   * and need no per-frame account lookup.
+   */
+  async function forwardLiveFrame(server: SocketIOServer, frame: RealtimeLiveFrame): Promise<void> {
+    const sockets = [...server.sockets.sockets.values()].filter((socket) =>
+      liveAssetsOf(socket).has(frame.assetId),
+    );
+    await Promise.allSettled(
+      sockets.map((socket) =>
+        enqueueLiveOp(socket, async () => {
+          const entry = liveAssetsOf(socket).get(frame.assetId);
+          if (!entry) return;
+          const emit = () => {
+            if (!socket.disconnected) {
+              socket.emit(REALTIME_SERVER_EVENTS.liveFrame, frame);
+            }
+          };
+          if (entry.ownerId === null) {
+            emit();
+            return;
+          }
+
+          const userId = socket.data.userId as string;
+          await withAccountPrivacyLock(userId, async () => {
+            const current = liveAssetsOf(socket).get(frame.assetId);
+            if (!current) return;
+            const resolved = await deps
+              .resolveWatchableAsset(userId, frame.assetId)
+              .catch(() => null);
+            if (!resolved || resolved.ownerId !== current.ownerId) {
+              liveAssetsOf(socket).delete(frame.assetId);
+              deps.liveMode?.unwatch(frame.assetId, current.rateMs);
+              await socket.leave(assetRoom(frame.assetId));
+              return;
+            }
+            emit();
+          });
+        }).catch((err) => {
+          logger.warn(
+            { err, userId: socket.data.userId, assetId: frame.assetId },
+            'live frame authorization failed',
+          );
+        }),
+      ),
+    );
   }
 
   /** Bridge the typed domain events into room emissions (§4.5). */
@@ -605,7 +665,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       if (deps.liveMode) {
         const server = io;
         const offFrames = deps.liveMode.onFrame((frame) => {
-          server.to(assetRoom(frame.assetId)).emit(REALTIME_SERVER_EVENTS.liveFrame, frame);
+          void forwardLiveFrame(server, frame);
         });
         unsubscribers.push(async () => offFrames());
       }

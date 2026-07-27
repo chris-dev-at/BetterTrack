@@ -13,8 +13,11 @@ import {
   friendGroupMembers,
   friendGroups,
   friendships,
+  mirrorChainInvites,
+  mirrorChainMembers,
   portfolios,
   shareAudiences,
+  userFollows,
   users,
 } from '../../../data/schema';
 import type { DomainEvent } from '../../../events';
@@ -477,6 +480,109 @@ describe('paranoid kill registry', () => {
         .from(shareAudiences)
         .where(eq(shareAudiences.subjectId, conglomerate!.id)),
     ).toEqual([]);
+  });
+
+  it('rejects a stale invite after the chain owner enters paranoid mode without join writes', async () => {
+    const owner = await harness.seedUser({
+      email: 'mirror-owner-race@bettertrack.test',
+      username: 'mirror_owner_race',
+    });
+    const recipient = await harness.seedUser({
+      email: 'mirror-recipient-race@bettertrack.test',
+      username: 'mirror_recipient_race',
+    });
+    const [userA, userB] = [owner.id, recipient.id].sort();
+    await harness.db.insert(friendships).values({ userA: userA!, userB: userB! });
+    const ownerPortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
+    const { chain } = await harness.ctx.mirror.convertToChain(owner.id, ownerPortfolioId);
+    await harness.ctx.mirror.inviteMember(owner.id, chain.id, recipient.id);
+    const invite = (await harness.ctx.mirror.listInvites(recipient.id)).incoming[0]!;
+    const portfoliosBefore = await harness.db
+      .select({ id: portfolios.id })
+      .from(portfolios)
+      .where(eq(portfolios.userId, recipient.id));
+
+    await withExclusiveParanoidTransitionTestLock(harness.db, owner.id, () =>
+      setParanoid(owner.id),
+    );
+    await expect(harness.ctx.mirror.acceptInvite(recipient.id, invite.id)).rejects.toMatchObject({
+      code: PARANOID_MODE_ERROR_CODE,
+    });
+    expect(
+      await harness.db
+        .select()
+        .from(mirrorChainMembers)
+        .where(eq(mirrorChainMembers.userId, recipient.id)),
+    ).toEqual([]);
+    expect(
+      (
+        await harness.db
+          .select({ status: mirrorChainInvites.status })
+          .from(mirrorChainInvites)
+          .where(eq(mirrorChainInvites.id, invite.id))
+      )[0]?.status,
+    ).toBe('pending');
+    expect(
+      await harness.db
+        .select({ id: portfolios.id })
+        .from(portfolios)
+        .where(eq(portfolios.userId, recipient.id)),
+    ).toHaveLength(portfoliosBefore.length);
+  });
+
+  it('filters both directions of an established follow after the counterpart transition wins', async () => {
+    const viewer = await harness.seedUser({
+      email: 'follow-viewer-race@bettertrack.test',
+      username: 'follow_viewer_race',
+    });
+    const counterpart = await harness.seedUser({
+      email: 'follow-counterpart-race@bettertrack.test',
+      username: 'follow_counterpart_race',
+    });
+    await harness.db.insert(userFollows).values([
+      { followerId: viewer.id, followedId: counterpart.id },
+      { followerId: counterpart.id, followedId: viewer.id },
+    ]);
+
+    let releaseModeChange!: () => void;
+    let modeChangeLocked!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseModeChange = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      modeChangeLocked = resolve;
+    });
+    const modeChange = withExclusiveParanoidTransitionTestLock(
+      harness.db,
+      counterpart.id,
+      async () => {
+        await setParanoid(counterpart.id);
+        modeChangeLocked();
+        await release;
+      },
+    );
+    await locked;
+
+    const followingRead = harness.ctx.social.listFollowing(viewer.id);
+    const followersRead = harness.ctx.social.listFollowers(viewer.id);
+    let settled = 0;
+    void followingRead.finally(() => {
+      settled += 1;
+    });
+    void followersRead.finally(() => {
+      settled += 1;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(0);
+
+    releaseModeChange();
+    await modeChange;
+    await expect(followingRead).resolves.toEqual({
+      following: [],
+      followingCount: 0,
+      followerCount: 0,
+    });
+    await expect(followersRead).resolves.toEqual({ followers: [] });
   });
 
   it('serializes owner-derived public, shared-sandbox, and followed-item reads', async () => {

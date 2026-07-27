@@ -155,6 +155,28 @@ export function createUserFollowsRepository(db: Database) {
       return row !== undefined;
     },
 
+    /**
+     * Id-only discovery for transition-safe list reads. The service locks every
+     * discovered counterpart before it performs the enriched username/icon
+     * query, so this first pass deliberately carries no profile data.
+     */
+    async listFollowingIds(followerId: string): Promise<string[]> {
+      const rows = await db
+        .select({ userId: userFollows.followedId })
+        .from(userFollows)
+        .where(eq(userFollows.followerId, followerId));
+      return rows.map((row) => row.userId);
+    },
+
+    /** Id-only counterpart discovery for the inbound followers list. */
+    async listFollowerIds(followedId: string): Promise<string[]> {
+      const rows = await db
+        .select({ userId: userFollows.followerId })
+        .from(userFollows)
+        .where(eq(userFollows.followedId, followedId));
+      return rows.map((row) => row.userId);
+    },
+
     /** The users `followerId` follows — the other party + per-follow prefs, by username. */
     async listFollowing(followerId: string): Promise<FollowingUserRow[]> {
       return db

@@ -19,6 +19,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { createAssetRepository } from '../../data/repositories/assetRepository';
+import { withExclusiveParanoidTransitionTestLock } from '../../data/repositories/paranoidEnforcementRepository';
 import { assets, users } from '../../data/schema';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import { createStubMarketData, type StubMarketData } from '../../testing/marketDataStubs';
@@ -407,6 +408,66 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     await unwatch(alice, assetId);
     await unwatch(alice, assetId); // repeat: must not steal bob's count
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
+  });
+
+  it('evicts an established custom-asset watch when a paranoid transition wins', async () => {
+    const { socket, user } = await connectAccount(
+      'private-transition@bt.test',
+      'private_transition',
+    );
+    const [customAsset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'manual',
+        providerRef: `live-transition:${user.id}`,
+        ownerId: user.id,
+        type: 'custom',
+        symbol: 'PRIVATE-RACE',
+        name: 'Private transition asset',
+        currency: 'EUR',
+      })
+      .returning();
+    const frames = collectFrames(socket);
+
+    await expect(watch(socket, customAsset!.id, '10m')).resolves.toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
+    expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(1);
+
+    let releaseTransition!: () => void;
+    let transitionLocked!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseTransition = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      transitionLocked = resolve;
+    });
+    const transition = withExclusiveParanoidTransitionTestLock(harness.db, user.id, async () => {
+      await harness.db
+        .update(users)
+        .set({
+          privacyMode: 'paranoid',
+          paranoidMediaSet: ['drive'],
+          paranoidDriveAttestedVersion: 1,
+        })
+        .where(eq(users.id, user.id));
+      transitionLocked();
+      await release;
+    });
+    await locked;
+
+    // The next frame queues behind the winning transition. Once it commits,
+    // authorization fails closed before fan-out and releases the only loop ref.
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 2));
+    releaseTransition();
+    await transition;
+    await vi.waitFor(() => expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(0));
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 2));
+    const frameCount = frames.length;
+    const pollCount = stub.calls.poll;
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 5));
+    expect(frames).toHaveLength(frameCount);
+    expect(stub.calls.poll).toBe(pollCount);
   });
 
   it('blocks an owned custom-asset live read for paranoid accounts but keeps global quotes', async () => {

@@ -94,7 +94,7 @@ export interface SocialServiceDeps {
   /** The central notification pipeline (#368) — friend.request/accepted enter here. */
   notify: NotificationCenter;
   logger?: Logger;
-  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'runAllowedMany'>;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'runAllowedMany' | 'runAllowedWithOptional'>;
 }
 
 export interface SocialService {
@@ -776,16 +776,67 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async listFollowing(userId) {
-      const [rows, followerCount] = await Promise.all([
-        follows.listFollowing(userId),
-        follows.countFollowers(userId),
+      if (!deps.paranoid) {
+        const [rows, followerCount] = await Promise.all([
+          follows.listFollowing(userId),
+          follows.countFollowers(userId),
+        ]);
+        return {
+          following: rows.map(toFollowingEntry),
+          followingCount: rows.length,
+          followerCount,
+        };
+      }
+
+      // Discover ids without profile data, then hold every counterpart's mode
+      // lock through the enriched re-read and DTO construction. Rows for a
+      // counterpart already in paranoid mode disappear instead of turning the
+      // caller's whole list into a mode oracle. A relation added after discovery
+      // is also excluded because its account was not part of the locked set.
+      const [followingIds, followerIds] = await Promise.all([
+        follows.listFollowingIds(userId),
+        follows.listFollowerIds(userId),
       ]);
-      return { following: rows.map(toFollowingEntry), followingCount: rows.length, followerCount };
+      return deps.paranoid.runAllowedWithOptional(
+        [userId],
+        [...new Set([...followingIds, ...followerIds])],
+        'sharing',
+        async (allowedCounterparts): Promise<FollowingListResponse> => {
+          const [rows, currentFollowerIds] = await Promise.all([
+            follows.listFollowing(userId),
+            follows.listFollowerIds(userId),
+          ]);
+          const visibleRows = rows.filter((row) => allowedCounterparts.has(row.id));
+          const followerCount = currentFollowerIds.filter((id) =>
+            allowedCounterparts.has(id),
+          ).length;
+          return {
+            following: visibleRows.map(toFollowingEntry),
+            followingCount: visibleRows.length,
+            followerCount,
+          };
+        },
+      );
     },
 
     async listFollowers(userId) {
-      const rows = await follows.listFollowers(userId);
-      return { followers: rows.map(toFollowUser) };
+      if (!deps.paranoid) {
+        const rows = await follows.listFollowers(userId);
+        return { followers: rows.map(toFollowUser) };
+      }
+
+      const followerIds = await follows.listFollowerIds(userId);
+      return deps.paranoid.runAllowedWithOptional(
+        [userId],
+        followerIds,
+        'sharing',
+        async (allowedCounterparts): Promise<FollowersListResponse> => {
+          const rows = await follows.listFollowers(userId);
+          return {
+            followers: rows.filter((row) => allowedCounterparts.has(row.id)).map(toFollowUser),
+          };
+        },
+      );
     },
 
     async followItem(userId, kind, subjectId) {

@@ -178,6 +178,7 @@ import {
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
 import {
   createParanoidEnforcementRepository,
+  withFreshLockedPrivacyModes,
   withLockedPrivacyModes,
 } from '../data/repositories/paranoidEnforcementRepository';
 import {
@@ -1642,19 +1643,25 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     resolveWatchableAsset: async (userId, assetId) => {
       const row = await assetRepo.findByIdForUser(assetId, userId);
       if (!row) return null;
-      let ref: { providerId: string; providerRef: string } | null = null;
+      let watchable: {
+        ref: { providerId: string; providerRef: string };
+        ownerId: string | null;
+      } | null = null;
       const allowed = await runIfParanoidOwnedSubjectAllowed(
         { exists: true, userId: row.ownerId },
         paranoidGuard,
         'portfolioServer',
         async () => {
-          ref = { providerId: row.providerId, providerRef: row.providerRef };
+          watchable = {
+            ref: { providerId: row.providerId, providerRef: row.providerRef },
+            ownerId: row.ownerId,
+          };
         },
       );
-      return allowed ? ref : null;
+      return allowed ? watchable : null;
     },
     withAccountPrivacyLock: (userId, action) =>
-      withLockedPrivacyModes(privacyLockDb, [userId], () => action()),
+      withFreshLockedPrivacyModes(privacyLockDb, [userId], () => action()),
     // Active-view presence (#368): enter/leave/heartbeat land here; the
     // dispatcher (any process) reads the same keys through Redis.
     presence,
