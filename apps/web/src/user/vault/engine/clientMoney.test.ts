@@ -342,6 +342,67 @@ describe('paranoid client money engine', () => {
     });
   });
 
+  it.each([
+    {
+      state: 'frozen tax facts on a buy',
+      mutate(document: Awaited<ReturnType<typeof decryptClientMoneyFixture>>['document']) {
+        const buy = document.entities.transaction?.find((entity) => entity.data.side === 'buy');
+        if (buy === undefined) throw new Error('Fixture buy is missing.');
+        buy.data.taxMode = 'none';
+      },
+    },
+    {
+      state: 'country-specific tax without a country',
+      mutate(document: Awaited<ReturnType<typeof decryptClientMoneyFixture>>['document']) {
+        const sell = document.entities.transaction?.find((entity) => entity.data.side === 'sell');
+        if (sell === undefined) throw new Error('Fixture sell is missing.');
+        sell.data.taxMode = 'country_specific';
+        sell.data.taxCountry = null;
+        sell.data.taxAmountEur = '0';
+        sell.data.taxParams = null;
+      },
+    },
+    {
+      state: 'custom tax with an invalid parameter snapshot',
+      mutate(document: Awaited<ReturnType<typeof decryptClientMoneyFixture>>['document']) {
+        const dividend = document.entities.dividend?.[0];
+        if (dividend === undefined) throw new Error('Fixture dividend is missing.');
+        dividend.data.taxMode = 'custom';
+        dividend.data.taxCountry = null;
+        dividend.data.taxAmountEur = '1';
+        dividend.data.taxParams = { ratePct: 20 };
+      },
+    },
+    {
+      state: 'a non-zero frozen amount in none mode',
+      mutate(document: Awaited<ReturnType<typeof decryptClientMoneyFixture>>['document']) {
+        const dividend = document.entities.dividend?.[0];
+        if (dividend === undefined) throw new Error('Fixture dividend is missing.');
+        dividend.data.taxMode = 'none';
+        dividend.data.taxCountry = null;
+        dividend.data.taxAmountEur = '1';
+        dividend.data.taxParams = null;
+      },
+    },
+  ])('rejects $state at the authenticated snapshot boundary', async ({ mutate }) => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    mutate(document);
+    const market = createClientMoneyMarket();
+
+    await expect(
+      createVaultMoneyEngine(createMutableTestSync(document, fixture.header), market.market, {
+        now: () => NOW,
+      }).deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'VAULT_CORRUPT', retryable: false },
+    });
+    expect(market.calls.quote).toEqual([]);
+    expect(market.calls.history).toEqual([]);
+    expect(market.calls.fx).toEqual([]);
+  });
+
   it('preserves frozen FIFO realizations after switching the current year to manual mode', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = withAdditionalTransaction(

@@ -1,6 +1,11 @@
 import { webcrypto } from 'node:crypto';
 
-import type { VaultDocumentV1, VaultEntity } from '@bettertrack/contracts';
+import {
+  decodeVaultEnvelope,
+  vaultEnvelopeHeaderSchema,
+  type VaultDocumentV1,
+  type VaultEntity,
+} from '@bettertrack/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -10,10 +15,19 @@ import {
   decryptClientMoneyFixture,
 } from '../engine/clientMoney.testSupport';
 import { createVaultMoneyEngine } from '../engine';
+import { encryptVaultDocument } from '../crypto';
+import type { DataHome } from '../dataHome';
+import {
+  createLocalDataHome,
+  type LocalDataHomeStorage,
+  type LocalVaultRecord,
+} from '../localDataHome';
+import { createMemoryVaultQuarantineStore } from '../quarantine';
+import { createVaultSyncEngine } from '../sync';
 import {
   createVaultPortfolioStore,
+  reconcilePortfolioDocument,
   type VaultPortfolioStore,
-  VaultPortfolioStoreError,
 } from '../vaultPortfolioStore';
 import { createStandingOrderMaterializationLifecycle } from './lifecycle';
 import { materializeDueStandingOrders } from './materialize';
@@ -500,7 +514,7 @@ describe('paranoid standing-order materialization', () => {
     expect(lockCalls).toBe(2);
   });
 
-  it('gates money results after an interrupted real store commit and recovers without duplication', async () => {
+  it('gates money results after a real local commit failure and recovers exactly once', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = withOrders(fixture.document, [
       standingOrder(DAILY_ADD_ID, {
@@ -511,26 +525,44 @@ describe('paranoid standing-order materialization', () => {
         startDate: '2026-07-20',
       }),
     ]);
-    const sync = createMutableTestSync(document, fixture.header);
-    const durableStore = createVaultPortfolioStore(sync);
-    let loseFirstCommitResponse = true;
-    const interruptedStore: VaultPortfolioStore = {
-      ...durableStore,
-      async materializeStandingOrderOccurrence(input, signal) {
-        const result = await durableStore.materializeStandingOrderOccurrence(input, signal);
-        if (loseFirstCommitResponse) {
-          loseFirstCommitResponse = false;
-          throw new VaultPortfolioStoreError(
-            'VAULT_DATA_UNAVAILABLE',
-            'The first durable commit response was interrupted.',
-          );
-        }
-        return result;
+    const encrypted = await encryptVaultDocument({
+      document,
+      vaultKey: fixture.vaultKey,
+      header: {
+        keyId: fixture.header.keyId,
+        wrappedKeys: fixture.header.wrappedKeys,
+        vaultVersion: fixture.header.vaultVersion,
+        deviceId: fixture.header.deviceId,
+        writeId: fixture.header.writeId,
+        writtenAt: fixture.header.writtenAt,
       },
-    };
+    });
+    const failingLocal = createFailingCommitStorage();
+    const local = createLocalDataHome({
+      scope: 'standing-order-first-commit-failure',
+      storage: failingLocal.storage,
+    });
+    await expect(local.write(encrypted.envelope, { ifVersion: null })).resolves.toMatchObject({
+      status: 'ok',
+    });
+    const primary = createMemoryPrimary(encrypted.envelope);
+    let writeSequence = 0x300;
+    const sync = createVaultSyncEngine({
+      local,
+      primary: primary.home,
+      vaultKey: fixture.vaultKey,
+      deviceId: DEVICE_ID,
+      writeId: () => `018f0000-0000-7000-8000-${(writeSequence++).toString(16).padStart(12, '0')}`,
+      now: () => BOOKED_AT,
+      quarantine: createMemoryVaultQuarantineStore(() => BOOKED_AT),
+      documentReconciler: reconcilePortfolioDocument,
+      requiresCompleteMutationProvenance: true,
+    });
+    await expect(sync.start()).resolves.toMatchObject({ status: 'synced' });
+    failingLocal.failNextCommit();
+
     const market = createClientMoneyMarket();
     const lifecycle = createStandingOrderMaterializationLifecycle(sync, market.market, {
-      store: interruptedStore,
       retryCount: 0,
       now: () => new Date(BOOKED_AT),
       timezone: 'Europe/Vienna',
@@ -544,6 +576,9 @@ describe('paranoid standing-order materialization', () => {
       ok: false,
       error: { code: 'VAULT_DATA_UNAVAILABLE', retryable: true },
     });
+    expect(failingLocal.failureCount).toBe(1);
+    expect(failingLocal.currentVersion).toBe(fixture.header.vaultVersion);
+    expect(primary.writeCount).toBe(0);
     await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
       ok: false,
       error: { code: 'VAULT_DATA_UNAVAILABLE', retryable: true },
@@ -551,9 +586,25 @@ describe('paranoid standing-order materialization', () => {
     expect(market.calls.quote).toEqual([]);
     expect(market.calls.history).toEqual([]);
 
-    await expect(engine.afterUnlock()).resolves.toMatchObject({ ok: true });
+    await expect(engine.afterUnlock()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        booked: [
+          {
+            orderId: DAILY_ADD_ID,
+            dueDate: '2026-07-27',
+            kind: 'cash-add',
+            status: 'created',
+          },
+        ],
+      },
+    });
     await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
       ok: true,
+    });
+    await expect(engine.afterUnlock()).resolves.toMatchObject({
+      ok: true,
+      value: { booked: [], deferred: [] },
     });
 
     const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
@@ -567,7 +618,10 @@ describe('paranoid standing-order materialization', () => {
         (entity) => entity.id === occurrenceId && entity.deletedAt === null,
       ),
     ).toHaveLength(1);
-    expect(sync.mutationCount).toBe(1);
+    expect(failingLocal.failureCount).toBe(1);
+    expect(failingLocal.currentVersion).toBe(fixture.header.vaultVersion + 1);
+    expect(primary.version).toBe(fixture.header.vaultVersion + 1);
+    expect(primary.writeCount).toBe(1);
   });
 
   it.each(['conflict', 'unresolved'] as const)(
@@ -738,4 +792,122 @@ function manualValue(id: string, assetId: string, date: string, close: string): 
     deletedAt: null,
     data: { assetId, date, close },
   };
+}
+
+function createFailingCommitStorage(): {
+  storage: LocalDataHomeStorage;
+  failNextCommit(): void;
+  readonly failureCount: number;
+  readonly currentVersion: number | null;
+} {
+  let record: LocalVaultRecord | null = null;
+  let failNext = false;
+  let failures = 0;
+  const storage: LocalDataHomeStorage = {
+    async read() {
+      return cloneLocalRecord(record);
+    },
+    async compareAndSwap(_scope, ifVersion, build) {
+      if (failNext) {
+        failNext = false;
+        failures += 1;
+        throw new Error('Injected local encrypted commit failure.');
+      }
+      const currentVersion = record?.version ?? null;
+      if (currentVersion !== ifVersion) {
+        return { status: 'conflict', currentVersion };
+      }
+      record = cloneLocalRecord(build(cloneLocalRecord(record)));
+      return { status: 'ok' };
+    },
+  };
+  return {
+    storage,
+    failNextCommit() {
+      failNext = true;
+    },
+    get failureCount() {
+      return failures;
+    },
+    get currentVersion() {
+      return record?.version ?? null;
+    },
+  };
+}
+
+function cloneLocalRecord(record: LocalVaultRecord | null): LocalVaultRecord | null {
+  return record === null ? null : structuredClone(record);
+}
+
+function createMemoryPrimary(initialEnvelope: Uint8Array): {
+  home: DataHome;
+  readonly writeCount: number;
+  readonly version: number;
+} {
+  let envelope = initialEnvelope.slice();
+  let header = decodeTestEnvelopeHeader(envelope);
+  let writes = 0;
+  const home: DataHome = {
+    medium: 'server',
+    async read() {
+      return {
+        status: 'ok',
+        medium: 'server',
+        envelope: envelope.slice(),
+        info: {
+          medium: 'server',
+          version: header.vaultVersion,
+          sizeBytes: envelope.byteLength,
+          updatedAt: header.writtenAt,
+        },
+      };
+    },
+    async write(next, options) {
+      writes += 1;
+      if (options.ifVersion !== header.vaultVersion) {
+        return {
+          status: 'conflict',
+          medium: 'server',
+          currentVersion: header.vaultVersion,
+        };
+      }
+      envelope = next.slice();
+      header = decodeTestEnvelopeHeader(envelope);
+      return {
+        status: 'ok',
+        medium: 'server',
+        info: {
+          medium: 'server',
+          version: header.vaultVersion,
+          sizeBytes: envelope.byteLength,
+          updatedAt: header.writtenAt,
+        },
+      };
+    },
+    async info() {
+      return {
+        status: 'ok',
+        medium: 'server',
+        info: {
+          medium: 'server',
+          version: header.vaultVersion,
+          sizeBytes: envelope.byteLength,
+          updatedAt: header.writtenAt,
+        },
+      };
+    },
+  };
+  return {
+    home,
+    get writeCount() {
+      return writes;
+    },
+    get version() {
+      return header.vaultVersion;
+    },
+  };
+}
+
+function decodeTestEnvelopeHeader(envelope: Uint8Array) {
+  return vaultEnvelopeHeaderSchema.parse(decodeVaultEnvelope(envelope).header);
 }

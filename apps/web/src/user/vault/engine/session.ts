@@ -1,6 +1,8 @@
 import {
+  customTaxParamsSchema,
   VAULT_DOCUMENT_VERSION,
   VAULT_ENTITY_KINDS,
+  VAULT_ENTITY_ROW_SCHEMAS,
   VAULT_ENTITY_SCHEMAS,
   vaultDocumentV1Schema,
   type VaultDocumentV1,
@@ -57,6 +59,7 @@ export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultS
     });
   }
   validateStrictEntities(parsed.data);
+  validatePersistedTaxFacts(parsed.data);
   const ownerUserId = validateRelationships(parsed.data);
   return {
     document: parsed.data,
@@ -180,6 +183,73 @@ function validateStrictEntities(document: VaultDocumentV1): void {
       }
     }
   }
+}
+
+function validatePersistedTaxFacts(document: VaultDocumentV1): void {
+  for (const entity of document.entities.transaction ?? []) {
+    const row = VAULT_ENTITY_ROW_SCHEMAS.transaction.parse(entity.data);
+    if (
+      row.side === 'buy' &&
+      (row.taxMode !== null ||
+        row.taxCountry !== null ||
+        row.taxAmountEur !== null ||
+        row.taxParams !== null)
+    ) {
+      invalidTaxFacts('transaction', entity.id, 'buy transactions cannot carry frozen tax facts');
+    }
+    validateFrozenTaxShape(
+      'transaction',
+      entity.id,
+      row.taxMode,
+      row.taxCountry,
+      row.taxAmountEur,
+      row.taxParams,
+    );
+  }
+
+  for (const entity of document.entities.dividend ?? []) {
+    const row = VAULT_ENTITY_ROW_SCHEMAS.dividend.parse(entity.data);
+    validateFrozenTaxShape(
+      'dividend',
+      entity.id,
+      row.taxMode,
+      row.taxCountry,
+      row.taxAmountEur,
+      row.taxParams,
+    );
+  }
+}
+
+function validateFrozenTaxShape(
+  kind: 'transaction' | 'dividend',
+  id: string,
+  mode: 'none' | 'manual_per_trade' | 'country_specific' | 'custom' | null,
+  country: 'AT' | 'DE' | 'FI' | null,
+  amountEur: string | null,
+  params: unknown,
+): void {
+  const shapeIsValid =
+    mode === null
+      ? country === null && params === null
+      : mode === 'country_specific'
+        ? country !== null && params === null
+        : mode === 'custom'
+          ? country === null && customTaxParamsSchema.safeParse(params).success
+          : country === null && params === null;
+  if (!shapeIsValid) {
+    invalidTaxFacts(kind, id, 'frozen tax mode, country, and parameters are inconsistent');
+  }
+  if (mode === 'none' && amountEur !== null && !isZeroDecimal(amountEur)) {
+    invalidTaxFacts(kind, id, 'none-mode rows cannot carry a frozen tax amount');
+  }
+}
+
+function isZeroDecimal(value: string): boolean {
+  return /^-?0(?:\.0+)?$/.test(value);
+}
+
+function invalidTaxFacts(kind: 'transaction' | 'dividend', id: string, reason: string): never {
+  throw moneyFailure('VAULT_CORRUPT', `Vault ${kind} ${id} is unreachable: ${reason}.`);
 }
 
 function validateRelationships(document: VaultDocumentV1): string {

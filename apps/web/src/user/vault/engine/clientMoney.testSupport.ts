@@ -26,11 +26,12 @@ export async function decryptClientMoneyFixture(): Promise<{
   document: VaultDocumentV1;
   header: VaultEnvelopeHeader;
   envelope: Uint8Array;
+  vaultKey: Uint8Array;
 }> {
   const envelope = Uint8Array.from(Buffer.from(fixture.envelopeBase64, 'base64'));
-  const key = Uint8Array.from(Buffer.from(fixture.vaultKeyBase64, 'base64'));
-  const decrypted = await decryptVaultDocument(envelope, key);
-  return { ...decrypted, envelope };
+  const vaultKey = Uint8Array.from(Buffer.from(fixture.vaultKeyBase64, 'base64'));
+  const decrypted = await decryptVaultDocument(envelope, vaultKey);
+  return { ...decrypted, envelope, vaultKey };
 }
 
 export interface MutableTestSync extends VaultSyncEngine {
