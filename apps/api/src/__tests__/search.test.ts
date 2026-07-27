@@ -166,6 +166,16 @@ describe('GET /api/v1/search', () => {
     await h.ctx.search.enrichmentSettled();
     expect(marketData.calls.search).toBe(1);
     expect(await countGlobal(h, 'BAYN.DE')).toBe(1);
+    const [enriched] = await h.db
+      .select({ id: schema.assets.id })
+      .from(schema.assets)
+      .where(eq(schema.assets.providerRef, 'BAYN.DE'));
+    expect(
+      await h.db
+        .select()
+        .from(schema.assetIdentities)
+        .where(eq(schema.assetIdentities.id, enriched!.id)),
+    ).toHaveLength(1);
     // First touch: exactly one backfill for the newly created row.
     expect(backfill.enqueued).toHaveLength(1);
 

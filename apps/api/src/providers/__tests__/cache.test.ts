@@ -1,6 +1,6 @@
 import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   cacheKey,
@@ -272,6 +272,61 @@ describe('MarketCache — negative caching (§5.3)', () => {
 });
 
 describe('MarketCache — cross-process coalescing (§5.3 Redis lock)', () => {
+  it.each(['success', 'failure'] as const)(
+    'atomically releases a cold-load lock after loader %s',
+    async (outcome) => {
+      const evalSpy = vi.spyOn(redis, 'eval');
+      const cache = createMarketCache(redis);
+      const loader =
+        outcome === 'success'
+          ? () => Promise.resolve({ price: 42 })
+          : () => Promise.reject(new Error('cold load failed'));
+
+      const result = cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader });
+      if (outcome === 'success') {
+        await expect(result).resolves.toMatchObject({ value: { price: 42 }, stale: false });
+      } else {
+        await expect(result).rejects.toThrowError('cold load failed');
+      }
+
+      expect(evalSpy).toHaveBeenCalledWith(
+        expect.stringContaining("redis.call('get', KEYS[1])"),
+        1,
+        loadLockKey(KEY),
+        expect.any(String),
+      );
+      await expect(redis.exists(loadLockKey(KEY))).resolves.toBe(0);
+    },
+  );
+
+  it.each(['success', 'failure'] as const)(
+    'atomically releases a background-revalidation lock after loader %s',
+    async (outcome) => {
+      const cache = createMarketCache(redis);
+      await cache.prime({ key: KEY, ttlSeconds: 60 }, { price: 40 });
+      await redis.del(freshCacheKey(KEY));
+      const evalSpy = vi.spyOn(redis, 'eval');
+      const loader =
+        outcome === 'success'
+          ? () => Promise.resolve({ price: 42 })
+          : () => Promise.reject(new Error('background refresh failed'));
+
+      await expect(cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader })).resolves.toMatchObject({
+        value: { price: 40 },
+        stale: true,
+      });
+      await cache.settled();
+
+      expect(evalSpy).toHaveBeenCalledWith(
+        expect.stringContaining("redis.call('get', KEYS[1])"),
+        1,
+        loadLockKey(KEY),
+        expect.any(String),
+      );
+      await expect(redis.exists(loadLockKey(KEY))).resolves.toBe(0);
+    },
+  );
+
   it('a second process awaiting the same cold miss reuses the winner’s result', async () => {
     // Two cache instances over the shared mock store = two processes.
     const winner = createMarketCache(redis, { pollIntervalMs: 5 });

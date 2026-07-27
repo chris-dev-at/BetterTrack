@@ -48,6 +48,94 @@ export interface CreateOAuthAuthCodeInput {
   expiresAt: Date;
 }
 
+/**
+ * The persistence operations available while an authorization code exchange is
+ * holding the code and its owning user row locked. Keeping the whole mutation
+ * inside this transaction makes an administrative status transition serialize
+ * with the exchange: suspension either observes and revokes the finished grant,
+ * or the exchange observes the disabled user and cannot mint one.
+ */
+export interface OAuthAuthorizationCodeExchange {
+  code: OAuthAuthCodeRow;
+  user: UserRow;
+  consumeCode(): Promise<OAuthAuthCodeRow | undefined>;
+  findActiveGrant(clientId: string): Promise<OAuthGrantRow | undefined>;
+  createGrant(input: {
+    clientId: string;
+    userId: string;
+    scopes: string[];
+  }): Promise<OAuthGrantRow>;
+  updateGrantScopes(grantId: string, scopes: string[]): Promise<void>;
+  createAccessToken(input: {
+    grantId: string;
+    tokenHash: string;
+    scopes: string[];
+    expiresAt: Date;
+  }): Promise<OAuthAccessTokenRow>;
+  createRefreshToken(input: {
+    grantId: string;
+    tokenHash: string;
+    expiresAt: Date;
+  }): Promise<OAuthRefreshTokenRow>;
+}
+
+function createAuthorizationCodeExchange(
+  executor: Pick<Database, 'select' | 'insert' | 'update'>,
+  code: OAuthAuthCodeRow,
+  user: UserRow,
+): OAuthAuthorizationCodeExchange {
+  return {
+    code,
+    user,
+
+    async consumeCode(): Promise<OAuthAuthCodeRow | undefined> {
+      const [row] = await executor
+        .update(oauthAuthCodes)
+        .set({ consumedAt: new Date() })
+        .where(and(eq(oauthAuthCodes.id, code.id), isNull(oauthAuthCodes.consumedAt)))
+        .returning();
+      return row;
+    },
+
+    async findActiveGrant(clientId: string): Promise<OAuthGrantRow | undefined> {
+      const [row] = await executor
+        .select()
+        .from(oauthGrants)
+        .where(
+          and(
+            eq(oauthGrants.clientId, clientId),
+            eq(oauthGrants.userId, code.userId),
+            isNull(oauthGrants.revokedAt),
+          ),
+        )
+        .limit(1);
+      return row;
+    },
+
+    async createGrant(input): Promise<OAuthGrantRow> {
+      const [row] = await executor.insert(oauthGrants).values(input).returning();
+      if (!row) throw new Error('Failed to insert OAuth grant');
+      return row;
+    },
+
+    async updateGrantScopes(grantId: string, scopes: string[]): Promise<void> {
+      await executor.update(oauthGrants).set({ scopes }).where(eq(oauthGrants.id, grantId));
+    },
+
+    async createAccessToken(input): Promise<OAuthAccessTokenRow> {
+      const [row] = await executor.insert(oauthAccessTokens).values(input).returning();
+      if (!row) throw new Error('Failed to insert OAuth access token');
+      return row;
+    },
+
+    async createRefreshToken(input): Promise<OAuthRefreshTokenRow> {
+      const [row] = await executor.insert(oauthRefreshTokens).values(input).returning();
+      if (!row) throw new Error('Failed to insert OAuth refresh token');
+      return row;
+    },
+  };
+}
+
 export function createOAuthRepository(db: Database) {
   return {
     // ── Clients ──────────────────────────────────────────────────────────────
@@ -189,35 +277,6 @@ export function createOAuthRepository(db: Database) {
     },
 
     // ── Grants ───────────────────────────────────────────────────────────────
-    async findActiveGrant(clientId: string, userId: string): Promise<OAuthGrantRow | undefined> {
-      const [row] = await db
-        .select()
-        .from(oauthGrants)
-        .where(
-          and(
-            eq(oauthGrants.clientId, clientId),
-            eq(oauthGrants.userId, userId),
-            isNull(oauthGrants.revokedAt),
-          ),
-        )
-        .limit(1);
-      return row;
-    },
-
-    async createGrant(input: {
-      clientId: string;
-      userId: string;
-      scopes: string[];
-    }): Promise<OAuthGrantRow> {
-      const [row] = await db.insert(oauthGrants).values(input).returning();
-      if (!row) throw new Error('Failed to insert OAuth grant');
-      return row;
-    },
-
-    async updateGrantScopes(grantId: string, scopes: string[]): Promise<void> {
-      await db.update(oauthGrants).set({ scopes }).where(eq(oauthGrants.id, grantId));
-    },
-
     /** The caller's active grants joined to the granting app's name + public id. */
     async listGrantsForUser(
       userId: string,
@@ -251,6 +310,23 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
+    /**
+     * Administrative account suspension invalidates every OAuth credential the
+     * user could otherwise resume with: live grants kill access/refresh tokens,
+     * and pending authorization codes are consumed permanently.
+     */
+    async revokeAllForUser(userId: string): Promise<void> {
+      const invalidatedAt = new Date();
+      await db
+        .update(oauthGrants)
+        .set({ revokedAt: invalidatedAt })
+        .where(and(eq(oauthGrants.userId, userId), isNull(oauthGrants.revokedAt)));
+      await db
+        .update(oauthAuthCodes)
+        .set({ consumedAt: invalidatedAt })
+        .where(and(eq(oauthAuthCodes.userId, userId), isNull(oauthAuthCodes.consumedAt)));
+    },
+
     async touchGrantLastUsed(grantId: string, at: Date): Promise<void> {
       await db.update(oauthGrants).set({ lastUsedAt: at }).where(eq(oauthGrants.id, grantId));
     },
@@ -262,26 +338,40 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
-    async findAuthCodeByHash(codeHash: string): Promise<OAuthAuthCodeRow | undefined> {
-      const [row] = await db
-        .select()
-        .from(oauthAuthCodes)
-        .where(eq(oauthAuthCodes.codeHash, codeHash))
-        .limit(1);
-      return row;
-    },
-
     /**
-     * Atomically consume a code: stamps `consumed_at` only if it was still null.
-     * Returns the row on success, undefined if it was already consumed (replay).
+     * Execute an authorization-code exchange under the code + user row locks.
+     *
+     * The user lock is deliberately the same row lock an administrative status
+     * update acquires. Therefore a code flow that entered first commits its
+     * grant/tokens before suspension can proceed (and suspension revokes that
+     * grant afterwards); one that enters after suspension sees `disabled` in
+     * the callback. The transaction also keeps a consumed pre-suspension code
+     * from resuming later and creating a fresh grant after re-enable.
      */
-    async consumeAuthCode(id: string): Promise<OAuthAuthCodeRow | undefined> {
-      const [row] = await db
-        .update(oauthAuthCodes)
-        .set({ consumedAt: new Date() })
-        .where(and(eq(oauthAuthCodes.id, id), isNull(oauthAuthCodes.consumedAt)))
-        .returning();
-      return row;
+    async withAuthorizationCodeExchange<T>(
+      codeHash: string,
+      run: (exchange: OAuthAuthorizationCodeExchange | null) => Promise<T>,
+    ): Promise<T> {
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const [code] = await executor
+          .select()
+          .from(oauthAuthCodes)
+          .where(eq(oauthAuthCodes.codeHash, codeHash))
+          .limit(1)
+          .for('update');
+        if (!code) return run(null);
+
+        const [user] = await executor
+          .select()
+          .from(users)
+          .where(eq(users.id, code.userId))
+          .limit(1)
+          .for('update');
+        if (!user) return run(null);
+
+        return run(createAuthorizationCodeExchange(executor, code, user));
+      });
     },
 
     // ── Access tokens ────────────────────────────────────────────────────────
@@ -333,14 +423,15 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
-    /** Resolve a refresh token by hash joined to its grant (any grant state). */
+    /** Resolve a refresh token by hash joined to its grant + owning user (any grant state). */
     async findRefreshTokenByHash(
       tokenHash: string,
-    ): Promise<{ token: OAuthRefreshTokenRow; grant: OAuthGrantRow } | undefined> {
+    ): Promise<{ token: OAuthRefreshTokenRow; grant: OAuthGrantRow; user: UserRow } | undefined> {
       const [row] = await db
-        .select({ token: oauthRefreshTokens, grant: oauthGrants })
+        .select({ token: oauthRefreshTokens, grant: oauthGrants, user: users })
         .from(oauthRefreshTokens)
         .innerJoin(oauthGrants, eq(oauthRefreshTokens.grantId, oauthGrants.id))
+        .innerJoin(users, eq(oauthGrants.userId, users.id))
         .where(eq(oauthRefreshTokens.tokenHash, tokenHash))
         .limit(1);
       return row;

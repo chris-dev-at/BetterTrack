@@ -1,5 +1,8 @@
+import { createHash } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
+import { decryptSecret, encryptSecret } from '../../services/crypto/secretBox';
 import { loadConfig } from '../env';
 
 /**
@@ -16,6 +19,8 @@ const REQUIRED: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgres://x',
   REDIS_URL: 'redis://x',
   SESSION_SECRET: 'a-sufficiently-long-secret-value',
+  BT_DATA_ENCRYPTION_KEY_ID: 'test-current',
+  BT_DATA_ENCRYPTION_KEY: 'test-record-encryption-material-at-least-32-characters',
 };
 
 function config(env: NodeJS.ProcessEnv) {
@@ -279,5 +284,108 @@ describe('web-push VAPID config (#368)', () => {
     expect(config({ BT_VAPID_PUBLIC_KEY: '', BT_VAPID_PRIVATE_KEY: '' }).webPush.enabled).toBe(
       false,
     );
+  });
+});
+
+describe('stored-record encryption configuration (#879)', () => {
+  it('requires a dedicated active key and id in production', () => {
+    expect(() =>
+      loadConfig({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgres://x',
+        REDIS_URL: 'redis://x',
+        SESSION_SECRET: 'a-sufficiently-long-secret-value',
+      }),
+    ).toThrow('dedicated record-encryption configuration is required in production');
+
+    expect(() =>
+      config({
+        BT_DATA_ENCRYPTION_KEY_ID: 'only-an-id',
+        BT_DATA_ENCRYPTION_KEY: '',
+      }),
+    ).toThrow('set both fields together');
+  });
+
+  it('uses a session-independent fixed fallback in development and test', () => {
+    const first = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://x',
+      REDIS_URL: 'redis://x',
+      SESSION_SECRET: 'old-cookie-secret-value',
+    });
+    const rotated = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://x',
+      REDIS_URL: 'redis://x',
+      SESSION_SECRET: 'new-cookie-secret-value,old-cookie-secret-value',
+    });
+
+    expect(rotated.recordEncryption.active.id).toBe(first.recordEncryption.active.id);
+    expect(rotated.recordEncryption.active.key.equals(first.recordEncryption.active.key)).toBe(
+      true,
+    );
+  });
+
+  it('keeps a legacy session-derived envelope readable across cookie rotation', () => {
+    const oldCookieSecret = 'old-cookie-secret-value';
+    const historicalKey = createHash('sha256').update(`bt-2fa:${oldCookieSecret}`).digest();
+    const legacy = encryptSecret('legacy TOTP seed', historicalKey);
+    const rotated = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://x',
+      REDIS_URL: 'redis://x',
+      SESSION_SECRET: `new-cookie-secret-value,${oldCookieSecret}`,
+    });
+
+    expect(decryptSecret(legacy, rotated.recordEncryption)).toBe('legacy TOTP seed');
+  });
+
+  it('keeps a legacy raw rotation-list envelope readable when another key is prepended', () => {
+    const historicalSessionSecret = 'new-cookie-secret-value,old-cookie-secret-value';
+    const historicalKey = createHash('sha256').update(`bt-2fa:${historicalSessionSecret}`).digest();
+    const legacy = encryptSecret('legacy multi-key TOTP seed', historicalKey);
+    const rotated = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://x',
+      REDIS_URL: 'redis://x',
+      SESSION_SECRET: `newest-cookie-secret-value,${historicalSessionSecret}`,
+    });
+
+    expect(decryptSecret(legacy, rotated.recordEncryption)).toBe('legacy multi-key TOTP seed');
+  });
+
+  it('reads a previous data key while writing only the configured active id', () => {
+    const oldMaterial = 'old-record-encryption-material-at-least-32-characters';
+    const oldConfig = config({
+      BT_DATA_ENCRYPTION_KEY_ID: 'old_2025',
+      BT_DATA_ENCRYPTION_KEY: oldMaterial,
+    });
+    const oldEnvelope = encryptSecret('rotating secret', oldConfig.recordEncryption);
+
+    const rotated = config({
+      BT_DATA_ENCRYPTION_KEY_ID: 'new_2026',
+      BT_DATA_ENCRYPTION_KEY: 'new-record-encryption-material-at-least-32-characters',
+      BT_DATA_ENCRYPTION_DECRYPT_KEYS: `old_2025=${oldMaterial}`,
+    });
+    expect(decryptSecret(oldEnvelope, rotated.recordEncryption)).toBe('rotating secret');
+
+    const newEnvelope = encryptSecret('new secret', rotated.recordEncryption);
+    expect(newEnvelope.startsWith('v2.new_2026.')).toBe(true);
+  });
+
+  it('rejects malformed or duplicate decrypt-key entries without echoing key material', () => {
+    const secret = 'sensitive-previous-key-material-at-least-32-characters';
+    for (const decryptKeys of [
+      'missing-separator',
+      `test-current=${secret}`,
+      `same=${secret},same=${secret}`,
+    ]) {
+      try {
+        config({ BT_DATA_ENCRYPTION_DECRYPT_KEYS: decryptKeys });
+        throw new Error('expected config to fail');
+      } catch (error) {
+        expect(String(error)).not.toContain(secret);
+      }
+    }
   });
 });

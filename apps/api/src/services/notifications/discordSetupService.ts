@@ -2,7 +2,7 @@ import type { DiscordSettingsResponse } from '@bettertrack/contracts';
 
 import type { DiscordWebhookRepository } from '../../data/repositories/discordWebhookRepository';
 import type { Logger } from '../../logger';
-import { encryptSecret } from '../crypto/secretBox';
+import { encryptSecret, type SecretBoxKeyring } from '../crypto/secretBox';
 
 import type { DiscordChannel, DiscordSendOutcome } from './discordChannel';
 
@@ -33,8 +33,8 @@ export interface DiscordSetupServiceDeps {
   webhooks: DiscordWebhookRepository;
   /** Null when the deployment kill-switch is off — no channel to probe. */
   channel: DiscordChannel | null;
-  /** Same key as `services/crypto/secretBox` uses everywhere else. */
-  encryptionKey: Buffer;
+  /** Dedicated record-encryption keyring (`config.recordEncryption`). */
+  encryptionKey: SecretBoxKeyring;
   logger: Logger;
 }
 
