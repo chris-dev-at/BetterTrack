@@ -1285,16 +1285,53 @@ ci_fix_red_step(){ # $1=queue file $2=issue $3=pr $4=approved head
   fi
 }
 
+# A BEHIND update re-parents the PR onto newer main. That always changes the head
+# SHA, which invalidates the head-bound approval even when the PR's own diff is
+# untouched. With several workers merging, every merge invalidates every other
+# queued PR and the queue re-reviews far more than it lands (measured 2026-07-26:
+# 4 merges against 21 invalidations). Carry the approval forward only when main's
+# new commits touched NONE of the files this PR changes — then the reviewed
+# contribution cannot have interacted with what moved. Any overlap, any read
+# failure, any truncated compare falls through to a fresh review. CI still gates
+# the merged result either way.
+carry_forward_ok(){ # $1=pr $2=head before update; 0 = safe to carry the approval
+  local pr=$1 head=$2 base cmp main_files pr_files overlap
+  base=$(gh api "repos/$REPO/compare/main...$head" -q '.merge_base_commit.sha' 2>/dev/null) || return 1
+  [ -n "$base" ] && [ "$base" != null ] || return 1
+  cmp=$(gh api "repos/$REPO/compare/$base...main" 2>/dev/null) || return 1
+  # A truncated compare cannot prove disjointness.
+  jq -e '((.truncated // false) | not) and ((.files // []) | length) < 300' \
+    <<<"$cmp" >/dev/null 2>&1 || return 1
+  main_files=$(jq -r '(.files // [])[].filename' <<<"$cmp" 2>/dev/null | sort -u) || return 1
+  pr_files=$(gh pr view "$pr" --json files -q '.files[].path' 2>/dev/null | sort -u) || return 1
+  [ -n "$pr_files" ] || return 1
+  overlap=$(comm -12 <(printf '%s\n' "$main_files") <(printf '%s\n' "$pr_files"))
+  [ -z "$overlap" ]
+}
+
+queue_carry_head(){ # $1=queue file $2=new head — record the SHA we now expect to merge
+  local f=$1 nh=$2 updated
+  updated=$(jq -c --arg h "$nh" --arg at "$(date -Is)" \
+    '. + {carried_head:$h, carried_at:$at}' "$f" 2>/dev/null) || return 1
+  [ -n "$updated" ] || return 1
+  atomic_write "$f" "$updated"
+}
+
 queue_approval_check(){ # $1=queue JSON; sets QUEUE_APPROVAL_STATE
-  local f=$1 pr head kind comment_id comments current
+  local f=$1 pr head effective kind comment_id comments current
   QUEUE_APPROVAL_STATE=invalid
   pr=$(jq -r '.pr' "$f")
   head=$(jq -r '.approved_head // ""' "$f")
+  # carried_head is set only when a BEHIND update provably left this PR's own
+  # contribution untouched (see carry_forward_ok). The canonical approval comment
+  # still names approved_head and is always validated against it: carrying
+  # forward moves which SHA we expect to merge, never what was reviewed.
+  effective=$(jq -r '.carried_head // .approved_head // ""' "$f")
   kind=$(jq -r '.approval_kind // ""' "$f")
   comment_id=$(jq -r '.approval_comment_id // ""' "$f")
-  [ -n "$head" ] && [ -n "$comment_id" ] || return 0
+  [ -n "$head" ] && [ -n "$effective" ] && [ -n "$comment_id" ] || return 0
   current=$(mf_pr_head "$pr") || return 1
-  if [ "$current" != "$head" ]; then
+  if [ "$current" != "$effective" ]; then
     QUEUE_APPROVAL_STATE=changed
     return 0
   fi
@@ -1343,7 +1380,10 @@ merger_step(){
   local f=$QUEUE/$head pr n approved_head ci_state
   pr=$(jq -r '.pr' "$f"); n=$(jq -r '.issue' "$f")
   ci_state=$(ci_fix_state_file "$n" "$pr")
-  approved_head=$(jq -r '.approved_head // ""' "$f")
+  # The SHA we now expect to merge: the carried head when a BEHIND update was
+  # proven non-interacting, else the originally approved one. queue_approval_check
+  # independently validates the approval comment against the original approved_head.
+  approved_head=$(jq -r '.carried_head // .approved_head // ""' "$f")
   if [ "$MF_DRY_RUN" = 1 ]; then log "DRY: would merge PR #$pr (issue #$n)"; rm -f "$f"; return 0; fi
   local pstate
   pstate=$(gh pr view "$pr" --json state -q '.state' 2>/dev/null || echo unknown)
@@ -1397,8 +1437,16 @@ merger_step(){
     return 0
   fi
   if [ "$merge_state" = BEHIND ]; then
+    local can_carry=1 new_head
+    carry_forward_ok "$pr" "$current_head" && can_carry=0
     if gh pr update-branch "$pr" >/dev/null 2>&1; then
-      log "merger: updated BEHIND PR #$pr; fresh review required"
+      new_head=$(mf_pr_head "$pr" 2>/dev/null || true)
+      if [ "$can_carry" = 0 ] && [ -n "$new_head" ] && [ "$new_head" != "$current_head" ] \
+        && queue_carry_head "$f" "$new_head"; then
+        log "merger: updated BEHIND PR #$pr; main touched no file it changes — approval carried to ${new_head:0:12}"
+      else
+        log "merger: updated BEHIND PR #$pr; fresh review required"
+      fi
     else
       log "merger: update-branch failed for PR #$pr — retrying next tick"
     fi
