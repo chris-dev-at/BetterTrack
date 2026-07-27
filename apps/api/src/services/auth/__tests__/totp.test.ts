@@ -139,6 +139,24 @@ describe('secretBox (AES-256-GCM)', () => {
     }
   });
 
+  it('rejects a canonical truncated authentication tag', () => {
+    const envelope = encryptSecret('JBSWY3DPEHPK3PXP', key);
+    const [version, iv, authTag, ciphertext] = envelope.split('.') as [
+      string,
+      string,
+      string,
+      string,
+    ];
+    const truncatedAuthTag = Buffer.from(authTag, 'base64url')
+      .subarray(0, 15)
+      .toString('base64url');
+
+    expect(Buffer.from(truncatedAuthTag, 'base64url')).toHaveLength(15);
+    expect(() => decryptSecret([version, iv, truncatedAuthTag, ciphertext].join('.'), key)).toThrow(
+      'secretBox: malformed envelope',
+    );
+  });
+
   it('round-trips empty and non-ASCII plaintext', () => {
     for (const plaintext of ['', 'Grüße aus Österreich 🔐']) {
       expect(decryptSecret(encryptSecret(plaintext, key), key)).toBe(plaintext);
