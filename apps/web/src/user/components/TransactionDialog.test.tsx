@@ -13,8 +13,6 @@ import type { DailyClosesResponse, PricePoint } from '@bettertrack/contracts';
 import { ApiError } from '../../lib/apiClient';
 import * as assetApi from '../../lib/assetApi';
 import * as portfolioApi from '../../lib/portfolioApi';
-import { apiPortfolioStore, type PortfolioStore } from '../../lib/portfolioStore';
-import { PortfolioStoreProvider } from '../portfolio/PortfolioStoreProvider';
 import {
   DERIVED_QUANTITY_DECIMALS,
   deriveQuantityFromAmount,
@@ -41,26 +39,21 @@ const BTC: TransactionDialogAsset = {
   currency: 'EUR',
 };
 
-function renderDialog(
-  props: Partial<React.ComponentProps<typeof TransactionDialog>> = {},
-  portfolioStore?: PortfolioStore,
-) {
+function renderDialog(props: Partial<React.ComponentProps<typeof TransactionDialog>> = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const onClose = vi.fn();
   const onSubmitted = vi.fn();
   const { unmount } = render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
-        <PortfolioStoreProvider store={portfolioStore}>
-          <TransactionDialog
-            portfolioId="p1"
-            onClose={onClose}
-            onSubmitted={onSubmitted}
-            asset={BTC}
-            today="2026-07-02"
-            {...props}
-          />
-        </PortfolioStoreProvider>
+        <TransactionDialog
+          portfolioId="p1"
+          onClose={onClose}
+          onSubmitted={onSubmitted}
+          asset={BTC}
+          today="2026-07-02"
+          {...props}
+        />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -185,25 +178,6 @@ describe('TransactionDialog — amount entry mode', () => {
       },
     ]);
     expect(onSubmitted).toHaveBeenCalledOnce();
-  });
-
-  test('routes creates through the selected vault portfolio store', async () => {
-    const vaultStore = {
-      ...apiPortfolioStore,
-      createTransactions: vi.fn().mockResolvedValue([]),
-    } satisfies PortfolioStore;
-    const user = userEvent.setup();
-    renderDialog({}, vaultStore);
-
-    await user.type(screen.getByLabelText(/quantity for btc/i), '1');
-    await user.type(screen.getByLabelText(/price for btc/i), '10');
-    await user.click(screen.getByRole('button', { name: /record buy/i }));
-
-    await waitFor(() => expect(vaultStore.createTransactions).toHaveBeenCalledOnce());
-    expect(vaultStore.createTransactions).toHaveBeenCalledWith('p1', [
-      expect.objectContaining({ assetId: 'asset-btc', quantity: 1, price: 10 }),
-    ]);
-    expect(portfolioApi.createTransactions).not.toHaveBeenCalled();
   });
 
   test('amount-entered payload is identical to the equivalent quantity-entered payload', async () => {
@@ -388,24 +362,6 @@ describe('TransactionDialog — edit mode patches only what changed', () => {
     await waitFor(() => expect(portfolioApi.updateTransaction).toHaveBeenCalledOnce());
     expect(vi.mocked(portfolioApi.updateTransaction).mock.calls[0]![2]).toEqual({ note: 'DCA' });
     expect(onSubmitted).toHaveBeenCalled();
-  });
-
-  test('routes edits through the selected vault portfolio store', async () => {
-    const vaultStore = {
-      ...apiPortfolioStore,
-      updateTransaction: vi.fn().mockResolvedValue({ ...EDIT_TXN, note: 'DCA' }),
-    } satisfies PortfolioStore;
-    const user = userEvent.setup();
-    renderDialog({ transaction: EDIT_TXN, asset: undefined }, vaultStore);
-
-    await user.type(screen.getByLabelText(/note for btc/i), 'DCA');
-    await user.click(screen.getByRole('button', { name: /save changes/i }));
-
-    await waitFor(() => expect(vaultStore.updateTransaction).toHaveBeenCalledOnce());
-    expect(vaultStore.updateTransaction).toHaveBeenCalledWith('p1', EDIT_TXN.id, {
-      note: 'DCA',
-    });
-    expect(portfolioApi.updateTransaction).not.toHaveBeenCalled();
   });
 
   test('editing an imported row surfaces its source badge; a manual row stays quiet (V5-P0c)', () => {

@@ -16,9 +16,15 @@ import {
   VAULT_ENTITY_ROW_SCHEMAS,
   type CashEntryRequest,
   type CashMovementResponse,
+  type CreatePortfolioRequest,
   type PortfolioAsset,
+  type PortfolioListResponse,
+  type PortfolioResponse,
   type PortfolioSummary,
   type Transaction,
+  type TransactionInput,
+  type TransactionListResponse,
+  type UpdatePortfolioRequest,
   type UpdateTransactionRequest,
   type VaultDocumentV1,
   type VaultEntity,
@@ -32,8 +38,6 @@ import {
 } from '@bettertrack/domain/cashLedger';
 import { viennaYearOf } from '@bettertrack/domain/tax';
 import { uuidv7 } from 'uuidv7';
-
-import type { PortfolioStore } from '../../lib/portfolioStore';
 
 import { VaultCryptoError } from './errors';
 import type { VaultSyncEngine } from './sync';
@@ -67,6 +71,38 @@ export interface VaultPortfolioStoreOptions {
   newId?: () => string;
 }
 
+/**
+ * The decrypted portfolio-data boundary used by the paranoid-mode bootstrap.
+ * It deliberately describes the vault's capabilities without selecting an
+ * application-wide transport; that composition belongs to the later bootstrap
+ * work, not the tax fence.
+ */
+export interface VaultPortfolioStore {
+  listPortfolios(signal?: AbortSignal, includeArchived?: boolean): Promise<PortfolioListResponse>;
+  createPortfolio(name: CreatePortfolioRequest['name']): Promise<PortfolioSummary>;
+  getPortfolio(portfolioId: string, signal?: AbortSignal): Promise<PortfolioResponse>;
+  updatePortfolio(portfolioId: string, patch: UpdatePortfolioRequest): Promise<PortfolioSummary>;
+  deletePortfolio(portfolioId: string): Promise<void>;
+  listTransactions(
+    portfolioId: string,
+    params?: { cursor?: string; limit?: number; source?: string },
+    signal?: AbortSignal,
+  ): Promise<TransactionListResponse>;
+  createTransactions(portfolioId: string, inputs: TransactionInput[]): Promise<Transaction[]>;
+  updateTransaction(
+    portfolioId: string,
+    transactionId: string,
+    patch: UpdateTransactionRequest,
+  ): Promise<Transaction>;
+  deleteTransaction(
+    portfolioId: string,
+    transactionId: string,
+    options?: { baseSeq?: number },
+  ): Promise<void>;
+  depositCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
+  withdrawCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
+}
+
 interface StoreContext {
   engine: VaultSyncEngine;
   now: () => string;
@@ -83,7 +119,7 @@ type TransactionDataPatch = Omit<UpdateTransactionRequest, 'baseSeq'>;
 export function createVaultPortfolioStore(
   engine: VaultSyncEngine,
   options: VaultPortfolioStoreOptions = {},
-): PortfolioStore {
+): VaultPortfolioStore {
   const context: StoreContext = {
     engine,
     now: options.now ?? (() => new Date().toISOString()),
@@ -93,8 +129,7 @@ export function createVaultPortfolioStore(
   return {
     async listPortfolios(signal, includeArchived = false) {
       signal?.throwIfAborted();
-      const portfolios = liveEntities(requireDocument(engine), 'portfolio')
-        .map(portfolioSummaryFromEntity)
+      const portfolios = portfolioSummariesFromDocument(requireDocument(engine))
         .filter((portfolio) => includeArchived || portfolio.archivedAt === null)
         .sort((left, right) => left.sortOrder - right.sortOrder || left.id.localeCompare(right.id));
       return parseVaultData(
@@ -106,22 +141,26 @@ export function createVaultPortfolioStore(
     async createPortfolio(name) {
       const parsedName = createPortfolioRequestSchema.parse({ name }).name;
       const entity = await appendEntity(context, 'portfolio', (document, id, timestamp) => {
-        const portfolios = liveEntities(document, 'portfolio').map(portfolioSummaryFromEntity);
-        const active = portfolios.filter((portfolio) => portfolio.archivedAt === null);
+        const portfolios = portfolioSummariesFromDocument(document);
         const highestSortOrder = portfolios.reduce(
           (highest, portfolio) => Math.max(highest, portfolio.sortOrder),
           -1,
         );
-        return entityRecord(id, engine.deviceId, timestamp, {
-          name: parsedName,
-          visibility: 'private',
-          sortOrder: highestSortOrder + 1,
-          isDefault: active.length === 0,
-          defaultPayFromCash: false,
-          archivedAt: null,
-        });
+        return entityRecord(
+          id,
+          engine.deviceId,
+          timestamp,
+          strictPortfolioData({
+            userId: portfolioOwnerUserId(document),
+            name: parsedName,
+            visibility: 'private',
+            sortOrder: highestSortOrder + 1,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          }),
+        );
       });
-      return portfolioSummaryFromEntity(entity);
+      return portfolioSummaryForId(requireDocument(engine), entity.id);
     },
 
     async getPortfolio(portfolioId, signal) {
@@ -134,13 +173,13 @@ export function createVaultPortfolioStore(
     },
 
     async updatePortfolio(portfolioId, patch) {
-      portfolioSummaryFromEntity(requirePortfolio(requireDocument(engine), portfolioId));
+      portfolioSummaryForId(requireDocument(engine), portfolioId);
       const parsedPatch = updatePortfolioRequestSchema.parse(patch);
       const entity = await updateEntity(context, 'portfolio', portfolioId, (data) => ({
         ...data,
         ...parsedPatch,
       }));
-      return portfolioSummaryFromEntity(entity);
+      return portfolioSummaryForId(requireDocument(engine), entity.id);
     },
 
     async deletePortfolio(portfolioId) {
@@ -370,10 +409,12 @@ async function deletePortfolioTree(context: StoreContext, portfolioId: string): 
   requireDocument(context.engine);
   await context.engine.mutate(({ document }) => {
     const portfolio = requirePortfolio(document, portfolioId);
-    const summary = portfolioSummaryFromEntity(portfolio);
-    const activePortfolios = liveEntities(document, 'portfolio')
-      .map(portfolioSummaryFromEntity)
-      .filter((candidate) => candidate.archivedAt === null);
+    const summaries = portfolioSummariesFromDocument(document);
+    const summary = summaries.find((candidate) => candidate.id === portfolio.id);
+    if (summary == null) {
+      throw storeError('VAULT_DATA_INVALID', 'The selected vault portfolio has no summary.');
+    }
+    const activePortfolios = summaries.filter((candidate) => candidate.archivedAt === null);
     if (summary.archivedAt === null && activePortfolios.length <= 1) {
       throw storeError(
         'VAULT_LAST_ACTIVE_PORTFOLIO',
@@ -386,24 +427,6 @@ async function deletePortfolioTree(context: StoreContext, portfolioId: string): 
       'portfolio',
       tombstoneEntity(portfolio, context.engine.deviceId, timestamp),
     );
-    if (summary.isDefault) {
-      const successorSummary = activePortfolios
-        .filter((candidate) => candidate.id !== portfolioId)
-        .sort(
-          (left, right) => left.sortOrder - right.sortOrder || left.id.localeCompare(right.id),
-        )[0];
-      const successor =
-        successorSummary == null ? null : findLiveEntity(next, 'portfolio', successorSummary.id);
-      if (successor != null) {
-        next = replaceEntity(next, 'portfolio', {
-          ...successor,
-          rev: successor.rev + 1,
-          editedAt: timestamp,
-          editedBy: context.engine.deviceId,
-          data: { ...successor.data, isDefault: true },
-        });
-      }
-    }
     for (const kind of PORTFOLIO_CHILD_ENTITY_KINDS) {
       const children = liveEntities(next, kind).filter(
         (entity) => stringField(entity.data, 'portfolioId') === portfolioId,
@@ -476,22 +499,26 @@ async function createCashMovement(
     const sourceId = resolveCashSourceId(document, portfolioId, parsedBody.sourceId);
     const timestamp = context.now();
     const id = safeNewId(context);
-    const entity = entityRecord(id, context.engine.deviceId, timestamp, {
-      ...parsedBody,
-      amountEur: kind === 'withdrawal' ? -amountEur : amountEur,
-      portfolioId,
-      kind,
-      source: 'manual',
-      sourceId,
-      executedAt: parsedBody.executedAt ?? timestamp,
-      createdAt: timestamp,
-      note: parsedBody.note ?? null,
-      transactionId: null,
-      transferId: null,
-      counterpartSourceId: null,
-      dividendId: null,
-      taxYear: null,
-    });
+    const entity = entityRecord(
+      id,
+      context.engine.deviceId,
+      timestamp,
+      strictCashMovementData({
+        portfolioId,
+        sourceId,
+        kind,
+        amountEur: decimalStringFromNumber(kind === 'withdrawal' ? -amountEur : amountEur),
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: parsedBody.executedAt ?? timestamp,
+        note: parsedBody.note ?? null,
+        source: 'manual',
+        createdAt: timestamp,
+      }),
+    );
     projectCashLedgerBySource([
       ...domainCashMovements(document, portfolioId),
       domainCashMovement(entity),
@@ -626,7 +653,51 @@ function resolveCashSourceId(
   return source.id;
 }
 
-function portfolioSummaryFromEntity(entity: VaultEntity): PortfolioSummary {
+function portfolioSummariesFromDocument(document: VaultDocumentV1): PortfolioSummary[] {
+  const portfolios = liveEntities(document, 'portfolio');
+  const defaultId = defaultPortfolioId(portfolios);
+  return portfolios.map((entity) => portfolioSummaryFromEntity(entity, entity.id === defaultId));
+}
+
+function portfolioSummaryForId(document: VaultDocumentV1, portfolioId: string): PortfolioSummary {
+  requirePortfolio(document, portfolioId);
+  const summary = portfolioSummariesFromDocument(document).find(
+    (candidate) => candidate.id === portfolioId,
+  );
+  if (summary == null) {
+    throw storeError('VAULT_DATA_INVALID', 'The selected vault portfolio has no summary.');
+  }
+  return summary;
+}
+
+function defaultPortfolioId(portfolios: readonly VaultEntity[]): string | null {
+  let best: VaultEntity | null = null;
+  for (const portfolio of portfolios) {
+    if (nullableStringField(portfolio.data, 'archivedAt') !== null) continue;
+    if (
+      best == null ||
+      numberField(portfolio.data, 'sortOrder', 0) < numberField(best.data, 'sortOrder', 0) ||
+      (numberField(portfolio.data, 'sortOrder', 0) === numberField(best.data, 'sortOrder', 0) &&
+        portfolio.id < best.id)
+    ) {
+      best = portfolio;
+    }
+  }
+  return best?.id ?? null;
+}
+
+function portfolioOwnerUserId(document: VaultDocumentV1): string {
+  const owner = liveEntities(document, 'portfolio')[0];
+  if (owner == null) {
+    throw storeError(
+      'VAULT_OPERATION_UNAVAILABLE',
+      'A portfolio owner is required before another vault portfolio can be created.',
+    );
+  }
+  return stringField(owner.data, 'userId');
+}
+
+function portfolioSummaryFromEntity(entity: VaultEntity, isDefault: boolean): PortfolioSummary {
   return parseVaultData(
     () =>
       portfolioSummarySchema.parse({
@@ -634,11 +705,25 @@ function portfolioSummaryFromEntity(entity: VaultEntity): PortfolioSummary {
         name: stringField(entity.data, 'name'),
         visibility: stringField(entity.data, 'visibility', 'private'),
         sortOrder: numberField(entity.data, 'sortOrder', 0),
-        isDefault: booleanField(entity.data, 'isDefault', false),
+        isDefault,
         defaultPayFromCash: booleanField(entity.data, 'defaultPayFromCash', false),
         archivedAt: nullableStringField(entity.data, 'archivedAt'),
       }),
     'A vault portfolio does not match the portfolio contract.',
+  );
+}
+
+function strictPortfolioData(data: Record<string, unknown>): Record<string, unknown> {
+  return parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.portfolio.parse(data),
+    'A vault portfolio does not match the strict restore contract.',
+  );
+}
+
+function strictCashMovementData(data: Record<string, unknown>): Record<string, unknown> {
+  return parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.cashMovement.parse(data),
+    'A vault cash movement does not match the strict restore contract.',
   );
 }
 
@@ -778,7 +863,7 @@ function decimalStringFromNumber(value: number): string {
 
   const negative = coefficient.startsWith('-');
   const unsigned = negative ? coefficient.slice(1) : coefficient;
-  const [whole, fraction = ''] = unsigned.split('.');
+  const [whole = '', fraction = ''] = unsigned.split('.');
   const digits = `${whole}${fraction}`;
   const decimalIndex = whole.length + exponent;
   const result =
@@ -871,7 +956,7 @@ function assertLocallySupportedTransactions(
   const effectiveTaxMode = effectivePortfolioTaxMode(document, portfolioId);
   const openFromYear = taxEngineOpenFromYear(effectiveTaxMode, now);
   const recordsEngineTax = candidates.some(
-    ({ input }) => input.side === 'sell' && effectiveTaxMode !== 'none',
+    ({ input }) => input.side === 'sell' && isAutomaticTaxMode(effectiveTaxMode),
   );
   const existingTransactions = liveEntities(document, 'transaction');
   const reshapesFrozenTax = candidates.some(({ id, input }) =>
@@ -904,12 +989,15 @@ function assertTransactionUpdateTaxSupported(
   }
   if (!financialEdit) return;
   const assetId = stringField(transaction.data, 'assetId');
-  const openFromYear = taxEngineOpenFromYear(effectivePortfolioTaxMode(document, portfolioId), now);
+  const effectiveTaxMode = effectivePortfolioTaxMode(document, portfolioId);
+  const openFromYear = taxEngineOpenFromYear(effectiveTaxMode, now);
   const prospectiveTransaction: VaultEntity = {
     ...transaction,
     data: definedFields({ ...transaction.data, ...patch }),
   };
   if (
+    (isAutomaticTaxMode(effectiveTaxMode) &&
+      stringField(prospectiveTransaction.data, 'side') === 'sell') ||
     isFrozenTaxSensitiveSell(prospectiveTransaction) ||
     sellRequiresClientTaxEngine(transaction, openFromYear) ||
     sellRequiresClientTaxEngine(prospectiveTransaction, openFromYear) ||
@@ -942,9 +1030,11 @@ function assertTransactionDeleteTaxSupported(
   now: string,
 ): void {
   const assetId = stringField(transaction.data, 'assetId');
-  const openFromYear = taxEngineOpenFromYear(effectivePortfolioTaxMode(document, portfolioId), now);
+  const effectiveTaxMode = effectivePortfolioTaxMode(document, portfolioId);
+  const openFromYear = taxEngineOpenFromYear(effectiveTaxMode, now);
   if (
     isFrozenTaxSensitiveSell(transaction) ||
+    (isAutomaticTaxMode(effectiveTaxMode) && stringField(transaction.data, 'side') === 'sell') ||
     sellRequiresClientTaxEngine(transaction, openFromYear) ||
     liveEntities(document, 'transaction').some(
       (entity) =>
@@ -1010,7 +1100,13 @@ function taxEngineOpenFromYear(
   mode: ReturnType<typeof effectivePortfolioTaxMode>,
   now: string,
 ): number | null {
-  return mode === 'country_specific' || mode === 'custom' ? viennaYearOf(now) : null;
+  return isAutomaticTaxMode(mode) ? viennaYearOf(now) : null;
+}
+
+function isAutomaticTaxMode(
+  mode: ReturnType<typeof effectivePortfolioTaxMode>,
+): mode is 'country_specific' | 'custom' {
+  return mode === 'country_specific' || mode === 'custom';
 }
 
 function sellRequiresClientTaxEngine(entity: VaultEntity, openFromYear: number | null): boolean {

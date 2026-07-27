@@ -22,7 +22,6 @@ import {
   vaultStrictDocumentV1Schema,
   type PortfolioAsset,
   type PortfolioSummary,
-  type Transaction,
   type VaultDocumentV1,
   type VaultEntity,
   type VaultEnvelopeHeader,
@@ -30,7 +29,6 @@ import {
 import { InsufficientCashError } from '@bettertrack/domain/cashLedger';
 
 import * as portfolioApi from '../../lib/portfolioApi';
-import { apiPortfolioStore, type PortfolioStore } from '../../lib/portfolioStore';
 
 import { encryptVaultDocument } from './crypto';
 import type {
@@ -55,6 +53,7 @@ const REMOTE_DEVICE_ID = '018f0000-0000-7000-8000-00000000000e';
 const PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000020';
 const CASH_SOURCE_ID = '018f0000-0000-7000-8000-000000000021';
 const ASSET_ID = '018f0000-0000-7000-8000-000000000022';
+const USER_ID = '018f0000-0000-7000-8000-000000000023';
 const GENERATED_IDS = [
   '018f0000-0000-7000-8000-000000000030',
   '018f0000-0000-7000-8000-000000000031',
@@ -108,23 +107,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-});
-
-describe('shared PortfolioStore conformance', () => {
-  it('runs against the normal-account API implementation', async () => {
-    const model = createMemoryPortfolioStore();
-    wireApiModel(model);
-    await assertPortfolioStoreConformance(apiPortfolioStore);
-  });
-
-  it('runs against the authenticated vault implementation', async () => {
-    const engine = createMutableEngine(initialDocument());
-    const store = createVaultPortfolioStore(engine, {
-      now: () => AT,
-      newId: idSequence(),
-    });
-    await assertPortfolioStoreConformance(store);
-  });
 });
 
 describe('vaultPortfolioStore privacy and correctness boundaries', () => {
@@ -182,25 +164,22 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     document.entities.portfolio = [
       ...(document.entities.portfolio ?? []),
       vaultEntity(secondaryId, {
+        userId: USER_ID,
         name: 'Secondary',
         visibility: 'private',
         sortOrder: 1,
-        isDefault: false,
         defaultPayFromCash: false,
         archivedAt: null,
       }),
     ];
     document.entities.transaction = [
-      vaultEntity(transactionId, {
+      transactionEntity(transactionId, {
         portfolioId: secondaryId,
-        assetId: ASSET_ID,
         side: 'buy',
         quantity: 1,
         price: 10,
         fee: 0,
         executedAt: AT,
-        note: null,
-        source: 'manual',
       }),
     ];
     document.entities.cashMovement = [
@@ -208,7 +187,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
         portfolioId: secondaryId,
         sourceId: CASH_SOURCE_ID,
         kind: 'buy',
-        amountEur: -10,
+        amountEur: '-10',
         transactionId,
         transferId: null,
         counterpartSourceId: null,
@@ -245,10 +224,10 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     document.entities.portfolio = [
       ...(document.entities.portfolio ?? []),
       vaultEntity(secondaryId, {
+        userId: USER_ID,
         name: 'Secondary',
         visibility: 'private',
         sortOrder: 1,
-        isDefault: false,
         defaultPayFromCash: false,
         archivedAt: null,
       }),
@@ -367,6 +346,60 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     });
   });
 
+  it('persists created portfolios and cash movements through a strict restore round trip', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    const createdPortfolio = await store.createPortfolio('Secondary');
+    await store.depositCash(PORTFOLIO_ID, {
+      amountEur: 12.34,
+      sourceId: CASH_SOURCE_ID,
+      executedAt: AT,
+    });
+
+    const strict = strictDocumentFrom(engine.state.active!.document);
+    const strictPortfolio = strict.entities.find(
+      (entity) => entity.kind === 'portfolio' && entity.id === createdPortfolio.id,
+    );
+    const strictMovement = strict.entities.find((entity) => entity.kind === 'cashMovement');
+    expect(strictPortfolio).toMatchObject({
+      kind: 'portfolio',
+      data: {
+        userId: USER_ID,
+        name: 'Secondary',
+        visibility: 'private',
+        sortOrder: 1,
+        defaultPayFromCash: false,
+        archivedAt: null,
+      },
+    });
+    expect(strictPortfolio?.data).not.toHaveProperty('isDefault');
+    expect(strictMovement).toMatchObject({
+      kind: 'cashMovement',
+      data: { amountEur: '12.34' },
+    });
+
+    const restoredStore = createVaultPortfolioStore(
+      createMutableEngine(documentFromStrictDocument(strict)),
+      { now: () => AT },
+    );
+    await expect(restoredStore.listPortfolios()).resolves.toEqual({
+      portfolios: [
+        portfolio,
+        {
+          ...portfolio,
+          id: createdPortfolio.id,
+          name: 'Secondary',
+          sortOrder: 1,
+          isDefault: false,
+        },
+      ],
+    });
+  });
+
   it('rejects a transaction before commit when its local asset snapshot is missing', async () => {
     const engine = createMutableEngine(initialDocument());
     const store = createVaultPortfolioStore(engine, {
@@ -391,6 +424,42 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
   });
 
   describe('transaction tax fence', () => {
+    it('keeps an untaxed manual-per-trade sell on the vault path', async () => {
+      const document = initialDocument();
+      document.entities.taxSetting = [
+        vaultEntity(GENERATED_IDS[6], {
+          userId: USER_ID,
+          mode: 'manual_per_trade',
+          country: null,
+          manualDefaultAmountEur: null,
+          manualDefaultRatePct: null,
+          customParams: null,
+          updatedAt: AT,
+        }),
+      ];
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, {
+        now: () => AT,
+        newId: () => GENERATED_IDS[7],
+      });
+
+      await expect(
+        store.createTransactions(PORTFOLIO_ID, [
+          {
+            assetId: ASSET_ID,
+            side: 'sell',
+            quantity: 1,
+            price: 12,
+            fee: 0,
+            executedAt: AT,
+          },
+        ]),
+      ).resolves.toHaveLength(1);
+
+      expect(engine.mutate).toHaveBeenCalledOnce();
+      expectPortfolioApiUnused();
+    });
+
     it.each(['country_specific', 'custom'] as const)(
       'rejects an ordinary sell under effective %s tax before CAS without explicit tax fields',
       async (mode) => {
@@ -466,6 +535,40 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
         await expect(store.deleteTransaction(PORTFOLIO_ID, frozenSellId)).rejects.toMatchObject({
           code: 'VAULT_OPERATION_UNAVAILABLE',
         });
+        await expect(store.deleteTransaction(PORTFOLIO_ID, preEngineSellId)).rejects.toMatchObject({
+          code: 'VAULT_OPERATION_UNAVAILABLE',
+        });
+
+        expect(engine.mutate).not.toHaveBeenCalled();
+        expect(engine.state.active?.header.vaultVersion).toBe(1);
+        expectPortfolioApiUnused();
+      },
+    );
+
+    it.each(['country_specific', 'custom'] as const)(
+      'rejects a pre-open-year sell introduction and deletion under effective %s tax before CAS',
+      async (mode) => {
+        const editableBuyId = GENERATED_IDS[0];
+        const preEngineSellId = GENERATED_IDS[1];
+        const document = initialDocument();
+        document.entities.transaction = [
+          transactionEntity(editableBuyId, {
+            side: 'buy',
+            executedAt: '2025-12-31T10:00:00.000Z',
+          }),
+          transactionEntity(preEngineSellId, {
+            side: 'sell',
+            executedAt: '2025-12-31T11:00:00.000Z',
+            taxMode: 'none',
+          }),
+        ];
+        configureEffectiveEngineTaxMode(document, mode);
+        const engine = createMutableEngine(document);
+        const store = createVaultPortfolioStore(engine, { now: () => AT });
+
+        await expect(
+          store.updateTransaction(PORTFOLIO_ID, editableBuyId, { side: 'sell' }),
+        ).rejects.toMatchObject({ code: 'VAULT_OPERATION_UNAVAILABLE' });
         await expect(store.deleteTransaction(PORTFOLIO_ID, preEngineSellId)).rejects.toMatchObject({
           code: 'VAULT_OPERATION_UNAVAILABLE',
         });
@@ -754,214 +857,20 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
   });
 });
 
-async function assertPortfolioStoreConformance(store: PortfolioStore): Promise<void> {
-  await expect(store.listPortfolios()).resolves.toEqual({ portfolios: [portfolio] });
-
-  const createdPortfolio = await store.createPortfolio('Secondary');
-  expect(createdPortfolio).toMatchObject({ name: 'Secondary', visibility: 'private' });
-  const updatedPortfolio = await store.updatePortfolio(createdPortfolio.id, { name: 'Renamed' });
-  expect(updatedPortfolio.name).toBe('Renamed');
-  expect((await store.listPortfolios()).portfolios.map((row) => row.id)).toContain(
-    createdPortfolio.id,
-  );
-  await store.deletePortfolio(createdPortfolio.id);
-  expect((await store.listPortfolios()).portfolios.map((row) => row.id)).not.toContain(
-    createdPortfolio.id,
-  );
-
-  const [createdTransaction] = await store.createTransactions(PORTFOLIO_ID, [
-    {
-      assetId: ASSET_ID,
-      side: 'buy',
-      quantity: 2,
-      price: 10,
-      fee: 0,
-      executedAt: AT,
-    },
-  ]);
-  expect(createdTransaction).toMatchObject({
-    assetId: ASSET_ID,
-    source: 'manual',
-    asset,
-  });
-  const listed = await store.listTransactions(PORTFOLIO_ID, { source: 'manual' });
-  expect(listed.items.map((row) => row.id)).toEqual([createdTransaction!.id]);
-  await expect(
-    store.updateTransaction(PORTFOLIO_ID, createdTransaction!.id, { note: 'Edited' }),
-  ).resolves.toMatchObject({ note: 'Edited' });
-  await store.deleteTransaction(PORTFOLIO_ID, createdTransaction!.id);
-  await expect(store.listTransactions(PORTFOLIO_ID)).resolves.toMatchObject({ items: [] });
-
-  await expect(
-    store.depositCash(PORTFOLIO_ID, { amountEur: 100, sourceId: CASH_SOURCE_ID }),
-  ).resolves.toMatchObject({
-    movement: { kind: 'deposit', amountEur: 100, sourceId: CASH_SOURCE_ID },
-    sourceBalanceEur: 100,
-    balanceEur: 100,
-  });
-  await expect(
-    store.withdrawCash(PORTFOLIO_ID, { amountEur: 35, sourceId: CASH_SOURCE_ID }),
-  ).resolves.toMatchObject({
-    movement: { kind: 'withdrawal', amountEur: -35, sourceId: CASH_SOURCE_ID },
-    sourceBalanceEur: 65,
-    balanceEur: 65,
-  });
-}
-
-function createMemoryPortfolioStore(): PortfolioStore {
-  let portfolios = [portfolio];
-  let transactions: Transaction[] = [];
-  let cashBalance = 0;
-  const ids = idSequence();
-
-  return {
-    async listPortfolios(_signal, includeArchived = false) {
-      return {
-        portfolios: portfolios.filter((row) => includeArchived || row.archivedAt === null),
-      };
-    },
-    async createPortfolio(name) {
-      const created: PortfolioSummary = {
-        id: ids(),
-        name,
-        visibility: 'private',
-        sortOrder: portfolios.length,
-        isDefault: false,
-        defaultPayFromCash: false,
-        archivedAt: null,
-      };
-      portfolios = [...portfolios, created];
-      return created;
-    },
-    async getPortfolio() {
-      return {
-        baseCurrency: 'EUR',
-        holdings: [],
-        totals: {
-          marketValueEur: 0,
-          investedEur: 0,
-          unrealizedPnlEur: 0,
-          unrealizedPnlPct: null,
-          dayChangeEur: 0,
-          dayChangePct: null,
-          cashEur: cashBalance,
-          totalValueEur: cashBalance,
-        },
-      };
-    },
-    async updatePortfolio(id, patch) {
-      const current = portfolios.find((row) => row.id === id);
-      if (current == null) throw new Error('Portfolio not found.');
-      const updated = { ...current, ...patch };
-      portfolios = portfolios.map((row) => (row.id === id ? updated : row));
-      return updated;
-    },
-    async deletePortfolio(id) {
-      portfolios = portfolios.filter((row) => row.id !== id);
-    },
-    async listTransactions(portfolioId, params = {}) {
-      const filtered = transactions.filter(
-        (row) =>
-          portfolioId === PORTFOLIO_ID && (params.source == null || row.source === params.source),
-      );
-      return { items: filtered.slice(0, params.limit), nextCursor: null };
-    },
-    async createTransactions(portfolioId, inputs) {
-      if (portfolioId !== PORTFOLIO_ID) throw new Error('Portfolio not found.');
-      const created = inputs.map(
-        (input): Transaction => ({
-          id: ids(),
-          assetId: input.assetId,
-          side: input.side,
-          quantity: input.quantity,
-          price: input.price,
-          fee: input.fee,
-          executedAt: input.executedAt,
-          note: input.note ?? null,
-          allowUncovered: input.allowUncovered ?? false,
-          uncoveredEntryPrice: input.uncoveredEntryPrice ?? null,
-          source: 'manual',
-          asset,
-        }),
-      );
-      transactions = [...created, ...transactions];
-      return created;
-    },
-    async updateTransaction(portfolioId, id, patch) {
-      const current = transactions.find((row) => portfolioId === PORTFOLIO_ID && row.id === id);
-      if (current == null) throw new Error('Transaction not found.');
-      const { baseSeq: _baseSeq, ...dataPatch } = patch;
-      const updated = { ...current, ...dataPatch };
-      transactions = transactions.map((row) => (row.id === id ? updated : row));
-      return updated;
-    },
-    async deleteTransaction(portfolioId, id) {
-      transactions = transactions.filter((row) => portfolioId !== PORTFOLIO_ID || row.id !== id);
-    },
-    async depositCash(portfolioId, body) {
-      if (portfolioId !== PORTFOLIO_ID) throw new Error('Portfolio not found.');
-      cashBalance += body.amountEur;
-      return {
-        movement: memoryMovement(ids(), 'deposit', body.amountEur, body),
-        sourceBalanceEur: cashBalance,
-        balanceEur: cashBalance,
-      };
-    },
-    async withdrawCash(portfolioId, body) {
-      if (portfolioId !== PORTFOLIO_ID) throw new Error('Portfolio not found.');
-      if (body.amountEur > cashBalance) throw new Error('Insufficient cash.');
-      cashBalance -= body.amountEur;
-      return {
-        movement: memoryMovement(ids(), 'withdrawal', -body.amountEur, body),
-        sourceBalanceEur: cashBalance,
-        balanceEur: cashBalance,
-      };
-    },
-  };
-}
-
-function memoryMovement(
-  id: string,
-  kind: 'deposit' | 'withdrawal',
-  amountEur: number,
-  body: { sourceId?: string; executedAt?: string; note?: string | null },
-) {
-  return {
-    id,
-    kind,
-    amountEur,
-    sourceId: body.sourceId ?? CASH_SOURCE_ID,
-    transactionId: null,
-    transferId: null,
-    counterpartSourceId: null,
-    dividendId: null,
-    taxYear: null,
-    executedAt: body.executedAt ?? AT,
-    note: body.note ?? null,
-    source: 'manual' as const,
-    createdAt: AT,
-  };
-}
-
-function wireApiModel(model: PortfolioStore): void {
-  vi.mocked(portfolioApi.listPortfolios).mockImplementation(model.listPortfolios);
-  vi.mocked(portfolioApi.createPortfolio).mockImplementation(model.createPortfolio);
-  vi.mocked(portfolioApi.getPortfolio).mockImplementation(model.getPortfolio);
-  vi.mocked(portfolioApi.updatePortfolio).mockImplementation(model.updatePortfolio);
-  vi.mocked(portfolioApi.deletePortfolio).mockImplementation(model.deletePortfolio);
-  vi.mocked(portfolioApi.listTransactions).mockImplementation(model.listTransactions);
-  vi.mocked(portfolioApi.createTransactions).mockImplementation(model.createTransactions);
-  vi.mocked(portfolioApi.updateTransaction).mockImplementation(model.updateTransaction);
-  vi.mocked(portfolioApi.deleteTransaction).mockImplementation(model.deleteTransaction);
-  vi.mocked(portfolioApi.depositCash).mockImplementation(model.depositCash);
-  vi.mocked(portfolioApi.withdrawCash).mockImplementation(model.withdrawCash);
-}
-
 function initialDocument(): VaultDocumentV1 {
   return {
     schemaVersion: 1,
     entities: {
-      portfolio: [vaultEntity(PORTFOLIO_ID, portfolio)],
+      portfolio: [
+        vaultEntity(PORTFOLIO_ID, {
+          userId: USER_ID,
+          name: portfolio.name,
+          visibility: portfolio.visibility,
+          sortOrder: portfolio.sortOrder,
+          defaultPayFromCash: portfolio.defaultPayFromCash,
+          archivedAt: portfolio.archivedAt,
+        }),
+      ],
       cashSource: [
         vaultEntity(CASH_SOURCE_ID, {
           portfolioId: PORTFOLIO_ID,
@@ -972,10 +881,44 @@ function initialDocument(): VaultDocumentV1 {
           createdAt: AT,
         }),
       ],
-      customAsset: [vaultEntity(ASSET_ID, asset)],
+      customAsset: [
+        vaultEntity(ASSET_ID, {
+          providerId: 'manual',
+          providerRef: asset.symbol,
+          ownerId: USER_ID,
+          type: asset.type,
+          symbol: asset.symbol,
+          name: asset.name,
+          exchange: asset.exchange,
+          currency: asset.currency,
+          meta: { category: asset.category, smoothing: asset.smoothing },
+          searchText: `${asset.symbol} ${asset.name}`,
+        }),
+      ],
     },
     mergeLog: [],
   };
+}
+
+function strictDocumentFrom(document: VaultDocumentV1) {
+  return vaultStrictDocumentV1Schema.parse({
+    schemaVersion: document.schemaVersion,
+    entities: Object.entries(document.entities).flatMap(([kind, entities]) =>
+      entities.map((entity) => ({ ...entity, kind })),
+    ),
+    mergeLog: document.mergeLog,
+  });
+}
+
+function documentFromStrictDocument(
+  strict: ReturnType<typeof vaultStrictDocumentV1Schema.parse>,
+): VaultDocumentV1 {
+  const entities: VaultDocumentV1['entities'] = {};
+  for (const strictEntity of strict.entities) {
+    const { kind, ...entity } = strictEntity;
+    entities[kind] = [...(entities[kind] ?? []), entity];
+  }
+  return { schemaVersion: strict.schemaVersion, entities, mergeLog: strict.mergeLog };
 }
 
 function vaultEntity(id: string, data: Record<string, unknown>): VaultEntity {
@@ -1029,7 +972,7 @@ function configureEffectiveEngineTaxMode(
   if (mode === 'country_specific') {
     document.entities.taxSetting = [
       vaultEntity(GENERATED_IDS[6], {
-        userId: GENERATED_IDS[7],
+        userId: USER_ID,
         mode,
         country: 'DE',
         manualDefaultAmountEur: null,

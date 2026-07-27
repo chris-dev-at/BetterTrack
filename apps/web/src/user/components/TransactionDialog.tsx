@@ -16,9 +16,14 @@ import { SOURCE_TAG_MANUAL } from '@bettertrack/contracts';
 import { useI18n, useT, type TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { getAssetDailyCloses } from '../../lib/assetApi';
-import { getPortfolioTaxSettings, previewCash } from '../../lib/portfolioApi';
+import {
+  createTransactions,
+  getPortfolioTaxSettings,
+  previewCash,
+  updatePortfolio,
+  updateTransaction,
+} from '../../lib/portfolioApi';
 import { pickDefaultSourceId } from '../portfolio/cashSourceUtils';
-import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 import { formatMoney, formatQuantity } from '../../lib/format';
 import { amountToInput, truncateMoneyForInput } from '../../lib/moneyInput';
 import { MoneyText } from '../../ui';
@@ -468,7 +473,6 @@ function localeWeekdayShort(locale: string, date: string): string {
 export function TransactionDialog(props: TransactionDialogProps) {
   const { portfolioId, onClose, onSubmitted, transaction } = props;
   const { locale, t } = useI18n();
-  const portfolioStore = usePortfolioStore();
   const isEdit = !!transaction;
   const today = isoToday(props.today);
   const headingId = useId();
@@ -918,17 +922,17 @@ export function TransactionDialog(props: TransactionDialogProps) {
         // the mirror seam skips the guard.
         if (transaction.mirror) patch.baseSeq = transaction.mirror.version;
         if (Object.keys(patch).length > 0) {
-          await portfolioStore.updateTransaction(portfolioId, transaction.id, patch);
+          await updateTransaction(portfolioId, transaction.id, patch);
         }
       } else {
-        await portfolioStore.createTransactions(portfolioId, inputs);
+        await createTransactions(portfolioId, inputs);
         // Sticky default (§14): remember this choice for next time, but only
         // when it actually changed — the toggle itself is always shown, never
         // silently pre-applied.
         if (cashRow && cashRow.cashLinked !== (props.defaultPayFromCash ?? false)) {
-          await portfolioStore
-            .updatePortfolio(portfolioId, { defaultPayFromCash: cashRow.cashLinked })
-            .catch(() => undefined);
+          await updatePortfolio(portfolioId, { defaultPayFromCash: cashRow.cashLinked }).catch(
+            () => undefined,
+          );
         }
       }
       onSubmitted();

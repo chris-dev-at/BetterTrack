@@ -5,11 +5,9 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { I18nProvider, useI18n } from '../i18n';
 import { RealtimeProvider } from '../lib/realtime';
-import type { PortfolioStore } from '../lib/portfolioStore';
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { RequireUser } from './RequireUser';
-import { PortfolioStoreProvider } from './portfolio/PortfolioStoreProvider';
 import { AppLayout } from './components/AppLayout';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { Splash, Toast } from './components/ui';
@@ -304,25 +302,18 @@ function LocaleSync() {
   return null;
 }
 
-/**
- * The paranoid bootstrap supplies its authenticated vault store here before it
- * renders the user route tree. Normal boot leaves it undefined and retains the
- * API-backed store.
- */
-export function UserApp({ portfolioStore }: { portfolioStore?: PortfolioStore } = {}) {
+export function UserApp() {
   return (
     <I18nProvider>
       <QueryClientProvider client={queryClient}>
-        <PortfolioStoreProvider store={portfolioStore}>
-          <AuthProvider>
-            <LocaleSync />
-            <RateLimitToastPortal />
-            <RealtimeRoot>
-              <AnnouncementBannerRoot />
-              <UserShell />
-            </RealtimeRoot>
-          </AuthProvider>
-        </PortfolioStoreProvider>
+        <AuthProvider>
+          <LocaleSync />
+          <RateLimitToastPortal />
+          <RealtimeRoot>
+            <AnnouncementBannerRoot />
+            <UserShell />
+          </RealtimeRoot>
+        </AuthProvider>
       </QueryClientProvider>
     </I18nProvider>
   );

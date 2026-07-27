@@ -11,6 +11,7 @@ import type {
 } from '@bettertrack/contracts';
 
 import {
+  deleteTransaction,
   dismissRecategorization,
   getPortfolio,
   getPortfolioHistory,
@@ -19,7 +20,6 @@ import {
   listPortfolios,
   listTransactions,
 } from '../../lib/portfolioApi';
-import { usePortfolioStore } from './PortfolioStoreProvider';
 import {
   PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
   PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY,
@@ -1134,7 +1134,6 @@ function DividendIntelSection() {
 export function PortfolioPage() {
   const t = useT();
   const queryClient = useQueryClient();
-  const portfolioStore = usePortfolioStore();
   const [range, setRange] = useState<PriceRange>('1M');
   // #125: absolute value curve (€) vs. cash-flow-neutralized performance (%).
   const [perfMode, setPerfMode] = useState(false);
@@ -1203,7 +1202,7 @@ export function PortfolioPage() {
 
   const deleteMutation = useMutation({
     mutationFn: ({ id, baseSeq }: { id: string; baseSeq?: number }) =>
-      portfolioStore.deleteTransaction(portfolioId!, id, { baseSeq }),
+      deleteTransaction(portfolioId!, id, { baseSeq }),
     onSuccess: () => {
       setActionError(null);
       void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
