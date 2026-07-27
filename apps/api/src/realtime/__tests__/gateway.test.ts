@@ -10,6 +10,7 @@ import {
   REALTIME_CLIENT_EVENTS,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
+  twoFactorEnrollResponseSchema,
   type ApiKeyScope,
   type RealtimeChatMessage,
   type RealtimeLiveWatchAck,
@@ -21,6 +22,7 @@ import {
 
 import { createOAuthRepository } from '../../data/repositories/oauthRepository';
 import * as schema from '../../data/schema';
+import { generateTotpCode } from '../../services/auth/totp';
 import { hashToken } from '../../services/crypto/tokens';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 
@@ -181,6 +183,19 @@ async function defaultPortfolioId(agent: Agent): Promise<string> {
   return def.id;
 }
 
+/** Enable TOTP on an already-authenticated ordinary-user session. */
+async function enrollTotp(agent: Agent): Promise<string> {
+  const enroll = await agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+  expect(enroll.status).toBe(200);
+  const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
+  const confirm = await agent
+    .post('/api/v1/auth/2fa/confirm')
+    .set(...XRW)
+    .send({ code: generateTotpCode(secret) });
+  expect(confirm.status).toBe(200);
+  return secret;
+}
+
 /** Make two agents friends: `from` requests, `to` accepts. */
 async function befriend(from: Agent, to: Agent, toIdentifier: string): Promise<void> {
   await from
@@ -199,12 +214,13 @@ async function befriend(from: Agent, to: Agent, toIdentifier: string): Promise<v
 
 /** Mint a confidential OAuth access token through the same public flow as a mobile app. */
 async function mintOAuthToken(
-  agent: Agent,
+  clientOwner: Agent,
   userId: string,
   scopes: ApiKeyScope[],
-): Promise<{ accessToken: string; grantId: string }> {
+  authorizedUser: Agent = clientOwner,
+): Promise<{ accessToken: string; grantId: string; clientRowId: string }> {
   const redirectUri = 'https://realtime.test/callback';
-  const clientRes = await agent
+  const clientRes = await clientOwner
     .post('/api/v1/settings/oauth-clients')
     .set(...XRW)
     .send({
@@ -215,11 +231,11 @@ async function mintOAuthToken(
     });
   expect(clientRes.status).toBe(201);
   const { client, clientSecret } = clientRes.body as {
-    client: { clientId: string };
+    client: { id: string; clientId: string };
     clientSecret: string;
   };
 
-  const approveRes = await agent
+  const approveRes = await authorizedUser
     .post('/api/v1/oauth/authorize')
     .set(...XRW)
     .send({ client_id: client.clientId, redirect_uri: redirectUri, scope: scopes.join(' ') });
@@ -237,7 +253,55 @@ async function mintOAuthToken(
   expect(tokenRes.status).toBe(200);
   const grants = await harness.ctx.oauth.listGrants(userId);
   expect(grants).toHaveLength(1);
-  return { accessToken: tokenRes.body.access_token as string, grantId: grants[0]!.id };
+  return {
+    accessToken: tokenRes.body.access_token as string,
+    grantId: grants[0]!.id,
+    clientRowId: client.id,
+  };
+}
+
+/** Mint a delegated token for an admin-managed first-party client. */
+async function mintFirstPartyOAuthToken(
+  admin: Agent,
+  user: Agent,
+  userId: string,
+  scopes: ApiKeyScope[],
+): Promise<{ accessToken: string; clientRowId: string }> {
+  const redirectUri = 'https://realtime.test/first-party-callback';
+  const clientRes = await admin
+    .post('/api/v1/admin/oauth-clients')
+    .set(...XRW)
+    .send({
+      name: 'Realtime first-party test client',
+      redirectUris: [redirectUri],
+      scopes,
+      public: false,
+    });
+  expect(clientRes.status).toBe(201);
+  const { client, clientSecret } = clientRes.body as {
+    client: { id: string; clientId: string };
+    clientSecret: string;
+  };
+
+  const approveRes = await user
+    .post('/api/v1/oauth/authorize')
+    .set(...XRW)
+    .send({ client_id: client.clientId, redirect_uri: redirectUri, scope: scopes.join(' ') });
+  expect(approveRes.status).toBe(200);
+  const code = new URL(approveRes.body.redirectTo as string).searchParams.get('code');
+  expect(code).toBeTruthy();
+
+  const tokenRes = await request(harness.app).post('/api/v1/oauth/token').send({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: redirectUri,
+    client_id: client.clientId,
+    client_secret: clientSecret,
+  });
+  expect(tokenRes.status).toBe(200);
+  const grants = await harness.ctx.oauth.listGrants(userId);
+  expect(grants).toHaveLength(1);
+  return { accessToken: tokenRes.body.access_token as string, clientRowId: client.id };
 }
 
 const SOME_UUID = '018f6f00-0000-7000-8000-000000000001';
@@ -742,6 +806,50 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     await reset;
   });
 
+  it('disconnects the prior account socket when a cookie signs in as another user', async () => {
+    await listenWithGateway();
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+    const aliceLogin = await login(alice.email, alice.password);
+    const aliceSocket = await connect(aliceLogin.cookie);
+
+    const disconnected = waitForDisconnect(aliceSocket);
+    const switched = await aliceLogin.agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: bob.email, password: bob.password });
+    expect(switched.status).toBe(200);
+    await disconnected;
+  });
+
+  it('disconnects the prior account socket when an account switch completes through 2FA', async () => {
+    await listenWithGateway();
+    const alice = await harness.seedUser({ email: 'alice-2fa@bt.test', username: 'alice2fa' });
+    const bob = await harness.seedUser({ email: 'bob-2fa@bt.test', username: 'bob2fa' });
+    const bobLogin = await login(bob.email, bob.password);
+    const bobTotpSecret = await enrollTotp(bobLogin.agent);
+    const aliceLogin = await login(alice.email, alice.password);
+    const aliceSocket = await connect(aliceLogin.cookie);
+
+    const challenge = await aliceLogin.agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: bob.email, password: bob.password });
+    expect(challenge.status).toBe(200);
+    expect(challenge.body.twoFactorRequired).toBe(true);
+
+    const disconnected = waitForDisconnect(aliceSocket);
+    const verified = await aliceLogin.agent
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({
+        pendingToken: challenge.body.pendingToken as string,
+        code: generateTotpCode(bobTotpSecret),
+      });
+    expect(verified.status).toBe(200);
+    await disconnected;
+  });
+
   it('disconnects a revoked OAuth grant after connect', async () => {
     await listenWithGateway();
     const user = await harness.seedUser();
@@ -751,6 +859,61 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
 
     const disconnected = waitForDisconnect(socket);
     await harness.ctx.oauth.revokeGrant({ userId: user.id, id: grantId });
+    await disconnected;
+  });
+
+  it('disconnects an OAuth socket when its user-owned client is deleted', async () => {
+    await listenWithGateway();
+    const owner = await harness.seedUser({
+      email: 'oauth-client-owner@bt.test',
+      username: 'oauthclientowner',
+    });
+    const user = await harness.seedUser({
+      email: 'oauth-client-user@bt.test',
+      username: 'oauthclientuser',
+    });
+    const ownerLogin = await login(owner.email, owner.password);
+    const userLogin = await login(user.email, user.password);
+    // The deleter owns the app, while the socket belongs to a separate user who
+    // authorized it. This proves cascade invalidation is attributed to grants,
+    // not merely to the client owner.
+    const { accessToken, clientRowId } = await mintOAuthToken(
+      ownerLogin.agent,
+      user.id,
+      ['chat:read'],
+      userLogin.agent,
+    );
+    const socket = await connectWith({ auth: { token: accessToken } });
+
+    const disconnected = waitForDisconnect(socket);
+    await ownerLogin.agent
+      .delete(`/api/v1/settings/oauth-clients/${clientRowId}`)
+      .set(...XRW)
+      .send()
+      .expect(204);
+    await disconnected;
+  });
+
+  it('disconnects an OAuth socket when its first-party client is deleted', async () => {
+    await listenWithGateway();
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const user = await harness.seedUser();
+    const userLogin = await login(user.email, user.password);
+    const { accessToken, clientRowId } = await mintFirstPartyOAuthToken(
+      adminAgent,
+      userLogin.agent,
+      user.id,
+      ['chat:read'],
+    );
+    const socket = await connectWith({ auth: { token: accessToken } });
+
+    const disconnected = waitForDisconnect(socket);
+    await adminAgent
+      .delete(`/api/v1/admin/oauth-clients/${clientRowId}`)
+      .set(...XRW)
+      .send()
+      .expect(200);
     await disconnected;
   });
 

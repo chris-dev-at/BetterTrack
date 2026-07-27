@@ -258,6 +258,22 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     }
   }
 
+  /** Fan out a client cascade to the exact OAuth grants it removed. */
+  async function invalidateDeletedClientGrants(
+    grants: readonly { id: string; userId: string }[],
+  ): Promise<void> {
+    await Promise.all(
+      grants.map(({ id, userId }) =>
+        publishInvalidation({
+          userId,
+          kind: 'oauth',
+          credentialId: id,
+          exceptCredentialId: null,
+        }),
+      ),
+    );
+  }
+
   /** Shared authorize-request validation for both the consent read and approve. */
   async function validateAuthorize(input: {
     clientId: string;
@@ -423,15 +439,16 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     },
 
     async deleteClient({ userId, id, ip }) {
-      const row = await repo.deleteClient(userId, id);
-      if (!row) {
+      const deleted = await repo.deleteClient(userId, id);
+      if (!deleted) {
         throw notFound('OAuth app not found.', 'OAUTH_CLIENT_NOT_FOUND');
       }
+      await invalidateDeletedClientGrants(deleted.activeGrants);
       await audit.record({
         actorId: userId,
         action: AuditAction.OAuthClientDeleted,
         targetType: 'oauth_client',
-        targetId: row.id,
+        targetId: deleted.client.id,
         ip: ip ?? null,
       });
     },
@@ -465,15 +482,16 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     },
 
     async deleteFirstPartyClient({ adminId, id, ip }) {
-      const row = await repo.deleteFirstPartyClient(id);
-      if (!row) {
+      const deleted = await repo.deleteFirstPartyClient(id);
+      if (!deleted) {
         throw notFound('OAuth app not found.', 'OAUTH_CLIENT_NOT_FOUND');
       }
+      await invalidateDeletedClientGrants(deleted.activeGrants);
       await audit.record({
         actorId: adminId,
         action: AuditAction.OAuthClientDeleted,
         targetType: 'oauth_client',
-        targetId: row.id,
+        targetId: deleted.client.id,
         ip: ip ?? null,
       });
     },

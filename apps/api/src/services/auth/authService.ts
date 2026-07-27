@@ -449,6 +449,17 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       exceptCredentialId: exceptSessionId ? sha256Base64Url(exceptSessionId) : null,
     });
 
+  /**
+   * Destroy a session and notify the socket owner that actually held it. Login
+   * rotation can intentionally switch accounts, so the caller being signed in
+   * is not necessarily the owner of the cookie being replaced.
+   */
+  async function destroySessionAndInvalidate(sessionId: string): Promise<void> {
+    const priorSession = await sessions.get(sessionId);
+    await sessions.destroy(sessionId);
+    if (priorSession) await invalidateSession(priorSession.userId, sessionId);
+  }
+
   /** Load and parse a pending-2FA state; null when missing/expired/corrupt. */
   async function loadPending(token: string): Promise<Pending2faState | null> {
     const raw = await redis.get(pendingKey(token));
@@ -681,8 +692,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       // Session rotation: drop any pre-login session before minting a new id.
       if (currentSessionId) {
-        await sessions.destroy(currentSessionId);
-        await invalidateSession(user.id, currentSessionId);
+        await destroySessionAndInvalidate(currentSessionId);
       }
       const sessionId = await sessions.create(user.id, persistent);
 
@@ -779,8 +789,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       await twoFactorThrottle.reset(userId);
       await clearFailures(userId);
       if (state.priorSessionId) {
-        await sessions.destroy(state.priorSessionId);
-        await invalidateSession(userId, state.priorSessionId);
+        await destroySessionAndInvalidate(state.priorSessionId);
       }
       // Honour the persistence choice made at the password step (V4-P2b); a
       // reset-originated challenge carries none → persistent, today's behavior.
