@@ -26,7 +26,6 @@ const BACKDATED_LEGACY_BUY_FIRST_ID = '018f0000-0000-7000-8000-000000000105';
 const NORMAL_ASSET_ID = '018f0000-0000-7000-8000-000000000106';
 const BACKDATED_LEGACY_BUY_SECOND_ID = '018f0000-0000-7000-8000-000000000107';
 const HIGH_MAGNITUDE_ASSET_ID = '018f0000-0000-7000-8000-000000000108';
-const HIGH_MAGNITUDE_SELL_ID = '018f0000-0000-7000-8000-00000000010a';
 const FIRST_REHYDRATION_ID = '018f0000-0000-7000-8000-00000000010b';
 const SECOND_REHYDRATION_ID = '018f0000-0000-7000-8000-00000000010c';
 const EDITED_AT = '2026-07-24T10:00:00.000Z';
@@ -150,6 +149,12 @@ function quantityField(transaction: StrictTransactionEntity): string {
   return (
     'transaction[' + transaction.id + '].quantity=' + JSON.stringify(transaction.data.quantity)
   );
+}
+
+function nextUuidV7WriteId(id: string): string {
+  const timestamp = id.slice(0, 8) + id.slice(9, 13);
+  const nextTimestamp = (BigInt(`0x${timestamp}`) + 1n).toString(16).padStart(12, '0');
+  return nextTimestamp.slice(0, 8) + '-' + nextTimestamp.slice(8) + id.slice(13);
 }
 
 async function seedGlobalAsset(harness: TestHarness, id: string, symbol: string): Promise<void> {
@@ -465,9 +470,11 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     );
     if (!normalBuy) throw new Error('expected normal high-magnitude buy');
     expect(normalBuy.data.quantity).toBe('999999999999.00000000');
+    const highMagnitudeSellId = nextUuidV7WriteId(normalBuy.id);
+    expect(highMagnitudeSellId > normalBuy.id).toBe(true);
     highMagnitudeDocument.entities.push(
       transactionEntity({
-        id: HIGH_MAGNITUDE_SELL_ID,
+        id: highMagnitudeSellId,
         portfolioId,
         assetId: HIGH_MAGNITUDE_ASSET_ID,
         side: 'sell',
@@ -496,7 +503,7 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
       message: expect.stringContaining(
         quantityField(
           transactionEntity({
-            id: HIGH_MAGNITUDE_SELL_ID,
+            id: highMagnitudeSellId,
             portfolioId,
             assetId: HIGH_MAGNITUDE_ASSET_ID,
             side: 'sell',
