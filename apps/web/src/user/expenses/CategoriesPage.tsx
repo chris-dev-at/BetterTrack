@@ -71,7 +71,7 @@ export function CategoriesPage() {
         <EmptyState
           title={t('expenses.categories.emptyTitle')}
           description={t('expenses.categories.emptyDescription')}
-          className="py-10"
+          compact
           cta={
             <Button onClick={() => setCreating(true)}>{t('expenses.categories.emptyCta')}</Button>
           }

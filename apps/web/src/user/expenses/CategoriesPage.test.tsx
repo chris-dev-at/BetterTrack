@@ -102,7 +102,11 @@ describe('CategoriesPage', () => {
     const user = userEvent.setup();
     renderPage();
 
-    expect(await screen.findByText('No categories yet')).toBeInTheDocument();
+    const title = await screen.findByText('No categories yet');
+    const emptyState = title.parentElement?.parentElement;
+    expect(title).toBeInTheDocument();
+    expect(emptyState).toHaveClass('py-10');
+    expect(emptyState).not.toHaveClass('py-16');
     expect(
       screen.getByText('Create a category to organize your spending and income.'),
     ).toBeInTheDocument();
