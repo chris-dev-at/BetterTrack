@@ -224,7 +224,7 @@ describe('Dispatcher fan-out through Telegram (§13.4 V4-P10)', () => {
 describe('Discord channel end-to-end (§13.4 V4-P10)', () => {
   it('a matrix-routed event fires the caller’s webhook exactly once', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
-    const encryptionKey = harness.ctx.config.twoFactor.encryptionKey;
+    const encryptionKey = harness.ctx.config.recordEncryption;
     const url = 'https://discord.com/api/webhooks/123/abcd';
     const envelope = encryptSecret(url, encryptionKey);
     await createDiscordWebhookRepository(harness.db).upsert(alice.id, {
@@ -359,7 +359,7 @@ describe('V5-P0 kill-switch — Telegram + Discord deactivated by default', () =
         linkedAt: new Date(),
         updatedAt: new Date(),
       });
-      const encryptionKey = off.ctx.config.twoFactor.encryptionKey;
+      const encryptionKey = off.ctx.config.recordEncryption;
       const url = 'https://discord.com/api/webhooks/999/xxxx';
       await createDiscordWebhookRepository(off.db).upsert(alice.id, {
         encryptedUrl: encryptSecret(url, encryptionKey),

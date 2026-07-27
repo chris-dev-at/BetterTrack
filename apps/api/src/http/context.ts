@@ -777,7 +777,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const discordChannel = config.discord.enabled
     ? createDiscordChannel({
         webhooks: discordWebhookRepo,
-        encryptionKey: config.twoFactor.encryptionKey,
+        encryptionKey: config.recordEncryption,
         logger,
       })
     : null;
@@ -1432,7 +1432,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     enabled: config.discord.enabled,
     webhooks: discordWebhookRepo,
     channel: discordChannel,
-    encryptionKey: config.twoFactor.encryptionKey,
+    encryptionKey: config.recordEncryption,
     logger,
   });
 

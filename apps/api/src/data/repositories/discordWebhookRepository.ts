@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, asc, eq, gt } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { discordWebhooks } from '../schema';
@@ -19,6 +19,11 @@ export interface DiscordWebhookRecord {
   updatedAt: Date;
 }
 
+export interface DiscordSecretEnvelope {
+  userId: string;
+  envelope: string;
+}
+
 export function createDiscordWebhookRepository(db: Database) {
   return {
     async findForUser(userId: string): Promise<DiscordWebhookRecord | null> {
@@ -27,6 +32,41 @@ export function createDiscordWebhookRepository(db: Database) {
         .from(discordWebhooks)
         .where(eq(discordWebhooks.userId, userId));
       return row ?? null;
+    },
+
+    /** Stable cursor page for the online record-encryption command. */
+    async listSecretEnvelopes(
+      afterUserId: string | null,
+      limit: number,
+    ): Promise<DiscordSecretEnvelope[]> {
+      return db
+        .select({ userId: discordWebhooks.userId, envelope: discordWebhooks.encryptedUrl })
+        .from(discordWebhooks)
+        .where(afterUserId ? gt(discordWebhooks.userId, afterUserId) : undefined)
+        .orderBy(asc(discordWebhooks.userId))
+        .limit(limit);
+    },
+
+    /**
+     * Compare-and-swap a webhook envelope so a concurrent user save is never
+     * replaced by a migration that inspected an older value.
+     */
+    async replaceSecretEnvelope(
+      userId: string,
+      expectedEnvelope: string,
+      replacementEnvelope: string,
+    ): Promise<boolean> {
+      const replaced = await db
+        .update(discordWebhooks)
+        .set({ encryptedUrl: replacementEnvelope, updatedAt: new Date() })
+        .where(
+          and(
+            eq(discordWebhooks.userId, userId),
+            eq(discordWebhooks.encryptedUrl, expectedEnvelope),
+          ),
+        )
+        .returning({ userId: discordWebhooks.userId });
+      return replaced.length === 1;
     },
 
     /** Save (or refresh) the caller's webhook. Idempotent by PK. */
