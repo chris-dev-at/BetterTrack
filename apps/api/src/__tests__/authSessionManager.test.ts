@@ -1,6 +1,6 @@
 import request from 'supertest';
 import type { Application } from 'express';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createApiKeyResponseSchema,
@@ -178,20 +178,23 @@ describe('Session manager (PROJECTPLAN.md §6.1, §6.11, V3-P11a)', () => {
     ).toBe(403);
   });
 
-  it('a password change kills all sessions and the list reflects it (regression)', async () => {
+  it('a password change fences siblings even when eager Redis cleanup fails', async () => {
     const user = await harness.seedUser();
     const agentA = await loginAgent(harness.app, user.email, user.password, CHROME);
     const agentB = await loginAgent(harness.app, user.email, user.password, FIREFOX);
 
-    // A changes the password → destroyAllForUser, then a fresh session for A.
+    const cleanup = vi
+      .spyOn(harness.ctx.redis, 'smembers')
+      .mockRejectedValueOnce(new Error('simulated Redis cleanup failure'));
     const res = await agentA
       .post('/api/v1/auth/change-password')
       .set(...XRW)
       .send({ currentPassword: user.password, newPassword: 'Str0ng-New-Passw0rd!' });
+    cleanup.mockRestore();
     expect(res.status).toBe(200);
 
-    // B's old session is dead; A is on a brand-new session and the list shows
-    // only it — the index routed through the same revocation mechanism.
+    // B's old session still exists physically, but generation equality rejects
+    // it. A alone was explicitly reissued at the new generation.
     expect((await agentB.get('/api/v1/auth/me')).status).toBe(401);
     const sessions = await listSessions(agentA, CHROME);
     expect(sessions).toHaveLength(1);

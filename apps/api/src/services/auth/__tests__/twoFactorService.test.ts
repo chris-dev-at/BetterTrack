@@ -216,7 +216,7 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     const legacyKey = createHash('sha256').update(`bt-2fa:${oldCookieSecret}`).digest();
     const repo = createTwoFactorRepository(h.db);
     await repo.setProvisionalSecret(userId, encryptSecret(secret, legacyKey));
-    await repo.enable(userId, new Date());
+    await repo.confirmTotp(userId, new Date(), null);
 
     h.ctx.config.recordEncryption = loadConfig({
       NODE_ENV: 'test',
@@ -234,7 +234,7 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     const legacyKey = createHash('sha256').update(`bt-2fa:${historicalSessionSecret}`).digest();
     const repo = createTwoFactorRepository(h.db);
     await repo.setProvisionalSecret(userId, encryptSecret(secret, legacyKey));
-    await repo.enable(userId, new Date());
+    await repo.confirmTotp(userId, new Date(), null);
 
     h.ctx.config.recordEncryption = loadConfig({
       NODE_ENV: 'test',

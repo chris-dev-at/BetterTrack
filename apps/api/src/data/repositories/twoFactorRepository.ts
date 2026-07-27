@@ -34,6 +34,11 @@ export interface TwoFactorSecretEnvelope {
 }
 
 export function createTwoFactorRepository(db: Database) {
+  const securityFence = (userId: string, expectedSecurityGeneration?: number) =>
+    expectedSecurityGeneration === undefined
+      ? eq(users.id, userId)
+      : and(eq(users.id, userId), eq(users.securityGeneration, expectedSecurityGeneration));
+
   return {
     /** Read the caller's 2FA columns off `users`. */
     async getState(userId: string): Promise<TwoFactorState | undefined> {
@@ -51,21 +56,13 @@ export function createTwoFactorRepository(db: Database) {
       return row;
     },
 
-    /**
-     * Set (or clear, with NULL) the admin-login 2FA email (#400). Independent of
-     * the `twoFactorEmailEnabled` flag — the service sets the address then flips
-     * the flag on confirm, and clears both when the admin turns the method off.
-     */
-    async setTwoFactorEmail(userId: string, email: string | null): Promise<void> {
-      await db
-        .update(users)
-        .set({ twoFactorEmail: email, updatedAt: new Date() })
-        .where(eq(users.id, userId));
-    },
-
     /** Store a provisional (not-yet-enabled) encrypted secret, clearing any prior confirm. */
-    async setProvisionalSecret(userId: string, encryptedSecret: string): Promise<void> {
-      await db
+    async setProvisionalSecret(
+      userId: string,
+      encryptedSecret: string,
+      expectedSecurityGeneration?: number,
+    ): Promise<boolean> {
+      const updated = await db
         .update(users)
         .set({
           twoFactorSecret: encryptedSecret,
@@ -73,7 +70,12 @@ export function createTwoFactorRepository(db: Database) {
           twoFactorConfirmedAt: null,
           updatedAt: new Date(),
         })
-        .where(eq(users.id, userId));
+        // A provisional secret grants no authority and does not increment the
+        // generation, but an in-flight stale bootstrap request still may not
+        // repopulate it after a factor reset.
+        .where(securityFence(userId, expectedSecurityGeneration))
+        .returning({ id: users.id });
+      return updated.length === 1;
     },
 
     /**
@@ -114,29 +116,16 @@ export function createTwoFactorRepository(db: Database) {
       return replaced.length === 1;
     },
 
-    /** Flip the TOTP method on and stamp the confirm time. */
-    async enable(userId: string, when: Date): Promise<void> {
-      await db
-        .update(users)
-        .set({ twoFactorEnabled: true, twoFactorConfirmedAt: when, updatedAt: new Date() })
-        .where(eq(users.id, userId));
-    },
-
-    /** Turn the standalone email-code method on or off (#298). */
-    async setEmailEnabled(userId: string, enabled: boolean): Promise<void> {
-      await db
-        .update(users)
-        .set({ twoFactorEmailEnabled: enabled, updatedAt: new Date() })
-        .where(eq(users.id, userId));
-    },
-
     /**
-     * Wipe just the TOTP secret + flag (the authenticator method), leaving the
-     * email method and recovery codes untouched. The service decides separately
-     * whether any method remains and whether to drop the recovery codes.
+     * Cancel only a provisional TOTP secret. No authority changed, so the
+     * generation stays fixed; the expected-generation fence still prevents a
+     * request admitted before a reset from writing afterward.
      */
-    async clearTotpSecret(userId: string): Promise<void> {
-      await db
+    async clearProvisionalSecret(
+      userId: string,
+      expectedSecurityGeneration?: number,
+    ): Promise<boolean> {
+      const updated = await db
         .update(users)
         .set({
           twoFactorSecret: null,
@@ -144,21 +133,215 @@ export function createTwoFactorRepository(db: Database) {
           twoFactorConfirmedAt: null,
           updatedAt: new Date(),
         })
-        .where(eq(users.id, userId));
+        .where(
+          and(
+            securityFence(userId, expectedSecurityGeneration),
+            eq(users.twoFactorEnabled, false),
+            isNotNull(users.twoFactorSecret),
+          ),
+        )
+        .returning({ id: users.id });
+      return updated.length === 1;
     },
 
-    /** Drop every recovery code for the user — run when the last method goes off. */
-    async clearRecoveryCodes(userId: string): Promise<void> {
-      await db.delete(twoFactorRecoveryCodes).where(eq(twoFactorRecoveryCodes.userId, userId));
+    /**
+     * Confirm TOTP and, when it is the first factor, install the initial recovery
+     * set in the same transaction as the generation increment.
+     */
+    async confirmTotp(
+      userId: string,
+      when: Date,
+      recoveryCodeHashes: string[] | null,
+      expectedSecurityGeneration?: number,
+    ): Promise<number | null> {
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(users)
+          .set({
+            twoFactorEnabled: true,
+            twoFactorConfirmedAt: when,
+            securityGeneration: sql`${users.securityGeneration} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              securityFence(userId, expectedSecurityGeneration),
+              eq(users.twoFactorEnabled, false),
+              isNotNull(users.twoFactorSecret),
+            ),
+          )
+          .returning({ securityGeneration: users.securityGeneration });
+        if (!updated) return null;
+
+        if (recoveryCodeHashes !== null) {
+          await tx.delete(twoFactorRecoveryCodes).where(eq(twoFactorRecoveryCodes.userId, userId));
+          if (recoveryCodeHashes.length > 0) {
+            await tx
+              .insert(twoFactorRecoveryCodes)
+              .values(recoveryCodeHashes.map((codeHash) => ({ userId, codeHash })));
+          }
+        }
+        return updated.securityGeneration;
+      });
     },
 
-    /** Replace the whole recovery-code set with a fresh batch of hashes. */
-    async replaceRecoveryCodes(userId: string, codeHashes: string[]): Promise<void> {
-      await db.delete(twoFactorRecoveryCodes).where(eq(twoFactorRecoveryCodes.userId, userId));
-      if (codeHashes.length === 0) return;
-      await db
-        .insert(twoFactorRecoveryCodes)
-        .values(codeHashes.map((codeHash) => ({ userId, codeHash })));
+    /** Disable TOTP and optionally clear the shared recovery set atomically. */
+    async disableTotp(
+      userId: string,
+      clearRecoveryCodes: boolean,
+      expectedSecurityGeneration?: number,
+    ): Promise<number | null> {
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(users)
+          .set({
+            twoFactorSecret: null,
+            twoFactorEnabled: false,
+            twoFactorConfirmedAt: null,
+            securityGeneration: sql`${users.securityGeneration} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              securityFence(userId, expectedSecurityGeneration),
+              eq(users.twoFactorEnabled, true),
+            ),
+          )
+          .returning({ securityGeneration: users.securityGeneration });
+        if (!updated) return null;
+        if (clearRecoveryCodes) {
+          await tx.delete(twoFactorRecoveryCodes).where(eq(twoFactorRecoveryCodes.userId, userId));
+        }
+        return updated.securityGeneration;
+      });
+    },
+
+    /**
+     * Enable the email factor, optionally storing the admin-only factor address
+     * and initial recovery set, in one generation-fenced transaction.
+     */
+    async confirmEmail(
+      userId: string,
+      twoFactorEmail: string | undefined,
+      recoveryCodeHashes: string[] | null,
+      expectedSecurityGeneration?: number,
+    ): Promise<number | null> {
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(users)
+          .set({
+            twoFactorEmailEnabled: true,
+            ...(twoFactorEmail === undefined ? {} : { twoFactorEmail }),
+            securityGeneration: sql`${users.securityGeneration} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              securityFence(userId, expectedSecurityGeneration),
+              eq(users.twoFactorEmailEnabled, false),
+            ),
+          )
+          .returning({ securityGeneration: users.securityGeneration });
+        if (!updated) return null;
+
+        if (recoveryCodeHashes !== null) {
+          await tx.delete(twoFactorRecoveryCodes).where(eq(twoFactorRecoveryCodes.userId, userId));
+          if (recoveryCodeHashes.length > 0) {
+            await tx
+              .insert(twoFactorRecoveryCodes)
+              .values(recoveryCodeHashes.map((codeHash) => ({ userId, codeHash })));
+          }
+        }
+        return updated.securityGeneration;
+      });
+    },
+
+    /** Disable email and its optional admin address; clear recovery when last. */
+    async disableEmail(
+      userId: string,
+      clearTwoFactorEmail: boolean,
+      clearRecoveryCodes: boolean,
+      expectedSecurityGeneration?: number,
+    ): Promise<number | null> {
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(users)
+          .set({
+            twoFactorEmailEnabled: false,
+            ...(clearTwoFactorEmail ? { twoFactorEmail: null } : {}),
+            securityGeneration: sql`${users.securityGeneration} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              securityFence(userId, expectedSecurityGeneration),
+              eq(users.twoFactorEmailEnabled, true),
+            ),
+          )
+          .returning({ securityGeneration: users.securityGeneration });
+        if (!updated) return null;
+        if (clearRecoveryCodes) {
+          await tx.delete(twoFactorRecoveryCodes).where(eq(twoFactorRecoveryCodes.userId, userId));
+        }
+        return updated.securityGeneration;
+      });
+    },
+
+    /** Replace every recovery code and bump the security generation atomically. */
+    async regenerateRecoveryCodes(
+      userId: string,
+      codeHashes: string[],
+      expectedSecurityGeneration?: number,
+    ): Promise<number | null> {
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(users)
+          .set({
+            securityGeneration: sql`${users.securityGeneration} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              securityFence(userId, expectedSecurityGeneration),
+              sql`(${users.twoFactorEnabled} or ${users.twoFactorEmailEnabled})`,
+            ),
+          )
+          .returning({ securityGeneration: users.securityGeneration });
+        if (!updated) return null;
+
+        await tx.delete(twoFactorRecoveryCodes).where(eq(twoFactorRecoveryCodes.userId, userId));
+        if (codeHashes.length > 0) {
+          await tx
+            .insert(twoFactorRecoveryCodes)
+            .values(codeHashes.map((codeHash) => ({ userId, codeHash })));
+        }
+        return updated.securityGeneration;
+      });
+    },
+
+    /**
+     * Shell break-glass primitive: all factors, their admin email, recovery
+     * codes, and the generation move in one PostgreSQL transaction.
+     */
+    async resetAllFactors(userId: string): Promise<number | null> {
+      return db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(users)
+          .set({
+            twoFactorSecret: null,
+            twoFactorEnabled: false,
+            twoFactorConfirmedAt: null,
+            twoFactorEmailEnabled: false,
+            twoFactorEmail: null,
+            securityGeneration: sql`${users.securityGeneration} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, userId))
+          .returning({ securityGeneration: users.securityGeneration });
+        if (!updated) return null;
+        await tx.delete(twoFactorRecoveryCodes).where(eq(twoFactorRecoveryCodes.userId, userId));
+        return updated.securityGeneration;
+      });
     },
 
     /**

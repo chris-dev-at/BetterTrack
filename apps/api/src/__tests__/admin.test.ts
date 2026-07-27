@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { adminStatsSchema, createUserResponseSchema } from '@bettertrack/contracts';
 
+import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -33,6 +34,14 @@ async function failLogin(app: Application, identifier: string, times: number) {
       .set(...XRW)
       .send({ identifier, password: 'definitely-the-wrong-password' });
   }
+}
+
+async function sessionKeyFor(harness: TestHarness, userId: string): Promise<string> {
+  for (const key of await harness.ctx.redis.keys('sess:*')) {
+    const raw = await harness.ctx.redis.get(key);
+    if (raw && (JSON.parse(raw) as { userId?: string }).userId === userId) return key;
+  }
+  throw new Error(`No session found for ${userId}`);
 }
 
 /**
@@ -65,6 +74,64 @@ describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
 
     const anon = await request(harness.app).get('/api/v1/admin/users');
     expect(anon.status).toBe(404);
+  });
+});
+
+describe('administrator role-transition generation (#888)', () => {
+  it('rejects a pre-promotion session even when eager Redis cleanup fails', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const target = await harness.seedUser({
+      email: 'promoted@test.dev',
+      username: 'promoted_user',
+    });
+    const stale = await loginAgent(harness.app, target.email, target.password);
+
+    const cleanup = vi
+      .spyOn(harness.ctx.redis, 'smembers')
+      .mockRejectedValueOnce(new Error('simulated Redis cleanup failure'));
+    const promoted = await adminAgent
+      .patch(`/api/v1/admin/users/${target.id}`)
+      .set(...XRW)
+      .send({ role: 'admin' });
+    cleanup.mockRestore();
+
+    expect(promoted.status).toBe(200);
+    const [row] = await harness.db
+      .select({ role: schema.users.role, generation: schema.users.securityGeneration })
+      .from(schema.users)
+      .where(eq(schema.users.id, target.id));
+    expect(row).toEqual({ role: 'admin', generation: 1 });
+
+    // The cookie still exists because cleanup failed, but it cannot inherit the
+    // newly committed administrator role.
+    expect((await stale.get('/api/v1/admin/security/2fa/status')).status).toBe(404);
+  });
+
+  it('fails closed when promotion commits after the session read but before the user read', async () => {
+    const target = await harness.seedUser({
+      email: 'interleaved@test.dev',
+      username: 'interleaved_user',
+    });
+    await loginAgent(harness.app, target.email, target.password);
+    const sessionKey = await sessionKeyFor(harness, target.id);
+    const sessionId = sessionKey.slice('sess:'.length);
+    const repo = createUserRepository(harness.db);
+    const redisGet = harness.ctx.redis.get.bind(harness.ctx.redis);
+    let transitioned = false;
+
+    const get = vi.spyOn(harness.ctx.redis, 'get').mockImplementation(async (...args) => {
+      const raw = await redisGet(...args);
+      if (!transitioned && args[0] === sessionKey) {
+        transitioned = true;
+        await repo.setRole(target.id, 'admin');
+      }
+      return raw;
+    });
+
+    expect(await harness.ctx.auth.resolveSession(sessionId)).toBeNull();
+    get.mockRestore();
+    expect(transitioned).toBe(true);
   });
 });
 

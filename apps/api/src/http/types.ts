@@ -27,6 +27,8 @@ declare global {
   namespace Express {
     interface Request {
       sessionId?: string;
+      /** Exact durable generation proven by the resolved cookie session (#888). */
+      sessionSecurityGeneration?: number;
       /**
        * Whether the resolved cookie session is persistent ("stay signed in") vs
        * ephemeral (V4-P2b, §399 §A). Set alongside `sessionId` by `loadSession`

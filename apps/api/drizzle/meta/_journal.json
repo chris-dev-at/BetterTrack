@@ -505,6 +505,13 @@
       "when": 1785105246594,
       "tag": "0071_asset_identities",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1785161806046,
+      "tag": "0072_account_security_generation",
+      "breakpoints": true
     }
   ]
 }

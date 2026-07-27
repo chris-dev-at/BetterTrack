@@ -6,6 +6,12 @@ import { sha256Base64Url } from '../crypto/tokens';
 
 export interface SessionData {
   userId: string;
+  /**
+   * Exact durable account-security generation at issue (#888). Deliberately
+   * required for newly minted records; legacy/malformed records are rejected by
+   * auth resolution rather than normalized to the current database value.
+   */
+  securityGeneration: number;
   createdAt: number;
   /** Last time the window was reset — on login (create) or PIN verify (renew). */
   renewedAt: number;
@@ -17,6 +23,12 @@ export interface SessionData {
    * created before this shipped — treated as persistent (see {@link isPersistent}).
    */
   persistent?: boolean;
+}
+
+/** Generation proof carried from session resolution into a security mutation. */
+export interface SessionSecurityContext {
+  sessionId: string;
+  securityGeneration: number;
 }
 
 /** Back-compat default: a session with no marker is persistent (pre-V4-P2b). */
@@ -63,8 +75,19 @@ export interface SessionService {
    * persistent session gets the fixed 30-day window; an ephemeral one gets a
    * sliding idle window hard-capped from now (V4-P2b, §399 §A).
    */
-  create(userId: string, persistent?: boolean): Promise<string>;
+  create(userId: string, securityGeneration: number, persistent?: boolean): Promise<string>;
   get(sessionId: string): Promise<SessionData | null>;
+  /**
+   * Move one already-authenticated session from the generation it proved to the
+   * exact generation committed by its security mutation. Atomic compare/rewrite
+   * preserves the session's id, timestamps, persistence, and remaining TTL.
+   */
+  rebindSecurityGeneration(
+    sessionId: string,
+    userId: string,
+    expectedSecurityGeneration: number,
+    securityGeneration: number,
+  ): Promise<boolean>;
   /** Reset the session's window (login / PIN verify), honouring its persistence. False if already gone. */
   renew(sessionId: string): Promise<boolean>;
   /**
@@ -106,6 +129,19 @@ export interface SessionService {
 const sessionKey = (sessionId: string) => `sess:${sessionId}`;
 const userIndexKey = (userId: string) => `user_sessions:${userId}`;
 const sessionMetaKey = (sessionId: string) => `sess_meta:${sessionId}`;
+
+const REBIND_SECURITY_GENERATION_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if not current or current ~= ARGV[1] then
+  return 0
+end
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl <= 0 then
+  return 0
+end
+redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+return 1
+`;
 
 /** How stale last-seen must be before a request rewrites it (V3-P11a). */
 export const LAST_SEEN_THROTTLE_MS = 60_000;
@@ -181,10 +217,19 @@ export function createSessionService(
         ? data.renewedAt + ttlSeconds * 1000
         : data.createdAt + ephemeralCapMs;
     },
-    async create(userId, persistent = true) {
+    async create(userId, securityGeneration, persistent = true) {
+      if (!Number.isSafeInteger(securityGeneration) || securityGeneration < 0) {
+        throw new Error('A valid account security generation is required to create a session.');
+      }
       const sessionId = randomBytes(32).toString('base64url');
       const now = clock();
-      const data: SessionData = { userId, createdAt: now, renewedAt: now, persistent };
+      const data: SessionData = {
+        userId,
+        securityGeneration,
+        createdAt: now,
+        renewedAt: now,
+        persistent,
+      };
       await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', ttlSecondsFor(data, now));
       await redis.sadd(userIndexKey(userId), sessionId);
       await touchIndex(userId);
@@ -200,6 +245,42 @@ export function createSessionService(
         await redis.del(sessionKey(sessionId));
         return null;
       }
+    },
+
+    async rebindSecurityGeneration(
+      sessionId,
+      userId,
+      expectedSecurityGeneration,
+      securityGeneration,
+    ) {
+      if (
+        !Number.isSafeInteger(expectedSecurityGeneration) ||
+        expectedSecurityGeneration < 0 ||
+        !Number.isSafeInteger(securityGeneration) ||
+        securityGeneration <= expectedSecurityGeneration
+      ) {
+        return false;
+      }
+      const key = sessionKey(sessionId);
+      const raw = await redis.get(key);
+      if (!raw) return false;
+      let data: SessionData;
+      try {
+        data = JSON.parse(raw) as SessionData;
+      } catch {
+        await redis.del(key);
+        return false;
+      }
+      if (
+        data.userId !== userId ||
+        !Number.isSafeInteger(data.securityGeneration) ||
+        data.securityGeneration !== expectedSecurityGeneration
+      ) {
+        return false;
+      }
+      const next = JSON.stringify({ ...data, securityGeneration });
+      const rebound = await redis.eval(REBIND_SECURITY_GENERATION_SCRIPT, 1, key, raw, next);
+      return Number(rebound) === 1;
     },
 
     async renew(sessionId) {

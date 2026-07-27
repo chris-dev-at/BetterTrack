@@ -1,7 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   adminTwoFactorStatusResponseSchema,
@@ -11,7 +11,7 @@ import {
   twoFactorMethodEnabledResponseSchema,
 } from '@bettertrack/contracts';
 
-import { auditLog } from '../data/schema';
+import { auditLog, users } from '../data/schema';
 import { generateTotpCode } from '../services/auth/totp';
 import {
   parseIdentifier,
@@ -94,6 +94,17 @@ async function auditCount(harness: TestHarness, userId: string, action: string):
   return rows.length;
 }
 
+async function sessionRecordFor(harness: TestHarness, userId: string) {
+  const keys = await harness.ctx.redis.keys('sess:*');
+  for (const key of keys) {
+    const raw = await harness.ctx.redis.get(key);
+    if (!raw) continue;
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    if (data.userId === userId) return { key, data };
+  }
+  throw new Error(`No session found for ${userId}`);
+}
+
 describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
   it('a fresh admin logs in with a password but is gated until enrolled', async () => {
     const harness = await createTestApp();
@@ -143,6 +154,58 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     expect(status.setupRequired).toBe(false);
     expect(status.totpEnabled).toBe(true);
     expect(status.recoveryCodesRemaining).toBe(10);
+  });
+
+  it('rebinds only the confirming bootstrap session and rejects its sibling', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    const current = await loginAdminAgent(harness, admin);
+    const sibling = await loginAdminAgent(harness, admin);
+
+    const { secret } = twoFactorEnrollResponseSchema.parse(
+      (await current.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
+    );
+    const cleanup = vi
+      .spyOn(harness.ctx.redis, 'smembers')
+      .mockRejectedValueOnce(new Error('simulated sibling cleanup failure'));
+    const confirm = await current
+      .post('/api/v1/admin/security/2fa/totp/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    cleanup.mockRestore();
+    expect(confirm.status).toBe(200);
+
+    // The explicitly authenticated current device was rebound to generation 1.
+    expect((await current.get('/api/v1/admin/users')).status).toBe(200);
+    // Its pre-enrollment sibling remains at generation 0 and cannot inherit
+    // either admin authority or first-enrollment bootstrap.
+    expect((await sibling.get('/api/v1/admin/security/2fa/status')).status).toBe(404);
+  });
+
+  it('fails legacy, malformed, and mismatched bootstrap sessions closed', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+
+    for (const corrupt of [
+      (data: Record<string, unknown>) => {
+        delete data.securityGeneration;
+      },
+      (data: Record<string, unknown>) => {
+        data.securityGeneration = '0';
+      },
+      (data: Record<string, unknown>) => {
+        data.securityGeneration = 99;
+      },
+    ]) {
+      const agent = await loginAdminAgent(harness, admin);
+      const { key, data } = await sessionRecordFor(harness, admin.id);
+      corrupt(data);
+      await harness.ctx.redis.set(key, JSON.stringify(data), 'EX', 3600);
+
+      const denied = await agent.get('/api/v1/admin/security/2fa/status');
+      expect(denied.status).toBe(404);
+      expect(await harness.ctx.redis.get(key)).toBeNull();
+    }
   });
 });
 
@@ -349,12 +412,41 @@ describe('mandatory admin-login 2FA — break-glass reset (§6.12, #400)', () =>
     expect(result).toMatchObject({ id: admin.id, email: admin.email });
     expect(await harness.ctx.twoFactor.isEnabled(admin.id)).toBe(false);
     expect(await auditCount(harness, admin.id, 'admin.two_factor_reset')).toBe(1);
+    const [reset] = await harness.db
+      .select({ securityGeneration: users.securityGeneration })
+      .from(users)
+      .where(eq(users.id, admin.id));
+    expect(reset?.securityGeneration).toBe(2);
 
     // Post-reset: password login succeeds (no challenge) but is gated to setup.
     const agent = await loginAdminAgent(harness, admin);
     const gated = await agent.get('/api/v1/admin/users');
     expect(gated.status).toBe(403);
     expect(gated.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+  });
+
+  it('rejects a password-change session after DB-only break-glass until fresh login', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    const stale = await loginAdminAgent(harness, admin);
+    const newPassword = 'admin-new-strong-password-2';
+
+    const changed = await stale
+      .post('/api/v1/auth/change-password')
+      .set(...XRW)
+      .send({ currentPassword: admin.password, newPassword });
+    expect(changed.status).toBe(200);
+
+    expect(await resetAdminTwoFactorEnrollment(harness.db, admin.email)).not.toBeNull();
+
+    // The shell utility has no Redis connection, so this proves the durable
+    // generation—not eager deletion—closes the bootstrap route.
+    expect((await stale.get('/api/v1/admin/security/2fa/status')).status).toBe(404);
+
+    const fresh = await loginAdminAgent(harness, { ...admin, password: newPassword });
+    const status = await fresh.get('/api/v1/admin/security/2fa/status');
+    expect(status.status).toBe(200);
+    expect(adminTwoFactorStatusResponseSchema.parse(status.body).setupRequired).toBe(true);
   });
 
   it('refuses to touch a non-admin account', async () => {

@@ -20,6 +20,7 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import { decryptSecret, encryptSecret } from '../crypto/secretBox';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
+import type { SessionSecurityContext, SessionService } from '../sessions/sessionService';
 import {
   buildOtpauthUri,
   generateRecoveryCodes,
@@ -37,6 +38,15 @@ export interface TwoFactorServiceDeps {
   redis: Redis;
   /** Sends the email-method setup code; also the SMTP-configured signal for the guard. */
   email: EmailService;
+  /**
+   * Rebinds only the authenticated current cookie after a generation transition.
+   * Omitted in the worker, whose export-only service instance never receives a
+   * session security context.
+   */
+  sessions?: Pick<
+    SessionService,
+    'rebindSecurityGeneration' | 'revokeOthersForUser' | 'destroyAllForUser'
+  >;
 }
 
 /** Which second-factor methods an account has switched on (#298). */
@@ -55,7 +65,11 @@ export interface TwoFactorService {
    * provisional (not-yet-enabled) state, and return the `otpauth://` URI + secret
    * for the authenticator QR. Re-enrolling while TOTP is already on is rejected.
    */
-  enrollTotp(userId: string, ip?: string | null): Promise<TwoFactorEnrollResponse>;
+  enrollTotp(
+    userId: string,
+    ip?: string | null,
+    session?: SessionSecurityContext,
+  ): Promise<TwoFactorEnrollResponse>;
   /**
    * Cancel a pending (unconfirmed) TOTP enrollment (#401): wipe the provisional
    * secret so a client's "cancel" on the enroll screen cleans up server-side.
@@ -63,7 +77,11 @@ export interface TwoFactorService {
    * it (disabling needs a valid factor via {@link disableTotp}); a 404
    * `TWO_FACTOR_NOT_PENDING` when there is nothing pending to cancel.
    */
-  cancelTotpEnrollment(userId: string, ip?: string | null): Promise<void>;
+  cancelTotpEnrollment(
+    userId: string,
+    ip?: string | null,
+    session?: SessionSecurityContext,
+  ): Promise<void>;
   /**
    * Confirm TOTP enrollment (§6.1): a valid current code flips the TOTP method on.
    * Recovery codes are issued only when this is the FIRST method enabled (returned
@@ -74,13 +92,19 @@ export interface TwoFactorService {
     userId: string,
     code: string,
     ip?: string | null,
+    session?: SessionSecurityContext,
   ): Promise<TwoFactorMethodEnabledResponse>;
   /**
    * Turn the TOTP method off (§6.1): a valid factor (TOTP code or an unused
    * recovery code) authorizes it. The secret is wiped; recovery codes are dropped
    * only if no method remains.
    */
-  disableTotp(userId: string, code: string, ip?: string | null): Promise<void>;
+  disableTotp(
+    userId: string,
+    code: string,
+    ip?: string | null,
+    session?: SessionSecurityContext,
+  ): Promise<void>;
   /**
    * Begin email-method enrollment (#298): send a one-time code to the account
    * email to prove mailbox access. Rejected with `TWO_FACTOR_EMAIL_UNAVAILABLE`
@@ -97,17 +121,19 @@ export interface TwoFactorService {
     userId: string,
     code: string,
     ip?: string | null,
+    session?: SessionSecurityContext,
   ): Promise<TwoFactorMethodEnabledResponse>;
   /**
    * Turn the email method off (#298). Authorized by the authenticated session
    * alone — the mailbox was already proven at enable time and there is no offline
    * factor to re-enter. Recovery codes are dropped only if no method remains.
    */
-  disableEmail(userId: string, ip?: string | null): Promise<void>;
+  disableEmail(userId: string, ip?: string | null, session?: SessionSecurityContext): Promise<void>;
   /** Regenerate the recovery codes (§6.1): only while some method is on; old set voided. */
   regenerateRecoveryCodes(
     userId: string,
     ip?: string | null,
+    session?: SessionSecurityContext,
   ): Promise<TwoFactorRecoveryCodesResponse>;
   /** Whether the account has ANY 2FA method on — the login challenge gate (§6.1). */
   isEnabled(userId: string): Promise<boolean>;
@@ -134,7 +160,7 @@ const EMAIL_SETUP_CODE_TTL_MINUTES = 10;
 const emailSetupKey = (userId: string) => `2fa_email_setup:${userId}`;
 
 export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorService {
-  const { config, userRepo, twoFactorRepo, audit, redis, email } = deps;
+  const { config, userRepo, twoFactorRepo, audit, redis, email, sessions } = deps;
 
   const alreadyEnabled = () =>
     badRequest(
@@ -147,12 +173,42 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
   /** True when at least one 2FA method is currently on. */
   const anyMethodOn = (state: TwoFactorState) => state.enabled || state.emailEnabled;
 
-  /** Issue a fresh recovery-code batch, persisting only the hashes. */
-  async function issueRecoveryCodes(userId: string): Promise<string[]> {
+  /** Generate a fresh recovery-code batch; repository composites persist hashes. */
+  function recoveryCodeBatch(): { codes: string[]; hashes: string[] } {
     const codes = generateRecoveryCodes();
     const hashes = codes.map((code) => hashToken(normalizeRecoveryCode(code)));
-    await twoFactorRepo.replaceRecoveryCodes(userId, hashes);
-    return codes;
+    return { codes, hashes };
+  }
+
+  async function rebindCurrentSession(
+    userId: string,
+    session: SessionSecurityContext | undefined,
+    securityGeneration: number,
+  ): Promise<void> {
+    if (!sessions) {
+      if (session) throw unauthorized();
+      return;
+    }
+    if (!session) {
+      try {
+        await sessions.destroyAllForUser(userId);
+      } catch {
+        // The committed generation already fences every cookie.
+      }
+      return;
+    }
+    const rebound = await sessions.rebindSecurityGeneration(
+      session.sessionId,
+      userId,
+      session.securityGeneration,
+      securityGeneration,
+    );
+    if (!rebound) throw unauthorized();
+    try {
+      await sessions.revokeOthersForUser(userId, session.sessionId);
+    } catch {
+      // Siblings are stale by generation even when eager cleanup fails.
+    }
   }
 
   /**
@@ -193,17 +249,19 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       };
     },
 
-    async enrollTotp(userId, ip) {
+    async enrollTotp(userId, ip, session) {
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
       const state = await twoFactorRepo.getState(userId);
       if (state?.enabled) throw alreadyEnabled();
 
       const secret = generateTotpSecret();
-      await twoFactorRepo.setProvisionalSecret(
+      const stored = await twoFactorRepo.setProvisionalSecret(
         userId,
         encryptSecret(secret, config.recordEncryption),
+        session?.securityGeneration,
       );
+      if (!stored) throw unauthorized();
       await audit.record({
         actorId: userId,
         action: AuditAction.TwoFactorEnrolled,
@@ -222,7 +280,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       };
     },
 
-    async cancelTotpEnrollment(userId, ip) {
+    async cancelTotpEnrollment(userId, ip, session) {
       const state = await twoFactorRepo.getState(userId);
       if (!state) throw unauthorized();
       // Armed TOTP is never cleared by this route — that path needs a valid
@@ -235,7 +293,11 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         );
       }
 
-      await twoFactorRepo.clearTotpSecret(userId);
+      const cleared = await twoFactorRepo.clearProvisionalSecret(
+        userId,
+        session?.securityGeneration,
+      );
+      if (!cleared) throw unauthorized();
       await audit.record({
         actorId: userId,
         action: AuditAction.TwoFactorEnrollCanceled,
@@ -245,7 +307,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       });
     },
 
-    async confirmTotp(userId, code, ip) {
+    async confirmTotp(userId, code, ip, session) {
       const state = await twoFactorRepo.getState(userId);
       if (!state) throw unauthorized();
       if (state.enabled) throw alreadyEnabled();
@@ -272,8 +334,15 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       // First method on ⇒ issue the shared recovery codes; otherwise the email
       // method already provided them and they stay valid.
       const isFirstMethod = !state.emailEnabled;
-      await twoFactorRepo.enable(userId, new Date());
-      const recoveryCodes = isFirstMethod ? await issueRecoveryCodes(userId) : null;
+      const recovery = isFirstMethod ? recoveryCodeBatch() : null;
+      const securityGeneration = await twoFactorRepo.confirmTotp(
+        userId,
+        new Date(),
+        recovery?.hashes ?? null,
+        session?.securityGeneration,
+      );
+      if (securityGeneration === null) throw unauthorized();
+      const recoveryCodes = recovery?.codes ?? null;
       await audit.record({
         actorId: userId,
         action: AuditAction.TwoFactorConfirmed,
@@ -281,10 +350,11 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
+      await rebindCurrentSession(userId, session, securityGeneration);
       return { recoveryCodes };
     },
 
-    async disableTotp(userId, code, ip) {
+    async disableTotp(userId, code, ip, session) {
       const state = await twoFactorRepo.getState(userId);
       if (!state?.enabled || !state.secret) throw notEnabled();
 
@@ -293,9 +363,12 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         throw unauthorized('That two-factor code is incorrect.', 'TWO_FACTOR_INVALID_CODE');
       }
 
-      await twoFactorRepo.clearTotpSecret(userId);
-      // Recovery codes are shared: drop them only if the email method is also off.
-      if (!state.emailEnabled) await twoFactorRepo.clearRecoveryCodes(userId);
+      const securityGeneration = await twoFactorRepo.disableTotp(
+        userId,
+        !state.emailEnabled,
+        session?.securityGeneration,
+      );
+      if (securityGeneration === null) throw unauthorized();
       await audit.record({
         actorId: userId,
         action: AuditAction.TwoFactorDisabled,
@@ -303,6 +376,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
+      await rebindCurrentSession(userId, session, securityGeneration);
     },
 
     async startEmailEnrollment(userId, ip) {
@@ -354,7 +428,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       });
     },
 
-    async confirmEmail(userId, code, ip) {
+    async confirmEmail(userId, code, ip, session) {
       const state = await twoFactorRepo.getState(userId);
       if (!state) throw unauthorized();
       if (state.emailEnabled) {
@@ -373,8 +447,15 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       // First method on ⇒ issue the shared recovery codes; otherwise TOTP already
       // provided them.
       const isFirstMethod = !state.enabled;
-      await twoFactorRepo.setEmailEnabled(userId, true);
-      const recoveryCodes = isFirstMethod ? await issueRecoveryCodes(userId) : null;
+      const recovery = isFirstMethod ? recoveryCodeBatch() : null;
+      const securityGeneration = await twoFactorRepo.confirmEmail(
+        userId,
+        undefined,
+        recovery?.hashes ?? null,
+        session?.securityGeneration,
+      );
+      if (securityGeneration === null) throw unauthorized();
+      const recoveryCodes = recovery?.codes ?? null;
       await audit.record({
         actorId: userId,
         action: AuditAction.TwoFactorEmailEnabled,
@@ -382,10 +463,11 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
+      await rebindCurrentSession(userId, session, securityGeneration);
       return { recoveryCodes };
     },
 
-    async disableEmail(userId, ip) {
+    async disableEmail(userId, ip, session) {
       const state = await twoFactorRepo.getState(userId);
       if (!state?.emailEnabled) {
         throw badRequest(
@@ -394,10 +476,14 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         );
       }
 
-      await twoFactorRepo.setEmailEnabled(userId, false);
+      const securityGeneration = await twoFactorRepo.disableEmail(
+        userId,
+        false,
+        !state.enabled,
+        session?.securityGeneration,
+      );
+      if (securityGeneration === null) throw unauthorized();
       await redis.del(emailSetupKey(userId));
-      // Recovery codes are shared: drop them only if the TOTP method is also off.
-      if (!state.enabled) await twoFactorRepo.clearRecoveryCodes(userId);
       await audit.record({
         actorId: userId,
         action: AuditAction.TwoFactorEmailDisabled,
@@ -405,13 +491,20 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
+      await rebindCurrentSession(userId, session, securityGeneration);
     },
 
-    async regenerateRecoveryCodes(userId, ip) {
+    async regenerateRecoveryCodes(userId, ip, session) {
       const state = await twoFactorRepo.getState(userId);
       if (!state || !anyMethodOn(state)) throw notEnabled();
 
-      const recoveryCodes = await issueRecoveryCodes(userId);
+      const recovery = recoveryCodeBatch();
+      const securityGeneration = await twoFactorRepo.regenerateRecoveryCodes(
+        userId,
+        recovery.hashes,
+        session?.securityGeneration,
+      );
+      if (securityGeneration === null) throw unauthorized();
       await audit.record({
         actorId: userId,
         action: AuditAction.TwoFactorRecoveryRegenerated,
@@ -419,7 +512,8 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      return { recoveryCodes };
+      await rebindCurrentSession(userId, session, securityGeneration);
+      return { recoveryCodes: recovery.codes };
     },
 
     async isEnabled(userId) {

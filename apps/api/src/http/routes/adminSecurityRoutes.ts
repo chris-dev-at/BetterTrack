@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 
 import {
   adminTwoFactorEmailStartRequestSchema,
@@ -16,6 +16,14 @@ import {
 import type { AppContext } from '../context';
 import { validateBody } from '../middleware/validate';
 import { toAdminSessionPolicy } from '../serializers';
+
+const sessionSecurityContextOf = (req: Request) =>
+  req.sessionId && req.sessionSecurityGeneration !== undefined
+    ? {
+        sessionId: req.sessionId,
+        securityGeneration: req.sessionSecurityGeneration,
+      }
+    : undefined;
 
 /**
  * Admin 2FA management endpoints under `/admin/security/2fa` (§6.12, #400).
@@ -39,7 +47,9 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
   });
 
   router.post('/security/2fa/totp/enroll', async (req, res) => {
-    res.json(await ctx.adminTwoFactor.enrollTotp(req.authUser!.id, req.ip));
+    res.json(
+      await ctx.adminTwoFactor.enrollTotp(req.authUser!.id, req.ip, sessionSecurityContextOf(req)),
+    );
   });
 
   router.post(
@@ -47,7 +57,14 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(twoFactorConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorConfirmRequest;
-      res.json(await ctx.adminTwoFactor.confirmTotp(req.authUser!.id, code, req.ip));
+      res.json(
+        await ctx.adminTwoFactor.confirmTotp(
+          req.authUser!.id,
+          code,
+          req.ip,
+          sessionSecurityContextOf(req),
+        ),
+      );
     },
   );
 
@@ -56,7 +73,12 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(twoFactorDisableRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorDisableRequest;
-      await ctx.adminTwoFactor.disableTotp(req.authUser!.id, code, req.ip);
+      await ctx.adminTwoFactor.disableTotp(
+        req.authUser!.id,
+        code,
+        req.ip,
+        sessionSecurityContextOf(req),
+      );
       res.status(204).end();
     },
   );
@@ -76,17 +98,30 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(twoFactorEmailConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorEmailConfirmRequest;
-      res.json(await ctx.adminTwoFactor.confirmEmail(req.authUser!.id, code, req.ip));
+      res.json(
+        await ctx.adminTwoFactor.confirmEmail(
+          req.authUser!.id,
+          code,
+          req.ip,
+          sessionSecurityContextOf(req),
+        ),
+      );
     },
   );
 
   router.post('/security/2fa/email/disable', async (req, res) => {
-    await ctx.adminTwoFactor.disableEmail(req.authUser!.id, req.ip);
+    await ctx.adminTwoFactor.disableEmail(req.authUser!.id, req.ip, sessionSecurityContextOf(req));
     res.status(204).end();
   });
 
   router.post('/security/2fa/recovery-codes', async (req, res) => {
-    res.json(await ctx.adminTwoFactor.regenerateRecoveryCodes(req.authUser!.id, req.ip));
+    res.json(
+      await ctx.adminTwoFactor.regenerateRecoveryCodes(
+        req.authUser!.id,
+        req.ip,
+        sessionSecurityContextOf(req),
+      ),
+    );
   });
 }
 

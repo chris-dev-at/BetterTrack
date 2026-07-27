@@ -114,6 +114,15 @@ export function createAdminService(deps: AdminServiceDeps) {
     return user;
   }
 
+  async function destroySessionsBestEffort(userId: string): Promise<void> {
+    try {
+      await sessions.destroyAllForUser(userId);
+    } catch {
+      // Role/password commits already advanced the durable generation. Cleanup
+      // must not be promoted back into the authorization boundary.
+    }
+  }
+
   // V5-P0 kill-switch (§13.5): the account-defaults response advertises which
   // additive channels this deployment offers at all so the admin editor hides
   // their matrix columns when the flag is off.
@@ -295,7 +304,9 @@ export function createAdminService(deps: AdminServiceDeps) {
           }
           await ensureNotLastActiveAdmin(target);
         }
-        await userRepo.setRole(target.id, input.role);
+        const securityGeneration = await userRepo.setRole(target.id, input.role);
+        if (securityGeneration === null) throw notFound('User not found.', 'USER_NOT_FOUND');
+        await destroySessionsBestEffort(target.id);
         await audit.record({
           actorId: actor.id,
           action: AuditAction.UserRoleChanged,
@@ -389,8 +400,9 @@ export function createAdminService(deps: AdminServiceDeps) {
       const target = await loadUser(id);
       const tempPassword = generateTempPassword();
       const passwordHash = await passwordHasher.hash(tempPassword);
-      await userRepo.updatePassword(target.id, passwordHash, true);
-      await sessions.destroyAllForUser(target.id);
+      const securityGeneration = await userRepo.updatePassword(target.id, passwordHash, true);
+      if (securityGeneration === null) throw notFound('User not found.', 'USER_NOT_FOUND');
+      await destroySessionsBestEffort(target.id);
       // Clear lockout so the user can sign in with the new temp password now.
       await clearLoginThrottle(redis, target.id);
       await audit.record({

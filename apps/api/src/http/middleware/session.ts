@@ -35,6 +35,7 @@ export function loadSession(ctx: AppContext): RequestHandler {
         return;
       }
       req.sessionId = sessionId;
+      req.sessionSecurityGeneration = resolved.securityGeneration;
       // Carry the session's persistence (V4-P2b) so the rolling cookie refresh
       // below — and the PIN-verify handler — re-issue the SAME cookie flavour
       // (Max-Age for persistent, browser-session for ephemeral) rather than
