@@ -135,7 +135,6 @@ const emailSetupKey = (userId: string) => `2fa_email_setup:${userId}`;
 
 export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorService {
   const { config, userRepo, twoFactorRepo, audit, redis, email } = deps;
-  const encryptionKey = config.twoFactor.encryptionKey;
 
   const alreadyEnabled = () =>
     badRequest(
@@ -170,7 +169,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
     if (/^\d{6}$/.test(trimmed) && state.enabled && state.secret) {
       let secret: string;
       try {
-        secret = decryptSecret(state.secret, encryptionKey);
+        secret = decryptSecret(state.secret, config.recordEncryption);
       } catch {
         return false;
       }
@@ -201,7 +200,10 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       if (state?.enabled) throw alreadyEnabled();
 
       const secret = generateTotpSecret();
-      await twoFactorRepo.setProvisionalSecret(userId, encryptSecret(secret, encryptionKey));
+      await twoFactorRepo.setProvisionalSecret(
+        userId,
+        encryptSecret(secret, config.recordEncryption),
+      );
       await audit.record({
         actorId: userId,
         action: AuditAction.TwoFactorEnrolled,
@@ -256,7 +258,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
 
       let secret: string;
       try {
-        secret = decryptSecret(state.secret, encryptionKey);
+        secret = decryptSecret(state.secret, config.recordEncryption);
       } catch {
         throw badRequest(
           'Two-factor enrollment is invalid; start again.',
@@ -435,7 +437,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       if (!state?.enabled || !state.secret) return false;
       let secret: string;
       try {
-        secret = decryptSecret(state.secret, encryptionKey);
+        secret = decryptSecret(state.secret, config.recordEncryption);
       } catch {
         return false;
       }

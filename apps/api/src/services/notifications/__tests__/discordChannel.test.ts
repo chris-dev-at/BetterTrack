@@ -3,14 +3,19 @@ import { createHash } from 'node:crypto';
 import { pino } from 'pino';
 import { describe, expect, it, vi } from 'vitest';
 
+import { loadConfig } from '../../../config/env';
 import type { DiscordWebhookRepository } from '../../../data/repositories/discordWebhookRepository';
 import type { Logger } from '../../../logger';
-import { encryptSecret } from '../../crypto/secretBox';
+import { createSecretBoxKeyring, encryptSecret } from '../../crypto/secretBox';
 import { createDiscordChannel } from '../discordChannel';
 import type { PushMessage } from '../fcm';
+import { createDiscordSetupService } from '../discordSetupService';
 
 const logger = pino({ level: 'silent' }) as unknown as Logger;
 const ENCRYPTION_KEY = createHash('sha256').update('discord-channel-test-key').digest();
+const ENCRYPTION = createSecretBoxKeyring({
+  active: { id: 'discord_current', key: ENCRYPTION_KEY },
+});
 
 function webhookRepo(initial?: {
   encryptedUrl: string;
@@ -32,6 +37,14 @@ function webhookRepo(initial?: {
     upserted,
     async findForUser() {
       return row;
+    },
+    async listSecretEnvelopes() {
+      return row ? [{ userId: row.userId, envelope: row.encryptedUrl }] : [];
+    },
+    async replaceSecretEnvelope(userId, expectedEnvelope, replacementEnvelope) {
+      if (!row || row.userId !== userId || row.encryptedUrl !== expectedEnvelope) return false;
+      row = { ...row, encryptedUrl: replacementEnvelope, updatedAt: new Date() };
+      return true;
     },
     async upsert(userId, params) {
       upserted.push({ userId, ...params });
@@ -79,7 +92,7 @@ describe('Discord channel (V4-P10)', () => {
     const { fn, calls } = fetchStub([{ status: 204 }]);
     const channel = createDiscordChannel({
       webhooks: repo,
-      encryptionKey: ENCRYPTION_KEY,
+      encryptionKey: ENCRYPTION,
       logger,
       fetchFn: fn as unknown as typeof fetch,
       minSpacingMs: 0,
@@ -97,7 +110,7 @@ describe('Discord channel (V4-P10)', () => {
     const { fn } = fetchStub([{ status: 404 }]);
     const channel = createDiscordChannel({
       webhooks: repo,
-      encryptionKey: ENCRYPTION_KEY,
+      encryptionKey: ENCRYPTION,
       logger,
       fetchFn: fn as unknown as typeof fetch,
       minSpacingMs: 0,
@@ -116,7 +129,7 @@ describe('Discord channel (V4-P10)', () => {
     const sleep = vi.fn(async () => undefined);
     const channel = createDiscordChannel({
       webhooks: repo,
-      encryptionKey: ENCRYPTION_KEY,
+      encryptionKey: ENCRYPTION,
       logger,
       fetchFn: fn as unknown as typeof fetch,
       sleep,
@@ -134,7 +147,7 @@ describe('Discord channel (V4-P10)', () => {
     const { fn } = fetchStub([{ status: 204 }]);
     const channel = createDiscordChannel({
       webhooks: repo,
-      encryptionKey: ENCRYPTION_KEY,
+      encryptionKey: ENCRYPTION,
       logger,
       fetchFn: fn as unknown as typeof fetch,
       minSpacingMs: 0,
@@ -151,7 +164,7 @@ describe('Discord channel (V4-P10)', () => {
     const { fn } = fetchStub([{ status: 500 }]);
     const channel = createDiscordChannel({
       webhooks: repo,
-      encryptionKey: ENCRYPTION_KEY,
+      encryptionKey: ENCRYPTION,
       logger: { ...logger, warn } as unknown as Logger,
       fetchFn: fn as unknown as typeof fetch,
       minSpacingMs: 0,
@@ -169,12 +182,136 @@ describe('Discord channel (V4-P10)', () => {
     const { fn, calls } = fetchStub([{ status: 204 }]);
     const channel = createDiscordChannel({
       webhooks: repo,
-      encryptionKey: ENCRYPTION_KEY,
+      encryptionKey: ENCRYPTION,
       logger,
       fetchFn: fn as unknown as typeof fetch,
       minSpacingMs: 0,
     });
     await channel.deliver('u', MESSAGE);
     expect(calls).toHaveLength(0);
+  });
+
+  it('delivers records written by a previous data key during rotation', async () => {
+    const previousKey = createHash('sha256').update('previous-discord-data-key').digest();
+    const previousWriter = createSecretBoxKeyring({
+      active: { id: 'discord_previous', key: previousKey },
+    });
+    const rotated = createSecretBoxKeyring({
+      active: { id: 'discord_current', key: ENCRYPTION_KEY },
+      previous: [{ id: 'discord_previous', key: previousKey }],
+    });
+    const repo = webhookRepo({
+      encryptedUrl: encryptSecret(WEBHOOK_URL, previousWriter),
+      webhookIdMasked: '…abcd',
+    });
+    const { fn, calls } = fetchStub([{ status: 204 }]);
+    const channel = createDiscordChannel({
+      webhooks: repo,
+      encryptionKey: rotated,
+      logger,
+      fetchFn: fn as unknown as typeof fetch,
+      minSpacingMs: 0,
+    });
+
+    await channel.deliver('user-1', MESSAGE);
+    expect(calls[0]!.url).toBe(WEBHOOK_URL);
+  });
+
+  it('delivers a legacy webhook after SESSION_SECRET rotates to new,old', async () => {
+    const oldCookieSecret = 'old-cookie-secret-value';
+    const historicalKey = createHash('sha256').update(`bt-2fa:${oldCookieSecret}`).digest();
+    const rotated = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://test',
+      REDIS_URL: 'redis://test',
+      SESSION_SECRET: `new-cookie-secret-value,${oldCookieSecret}`,
+    }).recordEncryption;
+    const repo = webhookRepo({
+      encryptedUrl: encryptSecret(WEBHOOK_URL, historicalKey),
+      webhookIdMasked: '…abcd',
+    });
+    const { fn, calls } = fetchStub([{ status: 204 }]);
+    const channel = createDiscordChannel({
+      webhooks: repo,
+      encryptionKey: rotated,
+      logger,
+      fetchFn: fn as unknown as typeof fetch,
+      minSpacingMs: 0,
+    });
+
+    await channel.deliver('user-1', MESSAGE);
+    expect(calls[0]!.url).toBe(WEBHOOK_URL);
+  });
+
+  it('delivers a legacy webhook after SESSION_SECRET rotates to newer,new,old', async () => {
+    const historicalSessionSecret = 'new-cookie-secret-value,old-cookie-secret-value';
+    const historicalKey = createHash('sha256').update(`bt-2fa:${historicalSessionSecret}`).digest();
+    const rotated = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://test',
+      REDIS_URL: 'redis://test',
+      SESSION_SECRET: `newest-cookie-secret-value,${historicalSessionSecret}`,
+    }).recordEncryption;
+    const repo = webhookRepo({
+      encryptedUrl: encryptSecret(WEBHOOK_URL, historicalKey),
+      webhookIdMasked: '…abcd',
+    });
+    const { fn, calls } = fetchStub([{ status: 204 }]);
+    const channel = createDiscordChannel({
+      webhooks: repo,
+      encryptionKey: rotated,
+      logger,
+      fetchFn: fn as unknown as typeof fetch,
+      minSpacingMs: 0,
+    });
+
+    await channel.deliver('user-1', MESSAGE);
+    expect(calls[0]!.url).toBe(WEBHOOK_URL);
+  });
+
+  it('fails closed without making a request for unknown or tampered envelopes', async () => {
+    const unknownWriter = createSecretBoxKeyring({
+      active: { id: 'unknown', key: Buffer.alloc(32, 0x77) },
+    });
+    const validUnknown = encryptSecret(WEBHOOK_URL, unknownWriter);
+    const parts = encryptSecret(WEBHOOK_URL, ENCRYPTION).split('.');
+    parts[4] = `${parts[4]![0] === 'A' ? 'B' : 'A'}${parts[4]!.slice(1)}`;
+
+    for (const envelope of [validUnknown, parts.join('.')]) {
+      const repo = webhookRepo({ encryptedUrl: envelope, webhookIdMasked: '…abcd' });
+      const { fn, calls } = fetchStub([{ status: 204 }]);
+      const channel = createDiscordChannel({
+        webhooks: repo,
+        encryptionKey: ENCRYPTION,
+        logger,
+        fetchFn: fn as unknown as typeof fetch,
+        minSpacingMs: 0,
+      });
+      await channel.deliver('user-1', MESSAGE);
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('setup writes only a v2 envelope under the active data-key id', async () => {
+    const repo = webhookRepo();
+    const setup = createDiscordSetupService({
+      enabled: true,
+      webhooks: repo,
+      encryptionKey: ENCRYPTION,
+      logger,
+      channel: {
+        async deliver() {},
+        async sendTest() {
+          return 'ok';
+        },
+        async probe() {
+          return 'ok';
+        },
+      },
+    });
+
+    await setup.save('user-1', WEBHOOK_URL);
+    const stored = await repo.findForUser('user-1');
+    expect(stored!.encryptedUrl).toMatch(/^v2\.discord_current\./);
   });
 });
