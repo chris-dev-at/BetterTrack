@@ -1,7 +1,8 @@
 import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { Logger } from '../../logger';
 import type { DomainEvent, DomainEventType } from '../types';
 import { channelForType, createEventBus, typeForChannel, type EventBus } from '../bus';
 
@@ -137,5 +138,40 @@ describe('EventBus publish → subscribe', () => {
     await bus.publish(quoteEvent);
     // The good handler still fires despite the sibling throwing.
     await expect(good).resolves.toBeUndefined();
+  });
+
+  it('warns and drops an unparseable message without invoking subscribers', async () => {
+    const warn = vi.fn();
+    const handler = vi.fn();
+    bus = createEventBus({ publisher, subscriber, logger: { warn } as unknown as Logger });
+    await bus.subscribe('quote.updated', handler);
+
+    await publisher.publish(channelForType('quote.updated'), '{not-json');
+
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    expect(warn).toHaveBeenCalledWith(
+      { channel: channelForType('quote.updated') },
+      'event bus: dropped unparseable message',
+    );
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('logs a rejected handler while still delivering once to a sibling', async () => {
+    const error = vi.fn();
+    const sibling = vi.fn();
+    bus = createEventBus({ publisher, subscriber, logger: { error } as unknown as Logger });
+    await bus.subscribe('quote.updated', () => Promise.reject(new Error('handler boom')));
+    await bus.subscribe('quote.updated', sibling);
+
+    await bus.publish(quoteEvent);
+
+    // Waiting for the catch ensures the bus has drained the handler promise.
+    await vi.waitFor(() => expect(error).toHaveBeenCalledTimes(1));
+    expect(sibling).toHaveBeenCalledTimes(1);
+    expect(sibling).toHaveBeenCalledWith(quoteEvent);
+    expect(error).toHaveBeenCalledWith(
+      { err: expect.any(Error), type: 'quote.updated' },
+      'event bus: subscriber handler failed',
+    );
   });
 });
