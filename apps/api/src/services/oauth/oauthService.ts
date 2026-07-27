@@ -26,7 +26,10 @@ import {
   type OAuthTokenResponse,
 } from '@bettertrack/contracts';
 
-import type { OAuthRepository } from '../../data/repositories/oauthRepository';
+import type {
+  OAuthAuthorizationCodeExchange,
+  OAuthRepository,
+} from '../../data/repositories/oauthRepository';
 import type { OAuthClientRow, UserRow } from '../../data/schema';
 import { badRequest, notFound } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
@@ -119,6 +122,12 @@ export interface OAuthService {
 
 const VALID_SCOPES = new Set<string>(API_KEY_SCOPES);
 const LAST_USED_THROTTLE_SEC = 60;
+
+/** The token-row writer shared by ordinary refreshes and locked code exchanges. */
+type OAuthTokenStore = Pick<
+  OAuthAuthorizationCodeExchange,
+  'createAccessToken' | 'createRefreshToken'
+>;
 
 function mint(prefix: string): { token: string; tokenHash: string } {
   const token = `${prefix}${randomBytes(32).toString('base64url')}`;
@@ -244,20 +253,28 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     return { client, scopes };
   }
 
-  function issueTokenPair(grantId: string, scopes: ApiKeyScope[]): Promise<OAuthTokenResponse> {
+  function issueTokenPair(
+    store: OAuthTokenStore,
+    grantId: string,
+    scopes: ApiKeyScope[],
+  ): Promise<OAuthTokenResponse> {
     const issued = now();
     const access = mint(OAUTH_ACCESS_TOKEN_PREFIX);
     const refresh = mint(OAUTH_REFRESH_TOKEN_PREFIX);
     const accessExpires = new Date(issued.getTime() + OAUTH_ACCESS_TOKEN_TTL_SECONDS * 1000);
     const refreshExpires = new Date(issued.getTime() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000);
     return Promise.all([
-      repo.createAccessToken({
+      store.createAccessToken({
         grantId,
         tokenHash: access.tokenHash,
         scopes,
         expiresAt: accessExpires,
       }),
-      repo.createRefreshToken({ grantId, tokenHash: refresh.tokenHash, expiresAt: refreshExpires }),
+      store.createRefreshToken({
+        grantId,
+        tokenHash: refresh.tokenHash,
+        expiresAt: refreshExpires,
+      }),
     ]).then(() => ({
       access_token: access.token,
       token_type: 'Bearer' as const,
@@ -611,62 +628,82 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       clientId: body.client_id,
       clientSecret: body.client_secret,
     });
-    const found = await repo.findAuthCodeByHash(hashToken(body.code));
-    // A code bound to a different client, or none, is an invalid grant.
-    if (!found || found.code.clientId !== client.id || found.user.status !== 'active') {
-      throw badRequest('Invalid authorization code.', 'INVALID_GRANT');
-    }
-    if (found.code.redirectUri !== body.redirect_uri) {
-      throw badRequest('redirect_uri does not match the authorization request.', 'INVALID_GRANT');
-    }
-    if (found.code.expiresAt.getTime() <= now().getTime()) {
-      throw badRequest('Authorization code has expired.', 'INVALID_GRANT');
-    }
-    // PKCE verification (RFC 7636). A stored challenge demands a matching verifier.
-    if (found.code.codeChallenge) {
-      if (
-        !body.code_verifier ||
-        !safeEqual(sha256Base64Url(body.code_verifier), found.code.codeChallenge)
-      ) {
-        throw badRequest('PKCE verification failed.', 'INVALID_GRANT');
-      }
-    }
-    // Single-use: the atomic consume is the guard against replay / double-spend.
-    const consumed = await repo.consumeAuthCode(found.code.id);
-    if (!consumed) {
-      throw badRequest('Authorization code has already been used.', 'INVALID_GRANT');
-    }
-    // Clamp the consented scopes to the app's CURRENT allowed set: if the admin
-    // narrowed the app during the code's brief lifetime, the grant + token
-    // reflect the reduced set immediately (consent-safe narrowing).
-    const scopes = clampToAllowed(found.code.scopes as ApiKeyScope[], client.scopes);
-    if (scopes.length === 0) {
-      throw badRequest('No requested scope is still permitted for this app.', 'INVALID_SCOPE');
-    }
-    // Establish (or reuse) the grant for this app↔user pair.
-    const existing = await repo.findActiveGrant(client.id, found.code.userId);
-    let grantId: string;
-    if (existing) {
-      grantId = existing.id;
-      await repo.updateGrantScopes(existing.id, scopes);
-    } else {
-      const grant = await repo.createGrant({
-        clientId: client.id,
-        userId: found.code.userId,
-        scopes,
-      });
-      grantId = grant.id;
-    }
-    const tokens = await issueTokenPair(grantId, scopes);
+    const issued = await repo.withAuthorizationCodeExchange(
+      hashToken(body.code),
+      async (exchange) => {
+        // A code bound to a different client, absent/deleted account, or disabled
+        // account is an invalid grant. This runs while the user's row is locked,
+        // so suspension cannot interleave after this check and before grant minting.
+        if (
+          !exchange ||
+          exchange.code.clientId !== client.id ||
+          exchange.user.status !== 'active'
+        ) {
+          throw badRequest('Invalid authorization code.', 'INVALID_GRANT');
+        }
+        if (exchange.code.redirectUri !== body.redirect_uri) {
+          throw badRequest(
+            'redirect_uri does not match the authorization request.',
+            'INVALID_GRANT',
+          );
+        }
+        if (exchange.code.expiresAt.getTime() <= now().getTime()) {
+          throw badRequest('Authorization code has expired.', 'INVALID_GRANT');
+        }
+        // PKCE verification (RFC 7636). A stored challenge demands a matching verifier.
+        if (exchange.code.codeChallenge) {
+          if (
+            !body.code_verifier ||
+            !safeEqual(sha256Base64Url(body.code_verifier), exchange.code.codeChallenge)
+          ) {
+            throw badRequest('PKCE verification failed.', 'INVALID_GRANT');
+          }
+        }
+        // Clamp the consented scopes to the app's CURRENT allowed set: if the admin
+        // narrowed the app during the code's brief lifetime, the grant + token
+        // reflect the reduced set immediately (consent-safe narrowing).
+        const scopes = clampToAllowed(exchange.code.scopes as ApiKeyScope[], client.scopes);
+        if (scopes.length === 0) {
+          throw badRequest('No requested scope is still permitted for this app.', 'INVALID_SCOPE');
+        }
+        // Single-use: consume under the code lock before creating a grant or token.
+        const consumed = await exchange.consumeCode();
+        if (!consumed) {
+          throw badRequest('Authorization code has already been used.', 'INVALID_GRANT');
+        }
+        // Establish (or reuse) the grant for this app↔user pair while retaining the
+        // user lock. An administrative disable therefore cannot revoke "what exists"
+        // and let this pre-suspension exchange create a new active grant afterwards.
+        const existing = await exchange.findActiveGrant(client.id);
+        let grantId: string;
+        if (existing) {
+          grantId = existing.id;
+          await exchange.updateGrantScopes(existing.id, scopes);
+        } else {
+          const grant = await exchange.createGrant({
+            clientId: client.id,
+            userId: exchange.code.userId,
+            scopes,
+          });
+          grantId = grant.id;
+        }
+        return {
+          tokens: await issueTokenPair(exchange, grantId, scopes),
+          grantId,
+          userId: exchange.code.userId,
+          scopes,
+        };
+      },
+    );
     await audit.record({
-      actorId: found.code.userId,
+      actorId: issued.userId,
       action: AuditAction.OAuthTokenIssued,
       targetType: 'oauth_grant',
-      targetId: grantId,
+      targetId: issued.grantId,
       ip,
-      meta: { clientId: client.clientId, scopes },
+      meta: { clientId: client.clientId, scopes: issued.scopes },
     });
-    return tokens;
+    return issued.tokens;
   }
 
   async function exchangeRefreshToken(
@@ -701,7 +738,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     // grant past a scope the admin has since removed, and the advertised `scope`
     // matches what the freshly-issued token can actually use.
     const scopes = clampToAllowed(found.grant.scopes as ApiKeyScope[], client.scopes);
-    const tokens = await issueTokenPair(found.grant.id, scopes);
+    const tokens = await issueTokenPair(repo, found.grant.id, scopes);
     await repo.touchGrantLastUsed(found.grant.id, now());
     await audit.record({
       actorId: found.grant.userId,

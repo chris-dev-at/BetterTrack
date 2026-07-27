@@ -19,7 +19,15 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import {
+  createOAuthRepository,
+  type OAuthAuthorizationCodeExchange,
+  type OAuthRepository,
+} from '../data/repositories/oauthRepository';
+import { createAuditRepository } from '../data/repositories/auditRepository';
+import { createAuditService } from '../services/audit/auditService';
 import { hashToken } from '../services/crypto/tokens';
+import { createOAuthService } from '../services/oauth/oauthService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -190,6 +198,14 @@ async function approveAndGetCode(
 
 function tokenRequest(body: Record<string, unknown>) {
   return request(harness.app).post('/api/v1/oauth/token').send(body);
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 async function auditActions(): Promise<string[]> {
@@ -593,6 +609,85 @@ describe('grant revocation', () => {
         })
       ).status,
     ).toBe(400);
+  });
+
+  it('serializes an in-flight code exchange with suspension before re-enable', async () => {
+    const { agent, clientId, clientSecret } = await registerClient({ scopes: ['portfolio:read'] });
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+    });
+    const [client] = await harness.db
+      .select()
+      .from(schema.oauthClients)
+      .where(eq(schema.oauthClients.clientId, clientId));
+    const userId = client?.userId;
+    expect(userId).toBeTruthy();
+    if (!userId) throw new Error('Registered OAuth client did not have an owner');
+
+    // Pause exactly after the code is consumed but before the exchange can look
+    // up/create its grant. The real repository still owns the surrounding
+    // transaction and its user-row lock.
+    const reachedGrantStep = deferred();
+    const releaseGrantStep = deferred();
+    const baseRepo = createOAuthRepository(harness.db);
+    const repo: OAuthRepository = {
+      ...baseRepo,
+      async withAuthorizationCodeExchange<T>(
+        codeHash: string,
+        run: (exchange: OAuthAuthorizationCodeExchange | null) => Promise<T>,
+      ): Promise<T> {
+        return baseRepo.withAuthorizationCodeExchange(codeHash, async (exchange) => {
+          if (!exchange) return run(null);
+          return run({
+            ...exchange,
+            async findActiveGrant(grantClientId: string) {
+              reachedGrantStep.resolve();
+              await releaseGrantStep.promise;
+              return exchange.findActiveGrant(grantClientId);
+            },
+          });
+        });
+      },
+    };
+    const exchangeService = createOAuthService({
+      repo,
+      audit: createAuditService(createAuditRepository(harness.db)),
+      redis: harness.ctx.redis,
+    });
+    const admin = await harness.seedAdmin();
+
+    const exchange = exchangeService.exchangeToken({
+      body: {
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: HTTPS_REDIRECT,
+        client_id: clientId,
+        client_secret: clientSecret!,
+      },
+    });
+    await reachedGrantStep.promise;
+
+    let disableFinished = false;
+    const disable = harness.ctx.admin
+      .updateUser(userId, { status: 'disabled' }, { id: admin.id })
+      .then(() => {
+        disableFinished = true;
+      });
+    // Let the suspend operation reach its status write. It must wait on the
+    // exchange's user-row lock rather than completing its cleanup early.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(disableFinished).toBe(false);
+
+    releaseGrantStep.resolve();
+    const tokens = await exchange;
+    await disable;
+    await harness.ctx.admin.updateUser(userId, { status: 'active' }, { id: admin.id });
+
+    // The suspension observes the completed grant before re-enable, so this
+    // pre-suspension exchange cannot leave a live bearer credential behind.
+    expect(await harness.ctx.oauth.authenticateToken(tokens.access_token)).toBeNull();
   });
 });
 
