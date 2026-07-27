@@ -72,6 +72,7 @@ describe('progressive limiter — steady state (§10)', () => {
         allowed: true,
         retryAfterSec: 0,
         level: 0,
+        cooldownStarted: false,
       })),
     );
     expect(await redis.get(keys.count)).toBe(String(SCHEDULE.limit));
@@ -87,6 +88,7 @@ describe('progressive limiter — escalation & decay (§10)', () => {
     expect(d.allowed).toBe(false);
     expect(d.retryAfterSec).toBe(SCHEDULE.cooldownsSec[0]);
     expect(d.level).toBe(1);
+    expect(d.cooldownStarted).toBe(true);
   });
 
   it('requests while cooling down are rejected without escalating further', async () => {
@@ -96,6 +98,7 @@ describe('progressive limiter — escalation & decay (§10)', () => {
     expect(again.allowed).toBe(false);
     expect(again.retryAfterSec).toBeGreaterThan(0);
     expect(again.level).toBe(1); // still 1 — a blocked retry does not climb
+    expect(again.cooldownStarted).toBe(false);
   });
 
   it('keeps a live sub-second cooldown closed and rounds its retry-after up', async () => {
@@ -112,23 +115,39 @@ describe('progressive limiter — escalation & decay (§10)', () => {
       allowed: false,
       retryAfterSec: 1,
       level: 2,
+      cooldownStarted: false,
     });
     expect(await redis.get(keys.count)).toBeNull();
     expect(await redis.get(keys.level)).toBe('2');
   });
 
-  it('linearizes a synchronized overflow and keeps blocked retries out of the counter', async () => {
+  it('linearizes a synchronized overflow and keeps concurrent blocked retries out of the transition', async () => {
     const limiter = createProgressiveLimiter(redis, 't', SCHEDULE);
     const keys = progressiveKeys('t', 'ip');
-    const firstWindow = await consumeConcurrently(limiter, 'ip', SCHEDULE.limit + 1);
-    const denied = firstWindow.filter((decision) => !decision.allowed);
+    const firstWindow = await consumeConcurrently(limiter, 'ip', SCHEDULE.limit + 2);
+    const transitions = firstWindow.filter((decision) => decision.cooldownStarted);
+    const cooldownRetries = firstWindow.filter(
+      (decision) => !decision.allowed && !decision.cooldownStarted,
+    );
 
     expect(firstWindow.filter((decision) => decision.allowed)).toHaveLength(SCHEDULE.limit);
-    expect(denied).toEqual([
+    // Exactly one request crosses the fresh-window boundary. The additional
+    // over-limit request starts at the same barrier but must observe that live
+    // cooldown and be rejected as a retry, rather than applying a second rung.
+    expect(transitions).toEqual([
       {
         allowed: false,
         retryAfterSec: SCHEDULE.cooldownsSec[0],
         level: 1,
+        cooldownStarted: true,
+      },
+    ]);
+    expect(cooldownRetries).toEqual([
+      {
+        allowed: false,
+        retryAfterSec: expect.any(Number),
+        level: 1,
+        cooldownStarted: false,
       },
     ]);
     expect(await redis.get(keys.count)).toBeNull();
@@ -141,6 +160,7 @@ describe('progressive limiter — escalation & decay (§10)', () => {
         allowed: false,
         retryAfterSec: expect.any(Number),
         level: 1,
+        cooldownStarted: false,
       })),
     );
     expect(await redis.get(keys.count)).toBeNull();
@@ -160,6 +180,7 @@ describe('progressive limiter — escalation & decay (§10)', () => {
         allowed: false,
         retryAfterSec: SCHEDULE.cooldownsSec[1],
         level: 2,
+        cooldownStarted: true,
       },
     ]);
     expect(await redis.get(keys.count)).toBeNull();

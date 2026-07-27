@@ -38,6 +38,12 @@ export interface ProgressiveDecision {
   retryAfterSec: number;
   /** Current escalation level (0 = clean; grows per violation, decays when quiet). */
   level: number;
+  /**
+   * Whether this event armed (or escalated) the cooldown. A rejected caller
+   * that finds an already-live cooldown gets `false`; it never transitions the
+   * ladder itself.
+   */
+  cooldownStarted: boolean;
 }
 
 export interface ProgressiveLimiter {
@@ -78,7 +84,7 @@ end
 -- but failing closed is safer than allowing a request through it.
 if cooldownMs ~= -2 then
   local retryAfterSec = math.max(1, math.ceil(math.max(cooldownMs, 0) / 1000))
-  return { 0, retryAfterSec, level }
+  return { 0, retryAfterSec, level, 0 }
 end
 
 local count = redis.call('INCR', KEYS[2])
@@ -87,7 +93,7 @@ if count == 1 then
 end
 
 if count <= tonumber(ARGV[2]) then
-  return { 1, 0, level }
+  return { 1, 0, level, 0 }
 end
 
 local rungCount = tonumber(ARGV[4])
@@ -99,7 +105,7 @@ redis.call('SET', KEYS[1], '1', 'EX', retryAfterSec)
 redis.call('SET', KEYS[3], tostring(nextLevel), 'EX', ARGV[3])
 redis.call('DEL', KEYS[2])
 
-return { 0, retryAfterSec, nextLevel }
+return { 0, retryAfterSec, nextLevel, 1 }
 `;
 
 /** The three Redis keys a limiter uses for one `id` under `namespace`. */
@@ -152,9 +158,14 @@ export function createProgressiveLimiter(
         schedule.decaySec,
         schedule.cooldownsSec.length,
         ...schedule.cooldownsSec,
-      )) as [number, number, number];
-      const [allowed, retryAfterSec, level] = result;
-      return { allowed: allowed === 1, retryAfterSec, level };
+      )) as [number, number, number, number];
+      const [allowed, retryAfterSec, level, cooldownStarted] = result;
+      return {
+        allowed: allowed === 1,
+        retryAfterSec,
+        level,
+        cooldownStarted: cooldownStarted === 1,
+      };
     },
 
     async peek(id) {
