@@ -15,8 +15,12 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
 import { generateRecoveryCodes, normalizeRecoveryCode } from '../auth/totp';
-import type { TwoFactorService } from '../auth/twoFactorService';
-import type { SessionSecurityContext, SessionService } from '../sessions/sessionService';
+import type { TwoFactorMutationResult, TwoFactorService } from '../auth/twoFactorService';
+import type {
+  SecuritySessionRotation,
+  SessionSecurityContext,
+  SessionService,
+} from '../sessions/sessionService';
 
 /**
  * Mandatory admin-login two-factor authentication (PROJECTPLAN.md §6.12, #400).
@@ -52,14 +56,14 @@ export interface AdminTwoFactorService {
     code: string,
     ip?: string | null,
     session?: SessionSecurityContext,
-  ): Promise<TwoFactorMethodEnabledResponse>;
+  ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
   /** Turn TOTP off with a valid factor (re-enroll = disable then enroll). */
   disableTotp(
     adminId: string,
     code: string,
     ip?: string | null,
     session?: SessionSecurityContext,
-  ): Promise<void>;
+  ): Promise<TwoFactorMutationResult<void>>;
   /**
    * Set (first time) or change the 2FA email and send a confirmation code to it.
    * A fresh 2FA `proof` (current TOTP code or unused recovery code) is REQUIRED
@@ -78,19 +82,19 @@ export interface AdminTwoFactorService {
     code: string,
     ip?: string | null,
     session?: SessionSecurityContext,
-  ): Promise<TwoFactorMethodEnabledResponse>;
+  ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
   /** Turn the email method off (session-authorized); clears the 2FA email. */
   disableEmail(
     adminId: string,
     ip?: string | null,
     session?: SessionSecurityContext,
-  ): Promise<void>;
+  ): Promise<TwoFactorMutationResult<void>>;
   /** Regenerate the recovery codes (only while some method is on; old set voided). */
   regenerateRecoveryCodes(
     adminId: string,
     ip?: string | null,
     session?: SessionSecurityContext,
-  ): Promise<TwoFactorRecoveryCodesResponse>;
+  ): Promise<TwoFactorMutationResult<TwoFactorRecoveryCodesResponse>>;
 }
 
 export interface AdminTwoFactorServiceDeps {
@@ -100,10 +104,7 @@ export interface AdminTwoFactorServiceDeps {
   audit: AuditService;
   redis: Redis;
   email: EmailService;
-  sessions: Pick<
-    SessionService,
-    'rebindSecurityGeneration' | 'revokeOthersForUser' | 'destroyAllForUser'
-  >;
+  sessions: Pick<SessionService, 'rotateAfterSecurityMutation' | 'destroyAllForUser'>;
 }
 
 // The admin email-method setup code (#400): a short-lived numeric code proving the
@@ -133,31 +134,20 @@ export function createAdminTwoFactorService(
     };
   }
 
-  async function rebindCurrentSession(
+  async function rotateCurrentSession(
     adminId: string,
     session: SessionSecurityContext | undefined,
     securityGeneration: number,
-  ): Promise<void> {
+  ): Promise<SecuritySessionRotation | null> {
     if (!session) {
       try {
         await sessions.destroyAllForUser(adminId);
       } catch {
         // The committed generation already fences every cookie.
       }
-      return;
+      return null;
     }
-    const rebound = await sessions.rebindSecurityGeneration(
-      session.sessionId,
-      adminId,
-      session.securityGeneration,
-      securityGeneration,
-    );
-    if (!rebound) throw unauthorized();
-    try {
-      await sessions.revokeOthersForUser(adminId, session.sessionId);
-    } catch {
-      // Siblings are stale by generation even when eager cleanup fails.
-    }
+    return sessions.rotateAfterSecurityMutation(adminId, securityGeneration, session.persistent);
   }
 
   /**
@@ -296,8 +286,8 @@ export function createAdminTwoFactorService(
         targetId: adminId,
         ip,
       });
-      await rebindCurrentSession(adminId, session, securityGeneration);
-      return { recoveryCodes };
+      const sessionRotation = await rotateCurrentSession(adminId, session, securityGeneration);
+      return { response: { recoveryCodes }, sessionRotation };
     },
 
     async disableEmail(adminId, ip, session) {
@@ -323,7 +313,8 @@ export function createAdminTwoFactorService(
         targetId: adminId,
         ip,
       });
-      await rebindCurrentSession(adminId, session, securityGeneration);
+      const sessionRotation = await rotateCurrentSession(adminId, session, securityGeneration);
+      return { response: undefined, sessionRotation };
     },
   };
 }

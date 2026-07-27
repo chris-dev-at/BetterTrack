@@ -20,7 +20,11 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import { decryptSecret, encryptSecret } from '../crypto/secretBox';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
-import type { SecurityMutationContext, SessionService } from '../sessions/sessionService';
+import type {
+  SecurityMutationContext,
+  SecuritySessionRotation,
+  SessionService,
+} from '../sessions/sessionService';
 import {
   buildOtpauthUri,
   generateRecoveryCodes,
@@ -39,14 +43,11 @@ export interface TwoFactorServiceDeps {
   /** Sends the email-method setup code; also the SMTP-configured signal for the guard. */
   email: EmailService;
   /**
-   * Rebinds only the authenticated current cookie after a generation transition.
+   * Rotates only the authenticated current cookie after a generation transition.
    * Omitted in the worker, whose export-only service instance never receives a
    * session security context.
    */
-  sessions?: Pick<
-    SessionService,
-    'rebindSecurityGeneration' | 'revokeOthersForUser' | 'destroyAllForUser'
-  >;
+  sessions?: Pick<SessionService, 'rotateAfterSecurityMutation' | 'destroyAllForUser'>;
 }
 
 /** Which second-factor methods an account has switched on (#298). */
@@ -55,6 +56,21 @@ export interface TwoFactorMethods {
   totp: boolean;
   /** Email codes. */
   email: boolean;
+}
+
+/** Factor state read atomically with the durable request/session generation. */
+export interface TwoFactorAuthorizationState {
+  enabled: boolean;
+  securityGeneration: number;
+}
+
+/**
+ * Internal result for a factor mutation. The HTTP layer emits only `response`;
+ * `sessionRotation` is used solely to replace a cookie after the durable commit.
+ */
+export interface TwoFactorMutationResult<T> {
+  response: T;
+  sessionRotation: SecuritySessionRotation | null;
 }
 
 export interface TwoFactorService {
@@ -93,7 +109,7 @@ export interface TwoFactorService {
     code: string,
     ip?: string | null,
     security?: SecurityMutationContext,
-  ): Promise<TwoFactorMethodEnabledResponse>;
+  ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
   /**
    * Turn the TOTP method off (§6.1): a valid factor (TOTP code or an unused
    * recovery code) authorizes it. The secret is wiped; recovery codes are dropped
@@ -104,7 +120,7 @@ export interface TwoFactorService {
     code: string,
     ip?: string | null,
     security?: SecurityMutationContext,
-  ): Promise<void>;
+  ): Promise<TwoFactorMutationResult<void>>;
   /**
    * Begin email-method enrollment (#298): send a one-time code to the account
    * email to prove mailbox access. Rejected with `TWO_FACTOR_EMAIL_UNAVAILABLE`
@@ -122,7 +138,7 @@ export interface TwoFactorService {
     code: string,
     ip?: string | null,
     security?: SecurityMutationContext,
-  ): Promise<TwoFactorMethodEnabledResponse>;
+  ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
   /**
    * Turn the email method off (#298). Authorized by the authenticated session
    * alone — the mailbox was already proven at enable time and there is no offline
@@ -132,15 +148,21 @@ export interface TwoFactorService {
     userId: string,
     ip?: string | null,
     security?: SecurityMutationContext,
-  ): Promise<void>;
+  ): Promise<TwoFactorMutationResult<void>>;
   /** Regenerate the recovery codes (§6.1): only while some method is on; old set voided. */
   regenerateRecoveryCodes(
     userId: string,
     ip?: string | null,
     security?: SecurityMutationContext,
-  ): Promise<TwoFactorRecoveryCodesResponse>;
+  ): Promise<TwoFactorMutationResult<TwoFactorRecoveryCodesResponse>>;
   /** Whether the account has ANY 2FA method on — the login challenge gate (§6.1). */
   isEnabled(userId: string): Promise<boolean>;
+  /**
+   * Final request-bootstrap authorization read. Factor state and generation come
+   * from one repository read so an in-flight request cannot inherit a later
+   * generation's newly enabled administrator assurance.
+   */
+  getAuthorizationState(userId: string): Promise<TwoFactorAuthorizationState | null>;
   /** Which methods are on, so the login flow can offer the right challenge channels. */
   getMethods(userId: string): Promise<TwoFactorMethods>;
   /**
@@ -184,14 +206,14 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
     return { codes, hashes };
   }
 
-  async function rebindCurrentSession(
+  async function rotateCurrentSession(
     userId: string,
     security: SecurityMutationContext | undefined,
     securityGeneration: number,
-  ): Promise<void> {
+  ): Promise<SecuritySessionRotation | null> {
     if (!sessions) {
       if (security?.sessionId) throw unauthorized();
-      return;
+      return null;
     }
     if (!security?.sessionId) {
       try {
@@ -199,20 +221,19 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       } catch {
         // The committed generation already fences every cookie.
       }
-      return;
+      return null;
     }
-    const rebound = await sessions.rebindSecurityGeneration(
-      security.sessionId,
-      userId,
-      security.securityGeneration,
-      securityGeneration,
-    );
-    if (!rebound) throw unauthorized();
-    try {
-      await sessions.revokeOthersForUser(userId, security.sessionId);
-    } catch {
-      // Siblings are stale by generation even when eager cleanup fails.
-    }
+    return sessions.rotateAfterSecurityMutation(userId, securityGeneration, security.persistent);
+  }
+
+  async function authorizationState(userId: string): Promise<TwoFactorAuthorizationState | null> {
+    const state = await twoFactorRepo.getState(userId);
+    return state
+      ? {
+          enabled: anyMethodOn(state),
+          securityGeneration: state.securityGeneration,
+        }
+      : null;
   }
 
   /**
@@ -354,8 +375,8 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      await rebindCurrentSession(userId, security, securityGeneration);
-      return { recoveryCodes };
+      const sessionRotation = await rotateCurrentSession(userId, security, securityGeneration);
+      return { response: { recoveryCodes }, sessionRotation };
     },
 
     async disableTotp(userId, code, ip, security) {
@@ -380,7 +401,8 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      await rebindCurrentSession(userId, security, securityGeneration);
+      const sessionRotation = await rotateCurrentSession(userId, security, securityGeneration);
+      return { response: undefined, sessionRotation };
     },
 
     async startEmailEnrollment(userId, ip) {
@@ -467,8 +489,8 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      await rebindCurrentSession(userId, security, securityGeneration);
-      return { recoveryCodes };
+      const sessionRotation = await rotateCurrentSession(userId, security, securityGeneration);
+      return { response: { recoveryCodes }, sessionRotation };
     },
 
     async disableEmail(userId, ip, security) {
@@ -495,7 +517,8 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      await rebindCurrentSession(userId, security, securityGeneration);
+      const sessionRotation = await rotateCurrentSession(userId, security, securityGeneration);
+      return { response: undefined, sessionRotation };
     },
 
     async regenerateRecoveryCodes(userId, ip, security) {
@@ -516,13 +539,19 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      await rebindCurrentSession(userId, security, securityGeneration);
-      return { recoveryCodes: recovery.codes };
+      const sessionRotation = await rotateCurrentSession(userId, security, securityGeneration);
+      return {
+        response: { recoveryCodes: recovery.codes },
+        sessionRotation,
+      };
     },
 
     async isEnabled(userId) {
-      const state = await twoFactorRepo.getState(userId);
-      return Boolean(state && anyMethodOn(state));
+      return Boolean((await authorizationState(userId))?.enabled);
+    },
+
+    getAuthorizationState(userId) {
+      return authorizationState(userId);
     },
 
     async getMethods(userId) {

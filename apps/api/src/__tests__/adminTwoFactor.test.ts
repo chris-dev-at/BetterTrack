@@ -60,13 +60,25 @@ function login(app: Application, identifier: string, password: string) {
     .send({ identifier, password });
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 /** Log an admin in (setup-state, so a session is minted) and return the agent. */
-async function loginAdminAgent(harness: TestHarness, admin: SeededAdmin) {
+async function loginAdminAgent(harness: TestHarness, admin: SeededAdmin, staySignedIn?: boolean) {
   const agent = request.agent(harness.app);
   const res = await agent
     .post('/api/v1/auth/login')
     .set(...XRW)
-    .send({ identifier: admin.email, password: admin.password });
+    .send({
+      identifier: admin.email,
+      password: admin.password,
+      ...(staySignedIn === undefined ? {} : { staySignedIn }),
+    });
   expect(meResponseSchema.safeParse(res.body).success).toBe(true);
   return agent;
 }
@@ -94,14 +106,23 @@ async function auditCount(harness: TestHarness, userId: string, action: string):
   return rows.length;
 }
 
-async function sessionRecordFor(harness: TestHarness, userId: string) {
+async function sessionRecordsFor(harness: TestHarness, userId: string) {
+  const records: { key: string; sessionId: string; data: Record<string, unknown> }[] = [];
   const keys = await harness.ctx.redis.keys('sess:*');
   for (const key of keys) {
     const raw = await harness.ctx.redis.get(key);
     if (!raw) continue;
     const data = JSON.parse(raw) as Record<string, unknown>;
-    if (data.userId === userId) return { key, data };
+    if (data.userId === userId) {
+      records.push({ key, sessionId: key.slice('sess:'.length), data });
+    }
   }
+  return records;
+}
+
+async function sessionRecordFor(harness: TestHarness, userId: string) {
+  const [record] = await sessionRecordsFor(harness, userId);
+  if (record) return record;
   throw new Error(`No session found for ${userId}`);
 }
 
@@ -156,7 +177,7 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     expect(status.recoveryCodesRemaining).toBe(10);
   });
 
-  it('rebinds only the confirming bootstrap session and rejects its sibling', async () => {
+  it('rotates only the confirming bootstrap session and rejects its sibling', async () => {
     const harness = await createTestApp();
     const admin = await harness.seedAdmin();
     const current = await loginAdminAgent(harness, admin);
@@ -175,12 +196,171 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     cleanup.mockRestore();
     expect(confirm.status).toBe(200);
 
-    // The explicitly authenticated current device was rebound to generation 1.
+    // The explicitly authenticated current device was rotated to generation 1.
     expect((await current.get('/api/v1/admin/users')).status).toBe(200);
     // Its pre-enrollment sibling remains at generation 0 and cannot inherit
     // either admin authority or first-enrollment bootstrap.
     expect((await sibling.get('/api/v1/admin/security/2fa/status')).status).toBe(404);
   });
+
+  it('rechecks the captured generation at the final bootstrap gate', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    const current = await loginAdminAgent(harness, admin);
+    const sibling = await loginAdminAgent(harness, admin);
+    const { secret } = twoFactorEnrollResponseSchema.parse(
+      (await current.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
+    );
+
+    const gateEntered = deferred();
+    const releaseGate = deferred();
+    const readAuthorization = harness.ctx.twoFactor.getAuthorizationState.bind(
+      harness.ctx.twoFactor,
+    );
+    let pauseOnce = true;
+    const authorizationSpy = vi
+      .spyOn(harness.ctx.twoFactor, 'getAuthorizationState')
+      .mockImplementation(async (userId) => {
+        if (pauseOnce) {
+          pauseOnce = false;
+          gateEntered.resolve();
+          await releaseGate.promise;
+        }
+        return readAuthorization(userId);
+      });
+    const protectedHandler = vi.spyOn(harness.ctx.admin, 'listUsers');
+
+    // Sibling B resolves its generation-0 session, then stops at the last gate.
+    const staleRequest = sibling.get('/api/v1/admin/users').then((response) => response);
+    await gateEntered.promise;
+
+    // Sibling A commits first-factor enrollment at generation 1.
+    const confirm = await current
+      .post('/api/v1/admin/security/2fa/totp/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    expect(confirm.status).toBe(200);
+
+    // B must compare its captured G0 with the factor-state read at G1 instead of
+    // inheriting the newly enabled administrator assurance.
+    releaseGate.resolve();
+    const denied = await staleRequest;
+    authorizationSpy.mockRestore();
+    expect(denied.status).toBe(401);
+    expect(protectedHandler).not.toHaveBeenCalled();
+    protectedHandler.mockRestore();
+  });
+
+  it.each([
+    { label: 'before the new-session handoff', pauseHandoff: true },
+    { label: 'after the new-session handoff', pauseHandoff: false },
+  ])(
+    'keeps the rotated device valid when stale resolver cleanup lands $label',
+    async ({ pauseHandoff }) => {
+      const harness = await createTestApp();
+      const admin = await harness.seedAdmin();
+      const current = await loginAdminAgent(harness, admin, false);
+      const [currentRecord] = await sessionRecordsFor(harness, admin.id);
+      expect(currentRecord).toBeDefined();
+      await loginAdminAgent(harness, admin);
+      const siblingRecord = (await sessionRecordsFor(harness, admin.id)).find(
+        ({ sessionId }) => sessionId !== currentRecord!.sessionId,
+      );
+      expect(siblingRecord).toBeDefined();
+
+      const { secret } = twoFactorEnrollResponseSchema.parse(
+        (await current.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
+      );
+
+      // Cache the old G0 payload inside a resolver, but do not let it compare the
+      // freshly read user generation or run stale cleanup yet.
+      const staleRead = deferred();
+      const releaseStaleResolver = deferred();
+      const originalGet = harness.ctx.redis.get.bind(harness.ctx.redis) as (
+        key: string | Buffer,
+      ) => Promise<string | null>;
+      let pauseOldRead = true;
+      const getSpy = vi.spyOn(harness.ctx.redis, 'get').mockImplementation(async (key) => {
+        const value = await originalGet(key);
+        if (pauseOldRead && key.toString() === currentRecord!.key) {
+          pauseOldRead = false;
+          staleRead.resolve();
+          await releaseStaleResolver.promise;
+        }
+        return value;
+      });
+      const staleResolution = harness.ctx.auth.resolveSession(currentRecord!.sessionId);
+      await staleRead.promise;
+
+      const handoffReached = deferred();
+      const releaseHandoff = deferred();
+      const originalSet = harness.ctx.redis.set.bind(harness.ctx.redis) as (
+        ...args: unknown[]
+      ) => Promise<unknown>;
+      let pauseNewSession = pauseHandoff;
+      const setSpy = vi.spyOn(harness.ctx.redis, 'set').mockImplementation((async (
+        ...args: unknown[]
+      ) => {
+        const key = args[0];
+        if (
+          pauseNewSession &&
+          typeof key === 'string' &&
+          key.startsWith('sess:') &&
+          key !== currentRecord!.key &&
+          key !== siblingRecord!.key
+        ) {
+          pauseNewSession = false;
+          handoffReached.resolve();
+          await releaseHandoff.promise;
+        }
+        return originalSet(...args);
+      }) as never);
+
+      const confirmRequest = current
+        .post('/api/v1/admin/security/2fa/totp/confirm')
+        .set(...XRW)
+        .send({ code: generateTotpCode(secret) })
+        .then((response) => response);
+
+      let confirm: request.Response;
+      if (pauseHandoff) {
+        // The PostgreSQL transition is committed, but the distinct G1 session
+        // has not been written. Let stale cleanup delete the old id first.
+        await handoffReached.promise;
+        releaseStaleResolver.resolve();
+        expect(await staleResolution).toBeNull();
+        releaseHandoff.resolve();
+        confirm = await confirmRequest;
+      } else {
+        // Let the mutation mint/return its G1 session, then resume a resolver
+        // that still holds the old G0 payload and performs delayed cleanup.
+        confirm = await confirmRequest;
+        releaseStaleResolver.resolve();
+        expect(await staleResolution).toBeNull();
+      }
+      getSpy.mockRestore();
+      setSpy.mockRestore();
+
+      expect(confirm.status).toBe(200);
+      expect(setsSessionCookie(confirm)).toBe(true);
+      const records = await sessionRecordsFor(harness, admin.id);
+      expect(records).toHaveLength(1);
+      const [rotated] = records;
+      expect(rotated!.sessionId).not.toBe(currentRecord!.sessionId);
+      expect(rotated!.sessionId).not.toBe(siblingRecord!.sessionId);
+      expect(rotated!.data).toMatchObject({
+        securityGeneration: 1,
+        persistent: false,
+      });
+      expect(await harness.ctx.auth.resolveSession(currentRecord!.sessionId)).toBeNull();
+      expect(await harness.ctx.auth.resolveSession(siblingRecord!.sessionId)).toBeNull();
+      expect(await harness.ctx.auth.resolveSession(rotated!.sessionId)).toMatchObject({
+        securityGeneration: 1,
+        persistent: false,
+      });
+      expect((await current.get('/api/v1/admin/users')).status).toBe(200);
+    },
+  );
 
   it('fails legacy, malformed, and mismatched bootstrap sessions closed', async () => {
     const harness = await createTestApp();

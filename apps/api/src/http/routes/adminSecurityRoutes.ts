@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 
 import {
   adminTwoFactorEmailStartRequestSchema,
@@ -13,17 +13,40 @@ import {
   type UpdateAdminSessionPolicyRequest,
 } from '@bettertrack/contracts';
 
+import { unauthorized } from '../../errors';
+import type {
+  SecuritySessionRotation,
+  SessionSecurityContext,
+} from '../../services/sessions/sessionService';
 import type { AppContext } from '../context';
+import { setSessionCookie } from '../cookies';
 import { validateBody } from '../middleware/validate';
 import { toAdminSessionPolicy } from '../serializers';
 
-const sessionSecurityContextOf = (req: Request) =>
-  req.sessionId && req.sessionSecurityGeneration !== undefined
-    ? {
-        sessionId: req.sessionId,
-        securityGeneration: req.sessionSecurityGeneration,
-      }
-    : undefined;
+const sessionSecurityContextOf = (req: Request): SessionSecurityContext => {
+  if (
+    req.sessionId &&
+    req.sessionSecurityGeneration !== undefined &&
+    req.sessionPersistent !== undefined
+  ) {
+    return {
+      sessionId: req.sessionId,
+      securityGeneration: req.sessionSecurityGeneration,
+      persistent: req.sessionPersistent,
+    };
+  }
+  throw unauthorized();
+};
+
+const setSecurityRotationCookie = (
+  res: Response,
+  ctx: AppContext,
+  rotation: SecuritySessionRotation | null,
+): void => {
+  if (rotation) {
+    setSessionCookie(res, ctx.config, rotation.sessionId, rotation.persistent);
+  }
+};
 
 /**
  * Admin 2FA management endpoints under `/admin/security/2fa` (§6.12, #400).
@@ -57,14 +80,14 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(twoFactorConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorConfirmRequest;
-      res.json(
-        await ctx.adminTwoFactor.confirmTotp(
-          req.authUser!.id,
-          code,
-          req.ip,
-          sessionSecurityContextOf(req),
-        ),
+      const result = await ctx.adminTwoFactor.confirmTotp(
+        req.authUser!.id,
+        code,
+        req.ip,
+        sessionSecurityContextOf(req),
       );
+      setSecurityRotationCookie(res, ctx, result.sessionRotation);
+      res.json(result.response);
     },
   );
 
@@ -73,12 +96,13 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(twoFactorDisableRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorDisableRequest;
-      await ctx.adminTwoFactor.disableTotp(
+      const result = await ctx.adminTwoFactor.disableTotp(
         req.authUser!.id,
         code,
         req.ip,
         sessionSecurityContextOf(req),
       );
+      setSecurityRotationCookie(res, ctx, result.sessionRotation);
       res.status(204).end();
     },
   );
@@ -98,30 +122,35 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(twoFactorEmailConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorEmailConfirmRequest;
-      res.json(
-        await ctx.adminTwoFactor.confirmEmail(
-          req.authUser!.id,
-          code,
-          req.ip,
-          sessionSecurityContextOf(req),
-        ),
+      const result = await ctx.adminTwoFactor.confirmEmail(
+        req.authUser!.id,
+        code,
+        req.ip,
+        sessionSecurityContextOf(req),
       );
+      setSecurityRotationCookie(res, ctx, result.sessionRotation);
+      res.json(result.response);
     },
   );
 
   router.post('/security/2fa/email/disable', async (req, res) => {
-    await ctx.adminTwoFactor.disableEmail(req.authUser!.id, req.ip, sessionSecurityContextOf(req));
+    const result = await ctx.adminTwoFactor.disableEmail(
+      req.authUser!.id,
+      req.ip,
+      sessionSecurityContextOf(req),
+    );
+    setSecurityRotationCookie(res, ctx, result.sessionRotation);
     res.status(204).end();
   });
 
   router.post('/security/2fa/recovery-codes', async (req, res) => {
-    res.json(
-      await ctx.adminTwoFactor.regenerateRecoveryCodes(
-        req.authUser!.id,
-        req.ip,
-        sessionSecurityContextOf(req),
-      ),
+    const result = await ctx.adminTwoFactor.regenerateRecoveryCodes(
+      req.authUser!.id,
+      req.ip,
+      sessionSecurityContextOf(req),
     );
+    setSecurityRotationCookie(res, ctx, result.sessionRotation);
+    res.json(result.response);
   });
 }
 

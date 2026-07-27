@@ -141,7 +141,19 @@ export function requireAdminTwoFactor(ctx: AppContext): RequestHandler {
         next();
         return;
       }
-      if (await ctx.twoFactor.isEnabled(req.authUser.id)) {
+      const authorization = await ctx.twoFactor.getAuthorizationState(req.authUser.id);
+      if (
+        !authorization ||
+        req.sessionSecurityGeneration === undefined ||
+        authorization.securityGeneration !== req.sessionSecurityGeneration
+      ) {
+        // `loadSession` proved a specific generation earlier in this request.
+        // Recheck it at the final bootstrap gate so a sibling resolved at G
+        // cannot inherit factor assurance committed later at G+1.
+        next(unauthorized());
+        return;
+      }
+      if (authorization.enabled) {
         next();
         return;
       }

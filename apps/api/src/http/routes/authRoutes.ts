@@ -1,4 +1,4 @@
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 
 import {
   acceptInviteRequestSchema,
@@ -49,7 +49,10 @@ import {
 } from '@bettertrack/contracts';
 
 import { ApiError, badRequest, notFound, unauthorized } from '../../errors';
-import type { SecurityMutationContext } from '../../services/sessions/sessionService';
+import type {
+  SecurityMutationContext,
+  SecuritySessionRotation,
+} from '../../services/sessions/sessionService';
 import {
   clearGoogleOAuthStateCookie,
   clearGoogleRegisterTicketCookie,
@@ -70,10 +73,15 @@ import { toMeResponse, toMeResponseFromRow } from '../serializers';
 import type { AppContext } from '../context';
 
 const securityMutationContextOf = (req: Request): SecurityMutationContext => {
-  if (req.sessionId && req.sessionSecurityGeneration !== undefined) {
+  if (
+    req.sessionId &&
+    req.sessionSecurityGeneration !== undefined &&
+    req.sessionPersistent !== undefined
+  ) {
     return {
       sessionId: req.sessionId,
       securityGeneration: req.sessionSecurityGeneration,
+      persistent: req.sessionPersistent,
     };
   }
   if (req.apiKey) {
@@ -83,6 +91,16 @@ const securityMutationContextOf = (req: Request): SecurityMutationContext => {
   // authentication attached no generation proof, so a security write must fail
   // closed instead of silently falling back to an unfenced user-id update.
   throw unauthorized();
+};
+
+const setSecurityRotationCookie = (
+  res: Response,
+  ctx: AppContext,
+  rotation: SecuritySessionRotation | null,
+): void => {
+  if (rotation) {
+    setSessionCookie(res, ctx.config, rotation.sessionId, rotation.persistent);
+  }
 };
 
 /** Auth endpoints (PROJECTPLAN.md §6.1, §8). Controllers stay thin. */
@@ -395,14 +413,14 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(twoFactorConfirmRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as TwoFactorConfirmRequest;
-      res.json(
-        await ctx.twoFactor.confirmTotp(
-          req.authUser!.id,
-          body.code,
-          req.ip,
-          securityMutationContextOf(req),
-        ),
+      const result = await ctx.twoFactor.confirmTotp(
+        req.authUser!.id,
+        body.code,
+        req.ip,
+        securityMutationContextOf(req),
       );
+      setSecurityRotationCookie(res, ctx, result.sessionRotation);
+      res.json(result.response);
     },
   );
 
@@ -412,12 +430,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(twoFactorDisableRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as TwoFactorDisableRequest;
-      await ctx.twoFactor.disableTotp(
+      const result = await ctx.twoFactor.disableTotp(
         req.authUser!.id,
         body.code,
         req.ip,
         securityMutationContextOf(req),
       );
+      setSecurityRotationCookie(res, ctx, result.sessionRotation);
       res.json({ ok: true });
     },
   );
@@ -436,19 +455,24 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(twoFactorEmailConfirmRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as TwoFactorEmailConfirmRequest;
-      res.json(
-        await ctx.twoFactor.confirmEmail(
-          req.authUser!.id,
-          body.code,
-          req.ip,
-          securityMutationContextOf(req),
-        ),
+      const result = await ctx.twoFactor.confirmEmail(
+        req.authUser!.id,
+        body.code,
+        req.ip,
+        securityMutationContextOf(req),
       );
+      setSecurityRotationCookie(res, ctx, result.sessionRotation);
+      res.json(result.response);
     },
   );
 
   router.post('/2fa/email/disable', requireUser, async (req, res) => {
-    await ctx.twoFactor.disableEmail(req.authUser!.id, req.ip, securityMutationContextOf(req));
+    const result = await ctx.twoFactor.disableEmail(
+      req.authUser!.id,
+      req.ip,
+      securityMutationContextOf(req),
+    );
+    setSecurityRotationCookie(res, ctx, result.sessionRotation);
     res.json({ ok: true });
   });
 
@@ -457,13 +481,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   });
 
   router.post('/2fa/recovery-codes', requireUser, async (req, res) => {
-    res.json(
-      await ctx.twoFactor.regenerateRecoveryCodes(
-        req.authUser!.id,
-        req.ip,
-        securityMutationContextOf(req),
-      ),
+    const result = await ctx.twoFactor.regenerateRecoveryCodes(
+      req.authUser!.id,
+      req.ip,
+      securityMutationContextOf(req),
     );
+    setSecurityRotationCookie(res, ctx, result.sessionRotation);
+    res.json(result.response);
   });
 
   // ── Passkeys / WebAuthn (§13.4 V4-P4) ───────────────────────────────────────

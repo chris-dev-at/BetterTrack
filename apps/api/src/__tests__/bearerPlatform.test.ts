@@ -438,10 +438,9 @@ describe('#888 bearer 2FA generation interleavings', () => {
   it('allows only one of two bearer factor mutations admitted at the same generation', async () => {
     const { token, userId } = await mintKey(['account:security']);
     const { secret } = await harness.ctx.twoFactor.enrollTotp(userId);
-    const { recoveryCodes } = await harness.ctx.twoFactor.confirmTotp(
-      userId,
-      generateTotpCode(secret),
-    );
+    const { recoveryCodes } = (
+      await harness.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret))
+    ).response;
     expect(recoveryCodes).not.toBeNull();
 
     const twoFactorRepo = createTwoFactorRepository(harness.db);

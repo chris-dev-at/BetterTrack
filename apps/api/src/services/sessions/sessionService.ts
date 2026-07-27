@@ -25,19 +25,30 @@ export interface SessionData {
   persistent?: boolean;
 }
 
-/**
- * Generation proof carried from authentication into an account-security
- * mutation. Bearer callers deliberately have no `sessionId`; cookie callers
- * use the narrower {@link SessionSecurityContext}.
- */
-export interface SecurityMutationContext {
+/** Generation proof carried by a bearer-authenticated security mutation. */
+export interface BearerSecurityMutationContext {
   securityGeneration: number;
-  sessionId?: string;
+  sessionId?: undefined;
+  persistent?: undefined;
 }
 
-/** Generation proof for a security mutation authenticated by a cookie session. */
-export interface SessionSecurityContext extends SecurityMutationContext {
+/**
+ * Generation proof for a security mutation authenticated by a cookie session.
+ * Persistence is captured when the request resolves so a post-commit rotation
+ * never needs to reread the old session, which may already have been revoked.
+ */
+export interface SessionSecurityContext {
+  securityGeneration: number;
   sessionId: string;
+  persistent: boolean;
+}
+
+export type SecurityMutationContext = BearerSecurityMutationContext | SessionSecurityContext;
+
+/** Fresh cookie session minted after a durable account-security transition. */
+export interface SecuritySessionRotation {
+  sessionId: string;
+  persistent: boolean;
 }
 
 /** Back-compat default: a session with no marker is persistent (pre-V4-P2b). */
@@ -87,16 +98,19 @@ export interface SessionService {
   create(userId: string, securityGeneration: number, persistent?: boolean): Promise<string>;
   get(sessionId: string): Promise<SessionData | null>;
   /**
-   * Move one already-authenticated session from the generation it proved to the
-   * exact generation committed by its security mutation. Atomic compare/rewrite
-   * preserves the session's id, timestamps, persistence, and remaining TTL.
+   * Reissue the authenticated device after a durable security transition.
+   *
+   * The new generation is always minted onto a distinct id before old sessions
+   * are cleaned up. A resolver that cached the old payload can therefore delete
+   * only that old id, regardless of whether its cleanup lands before or after
+   * this handoff. Sibling cleanup is best effort because the durable generation
+   * already makes every old cookie invalid.
    */
-  rebindSecurityGeneration(
-    sessionId: string,
+  rotateAfterSecurityMutation(
     userId: string,
-    expectedSecurityGeneration: number,
     securityGeneration: number,
-  ): Promise<boolean>;
+    persistent: boolean,
+  ): Promise<SecuritySessionRotation>;
   /** Reset the session's window (login / PIN verify), honouring its persistence. False if already gone. */
   renew(sessionId: string): Promise<boolean>;
   /**
@@ -138,19 +152,6 @@ export interface SessionService {
 const sessionKey = (sessionId: string) => `sess:${sessionId}`;
 const userIndexKey = (userId: string) => `user_sessions:${userId}`;
 const sessionMetaKey = (sessionId: string) => `sess_meta:${sessionId}`;
-
-const REBIND_SECURITY_GENERATION_SCRIPT = `
-local current = redis.call('GET', KEYS[1])
-if not current or current ~= ARGV[1] then
-  return 0
-end
-local ttl = redis.call('PTTL', KEYS[1])
-if ttl <= 0 then
-  return 0
-end
-redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
-return 1
-`;
 
 /** How stale last-seen must be before a request rewrites it (V3-P11a). */
 export const LAST_SEEN_THROTTLE_MS = 60_000;
@@ -256,40 +257,15 @@ export function createSessionService(
       }
     },
 
-    async rebindSecurityGeneration(
-      sessionId,
-      userId,
-      expectedSecurityGeneration,
-      securityGeneration,
-    ) {
-      if (
-        !Number.isSafeInteger(expectedSecurityGeneration) ||
-        expectedSecurityGeneration < 0 ||
-        !Number.isSafeInteger(securityGeneration) ||
-        securityGeneration <= expectedSecurityGeneration
-      ) {
-        return false;
-      }
-      const key = sessionKey(sessionId);
-      const raw = await redis.get(key);
-      if (!raw) return false;
-      let data: SessionData;
+    async rotateAfterSecurityMutation(userId, securityGeneration, persistent) {
+      const sessionId = await service.create(userId, securityGeneration, persistent);
       try {
-        data = JSON.parse(raw) as SessionData;
+        await service.revokeOthersForUser(userId, sessionId);
       } catch {
-        await redis.del(key);
-        return false;
+        // The committed generation already fences any old cookie that eager
+        // cleanup could not reach. Never discard the freshly minted handoff.
       }
-      if (
-        data.userId !== userId ||
-        !Number.isSafeInteger(data.securityGeneration) ||
-        data.securityGeneration !== expectedSecurityGeneration
-      ) {
-        return false;
-      }
-      const next = JSON.stringify({ ...data, securityGeneration });
-      const rebound = await redis.eval(REBIND_SECURITY_GENERATION_SCRIPT, 1, key, raw, next);
-      return Number(rebound) === 1;
+      return { sessionId, persistent };
     },
 
     async renew(sessionId) {

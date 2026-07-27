@@ -40,23 +40,35 @@ describe('sessionService', () => {
     expect(data?.renewedAt).toBeGreaterThan(0);
   });
 
-  it('rebinds only the exact authenticated session generation and preserves its TTL', async () => {
-    const sessions = createSessionService(redis, 100);
-    const id = await sessions.create('user-1', 3);
-    await redis.expire(sessKey(id), 40);
+  it.each(['before', 'after'] as const)(
+    'rotates onto a distinct id when stale cleanup lands %s the handoff',
+    async (cleanupOrder) => {
+      const sessions = createSessionService(redis, 100);
+      const old = await sessions.create('user-1', 3, false);
+      const sibling = await sessions.create('user-1', 3, true);
 
-    expect(await sessions.rebindSecurityGeneration(id, 'user-1', 3, 4)).toBe(true);
-    expect((await sessions.get(id))?.securityGeneration).toBe(4);
-    const ttl = await redis.ttl(sessKey(id));
-    expect(ttl).toBeGreaterThan(0);
-    expect(ttl).toBeLessThanOrEqual(40);
+      // A resolver has already cached the old generation-3 payload.
+      expect((await sessions.get(old))?.securityGeneration).toBe(3);
+      if (cleanupOrder === 'before') await sessions.destroy(old);
 
-    // A sibling/stale request cannot overwrite the newly rebound generation,
-    // and a caller cannot rebind a session owned by another user.
-    expect(await sessions.rebindSecurityGeneration(id, 'user-1', 3, 5)).toBe(false);
-    expect(await sessions.rebindSecurityGeneration(id, 'user-2', 4, 5)).toBe(false);
-    expect((await sessions.get(id))?.securityGeneration).toBe(4);
-  });
+      const rotation = await sessions.rotateAfterSecurityMutation('user-1', 4, false);
+
+      // A delayed stale resolver can still run its old-id cleanup after the
+      // rotation. Because the handoff has a distinct id, it cannot erase it.
+      if (cleanupOrder === 'after') await sessions.destroy(old);
+
+      expect(rotation.sessionId).not.toBe(old);
+      expect(rotation).toMatchObject({ persistent: false });
+      expect(await sessions.get(old)).toBeNull();
+      expect(await sessions.get(sibling)).toBeNull();
+      expect(await sessions.get(rotation.sessionId)).toMatchObject({
+        userId: 'user-1',
+        securityGeneration: 4,
+        persistent: false,
+      });
+      expect(await sessions.listForUser('user-1', rotation.sessionId)).toHaveLength(1);
+    },
+  );
 
   it('does NOT extend the window on get — the window is fixed, not rolling', async () => {
     const sessions = createSessionService(redis, 100);
