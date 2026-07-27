@@ -254,6 +254,20 @@ describe('googleVerifier — ID-token verification (§13.4 V4-P4b)', () => {
     expect(non2xxError).toBe('Google token exchange failed (401)');
     assertSafeError(non2xxError);
 
+    const malformedJsonError = await rejectionMessage(
+      createGoogleVerifier({
+        clientId: CLIENT_ID,
+        clientSecret,
+        fetchImpl: (async () =>
+          new Response(`{\"id_token\":\"${tokenContents}`, {
+            headers: { 'content-type': 'application/json' },
+          })) as typeof fetch,
+        keyResolver,
+      }).exchangeAndVerify({ code: authorizationCode, redirectUri: 'r' }),
+    );
+    expect(malformedJsonError).toBe('Google token response missing id_token');
+    assertSafeError(malformedJsonError);
+
     for (const malformedResponse of [
       { error_description: responseBody },
       { id_token: '', error_description: responseBody },

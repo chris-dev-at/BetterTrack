@@ -96,7 +96,16 @@ export function createGoogleVerifier(deps: CreateGoogleVerifierDeps): GoogleToke
       if (!res.ok) {
         throw new Error(`Google token exchange failed (${res.status})`);
       }
-      const idToken = idTokenFromResponse(await res.json());
+      let tokenResponse: unknown;
+      try {
+        tokenResponse = await res.json();
+      } catch {
+        // JSON parser errors can echo a prefix of the response body. The caller
+        // logs thrown errors, so map them to the same safe malformed-response
+        // error used when an id_token is absent or invalid.
+        throw new Error('Google token response missing id_token');
+      }
+      const idToken = idTokenFromResponse(tokenResponse);
       if (typeof idToken !== 'string' || idToken.length === 0) {
         throw new Error('Google token response missing id_token');
       }
