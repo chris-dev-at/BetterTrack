@@ -837,10 +837,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     );
   }
 
-  // Compatibility for out-of-scope v1 secretBox consumers. Selecting the oldest
-  // split cookie key avoids the historical whole-string rotation bug. TOTP and
-  // Discord do not use this field anymore; they use `recordEncryption`.
-  const compatibilityKeyMaterial = e.TOTP_ENCRYPTION_KEY ?? `bt-2fa:${sessionSecrets.at(-1)!}`;
+  // Compatibility for out-of-scope v1 secretBox consumers. Preserve the exact
+  // pre-#879 derivation, including a raw comma-separated cookie-rotation list,
+  // so their existing envelopes remain readable. TOTP and Discord use
+  // `recordEncryption` instead.
+  const compatibilityKeyMaterial = e.TOTP_ENCRYPTION_KEY ?? `bt-2fa:${e.SESSION_SECRET}`;
   const twoFactorEncryptionKey = legacyTwoFactorKey(compatibilityKeyMaterial);
 
   return {
