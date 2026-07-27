@@ -85,9 +85,8 @@ export function createCustomAssetsRouter(ctx: AppContext): Router {
   router.put(
     '/:id/value-points',
     validateParams(customAssetIdParamSchema),
-    validateBody(putValuePointsRequestSchema),
     idempotency,
-    withIdempotencyExecution(async (req, res) => {
+    withIdempotencyExecution(validateBody(putValuePointsRequestSchema), async (req, res) => {
       const { id } = req.valid?.params as { id: string };
       const { points } = req.valid?.body as PutValuePointsRequest;
       const stored = await ctx.customAssets.putValuePoints(req.authUser!.id, id, points);

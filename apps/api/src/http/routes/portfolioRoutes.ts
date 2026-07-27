@@ -235,9 +235,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/cash/deposit',
     validateParams(portfolioIdParamSchema),
-    validateBody(cashEntryRequestSchema),
     idempotency,
-    withIdempotencyExecution(async (req, res) => {
+    withIdempotencyExecution(validateBody(cashEntryRequestSchema), async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CashEntryRequest;
       const result = await ctx.mirror.submitCashDeposit(req.authUser!.id, portfolioId, body);
@@ -249,9 +248,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/cash/withdraw',
     validateParams(portfolioIdParamSchema),
-    validateBody(cashEntryRequestSchema),
     idempotency,
-    withIdempotencyExecution(async (req, res) => {
+    withIdempotencyExecution(validateBody(cashEntryRequestSchema), async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CashEntryRequest;
       const result = await ctx.mirror.submitCashWithdraw(req.authUser!.id, portfolioId, body);
@@ -378,9 +376,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/cash/transfer',
     validateParams(portfolioIdParamSchema),
-    validateBody(cashTransferRequestSchema),
     idempotency,
-    withIdempotencyExecution(async (req, res) => {
+    withIdempotencyExecution(validateBody(cashTransferRequestSchema), async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CashTransferRequest;
       const result = await ctx.mirror.submitCashTransfer(req.authUser!.id, portfolioId, body);
@@ -393,9 +390,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/cash/sources/:sourceId/set-balance',
     validateParams(cashSourceParamsSchema),
-    validateBody(setCashBalanceRequestSchema),
     idempotency,
-    withIdempotencyExecution(async (req, res) => {
+    withIdempotencyExecution(validateBody(setCashBalanceRequestSchema), async (req, res) => {
       const { portfolioId, sourceId } = req.valid?.params as {
         portfolioId: string;
         sourceId: string;
@@ -580,9 +576,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/transactions',
     validateParams(portfolioIdParamSchema),
-    validateBody(createTransactionsRequestSchema),
     idempotency,
-    withIdempotencyExecution(async (req, res) => {
+    withIdempotencyExecution(validateBody(createTransactionsRequestSchema), async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CreateTransactionsRequest;
       const inputs: TransactionInput[] = 'transactions' in body ? body.transactions : [body];
@@ -599,9 +594,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.patch(
     '/:portfolioId/transactions/:txId',
     validateParams(portfolioTransactionParamsSchema),
-    validateBody(updateTransactionRequestSchema),
     idempotency,
-    withIdempotencyExecution(async (req, res) => {
+    withIdempotencyExecution(validateBody(updateTransactionRequestSchema), async (req, res) => {
       const { portfolioId, txId } = req.valid?.params as { portfolioId: string; txId: string };
       const { baseSeq, ...patch } = req.valid?.body as UpdateTransactionRequest;
       const transaction = await ctx.mirror.submitTransactionUpdate(
@@ -620,9 +614,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.delete(
     '/:portfolioId/transactions/:txId',
     validateParams(portfolioTransactionParamsSchema),
-    validateBody(mirrorGuardRequestSchema),
     idempotency,
-    withIdempotencyExecution(async (req, res) => {
+    withIdempotencyExecution(validateBody(mirrorGuardRequestSchema), async (req, res) => {
       const { portfolioId, txId } = req.valid?.params as { portfolioId: string; txId: string };
       const { baseSeq } = req.valid?.body as MirrorGuardRequest;
       await ctx.mirror.submitTransactionDelete(req.authUser!.id, portfolioId, txId, { baseSeq });

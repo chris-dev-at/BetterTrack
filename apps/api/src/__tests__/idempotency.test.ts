@@ -100,14 +100,18 @@ function invokeIdempotency(
   });
 }
 
-async function invokeIdempotencyHandler(
-  handler: RequestHandler,
+async function invokeIdempotencyHandlers(
+  handlers: [RequestHandler, ...RequestHandler[]],
   req: Request,
   res: IdempotencyTestResponse,
 ): Promise<void> {
-  await withIdempotencyExecution(handler)(req, res as unknown as Response, (error?: unknown) => {
-    if (error) throw error;
-  });
+  await withIdempotencyExecution(...handlers)(
+    req,
+    res as unknown as Response,
+    (error?: unknown) => {
+      if (error) throw error;
+    },
+  );
 }
 
 function deferred<T>() {
@@ -276,10 +280,15 @@ describe('idempotency — response settlement', () => {
     const mutation = deferred<void>();
     let handlerRun = Promise.resolve();
     const next = vi.fn(() => {
-      handlerRun = invokeIdempotencyHandler(
-        async () => {
-          await mutation.promise;
-        },
+      handlerRun = invokeIdempotencyHandlers(
+        [
+          (_req, _res, continueAfterValidation) => {
+            continueAfterValidation();
+          },
+          async () => {
+            await mutation.promise;
+          },
+        ],
         idempotencyRequest(key),
         first,
       );
@@ -315,6 +324,49 @@ describe('idempotency — response settlement', () => {
     expect(memory.wonClaims()).toBe(2);
   });
 
+  it('releases a closed response after post-claim validation rejects', async () => {
+    const memory = createMemoryIdempotencyRepository();
+    const logger = { warn: vi.fn() };
+    const middleware = responseSettlementMiddleware(memory.repo, logger);
+    const key = randomUUID();
+    const first = new IdempotencyTestResponse();
+    const validationError = new Error('invalid body');
+    const terminalHandler = vi.fn();
+    let forwardedError: unknown;
+    let executionRun = Promise.resolve();
+    const next = vi.fn(() => {
+      const result = withIdempotencyExecution((_req, _res, failValidation) => {
+        failValidation(validationError);
+      }, terminalHandler)(
+        idempotencyRequest(key),
+        first as unknown as Response,
+        (error?: unknown) => {
+          forwardedError = error;
+        },
+      );
+      executionRun = Promise.resolve(result).then(() => undefined);
+    });
+
+    middleware(idempotencyRequest(key), first as unknown as Response, next);
+    await vi.waitFor(() => {
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+    first.emit('close');
+    await executionRun;
+    await vi.waitFor(() => {
+      expect(memory.release).toHaveBeenCalledTimes(1);
+    });
+
+    expect(forwardedError).toBe(validationError);
+    expect(terminalHandler).not.toHaveBeenCalled();
+    expect(memory.complete).not.toHaveBeenCalled();
+
+    const retry = new IdempotencyTestResponse();
+    await invokeIdempotency(middleware, idempotencyRequest(key), retry);
+
+    expect(memory.wonClaims()).toBe(2);
+  });
+
   it('releases an already-complete no-response handler as soon as its response closes', async () => {
     const memory = createMemoryIdempotencyRepository();
     const logger = { warn: vi.fn() };
@@ -323,7 +375,11 @@ describe('idempotency — response settlement', () => {
     const first = new IdempotencyTestResponse();
     let handlerRun = Promise.resolve();
     const next = vi.fn(() => {
-      handlerRun = invokeIdempotencyHandler(async () => undefined, idempotencyRequest(key), first);
+      handlerRun = invokeIdempotencyHandlers(
+        [async () => undefined],
+        idempotencyRequest(key),
+        first,
+      );
     });
 
     middleware(idempotencyRequest(key), first as unknown as Response, next);
@@ -353,13 +409,15 @@ describe('idempotency — response settlement', () => {
     const mutation = deferred<void>();
     let handlerRun = Promise.resolve();
     const next = vi.fn(() => {
-      handlerRun = invokeIdempotencyHandler(
-        async () => {
-          await mutation.promise;
-          first.statusCode = 201;
-          first.setHeader('Content-Type', 'application/json');
-          first.send('{"movement":{"id":"abandoned"}}');
-        },
+      handlerRun = invokeIdempotencyHandlers(
+        [
+          async () => {
+            await mutation.promise;
+            first.statusCode = 201;
+            first.setHeader('Content-Type', 'application/json');
+            first.send('{"movement":{"id":"abandoned"}}');
+          },
+        ],
         idempotencyRequest(key),
         first,
       );
@@ -697,6 +755,31 @@ describe('idempotency — concurrency, conflicts, scoping', () => {
     expect(await movementCount(pid)).toBe(1); // the second body never executed
   });
 
+  it('completed key plus an invalid different body → IDEMPOTENCY_KEY_MISMATCH before validation', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const key = randomUUID();
+    const path = `/api/v1/portfolios/${pid}/cash/deposit`;
+
+    const first = await agent
+      .post(path)
+      .set(...XRW)
+      .set(IK, key)
+      .send({ amountEur: 100 });
+    expect(first.status).toBe(201);
+
+    const clash = await agent
+      .post(path)
+      .set(...XRW)
+      .set(IK, key)
+      .send({ amountEur: 'invalid' });
+
+    expect(clash.status).toBe(409);
+    expect(clash.body.error.code).toBe('IDEMPOTENCY_KEY_MISMATCH');
+    expect(await movementCount(pid)).toBe(1);
+  });
+
   it('keys are per-user: user B reusing user A’s key is unaffected by A’s response', async () => {
     const userA = await harness.seedUser({ email: 'a@bt.test', username: 'usera' });
     const userB = await harness.seedUser({ email: 'b@bt.test', username: 'userb' });
@@ -735,6 +818,22 @@ describe('idempotency — concurrency, conflicts, scoping', () => {
       .set(...XRW)
       .set(IK, 'not-a-uuid')
       .send({ amountEur: 100 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('IDEMPOTENCY_KEY_INVALID');
+    expect(await movementCount(pid)).toBe(0);
+  });
+
+  it('malformed key plus invalid body → IDEMPOTENCY_KEY_INVALID before validation', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+
+    const res = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .set(IK, 'not-a-uuid')
+      .send({ amountEur: 'invalid' });
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('IDEMPOTENCY_KEY_INVALID');

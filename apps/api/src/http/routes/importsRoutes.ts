@@ -95,9 +95,8 @@ export function createImportsRouter(ctx: AppContext): Router {
   router.post(
     '/:batchId/apply',
     validateParams(importBatchIdParamSchema),
-    validateBody(applyImportRequestSchema),
     idempotency,
-    withIdempotencyExecution(async (req, res) => {
+    withIdempotencyExecution(validateBody(applyImportRequestSchema), async (req, res) => {
       const { batchId } = req.valid?.params as { batchId: string };
       const body = req.valid?.body as ApplyImportRequest;
       const result = await ctx.imports.applyBatch(req.authUser!.id, batchId, body);

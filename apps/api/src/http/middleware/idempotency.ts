@@ -115,14 +115,18 @@ interface IdempotencyExecution {
 const idempotencyExecutions = new WeakMap<Response, IdempotencyExecution>();
 
 /**
- * Mark the terminal handler of an idempotency-protected route as complete.
+ * Mark the full post-claim path of an idempotency-protected route as complete.
  *
  * A socket `close` does not cancel an async Express handler. This wrapper lets
- * the close path defer release until that handler has stopped, preventing a
- * matching retry from entering while a mutation is still underway. Use it only
- * for the route's terminal handler; validation belongs before idempotency.
+ * the close path defer release until validation and the terminal handler have
+ * stopped, preventing a matching retry from entering while a mutation is still
+ * underway. Keeping validation inside this boundary also preserves the HTTP
+ * contract: idempotency inspects the key and raw-body hash before schema
+ * validation.
  */
-export function withIdempotencyExecution(handler: RequestHandler): RequestHandler {
+export function withIdempotencyExecution(
+  ...handlers: [RequestHandler, ...RequestHandler[]]
+): RequestHandler {
   return async (req, res, next) => {
     const execution = idempotencyExecutions.get(res);
     if (execution?.isResponseClosed()) {
@@ -130,8 +134,35 @@ export function withIdempotencyExecution(handler: RequestHandler): RequestHandle
       return;
     }
 
+    const dispatch = async (index: number): Promise<void> => {
+      const handler = handlers[index];
+      if (!handler) {
+        next();
+        return;
+      }
+
+      let continued = false;
+      let continuation: Promise<void> | undefined;
+      const scopedNext: Parameters<RequestHandler>[2] = (error?: unknown) => {
+        if (continued) {
+          next(error);
+          return;
+        }
+        continued = true;
+        if (error !== undefined) {
+          next(error);
+          continuation = Promise.resolve();
+          return;
+        }
+        continuation = dispatch(index + 1);
+      };
+
+      await handler(req, res, scopedNext);
+      await continuation;
+    };
+
     try {
-      await handler(req, res, next);
+      await dispatch(0);
     } finally {
       execution?.complete();
     }
@@ -217,10 +248,11 @@ function captureAndPersist(
 }
 
 /**
- * Build the idempotency middleware bound to the app context. Mount it on a
- * mutation route AFTER the auth guard (so `req.authUser` is set) and validation — e.g.
- * `router.post(path, validateParams(...), validateBody(...), idempotency,
- * withIdempotencyExecution(handler))`.
+ * Build the idempotency middleware bound to the app context. Mount it after the
+ * auth guard and parameter validation (so `req.authUser` and the resource path
+ * are established), but before body validation:
+ * `router.post(path, validateParams(...), idempotency,
+ * withIdempotencyExecution(validateBody(...), handler))`.
  */
 export function createIdempotency(
   ctx: AppContext,
