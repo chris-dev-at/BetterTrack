@@ -374,6 +374,19 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
       twoFactorEmail: 'first@ops.test',
     });
 
+    // Issue a separate login challenge and send its code to the old address.
+    // The address-change commit below must invalidate both pieces of authority.
+    const staleChallenge = twoFactorChallengeResponseSchema.parse(
+      (await login(harness.app, admin.email, admin.password)).body,
+    );
+    const staleCodeRequest = await request(harness.app)
+      .post('/api/v1/auth/2fa/email-code')
+      .set(...XRW)
+      .send({ pendingToken: staleChallenge.pendingToken });
+    expect(staleCodeRequest.status).toBe(200);
+    expect(transport.sent.at(-1)!.to).toBe('first@ops.test');
+    const staleLoginCode = lastEmailedCode(transport);
+
     // Confirming another freshly-proved address is an update of the already
     // enabled method, not a second enrollment.
     const change = await agent
@@ -396,6 +409,18 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
       emailEnabled: true,
       twoFactorEmail: 'changed@ops.test',
     });
+
+    // A code already sent to the old 2FA address cannot cross the durable
+    // generation transition and mint a current administrator session.
+    const staleVerify = await request(harness.app)
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: staleChallenge.pendingToken, code: staleLoginCode });
+    expect(staleVerify.status).toBe(401);
+    expect(staleVerify.body.error.code).toBe('TWO_FACTOR_PENDING_INVALID');
+    expect(setsSessionCookie(staleVerify)).toBe(false);
+    expect(await harness.ctx.redis.get(`pending2fa:${staleChallenge.pendingToken}`)).toBeNull();
+    expect(await harness.ctx.redis.get(`2fa_email_code:${staleChallenge.pendingToken}`)).toBeNull();
   });
 });
 

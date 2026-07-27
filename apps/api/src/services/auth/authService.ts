@@ -351,6 +351,8 @@ const emailCodeKey = (token: string) => `2fa_email_code:${token}`;
 /** The Redis-side pending-2FA state — never a session, so no route honours it. */
 interface Pending2faState {
   userId: string;
+  /** Durable authority generation that established the first-factor proof. */
+  securityGeneration: number;
   /** A pre-login session id to rotate out on successful verify, if any. */
   priorSessionId?: string;
   /**
@@ -502,13 +504,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
    */
   async function issueTwoFactorChallenge(
     user: UserRow,
+    securityGeneration: number,
     ip?: string | null,
     priorSessionId?: string,
     persistent?: boolean,
   ): Promise<TwoFactorChallenge> {
     const methods = await twoFactor.getMethods(user.id);
     const pendingToken = randomBytes(32).toString('base64url');
-    const state: Pending2faState = { userId: user.id };
+    const state: Pending2faState = { userId: user.id, securityGeneration };
     if (priorSessionId) state.priorSessionId = priorSessionId;
     // Carry the password-step persistence choice to the verify step (V4-P2b).
     if (persistent !== undefined) state.persistent = persistent;
@@ -659,6 +662,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (await twoFactor.isEnabled(user.id)) {
         const challenge = await issueTwoFactorChallenge(
           user,
+          user.securityGeneration,
           ip,
           currentSessionId ?? undefined,
           persistent,
@@ -702,19 +706,26 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (!state) throw pendingInvalid();
       const { userId } = state;
 
+      const user = await userRepo.findById(userId);
+      if (
+        !user ||
+        user.status !== 'active' ||
+        !Number.isSafeInteger(state.securityGeneration) ||
+        state.securityGeneration !== user.securityGeneration
+      ) {
+        // The first-factor authority is valid only at the generation that
+        // issued this challenge. Password, factor, recovery, and role changes
+        // all advance it, so reject before consuming any second factor.
+        await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
+        throw pendingInvalid();
+      }
+
       // Already cooling down from prior wrong factors: reject before verifying so
       // blocked retries — even a correct code — cannot brute-force through the
       // cooldown (§10). Mirrors the password limiter's peek-before-check.
       const cooling = await twoFactorThrottle.peek(userId);
       if (cooling > 0) {
         throw tooManyRequests(cooling, 'Too many incorrect codes. Please wait and try again.');
-      }
-
-      const user = await userRepo.findById(userId);
-      if (!user || user.status !== 'active') {
-        // Account vanished/suspended mid-challenge: drop the pending state.
-        await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
-        throw pendingInvalid();
       }
 
       // 2FA turned off between challenge issue and verify: every factor now
@@ -766,7 +777,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Honour the persistence choice made at the password step (V4-P2b); a
       // reset-originated challenge carries none → persistent, today's behavior.
       const persistent = state.persistent ?? true;
-      const sessionId = await sessions.create(userId, user.securityGeneration, persistent);
+      const sessionId = await sessions.create(userId, state.securityGeneration, persistent);
 
       const now = new Date();
       await userRepo.setLastLogin(userId, now);
@@ -786,7 +797,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const state = await loadPending(pendingToken);
       if (!state) throw pendingInvalid();
       const user = await userRepo.findById(state.userId);
-      if (!user || user.status !== 'active') {
+      if (
+        !user ||
+        user.status !== 'active' ||
+        !Number.isSafeInteger(state.securityGeneration) ||
+        state.securityGeneration !== user.securityGeneration
+      ) {
         await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
         throw pendingInvalid();
       }
@@ -1087,7 +1103,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // on, withhold the session and require a second factor, mirroring login;
       // otherwise the reset lands the user signed in with no redundant prompt.
       if (await twoFactor.isEnabled(user.id)) {
-        const challenge = await issueTwoFactorChallenge(user, ip);
+        const challenge = await issueTwoFactorChallenge(user, securityGeneration, ip);
         return { status: 'two_factor_required', challenge };
       }
 
