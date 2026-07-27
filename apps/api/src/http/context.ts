@@ -524,6 +524,8 @@ export interface BuildContextDeps {
   googleVerifier?: GoogleTokenVerifier;
   /** Test seam: fast poll cadence / small ring for Live Mode tests (V3-P7b). */
   liveModeOptions?: LiveModeServiceOptions;
+  /** Test seam: deterministic process-local realtime command-bucket clock. */
+  realtimeCommandNow?: () => number;
   /**
    * Test seam (#368): the notification center's transport. Defaults to the
    * durable BullMQ enqueue in production and to a direct synchronous
@@ -1569,6 +1571,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     bus: events,
     logger,
     redis,
+    realtimeCommandNow: deps.realtimeCommandNow,
     resolveSession: async (sessionId, userAgent) => {
       const resolved = await auth.resolveSession(sessionId, userAgent);
       if (!resolved) return null;

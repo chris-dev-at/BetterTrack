@@ -46,6 +46,7 @@ import type { PresenceStore } from '../services/notifications/presence';
 import {
   createRealtimeAdmission,
   createRealtimeTokenBucket,
+  REALTIME_ADMISSION_LEASE_TTL_MS,
   REALTIME_ADMISSION_RENEW_INTERVAL_MS,
   type RealtimeAdmission,
   type RealtimeAdmissionOptions,
@@ -197,6 +198,8 @@ export interface RealtimeGatewayDeps {
   realtimeAdmissionOptions?: RealtimeAdmissionOptions;
   /** Optional fully-built admission primitive for focused gateway tests. */
   realtimeAdmission?: RealtimeAdmission;
+  /** Test seam for deterministic process-local command-bucket boundaries. */
+  realtimeCommandNow?: () => number;
   /**
    * Session-cookie → user resolution — the SAME path the HTTP session
    * middleware uses ({@link import('../services/auth/authService').AuthService}),
@@ -281,6 +284,20 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   const { config, bus, logger } = deps;
   const admission =
     deps.realtimeAdmission ?? createRealtimeAdmission(deps.redis, deps.realtimeAdmissionOptions);
+  const admissionLeaseTtlMs =
+    deps.realtimeAdmissionOptions?.leaseTtlMs ?? REALTIME_ADMISSION_LEASE_TTL_MS;
+  const admissionNow = deps.realtimeAdmissionOptions?.now ?? Date.now;
+  const admissionRenewIntervalMs = Math.min(
+    REALTIME_ADMISSION_RENEW_INTERVAL_MS,
+    Math.max(1, Math.floor(admissionLeaseTtlMs / 3)),
+  );
+  // Disconnect before Redis may consider the lease expired. This leaves enough
+  // room for disconnect cleanup to queue its token-scoped release behind a
+  // delayed renewal without ever trusting that renewal's late settlement.
+  const admissionDeadlineSlackMs = Math.min(
+    1_000,
+    Math.max(1, Math.floor(admissionLeaseTtlMs / 10)),
+  );
   let io: SocketIOServer | null = null;
   let principalRevalidationTimer: ReturnType<typeof setInterval> | null = null;
   let principalRevalidationRunning = false;
@@ -404,6 +421,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     leaseId: string;
     userId: string;
     bearerCredentialId: string | null;
+    expiresAtMs: number;
     released: boolean;
   };
 
@@ -424,6 +442,54 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
 
   const preConnectCloseFenceOf = (socket: Socket): PreConnectCloseFence | null =>
     (socket.data.preConnectCloseFence as PreConnectCloseFence | undefined) ?? null;
+
+  class AdmissionLeaseDeadlineError extends Error {
+    constructor() {
+      super('realtime admission lease renewal missed its local deadline');
+      this.name = 'AdmissionLeaseDeadlineError';
+    }
+  }
+
+  /**
+   * A Redis command may remain pending indefinitely when ioredis is reconnecting.
+   * Settle at most once before the locally-known lease cutoff; late fulfilment is
+   * ignored, while the caller's token-scoped release fences any delayed Redis
+   * execution from reviving work after disconnect.
+   */
+  async function renewBeforeDeadline<T>(
+    expiresAtMs: number,
+    renew: () => Promise<T>,
+  ): Promise<{ value: T; expiresAtMs: number }> {
+    const startedAt = admissionNow();
+    const waitMs = expiresAtMs - admissionDeadlineSlackMs - startedAt;
+    if (waitMs <= 0) throw new AdmissionLeaseDeadlineError();
+
+    const operation = renew();
+    const value = await new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new AdmissionLeaseDeadlineError());
+      }, waitMs);
+      timer.unref?.();
+      void operation.then(
+        (result) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(result);
+        },
+        (err: unknown) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
+    return { value, expiresAtMs: startedAt + admissionLeaseTtlMs };
+  }
 
   function disarmPreConnectCloseFence(socket: Socket): void {
     const fence = preConnectCloseFenceOf(socket);
@@ -446,7 +512,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
 
   const socketCommandBucketOf = (socket: Socket): RealtimeTokenBucket =>
     (socket.data.commandBucket as RealtimeTokenBucket | undefined) ??
-    (socket.data.commandBucket = createRealtimeTokenBucket());
+    (socket.data.commandBucket = createRealtimeTokenBucket(
+      undefined,
+      undefined,
+      deps.realtimeCommandNow,
+    ));
 
   function admitSocketCommand(socket: Socket, ack: unknown): boolean {
     if (!socketCommandBucketOf(socket).consume()) {
@@ -555,10 +625,67 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     rateMs: number | undefined;
     leaseId: string;
     userId: string;
+    expiresAtMs: number;
   };
   const liveAssetsOf = (socket: Socket): Map<string, LiveWatchEntry> =>
     (socket.data.liveAssets as Map<string, LiveWatchEntry> | undefined) ??
     (socket.data.liveAssets = new Map<string, LiveWatchEntry>());
+
+  const pendingLiveWatchAssetsOf = (socket: Socket): Map<string, number> =>
+    (socket.data.pendingLiveWatchAssets as Map<string, number> | undefined) ??
+    (socket.data.pendingLiveWatchAssets = new Map<string, number>());
+
+  const liveWatchGenerationsOf = (socket: Socket): Map<string, number> =>
+    (socket.data.liveWatchGenerations as Map<string, number> | undefined) ??
+    (socket.data.liveWatchGenerations = new Map<string, number>());
+
+  const liveCleanupWatermarksOf = (socket: Socket): Map<string, number> =>
+    (socket.data.liveCleanupWatermarks as Map<string, number> | undefined) ??
+    (socket.data.liveCleanupWatermarks = new Map<string, number>());
+
+  const queuedLiveCleanupsOf = (socket: Socket): Set<string> =>
+    (socket.data.queuedLiveCleanups as Set<string> | undefined) ??
+    (socket.data.queuedLiveCleanups = new Set<string>());
+
+  function beginPendingLiveWatch(socket: Socket, assetId: string): number {
+    const pending = pendingLiveWatchAssetsOf(socket);
+    pending.set(assetId, (pending.get(assetId) ?? 0) + 1);
+    const generations = liveWatchGenerationsOf(socket);
+    const generation = (generations.get(assetId) ?? 0) + 1;
+    generations.set(assetId, generation);
+    return generation;
+  }
+
+  function pruneLiveIntent(socket: Socket, assetId: string): void {
+    if (
+      liveAssetsOf(socket).has(assetId) ||
+      (pendingLiveWatchAssetsOf(socket).get(assetId) ?? 0) > 0 ||
+      queuedLiveCleanupsOf(socket).has(assetId)
+    ) {
+      return;
+    }
+    liveCleanupWatermarksOf(socket).delete(assetId);
+    liveWatchGenerationsOf(socket).delete(assetId);
+  }
+
+  function finishPendingLiveWatch(socket: Socket, assetId: string): void {
+    const pending = pendingLiveWatchAssetsOf(socket);
+    const count = pending.get(assetId) ?? 0;
+    if (count > 1) pending.set(assetId, count - 1);
+    else pending.delete(assetId);
+    pruneLiveIntent(socket, assetId);
+  }
+
+  function markLiveCleanupIntent(socket: Socket, assetId: string): boolean {
+    const held = liveAssetsOf(socket).has(assetId);
+    const pending = (pendingLiveWatchAssetsOf(socket).get(assetId) ?? 0) > 0;
+    if (!held && !pending) return false;
+    const generations = liveWatchGenerationsOf(socket);
+    const generation = generations.get(assetId) ?? 0;
+    const watermarks = liveCleanupWatermarksOf(socket);
+    watermarks.set(assetId, Math.max(watermarks.get(assetId) ?? 0, generation));
+    return true;
+  }
 
   async function releaseConnectionLease(socket: Socket): Promise<void> {
     const lease = connectionLeaseOf(socket);
@@ -602,6 +729,23 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     }
   }
 
+  async function releaseCanceledLiveWatch(
+    socket: Socket,
+    assetId: string,
+    watchGeneration: number,
+  ): Promise<void> {
+    const watermarks = liveCleanupWatermarksOf(socket);
+    const cleanupThrough = watermarks.get(assetId);
+    if (cleanupThrough === undefined) return;
+    if (cleanupThrough < watchGeneration) {
+      // A later watch supersedes every older cleanup intent.
+      watermarks.delete(assetId);
+      return;
+    }
+    const entry = liveAssetsOf(socket).get(assetId);
+    if (entry) await releaseLiveWatch(socket, assetId, entry, true);
+  }
+
   function stopAdmissionHeartbeat(socket: Socket): void {
     const timer = socket.data.admissionHeartbeatTimer as ReturnType<typeof setInterval> | undefined;
     if (timer) clearInterval(timer);
@@ -617,16 +761,24 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       if (!lease || lease.released) return;
       socket.data.admissionHeartbeatRunning = true;
       void (async () => {
-        const connectionAlive = await admission.renewConnection(lease);
-        if (!connectionAlive) return false;
+        const connectionRenewal = await renewBeforeDeadline(lease.expiresAtMs, () =>
+          admission.renewConnection(lease),
+        );
+        if (connectionLeaseOf(socket) !== lease || lease.released) return false;
+        if (!connectionRenewal.value) return false;
+        lease.expiresAtMs = connectionRenewal.expiresAtMs;
         for (const [assetId, entry] of [...liveAssetsOf(socket)]) {
-          const alive = await admission.renewWatch({
-            leaseId: entry.leaseId,
-            userId: lease.userId,
-            assetId,
-          });
+          const watchRenewal = await renewBeforeDeadline(entry.expiresAtMs, () =>
+            admission.renewWatch({
+              leaseId: entry.leaseId,
+              userId: lease.userId,
+              assetId,
+            }),
+          );
           // An intentional unwatch may have completed while Redis renewed.
-          if (!alive && liveAssetsOf(socket).get(assetId) === entry) return false;
+          if (liveAssetsOf(socket).get(assetId) !== entry) continue;
+          if (!watchRenewal.value) return false;
+          entry.expiresAtMs = watchRenewal.expiresAtMs;
         }
         return true;
       })()
@@ -640,7 +792,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         .finally(() => {
           socket.data.admissionHeartbeatRunning = false;
         });
-    }, REALTIME_ADMISSION_RENEW_INTERVAL_MS);
+    }, admissionRenewIntervalMs);
     timer.unref?.();
     socket.data.admissionHeartbeatTimer = timer;
   }
@@ -670,6 +822,29 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   }
 
   /**
+   * A locally rate-limited cleanup cannot enqueue one operation per spam frame.
+   * Coalesce it per eligible asset; its generation watermark is retained so a
+   * watch queued behind this drain is still canceled only when the unwatch was
+   * observed after that watch submission.
+   */
+  function enqueueRateLimitedLiveCleanup(socket: Socket, assetId: string): void {
+    const queued = queuedLiveCleanupsOf(socket);
+    if (queued.has(assetId)) return;
+    queued.add(assetId);
+    void enqueueLiveOp(socket, async () => {
+      try {
+        const entry = liveAssetsOf(socket).get(assetId);
+        if (entry) await releaseLiveWatch(socket, assetId, entry, true);
+      } finally {
+        queued.delete(assetId);
+        pruneLiveIntent(socket, assetId);
+      }
+    }).catch((err) => {
+      logger.warn({ err, assetId }, 'rate-limited live unwatch cleanup failed');
+    });
+  }
+
+  /**
    * Hold finite cross-process start/backfill capacity while the ordered socket
    * operation resolves, starts, and stitches history. The event listener caps
    * this socket's pending starts before enqueueing; this global semaphore caps
@@ -684,7 +859,9 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     const leaseId = randomUUID();
     let acquired = false;
     let renewTimer: ReturnType<typeof setInterval> | null = null;
+    let renewRunning = false;
     let released = false;
+    let expiresAtMs = 0;
     const workLease = {
       async release(): Promise<void> {
         if (released) return;
@@ -694,11 +871,31 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         if (!acquired) return;
         await admission.releaseWatchStart(leaseId);
       },
+      expire(): void {
+        if (released) return;
+        released = true;
+        if (renewTimer) clearInterval(renewTimer);
+        renewTimer = null;
+        // The lease id fences delayed renewal execution: Redis processes this
+        // release after that renewal, while the TTL remains the outage backstop.
+        if (acquired) {
+          void admission.releaseWatchStart(leaseId).catch((err) => {
+            logger.warn({ err, userId: principal.userId }, 'live work lease expiry release failed');
+          });
+        }
+      },
     };
     try {
+      const acquireStartedAt = admissionNow();
+      expiresAtMs = acquireStartedAt + admissionLeaseTtlMs;
       acquired = await admission.acquireWatchStart(leaseId);
       if (!acquired) {
         respondError(ack, 'LIVE_WORK_BUSY');
+        return;
+      }
+      if (admissionNow() >= expiresAtMs - admissionDeadlineSlackMs) {
+        await workLease.release();
+        respondError(ack, 'UNAVAILABLE');
         return;
       }
       if (socket.disconnected) {
@@ -706,16 +903,27 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         return;
       }
       renewTimer = setInterval(() => {
-        void admission
-          .renewWatchStart(leaseId)
-          .then((alive) => {
-            if (!alive && !socket.disconnected) socket.disconnect(true);
+        if (released || renewRunning) return;
+        renewRunning = true;
+        void renewBeforeDeadline(expiresAtMs, () => admission.renewWatchStart(leaseId))
+          .then((renewal) => {
+            if (released) return;
+            if (!renewal.value) {
+              workLease.expire();
+              if (!socket.disconnected) socket.disconnect(true);
+              return;
+            }
+            expiresAtMs = renewal.expiresAtMs;
           })
           .catch((err) => {
             logger.warn({ err, userId: principal.userId }, 'live work lease renewal failed');
+            workLease.expire();
             if (!socket.disconnected) socket.disconnect(true);
+          })
+          .finally(() => {
+            renewRunning = false;
           });
-      }, REALTIME_ADMISSION_RENEW_INTERVAL_MS);
+      }, admissionRenewIntervalMs);
       renewTimer.unref?.();
       await handleLiveWatch(socket, principal, payload, ack);
     } catch (err) {
@@ -789,6 +997,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         return;
       }
       const leaseId = randomUUID();
+      const leaseExpiresAtMs = admissionNow() + admissionLeaseTtlMs;
       let admitted;
       try {
         admitted = await admission.acquireWatch({
@@ -803,6 +1012,13 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       }
       if (!admitted.ok) {
         respond({ ok: false, error: admitted.error });
+        return;
+      }
+      if (admissionNow() >= leaseExpiresAtMs - admissionDeadlineSlackMs) {
+        await admission
+          .releaseWatch({ leaseId, userId: principal.userId, assetId })
+          .catch(() => undefined);
+        respond({ ok: false, error: 'UNAVAILABLE' });
         return;
       }
       if (socket.disconnected) {
@@ -828,7 +1044,13 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         respond({ ok: false, error: 'LIVE_START_FAILED' });
         return;
       }
-      entry = { ref, rateMs, leaseId, userId: principal.userId };
+      entry = {
+        ref,
+        rateMs,
+        leaseId,
+        userId: principal.userId,
+        expiresAtMs: leaseExpiresAtMs,
+      };
       watched.set(assetId, entry);
       startedHere = true;
       try {
@@ -934,6 +1156,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     if (entry) {
       await releaseLiveWatch(socket, assetId, entry, true);
     }
+    pruneLiveIntent(socket, assetId);
     respond({ ok: true });
   }
 
@@ -1284,6 +1507,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
             leaseId: randomUUID(),
             userId: principal.userId,
             bearerCredentialId: bearerAdmissionCredential(principal),
+            expiresAtMs: admissionNow() + admissionLeaseTtlMs,
             released: false,
           };
           // Publish the lease to the close fence before the Redis await. The
@@ -1295,6 +1519,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
             lease.released = true;
             disarmPreConnectCloseFence(socket);
             next(handshakeError(decision.error));
+            return;
+          }
+          if (admissionNow() >= lease.expiresAtMs - admissionDeadlineSlackMs) {
+            await releaseConnectionLease(socket);
+            disarmPreConnectCloseFence(socket);
+            next(handshakeError('UNAVAILABLE'));
             return;
           }
           fence.admitted = true;
@@ -1379,16 +1609,34 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
             return;
           }
           socket.data.pendingWatchStarts = pending + 1;
+          const parsedWatch = realtimeLiveWatchRequestSchema.safeParse(payload);
+          const pendingWatch = parsedWatch.success
+            ? {
+                assetId: parsedWatch.data.assetId,
+                generation: beginPendingLiveWatch(socket, parsedWatch.data.assetId),
+              }
+            : null;
           const userAdmission = admitUserCommand(principal, ack);
           void enqueueLiveOp(socket, async () => {
             try {
               if (!(await userAdmission)) return;
               await handleBoundedLiveWatch(socket, principal, payload, ack);
             } finally {
-              socket.data.pendingWatchStarts = Math.max(
-                0,
-                ((socket.data.pendingWatchStarts as number | undefined) ?? 1) - 1,
-              );
+              try {
+                if (pendingWatch) {
+                  await releaseCanceledLiveWatch(
+                    socket,
+                    pendingWatch.assetId,
+                    pendingWatch.generation,
+                  );
+                }
+              } finally {
+                if (pendingWatch) finishPendingLiveWatch(socket, pendingWatch.assetId);
+                socket.data.pendingWatchStarts = Math.max(
+                  0,
+                  ((socket.data.pendingWatchStarts as number | undefined) ?? 1) - 1,
+                );
+              }
             }
           }).catch((err) => {
             logger.warn({ err, userId }, 'live watch failed');
@@ -1396,25 +1644,28 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.liveUnwatch, (payload: unknown, ack: unknown) => {
-          const socketAdmitted = admitSocketCommand(socket, ack);
           const parsed = realtimeLiveUnwatchRequestSchema.safeParse(payload);
-          const heldEntry = parsed.success
-            ? liveAssetsOf(socket).get(parsed.data.assetId)
-            : undefined;
+          const cleanupIntent =
+            parsed.success && markLiveCleanupIntent(socket, parsed.data.assetId);
+          const socketAdmitted = admitSocketCommand(socket, ack);
           // A cleanup frame is charged and may still report RATE_LIMITED, but an
-          // exhausted bucket must never turn it into a leaked renewable watch.
-          // Ignore rate-limited frames that cannot release anything so rejected
-          // spam cannot grow the ordered cleanup queue.
-          if (!socketAdmitted && !heldEntry) return;
-          const userAdmission = socketAdmitted
-            ? admitUserCommand(principal, ack)
-            : Promise.resolve(false);
+          // exhausted bucket must never turn a held OR pending watch into a
+          // renewable leak. Locally-rejected cleanup is coalesced per eligible
+          // asset, keeping hostile spam from growing the ordered queue.
+          if (!socketAdmitted) {
+            if (cleanupIntent && parsed.success) {
+              enqueueRateLimitedLiveCleanup(socket, parsed.data.assetId);
+            }
+            return;
+          }
+          const userAdmission = admitUserCommand(principal, ack);
           let commandAdmitted = false;
           void enqueueLiveOp(socket, async () => {
             commandAdmitted = await userAdmission;
             // Pass no ack after either bucket has already answered with an
-            // error; cleanup remains idempotent and still runs for the held row.
-            if (commandAdmitted || heldEntry) {
+            // error; cleanup remains idempotent and sees starts that were pending
+            // (and absent from the socket map) when this frame first arrived.
+            if (commandAdmitted || cleanupIntent) {
               await handleLiveUnwatch(socket, payload, commandAdmitted ? ack : undefined);
             }
           }).catch((err) => {

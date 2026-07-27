@@ -181,6 +181,39 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     expect(firstStub.calls.poll).toBe(firstFrozen);
     expect(secondStub.calls.poll).toBeGreaterThanOrEqual(2);
   });
+
+  it('fences an overdue owner tick after lease-expiry takeover', async () => {
+    const firstStub = createStubMarketData({ poll: () => quoteResult(100) });
+    const secondStub = createStubMarketData({ poll: () => quoteResult(200) });
+    const { service: first } = makeService(firstStub, {
+      intervalMs: 120,
+      maxIntervalMs: 120,
+      coordinationIntervalMs: 1_000,
+      leaderLeaseTtlMs: 60,
+      instanceId: 'paused-api-process',
+    });
+    const { service: second } = makeService(secondStub, {
+      intervalMs: 20,
+      maxIntervalMs: 80,
+      coordinationIntervalMs: 10,
+      leaderLeaseTtlMs: 60,
+      instanceId: 'takeover-api-process',
+    });
+
+    first.watch(ASSET_ID, REF, 120, false);
+    await vi.waitFor(() => expect(firstStub.calls.poll).toBe(1));
+    second.watch(ASSET_ID, REF, 20, true);
+
+    // Process A does not reconcile again before its lease expires. Process B
+    // reaps it and starts polling; A's already-scheduled 120 ms tick then wakes
+    // after takeover and must fail its local lease fence before provider work.
+    await vi.waitFor(() => expect(secondStub.calls.poll).toBeGreaterThanOrEqual(1), {
+      timeout: 1_000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 140));
+    expect(firstStub.calls.poll).toBe(1);
+    expect(secondStub.calls.poll).toBeGreaterThanOrEqual(1);
+  });
 });
 
 describe('liveModeService — provider distress (§5.3 politeness)', () => {

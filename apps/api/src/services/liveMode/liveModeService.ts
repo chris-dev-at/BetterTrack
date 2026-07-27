@@ -163,6 +163,8 @@ interface AssetLoop {
   coordinationAllowAcquire: boolean;
   coordinationNotifyPeers: boolean;
   leader: boolean;
+  /** Local work fence for the currently-proven Redis owner lease. */
+  leaderLeaseExpiresAt: number;
 }
 
 const liveLoopLeaderKey = (assetId: string): string =>
@@ -285,6 +287,11 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
    */
   function reschedule(assetId: string, loop: AssetLoop): void {
     if (closed || loops.get(assetId) !== loop || !loop.leader || loop.timer === null) return;
+    if (now() >= loop.leaderLeaseExpiresAt) {
+      stopPolling(loop);
+      requestCoordination(assetId, loop, true);
+      return;
+    }
     clearTimeout(loop.timer);
     const delay = Math.max(0, loop.lastTickAt + loop.intervalMs - now());
     loop.timer = setTimeout(() => void tick(assetId, loop), delay);
@@ -292,6 +299,7 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
 
   function stopPolling(loop: AssetLoop): void {
     loop.leader = false;
+    loop.leaderLeaseExpiresAt = 0;
     if (loop.timer) clearTimeout(loop.timer);
     loop.timer = null;
   }
@@ -338,14 +346,16 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         loop.coordinationQueued = false;
         loop.coordinationAllowAcquire = false;
         loop.coordinationNotifyPeers = false;
+        const coordinatedAt = now();
+        const leaseExpiresAt = coordinatedAt + leaderLeaseTtlMs;
         const result = (await deps.redis.eval(
           COORDINATE_LOOP_SCRIPT,
           3,
           liveLoopLeaderKey(assetId),
           liveLoopProcessesKey(assetId),
           liveLoopRatesKey(assetId),
-          now(),
-          now() + leaderLeaseTtlMs,
+          coordinatedAt,
+          leaseExpiresAt,
           loop.coordinationId,
           finestLocalRateMs(loop),
           leaderLeaseTtlMs,
@@ -358,13 +368,18 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
           return;
         }
 
-        const ownsLoop = Number(result[0]) === 1;
+        // A delayed Redis response never grants local work beyond the deadline
+        // encoded in that exact atomic election.
+        const ownsLoop = Number(result[0]) === 1 && now() < leaseExpiresAt;
         applyGlobalRate(assetId, loop, Number(result[1]));
-        if (ownsLoop && !loop.leader) {
-          loop.leader = true;
-          loop.failures = 0;
-          applyCadence(loop);
-          void tick(assetId, loop);
+        if (ownsLoop) {
+          loop.leaderLeaseExpiresAt = leaseExpiresAt;
+          if (!loop.leader) {
+            loop.leader = true;
+            loop.failures = 0;
+            applyCadence(loop);
+            void tick(assetId, loop);
+          }
         } else if (!ownsLoop && loop.leader) {
           stopPolling(loop);
         }
@@ -421,9 +436,30 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
     // A superseded loop (last watcher left, or close()) never polls again.
     if (closed || loops.get(assetId) !== loop || !loop.leader) return;
     loop.timer = null;
+    // The local boolean is only a cache of the last election. A paused process
+    // may resume after this lease expired and a follower took ownership; fence
+    // provider work at the call boundary before an overdue timer can poll.
+    if (now() >= loop.leaderLeaseExpiresAt) {
+      stopPolling(loop);
+      requestCoordination(assetId, loop, true);
+      return;
+    }
     loop.lastTickAt = now();
     try {
       const cached = await marketData.pollQuote(loop.ref);
+      // Do not publish or reschedule a call whose owner proof expired in flight.
+      if (
+        closed ||
+        loops.get(assetId) !== loop ||
+        !loop.leader ||
+        now() >= loop.leaderLeaseExpiresAt
+      ) {
+        if (loop.leader) {
+          stopPolling(loop);
+          requestCoordination(assetId, loop, true);
+        }
+        return;
+      }
       const frame: RealtimeLiveFrame = {
         assetId,
         price: cached.value.price,
@@ -459,14 +495,25 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
     } catch (err) {
       // 429 (breaker just tripped), CircuitOpenError, timeout, 5xx: stretch the
       // cadence instead of erroring viewers (§5.3); success resets it above.
-      loop.failures += 1;
-      applyCadence(loop);
-      logger.warn(
-        { err, assetId, nextPollMs: loop.intervalMs },
-        'live poll tick failed; stretching interval',
-      );
+      if (loop.leader && now() < loop.leaderLeaseExpiresAt) {
+        loop.failures += 1;
+        applyCadence(loop);
+        logger.warn(
+          { err, assetId, nextPollMs: loop.intervalMs },
+          'live poll tick failed; stretching interval',
+        );
+      } else if (loop.leader) {
+        stopPolling(loop);
+        requestCoordination(assetId, loop, true);
+      }
     } finally {
-      if (!closed && loops.get(assetId) === loop && loop.leader && watcherTotal(loop) > 0) {
+      if (
+        !closed &&
+        loops.get(assetId) === loop &&
+        loop.leader &&
+        now() < loop.leaderLeaseExpiresAt &&
+        watcherTotal(loop) > 0
+      ) {
         loop.timer = setTimeout(() => void tick(assetId, loop), loop.intervalMs);
       }
     }
@@ -501,6 +548,7 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         coordinationAllowAcquire: false,
         coordinationNotifyPeers: false,
         leader: false,
+        leaderLeaseExpiresAt: 0,
       };
       applyCadence(loop);
       loops.set(assetId, loop);

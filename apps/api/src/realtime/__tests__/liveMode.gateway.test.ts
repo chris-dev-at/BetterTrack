@@ -40,6 +40,7 @@ let harness: TestHarness;
 let stub: StubMarketData;
 let server: HttpServer | null = null;
 let baseUrl = '';
+let commandClockMs: number | null = null;
 const openSockets: ClientSocket[] = [];
 
 const quoteResult = (price: number): CachedResult<Quote> => ({
@@ -57,6 +58,7 @@ beforeEach(async () => {
   historyBars = [];
   historyGate = null;
   historyError = null;
+  commandClockMs = null;
   stub = createStubMarketData({
     quote: () => quoteResult(price),
     poll: () => quoteResult(price++),
@@ -69,6 +71,7 @@ beforeEach(async () => {
   harness = await createTestApp({
     marketData: stub,
     liveModeOptions: { intervalMs: POLL_MS, maxIntervalMs: POLL_MS * 4 },
+    realtimeCommandNow: () => commandClockMs ?? Date.now(),
   });
   server = harness.app.listen(0);
   await new Promise<void>((resolve) => server!.once('listening', resolve));
@@ -534,6 +537,99 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
   });
 
+  it('carries a locally rate-limited unwatch across a pending first watch', async () => {
+    commandClockMs = Date.now();
+    const [blockingAssetId, targetAssetId] = await Promise.all([
+      seedAsset('-local-blocker'),
+      seedAsset('-local-target'),
+    ]);
+    const alice = await connectUser('local-race@bt.test', 'localrace');
+    let releaseHistory!: () => void;
+    historyGate = new Promise<void>((resolve) => {
+      releaseHistory = resolve;
+    });
+
+    const blockingWatch = watch(alice, blockingAssetId, '10m');
+    await vi.waitFor(() => {
+      expect(harness.ctx.liveMode.watcherCount(blockingAssetId)).toBe(1);
+    });
+    const targetWatch = watch(alice, targetAssetId, '10m');
+
+    // Both watch frames consumed a token. Keep the first operation blocked so
+    // targetAssetId is pending but absent from the held map while this burst
+    // deterministically empties the frozen process-local bucket.
+    for (let index = 0; index < REALTIME_SOCKET_COMMAND_BURST - 2; index += 1) {
+      alice.emit(REALTIME_CLIENT_EVENTS.roomLeave, {
+        room: { kind: 'asset', id: blockingAssetId },
+      });
+    }
+    await expect(unwatch(alice, targetAssetId)).resolves.toEqual({
+      ok: false,
+      error: 'RATE_LIMITED',
+    });
+
+    releaseHistory();
+    await expect(Promise.all([blockingWatch, targetWatch])).resolves.toEqual([
+      expect.objectContaining({ ok: true }),
+      expect.objectContaining({ ok: true }),
+    ]);
+    await vi.waitFor(async () => {
+      expect(harness.ctx.liveMode.watcherCount(targetAssetId)).toBe(0);
+      expect(
+        await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalAssetWatches(targetAssetId)),
+      ).toBe(0);
+    });
+  });
+
+  it('carries a user-rate-limited unwatch across a pending first watch', async () => {
+    const [blockingAssetId, targetAssetId] = await Promise.all([
+      seedAsset('-user-blocker'),
+      seedAsset('-user-target'),
+    ]);
+    const user = await harness.seedUser({
+      email: 'user-race@bt.test',
+      username: 'userrace',
+    });
+    const alice = await connectSeededUser(user);
+    let releaseHistory!: () => void;
+    historyGate = new Promise<void>((resolve) => {
+      releaseHistory = resolve;
+    });
+
+    const blockingWatch = watch(alice, blockingAssetId, '10m');
+    await vi.waitFor(() => {
+      expect(harness.ctx.liveMode.watcherCount(blockingAssetId)).toBe(1);
+    });
+    const commandKey = realtimeAdmissionKeys.userCommand(user.id);
+    await harness.ctx.redis.hset(
+      commandKey,
+      'tokens',
+      '1',
+      'updatedAt',
+      String(Date.now() + 60_000),
+    );
+    const targetWatch = watch(alice, targetAssetId, '10m');
+    await vi.waitFor(async () => {
+      expect(Number(await harness.ctx.redis.hget(commandKey, 'tokens'))).toBe(0);
+    });
+    await expect(unwatch(alice, targetAssetId)).resolves.toEqual({
+      ok: false,
+      error: 'RATE_LIMITED',
+    });
+
+    releaseHistory();
+    await expect(Promise.all([blockingWatch, targetWatch])).resolves.toEqual([
+      expect.objectContaining({ ok: true }),
+      expect.objectContaining({ ok: true }),
+    ]);
+    await vi.waitFor(async () => {
+      expect(harness.ctx.liveMode.watcherCount(targetAssetId)).toBe(0);
+      expect(
+        await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalAssetWatches(targetAssetId)),
+      ).toBe(0);
+    });
+  });
+
   it('unwatch is idempotent and only releases a held watch', async () => {
     const assetId = await seedAsset();
     const alice = await connectUser('alice@bt.test', 'alice');
@@ -548,6 +644,7 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
   });
 
   it('releases a held watch even when the unwatch frame is rate-limited', async () => {
+    commandClockMs = Date.now();
     const assetId = await seedAsset();
     const alice = await connectUser('alice@bt.test', 'alice');
     await expect(watch(alice, assetId, '10m')).resolves.toMatchObject({ ok: true });
