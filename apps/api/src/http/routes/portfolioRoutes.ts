@@ -54,7 +54,7 @@ import {
 
 import { serializeTaxYearReportCsv, taxReportCsvFilename } from '../../services/tax/taxReportCsv';
 import { conditionalGet, CONDITIONAL_LAST_MODIFIED } from '../middleware/conditional';
-import { createIdempotency } from '../middleware/idempotency';
+import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -235,28 +235,28 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/cash/deposit',
     validateParams(portfolioIdParamSchema),
-    idempotency,
     validateBody(cashEntryRequestSchema),
-    async (req, res) => {
+    idempotency,
+    withIdempotencyExecution(async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CashEntryRequest;
       const result = await ctx.mirror.submitCashDeposit(req.authUser!.id, portfolioId, body);
       res.status(201).json(result);
-    },
+    }),
   );
 
   // POST /portfolios/:portfolioId/cash/withdraw — record a withdrawal; 400 on overdraw (§14).
   router.post(
     '/:portfolioId/cash/withdraw',
     validateParams(portfolioIdParamSchema),
-    idempotency,
     validateBody(cashEntryRequestSchema),
-    async (req, res) => {
+    idempotency,
+    withIdempotencyExecution(async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CashEntryRequest;
       const result = await ctx.mirror.submitCashWithdraw(req.authUser!.id, portfolioId, body);
       res.status(201).json(result);
-    },
+    }),
   );
 
   // POST /portfolios/:portfolioId/cash/preview — live "available → after" preview (§14).
@@ -378,14 +378,14 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/cash/transfer',
     validateParams(portfolioIdParamSchema),
-    idempotency,
     validateBody(cashTransferRequestSchema),
-    async (req, res) => {
+    idempotency,
+    withIdempotencyExecution(async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CashTransferRequest;
       const result = await ctx.mirror.submitCashTransfer(req.authUser!.id, portfolioId, body);
       res.status(201).json(result);
-    },
+    }),
   );
 
   // POST /portfolios/:portfolioId/cash/sources/:sourceId/set-balance — "set
@@ -393,9 +393,9 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/cash/sources/:sourceId/set-balance',
     validateParams(cashSourceParamsSchema),
-    idempotency,
     validateBody(setCashBalanceRequestSchema),
-    async (req, res) => {
+    idempotency,
+    withIdempotencyExecution(async (req, res) => {
       const { portfolioId, sourceId } = req.valid?.params as {
         portfolioId: string;
         sourceId: string;
@@ -408,7 +408,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         body,
       );
       res.json(result);
-    },
+    }),
   );
 
   // POST /portfolios/:portfolioId/dividends — record a dividend on a held
@@ -580,9 +580,9 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/transactions',
     validateParams(portfolioIdParamSchema),
-    idempotency,
     validateBody(createTransactionsRequestSchema),
-    async (req, res) => {
+    idempotency,
+    withIdempotencyExecution(async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CreateTransactionsRequest;
       const inputs: TransactionInput[] = 'transactions' in body ? body.transactions : [body];
@@ -592,16 +592,16 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         inputs,
       );
       res.status(201).json({ transactions: created });
-    },
+    }),
   );
 
   // PATCH /portfolios/:portfolioId/transactions/:txId — edit; re-validates oversell (§6.8).
   router.patch(
     '/:portfolioId/transactions/:txId',
     validateParams(portfolioTransactionParamsSchema),
-    idempotency,
     validateBody(updateTransactionRequestSchema),
-    async (req, res) => {
+    idempotency,
+    withIdempotencyExecution(async (req, res) => {
       const { portfolioId, txId } = req.valid?.params as { portfolioId: string; txId: string };
       const { baseSeq, ...patch } = req.valid?.body as UpdateTransactionRequest;
       const transaction = await ctx.mirror.submitTransactionUpdate(
@@ -612,7 +612,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         { baseSeq },
       );
       res.json({ transaction });
-    },
+    }),
   );
 
   // DELETE /portfolios/:portfolioId/transactions/:txId — remove; re-validates
@@ -620,14 +620,14 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.delete(
     '/:portfolioId/transactions/:txId',
     validateParams(portfolioTransactionParamsSchema),
-    idempotency,
     validateBody(mirrorGuardRequestSchema),
-    async (req, res) => {
+    idempotency,
+    withIdempotencyExecution(async (req, res) => {
       const { portfolioId, txId } = req.valid?.params as { portfolioId: string; txId: string };
       const { baseSeq } = req.valid?.body as MirrorGuardRequest;
       await ctx.mirror.submitTransactionDelete(req.authUser!.id, portfolioId, txId, { baseSeq });
       res.status(204).send();
-    },
+    }),
   );
 
   return router;

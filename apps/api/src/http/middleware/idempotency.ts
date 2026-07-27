@@ -102,12 +102,48 @@ async function persistSafely(
   }
 }
 
+interface IdempotencyExecution {
+  isResponseClosed(): boolean;
+  complete(): void;
+}
+
+/**
+ * The response is the request-scoped identity available to both the claim
+ * middleware and its terminal route handler. A weak map keeps the execution
+ * boundary private and cannot retain completed requests.
+ */
+const idempotencyExecutions = new WeakMap<Response, IdempotencyExecution>();
+
+/**
+ * Mark the terminal handler of an idempotency-protected route as complete.
+ *
+ * A socket `close` does not cancel an async Express handler. This wrapper lets
+ * the close path defer release until that handler has stopped, preventing a
+ * matching retry from entering while a mutation is still underway. Use it only
+ * for the route's terminal handler; validation belongs before idempotency.
+ */
+export function withIdempotencyExecution(handler: RequestHandler): RequestHandler {
+  return async (req, res, next) => {
+    const execution = idempotencyExecutions.get(res);
+    if (execution?.isResponseClosed()) {
+      execution.complete();
+      return;
+    }
+
+    try {
+      await handler(req, res, next);
+    } finally {
+      execution?.complete();
+    }
+  };
+}
+
 /**
  * Wrap the winning request's response so the exact bytes + status it sends are
  * captured and memoized (2xx) or released (non-2xx) once the response settles.
- * A prematurely closed connection is safe to settle only after the handler has
- * generated its response: that keeps a delayed mutation's claim exclusive while
- * still recovering a response that can no longer emit `finish`.
+ * A close before `finish` is abandoned only after the terminal route handler
+ * completes: the key then becomes immediately reusable without allowing an
+ * in-flight mutation to race its retry.
  * Express funnels `res.json` through `res.send`, so wrapping `res.send` captures
  * both the JSON handlers and the empty 204 `send()`.
  */
@@ -120,12 +156,15 @@ function captureAndPersist(
   const originalSend = res.send.bind(res);
   let captured = '';
   let sawSend = false;
-  let closed = false;
+  let closed = res.destroyed;
+  let finished = false;
+  let executionComplete = false;
   let settled = false;
 
   const settle = (persist: () => Promise<void>): void => {
     if (settled) return;
     settled = true;
+    idempotencyExecutions.delete(res);
     void persistSafely(logger, id, persist);
   };
   const settleResponse = (): void => {
@@ -138,6 +177,19 @@ function captureAndPersist(
         : repo.release(id),
     );
   };
+  const settleAbandoned = (): void => {
+    if (closed && !finished && executionComplete) {
+      settle(() => repo.release(id));
+    }
+  };
+
+  idempotencyExecutions.set(res, {
+    isResponseClosed: () => closed,
+    complete: () => {
+      executionComplete = true;
+      settleAbandoned();
+    },
+  });
 
   res.send = ((body?: unknown) => {
     if (!sawSend) {
@@ -151,29 +203,24 @@ function captureAndPersist(
               ? body.toString('utf8')
               : JSON.stringify(body);
     }
-    try {
-      return originalSend(body);
-    } finally {
-      // A handler that reaches `send` has completed its mutation. If the peer
-      // already disconnected, `finish` may never fire, but this response is safe
-      // to persist for an idempotent retry rather than releasing the live claim.
-      if (closed) settleResponse();
-    }
+    return originalSend(body);
   }) as typeof res.send;
 
-  res.once('finish', settleResponse);
+  res.once('finish', () => {
+    finished = true;
+    settleResponse();
+  });
   res.once('close', () => {
     closed = true;
-    // The write may have happened just before close; its captured response is
-    // enough to settle safely even when the transport will never emit `finish`.
-    if (sawSend) settleResponse();
+    settleAbandoned();
   });
 }
 
 /**
  * Build the idempotency middleware bound to the app context. Mount it on a
- * mutation route AFTER the auth guard (so `req.authUser` is set) — e.g.
- * `router.post(path, validateParams(...), idempotency, validateBody(...), handler)`.
+ * mutation route AFTER the auth guard (so `req.authUser` is set) and validation — e.g.
+ * `router.post(path, validateParams(...), validateBody(...), idempotency,
+ * withIdempotencyExecution(handler))`.
  */
 export function createIdempotency(
   ctx: AppContext,

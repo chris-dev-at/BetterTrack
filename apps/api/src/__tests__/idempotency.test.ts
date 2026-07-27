@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
-import type { Application, Request, Response } from 'express';
+import type { Application, Request, RequestHandler, Response } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as schema from '../data/schema';
@@ -14,7 +14,7 @@ import type {
   IdempotencyRecord,
   IdempotencyResponse,
 } from '../data/repositories/idempotencyKeyRepository';
-import { createIdempotency } from '../http/middleware/idempotency';
+import { createIdempotency, withIdempotencyExecution } from '../http/middleware/idempotency';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -97,6 +97,16 @@ function invokeIdempotency(
       }
       resolve();
     });
+  });
+}
+
+async function invokeIdempotencyHandler(
+  handler: RequestHandler,
+  req: Request,
+  res: IdempotencyTestResponse,
+): Promise<void> {
+  await withIdempotencyExecution(handler)(req, res as unknown as Response, (error?: unknown) => {
+    if (error) throw error;
   });
 }
 
@@ -246,6 +256,7 @@ describe('idempotency — response settlement', () => {
     await vi.waitFor(() => {
       expect(memory.release).toHaveBeenCalledWith('claim-closed-before-execution');
     });
+    expect(memory.release).toHaveBeenCalledTimes(1);
     expect(next).not.toHaveBeenCalled();
     expect(memory.complete).not.toHaveBeenCalled();
 
@@ -256,19 +267,22 @@ describe('idempotency — response settlement', () => {
     expect(memory.claim).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps a claim while a closed response has a delayed mutation in flight', async () => {
+  it('releases a closed response once its terminal handler completes without writing', async () => {
     const memory = createMemoryIdempotencyRepository();
     const logger = { warn: vi.fn() };
     const middleware = responseSettlementMiddleware(memory.repo, logger);
     const key = randomUUID();
     const first = new IdempotencyTestResponse();
     const mutation = deferred<void>();
+    let handlerRun = Promise.resolve();
     const next = vi.fn(() => {
-      void mutation.promise.then(() => {
-        first.statusCode = 201;
-        first.setHeader('Content-Type', 'application/json');
-        first.send('{"movement":{"id":"delayed"}}');
-      });
+      handlerRun = invokeIdempotencyHandler(
+        async () => {
+          await mutation.promise;
+        },
+        idempotencyRequest(key),
+        first,
+      );
     });
 
     middleware(idempotencyRequest(key), first as unknown as Response, next);
@@ -289,15 +303,86 @@ describe('idempotency — response settlement', () => {
     expect(memory.claim).toHaveBeenCalledTimes(2);
 
     mutation.resolve();
+    await handlerRun;
     await vi.waitFor(() => {
-      expect(memory.complete).toHaveBeenCalledTimes(1);
+      expect(memory.release).toHaveBeenCalledTimes(1);
+    });
+    expect(memory.complete).not.toHaveBeenCalled();
+
+    const retryAfterCompletion = new IdempotencyTestResponse();
+    await invokeIdempotency(middleware, idempotencyRequest(key), retryAfterCompletion);
+
+    expect(memory.wonClaims()).toBe(2);
+  });
+
+  it('releases an already-complete no-response handler as soon as its response closes', async () => {
+    const memory = createMemoryIdempotencyRepository();
+    const logger = { warn: vi.fn() };
+    const middleware = responseSettlementMiddleware(memory.repo, logger);
+    const key = randomUUID();
+    const first = new IdempotencyTestResponse();
+    let handlerRun = Promise.resolve();
+    const next = vi.fn(() => {
+      handlerRun = invokeIdempotencyHandler(async () => undefined, idempotencyRequest(key), first);
     });
 
-    const replayed = new IdempotencyTestResponse();
-    await invokeIdempotency(middleware, idempotencyRequest(key), replayed);
+    middleware(idempotencyRequest(key), first as unknown as Response, next);
+    await vi.waitFor(() => {
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+    await handlerRun;
 
-    expect(replayed.statusCode).toBe(201);
-    expect(replayed.sentBody).toBe('{"movement":{"id":"delayed"}}');
+    first.emit('close');
+    await vi.waitFor(() => {
+      expect(memory.release).toHaveBeenCalledTimes(1);
+    });
+    expect(memory.complete).not.toHaveBeenCalled();
+
+    const retry = new IdempotencyTestResponse();
+    await invokeIdempotency(middleware, idempotencyRequest(key), retry);
+
+    expect(memory.wonClaims()).toBe(2);
+  });
+
+  it('releases a closed 2xx response that never reaches finish', async () => {
+    const memory = createMemoryIdempotencyRepository();
+    const logger = { warn: vi.fn() };
+    const middleware = responseSettlementMiddleware(memory.repo, logger);
+    const key = randomUUID();
+    const first = new IdempotencyTestResponse();
+    const mutation = deferred<void>();
+    let handlerRun = Promise.resolve();
+    const next = vi.fn(() => {
+      handlerRun = invokeIdempotencyHandler(
+        async () => {
+          await mutation.promise;
+          first.statusCode = 201;
+          first.setHeader('Content-Type', 'application/json');
+          first.send('{"movement":{"id":"abandoned"}}');
+        },
+        idempotencyRequest(key),
+        first,
+      );
+    });
+
+    middleware(idempotencyRequest(key), first as unknown as Response, next);
+    await vi.waitFor(() => {
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+    first.emit('close');
+
+    expect(memory.release).not.toHaveBeenCalled();
+    mutation.resolve();
+    await handlerRun;
+    await vi.waitFor(() => {
+      expect(memory.release).toHaveBeenCalledTimes(1);
+    });
+    expect(memory.complete).not.toHaveBeenCalled();
+
+    const retry = new IdempotencyTestResponse();
+    await invokeIdempotency(middleware, idempotencyRequest(key), retry);
+
+    expect(memory.wonClaims()).toBe(2);
   });
 
   it('memoizes a finished success when close follows finish', async () => {

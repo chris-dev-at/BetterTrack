@@ -10,7 +10,7 @@ import {
   type UpdateCustomAssetRequest,
 } from '@bettertrack/contracts';
 
-import { createIdempotency } from '../middleware/idempotency';
+import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -85,14 +85,14 @@ export function createCustomAssetsRouter(ctx: AppContext): Router {
   router.put(
     '/:id/value-points',
     validateParams(customAssetIdParamSchema),
-    idempotency,
     validateBody(putValuePointsRequestSchema),
-    async (req, res) => {
+    idempotency,
+    withIdempotencyExecution(async (req, res) => {
       const { id } = req.valid?.params as { id: string };
       const { points } = req.valid?.body as PutValuePointsRequest;
       const stored = await ctx.customAssets.putValuePoints(req.authUser!.id, id, points);
       res.json({ points: stored });
-    },
+    }),
   );
 
   return router;
