@@ -113,6 +113,8 @@ interface ExactDecimal {
 
 const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
 const pow10 = (scale: number): bigint => 10n ** BigInt(scale);
+const TRANSACTION_QUANTITY_STORAGE_PRECISION = 20;
+const TRANSACTION_QUANTITY_STORAGE_SCALE = 8;
 /**
  * Normal batch validation runs against the unrounded client quantities with a
  * 1e-9 epsilon, then PostgreSQL rounds each row independently to scale 8. Two
@@ -151,6 +153,19 @@ function persistedNumeric(value: string, precision: number, scale: number, label
     );
   }
   return decimal.coefficient * pow10(scale - decimal.scale);
+}
+
+/**
+ * The restore position replay compares the same fixed-scale values that the
+ * transaction repository persists in `numeric(20,8)`.
+ */
+function persistedTransactionQuantity(value: string): bigint {
+  return persistedNumeric(
+    value,
+    TRANSACTION_QUANTITY_STORAGE_PRECISION,
+    TRANSACTION_QUANTITY_STORAGE_SCALE,
+    'transaction quantity',
+  );
 }
 
 function requirePositive(value: bigint, label: string): void {
@@ -411,7 +426,7 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
   }
 
   for (const transaction of rows(entities, 'transaction')) {
-    const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+    const quantity = persistedTransactionQuantity(transaction.data.quantity);
     const price = persistedNumeric(transaction.data.price, 20, 6, 'transaction price');
     const fee = persistedNumeric(transaction.data.fee, 20, 6, 'transaction fee');
     requirePositive(quantity, 'transaction quantity');
@@ -1223,7 +1238,7 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
       );
       let held = 0n;
       for (const transaction of orderedTransactions) {
-        const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+        const quantity = persistedTransactionQuantity(transaction.data.quantity);
         if (transaction.data.side === 'buy') {
           held += quantity;
         } else {
@@ -1239,7 +1254,9 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
             shortfall > PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
             !transaction.data.allowUncovered
           ) {
-            throw new Error('transaction would oversell its position');
+            throw new Error(
+              `transaction quantity ${JSON.stringify(transaction.data.quantity)} would oversell its position`,
+            );
           }
           held = shortfall > 0n ? 0n : held - quantity;
         }

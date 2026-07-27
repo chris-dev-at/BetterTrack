@@ -397,6 +397,85 @@ async function replaceNormalPortfolioGraphWithServerVault(
   });
 }
 
+async function storageRoundedQuantityFixture() {
+  const harness = await createTestApp();
+  const user = await harness.seedUser();
+  const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+  const [asset] = await harness.db
+    .insert(assets)
+    .values({
+      providerId: 'test',
+      providerRef: 'QUANTITY-ROUNDING.EUR',
+      ownerId: null,
+      type: 'stock',
+      symbol: 'QTY',
+      name: 'Quantity rounding boundary',
+      exchange: null,
+      currency: 'EUR',
+    })
+    .returning();
+  if (!asset) throw new Error('expected market asset');
+
+  await expect(
+    harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 1.0000000046,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:00:00.000Z',
+      },
+      {
+        assetId: asset.id,
+        side: 'sell',
+        quantity: 1.0000000051,
+        price: 11,
+        fee: 0,
+        executedAt: '2026-07-23T10:01:00.000Z',
+      },
+    ]),
+  ).resolves.toHaveLength(2);
+
+  const [sourcePortfolio] = await harness.db
+    .select()
+    .from(portfolios)
+    .where(eq(portfolios.id, portfolioId));
+  const sourceCashSources = await harness.db
+    .select()
+    .from(portfolioCashSources)
+    .where(eq(portfolioCashSources.portfolioId, portfolioId));
+  const sourceTransactions = await harness.db
+    .select()
+    .from(transactions)
+    .where(eq(transactions.portfolioId, portfolioId));
+  if (!sourcePortfolio) throw new Error('expected source portfolio');
+  expect(
+    sourceTransactions
+      .map((row) => ({ side: row.side, quantity: row.quantity }))
+      .sort((a, b) => a.side.localeCompare(b.side)),
+  ).toEqual([
+    { side: 'buy', quantity: '1.00000000' },
+    { side: 'sell', quantity: '1.00000001' },
+  ]);
+
+  const input: ParanoidDisableRehydrationRequest = {
+    rehydrationId: REHYDRATION_ID,
+    document: {
+      schemaVersion: 1,
+      entities: [
+        strictPortfolioEntity(sourcePortfolio),
+        ...sourceCashSources.map(strictCashSourceEntity),
+        ...sourceTransactions.map(strictTransactionEntity),
+      ],
+      mergeLog: [],
+    },
+  };
+
+  await replaceNormalPortfolioGraphWithServerVault(harness, user.id);
+  return { harness, user, portfolioId, sourceTransactions, input };
+}
+
 function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequest {
   return {
     rehydrationId,
@@ -1131,81 +1210,8 @@ describe('paranoid rehydration service', () => {
   });
 
   it('round-trips an epsilon-valid transaction batch after scale-8 quantities round apart', async () => {
-    const harness = await createTestApp();
-    const user = await harness.seedUser();
-    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
-    const [asset] = await harness.db
-      .insert(assets)
-      .values({
-        providerId: 'test',
-        providerRef: 'QUANTITY-ROUNDING.EUR',
-        ownerId: null,
-        type: 'stock',
-        symbol: 'QTY',
-        name: 'Quantity rounding boundary',
-        exchange: null,
-        currency: 'EUR',
-      })
-      .returning();
-    if (!asset) throw new Error('expected market asset');
-
-    await expect(
-      harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
-        {
-          assetId: asset.id,
-          side: 'buy',
-          quantity: 1.0000000046,
-          price: 10,
-          fee: 0,
-          executedAt: '2026-07-23T10:00:00.000Z',
-        },
-        {
-          assetId: asset.id,
-          side: 'sell',
-          quantity: 1.0000000051,
-          price: 11,
-          fee: 0,
-          executedAt: '2026-07-23T10:01:00.000Z',
-        },
-      ]),
-    ).resolves.toHaveLength(2);
-
-    const [sourcePortfolio] = await harness.db
-      .select()
-      .from(portfolios)
-      .where(eq(portfolios.id, portfolioId));
-    const sourceCashSources = await harness.db
-      .select()
-      .from(portfolioCashSources)
-      .where(eq(portfolioCashSources.portfolioId, portfolioId));
-    const sourceTransactions = await harness.db
-      .select()
-      .from(transactions)
-      .where(eq(transactions.portfolioId, portfolioId));
-    if (!sourcePortfolio) throw new Error('expected source portfolio');
-    expect(
-      sourceTransactions
-        .map((row) => ({ side: row.side, quantity: row.quantity }))
-        .sort((a, b) => a.side.localeCompare(b.side)),
-    ).toEqual([
-      { side: 'buy', quantity: '1.00000000' },
-      { side: 'sell', quantity: '1.00000001' },
-    ]);
-
-    const input: ParanoidDisableRehydrationRequest = {
-      rehydrationId: REHYDRATION_ID,
-      document: {
-        schemaVersion: 1,
-        entities: [
-          strictPortfolioEntity(sourcePortfolio),
-          ...sourceCashSources.map(strictCashSourceEntity),
-          ...sourceTransactions.map(strictTransactionEntity),
-        ],
-        mergeLog: [],
-      },
-    };
-
-    await replaceNormalPortfolioGraphWithServerVault(harness, user.id);
+    const { harness, user, portfolioId, sourceTransactions, input } =
+      await storageRoundedQuantityFixture();
     await expect(
       createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
     ).resolves.toMatchObject({ idempotent: false });
@@ -1233,6 +1239,36 @@ describe('paranoid rehydration service', () => {
         }))
         .sort((a, b) => a.side.localeCompare(b.side)),
     );
+  });
+
+  it('negative control: rejects a two-quantum persisted sell before restore and names its quantity', async () => {
+    const { harness, user, portfolioId, input } = await storageRoundedQuantityFixture();
+    const sell = input.document.entities.find(
+      (entry): entry is StrictTransactionEntity =>
+        entry.kind === 'transaction' && entry.data.side === 'sell',
+    );
+    if (!sell) throw new Error('expected persisted sell transaction');
+    sell.data.quantity = '1.00000002';
+    const stages: string[] = [];
+
+    await expect(
+      createParanoidRehydrationService({
+        db: harness.db,
+        afterStage(stage) {
+          stages.push(stage);
+        },
+      }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({
+      code: 'INVALID_CASH_LEDGER',
+      message: 'transaction quantity "1.00000002" would oversell its position',
+    });
+    expect(stages).toEqual([]);
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
+    ).toEqual([]);
   });
 
   it('restores more transactions than one PostgreSQL bind-parameter batch can hold', async () => {
