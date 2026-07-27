@@ -104,7 +104,12 @@ function commentRow(overrides: Partial<CommentRow> = {}): CommentRow {
 function admit(harness: Harness, kind: ShareKind, viewerIds: readonly string[]) {
   const resolve = async (viewerId: string, subjectId: string) =>
     viewerIds.includes(viewerId) && subjectId === SUBJECT_ID
-      ? { ownerId: OWNER, username: 'owner' }
+      ? {
+          ownerId: OWNER,
+          ownerUsername: 'owner',
+          ownerProfileIcon: null,
+          name: 'Shared subject',
+        }
       : undefined;
 
   switch (kind) {
@@ -126,7 +131,12 @@ function admit(harness: Harness, kind: ShareKind, viewerIds: readonly string[]) 
 function admitWhile(harness: Harness, kind: ShareKind, isAdmitted: () => boolean) {
   const resolve = async (viewerId: string, subjectId: string) =>
     isAdmitted() && viewerId === VIEWER && subjectId === SUBJECT_ID
-      ? { ownerId: OWNER, username: 'owner' }
+      ? {
+          ownerId: OWNER,
+          ownerUsername: 'owner',
+          ownerProfileIcon: null,
+          name: 'Shared subject',
+        }
       : undefined;
 
   switch (kind) {
