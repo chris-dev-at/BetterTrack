@@ -30,8 +30,11 @@ import type {
   OAuthAuthorizationCodeExchange,
   OAuthRepository,
 } from '../../data/repositories/oauthRepository';
+import type { UserRepository } from '../../data/repositories/userRepository';
 import type { OAuthClientRow, UserRow } from '../../data/schema';
 import { badRequest, notFound } from '../../errors';
+import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
+import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken, sha256Base64Url } from '../crypto/tokens';
 
@@ -39,6 +42,10 @@ import { hashToken, sha256Base64Url } from '../crypto/tokens';
 export interface OAuthPrincipal {
   user: UserRow;
   grantId: string;
+  /** The individual access-token row; the grant is the revocation unit. */
+  accessTokenId: string;
+  /** Absolute access-token deadline used to terminate an idle socket on time. */
+  expiresAt: Date;
   scopes: ApiKeyScope[];
 }
 
@@ -46,6 +53,11 @@ export interface OAuthServiceDeps {
   repo: OAuthRepository;
   audit: AuditService;
   redis: Redis;
+  /** Fresh user-status lookup for fail-closed realtime principal revalidation. */
+  userRepo?: Pick<UserRepository, 'findById'>;
+  /** Best-effort lifecycle fan-out to disconnect already-open realtime sockets. */
+  events?: Pick<EventBus, 'publish'>;
+  logger?: Pick<Logger, 'warn'>;
   /** Clock seam so token/code TTLs are testable without wall-clock waits. */
   now?: () => Date;
 }
@@ -109,6 +121,14 @@ export interface OAuthService {
   }): Promise<OAuthTokenResponse>;
   /** Bearer-auth lookup: resolve an active OAuth access token, else null. */
   authenticateToken(token: string): Promise<OAuthPrincipal | null>;
+  /** Revalidate a connected realtime OAuth principal without retaining its token. */
+  revalidatePrincipal(input: {
+    userId: string;
+    grantId: string;
+    accessTokenId: string;
+    expiresAt: Date;
+    scopes: ApiKeyScope[];
+  }): Promise<OAuthPrincipal | null>;
   /** Record a scope-denied OAuth bearer attempt (called by the scope middleware). */
   recordScopeDenied(input: {
     userId: string;
@@ -215,8 +235,28 @@ function clampToAllowed(
  * cuts off every token because the token lookup joins through the grant.
  */
 export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
-  const { repo, audit, redis } = deps;
+  const { repo, audit, redis, userRepo, events, logger } = deps;
   const now = deps.now ?? (() => new Date());
+
+  async function publishInvalidation(
+    event: Omit<RealtimePrincipalInvalidatedEvent, 'type' | 'occurredAt'>,
+  ): Promise<void> {
+    if (!events) return;
+    try {
+      await events.publish({
+        type: 'realtime.principal.invalidated',
+        ...event,
+        occurredAt: now().toISOString(),
+      });
+    } catch (err) {
+      // The grant is already revoked. Socket revalidation remains the
+      // fail-closed backstop if this ephemeral cross-process signal is lost.
+      logger?.warn(
+        { err, userId: event.userId, kind: event.kind },
+        'oauth realtime invalidation publish failed',
+      );
+    }
+  }
 
   /** Shared authorize-request validation for both the consent read and approve. */
   async function validateAuthorize(input: {
@@ -500,6 +540,12 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       if (!row) {
         throw notFound('Authorized app not found.', 'OAUTH_GRANT_NOT_FOUND');
       }
+      await publishInvalidation({
+        userId,
+        kind: 'oauth',
+        credentialId: row.id,
+        exceptCredentialId: null,
+      });
       await audit.record({
         actorId: userId,
         action: AuditAction.OAuthGrantRevoked,
@@ -511,6 +557,12 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
 
     async revokeAllForUser(userId) {
       await repo.revokeAllForUser(userId);
+      await publishInvalidation({
+        userId,
+        kind: 'oauth',
+        credentialId: null,
+        exceptCredentialId: null,
+      });
     },
 
     async getAuthorizationDetails(query) {
@@ -604,7 +656,31 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       return {
         user: found.user,
         grantId: found.grant.id,
+        accessTokenId: found.token.id,
+        expiresAt: found.token.expiresAt,
         scopes: clampToAllowed(found.token.scopes as ApiKeyScope[], found.client.scopes),
+      };
+    },
+
+    async revalidatePrincipal({ userId, grantId, accessTokenId, expiresAt, scopes }) {
+      // A real API process always provides the user repository. A deliberately
+      // minimal construction must never accidentally keep a socket authorized.
+      if (!userRepo || expiresAt.getTime() <= now().getTime()) return null;
+      const [user, grants] = await Promise.all([
+        userRepo.findById(userId),
+        repo.listGrantsForUser(userId),
+      ]);
+      if (!user || user.status !== 'active') return null;
+      const active = grants.find(({ grant }) => grant.id === grantId);
+      if (!active) return null;
+      // Keep this specific access token's ceiling: a later grant/client edit
+      // may reduce it, but revalidation must never broaden its original grant.
+      return {
+        user,
+        grantId,
+        accessTokenId,
+        expiresAt,
+        scopes: clampToAllowed(scopes, active.client.scopes),
       };
     },
 
@@ -725,6 +801,12 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     // revoke the whole grant (RFC 6819 §5.2.2.3) and reject.
     if (found.token.consumedAt) {
       await repo.revokeGrant(found.grant.userId, found.grant.id);
+      await publishInvalidation({
+        userId: found.grant.userId,
+        kind: 'oauth',
+        credentialId: found.grant.id,
+        exceptCredentialId: null,
+      });
       throw badRequest('Refresh token has already been used.', 'INVALID_GRANT');
     }
     if (found.token.expiresAt.getTime() <= now().getTime()) {

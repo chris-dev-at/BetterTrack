@@ -1,20 +1,27 @@
 import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+import { eq } from 'drizzle-orm';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   REALTIME_CLIENT_EVENTS,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
   type ApiKeyScope,
+  type RealtimeChatMessage,
+  type RealtimeLiveWatchAck,
   type RealtimeNotificationNew,
+  type RealtimePortfolioChanged,
   type RealtimeQuoteUpdated,
   type RealtimeRoomAck,
 } from '@bettertrack/contracts';
 
+import { createOAuthRepository } from '../../data/repositories/oauthRepository';
+import * as schema from '../../data/schema';
+import { hashToken } from '../../services/crypto/tokens';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -141,6 +148,27 @@ function emitRoom(socket: ClientSocket, event: string, payload: unknown): Promis
   });
 }
 
+function emitAck<T>(socket: ClientSocket, event: string, payload: unknown): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out waiting for ${event} ack`)), 3000);
+    socket.emit(event, payload, (ack: T) => {
+      clearTimeout(timer);
+      resolve(ack);
+    });
+  });
+}
+
+function waitForDisconnect(socket: ClientSocket, ms = 3000): Promise<void> {
+  if (!socket.connected) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timed out waiting for disconnect')), ms);
+    socket.once('disconnect', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 const joinRoom = (socket: ClientSocket, kind: string, id: string) =>
   emitRoom(socket, REALTIME_CLIENT_EVENTS.roomJoin, { room: { kind, id } });
 
@@ -167,6 +195,49 @@ async function befriend(from: Agent, to: Agent, toIdentifier: string): Promise<v
     .set(...XRW)
     .send();
   expect(res.status).toBe(200);
+}
+
+/** Mint a confidential OAuth access token through the same public flow as a mobile app. */
+async function mintOAuthToken(
+  agent: Agent,
+  userId: string,
+  scopes: ApiKeyScope[],
+): Promise<{ accessToken: string; grantId: string }> {
+  const redirectUri = 'https://realtime.test/callback';
+  const clientRes = await agent
+    .post('/api/v1/settings/oauth-clients')
+    .set(...XRW)
+    .send({
+      name: 'Realtime test client',
+      redirectUris: [redirectUri],
+      scopes,
+      public: false,
+    });
+  expect(clientRes.status).toBe(201);
+  const { client, clientSecret } = clientRes.body as {
+    client: { clientId: string };
+    clientSecret: string;
+  };
+
+  const approveRes = await agent
+    .post('/api/v1/oauth/authorize')
+    .set(...XRW)
+    .send({ client_id: client.clientId, redirect_uri: redirectUri, scope: scopes.join(' ') });
+  expect(approveRes.status).toBe(200);
+  const code = new URL(approveRes.body.redirectTo as string).searchParams.get('code');
+  expect(code).toBeTruthy();
+
+  const tokenRes = await request(harness.app).post('/api/v1/oauth/token').send({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: redirectUri,
+    client_id: client.clientId,
+    client_secret: clientSecret,
+  });
+  expect(tokenRes.status).toBe(200);
+  const grants = await harness.ctx.oauth.listGrants(userId);
+  expect(grants).toHaveLength(1);
+  return { accessToken: tokenRes.body.access_token as string, grantId: grants[0]!.id };
 }
 
 const SOME_UUID = '018f6f00-0000-7000-8000-000000000001';
@@ -211,18 +282,21 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
 });
 
 describe('realtime gateway — bearer handshake auth (mobile, §6.13/§14)', () => {
-  it('accepts a bearer via the socket.io auth payload and joins only its own user room', async () => {
+  it('accepts a notification-scoped bearer via the socket.io auth payload', async () => {
     await listenWithGateway();
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
     // No cookie — the mobile credential is the bearer alone.
-    const aliceSocket = await connectWith({ auth: { token: await mintKey(alice.id) } });
-    const bobSocket = await connectWith({ auth: { token: await mintKey(bob.id) } });
+    const aliceSocket = await connectWith({
+      auth: { token: await mintKey(alice.id, ['notifications:read']) },
+    });
+    const bobSocket = await connectWith({
+      auth: { token: await mintKey(bob.id, ['notifications:read']) },
+    });
     expect(aliceSocket.connected).toBe(true);
 
-    // A push addressed to alice reaches alice's BEARER socket and never bob's —
-    // proving the bearer socket auto-joined `user:{alice}` exactly like a cookie
-    // socket, and only its own room.
+    // A push addressed to alice reaches alice's notification-scoped bearer and
+    // never bob's. The bearer never enters the undifferentiated user room.
     const received = waitForEvent<RealtimeNotificationNew>(
       aliceSocket,
       REALTIME_SERVER_EVENTS.notificationNew,
@@ -283,6 +357,203 @@ describe('realtime gateway — bearer handshake auth (mobile, §6.13/§14)', () 
     const admin = await harness.seedAdmin();
     const token = await mintKey(admin.id);
     await expect(connectWith({ auth: { token } })).rejects.toThrow(/UNAUTHORIZED/);
+  });
+});
+
+describe('realtime gateway — scoped bearer matrix (#880)', () => {
+  it('isolates notification, portfolio, chat, and market bearer capabilities', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const loginState = await login(user.email, user.password);
+    const portfolioId = await defaultPortfolioId(loginState.agent);
+    const assetId = SOME_UUID;
+
+    const notifications = await connectWith({
+      auth: { token: await mintKey(user.id, ['notifications:read']) },
+    });
+    const portfolio = await connectWith({
+      auth: { token: await mintKey(user.id, ['portfolio:read']) },
+    });
+    const chat = await connectWith({ auth: { token: await mintKey(user.id, ['chat:read']) } });
+    const market = await connectWith({ auth: { token: await mintKey(user.id, ['market:read']) } });
+
+    // Joining a room is itself a data-family authorization boundary.
+    await expect(joinRoom(notifications, 'asset', assetId)).resolves.toEqual({
+      ok: false,
+      error: 'FORBIDDEN',
+    });
+    await expect(joinRoom(portfolio, 'asset', assetId)).resolves.toEqual({
+      ok: false,
+      error: 'FORBIDDEN',
+    });
+    await expect(joinRoom(chat, 'asset', assetId)).resolves.toEqual({
+      ok: false,
+      error: 'FORBIDDEN',
+    });
+    await expect(joinRoom(market, 'asset', assetId)).resolves.toEqual({ ok: true });
+
+    await expect(joinRoom(notifications, 'portfolio', portfolioId)).resolves.toEqual({
+      ok: false,
+      error: 'FORBIDDEN',
+    });
+    await expect(joinRoom(chat, 'portfolio', portfolioId)).resolves.toEqual({
+      ok: false,
+      error: 'FORBIDDEN',
+    });
+    await expect(joinRoom(market, 'portfolio', portfolioId)).resolves.toEqual({
+      ok: false,
+      error: 'FORBIDDEN',
+    });
+    await expect(joinRoom(portfolio, 'portfolio', portfolioId)).resolves.toEqual({ ok: true });
+
+    // Chat presence is a chat read, not a generic authenticated command.
+    await expect(
+      emitAck<RealtimeRoomAck>(chat, REALTIME_CLIENT_EVENTS.presenceEnter, {
+        surface: 'chat',
+        id: SOME_UUID,
+      }),
+    ).resolves.toEqual({ ok: true });
+    for (const socket of [notifications, portfolio, market]) {
+      await expect(
+        emitAck<RealtimeRoomAck>(socket, REALTIME_CLIENT_EVENTS.presenceEnter, {
+          surface: 'chat',
+          id: SOME_UUID,
+        }),
+      ).resolves.toEqual({ ok: false, error: 'FORBIDDEN' });
+    }
+
+    // `live.watch` is rejected before asset resolution without market read; a
+    // market token reaches resolution and gets the ordinary no-leak NOT_FOUND.
+    for (const socket of [notifications, portfolio, chat]) {
+      await expect(
+        emitAck<RealtimeLiveWatchAck>(socket, REALTIME_CLIENT_EVENTS.liveWatch, {
+          assetId,
+          window: '10m',
+        }),
+      ).resolves.toEqual({ ok: false, error: 'FORBIDDEN' });
+    }
+    await expect(
+      emitAck<RealtimeLiveWatchAck>(market, REALTIME_CLIENT_EVENTS.liveWatch, {
+        assetId,
+        window: '10m',
+      }),
+    ).resolves.toEqual({ ok: false, error: 'NOT_FOUND' });
+
+    const notification = waitForEvent<RealtimeNotificationNew>(
+      notifications,
+      REALTIME_SERVER_EVENTS.notificationNew,
+    );
+    const portfolioChanged = waitForEvent<RealtimePortfolioChanged>(
+      portfolio,
+      REALTIME_SERVER_EVENTS.portfolioChanged,
+    );
+    const chatMessage = waitForEvent<RealtimeChatMessage>(chat, REALTIME_SERVER_EVENTS.chatMessage);
+    const quote = waitForEvent<RealtimeQuoteUpdated>(market, REALTIME_SERVER_EVENTS.quoteUpdated);
+    const deniedFamilies = Promise.all([
+      ...[portfolio, chat, market].map((socket) =>
+        expectSilence(socket, REALTIME_SERVER_EVENTS.notificationNew),
+      ),
+      ...[notifications, chat, market].map((socket) =>
+        expectSilence(socket, REALTIME_SERVER_EVENTS.portfolioChanged),
+      ),
+      ...[notifications, portfolio, market].map((socket) =>
+        expectSilence(socket, REALTIME_SERVER_EVENTS.chatMessage),
+      ),
+      ...[notifications, portfolio, chat].map((socket) =>
+        expectSilence(socket, REALTIME_SERVER_EVENTS.quoteUpdated),
+      ),
+    ]);
+
+    const occurredAt = new Date().toISOString();
+    await Promise.all([
+      harness.ctx.events.publish({
+        type: 'notification.created',
+        userId: user.id,
+        notificationId: SOME_UUID,
+        occurredAt,
+      }),
+      harness.ctx.events.publish({
+        type: 'portfolio.changed',
+        userId: user.id,
+        portfolioId,
+        occurredAt,
+      }),
+      harness.ctx.events.publish({
+        type: 'chat.message',
+        userId: user.id,
+        senderId: SOME_UUID,
+        senderUsername: 'sender',
+        conversationId: SOME_UUID,
+        messageId: SOME_UUID,
+        bodyPreview: null,
+        hasChip: false,
+        occurredAt,
+      }),
+      harness.ctx.events.publish({ type: 'quote.updated', assetId, occurredAt }),
+    ]);
+
+    await expect(notification).resolves.toMatchObject({ notificationId: SOME_UUID });
+    await expect(portfolioChanged).resolves.toMatchObject({ portfolioId });
+    await expect(chatMessage).resolves.toMatchObject({ conversationId: SOME_UUID });
+    await expect(quote).resolves.toMatchObject({ assetId });
+    await deniedFamilies;
+  });
+
+  it('accepts matching write scopes as their implied realtime reads', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const loginState = await login(user.email, user.password);
+    const portfolioId = await defaultPortfolioId(loginState.agent);
+    const notificationWrite = await connectWith({
+      auth: { token: await mintKey(user.id, ['notifications:write']) },
+    });
+    const portfolioWrite = await connectWith({
+      auth: { token: await mintKey(user.id, ['portfolio:write']) },
+    });
+    const chatWrite = await connectWith({
+      auth: { token: await mintKey(user.id, ['chat:write']) },
+    });
+
+    await expect(joinRoom(portfolioWrite, 'portfolio', portfolioId)).resolves.toEqual({ ok: true });
+    await expect(
+      emitAck<RealtimeRoomAck>(chatWrite, REALTIME_CLIENT_EVENTS.presenceEnter, {
+        surface: 'chat',
+        id: SOME_UUID,
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    const notification = waitForEvent(notificationWrite, REALTIME_SERVER_EVENTS.notificationNew);
+    const portfolio = waitForEvent(portfolioWrite, REALTIME_SERVER_EVENTS.portfolioChanged);
+    const chat = waitForEvent(chatWrite, REALTIME_SERVER_EVENTS.chatMessage);
+    const occurredAt = new Date().toISOString();
+    await Promise.all([
+      harness.ctx.events.publish({
+        type: 'notification.created',
+        userId: user.id,
+        notificationId: SOME_UUID,
+        occurredAt,
+      }),
+      harness.ctx.events.publish({
+        type: 'portfolio.changed',
+        userId: user.id,
+        portfolioId,
+        occurredAt,
+      }),
+      harness.ctx.events.publish({
+        type: 'chat.message',
+        userId: user.id,
+        senderId: SOME_UUID,
+        senderUsername: 'sender',
+        conversationId: SOME_UUID,
+        messageId: SOME_UUID,
+        bodyPreview: null,
+        hasChip: false,
+        occurredAt,
+      }),
+    ]);
+    await expect(notification).resolves.toBeDefined();
+    await expect(portfolio).resolves.toBeDefined();
+    await expect(chat).resolves.toBeDefined();
   });
 });
 
@@ -420,6 +691,126 @@ describe('realtime gateway — rooms (§4.5)', () => {
       }),
     ).toEqual({ ok: false, error: 'BAD_REQUEST' });
     expect(socket.connected).toBe(true);
+  });
+});
+
+describe('realtime gateway — after-connect credential lifecycle (#880)', () => {
+  it('disconnects a revoked personal key and clears its chat presence', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const { key, token } = await harness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'realtime key',
+      scopes: ['chat:read'],
+    });
+    const socket = await connectWith({ auth: { token } });
+    await expect(
+      emitAck<RealtimeRoomAck>(socket, REALTIME_CLIENT_EVENTS.presenceEnter, {
+        surface: 'chat',
+        id: SOME_UUID,
+      }),
+    ).resolves.toEqual({ ok: true });
+    await expect(harness.ctx.presence.isPresent(user.id, 'chat', SOME_UUID)).resolves.toBe(true);
+
+    const disconnected = waitForDisconnect(socket);
+    await harness.ctx.apiKeys.revoke({ userId: user.id, id: key.id });
+    await disconnected;
+    await vi.waitFor(async () => {
+      await expect(harness.ctx.presence.isPresent(user.id, 'chat', SOME_UUID)).resolves.toBe(false);
+    });
+  });
+
+  it('disconnects a cookie session on logout and password reset', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const loginState = await login(user.email, user.password);
+    const socket = await connect(loginState.cookie);
+
+    const loggedOut = waitForDisconnect(socket);
+    await loginState.agent
+      .post('/api/v1/auth/logout')
+      .set(...XRW)
+      .send()
+      .expect(200);
+    await loggedOut;
+
+    const renewedLogin = await login(user.email, user.password);
+    const resetSocket = await connect(renewedLogin.cookie);
+    const admin = await harness.seedAdmin();
+    const reset = waitForDisconnect(resetSocket);
+    await harness.ctx.admin.resetPassword(user.id, { id: admin.id });
+    await reset;
+  });
+
+  it('disconnects a revoked OAuth grant after connect', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const loginState = await login(user.email, user.password);
+    const { accessToken, grantId } = await mintOAuthToken(loginState.agent, user.id, ['chat:read']);
+    const socket = await connectWith({ auth: { token: accessToken } });
+
+    const disconnected = waitForDisconnect(socket);
+    await harness.ctx.oauth.revokeGrant({ userId: user.id, id: grantId });
+    await disconnected;
+  });
+
+  it('disconnects all credential kinds on account disable and never resurrects them on enable', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const loginState = await login(user.email, user.password);
+    const { token } = await harness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'mobile',
+      scopes: ['notifications:read'],
+    });
+    const cookieSocket = await connect(loginState.cookie);
+    const keySocket = await connectWith({ auth: { token } });
+    const admin = await harness.seedAdmin();
+
+    const cookieDisconnected = waitForDisconnect(cookieSocket);
+    const keyDisconnected = waitForDisconnect(keySocket);
+    await harness.ctx.admin.updateUser(user.id, { status: 'disabled' }, { id: admin.id });
+    await Promise.all([cookieDisconnected, keyDisconnected]);
+
+    await harness.ctx.admin.updateUser(user.id, { status: 'active' }, { id: admin.id });
+    expect(cookieSocket.connected).toBe(false);
+    expect(keySocket.connected).toBe(false);
+    await expect(connect(loginState.cookie)).rejects.toThrow(/UNAUTHORIZED/);
+    await expect(connectWith({ auth: { token } })).rejects.toThrow(/UNAUTHORIZED/);
+  });
+
+  it('terminates an OAuth socket at access-token expiry without another client command', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const loginState = await login(user.email, user.password);
+    const { accessToken } = await mintOAuthToken(loginState.agent, user.id, ['chat:read']);
+    // Set a short but connect-safe deadline before the handshake reads the
+    // token. The gateway must install its own deadline timer after connect.
+    await harness.db
+      .update(schema.oauthAccessTokens)
+      .set({ expiresAt: new Date(Date.now() + 1500) })
+      .where(eq(schema.oauthAccessTokens.tokenHash, hashToken(accessToken)));
+
+    const socket = await connectWith({ auth: { token: accessToken } });
+    await expect(waitForDisconnect(socket, 4000)).resolves.toBeUndefined();
+  });
+
+  it('fails closed on bounded revalidation when a lifecycle publish is missed', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const loginState = await login(user.email, user.password);
+    const { accessToken, grantId } = await mintOAuthToken(loginState.agent, user.id, ['chat:read']);
+    // The deadline forces the gateway through its token-free revalidation path
+    // shortly after connect. Revoke through the repository directly so no bus
+    // invalidation is published; the socket must still be rejected.
+    await harness.db
+      .update(schema.oauthAccessTokens)
+      .set({ expiresAt: new Date(Date.now() + 1500) })
+      .where(eq(schema.oauthAccessTokens.tokenHash, hashToken(accessToken)));
+    const socket = await connectWith({ auth: { token: accessToken } });
+    await createOAuthRepository(harness.db).revokeGrant(user.id, grantId);
+
+    await expect(waitForDisconnect(socket, 4000)).resolves.toBeUndefined();
   });
 });
 
