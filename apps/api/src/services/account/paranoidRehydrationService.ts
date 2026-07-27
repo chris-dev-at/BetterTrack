@@ -265,6 +265,8 @@ function normalBatchCanReplay(rows: readonly QuantityReplayRow[], legacyCutoff: 
   return true;
 }
 
+const NORMAL_WRITE_BATCH_MAX_TRANSACTIONS = 500;
+
 interface ExactLegacyReplaySummary {
   /** Net quantity delta when the sequence can run from its required opening balance. */
   delta: bigint;
@@ -375,31 +377,89 @@ function maximumNormalReplayCutoff(
 }
 
 /**
- * Rebuild the public-number view which made a persisted strict-v1 document
- * reachable. Tax replay must use this same view whenever persisted quantities
- * alone appear to oversell: marking the suffix uncovered would invent a
- * sale-price basis for shares that the normal write had actually covered.
+ * Tax replay already has a deliberately narrow one-storage-quantum exception.
+ * Keep its representation untouched: wider strict-document reachability is a
+ * quantity-validation concern, not a reason to reconstruct historical tax
+ * inputs or change covered-sale cost basis.
  */
-function normalWriteQuantityOverrides(
+function oneQuantumStorageRoundingSellIds(
   groups: readonly (readonly QuantityReplayRow[])[],
-  legacyCutoff: number,
-): ReadonlyMap<string, number> {
-  const overrides = new Map<string, number>();
+): ReadonlySet<string> {
+  const sellIds = new Set<string>();
   for (const rows of groups) {
+    let held = 0n;
     for (const row of rows) {
-      const quantity =
-        row.normalRevision || row.writeOrder >= legacyCutoff
-          ? row.normalInputQuantity
-          : row.readbackQuantity;
-      if (quantity === null) {
-        throw new Error('normal-write quantity representation is unavailable');
+      if (row.transaction.data.side === 'buy') {
+        held += row.quantity;
+        continue;
       }
-      if (quantity !== row.readbackQuantity) {
-        overrides.set(row.transaction.id, quantity);
+      const shortfall = row.quantity - held;
+      if (shortfall === 1n && !row.transaction.data.allowUncovered) {
+        sellIds.add(row.transaction.id);
       }
+      held = shortfall > 0n ? 0n : held - row.quantity;
     }
   }
-  return overrides;
+  return sellIds;
+}
+
+/**
+ * The strict document records row history, not HTTP batch boundaries. A
+ * persisted-insolvent group is therefore admitted only when every normal row
+ * needed by its favorable public-number witness could have shared one legal
+ * public batch. Rows in other, already-persisted-solvent groups stay out of
+ * this local proof, so ordinary long histories are not capped.
+ */
+function normalBatchWitnessFits(
+  rows: readonly QuantityReplayRow[],
+  persistedInsolventGroups: readonly (readonly QuantityReplayRow[])[],
+  legacyCutoff: number,
+): boolean {
+  const relevantTransactionIds = new Set(
+    persistedInsolventGroups.flatMap((group) => group.map((row) => row.transaction.id)),
+  );
+  const normalRows = rows.filter(
+    (row) =>
+      relevantTransactionIds.has(row.transaction.id) &&
+      (row.normalRevision || row.writeOrder >= legacyCutoff),
+  );
+  if (normalRows.length > NORMAL_WRITE_BATCH_MAX_TRANSACTIONS) return false;
+  if (normalRows.length === 0) return true;
+
+  const firstWriteOrder = normalRows[0]!.writeOrder;
+  const lastWriteOrder = normalRows[normalRows.length - 1]!.writeOrder;
+  return lastWriteOrder - firstWriteOrder < NORMAL_WRITE_BATCH_MAX_TRANSACTIONS;
+}
+
+/**
+ * Rehydration must not reach tax replay with a persisted quantity sequence
+ * that the unchanged repository-number replay cannot reduce. The existing
+ * one-quantum exception is the only tolerated storage mismatch; broader
+ * normal-write candidates are rejected during preflight instead of after
+ * restore rows have started writing.
+ */
+function repositoryReadbackCanReplay(
+  rows: readonly QuantityReplayRow[],
+  storageRoundingSellIds: ReadonlySet<string>,
+): boolean {
+  let held = 0;
+  for (const row of rows) {
+    const quantity = row.readbackQuantity;
+    if (row.transaction.data.side === 'buy') {
+      held += quantity;
+      continue;
+    }
+    if (quantity > held + QTY_EPSILON) {
+      if (!row.transaction.data.allowUncovered && !storageRoundingSellIds.has(row.transaction.id)) {
+        return false;
+      }
+      held = 0;
+      continue;
+    }
+    held -= quantity;
+    if (Math.abs(held) <= QTY_EPSILON) held = 0;
+  }
+  return true;
 }
 
 /**
@@ -418,10 +478,10 @@ function normalWriteQuantityOverrides(
  * documents take O(n log n) quantity work before the pre-write rejection,
  * without imposing an artificial transaction-count limit on valid vaults.
  */
-function normalWriteQuantityOverridesFor(
+function storageRoundingSellIdsFor(
   transactions: readonly EntityOf<'transaction'>[],
   testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity,
-): ReadonlyMap<string, number> {
+): ReadonlySet<string> {
   const writeHistory = [...transactions].sort((a, b) => a.id.localeCompare(b.id));
   const rows = writeHistory.map((transaction, writeOrder): QuantityReplayRow => {
     const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
@@ -471,7 +531,7 @@ function normalWriteQuantityOverridesFor(
   );
 
   const persistedInsolventGroups = replayGroups.filter((group) => !isPersistedSolvent(group));
-  if (persistedInsolventGroups.length === 0) return new Map();
+  if (persistedInsolventGroups.length === 0) return new Set();
 
   // A row without a public-number preimage can only live in the strict-v1
   // prefix. Start at the first globally possible cutoff instead of trying
@@ -482,8 +542,16 @@ function normalWriteQuantityOverridesFor(
     0,
   );
 
+  if (!normalBatchWitnessFits(rows, persistedInsolventGroups, firstPossibleLegacyCutoff)) {
+    throw new Error(
+      'transaction quantity reachability requires more than ' +
+        NORMAL_WRITE_BATCH_MAX_TRANSACTIONS +
+        ' normal batch inputs',
+    );
+  }
+
   const maximumCutoff = maximumNormalReplayCutoff(
-    replayGroups,
+    persistedInsolventGroups,
     firstPossibleLegacyCutoff,
     rows.length,
   );
@@ -518,7 +586,13 @@ function normalWriteQuantityOverridesFor(
       activateLegacyRow(rows[legacyCutoff - 1]!);
     }
     if (insolventLegacyGroups === 0) {
-      return normalWriteQuantityOverrides(persistedInsolventGroups, firstPossibleLegacyCutoff);
+      const storageRoundingSellIds = oneQuantumStorageRoundingSellIds(replayGroups);
+      if (
+        !replayGroups.every((group) => repositoryReadbackCanReplay(group, storageRoundingSellIds))
+      ) {
+        throw new Error('transaction quantity cannot replay from repository readback');
+      }
+      return storageRoundingSellIds;
     }
 
     for (
@@ -528,7 +602,13 @@ function normalWriteQuantityOverridesFor(
     ) {
       activateLegacyRow(rows[legacyCutoff - 1]!);
       if (insolventLegacyGroups === 0) {
-        return normalWriteQuantityOverrides(persistedInsolventGroups, legacyCutoff);
+        const storageRoundingSellIds = oneQuantumStorageRoundingSellIds(replayGroups);
+        if (
+          !replayGroups.every((group) => repositoryReadbackCanReplay(group, storageRoundingSellIds))
+        ) {
+          throw new Error('transaction quantity cannot replay from repository readback');
+        }
+        return storageRoundingSellIds;
       }
     }
   }
@@ -1011,8 +1091,8 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
  * as one clean failure and makes the no-write guarantee directly testable.
  */
 interface ValidatedGraph {
-  /** Public-number quantities needed to replay a proven normal-write suffix for tax. */
-  normalWriteQuantityOverrides: ReadonlyMap<string, number>;
+  /** Existing one-quantum exception for tax replay's storage-rounding seam. */
+  storageRoundingSellIds: ReadonlySet<string>;
 }
 
 function validateGraph(
@@ -1631,7 +1711,7 @@ function validateGraph(
       .filter((movement) => movement.data.source === SOURCE_TAG_SYNC_MIRRORCHAIN)
       .map((movement) => movement.data.sourceId),
   );
-  let normalWriteQuantityOverrides = new Map<string, number>();
+  const storageRoundingSellIds = new Set<string>();
 
   try {
     const balancesBySource = new Map<string, bigint>();
@@ -1647,12 +1727,12 @@ function validateGraph(
       }
       balancesBySource.set(movement.data.sourceId, balance);
     }
-    normalWriteQuantityOverrides = new Map(
-      normalWriteQuantityOverridesFor(
-        rows(entities, 'transaction'),
-        testOnlyRejectPersistedTransactionQuantity,
-      ),
-    );
+    for (const sellId of storageRoundingSellIdsFor(
+      rows(entities, 'transaction'),
+      testOnlyRejectPersistedTransactionQuantity,
+    )) {
+      storageRoundingSellIds.add(sellId);
+    }
   } catch (error) {
     if (error instanceof ParanoidRehydrationError) throw error;
     throw new ParanoidRehydrationError(
@@ -1660,7 +1740,7 @@ function validateGraph(
       error instanceof Error ? error.message : 'cash ledger is invalid',
     );
   }
-  return { normalWriteQuantityOverrides };
+  return { storageRoundingSellIds };
 }
 
 interface ReferencedAsset {
@@ -1835,7 +1915,7 @@ export function createParanoidRehydrationService(
           portfolioIds: rows(entities, 'portfolio').map((portfolio) => portfolio.id),
           now: now(),
           toEur: toCashEur,
-          normalWriteQuantityOverrides: validatedGraph.normalWriteQuantityOverrides,
+          storageRoundingSellIds: validatedGraph.storageRoundingSellIds,
         });
         await stage('taxReplay');
 
