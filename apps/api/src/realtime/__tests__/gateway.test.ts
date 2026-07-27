@@ -1,4 +1,4 @@
-import type { Server as HttpServer } from 'node:http';
+import { createServer, type Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import { eq } from 'drizzle-orm';
@@ -27,9 +27,13 @@ import { createOAuthRepository } from '../../data/repositories/oauthRepository';
 import * as schema from '../../data/schema';
 import { generateTotpCode } from '../../services/auth/totp';
 import { hashToken } from '../../services/crypto/tokens';
-import { realtimeAdmissionKeys } from '../../services/security/realtimeAdmission';
+import {
+  realtimeAdmissionKeys,
+  type RealtimeAdmission,
+} from '../../services/security/realtimeAdmission';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import {
+  createRealtimeGateway,
   REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS,
   REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS,
 } from '../gateway';
@@ -350,6 +354,91 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
     const { cookie } = await login(user.email, user.password);
     const socket = await connect(cookie);
     expect(socket.connected).toBe(true);
+  });
+
+  it('releases admission when Engine.IO closes while namespace middleware is in flight', async () => {
+    let signalAcquireStarted!: () => void;
+    const acquireStarted = new Promise<void>((resolve) => {
+      signalAcquireStarted = resolve;
+    });
+    let finishAcquire!: () => void;
+    const acquireGate = new Promise<void>((resolve) => {
+      finishAcquire = resolve;
+    });
+    const releaseConnection = vi.fn(async () => undefined);
+    const admission: RealtimeAdmission = {
+      acquireConnection: vi.fn(async () => {
+        signalAcquireStarted();
+        await acquireGate;
+        return { ok: true as const };
+      }),
+      renewConnection: vi.fn(async () => true),
+      releaseConnection,
+      consumeUserCommand: vi.fn(async () => true),
+      acquireWatch: vi.fn(async () => ({ ok: true as const, sharedGlobalAsset: false })),
+      renewWatch: vi.fn(async () => true),
+      releaseWatch: vi.fn(async () => undefined),
+      acquireWatchStart: vi.fn(async () => true),
+      renewWatchStart: vi.fn(async () => true),
+      releaseWatchStart: vi.fn(async () => undefined),
+    };
+    const userId = '018f6f00-0000-7000-8000-000000000099';
+    const personal = {
+      kind: 'personal' as const,
+      user: {
+        id: userId,
+        role: 'user' as const,
+        status: 'active',
+        mustChangePassword: false,
+      },
+      keyId: 'key-controlled-abort',
+      scopes: ['chat:read'] as ApiKeyScope[],
+    };
+    const controlledGateway = createRealtimeGateway({
+      config: harness.ctx.config,
+      bus: harness.ctx.events,
+      logger: harness.ctx.logger,
+      redis: harness.ctx.redis,
+      realtimeAdmission: admission,
+      resolveSession: async () => null,
+      resolveBearer: async () => personal,
+      revalidatePersonal: async () => personal,
+      revalidateOAuth: async () => null,
+      canViewPortfolio: async () => false,
+      liveMode: null,
+      resolveWatchableAsset: async () => null,
+      presence: harness.ctx.presence,
+    });
+    const controlledServer = createServer();
+    const clientSockets: ClientSocket[] = [];
+    try {
+      controlledServer.listen(0);
+      await new Promise<void>((resolve) => controlledServer.once('listening', resolve));
+      await controlledGateway.attach(controlledServer);
+      const url = `http://127.0.0.1:${(controlledServer.address() as AddressInfo).port}`;
+      const client = ioClient(url, {
+        path: REALTIME_PATH,
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: 'controlled-token' },
+      });
+      clientSockets.push(client);
+      client.on('connect_error', () => undefined);
+
+      await acquireStarted;
+      client.io.engine?.close();
+      finishAcquire();
+
+      await vi.waitFor(() => expect(releaseConnection).toHaveBeenCalledTimes(1));
+      expect(controlledGateway.connectionCount()).toBe(0);
+    } finally {
+      finishAcquire();
+      for (const socket of clientSockets) socket.disconnect();
+      await controlledGateway.close();
+      if (controlledServer.listening) {
+        await new Promise<void>((resolve) => controlledServer.close(() => resolve()));
+      }
+    }
   });
 
   it('admits exactly five concurrent sockets per user and releases on disconnect', async () => {

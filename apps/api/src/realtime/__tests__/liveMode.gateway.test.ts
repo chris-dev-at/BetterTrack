@@ -12,6 +12,7 @@ import {
   REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
+  REALTIME_SOCKET_COMMAND_BURST,
   type CachedResult,
   type LiveRate,
   type PricePoint,
@@ -24,6 +25,7 @@ import { createAssetRepository } from '../../data/repositories/assetRepository';
 import { realtimeAdmissionKeys } from '../../services/security/realtimeAdmission';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import { createStubMarketData, type StubMarketData } from '../../testing/marketDataStubs';
+import { REALTIME_LIVE_FANOUT_CHANNEL } from '../gateway';
 
 /**
  * Live Mode end-to-end over the gateway (§6.3, V3-P7b): the §5.3 "N viewers =
@@ -101,6 +103,10 @@ async function seedAsset(suffix = ''): Promise<string> {
 
 async function connectUser(email: string, username: string): Promise<ClientSocket> {
   const user = await harness.seedUser({ email, username });
+  return connectSeededUser(user);
+}
+
+async function connectSeededUser(user: { email: string; password: string }): Promise<ClientSocket> {
   const agent = request.agent(harness.app);
   const res = await agent
     .post('/api/v1/auth/login')
@@ -180,6 +186,28 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     expect(bobFrames.map((f) => f.price)).toEqual(
       aliceFrames.slice(aliceFrames.length - bobFrames.length).map((f) => f.price),
     );
+  });
+
+  it('fans a remote poll owner frame into this process local asset room', async () => {
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+    const frames = collectFrames(alice);
+    expect(await watch(alice, assetId, '10m')).toMatchObject({ ok: true });
+
+    const remoteFrame: RealtimeLiveFrame = {
+      assetId,
+      price: 999,
+      currency: 'EUR',
+      dayChangePct: 2,
+      marketState: 'open',
+      at: new Date().toISOString(),
+    };
+    await harness.ctx.redis.publish(
+      REALTIME_LIVE_FANOUT_CHANNEL,
+      JSON.stringify({ sourceId: 'remote-api-process', frame: remoteFrame }),
+    );
+
+    await vi.waitFor(() => expect(frames).toContainEqual(remoteFrame));
   });
 
   it('a viewer joining mid-stream gets the requested window backfilled, then live frames', async () => {
@@ -517,5 +545,56 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     await unwatch(alice, assetId);
     await unwatch(alice, assetId); // repeat: must not steal bob's count
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
+  });
+
+  it('releases a held watch even when the unwatch frame is rate-limited', async () => {
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+    await expect(watch(alice, assetId, '10m')).resolves.toMatchObject({ ok: true });
+
+    // `live.watch` consumed one token. Fill the rest of the local burst and one
+    // extra in the same ordered socket stream so the following cleanup frame is
+    // rejected by admission but must still release its provider/Redis leases.
+    for (let index = 0; index < REALTIME_SOCKET_COMMAND_BURST; index += 1) {
+      alice.emit(REALTIME_CLIENT_EVENTS.roomLeave, {
+        room: { kind: 'asset', id: assetId },
+      });
+    }
+    await expect(unwatch(alice, assetId)).resolves.toEqual({
+      ok: false,
+      error: 'RATE_LIMITED',
+    });
+    await vi.waitFor(async () => {
+      expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
+      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalWatches)).toBe(0);
+    });
+  });
+
+  it('releases a held watch when the cross-process user command bucket is empty', async () => {
+    const assetId = await seedAsset();
+    const user = await harness.seedUser({
+      email: 'user-bucket@bt.test',
+      username: 'userbucket',
+    });
+    const alice = await connectSeededUser(user);
+    await expect(watch(alice, assetId, '10m')).resolves.toMatchObject({ ok: true });
+
+    // Pin the shared bucket at zero with a future watermark, so no elapsed-time
+    // refill can race the next frame. The socket-local bucket still has room.
+    await harness.ctx.redis.hset(
+      realtimeAdmissionKeys.userCommand(user.id),
+      'tokens',
+      '0',
+      'updatedAt',
+      String(Date.now() + 60_000),
+    );
+    await expect(unwatch(alice, assetId)).resolves.toEqual({
+      ok: false,
+      error: 'RATE_LIMITED',
+    });
+    await vi.waitFor(async () => {
+      expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
+      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalWatches)).toBe(0);
+    });
   });
 });

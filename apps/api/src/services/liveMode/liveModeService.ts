@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   LIVE_WINDOW_MS,
   type AssetRef,
@@ -46,13 +48,13 @@ import { createLiveRingBuffer, type LiveRingBuffer } from './ringBuffer';
  * never a fresh per-viewer upstream call — marked `seed: true`. Live ticks
  * then age the seed out of the window until it is 100 % real observations.
  *
- * Hosting decision (§6.3 sketches the loop in the worker): the loop lives in
- * the API process next to the gateway, because the watcher lifecycle is
- * socket-driven and local counts make start/auto-stop deterministic. Since
- * #881 the gateway separately holds Redis leases for cross-process user/global
- * admission; this service still owns only the loops hosted by this process.
- * The ring buffer stays in Redis, so relocating loops later remains a wiring
- * change rather than a data-path change.
+ * Hosting decision (§6.3 sketches the loop in the worker): API processes keep
+ * socket-local watcher counts, while Redis elects exactly one process to poll
+ * each globally-hot asset. Followers register their finest local rate and hold
+ * no provider timer; an expiring owner lease plus a graceful-release wakeup
+ * gives crash recovery without overlapping provider loops. The ring buffer and
+ * cross-process gateway fan-out stay in Redis, so ownership can move without
+ * changing the client data path.
  */
 
 /** Default watcher rate when none is requested (pre-#372 cadence). */
@@ -61,6 +63,12 @@ export const LIVE_POLL_INTERVAL_MS = 10_000;
 export const LIVE_POLL_MAX_INTERVAL_MS = 120_000;
 /** Ring retention: the longest live window plus one stretched interval of slack. */
 export const LIVE_RING_RETENTION_MS = LIVE_WINDOW_MS['12h'] + LIVE_POLL_MAX_INTERVAL_MS;
+/** Cross-process poll-owner lease: one missed heartbeat is tolerated before failover. */
+export const LIVE_LOOP_LEASE_TTL_MS = 60_000;
+/** Poll-owner/rate reconciliation cadence across API processes. */
+export const LIVE_LOOP_COORDINATION_INTERVAL_MS = 20_000;
+/** Graceful owner release wakes follower processes on this ephemeral channel. */
+export const LIVE_LOOP_COORDINATION_CHANNEL = 'bt:live:coordinate';
 /**
  * Smallest ring-coverage gap worth stitching from history (#372): provider
  * intraday bars are 1-minute, so a finer gap has no history to fill it.
@@ -74,9 +82,12 @@ export interface LiveModeService {
    * loop (first tick immediate); later watchers only register their rate, and
    * the loop re-derives its cadence — the finest ACTIVE rate. The caller (the
    * gateway) has already authorized the user and resolved the provider ref.
+   * `sharedGlobalAsset` suppresses eager ownership when Redis admission already
+   * saw another process holding this asset; the follower still registers for
+   * rate reconciliation and crash failover.
    */
   /** False only after service shutdown, when no loop can be registered. */
-  watch(assetId: string, ref: AssetRef, intervalMs?: number): boolean;
+  watch(assetId: string, ref: AssetRef, intervalMs?: number, sharedGlobalAsset?: boolean): boolean;
   /**
    * Deregister one watcher previously registered at `intervalMs` (same default
    * as {@link watch}); at zero watchers the loop stops and the asset goes cold.
@@ -98,6 +109,8 @@ export interface LiveModeService {
   watcherCount(assetId: string): number;
   /** The asset's current poll interval, or null when no loop runs (introspection). */
   pollIntervalMs(assetId: string): number | null;
+  /** Promptly reconcile a follower after another process releases poll ownership. */
+  reconcile(assetId: string): void;
   /** Stop every loop and drop all subscribers (shutdown). */
   close(): void;
 }
@@ -113,6 +126,12 @@ export interface LiveModeServiceOptions {
   ringRetentionMs?: number;
   /** Minimum ring gap worth history-stitching; defaults to {@link LIVE_SEED_MIN_GAP_MS}. */
   seedMinGapMs?: number;
+  /** Cross-process owner heartbeat cadence; injectable only for focused tests. */
+  coordinationIntervalMs?: number;
+  /** Cross-process owner lease TTL; injectable only for focused tests. */
+  leaderLeaseTtlMs?: number;
+  /** Stable process token; injectable only to make cross-process tests legible. */
+  instanceId?: string;
   /** Injectable clock for frame timestamps (tests). */
   now?: () => number;
 }
@@ -126,16 +145,89 @@ export interface LiveModeServiceDeps {
 
 interface AssetLoop {
   ref: AssetRef;
+  /** Per-hot-generation token; prevents a late release deleting a restarted loop. */
+  coordinationId: string;
   /** Requested interval → number of watchers holding it (a multiset, #372). */
   rates: Map<number, number>;
   /** Consecutive failed ticks; each one doubles the cadence up to the ceiling. */
   failures: number;
+  /** Finest active rate across every API process, refreshed with the owner lease. */
+  baseIntervalMs: number;
   /** Effective cadence: finest active rate × 2^failures, capped. */
   intervalMs: number;
   /** When the last tick started — anchor for rescheduling on rate changes. */
   lastTickAt: number;
   timer: NodeJS.Timeout | null;
+  coordinationRunning: boolean;
+  coordinationQueued: boolean;
+  coordinationAllowAcquire: boolean;
+  coordinationNotifyPeers: boolean;
+  leader: boolean;
 }
+
+const liveLoopLeaderKey = (assetId: string): string =>
+  `bt:live:leader:${encodeURIComponent(assetId)}`;
+const liveLoopProcessesKey = (assetId: string): string =>
+  `bt:live:processes:${encodeURIComponent(assetId)}`;
+const liveLoopRatesKey = (assetId: string): string =>
+  `bt:live:rates:${encodeURIComponent(assetId)}`;
+
+/**
+ * Register this process's local demand, reap crashed peers, and atomically elect
+ * at most one provider-loop owner. Followers still refresh their rate lease so
+ * the owner can poll at the finest rate requested anywhere in the cluster.
+ */
+const COORDINATE_LOOP_SCRIPT = `
+local now = tonumber(ARGV[1])
+local expiresAt = tonumber(ARGV[2])
+local instanceId = ARGV[3]
+local rateMs = tonumber(ARGV[4])
+local leaseTtlMs = tonumber(ARGV[5])
+local keyTtlMs = tonumber(ARGV[6])
+local allowAcquire = tonumber(ARGV[7])
+
+local expired = redis.call('ZRANGEBYSCORE', KEYS[2], '-inf', now)
+for _, expiredId in ipairs(expired) do
+  redis.call('HDEL', KEYS[3], expiredId)
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+
+redis.call('ZADD', KEYS[2], expiresAt, instanceId)
+redis.call('HSET', KEYS[3], instanceId, rateMs)
+redis.call('PEXPIRE', KEYS[2], keyTtlMs)
+redis.call('PEXPIRE', KEYS[3], keyTtlMs)
+
+local owner = redis.call('GET', KEYS[1])
+if owner and not redis.call('ZSCORE', KEYS[2], owner) then
+  redis.call('DEL', KEYS[1])
+  owner = false
+end
+if not owner and allowAcquire == 1 then
+  redis.call('SET', KEYS[1], instanceId, 'PX', leaseTtlMs)
+  owner = instanceId
+elseif owner == instanceId then
+  redis.call('PEXPIRE', KEYS[1], leaseTtlMs)
+end
+
+local finest = rateMs
+for _, candidate in ipairs(redis.call('HVALS', KEYS[3])) do
+  finest = math.min(finest, tonumber(candidate))
+end
+return { owner == instanceId and 1 or 0, finest }
+`;
+
+/** Remove this process without deleting a successor's ownership. */
+const RELEASE_LOOP_SCRIPT = `
+local instanceId = ARGV[1]
+redis.call('ZREM', KEYS[2], instanceId)
+redis.call('HDEL', KEYS[3], instanceId)
+local releasedOwner = 0
+if redis.call('GET', KEYS[1]) == instanceId then
+  redis.call('DEL', KEYS[1])
+  releasedOwner = 1
+end
+return releasedOwner
+`;
 
 export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeService {
   const { marketData, logger } = deps;
@@ -145,11 +237,17 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
   const retentionMs = options.ringRetentionMs ?? LIVE_RING_RETENTION_MS;
   const capacity = options.ringCapacity ?? Math.ceil(retentionMs / defaultIntervalMs);
   const seedMinGapMs = options.seedMinGapMs ?? LIVE_SEED_MIN_GAP_MS;
+  const coordinationIntervalMs =
+    options.coordinationIntervalMs ?? LIVE_LOOP_COORDINATION_INTERVAL_MS;
+  const leaderLeaseTtlMs = options.leaderLeaseTtlMs ?? LIVE_LOOP_LEASE_TTL_MS;
+  const coordinationKeyTtlMs = leaderLeaseTtlMs * 2;
+  const instanceId = options.instanceId ?? randomUUID();
   const now = options.now ?? Date.now;
 
   const ring: LiveRingBuffer = createLiveRingBuffer(deps.redis, { capacity, retentionMs });
   const loops = new Map<string, AssetLoop>();
   const handlers = new Set<(frame: RealtimeLiveFrame) => void>();
+  let coordinationTimer: NodeJS.Timeout | null = null;
   let closed = false;
 
   function emit(frame: RealtimeLiveFrame): void {
@@ -165,8 +263,8 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
   const watcherTotal = (loop: AssetLoop): number =>
     [...loop.rates.values()].reduce((sum, count) => sum + count, 0);
 
-  /** Finest ACTIVE rate: the minimum requested interval — never a divisor (#372). */
-  const finestRateMs = (loop: AssetLoop): number => Math.min(...loop.rates.keys());
+  /** Finest rate requested by this process; Redis reconciles it with every peer. */
+  const finestLocalRateMs = (loop: AssetLoop): number => Math.min(...loop.rates.keys());
 
   /**
    * Re-derive the effective cadence from the rate set + distress state. The
@@ -175,8 +273,8 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
    */
   function applyCadence(loop: AssetLoop): void {
     // 2^failures with a hard cap keeps the multiplier finite under long outages.
-    const stretched = finestRateMs(loop) * 2 ** Math.min(loop.failures, 30);
-    loop.intervalMs = Math.max(finestRateMs(loop), Math.min(stretched, maxIntervalMs));
+    const stretched = loop.baseIntervalMs * 2 ** Math.min(loop.failures, 30);
+    loop.intervalMs = Math.max(loop.baseIntervalMs, Math.min(stretched, maxIntervalMs));
   }
 
   /**
@@ -186,15 +284,142 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
    * already in flight reschedules itself in its `finally` instead.
    */
   function reschedule(assetId: string, loop: AssetLoop): void {
-    if (closed || loops.get(assetId) !== loop || loop.timer === null) return;
+    if (closed || loops.get(assetId) !== loop || !loop.leader || loop.timer === null) return;
     clearTimeout(loop.timer);
     const delay = Math.max(0, loop.lastTickAt + loop.intervalMs - now());
     loop.timer = setTimeout(() => void tick(assetId, loop), delay);
   }
 
+  function stopPolling(loop: AssetLoop): void {
+    loop.leader = false;
+    if (loop.timer) clearTimeout(loop.timer);
+    loop.timer = null;
+  }
+
+  function applyGlobalRate(assetId: string, loop: AssetLoop, intervalMs: number): void {
+    const before = loop.intervalMs;
+    loop.baseIntervalMs = intervalMs;
+    applyCadence(loop);
+    if (loop.intervalMs < before) reschedule(assetId, loop);
+  }
+
+  async function releaseProcessRegistration(
+    assetId: string,
+    coordinationId: string,
+  ): Promise<void> {
+    const releasedOwner = await deps.redis.eval(
+      RELEASE_LOOP_SCRIPT,
+      3,
+      liveLoopLeaderKey(assetId),
+      liveLoopProcessesKey(assetId),
+      liveLoopRatesKey(assetId),
+      coordinationId,
+    );
+    // A follower leaving may also change the globally-finest rate, while an
+    // owner leaving requires immediate election. One compact poke covers both.
+    await deps.redis.publish(LIVE_LOOP_COORDINATION_CHANNEL, JSON.stringify({ assetId }));
+    if (releasedOwner === 1) {
+      logger.debug({ assetId }, 'live poll ownership released');
+    }
+  }
+
+  async function runCoordination(assetId: string, loop: AssetLoop): Promise<void> {
+    if (loop.coordinationRunning) return;
+    loop.coordinationRunning = true;
+    try {
+      while (
+        loop.coordinationQueued &&
+        !closed &&
+        loops.get(assetId) === loop &&
+        watcherTotal(loop) > 0
+      ) {
+        const allowAcquire = loop.coordinationAllowAcquire;
+        const notifyPeers = loop.coordinationNotifyPeers;
+        loop.coordinationQueued = false;
+        loop.coordinationAllowAcquire = false;
+        loop.coordinationNotifyPeers = false;
+        const result = (await deps.redis.eval(
+          COORDINATE_LOOP_SCRIPT,
+          3,
+          liveLoopLeaderKey(assetId),
+          liveLoopProcessesKey(assetId),
+          liveLoopRatesKey(assetId),
+          now(),
+          now() + leaderLeaseTtlMs,
+          loop.coordinationId,
+          finestLocalRateMs(loop),
+          leaderLeaseTtlMs,
+          coordinationKeyTtlMs,
+          allowAcquire ? 1 : 0,
+        )) as [number | string, number | string];
+
+        if (closed || loops.get(assetId) !== loop || watcherTotal(loop) === 0) {
+          await releaseProcessRegistration(assetId, loop.coordinationId);
+          return;
+        }
+
+        const ownsLoop = Number(result[0]) === 1;
+        applyGlobalRate(assetId, loop, Number(result[1]));
+        if (ownsLoop && !loop.leader) {
+          loop.leader = true;
+          loop.failures = 0;
+          applyCadence(loop);
+          void tick(assetId, loop);
+        } else if (!ownsLoop && loop.leader) {
+          stopPolling(loop);
+        }
+        if (notifyPeers) {
+          await deps.redis.publish(LIVE_LOOP_COORDINATION_CHANNEL, JSON.stringify({ assetId }));
+        }
+      }
+    } catch (err) {
+      // Losing Redis means ownership cannot be proven. Stop provider work now;
+      // the expiring lease lets a healthy process take over without overlap.
+      stopPolling(loop);
+      logger.warn({ err, assetId }, 'live poll ownership reconciliation failed');
+    } finally {
+      loop.coordinationRunning = false;
+      if (
+        loop.coordinationQueued &&
+        !closed &&
+        loops.get(assetId) === loop &&
+        watcherTotal(loop) > 0
+      ) {
+        void runCoordination(assetId, loop);
+      }
+    }
+  }
+
+  function requestCoordination(
+    assetId: string,
+    loop: AssetLoop,
+    allowAcquire: boolean,
+    notifyPeers = false,
+  ): void {
+    if (closed || loops.get(assetId) !== loop || watcherTotal(loop) === 0) return;
+    loop.coordinationQueued = true;
+    loop.coordinationAllowAcquire ||= allowAcquire;
+    loop.coordinationNotifyPeers ||= notifyPeers;
+    void runCoordination(assetId, loop);
+  }
+
+  function ensureCoordinationTimer(): void {
+    if (coordinationTimer) return;
+    coordinationTimer = setInterval(() => {
+      for (const [assetId, loop] of loops) requestCoordination(assetId, loop, true);
+    }, coordinationIntervalMs);
+    coordinationTimer.unref?.();
+  }
+
+  function stopCoordinationTimerWhenIdle(): void {
+    if (!coordinationTimer || loops.size > 0) return;
+    clearInterval(coordinationTimer);
+    coordinationTimer = null;
+  }
+
   async function tick(assetId: string, loop: AssetLoop): Promise<void> {
     // A superseded loop (last watcher left, or close()) never polls again.
-    if (closed || loops.get(assetId) !== loop) return;
+    if (closed || loops.get(assetId) !== loop || !loop.leader) return;
     loop.timer = null;
     loop.lastTickAt = now();
     try {
@@ -241,37 +466,49 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         'live poll tick failed; stretching interval',
       );
     } finally {
-      if (!closed && loops.get(assetId) === loop && watcherTotal(loop) > 0) {
+      if (!closed && loops.get(assetId) === loop && loop.leader && watcherTotal(loop) > 0) {
         loop.timer = setTimeout(() => void tick(assetId, loop), loop.intervalMs);
       }
     }
   }
 
   return {
-    watch(assetId, ref, intervalMs = defaultIntervalMs) {
+    watch(assetId, ref, intervalMs = defaultIntervalMs, sharedGlobalAsset = false) {
       if (closed) return false;
       const existing = loops.get(assetId);
       if (existing) {
         existing.rates.set(intervalMs, (existing.rates.get(intervalMs) ?? 0) + 1);
         const before = existing.intervalMs;
+        existing.baseIntervalMs = finestLocalRateMs(existing);
         applyCadence(existing);
         // Only a finer cadence moves the pending tick — poll-rate changes must
         // never fire an extra upstream call, so coarsening waits its turn.
         if (existing.intervalMs < before) reschedule(assetId, existing);
+        requestCoordination(assetId, existing, true, true);
         return true;
       }
       const loop: AssetLoop = {
         ref,
+        coordinationId: `${instanceId}:${randomUUID()}`,
         rates: new Map([[intervalMs, 1]]),
         failures: 0,
+        baseIntervalMs: intervalMs,
         intervalMs,
         lastTickAt: 0,
         timer: null,
+        coordinationRunning: false,
+        coordinationQueued: false,
+        coordinationAllowAcquire: false,
+        coordinationNotifyPeers: false,
+        leader: false,
       };
       applyCadence(loop);
       loops.set(assetId, loop);
-      // Immediate first tick: the first watcher sees a frame right away.
-      void tick(assetId, loop);
+      ensureCoordinationTimer();
+      // A globally-shared asset starts as a follower: it registers its demand
+      // but cannot opportunistically create a second provider loop. Periodic or
+      // release-triggered reconciliation may elect it after the owner vanishes.
+      requestCoordination(assetId, loop, !sharedGlobalAsset, true);
       return true;
     },
 
@@ -287,14 +524,21 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         // The finest watcher leaving coarsens the loop to the new minimum. The
         // pending tick keeps its (finer) schedule — one early tick, then the
         // new cadence takes over at its reschedule.
+        loop.baseIntervalMs = finestLocalRateMs(loop);
         applyCadence(loop);
+        requestCoordination(assetId, loop, true, true);
         return;
       }
       // Last watcher gone: stop now. An in-flight tick notices the map no
       // longer holds its loop and never reschedules — upstream calls cease
       // within one interval (§6.3 auto-stop; presence-gated, #372).
       if (loop.timer) clearTimeout(loop.timer);
+      stopPolling(loop);
       loops.delete(assetId);
+      stopCoordinationTimerWhenIdle();
+      void releaseProcessRegistration(assetId, loop.coordinationId).catch((err) => {
+        logger.warn({ err, assetId }, 'live poll ownership release failed');
+      });
     },
 
     async backfill(assetId, ref, window) {
@@ -350,10 +594,21 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
       return loops.get(assetId)?.intervalMs ?? null;
     },
 
+    reconcile(assetId) {
+      const loop = loops.get(assetId);
+      if (loop) requestCoordination(assetId, loop, true);
+    },
+
     close() {
       closed = true;
-      for (const loop of loops.values()) {
+      if (coordinationTimer) clearInterval(coordinationTimer);
+      coordinationTimer = null;
+      for (const [assetId, loop] of loops) {
         if (loop.timer) clearTimeout(loop.timer);
+        stopPolling(loop);
+        void releaseProcessRegistration(assetId, loop.coordinationId).catch((err) => {
+          logger.warn({ err, assetId }, 'live poll ownership shutdown release failed');
+        });
       }
       loops.clear();
       handlers.clear();

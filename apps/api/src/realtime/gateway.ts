@@ -15,6 +15,7 @@ import {
   REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
+  realtimeLiveFrameSchema,
   realtimeLiveUnwatchRequestSchema,
   realtimeLiveWatchRequestSchema,
   realtimePresenceRequestSchema,
@@ -40,7 +41,7 @@ import type { AppConfig } from '../config/env';
 import type { EventBus, RealtimePrincipalInvalidatedEvent, Unsubscribe } from '../events';
 import type { Logger } from '../logger';
 import { sha256Base64Url } from '../services/crypto/tokens';
-import type { LiveModeService } from '../services/liveMode';
+import { LIVE_LOOP_COORDINATION_CHANNEL, type LiveModeService } from '../services/liveMode';
 import type { PresenceStore } from '../services/notifications/presence';
 import {
   createRealtimeAdmission,
@@ -97,6 +98,8 @@ export const portfolioRoom = (portfolioId: string): string => `portfolio:${portf
 export const REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS = 30_000;
 export const REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS = 5_000;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
+/** Cross-process live frames; each gateway emits remote frames into its local rooms. */
+export const REALTIME_LIVE_FANOUT_CHANNEL = 'bt:live:frames';
 
 /** Bearer-only user rooms prevent a narrow token entering the full user room. */
 const scopedUserRoom = (userId: string, capability: RealtimeBearerCapability): string =>
@@ -283,6 +286,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   let principalRevalidationRunning = false;
   const unsubscribers: Unsubscribe[] = [];
   const socketCleanupTasks = new Set<Promise<void>>();
+  const gatewayInstanceId = randomUUID();
 
   // The exact cookie-parser the Express app mounts: same signing secrets, same
   // rotation behavior. Run over the raw handshake request so `signedCookies`
@@ -403,6 +407,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     released: boolean;
   };
 
+  type PreConnectCloseFence = {
+    closed: boolean;
+    admitted: boolean;
+    onClose: () => void;
+  };
+
   const bearerAdmissionCredential = (principal: RealtimePrincipal): string | null => {
     if (principal.kind === 'personal') return principal.keyId;
     if (principal.kind === 'oauth') return principal.accessTokenId;
@@ -411,6 +421,16 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
 
   const connectionLeaseOf = (socket: Socket): ConnectionLease | null =>
     (socket.data.connectionLease as ConnectionLease | undefined) ?? null;
+
+  const preConnectCloseFenceOf = (socket: Socket): PreConnectCloseFence | null =>
+    (socket.data.preConnectCloseFence as PreConnectCloseFence | undefined) ?? null;
+
+  function disarmPreConnectCloseFence(socket: Socket): void {
+    const fence = preConnectCloseFenceOf(socket);
+    if (!fence) return;
+    socket.conn.off('close', fence.onClose);
+    delete socket.data.preConnectCloseFence;
+  }
 
   const respondError = (ack: unknown, error: RealtimeAckError): void => {
     if (typeof ack === 'function') {
@@ -793,7 +813,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         return;
       }
       try {
-        if (!liveMode.watch(assetId, ref, rateMs)) {
+        if (!liveMode.watch(assetId, ref, rateMs, admitted.sharedGlobalAsset)) {
           await admission
             .releaseWatch({ leaseId, userId: principal.userId, assetId })
             .catch(() => undefined);
@@ -1165,6 +1185,53 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     );
   }
 
+  /**
+   * Provider polling has one Redis-elected owner, but Socket.IO rooms remain
+   * process-local. Relay the owner's frames to every gateway and use the same
+   * dedicated subscriber to wake followers after a graceful owner release.
+   */
+  async function subscribeLiveChannels(server: SocketIOServer): Promise<void> {
+    if (!deps.liveMode) return;
+    const subscriber = deps.redis.duplicate();
+    const onMessage = (channel: string, raw: string): void => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        logger.warn({ channel }, 'realtime live channel dropped malformed JSON');
+        return;
+      }
+      if (channel === REALTIME_LIVE_FANOUT_CHANNEL) {
+        if (typeof parsed !== 'object' || parsed === null) return;
+        const envelope = parsed as { sourceId?: unknown; frame?: unknown };
+        if (envelope.sourceId === gatewayInstanceId) return;
+        const frame = realtimeLiveFrameSchema.safeParse(envelope.frame);
+        if (!frame.success) return;
+        server.to(assetRoom(frame.data.assetId)).emit(REALTIME_SERVER_EVENTS.liveFrame, frame.data);
+        return;
+      }
+      if (channel === LIVE_LOOP_COORDINATION_CHANNEL) {
+        const message = realtimeLiveUnwatchRequestSchema.safeParse(parsed);
+        if (message.success) deps.liveMode?.reconcile(message.data.assetId);
+      }
+    };
+    subscriber.on('message', onMessage);
+    try {
+      await subscriber.subscribe(REALTIME_LIVE_FANOUT_CHANNEL, LIVE_LOOP_COORDINATION_CHANNEL);
+    } catch (err) {
+      subscriber.off('message', onMessage);
+      await subscriber.quit().catch(() => undefined);
+      throw err;
+    }
+    unsubscribers.push(async () => {
+      subscriber.off('message', onMessage);
+      await subscriber
+        .unsubscribe(REALTIME_LIVE_FANOUT_CHANNEL, LIVE_LOOP_COORDINATION_CHANNEL)
+        .catch(() => undefined);
+      await subscriber.quit().catch(() => undefined);
+    });
+  }
+
   return {
     async attach(server: HttpServer): Promise<void> {
       if (!config.realtime.enabled || io) return;
@@ -1181,17 +1248,35 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         // /ws): same credentialed allowlist as the API (§4.6, §10).
         cors: { origin: config.corsOrigins, credentials: true },
       });
+      await subscribeLiveChannels(io);
 
       io.use((socket, next) => {
+        const fence: PreConnectCloseFence = {
+          closed: socket.conn.readyState === 'closed',
+          admitted: false,
+          onClose: () => undefined,
+        };
+        fence.onClose = () => {
+          fence.closed = true;
+          // If close wins while acquireConnection is in flight, the continuation
+          // below releases after that atomic operation settles. After admission,
+          // this path owns cleanup until the namespace disconnect listener is
+          // installed by the connection handler.
+          if (fence.admitted) trackSocketCleanup(releaseConnectionLease(socket));
+        };
+        socket.data.preConnectCloseFence = fence;
+        socket.conn.once('close', fence.onClose);
         void (async () => {
           // Runtime kill-switch (§13.5 V5-P2 arc (c)): with `realtime` flipped
           // OFF the gateway refuses the very next handshake.
           if (!(await featureEnabled('realtime'))) {
+            disarmPreConnectCloseFence(socket);
             next(handshakeError('UNAVAILABLE'));
             return;
           }
           const principal = await authenticate(socket);
           if (!principal) {
+            disarmPreConnectCloseFence(socket);
             next(handshakeError('UNAUTHORIZED'));
             return;
           }
@@ -1201,17 +1286,32 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
             bearerCredentialId: bearerAdmissionCredential(principal),
             released: false,
           };
+          // Publish the lease to the close fence before the Redis await. The
+          // fence only releases after `admitted` flips, so close-before-settle
+          // cannot race a premature ZREM against a later successful ZADD.
+          socket.data.connectionLease = lease;
           const decision = await admission.acquireConnection(lease);
           if (!decision.ok) {
+            lease.released = true;
+            disarmPreConnectCloseFence(socket);
             next(handshakeError(decision.error));
             return;
           }
+          fence.admitted = true;
           socket.data.principal = principal;
-          socket.data.connectionLease = lease;
+          if (fence.closed || socket.conn.readyState === 'closed') {
+            await releaseConnectionLease(socket);
+            disarmPreConnectCloseFence(socket);
+            next(handshakeError('UNAVAILABLE'));
+            return;
+          }
           next();
         })().catch((err) => {
           logger.warn({ err }, 'realtime handshake auth/admission failed');
-          next(handshakeError('UNAVAILABLE'));
+          void releaseConnectionLease(socket).finally(() => {
+            disarmPreConnectCloseFence(socket);
+            next(handshakeError('UNAVAILABLE'));
+          });
         });
       });
 
@@ -1223,6 +1323,29 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           return;
         }
         const { userId } = principal;
+        // Install namespace cleanup before disarming the Engine.IO close fence:
+        // every instant after admission is therefore owned by one release path.
+        socket.once('disconnect', () => {
+          clearPrincipalExpiry(socket);
+          stopAdmissionHeartbeat(socket);
+          const cleanup = Promise.allSettled([
+            clearPresence(socket, userId),
+            releaseConnectionLease(socket),
+            (async () => {
+              for (const [assetId, entry] of [...liveAssetsOf(socket)]) {
+                await releaseLiveWatch(socket, assetId, entry, false);
+              }
+            })(),
+          ]).then((results) => {
+            for (const result of results) {
+              if (result.status === 'rejected') {
+                logger.warn({ err: result.reason, userId }, 'realtime disconnect cleanup failed');
+              }
+            }
+          });
+          trackSocketCleanup(cleanup);
+        });
+        disarmPreConnectCloseFence(socket);
         startAdmissionHeartbeat(socket);
         void joinPrincipalRooms(socket, principal).catch((err) => {
           logger.warn({ err, userId, kind: principal.kind }, 'realtime principal room join failed');
@@ -1273,14 +1396,30 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.liveUnwatch, (payload: unknown, ack: unknown) => {
-          if (!admitSocketCommand(socket, ack)) return;
-          const userAdmission = admitUserCommand(principal, ack);
+          const socketAdmitted = admitSocketCommand(socket, ack);
+          const parsed = realtimeLiveUnwatchRequestSchema.safeParse(payload);
+          const heldEntry = parsed.success
+            ? liveAssetsOf(socket).get(parsed.data.assetId)
+            : undefined;
+          // A cleanup frame is charged and may still report RATE_LIMITED, but an
+          // exhausted bucket must never turn it into a leaked renewable watch.
+          // Ignore rate-limited frames that cannot release anything so rejected
+          // spam cannot grow the ordered cleanup queue.
+          if (!socketAdmitted && !heldEntry) return;
+          const userAdmission = socketAdmitted
+            ? admitUserCommand(principal, ack)
+            : Promise.resolve(false);
+          let commandAdmitted = false;
           void enqueueLiveOp(socket, async () => {
-            if (!(await userAdmission)) return;
-            await handleLiveUnwatch(socket, payload, ack);
+            commandAdmitted = await userAdmission;
+            // Pass no ack after either bucket has already answered with an
+            // error; cleanup remains idempotent and still runs for the held row.
+            if (commandAdmitted || heldEntry) {
+              await handleLiveUnwatch(socket, payload, commandAdmitted ? ack : undefined);
+            }
           }).catch((err) => {
             logger.warn({ err, userId }, 'live unwatch failed');
-            respondError(ack, 'UNAVAILABLE');
+            if (commandAdmitted) respondError(ack, 'UNAVAILABLE');
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.presenceEnter, (payload: unknown, ack: unknown) => {
@@ -1301,30 +1440,6 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
             respondError(ack, 'UNAVAILABLE');
           });
         });
-        // A vanished socket immediately releases settled watches. A watch still
-        // resolving checks `socket.disconnected` before registration; in-flight
-        // provider work retains its semaphore until it actually settles.
-        // Presence claims clear too; TTLs remain the crash/error backstop.
-        socket.on('disconnect', () => {
-          clearPrincipalExpiry(socket);
-          stopAdmissionHeartbeat(socket);
-          const cleanup = Promise.allSettled([
-            clearPresence(socket, userId),
-            releaseConnectionLease(socket),
-            (async () => {
-              for (const [assetId, entry] of [...liveAssetsOf(socket)]) {
-                await releaseLiveWatch(socket, assetId, entry, false);
-              }
-            })(),
-          ]).then((results) => {
-            for (const result of results) {
-              if (result.status === 'rejected') {
-                logger.warn({ err: result.reason, userId }, 'realtime disconnect cleanup failed');
-              }
-            }
-          });
-          trackSocketCleanup(cleanup);
-        });
       });
 
       await subscribeBus(io);
@@ -1335,6 +1450,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         const server = io;
         const offFrames = deps.liveMode.onFrame((frame) => {
           server.to(assetRoom(frame.assetId)).emit(REALTIME_SERVER_EVENTS.liveFrame, frame);
+          void deps.redis
+            .publish(
+              REALTIME_LIVE_FANOUT_CHANNEL,
+              JSON.stringify({ sourceId: gatewayInstanceId, frame }),
+            )
+            .catch((err) => {
+              logger.warn(
+                { err, assetId: frame.assetId },
+                'live frame cross-process fan-out failed',
+              );
+            });
         });
         unsubscribers.push(async () => offFrames());
       }

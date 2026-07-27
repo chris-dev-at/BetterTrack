@@ -1554,9 +1554,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // cookie→user resolution verbatim; `portfolio:{id}` room joins enforce
   // owner-or-shared with the same repository checks the shared-view HTTP
   // endpoints use (§6.9), recomputed at join time.
-  // Live Mode core (§6.3, V3-P7b). Hosted in the API process next to the
-  // gateway that drives its watcher counts — the ring buffer lives in Redis, so
-  // moving the loop into the worker later is wiring, not a data-path change.
+  // Live Mode core (§6.3, V3-P7b). API processes retain socket-local watcher
+  // counts; Redis elects one provider poll owner per globally-hot asset and
+  // holds the shared ring buffer used across owner handoff.
   const liveMode = createLiveModeService({
     marketData,
     redis,
