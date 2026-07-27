@@ -216,8 +216,9 @@ interface QuantityReplayRow {
   /** Immutable UUIDv7 write position within the whole strict document. */
   writeOrder: number;
   /**
-   * `rev` is only enough to make this row a PATCH candidate. It does not prove
-   * that this or any other revised row was submitted through the normal path.
+   * A strict-vault revision is not itself normal-write provenance. It can only
+   * stand in for a one-row quantity PATCH when the unchanged normal update
+   * guards would allow that financial edit.
    */
   revisionCandidate: boolean;
 }
@@ -268,193 +269,112 @@ function normalRowsCanReplay(
 
 const NORMAL_WRITE_BATCH_MAX_TRANSACTIONS = 500;
 
-interface NormalReplaySummary {
-  /** Net quantity delta above any uncovered/clamped floor. */
-  delta: number;
-  /** Lower output clamp introduced by a sell; null means no clamp. */
-  floor: number | null;
-  /** Optimistic minimum opening holding needed by ordinary sells. */
-  required: number;
-}
-
-const NORMAL_REPLAY_IDENTITY: NormalReplaySummary = {
-  delta: 0,
-  floor: null,
-  required: 0,
-};
-
 /**
- * Compose optimistic normal-number summaries. The summary deliberately keeps
- * a sub-epsilon positive remainder which reducePosition would clamp to zero.
- * It can therefore admit a candidate to the exact replay below, but it cannot
- * hide a viable candidate and is safe as a linear-time search filter.
+ * A normal CREATE is a contiguous UUIDv7 write span for one portfolio. Every
+ * relevant row before the span has already been persisted and is therefore
+ * replayed at repository Number(numeric) precision; only rows in the current
+ * request use their favorable public-number preimage.
  */
-function composeNormalReplay(
-  left: NormalReplaySummary,
-  right: NormalReplaySummary,
-): NormalReplaySummary {
-  const requiredForRight =
-    left.floor !== null && left.floor + QTY_EPSILON >= right.required
-      ? 0
-      : Math.max(0, right.required - left.delta - QTY_EPSILON);
-  const shiftedLeftFloor = left.floor === null ? null : left.floor + right.delta;
-  const floor =
-    shiftedLeftFloor === null
-      ? right.floor
-      : right.floor === null
-        ? shiftedLeftFloor
-        : Math.max(shiftedLeftFloor, right.floor);
-  return {
-    delta: left.delta + right.delta,
-    floor,
-    required: Math.max(left.required, requiredForRight),
-  };
-}
-
-function normalReplaySummary(row: QuantityReplayRow, quantity: number): NormalReplaySummary {
-  if (row.transaction.data.side === 'buy') {
-    return { delta: quantity, floor: null, required: 0 };
+function normalCreateOperationCanReplay(
+  groupsByTransactionId: ReadonlyMap<string, readonly QuantityReplayRow[]>,
+  writeHistory: readonly QuantityReplayRow[],
+  start: number,
+  end: number,
+): boolean {
+  const touchedGroups = new Set<readonly QuantityReplayRow[]>();
+  for (let writeOrder = start; writeOrder <= end; writeOrder += 1) {
+    const group = groupsByTransactionId.get(writeHistory[writeOrder]!.transaction.id);
+    if (group) touchedGroups.add(group);
   }
-  return {
-    delta: -quantity,
-    floor: 0,
-    required: row.transaction.data.allowUncovered ? 0 : Math.max(0, quantity - QTY_EPSILON),
-  };
+
+  for (const group of touchedGroups) {
+    // Later normal calls do not exist yet. A backdated row in this request is
+    // still sorted with the already-persisted rows by normalRowsCanReplay.
+    const visibleRows = group.filter((row) => row.writeOrder <= end);
+    if (
+      !normalRowsCanReplay(visibleRows, (row) => row.writeOrder >= start && row.writeOrder <= end)
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
- * Point-update tree used while sliding a legal 500-row create operation across
- * UUID write history. Its root is only an optimistic filter; a possible
- * witness is always confirmed with normalRowsCanReplay.
+ * Validate one shared CREATE partition for every persisted-insolvent group,
+ * instead of independently finding a favorable window per group. Unaffected
+ * rows still consume a position in the 500-row span. The state after any
+ * reachable boundary is deterministic: every earlier row has been written and
+ * read back, so one reachable boundary is enough regardless of the path that
+ * reached it. Each transition is capped by the public contract.
  */
-class NormalReplaySolvencyTree {
-  private readonly leafCount: number;
-  private readonly nodes: NormalReplaySummary[];
-
-  constructor(private readonly rows: readonly QuantityReplayRow[]) {
-    let leafCount = 1;
-    while (leafCount < rows.length) leafCount *= 2;
-    this.leafCount = leafCount;
-    this.nodes = Array.from({ length: leafCount * 2 }, () => NORMAL_REPLAY_IDENTITY);
-    for (let index = 0; index < rows.length; index += 1) {
-      this.nodes[leafCount + index] = normalReplaySummary(
-        rows[index]!,
-        rows[index]!.readbackQuantity,
-      );
-    }
-    for (let node = leafCount - 1; node >= 1; node -= 1) {
-      this.nodes[node] = composeNormalReplay(this.nodes[node * 2]!, this.nodes[node * 2 + 1]!);
-    }
-  }
-
-  setRawInput(index: number, enabled: boolean): void {
-    const row = this.rows[index]!;
-    const quantity = enabled ? row.normalInputQuantity : row.readbackQuantity;
-    if (quantity === null) {
-      throw new Error('candidate normal operation has no public-number quantity preimage');
-    }
-    let node = this.leafCount + index;
-    this.nodes[node] = normalReplaySummary(row, quantity);
-    while (node > 1) {
-      node = Math.floor(node / 2);
-      this.nodes[node] = composeNormalReplay(this.nodes[node * 2]!, this.nodes[node * 2 + 1]!);
-    }
-  }
-
-  mightBeSolvent(): boolean {
-    return this.nodes[1]!.required <= QTY_EPSILON;
-  }
-}
-
-/**
- * Prove one legal normal operation against the final repository-readback
- * sequence. A create operation is one contiguous UUID write span containing at
- * most 500 transaction rows. A PATCH operation contributes exactly one revised
- * pre-cutoff row. Persisting between operations means no other row may keep its
- * favorable raw preimage.
- */
-function normalOperationCanReplay(
-  rows: readonly QuantityReplayRow[],
+function normalCreatePartitionCanReplay(
+  replayGroups: readonly (readonly QuantityReplayRow[])[],
   writeHistory: readonly QuantityReplayRow[],
   legacyCutoff: number,
 ): boolean {
-  const usesNoRawInput = (): boolean => false;
-  const readbackCanReplay = normalRowsCanReplay(rows, usesNoRawInput);
-  const eligibleRevision = (row: QuantityReplayRow): boolean =>
-    row.writeOrder < legacyCutoff && row.revisionCandidate;
-  const eligibleCreate = (row: QuantityReplayRow): boolean => row.writeOrder >= legacyCutoff;
+  if (legacyCutoff >= writeHistory.length) return true;
 
-  // Raw buy inputs are no smaller than readback and raw sell inputs are no
-  // larger. If readback already passes, any single eligible CREATE/PATCH is a
-  // legal favorable witness.
-  if (readbackCanReplay) {
-    return rows.some((row) => eligibleRevision(row) || eligibleCreate(row));
+  const groupsByTransactionId = new Map<string, readonly QuantityReplayRow[]>();
+  for (const group of replayGroups) {
+    for (const row of group) groupsByTransactionId.set(row.transaction.id, group);
   }
 
-  const replayTree = new NormalReplaySolvencyTree(rows);
-  const chronologicalIndexByWriteOrder = new Map<number, number>();
-  for (let index = 0; index < rows.length; index += 1) {
-    chronologicalIndexByWriteOrder.set(rows[index]!.writeOrder, index);
-  }
+  const reachableBoundary = Array.from({ length: writeHistory.length + 1 }, () => false);
+  reachableBoundary[legacyCutoff] = true;
 
-  // Revisions are separate one-row PATCH calls. Test and persist/read back one
-  // before considering another; `rev` never combines their raw quantities.
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index]!;
-    if (!eligibleRevision(row)) continue;
-    replayTree.setRawInput(index, true);
-    const mightReplay = replayTree.mightBeSolvent();
-    replayTree.setRawInput(index, false);
-    if (
-      mightReplay &&
-      normalRowsCanReplay(rows, (candidate) => candidate.transaction.id === row.transaction.id)
-    ) {
-      return true;
+  for (let start = legacyCutoff; start < writeHistory.length; start += 1) {
+    if (!reachableBoundary[start]) continue;
+    const portfolioId = writeHistory[start]!.transaction.data.portfolioId;
+    const maximumEnd = Math.min(
+      writeHistory.length - 1,
+      start + NORMAL_WRITE_BATCH_MAX_TRANSACTIONS - 1,
+    );
+    for (let end = start; end <= maximumEnd; end += 1) {
+      // The normal CREATE endpoint is portfolio-scoped; a different portfolio
+      // is a mandatory operation boundary even if UUIDv7 timestamps interleave.
+      if (writeHistory[end]!.transaction.data.portfolioId !== portfolioId) break;
+      if (reachableBoundary[end + 1]) continue;
+      if (normalCreateOperationCanReplay(groupsByTransactionId, writeHistory, start, end)) {
+        reachableBoundary[end + 1] = true;
+      }
     }
   }
 
-  const suffixLength = writeHistory.length - legacyCutoff;
-  if (suffixLength <= 0) return false;
+  return reachableBoundary[writeHistory.length]!;
+}
 
-  // It is sufficient to test maximal spans: extending a shorter operation to
-  // at most 500 adjacent normal rows only replaces more readbacks with
-  // favorable raw inputs and cannot make quantity replay less solvent.
-  const windowLength = Math.min(NORMAL_WRITE_BATCH_MAX_TRANSACTIONS, suffixLength);
-  const lastStart = writeHistory.length - windowLength;
-  let rawRowsInGroup = 0;
-  for (let writeOrder = legacyCutoff; writeOrder < legacyCutoff + windowLength; writeOrder += 1) {
-    const index = chronologicalIndexByWriteOrder.get(writeOrder);
-    if (index === undefined) continue;
-    replayTree.setRawInput(index, true);
-    rawRowsInGroup += 1;
-  }
+/** A revised strict-v1 row can only contribute one normal-mode PATCH input. */
+function normalRevisionCanReplay(
+  rows: readonly QuantityReplayRow[],
+  revision: QuantityReplayRow,
+): boolean {
+  return normalRowsCanReplay(rows, (row) => row.transaction.id === revision.transaction.id);
+}
 
-  for (let start = legacyCutoff; start <= lastStart; start += 1) {
-    if (
-      rawRowsInGroup > 0 &&
-      replayTree.mightBeSolvent() &&
-      normalRowsCanReplay(
-        rows,
-        (row) => row.writeOrder >= start && row.writeOrder < start + windowLength,
-      )
-    ) {
-      return true;
-    }
-    if (start === lastStart) break;
-
-    const outgoingIndex = chronologicalIndexByWriteOrder.get(start);
-    if (outgoingIndex !== undefined) {
-      replayTree.setRawInput(outgoingIndex, false);
-      rawRowsInGroup -= 1;
-    }
-    const incomingWriteOrder = start + windowLength;
-    const incomingIndex = chronologicalIndexByWriteOrder.get(incomingWriteOrder);
-    if (incomingIndex !== undefined) {
-      replayTree.setRawInput(incomingIndex, true);
-      rawRowsInGroup += 1;
+/**
+ * Prove the normal portion as a globally compatible CREATE partition, then
+ * prove every inferred pre-transition revision as its own persisted PATCH.
+ * Revisions never share favorable inputs with each other or with a CREATE.
+ */
+function normalOperationsCanReplay(
+  replayGroups: readonly (readonly QuantityReplayRow[])[],
+  writeHistory: readonly QuantityReplayRow[],
+  legacyCutoff: number,
+): boolean {
+  if (!normalCreatePartitionCanReplay(replayGroups, writeHistory, legacyCutoff)) return false;
+  for (const group of replayGroups) {
+    for (const row of group) {
+      if (
+        row.writeOrder < legacyCutoff &&
+        row.revisionCandidate &&
+        !normalRevisionCanReplay(group, row)
+      ) {
+        return false;
+      }
     }
   }
-  return false;
+  return true;
 }
 
 interface ExactLegacyReplaySummary {
@@ -545,23 +465,19 @@ function maximumNormalReplayCutoff(
   firstPossibleLegacyCutoff: number,
   rowCount: number,
 ): number | null {
-  if (
-    !groups.every((group) =>
-      normalOperationCanReplay(group, writeHistory, firstPossibleLegacyCutoff),
-    )
-  ) {
+  if (!normalOperationsCanReplay(groups, writeHistory, firstPossibleLegacyCutoff)) {
     return null;
   }
 
-  // Moving the cutoff later can only remove rows from a CREATE candidate. A
-  // revised row that crosses it remains available as the strictly narrower
-  // singleton PATCH candidate, so legal-operation witness validity is a
-  // contiguous cutoff range and binary search remains sound.
+  // Moving the cutoff later can only remove rows from the normal CREATE
+  // partition. A revised row that crosses it remains available as the
+  // strictly narrower singleton PATCH candidate, so legal-operation witness
+  // validity is a contiguous cutoff range and binary search remains sound.
   let minimum = firstPossibleLegacyCutoff;
   let maximum = rowCount;
   while (minimum < maximum) {
     const candidate = minimum + Math.ceil((maximum - minimum) / 2);
-    if (groups.every((group) => normalOperationCanReplay(group, writeHistory, candidate))) {
+    if (normalOperationsCanReplay(groups, writeHistory, candidate)) {
       minimum = candidate;
     } else {
       maximum = candidate - 1;
@@ -628,24 +544,59 @@ function repositoryReadbackCanReplay(
   return true;
 }
 
+function isEngineTaxedTransaction(transaction: EntityOf<'transaction'>): boolean {
+  return transaction.data.taxMode === 'country_specific' || transaction.data.taxMode === 'custom';
+}
+
+/**
+ * A vault `rev` only establishes that an entity was edited, not that its
+ * quantity travelled through updateTransaction. Infer that narrow provenance
+ * only when the normal financial-edit guards permit a possible PATCH:
+ *
+ * - manual and engine-taxed rows are immutable themselves;
+ * - a linked cash movement is created with the row and permanently blocks a
+ *   financial edit; and
+ * - an engine-taxed sibling created before this row was already present for
+ *   every possible later PATCH. A later sibling can still be recorded after a
+ *   legal PATCH, so UUIDv7 write order keeps that reachable lifecycle intact.
+ */
+function canBeNormalQuantityPatch(
+  transaction: EntityOf<'transaction'>,
+  normalInputQuantity: number | null,
+  transactions: readonly EntityOf<'transaction'>[],
+  cashLinkedTransactionIds: ReadonlySet<string>,
+): boolean {
+  if (transaction.rev === 0 || normalInputQuantity === null) return false;
+  if (
+    transaction.data.taxMode === 'manual_per_trade' ||
+    isEngineTaxedTransaction(transaction) ||
+    cashLinkedTransactionIds.has(transaction.id)
+  ) {
+    return false;
+  }
+  return !transactions.some(
+    (sibling) =>
+      sibling.id !== transaction.id &&
+      sibling.id < transaction.id &&
+      sibling.data.portfolioId === transaction.data.portfolioId &&
+      sibling.data.assetId === transaction.data.assetId &&
+      sibling.data.side === 'sell' &&
+      isEngineTaxedTransaction(sibling),
+  );
+}
+
 /**
  * A strict-v1 document may start with an exact persisted history that predates
  * public-number writes. Its membership follows one immutable UUIDv7 creation
- * cutoff for the entire document, not per asset and not `executedAt`: normal
- * writes may be deliberately backdated. A later normal-mode PATCH preserves
- * its row ID, though; a bumped `rev` makes that row a candidate for a singleton
- * PATCH witness. It never lets multiple revised rows share raw inputs. Existing
- * rows are read through repository Number(numeric), while one candidate create
- * operation or PATCH needs a real String(number) to numeric(20,8) preimage.
- *
- * The exact legacy prefix is maintained incrementally in chronological group
- * trees. Combined with point-updated operation windows and the monotonic cutoff
- * search, malformed documents take O(n log² n) quantity work before the
- * pre-write rejection, without imposing an artificial transaction-count limit
- * on valid vaults.
+ * cutoff for the whole document, not per asset and not `executedAt`: normal
+ * writes may be deliberately backdated. Every normal CREATE after the cutoff
+ * must fit one globally coherent 500-row operation partition, while a legal
+ * pre-cutoff PATCH remains a singleton operation that is persisted before the
+ * next one is considered.
  */
 function storageRoundingSellIdsFor(
   transactions: readonly EntityOf<'transaction'>[],
+  cashLinkedTransactionIds: ReadonlySet<string>,
   testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity,
 ): ReadonlySet<string> {
   const writeHistory = [...transactions].sort((a, b) => a.id.localeCompare(b.id));
@@ -661,7 +612,12 @@ function storageRoundingSellIdsFor(
       readbackQuantity: Number(fixedScaleDecimal(quantity, 8)),
       normalInputQuantity,
       writeOrder,
-      revisionCandidate: transaction.rev > 0 && normalInputQuantity !== null,
+      revisionCandidate: canBeNormalQuantityPatch(
+        transaction,
+        normalInputQuantity,
+        transactions,
+        cashLinkedTransactionIds,
+      ),
     };
   });
 
@@ -1888,6 +1844,11 @@ function validateGraph(
     }
     for (const sellId of storageRoundingSellIdsFor(
       rows(entities, 'transaction'),
+      new Set(
+        movements.flatMap((movement) =>
+          movement.data.transactionId ? [movement.data.transactionId] : [],
+        ),
+      ),
       testOnlyRejectPersistedTransactionQuantity,
     )) {
       storageRoundingSellIds.add(sellId);

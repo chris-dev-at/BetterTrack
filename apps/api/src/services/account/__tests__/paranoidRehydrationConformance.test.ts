@@ -520,6 +520,93 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     }
   });
 
+  it('rejects cross-asset rounding windows that cannot share one legal create partition', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const assetAId = '018f0000-0000-7000-8000-000000000112';
+    const assetBId = '018f0000-0000-7000-8000-000000000113';
+    const fillerAssetId = '018f0000-0000-7000-8000-000000000114';
+    await seedGlobalAsset(harness, assetAId, 'PARTITION-A');
+    await seedGlobalAsset(harness, assetBId, 'PARTITION-B');
+    await seedGlobalAsset(harness, fillerAssetId, 'PARTITION-FILLER');
+
+    // A needs the raw-input span 0..499, while B needs 1..500. Both pairs
+    // separately fit a 500-row CREATE witness, but no partition can keep both
+    // pairs in legal calls: either A's or B's sell sees its buy after database
+    // readback at 1.00000000.
+    const writeIds = ['018f0000-0700-7000-8000-000000000701'];
+    for (let index = 1; index <= 500; index += 1) {
+      writeIds.push(nextUuidV7WriteId(writeIds[index - 1]!));
+    }
+    const firstExecutedAt = Date.parse('2026-07-23T10:00:00.000Z');
+    const aSell = transactionEntity({
+      id: writeIds[499]!,
+      portfolioId,
+      assetId: assetAId,
+      side: 'sell',
+      quantity: '1.00000001',
+      executedAt: new Date(firstExecutedAt + 499).toISOString(),
+    });
+    const document = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: writeIds[0]!,
+        portfolioId,
+        assetId: assetAId,
+        side: 'buy',
+        quantity: '1.00000000',
+        executedAt: new Date(firstExecutedAt).toISOString(),
+      }),
+      transactionEntity({
+        id: writeIds[1]!,
+        portfolioId,
+        assetId: assetBId,
+        side: 'buy',
+        quantity: '1.00000000',
+        executedAt: new Date(firstExecutedAt + 1).toISOString(),
+      }),
+      ...writeIds.slice(2, 499).map((id, index) =>
+        transactionEntity({
+          id,
+          portfolioId,
+          assetId: fillerAssetId,
+          side: 'buy',
+          quantity: '1.00000000',
+          executedAt: new Date(firstExecutedAt + index + 2).toISOString(),
+        }),
+      ),
+      aSell,
+      transactionEntity({
+        id: writeIds[500]!,
+        portfolioId,
+        assetId: assetBId,
+        side: 'sell',
+        quantity: '1.00000001',
+        executedAt: new Date(firstExecutedAt + 500).toISOString(),
+      }),
+    ]);
+    expect(writeIds).toEqual([...writeIds].sort());
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    try {
+      await expect(
+        createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
+          rehydrationId: FIRST_REHYDRATION_ID,
+          document,
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_CASH_LEDGER',
+        message: expect.stringContaining(quantityField(aSell)),
+      });
+      expect(mutationTransaction).not.toHaveBeenCalled();
+      expect(await harness.db.select().from(transactions)).toEqual([]);
+    } finally {
+      mutationTransaction.mockRestore();
+    }
+  });
+
   it('keeps the normal-readback tax basis for an exact legacy prefix and later sale', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
@@ -919,6 +1006,74 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
         id: writeIds[2]!,
         portfolioId,
         assetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:02:00.000Z',
+      }),
+    ]);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    try {
+      await expect(
+        createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
+          rehydrationId: FIRST_REHYDRATION_ID,
+          document,
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_CASH_LEDGER',
+        message: expect.stringContaining(quantityField(revisedSell)),
+      });
+      expect(mutationTransaction).not.toHaveBeenCalled();
+      expect(
+        await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+      ).toEqual([]);
+      expect(await harness.db.select().from(transactions)).toEqual([]);
+    } finally {
+      mutationTransaction.mockRestore();
+    }
+  });
+
+  it('rejects a revised row that the normal tax guard makes financially immutable', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const assetId = '018f0000-0000-7000-8000-000000000115';
+    const unrelatedAssetId = '018f0000-0000-7000-8000-000000000116';
+    await seedGlobalAsset(harness, assetId, 'IMMUTABLE-PATCH');
+    await seedGlobalAsset(harness, unrelatedAssetId, 'IMMUTABLE-PATCH-CUTOFF');
+
+    const writeIds = ['018f0000-0800-7000-8000-000000000801'];
+    writeIds.push(nextUuidV7WriteId(writeIds[0]!));
+    writeIds.push(nextUuidV7WriteId(writeIds[1]!));
+    const revisedSell = transactionEntity({
+      id: writeIds[1]!,
+      portfolioId,
+      assetId,
+      side: 'sell',
+      quantity: '999999999999.00000000',
+      executedAt: '2026-07-23T10:01:00.000Z',
+    });
+    // The rows have equal Number(numeric) readbacks, but this is not a legal
+    // normal PATCH: manual-per-trade rows are financially frozen by the public
+    // update guard. The later exact row fixes the document cutoff after it.
+    revisedSell.rev = 1;
+    revisedSell.data.taxMode = 'manual_per_trade';
+    const document = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: writeIds[0]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '999999999998.99999999',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+      revisedSell,
+      transactionEntity({
+        id: writeIds[2]!,
+        portfolioId,
+        assetId: unrelatedAssetId,
         side: 'buy',
         quantity: '90071992547.12345678',
         executedAt: '2026-07-23T10:02:00.000Z',
