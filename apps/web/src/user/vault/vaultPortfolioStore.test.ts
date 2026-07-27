@@ -787,6 +787,72 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       expectPortfolioApiUnused();
     });
 
+    it('rejects updates and deletes of a settled tax row with no persisted tax mode before CAS', async () => {
+      const frozenSellId = GENERATED_IDS[1];
+      const document = initialDocument();
+      document.entities.transaction = [
+        transactionEntity(GENERATED_IDS[0], {
+          side: 'buy',
+          quantity: 2,
+          executedAt: '2026-07-25T08:00:00.000Z',
+        }),
+        transactionEntity(frozenSellId, {
+          side: 'sell',
+          executedAt: '2026-07-25T09:00:00.000Z',
+          taxMode: null,
+          taxAmountEur: 1,
+          taxParams: null,
+        }),
+      ];
+      document.entities.cashMovement = [
+        vaultEntity(GENERATED_IDS[2], {
+          portfolioId: PORTFOLIO_ID,
+          sourceId: CASH_SOURCE_ID,
+          kind: 'deposit',
+          amountEur: '1',
+          transactionId: null,
+          transferId: null,
+          counterpartSourceId: null,
+          dividendId: null,
+          taxYear: null,
+          executedAt: '2026-07-25T07:00:00.000Z',
+          note: null,
+          source: 'manual',
+          createdAt: AT,
+        }),
+        vaultEntity(GENERATED_IDS[3], {
+          portfolioId: PORTFOLIO_ID,
+          sourceId: CASH_SOURCE_ID,
+          kind: 'tax_withholding',
+          amountEur: '-1',
+          transactionId: frozenSellId,
+          transferId: null,
+          counterpartSourceId: null,
+          dividendId: null,
+          taxYear: 2026,
+          executedAt: '2026-07-25T09:00:00.000Z',
+          note: null,
+          source: 'manual',
+          createdAt: AT,
+        }),
+      ];
+      expect(() => strictDocumentFrom(document)).not.toThrow();
+
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, { now: () => AT });
+
+      await expect(
+        store.updateTransaction(PORTFOLIO_ID, frozenSellId, { note: 'Explanation only' }),
+      ).rejects.toMatchObject({ code: 'VAULT_OPERATION_UNAVAILABLE' });
+      await expect(store.deleteTransaction(PORTFOLIO_ID, frozenSellId)).rejects.toMatchObject({
+        code: 'VAULT_OPERATION_UNAVAILABLE',
+      });
+
+      expect(engine.mutate).not.toHaveBeenCalled();
+      expect(engine.state.active?.header.vaultVersion).toBe(1);
+      expectPortfolioApiUnused();
+    });
+
     it('scopes frozen-sell replay checks to the matching portfolio and asset', async () => {
       const editableBuyId = GENERATED_IDS[0];
       const document = initialDocument();

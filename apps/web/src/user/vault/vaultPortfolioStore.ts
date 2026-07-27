@@ -1168,7 +1168,17 @@ function isEngineTaxedSell(entity: VaultEntity): boolean {
 function isFrozenTaxSensitiveSell(entity: VaultEntity): boolean {
   if (stringField(entity.data, 'side') !== 'sell') return false;
   const mode = frozenTransactionTaxMode(entity);
-  return mode === 'manual_per_trade' || mode === 'country_specific' || mode === 'custom';
+  return (
+    mode === 'manual_per_trade' ||
+    mode === 'country_specific' ||
+    mode === 'custom' ||
+    hasNonzeroFrozenTaxAmount(entity)
+  );
+}
+
+function hasNonzeroFrozenTaxAmount(entity: VaultEntity): boolean {
+  const amount = nullableNumberField(entity.data, 'taxAmountEur');
+  return amount !== null && amount !== 0;
 }
 
 function frozenTransactionTaxMode(
