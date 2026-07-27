@@ -1,0 +1,71 @@
+import type { PortfolioHistoryRange, TaxYearReportResponse } from '@bettertrack/contracts';
+import type { Holding } from '@bettertrack/domain/holdings';
+import type { SeriesStats } from '@bettertrack/domain/seriesStats';
+
+import type { VaultMoneyOutcome } from './errors';
+
+export type ClientPortfolioRange = PortfolioHistoryRange;
+
+export interface ClientCashSourceBalance {
+  sourceId: string;
+  name: string;
+  balanceEur: number;
+}
+
+export interface ClientAllocationRow {
+  assetId: string;
+  valueEur: number;
+  pct: number;
+}
+
+export interface ClientSeriesPoint {
+  date: string;
+  /** Null means at least one held asset lacked a usable close/FX rate. */
+  valueEur: number | null;
+  costBasisEur: number | null;
+  pnlEur: number | null;
+  twrPct: number | null;
+  missingAssetIds: string[];
+  freshness: 'fresh' | 'stale';
+  isLiveToday: boolean;
+}
+
+export interface ClientPortfolioDerivation {
+  portfolioId: string;
+  vaultVersion: number;
+  assetPriceWatermark: string;
+  range: ClientPortfolioRange;
+  baseCurrency: 'EUR';
+  holdings: Holding[];
+  holdingsValueEur: number | null;
+  cashBalanceEur: number;
+  totalValueEur: number | null;
+  allocation: ClientAllocationRow[] | null;
+  cashSources: ClientCashSourceBalance[];
+  series: ClientSeriesPoint[];
+  stats: SeriesStats | null;
+  freshness: 'fresh' | 'stale';
+  missingAssetIds: string[];
+}
+
+export interface ClientTaxReport {
+  report: TaxYearReportResponse;
+  computedTaxTargetEur: number;
+  vaultVersion: number;
+  assetPriceWatermark: string;
+  freshness: 'fresh' | 'stale';
+}
+
+export interface VaultMoneyEngine {
+  derivePortfolio(
+    portfolioId: string,
+    range: ClientPortfolioRange,
+    signal?: AbortSignal,
+  ): Promise<VaultMoneyOutcome<ClientPortfolioDerivation>>;
+  deriveTaxReport(
+    portfolioId: string,
+    year: number,
+    signal?: AbortSignal,
+  ): Promise<VaultMoneyOutcome<ClientTaxReport>>;
+  clearCache(): void;
+}

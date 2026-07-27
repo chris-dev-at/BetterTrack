@@ -7,6 +7,7 @@ import {
   portfolioAssetSchema,
   portfolioListResponseSchema,
   portfolioSummarySchema,
+  SOURCE_TAG_STANDING_ORDER,
   transactionInputSchema,
   transactionListQuerySchema,
   transactionListResponseSchema,
@@ -42,6 +43,8 @@ import { viennaYearOf } from '@bettertrack/domain/tax';
 import { uuidv7 } from 'uuidv7';
 
 import { VaultCryptoError } from './errors';
+import { standingOrderOccurrenceId } from './standingOrders/occurrenceId';
+import { calendarDayInTimezone, dueStandingOrderOccurrence } from './standingOrders/schedule';
 import type {
   VaultAtomicMutation,
   VaultDocumentReconcileContext,
@@ -80,6 +83,30 @@ export interface VaultPortfolioStoreOptions {
   newId?: () => string;
 }
 
+export interface VaultStandingOrderOccurrenceInput {
+  /** Deterministic UUID derived from `(orderId, dueDate)`. */
+  occurrenceId: string;
+  orderId: string;
+  /** ISO `YYYY-MM-DD` schedule occurrence. */
+  dueDate: string;
+  /** The schedule's timezone-resolved calendar day at execution. */
+  calendarDay: string;
+  timezone: string;
+  /** The authenticated client's wall-clock booking time. */
+  executedAt: string;
+  /** Required exactly for `buy-asset`, in the standing order's native currency. */
+  price?: number;
+  quoteCurrency?: string;
+}
+
+export interface VaultStandingOrderOccurrenceResult {
+  occurrenceId: string;
+  orderId: string;
+  dueDate: string;
+  rowKind: 'transaction' | 'cashMovement';
+  status: 'created' | 'existing';
+}
+
 /**
  * The decrypted portfolio-data boundary used by the paranoid-mode bootstrap.
  * It deliberately describes the vault's capabilities without selecting an
@@ -110,6 +137,10 @@ export interface VaultPortfolioStore {
   ): Promise<void>;
   depositCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
   withdrawCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
+  materializeStandingOrderOccurrence(
+    input: VaultStandingOrderOccurrenceInput,
+    signal?: AbortSignal,
+  ): Promise<VaultStandingOrderOccurrenceResult>;
 }
 
 interface StoreContext {
@@ -375,6 +406,10 @@ export function createVaultPortfolioStore(
 
     async withdrawCash(portfolioId, body) {
       return createCashMovement(context, portfolioId, body, 'withdrawal');
+    },
+
+    async materializeStandingOrderOccurrence(input, signal) {
+      return materializeStandingOrderOccurrence(context, input, signal);
     },
   };
 }
@@ -671,6 +706,331 @@ async function createCashMovement(
       }),
     'The committed cash movement does not match the cash response contract.',
   );
+}
+
+async function materializeStandingOrderOccurrence(
+  context: StoreContext,
+  input: VaultStandingOrderOccurrenceInput,
+  signal?: AbortSignal,
+): Promise<VaultStandingOrderOccurrenceResult> {
+  signal?.throwIfAborted();
+  assertStandingOrderOccurrenceInput(input);
+  if (input.occurrenceId !== (await standingOrderOccurrenceId(input.orderId, input.dueDate))) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'The standing-order occurrence id is not derived from its order and due date.',
+    );
+  }
+  const current = requireDocument(context.engine);
+  assertStandingOrderDefinition(current, requireLiveStandingOrder(current, input.orderId), input);
+  const alreadyCommitted = existingStandingOrderOccurrence(current, input);
+  if (alreadyCommitted != null) return alreadyCommitted;
+
+  let created = false;
+  const mutationState = await context.engine.mutate(({ document }) => {
+    signal?.throwIfAborted();
+    const concurrent = existingStandingOrderOccurrence(document, input);
+    if (concurrent != null) return document;
+
+    const order = requireLiveStandingOrder(document, input.orderId);
+    assertStandingOrderDefinition(document, order, input);
+    assertStandingOrderDue(order, input);
+    const timestamp = input.executedAt;
+    const rowKind = standingOrderRowKind(order);
+    let ledgerEntity: VaultEntity;
+    let nextDocument: VaultDocumentV1;
+
+    if (rowKind === 'transaction') {
+      const assetId = stringField(order.data, 'assetId');
+      const asset = resolveTransactionAsset(document, assetId);
+      const orderCurrency = stringField(order.data, 'currency');
+      if (input.quoteCurrency !== orderCurrency || asset.currency !== orderCurrency) {
+        throw storeError(
+          'VAULT_DATA_INVALID',
+          'The standing-order quote currency does not match the local asset snapshot.',
+        );
+      }
+      const price = input.price;
+      if (price == null || !Number.isFinite(price) || price <= 0) {
+        throw storeError(
+          'VAULT_DATA_INVALID',
+          'A positive current quote is required for a buy standing order.',
+        );
+      }
+      ledgerEntity = entityRecord(
+        input.occurrenceId,
+        context.engine.deviceId,
+        timestamp,
+        parseVaultData(
+          () =>
+            VAULT_ENTITY_ROW_SCHEMAS.transaction.parse({
+              portfolioId: stringField(order.data, 'portfolioId'),
+              assetId,
+              side: 'buy',
+              quantity: stringField(order.data, 'amount'),
+              price: decimalStringFromNumber(price),
+              fee: '0',
+              executedAt: timestamp,
+              note: nullableStringField(order.data, 'label'),
+              taxMode: null,
+              taxCountry: null,
+              taxAmountEur: null,
+              taxParams: null,
+              allowUncovered: false,
+              uncoveredEntryPrice: null,
+              source: SOURCE_TAG_STANDING_ORDER,
+            }),
+          'A standing-order transaction does not match the strict restore contract.',
+        ),
+      );
+      nextDocument = appendEntities(document, 'transaction', [ledgerEntity]);
+      assertProspectiveAssetTimelines(nextDocument, stringField(order.data, 'portfolioId'), [
+        assetId,
+      ]);
+    } else {
+      const portfolioId = stringField(order.data, 'portfolioId');
+      const sourceId = resolveCashSourceId(document, portfolioId, undefined);
+      const magnitude = floorCents(numberField(order.data, 'amount'));
+      const kind = stringField(order.data, 'kind');
+      ledgerEntity = entityRecord(
+        input.occurrenceId,
+        context.engine.deviceId,
+        timestamp,
+        strictCashMovementData({
+          portfolioId,
+          sourceId,
+          kind: kind === 'cash-add' ? 'deposit' : 'withdrawal',
+          amountEur: decimalStringFromNumber(kind === 'cash-add' ? magnitude : -magnitude),
+          transactionId: null,
+          transferId: null,
+          counterpartSourceId: null,
+          dividendId: null,
+          taxYear: null,
+          executedAt: timestamp,
+          note: nullableStringField(order.data, 'label'),
+          source: SOURCE_TAG_STANDING_ORDER,
+          createdAt: timestamp,
+        }),
+      );
+      nextDocument = appendEntities(document, 'cashMovement', [ledgerEntity]);
+      projectCashLedgerBySource(domainCashMovements(nextDocument, portfolioId));
+    }
+
+    const run = entityRecord(
+      input.occurrenceId,
+      context.engine.deviceId,
+      timestamp,
+      parseVaultData(
+        () =>
+          VAULT_ENTITY_ROW_SCHEMAS.standingOrderRun.parse({
+            standingOrderId: input.orderId,
+            periodKey: input.dueDate,
+            bookedAt: timestamp,
+          }),
+        'A standing-order run does not match the strict restore contract.',
+      ),
+    );
+    const updatedOrder: VaultEntity = {
+      ...order,
+      rev: order.rev + 1,
+      editedAt: timestamp,
+      editedBy: context.engine.deviceId,
+      data: parseVaultData(
+        () =>
+          VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse({
+            ...order.data,
+            lastRunAt: timestamp,
+            lastPeriodKey: input.dueDate,
+            updatedAt: timestamp,
+          }),
+        'A standing order does not match the strict restore contract.',
+      ),
+    };
+    created = true;
+    return appendEntities(
+      replaceEntity(nextDocument, 'standingOrder', updatedOrder),
+      'standingOrderRun',
+      [run],
+    );
+  });
+
+  signal?.throwIfAborted();
+  const committedDocument = mutationState.active?.document;
+  if (committedDocument == null) {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      'The standing-order occurrence was not committed locally.',
+    );
+  }
+  const committed = existingStandingOrderOccurrence(committedDocument, input);
+  if (committed == null) {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      'The standing-order occurrence did not survive commit and reconciliation.',
+    );
+  }
+  return { ...committed, status: created ? 'created' : 'existing' };
+}
+
+function assertStandingOrderOccurrenceInput(input: VaultStandingOrderOccurrenceInput): void {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const day = /^\d{4}-\d{2}-\d{2}$/;
+  if (
+    !uuid.test(input.occurrenceId) ||
+    !uuid.test(input.orderId) ||
+    !day.test(input.dueDate) ||
+    !day.test(input.calendarDay) ||
+    input.timezone.trim().length === 0 ||
+    !Number.isFinite(Date.parse(input.executedAt))
+  ) {
+    throw storeError('VAULT_DATA_INVALID', 'The standing-order occurrence identity is invalid.');
+  }
+}
+
+function requireLiveStandingOrder(document: VaultDocumentV1, orderId: string): VaultEntity {
+  const order = findLiveEntity(document, 'standingOrder', orderId);
+  if (order == null) {
+    throw storeError('VAULT_ENTITY_NOT_FOUND', 'Standing order not found in the active vault.');
+  }
+  parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse(order.data),
+    'A standing order does not match the strict restore contract.',
+  );
+  return order;
+}
+
+function assertStandingOrderDefinition(
+  document: VaultDocumentV1,
+  order: VaultEntity,
+  input: VaultStandingOrderOccurrenceInput,
+): void {
+  const portfolio = requirePortfolio(document, stringField(order.data, 'portfolioId'));
+  if (stringField(order.data, 'userId') !== stringField(portfolio.data, 'userId')) {
+    throw storeError('VAULT_DATA_INVALID', 'The standing order and portfolio owners do not match.');
+  }
+  const isBuy = stringField(order.data, 'kind') === 'buy-asset';
+  const assetId = nullableStringField(order.data, 'assetId');
+  if (isBuy !== (assetId !== null)) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing-order asset is required exactly for an asset buy.',
+    );
+  }
+  if (
+    !isBuy &&
+    (stringField(order.data, 'currency') !== 'EUR' ||
+      input.price !== undefined ||
+      input.quoteCurrency !== undefined)
+  ) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'Cash standing orders must use EUR and cannot carry quote data.',
+    );
+  }
+  const lastRunAt = nullableStringField(order.data, 'lastRunAt');
+  const lastPeriodKey = nullableStringField(order.data, 'lastPeriodKey');
+  if ((lastRunAt === null) !== (lastPeriodKey === null)) {
+    throw storeError('VAULT_DATA_INVALID', 'A standing-order run watermark is incomplete.');
+  }
+}
+
+function assertStandingOrderDue(
+  order: VaultEntity,
+  input: VaultStandingOrderOccurrenceInput,
+): void {
+  const status = stringField(order.data, 'status');
+  const startDate = stringField(order.data, 'startDate');
+  const endDate = nullableStringField(order.data, 'endDate');
+  const lastPeriodKey = nullableStringField(order.data, 'lastPeriodKey');
+  let actualCalendarDay: string;
+  try {
+    actualCalendarDay = calendarDayInTimezone(new Date(input.executedAt), input.timezone);
+  } catch (cause) {
+    throw storeError('VAULT_DATA_INVALID', 'The standing-order timezone is invalid.', cause);
+  }
+  let expectedDue: string | null;
+  try {
+    expectedDue = dueStandingOrderOccurrence(
+      {
+        cadence: stringField(order.data, 'cadence') as 'daily' | 'monthly',
+        anchorDay: typeof order.data.anchorDay === 'number' ? order.data.anchorDay : null,
+        startDate,
+        endDate,
+      },
+      input.calendarDay,
+    );
+  } catch (cause) {
+    throw storeError('VAULT_DATA_INVALID', 'The standing-order schedule is invalid.', cause);
+  }
+  if (status !== 'active') {
+    throw storeError('VAULT_OPERATION_UNAVAILABLE', 'A paused standing order cannot be booked.');
+  }
+  if (
+    input.dueDate < startDate ||
+    (endDate != null && input.dueDate > endDate) ||
+    input.dueDate > input.calendarDay ||
+    input.calendarDay !== actualCalendarDay ||
+    input.dueDate !== expectedDue
+  ) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'The standing-order occurrence is outside its schedule.',
+    );
+  }
+  if (lastPeriodKey != null && lastPeriodKey >= input.dueDate) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing order is marked booked without its deterministic occurrence rows.',
+    );
+  }
+}
+
+function standingOrderRowKind(order: VaultEntity): 'transaction' | 'cashMovement' {
+  return stringField(order.data, 'kind') === 'buy-asset' ? 'transaction' : 'cashMovement';
+}
+
+function existingStandingOrderOccurrence(
+  document: VaultDocumentV1,
+  input: VaultStandingOrderOccurrenceInput,
+): VaultStandingOrderOccurrenceResult | null {
+  const order = findLiveEntity(document, 'standingOrder', input.orderId);
+  const run = findLiveEntity(document, 'standingOrderRun', input.occurrenceId);
+  const transaction = findLiveEntity(document, 'transaction', input.occurrenceId);
+  const cashMovement = findLiveEntity(document, 'cashMovement', input.occurrenceId);
+  const ledgerRows = [transaction, cashMovement].filter((entity) => entity != null);
+  if (run == null && ledgerRows.length === 0) return null;
+  if (order == null || run == null || ledgerRows.length !== 1) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing-order occurrence is incomplete or has conflicting ledger rows.',
+    );
+  }
+  const runData = parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.standingOrderRun.parse(run.data),
+    'A standing-order run does not match the strict restore contract.',
+  );
+  const rowKind = standingOrderRowKind(order);
+  const ledger = rowKind === 'transaction' ? transaction : cashMovement;
+  if (
+    ledger == null ||
+    runData.standingOrderId !== input.orderId ||
+    runData.periodKey !== input.dueDate ||
+    nullableStringField(order.data, 'lastPeriodKey') == null ||
+    nullableStringField(order.data, 'lastPeriodKey')! < input.dueDate ||
+    stringField(ledger.data, 'source') !== SOURCE_TAG_STANDING_ORDER
+  ) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing-order occurrence does not match its deterministic identity.',
+    );
+  }
+  return {
+    occurrenceId: input.occurrenceId,
+    orderId: input.orderId,
+    dueDate: input.dueDate,
+    rowKind,
+    status: 'existing',
+  };
 }
 
 function appendEntities(

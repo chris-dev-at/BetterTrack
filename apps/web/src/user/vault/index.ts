@@ -1,8 +1,10 @@
 export * from './crypto';
 export * from './custody';
 export * from './dataHome';
+export * from './engine';
 export * from './envelope';
 export * from './errors';
+export * from './export';
 export * from './localDataHome';
 export * from './lock';
 export * from './merge';
@@ -12,5 +14,6 @@ export * from './recovery';
 export * from './rekey';
 export * from './restore';
 export * from './serverBlobDataHome';
+export * from './standingOrders';
 export * from './sync';
 export * from './vectors';
