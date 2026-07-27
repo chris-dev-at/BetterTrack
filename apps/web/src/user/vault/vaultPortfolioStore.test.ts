@@ -460,6 +460,63 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       expectPortfolioApiUnused();
     });
 
+    it.each([
+      [
+        'an inherited manual amount default',
+        (document: VaultDocumentV1) => {
+          document.entities.taxSetting = [
+            vaultEntity(GENERATED_IDS[6], {
+              userId: USER_ID,
+              mode: 'manual_per_trade',
+              country: null,
+              manualDefaultAmountEur: '1.25',
+              manualDefaultRatePct: null,
+              customParams: null,
+              updatedAt: AT,
+            }),
+          ];
+        },
+      ],
+      [
+        'a portfolio manual rate default',
+        (document: VaultDocumentV1) => {
+          document.entities.portfolioSetting = [
+            vaultEntity(GENERATED_IDS[6], {
+              portfolioId: PORTFOLIO_ID,
+              key: 'tax',
+              value: { mode: 'manual_per_trade', manualDefaultRatePct: 25 },
+              updatedAt: AT,
+            }),
+          ];
+        },
+      ],
+    ])('rejects a sell with %s before CAS', async (_description, configure) => {
+      const document = initialDocument();
+      configure(document);
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, {
+        now: () => AT,
+        newId: () => GENERATED_IDS[7],
+      });
+
+      await expect(
+        store.createTransactions(PORTFOLIO_ID, [
+          {
+            assetId: ASSET_ID,
+            side: 'sell',
+            quantity: 1,
+            price: 12,
+            fee: 0,
+            executedAt: AT,
+          },
+        ]),
+      ).rejects.toMatchObject({ code: 'VAULT_OPERATION_UNAVAILABLE' });
+
+      expect(engine.mutate).not.toHaveBeenCalled();
+      expect(engine.state.active?.header.vaultVersion).toBe(1);
+      expectPortfolioApiUnused();
+    });
+
     it.each(['country_specific', 'custom'] as const)(
       'rejects an ordinary sell under effective %s tax before CAS without explicit tax fields',
       async (mode) => {

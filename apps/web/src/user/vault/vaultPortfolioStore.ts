@@ -110,6 +110,12 @@ interface StoreContext {
 }
 
 type TransactionDataPatch = Omit<UpdateTransactionRequest, 'baseSeq'>;
+type VaultTaxMode = 'none' | 'manual_per_trade' | 'country_specific' | 'custom';
+
+interface EffectivePortfolioTaxSettings {
+  mode: VaultTaxMode;
+  hasManualDefault: boolean;
+}
 
 /**
  * PortfolioStore for paranoid accounts. The only mutable dependency is the
@@ -953,8 +959,11 @@ function assertLocallySupportedTransactions(
       input.taxAmountEur !== undefined ||
       input.taxRatePct !== undefined,
   );
-  const effectiveTaxMode = effectivePortfolioTaxMode(document, portfolioId);
+  const effectiveTaxSettings = effectivePortfolioTaxSettings(document, portfolioId);
+  const effectiveTaxMode = effectiveTaxSettings.mode;
   const openFromYear = taxEngineOpenFromYear(effectiveTaxMode, now);
+  const recordsManualDefaultTax =
+    effectiveTaxSettings.hasManualDefault && candidates.some(({ input }) => input.side === 'sell');
   const recordsEngineTax = candidates.some(
     ({ input }) => input.side === 'sell' && isAutomaticTaxMode(effectiveTaxMode),
   );
@@ -968,7 +977,7 @@ function assertLocallySupportedTransactions(
         taxSellFollowsTransaction(entity, input.executedAt, id),
     ),
   );
-  if (requiresDerivedEngine || recordsEngineTax || reshapesFrozenTax) {
+  if (requiresDerivedEngine || recordsManualDefaultTax || recordsEngineTax || reshapesFrozenTax) {
     throw storeError(
       'VAULT_OPERATION_UNAVAILABLE',
       'Cash-linked and tax-computed transactions require the client portfolio engine.',
@@ -989,7 +998,7 @@ function assertTransactionUpdateTaxSupported(
   }
   if (!financialEdit) return;
   const assetId = stringField(transaction.data, 'assetId');
-  const effectiveTaxMode = effectivePortfolioTaxMode(document, portfolioId);
+  const effectiveTaxMode = effectivePortfolioTaxSettings(document, portfolioId).mode;
   const openFromYear = taxEngineOpenFromYear(effectiveTaxMode, now);
   const prospectiveTransaction: VaultEntity = {
     ...transaction,
@@ -1030,7 +1039,7 @@ function assertTransactionDeleteTaxSupported(
   now: string,
 ): void {
   const assetId = stringField(transaction.data, 'assetId');
-  const effectiveTaxMode = effectivePortfolioTaxMode(document, portfolioId);
+  const effectiveTaxMode = effectivePortfolioTaxSettings(document, portfolioId).mode;
   const openFromYear = taxEngineOpenFromYear(effectiveTaxMode, now);
   if (
     isFrozenTaxSensitiveSell(transaction) ||
@@ -1053,17 +1062,19 @@ function assertTransactionDeleteTaxSupported(
   }
 }
 
-function effectivePortfolioTaxMode(
+function effectivePortfolioTaxSettings(
   document: VaultDocumentV1,
   portfolioId: string,
-): 'none' | 'manual_per_trade' | 'country_specific' | 'custom' {
+): EffectivePortfolioTaxSettings {
   const override = liveEntities(document, 'portfolioSetting').find(
     (entity) =>
       stringField(entity.data, 'portfolioId') === portfolioId &&
       stringField(entity.data, 'key') === 'tax',
   );
-  const overrideMode = taxModeField(override == null ? null : recordField(override.data, 'value'));
-  if (overrideMode != null) return overrideMode;
+  const overrideSettings = taxSettingsFromData(
+    override == null ? null : recordField(override.data, 'value'),
+  );
+  if (overrideSettings != null) return overrideSettings;
 
   const portfolio = requirePortfolio(document, portfolioId);
   const userId = nullableStringField(portfolio.data, 'userId');
@@ -1081,12 +1092,25 @@ function effectivePortfolioTaxMode(
         ) || left.id.localeCompare(right.id),
     )
     .at(-1);
-  return taxModeField(userDefault?.data ?? null) ?? 'none';
+  return (
+    taxSettingsFromData(userDefault?.data ?? null) ?? { mode: 'none', hasManualDefault: false }
+  );
 }
 
-function taxModeField(
+function taxSettingsFromData(
   data: Record<string, unknown> | null,
-): 'none' | 'manual_per_trade' | 'country_specific' | 'custom' | null {
+): EffectivePortfolioTaxSettings | null {
+  const mode = taxModeField(data);
+  if (mode == null) return null;
+  return {
+    mode,
+    hasManualDefault:
+      mode === 'manual_per_trade' &&
+      (data?.manualDefaultAmountEur != null || data?.manualDefaultRatePct != null),
+  };
+}
+
+function taxModeField(data: Record<string, unknown> | null): VaultTaxMode | null {
   const mode = data?.mode;
   return mode === 'none' ||
     mode === 'manual_per_trade' ||
@@ -1096,16 +1120,11 @@ function taxModeField(
     : null;
 }
 
-function taxEngineOpenFromYear(
-  mode: ReturnType<typeof effectivePortfolioTaxMode>,
-  now: string,
-): number | null {
+function taxEngineOpenFromYear(mode: VaultTaxMode, now: string): number | null {
   return isAutomaticTaxMode(mode) ? viennaYearOf(now) : null;
 }
 
-function isAutomaticTaxMode(
-  mode: ReturnType<typeof effectivePortfolioTaxMode>,
-): mode is 'country_specific' | 'custom' {
+function isAutomaticTaxMode(mode: VaultTaxMode): mode is 'country_specific' | 'custom' {
   return mode === 'country_specific' || mode === 'custom';
 }
 
