@@ -120,6 +120,29 @@ export const requireAdmin: RequestHandler = (req, _res, next) => {
   next();
 };
 
+const adminMfaSessionRequired = () =>
+  forbidden(
+    'This administrator session must complete two-factor verification at sign-in.',
+    'ADMIN_2FA_SESSION_REQUIRED',
+  );
+
+const adminSetupRequired = () =>
+  forbidden(
+    'Two-factor authentication setup is required for admin accounts.',
+    ADMIN_2FA_SETUP_REQUIRED,
+  );
+
+/**
+ * Check proof on the resolved session itself. Account-level enrollment is not
+ * proof: another browser may have enrolled or completed a challenge.
+ */
+const hasCurrentAdminMfaAssurance = async (ctx: AppContext, req: Parameters<RequestHandler>[0]) =>
+  Boolean(
+    req.authUser &&
+    req.sessionId &&
+    (await ctx.auth.isSessionMfaAssured(req.authUser.id, req.sessionId)),
+  );
+
 /**
  * Mandatory admin-login 2FA gate (§6.12, #400). Mounted right AFTER
  * {@link requireAdmin} and AFTER the 2FA enroll/confirm sub-router, so it guards
@@ -130,7 +153,9 @@ export const requireAdmin: RequestHandler = (req, _res, next) => {
  * admin can do nothing except enroll until a method is confirmed. An enrolled
  * admin can never reach here on a fresh login without first passing the shared
  * `two_factor_required` challenge (the session is withheld until it does), so this
- * gate only ever fires in the not-yet-enrolled state.
+ * gate only ever fires in the not-yet-enrolled state. An enrolled account must
+ * additionally carry MFA assurance on this exact server-side session; a
+ * password-only session is not upgraded merely because another session enrolled.
  */
 export function requireAdminTwoFactor(ctx: AppContext): RequestHandler {
   return async (req, _res, next) => {
@@ -140,16 +165,69 @@ export function requireAdminTwoFactor(ctx: AppContext): RequestHandler {
         next();
         return;
       }
-      if (await ctx.twoFactor.isEnabled(req.authUser.id)) {
+      if (!(await ctx.twoFactor.isEnabled(req.authUser.id))) {
+        next(adminSetupRequired());
+        return;
+      }
+      if (await hasCurrentAdminMfaAssurance(ctx, req)) {
         next();
         return;
       }
-      next(
-        forbidden(
-          'Two-factor authentication setup is required for admin accounts.',
-          ADMIN_2FA_SETUP_REQUIRED,
-        ),
-      );
+      next(adminMfaSessionRequired());
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
+/**
+ * Exact first-factor → first-enrollment routes. They are the only administrator
+ * 2FA routes reachable without current-session MFA assurance, and only while the
+ * account genuinely has no factor at all. Once a factor exists, management is
+ * behind the same current-session gate as every other admin surface.
+ */
+const ADMIN_MFA_BOOTSTRAP_ROUTES = new Set([
+  'GET /status',
+  'POST /totp/enroll',
+  'POST /totp/confirm',
+  'POST /email/start',
+  'POST /email/confirm',
+]);
+
+export function requireAdminTwoFactorOrBootstrap(ctx: AppContext): RequestHandler {
+  return async (req, _res, next) => {
+    try {
+      // requireAdmin already ran; stay defensive if mount order changes.
+      if (req.apiKey || !req.authUser || req.authUser.role !== 'admin') {
+        next();
+        return;
+      }
+
+      const hasFactor = await ctx.twoFactor.isEnabled(req.authUser.id);
+      const assured = await hasCurrentAdminMfaAssurance(ctx, req);
+      if (hasFactor) {
+        if (assured) {
+          next();
+          return;
+        }
+        next(adminMfaSessionRequired());
+        return;
+      }
+
+      // A break-glass reset removes the factor from the account. A session that
+      // was previously MFA-assured must not turn into a bootstrap credential;
+      // it is downgraded until the admin performs a fresh password login.
+      if (assured) {
+        next(adminSetupRequired());
+        return;
+      }
+
+      const route = `${req.method.toUpperCase()} ${req.path}`;
+      if (!ADMIN_MFA_BOOTSTRAP_ROUTES.has(route)) {
+        next(adminSetupRequired());
+        return;
+      }
+      next();
     } catch (err) {
       next(err);
     }

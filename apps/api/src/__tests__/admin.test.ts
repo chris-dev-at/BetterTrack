@@ -1,11 +1,20 @@
 import { eq } from 'drizzle-orm';
+import express from 'express';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { adminStatsSchema, createUserResponseSchema } from '@bettertrack/contracts';
+import {
+  adminStatsSchema,
+  createUserResponseSchema,
+  twoFactorChallengeResponseSchema,
+  twoFactorEnrollResponseSchema,
+} from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { BULL_BOARD_BASE_PATH, createBullBoardRouter } from '../http/bullBoard';
+import { ALL_QUEUE_NAMES, type QueueRegistry } from '../jobs';
+import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -65,6 +74,152 @@ describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
 
     const anon = await request(harness.app).get('/api/v1/admin/users');
     expect(anon.status).toBe(404);
+  });
+});
+
+describe('Bull Board administrator boundary', () => {
+  it('uses the same role and current-session MFA gate as the rest of admin', async () => {
+    const admin = await harness.seedAdmin();
+    const passwordOnlyAdmin = await loginAgent(harness.app, admin.email, admin.password);
+    const user = await harness.seedUser({ email: 'queue-user@test.dev', username: 'queue_user' });
+    const userAgent = await loginAgent(harness.app, user.email, user.password);
+
+    expect((await request(harness.app).get('/api/v1/admin/queues')).status).toBe(404);
+    expect((await userAgent.get('/api/v1/admin/queues')).status).toBe(404);
+    expect((await passwordOnlyAdmin.get('/api/v1/admin/queues')).status).toBe(403);
+    const assuredAdmin = await harness.loginAdmin(admin);
+    expect((await assuredAdmin.get('/api/v1/admin/queues')).status).toBe(503);
+  });
+
+  it('is read-only and redacts job payloads, results, and diagnostic detail', async () => {
+    const queues = new Map<string, object>();
+    const job = {
+      toJSON: () => ({
+        id: 'job-1',
+        name: 'alerts',
+        progress: { secret: 'progress-secret' },
+        attemptsMade: 1,
+        timestamp: 1,
+        failedReason: 'failure-secret',
+        stacktrace: ['stack-secret'],
+        data: { secret: 'payload-secret' },
+        returnvalue: { secret: 'result-secret' },
+        opts: {},
+      }),
+      getState: async () => 'completed',
+    };
+    const queueFor = (name: string) => {
+      let queue = queues.get(name);
+      if (!queue) {
+        queue = {
+          name,
+          // BullMQAdapter accepts this lightweight test double when it reports
+          // BullMQ's metadata version; no live Redis/BullMQ process is needed.
+          metaValues: { version: 'bullmq' },
+          getJobCounts: async () => ({
+            latest: 1,
+            active: 0,
+            waiting: 0,
+            'waiting-children': 0,
+            prioritized: 0,
+            completed: 1,
+            failed: 0,
+            delayed: 0,
+            paused: 0,
+          }),
+          isPaused: async () => false,
+          getGlobalConcurrency: async () => null,
+          getJobs: async () => [job],
+        };
+        queues.set(name, queue);
+      }
+      return queue;
+    };
+    const registry = {
+      get: (name: string) => queueFor(name),
+    } as unknown as QueueRegistry;
+    const board = express();
+    board.use(BULL_BOARD_BASE_PATH, createBullBoardRouter(registry));
+    const queueName = ALL_QUEUE_NAMES[0]!;
+
+    const listed = await request(board)
+      .get(`${BULL_BOARD_BASE_PATH}/api/queues`)
+      .query({ activeQueue: queueName, jobsPerPage: 1 });
+    expect(listed.status).toBe(200);
+    const listedJob = listed.body.queues[0].jobs[0];
+    expect(listedJob).toMatchObject({
+      data: '[redacted]',
+      returnValue: '[redacted]',
+      progress: '[redacted]',
+      failedReason: '[redacted]',
+      stacktrace: '[redacted]',
+    });
+    expect(JSON.stringify(listed.body)).not.toContain('secret');
+
+    expect(
+      (await request(board).put(`${BULL_BOARD_BASE_PATH}/api/queues/${queueName}/pause`)).status,
+    ).toBe(405);
+    expect(
+      (await request(board).get(`${BULL_BOARD_BASE_PATH}/api/queues/${queueName}/job-1/logs`))
+        .status,
+    ).toBe(404);
+  });
+});
+
+describe('administrator promotion invalidates old sessions', () => {
+  it('requires a promoted user to complete a fresh MFA login before admin access', async () => {
+    const owner = await harness.seedAdmin();
+    const ownerAgent = await harness.loginAdmin(owner);
+    const candidate = await harness.seedUser({
+      email: 'promote-me@test.dev',
+      username: 'promote_me',
+      password: 'promote-me-strong-password-1',
+    });
+    const candidateAgent = await loginAgent(harness.app, candidate.email, candidate.password);
+
+    // Give the future admin a valid factor while they are still a user-kind
+    // account. Promotion must not turn this existing cookie into admin authority.
+    const { secret } = twoFactorEnrollResponseSchema.parse(
+      (await candidateAgent.post('/api/v1/auth/2fa/enroll').set(...XRW)).body,
+    );
+    expect(
+      (
+        await candidateAgent
+          .post('/api/v1/auth/2fa/confirm')
+          .set(...XRW)
+          .send({ code: generateTotpCode(secret) })
+      ).status,
+    ).toBe(200);
+
+    const promoted = await ownerAgent
+      .patch(`/api/v1/admin/users/${candidate.id}`)
+      .set(...XRW)
+      .send({ role: 'admin' });
+    expect(promoted.status).toBe(200);
+    expect(promoted.body.role).toBe('admin');
+
+    // The session minted before promotion no longer exists, so it cannot reach
+    // any admin route by inheriting the new role.
+    expect((await candidateAgent.get('/api/v1/admin/users')).status).toBe(404);
+
+    const freshAgent = request.agent(harness.app);
+    const challenge = twoFactorChallengeResponseSchema.parse(
+      (
+        await freshAgent
+          .post('/api/v1/auth/login')
+          .set(...XRW)
+          .send({ identifier: candidate.email, password: candidate.password })
+      ).body,
+    );
+    expect(
+      (
+        await freshAgent
+          .post('/api/v1/auth/2fa/verify')
+          .set(...XRW)
+          .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) })
+      ).status,
+    ).toBe(200);
+    expect((await freshAgent.get('/api/v1/admin/users')).status).toBe(200);
   });
 });
 

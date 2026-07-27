@@ -14,6 +14,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type { AppContext } from '../context';
+import { setSessionCookie } from '../cookies';
 import { validateBody } from '../middleware/validate';
 import { toAdminSessionPolicy } from '../serializers';
 
@@ -21,11 +22,11 @@ import { toAdminSessionPolicy } from '../serializers';
  * Admin 2FA management endpoints under `/admin/security/2fa` (§6.12, #400).
  *
  * Registered FLAT onto the admin router (not a nested sub-router — the OpenAPI
- * coverage checker only reconstructs top-level mounts) and BEFORE the
- * {@link requireAdminTwoFactor} setup gate, so they stay reachable in the
- * not-yet-enrolled bootstrap state: they are exactly the "2FA enroll/confirm set"
- * the gate exempts. `requireAdmin` on the parent router fences them to admin
- * accounts (404 to everyone else).
+ * coverage checker only reconstructs top-level mounts). The parent router allows
+ * only the exact first-factor → first-enrollment bootstrap paths before any
+ * factor exists; once one exists, every route here requires current-session MFA
+ * assurance. `requireAdmin` fences the whole surface to admin accounts (404 to
+ * everyone else).
  *
  * The TOTP + recovery lifecycle mirrors the user endpoints (the service delegates
  * to the shared core); the email method targets the SEPARATE 2FA email.
@@ -47,7 +48,17 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(twoFactorConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorConfirmRequest;
-      res.json(await ctx.adminTwoFactor.confirmTotp(req.authUser!.id, code, req.ip));
+      const result = await ctx.adminTwoFactor.confirmTotp(req.authUser!.id, code, req.ip);
+      // Completing enrollment is an MFA ceremony. Rotate the cookie and revoke
+      // every older session before returning success, so no other password-only
+      // session can inherit this new assurance.
+      const session = await ctx.auth.completeAdminMfaEnrollment(
+        req.authUser!.id,
+        req.sessionId!,
+        'totp',
+      );
+      setSessionCookie(res, ctx.config, session.sessionId, session.persistent);
+      res.json(result);
     },
   );
 
@@ -57,6 +68,8 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorDisableRequest;
       await ctx.adminTwoFactor.disableTotp(req.authUser!.id, code, req.ip);
+      // A factor-set mutation invalidates every other device's prior assurance.
+      await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId!);
       res.status(204).end();
     },
   );
@@ -76,17 +89,27 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(twoFactorEmailConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorEmailConfirmRequest;
-      res.json(await ctx.adminTwoFactor.confirmEmail(req.authUser!.id, code, req.ip));
+      const result = await ctx.adminTwoFactor.confirmEmail(req.authUser!.id, code, req.ip);
+      const session = await ctx.auth.completeAdminMfaEnrollment(
+        req.authUser!.id,
+        req.sessionId!,
+        'email',
+      );
+      setSessionCookie(res, ctx.config, session.sessionId, session.persistent);
+      res.json(result);
     },
   );
 
   router.post('/security/2fa/email/disable', async (req, res) => {
     await ctx.adminTwoFactor.disableEmail(req.authUser!.id, req.ip);
+    await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId!);
     res.status(204).end();
   });
 
   router.post('/security/2fa/recovery-codes', async (req, res) => {
-    res.json(await ctx.adminTwoFactor.regenerateRecoveryCodes(req.authUser!.id, req.ip));
+    const result = await ctx.adminTwoFactor.regenerateRecoveryCodes(req.authUser!.id, req.ip);
+    await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId!);
+    res.json(result);
   });
 }
 

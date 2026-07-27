@@ -34,7 +34,11 @@ import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import { describeUserAgent } from '../sessions/deviceLabel';
-import { isPersistent, type SessionService } from '../sessions/sessionService';
+import {
+  isPersistent,
+  type SessionMfaMethod,
+  type SessionService,
+} from '../sessions/sessionService';
 import {
   clearLoginThrottle,
   clearPasswordThrottle,
@@ -185,6 +189,20 @@ export interface AuthService {
     sessionId: string,
     userAgent?: string | null,
   ): Promise<{ user: UserRow; persistent: boolean } | null>;
+  /**
+   * Whether this exact session — not merely another session for this account —
+   * completed MFA. Used exclusively by the administrator authorization gate.
+   */
+  isSessionMfaAssured(userId: string, sessionId: string): Promise<boolean>;
+  /**
+   * Complete administrator first-factor enrollment by rotating the current
+   * session into a newly MFA-assured one and revoking stale sessions.
+   */
+  completeAdminMfaEnrollment(
+    userId: string,
+    sessionId: string,
+    method: SessionMfaMethod,
+  ): Promise<{ sessionId: string; persistent: boolean }>;
   changePassword(
     userId: string,
     input: ChangePasswordRequest,
@@ -534,7 +552,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     user: UserRow,
     ip?: string | null,
   ): Promise<{ sessionId: string; user: UserRow }> {
-    const sessionId = await sessions.create(user.id, false);
+    const sessionId = await sessions.create(user.id, false, { authenticationMethod: 'pin' });
     const now = new Date();
     await userRepo.setLastLogin(user.id, now);
     await audit.record({
@@ -639,7 +657,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       // Session rotation: drop any pre-login session before minting a new id.
       if (currentSessionId) await sessions.destroy(currentSessionId);
-      const sessionId = await sessions.create(user.id, persistent);
+      const sessionId = await sessions.create(user.id, persistent, {
+        authenticationMethod: 'password',
+      });
 
       const now = new Date();
       await userRepo.setLastLogin(user.id, now);
@@ -701,16 +721,20 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // branch; a 6-digit `code` is tried as an emailed code first (single-use)
       // then as a TOTP — the two are disjoint, so order only affects which state
       // a match burns.
-      let ok = false;
+      let mfaMethod: SessionMfaMethod | null = null;
       if (recoveryCode) {
-        ok = await twoFactor.consumeRecoveryCode(userId, recoveryCode);
+        if (await twoFactor.consumeRecoveryCode(userId, recoveryCode)) {
+          mfaMethod = 'recovery';
+        }
       } else if (code) {
-        ok =
-          (await consumeEmailCode(pendingToken, code)) ||
-          (await twoFactor.verifyTotpCode(userId, code));
+        if (await consumeEmailCode(pendingToken, code)) {
+          mfaMethod = 'email';
+        } else if (await twoFactor.verifyTotpCode(userId, code)) {
+          mfaMethod = 'totp';
+        }
       }
 
-      if (!ok) {
+      if (!mfaMethod) {
         const decision = await twoFactorThrottle.consume(userId);
         await audit.record({
           action: AuditAction.TwoFactorVerifyFail,
@@ -737,7 +761,13 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Honour the persistence choice made at the password step (V4-P2b); a
       // reset-originated challenge carries none → persistent, today's behavior.
       const persistent = state.persistent ?? true;
-      const sessionId = await sessions.create(userId, persistent);
+      const sessionId = await sessions.create(userId, persistent, {
+        authenticationMethod: 'password',
+        // Administrator assurance is deliberately session- and role-specific.
+        // A user-kind session that happened to complete its own login MFA must
+        // still never become an admin credential if the account is promoted.
+        mfaMethod: user.role === 'admin' ? mfaMethod : undefined,
+      });
 
       const now = new Date();
       await userRepo.setLastLogin(userId, now);
@@ -813,6 +843,17 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       return { user, persistent: isPersistent(data) };
     },
 
+    async isSessionMfaAssured(userId, sessionId) {
+      const data = await sessions.get(sessionId);
+      return data?.userId === userId && data.mfaAssurance !== undefined;
+    },
+
+    async completeAdminMfaEnrollment(userId, sessionId, method) {
+      const rotated = await sessions.rotateWithMfa(userId, sessionId, method);
+      if (!rotated) throw unauthorized();
+      return { sessionId: rotated.sessionId, persistent: rotated.persistent };
+    },
+
     async changePassword(userId, input, ip) {
       // The target is always THIS session's account (`userId` came from the
       // session cookie), so the outcome never depends on any admin session
@@ -839,7 +880,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       // Kill every session, then re-establish one for the current device.
       await sessions.destroyAllForUser(user.id);
-      const sessionId = await sessions.create(user.id);
+      const sessionId = await sessions.create(user.id, true, { authenticationMethod: 'password' });
 
       await audit.record({
         actorId: user.id,
@@ -933,7 +974,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
-      const sessionId = await sessions.create(user.id);
+      const sessionId = await sessions.create(user.id, true, {
+        authenticationMethod: 'registration',
+      });
       return { user, sessionId, persistent: true };
     },
 
@@ -1020,7 +1063,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         return { status: 'two_factor_required', challenge };
       }
 
-      const sessionId = await sessions.create(user.id);
+      const sessionId = await sessions.create(user.id, true, {
+        authenticationMethod: 'password_reset',
+      });
       const updated = await userRepo.findById(user.id);
       return {
         status: 'authenticated',
@@ -1178,7 +1223,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
-      const sessionId = await sessions.create(user.id);
+      const sessionId = await sessions.create(user.id, true, {
+        authenticationMethod: 'registration',
+      });
       return { status: 'authenticated', user, sessionId, persistent: true };
     },
 

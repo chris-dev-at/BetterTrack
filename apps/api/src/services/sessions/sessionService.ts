@@ -4,6 +4,31 @@ import type { Redis } from 'ioredis';
 
 import { sha256Base64Url } from '../crypto/tokens';
 
+/**
+ * The first-factor flow that minted a session. This is server-side state only:
+ * clients never choose it and it must not be inferred from account settings.
+ */
+export type SessionAuthenticationMethod =
+  | 'password'
+  | 'password_reset'
+  | 'registration'
+  | 'google'
+  | 'passkey'
+  | 'pin';
+
+/** A second-factor method that established assurance for this exact session. */
+export type SessionMfaMethod = 'totp' | 'email' | 'recovery';
+
+/**
+ * Proof recorded only after a successful MFA ceremony. It deliberately lives in
+ * the session record rather than on the account: another cookie cannot inherit
+ * the proof merely because it belongs to the same administrator.
+ */
+export interface SessionMfaAssurance {
+  method: SessionMfaMethod;
+  verifiedAt: number;
+}
+
 export interface SessionData {
   userId: string;
   createdAt: number;
@@ -17,11 +42,75 @@ export interface SessionData {
    * created before this shipped — treated as persistent (see {@link isPersistent}).
    */
   persistent?: boolean;
+  /** The server-side first-factor flow that minted this session. */
+  authenticationMethod: SessionAuthenticationMethod;
+  /** Present only when MFA was proved in this very session. */
+  mfaAssurance?: SessionMfaAssurance;
 }
 
 /** Back-compat default: a session with no marker is persistent (pre-V4-P2b). */
 export const isPersistent = (data: Pick<SessionData, 'persistent'>): boolean =>
   data.persistent !== false;
+
+/** A legacy session without the marker was minted by the password flow. */
+const authenticationMethodFor = (value: unknown): SessionAuthenticationMethod => {
+  switch (value) {
+    case 'password':
+    case 'password_reset':
+    case 'registration':
+    case 'google':
+    case 'passkey':
+    case 'pin':
+      return value;
+    default:
+      return 'password';
+  }
+};
+
+/** Invalid/corrupt assurance is never allowed to become administrator proof. */
+const mfaAssuranceFor = (value: unknown): SessionMfaAssurance | undefined => {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Partial<SessionMfaAssurance>;
+  if (
+    (candidate.method !== 'totp' &&
+      candidate.method !== 'email' &&
+      candidate.method !== 'recovery') ||
+    typeof candidate.verifiedAt !== 'number' ||
+    !Number.isFinite(candidate.verifiedAt)
+  ) {
+    return undefined;
+  }
+  return { method: candidate.method, verifiedAt: candidate.verifiedAt };
+};
+
+/** Normalize legacy Redis records without granting them MFA assurance. */
+const parseSessionData = (raw: string): SessionData => {
+  const parsed = JSON.parse(raw) as Omit<SessionData, 'authenticationMethod' | 'mfaAssurance'> & {
+    authenticationMethod?: unknown;
+    mfaAssurance?: unknown;
+  };
+  const { authenticationMethod, mfaAssurance: rawMfaAssurance, ...base } = parsed;
+  const mfaAssurance = mfaAssuranceFor(rawMfaAssurance);
+  return {
+    ...base,
+    authenticationMethod: authenticationMethodFor(authenticationMethod),
+    ...(mfaAssurance ? { mfaAssurance } : {}),
+  };
+};
+
+/** Optional metadata supplied by the server-side authentication flow at mint time. */
+export interface CreateSessionOptions {
+  authenticationMethod?: SessionAuthenticationMethod;
+  /** A just-verified MFA method. Its timestamp is set by the session service. */
+  mfaMethod?: SessionMfaMethod;
+}
+
+/** Result of replacing a first-factor session with an MFA-assured session. */
+export interface RotatedMfaSession {
+  sessionId: string;
+  userId: string;
+  persistent: boolean;
+}
 
 /** Device metadata for the session manager (V3-P11a). Stored beside the session,
  * NOT inside `SessionData`, so writing it never touches the fixed-window TTL. */
@@ -63,8 +152,18 @@ export interface SessionService {
    * persistent session gets the fixed 30-day window; an ephemeral one gets a
    * sliding idle window hard-capped from now (V4-P2b, §399 §A).
    */
-  create(userId: string, persistent?: boolean): Promise<string>;
+  create(userId: string, persistent?: boolean, options?: CreateSessionOptions): Promise<string>;
   get(sessionId: string): Promise<SessionData | null>;
+  /**
+   * Replace one of a user's sessions with a newly minted MFA-assured session and
+   * revoke every other session for that user. Used when an admin completes first
+   * enrollment, so no stale cookie can inherit that newly established proof.
+   */
+  rotateWithMfa(
+    userId: string,
+    sessionId: string,
+    method: SessionMfaMethod,
+  ): Promise<RotatedMfaSession | null>;
   /** Reset the session's window (login / PIN verify), honouring its persistence. False if already gone. */
   renew(sessionId: string): Promise<boolean>;
   /**
@@ -181,10 +280,19 @@ export function createSessionService(
         ? data.renewedAt + ttlSeconds * 1000
         : data.createdAt + ephemeralCapMs;
     },
-    async create(userId, persistent = true) {
+    async create(userId, persistent = true, options = {}) {
       const sessionId = randomBytes(32).toString('base64url');
       const now = clock();
-      const data: SessionData = { userId, createdAt: now, renewedAt: now, persistent };
+      const data: SessionData = {
+        userId,
+        createdAt: now,
+        renewedAt: now,
+        persistent,
+        authenticationMethod: options.authenticationMethod ?? 'password',
+        ...(options.mfaMethod
+          ? { mfaAssurance: { method: options.mfaMethod, verifiedAt: now } }
+          : {}),
+      };
       await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', ttlSecondsFor(data, now));
       await redis.sadd(userIndexKey(userId), sessionId);
       await touchIndex(userId);
@@ -195,11 +303,28 @@ export function createSessionService(
       const raw = await redis.get(sessionKey(sessionId));
       if (!raw) return null;
       try {
-        return JSON.parse(raw) as SessionData;
+        return parseSessionData(raw);
       } catch {
         await redis.del(sessionKey(sessionId));
         return null;
       }
+    },
+
+    async rotateWithMfa(userId, sessionId, method) {
+      const data = await service.get(sessionId);
+      // Never let a caller rotate another account's session. This is also a
+      // fail-closed response for a missing/expired current session.
+      if (!data || data.userId !== userId) return null;
+
+      // Enrollment changes the account's factor state. Every old session must
+      // disappear before the new proof is usable; otherwise a password-only
+      // cookie on another device could inherit authority from this ceremony.
+      await service.destroyAllForUser(userId);
+      const nextSessionId = await service.create(userId, isPersistent(data), {
+        authenticationMethod: data.authenticationMethod,
+        mfaMethod: method,
+      });
+      return { sessionId: nextSessionId, userId, persistent: isPersistent(data) };
     },
 
     async renew(sessionId) {
@@ -207,7 +332,7 @@ export function createSessionService(
       if (!raw) return false;
       let data: SessionData;
       try {
-        data = JSON.parse(raw) as SessionData;
+        data = parseSessionData(raw);
       } catch {
         await redis.del(sessionKey(sessionId));
         return false;
@@ -227,7 +352,7 @@ export function createSessionService(
       if (!raw) return false;
       let data: SessionData;
       try {
-        data = JSON.parse(raw) as SessionData;
+        data = parseSessionData(raw);
       } catch {
         await redis.del(sessionKey(sessionId));
         return false;
@@ -249,7 +374,7 @@ export function createSessionService(
       await redis.del(sessionKey(sessionId), sessionMetaKey(sessionId));
       if (raw) {
         try {
-          const data = JSON.parse(raw) as SessionData;
+          const data = parseSessionData(raw);
           await redis.srem(userIndexKey(data.userId), sessionId);
         } catch {
           // Corrupt payload already deleted above.
@@ -273,7 +398,7 @@ export function createSessionService(
       if (!rawSession) return;
       let session: SessionData | null = null;
       try {
-        session = JSON.parse(rawSession) as SessionData;
+        session = parseSessionData(rawSession);
       } catch {
         session = null;
       }
@@ -330,7 +455,7 @@ export function createSessionService(
         }
         let data: SessionData;
         try {
-          data = JSON.parse(rawSession) as SessionData;
+          data = parseSessionData(rawSession);
         } catch {
           await redis.del(sessionKey(sessionId), sessionMetaKey(sessionId));
           await redis.srem(userIndexKey(userId), sessionId);
@@ -378,7 +503,7 @@ export function createSessionService(
           return false;
         }
         try {
-          const data = JSON.parse(rawSession) as SessionData;
+          const data = parseSessionData(rawSession);
           if (data.userId !== userId) return false;
         } catch {
           // Corrupt: treat as gone but clean it up.

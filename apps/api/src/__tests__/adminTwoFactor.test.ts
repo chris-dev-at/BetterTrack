@@ -53,6 +53,14 @@ function setsSessionCookie(res: request.Response): boolean {
   return setCookie.some((c) => c.startsWith('bt_sid='));
 }
 
+function sessionCookie(res: request.Response): string | undefined {
+  const setCookie = (res.headers['set-cookie'] as unknown as string[] | undefined) ?? [];
+  return setCookie
+    .filter((cookie) => cookie.startsWith('bt_sid='))
+    .at(-1)
+    ?.split(';', 1)[0];
+}
+
 function login(app: Application, identifier: string, password: string) {
   return request(app)
     .post('/api/v1/auth/login')
@@ -144,6 +152,46 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     expect(status.totpEnabled).toBe(true);
     expect(status.recoveryCodesRemaining).toBe(10);
   });
+
+  it('rotates the enrollment session and never grants a concurrent password session its proof', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    const enrolledHere = request.agent(harness.app);
+    const concurrentPasswordSession = await loginAdminAgent(harness, admin);
+
+    const login = await enrolledHere
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: admin.email, password: admin.password });
+    const oldCookie = sessionCookie(login);
+    expect(oldCookie).toBeDefined();
+
+    const { secret } = twoFactorEnrollResponseSchema.parse(
+      (await enrolledHere.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
+    );
+    const confirm = await enrolledHere
+      .post('/api/v1/admin/security/2fa/totp/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    expect(confirm.status).toBe(200);
+    expect(sessionCookie(confirm)).toBeDefined();
+    expect(sessionCookie(confirm)).not.toBe(oldCookie);
+
+    const sessionKeys = await harness.ctx.redis.keys('sess:*');
+    expect(sessionKeys).toHaveLength(1);
+    const session = JSON.parse((await harness.ctx.redis.get(sessionKeys[0]!))!) as {
+      authenticationMethod: string;
+      mfaAssurance?: { method: string; verifiedAt: number };
+    };
+    expect(session.authenticationMethod).toBe('password');
+    expect(session.mfaAssurance).toMatchObject({ method: 'totp' });
+    expect(session.mfaAssurance?.verifiedAt).toEqual(expect.any(Number));
+
+    // The session that completed MFA is the only one allowed through. The other
+    // password-only browser was revoked rather than inheriting account-level MFA.
+    expect((await enrolledHere.get('/api/v1/admin/users')).status).toBe(200);
+    expect((await concurrentPasswordSession.get('/api/v1/admin/users')).status).toBe(404);
+  });
 });
 
 describe('mandatory admin-login 2FA — login challenge (§6.12, #400)', () => {
@@ -212,6 +260,24 @@ describe('mandatory admin-login 2FA — login challenge (§6.12, #400)', () => {
       .set(...XRW)
       .send({ pendingToken: second.pendingToken, recoveryCode: recoveryCodes[0] });
     expect(reuse.status).toBe(401);
+  });
+
+  it('drops current-session assurance after a password change', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+
+    const changed = await agent
+      .post('/api/v1/auth/change-password')
+      .set(...XRW)
+      .send({ currentPassword: admin.password, newPassword: 'changed-admin-password-77' });
+    expect(changed.status).toBe(200);
+
+    // Password changes revoke all prior sessions and issue a plain first-factor
+    // session. It must complete a fresh MFA login before any admin access.
+    const denied = await agent.get('/api/v1/admin/users');
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('ADMIN_2FA_SESSION_REQUIRED');
   });
 });
 
@@ -342,7 +408,7 @@ describe('mandatory admin-login 2FA — break-glass reset (§6.12, #400)', () =>
   it('resets a named admin back into the setup state and writes an audit row', async () => {
     const harness = await createTestApp();
     const admin = await harness.seedAdmin();
-    await enrollAdminTotp(harness, admin);
+    const previouslyAssured = await harness.loginAdmin(admin);
     expect(await harness.ctx.twoFactor.isEnabled(admin.id)).toBe(true);
 
     const result = await resetAdminTwoFactorEnrollment(harness.db, admin.email);
@@ -350,11 +416,24 @@ describe('mandatory admin-login 2FA — break-glass reset (§6.12, #400)', () =>
     expect(await harness.ctx.twoFactor.isEnabled(admin.id)).toBe(false);
     expect(await auditCount(harness, admin.id, 'admin.two_factor_reset')).toBe(1);
 
+    // The reset cannot revoke Redis from the offline shell script, so the admin
+    // gate must downgrade an old assured session. It cannot reuse that cookie as
+    // a bootstrap credential either.
+    expect((await previouslyAssured.get('/api/v1/admin/users')).status).toBe(403);
+    expect((await previouslyAssured.get('/api/v1/admin/security/2fa/status')).status).toBe(403);
+
     // Post-reset: password login succeeds (no challenge) but is gated to setup.
     const agent = await loginAdminAgent(harness, admin);
     const gated = await agent.get('/api/v1/admin/users');
     expect(gated.status).toBe(403);
     expect(gated.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+
+    // A genuinely fresh password session may use only the first-enrollment
+    // bootstrap paths — not normal factor management.
+    expect((await agent.get('/api/v1/admin/security/2fa/status')).status).toBe(200);
+    expect((await agent.post('/api/v1/admin/security/2fa/recovery-codes').set(...XRW)).status).toBe(
+      403,
+    );
   });
 
   it('refuses to touch a non-admin account', async () => {

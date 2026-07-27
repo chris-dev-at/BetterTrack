@@ -52,7 +52,11 @@ import {
 
 import type { AdminActor } from '../../services/admin/adminService';
 import type { AppContext } from '../context';
-import { requireAdmin, requireAdminTwoFactor } from '../middleware/session';
+import {
+  requireAdmin,
+  requireAdminTwoFactor,
+  requireAdminTwoFactorOrBootstrap,
+} from '../middleware/session';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { registerAdminApiKeyRoutes } from './adminApiKeyRoutes';
 import { registerAdminProblemsRoutes } from './adminProblemsRoutes';
@@ -85,12 +89,14 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   router.use(limiters.admin);
   router.use(requireAdmin);
 
-  // Admin 2FA management (§6.12, #400) is registered BEFORE the setup gate so it
-  // stays reachable while the admin is not yet enrolled (the bootstrap wizard).
+  // Only the exact first-factor → first-enrollment routes remain reachable before
+  // an admin has a factor. Once any factor exists, even this management surface
+  // requires proof recorded on the current server-side session.
+  router.use('/security/2fa', requireAdminTwoFactorOrBootstrap(ctx));
   registerAdminSecurityRoutes(router, ctx);
 
-  // Mandatory admin-login 2FA: every admin endpoint below this line 403s with
-  // ADMIN_2FA_SETUP_REQUIRED until the admin has a confirmed 2FA method.
+  // Mandatory admin-login 2FA: every admin endpoint below this line requires a
+  // confirmed account factor AND MFA assurance on this exact session.
   router.use(requireAdminTwoFactor(ctx));
 
   // Admin session policy (§13.5 V5-P13c): read/set the early-expiring admin

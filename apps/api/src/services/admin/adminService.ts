@@ -296,6 +296,11 @@ export function createAdminService(deps: AdminServiceDeps) {
           await ensureNotLastActiveAdmin(target);
         }
         await userRepo.setRole(target.id, input.role);
+        // Role transitions change the authorization boundary. In particular, a
+        // user session minted before promotion must never become an admin session
+        // merely because the user row now says `admin`; the next admin access
+        // requires a fresh password + MFA login on a new session.
+        await sessions.destroyAllForUser(target.id);
         await audit.record({
           actorId: actor.id,
           action: AuditAction.UserRoleChanged,
