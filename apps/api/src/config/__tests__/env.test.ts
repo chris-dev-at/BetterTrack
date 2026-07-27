@@ -340,6 +340,20 @@ describe('stored-record encryption configuration (#879)', () => {
     expect(decryptSecret(legacy, rotated.recordEncryption)).toBe('legacy TOTP seed');
   });
 
+  it('keeps a legacy raw rotation-list envelope readable when another key is prepended', () => {
+    const historicalSessionSecret = 'new-cookie-secret-value,old-cookie-secret-value';
+    const historicalKey = createHash('sha256').update(`bt-2fa:${historicalSessionSecret}`).digest();
+    const legacy = encryptSecret('legacy multi-key TOTP seed', historicalKey);
+    const rotated = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://x',
+      REDIS_URL: 'redis://x',
+      SESSION_SECRET: `newest-cookie-secret-value,${historicalSessionSecret}`,
+    });
+
+    expect(decryptSecret(legacy, rotated.recordEncryption)).toBe('legacy multi-key TOTP seed');
+  });
+
   it('reads a previous data key while writing only the configured active id', () => {
     const oldMaterial = 'old-record-encryption-material-at-least-32-characters';
     const oldConfig = config({

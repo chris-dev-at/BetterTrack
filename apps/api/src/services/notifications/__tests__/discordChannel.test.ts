@@ -243,6 +243,32 @@ describe('Discord channel (V4-P10)', () => {
     expect(calls[0]!.url).toBe(WEBHOOK_URL);
   });
 
+  it('delivers a legacy webhook after SESSION_SECRET rotates to newer,new,old', async () => {
+    const historicalSessionSecret = 'new-cookie-secret-value,old-cookie-secret-value';
+    const historicalKey = createHash('sha256').update(`bt-2fa:${historicalSessionSecret}`).digest();
+    const rotated = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://test',
+      REDIS_URL: 'redis://test',
+      SESSION_SECRET: `newest-cookie-secret-value,${historicalSessionSecret}`,
+    }).recordEncryption;
+    const repo = webhookRepo({
+      encryptedUrl: encryptSecret(WEBHOOK_URL, historicalKey),
+      webhookIdMasked: '…abcd',
+    });
+    const { fn, calls } = fetchStub([{ status: 204 }]);
+    const channel = createDiscordChannel({
+      webhooks: repo,
+      encryptionKey: rotated,
+      logger,
+      fetchFn: fn as unknown as typeof fetch,
+      minSpacingMs: 0,
+    });
+
+    await channel.deliver('user-1', MESSAGE);
+    expect(calls[0]!.url).toBe(WEBHOOK_URL);
+  });
+
   it('fails closed without making a request for unknown or tampered envelopes', async () => {
     const unknownWriter = createSecretBoxKeyring({
       active: { id: 'unknown', key: Buffer.alloc(32, 0x77) },

@@ -228,6 +228,24 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     expect(await h.ctx.twoFactor.verifyTotpCode(userId, generateTotpCode(secret))).toBe(true);
   });
 
+  it('verifies a legacy TOTP fixture after SESSION_SECRET rotates to newer,new,old', async () => {
+    const secret = 'JBSWY3DPEHPK3PXP';
+    const historicalSessionSecret = 'new-cookie-secret-value,old-cookie-secret-value';
+    const legacyKey = createHash('sha256').update(`bt-2fa:${historicalSessionSecret}`).digest();
+    const repo = createTwoFactorRepository(h.db);
+    await repo.setProvisionalSecret(userId, encryptSecret(secret, legacyKey));
+    await repo.enable(userId, new Date());
+
+    h.ctx.config.recordEncryption = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://test',
+      REDIS_URL: 'redis://test',
+      SESSION_SECRET: `newest-cookie-secret-value,${historicalSessionSecret}`,
+    }).recordEncryption;
+
+    expect(await h.ctx.twoFactor.verifyTotpCode(userId, generateTotpCode(secret))).toBe(true);
+  });
+
   it('reads the previous data key during rotation and writes only with the new active id', async () => {
     const oldMaterial = 'old-record-encryption-material-at-least-32-characters';
     await boot({

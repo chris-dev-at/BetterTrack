@@ -63,7 +63,10 @@ the same reader-capable release. This keeps records written during the attempted
 rotation readable. Do not roll back to a release that only understands `v1`
 after any `v2` write has occurred.
 
-For the one-time upgrade from legacy `v1`, keep every cookie-signing secret that
-may have encrypted existing records in the comma-separated `SESSION_SECRET`
-rotation list until step 5 is clean. The new active data key is still dedicated;
-cookie-derived candidates are read-only legacy compatibility.
+For the one-time upgrade from legacy `v1`, prepend new cookie-signing secrets to
+the existing comma-separated `SESSION_SECRET` without reordering, removing, or
+reformatting its retained suffix until step 5 is clean. For example, preserve
+`new,old` exactly when moving to `newer,new,old`: the reader tries each ordered
+suffix and can therefore recover records encrypted from either historical raw
+list. The new active data key is still dedicated; cookie-derived candidates are
+read-only legacy compatibility.

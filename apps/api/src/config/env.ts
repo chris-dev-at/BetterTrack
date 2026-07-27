@@ -326,6 +326,20 @@ function legacyTwoFactorKey(material: string): Buffer {
   return createHash('sha256').update(material).digest();
 }
 
+function legacySessionEncryptionKeys(rawSessionSecret: string): Buffer[] {
+  const rawSegments = rawSessionSecret.split(',');
+  const orderedSuffixes = rawSegments
+    .map((_, index) => rawSegments.slice(index).join(','))
+    .filter((suffix) => suffix.trim().length > 0);
+  const individualSecrets = rawSegments
+    .map((secret) => secret.trim())
+    .filter((secret) => secret.length > 0);
+
+  return [...orderedSuffixes, ...individualSecrets].map((material) =>
+    legacyTwoFactorKey(`bt-2fa:${material}`),
+  );
+}
+
 function parsePreviousDataEncryptionKeys(value: string | undefined): SecretBoxKey[] {
   if (!value) return [];
 
@@ -814,11 +828,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const historicalLegacyKeys = [
     // Dedicated key used by pre-#879 deployments, when configured.
     ...(e.TOTP_ENCRYPTION_KEY ? [legacyTwoFactorKey(e.TOTP_ENCRYPTION_KEY)] : []),
-    // Exact historical fallback (including a raw comma-separated rotation list).
-    legacyTwoFactorKey(`bt-2fa:${e.SESSION_SECRET}`),
-    // Per-cookie-secret candidates keep an `old` record readable after the
-    // cookie configuration changes from `old` to `new,old`.
-    ...sessionSecrets.map((secret) => legacyTwoFactorKey(`bt-2fa:${secret}`)),
+    // Before #879 the fallback hashed the complete, unsplit SESSION_SECRET.
+    // Preserve every ordered raw suffix so prepending `newer` to an existing
+    // `new,old` rotation list still admits records written under `new,old`.
+    // Individual trimmed values also retain the original `old` -> `new,old`
+    // compatibility when operators used whitespace around delimiters.
+    ...legacySessionEncryptionKeys(e.SESSION_SECRET),
   ];
   let recordEncryption: SecretBoxKeyring;
   try {
