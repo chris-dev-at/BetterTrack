@@ -58,6 +58,7 @@ const PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000020';
 const CASH_SOURCE_ID = '018f0000-0000-7000-8000-000000000021';
 const ASSET_ID = '018f0000-0000-7000-8000-000000000022';
 const USER_ID = '018f0000-0000-7000-8000-000000000023';
+const SECOND_ASSET_ID = '018f0000-0000-7000-8000-000000000024';
 const GENERATED_IDS = [
   '018f0000-0000-7000-8000-000000000030',
   '018f0000-0000-7000-8000-000000000031',
@@ -1185,6 +1186,194 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(first.state.active?.document.entities.transaction).toEqual(
       second.state.active?.document.entities.transaction,
     );
+  });
+
+  it('replays an intervening backdated buy before a later financial edit', async () => {
+    const originalXBuyId = GENERATED_IDS[0];
+    const originalYBuyId = GENERATED_IDS[1];
+    const backdatedXBuyId = GENERATED_IDS[2];
+    const document = initialDocument();
+    document.entities.customAsset = [
+      ...(document.entities.customAsset ?? []),
+      vaultEntity(SECOND_ASSET_ID, {
+        providerId: 'manual',
+        providerRef: 'SECOND',
+        ownerId: USER_ID,
+        type: 'stock',
+        symbol: 'SECOND',
+        name: 'Second local asset',
+        exchange: null,
+        currency: 'EUR',
+        meta: { category: 'stock', smoothing: false },
+        searchText: 'SECOND Second local asset',
+      }),
+    ];
+    const { first, second, remote } = await createConcurrentSyncEngines(
+      document,
+      'portfolio-store-sequenced-financial-edit',
+    );
+    const offlineStore = createVaultPortfolioStore(second, {
+      now: () => AT,
+      newId: idSequenceFrom(originalXBuyId, originalYBuyId, backdatedXBuyId),
+    });
+
+    remote.setOnline(false);
+    await expect(
+      offlineStore.createTransactions(PORTFOLIO_ID, [
+        {
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 1,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-25T09:00:00.000Z',
+        },
+        {
+          assetId: SECOND_ASSET_ID,
+          side: 'buy',
+          quantity: 1,
+          price: 20,
+          fee: 0,
+          executedAt: '2026-07-25T09:00:00.000Z',
+        },
+      ]),
+    ).resolves.toMatchObject([{ id: originalXBuyId }, { id: originalYBuyId }]);
+    await expect(
+      offlineStore.createTransactions(PORTFOLIO_ID, [
+        {
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 1,
+          price: 9,
+          fee: 0,
+          executedAt: '2026-07-25T08:00:00.000Z',
+        },
+      ]),
+    ).resolves.toMatchObject([{ id: backdatedXBuyId }]);
+    await expect(
+      offlineStore.updateTransaction(PORTFOLIO_ID, originalXBuyId, { side: 'sell' }),
+    ).resolves.toMatchObject({ id: originalXBuyId, side: 'sell' });
+
+    remote.setOnline(true);
+    await expect(second.reconnect()).resolves.toMatchObject({ status: 'synced' });
+
+    const rows = second.state.active?.document.entities.transaction ?? [];
+    expect(rows.find((row) => row.id === originalXBuyId)).toMatchObject({
+      deletedAt: null,
+      data: expect.objectContaining({ side: 'sell' }),
+    });
+    expect(rows.find((row) => row.id === originalYBuyId)).toMatchObject({
+      deletedAt: null,
+      data: expect.objectContaining({ assetId: SECOND_ASSET_ID, side: 'buy' }),
+    });
+    expect(rows.find((row) => row.id === backdatedXBuyId)).toMatchObject({
+      deletedAt: null,
+      data: expect.objectContaining({ side: 'buy' }),
+    });
+    await expect(offlineStore.listTransactions(PORTFOLIO_ID)).resolves.toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ id: originalXBuyId, side: 'sell' }),
+        expect.objectContaining({ id: originalYBuyId, side: 'buy' }),
+        expect.objectContaining({ id: backdatedXBuyId, side: 'buy' }),
+      ]),
+    });
+
+    await first.reconnect();
+    expect(first.state.active?.document.entities.transaction).toEqual(
+      second.state.active?.document.entities.transaction,
+    );
+  });
+
+  it('uses parsed instants and entity ids for equal-time holdings replay', async () => {
+    const sellId = GENERATED_IDS[0];
+    const buyId = GENERATED_IDS[1];
+    const { first, second, remote } = await createConcurrentSyncEngines(
+      initialDocument(),
+      'portfolio-store-equivalent-instant-order',
+    );
+    const offlineStore = createVaultPortfolioStore(second, {
+      now: () => AT,
+      newId: idSequenceFrom(sellId, buyId),
+    });
+
+    remote.setOnline(false);
+    await expect(
+      offlineStore.createTransactions(PORTFOLIO_ID, [
+        {
+          assetId: ASSET_ID,
+          side: 'sell',
+          quantity: 1,
+          price: 12,
+          fee: 0,
+          executedAt: '2026-07-25T10:00:00Z',
+        },
+        {
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 1,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-25T10:00:00.000Z',
+        },
+      ]),
+    ).resolves.toMatchObject([{ id: sellId }, { id: buyId }]);
+
+    remote.setOnline(true);
+    await expect(second.reconnect()).resolves.toMatchObject({ status: 'synced' });
+
+    const rows = second.state.active?.document.entities.transaction ?? [];
+    expect(rows.find((row) => row.id === sellId)).toMatchObject({ deletedAt: AT });
+    expect(rows.find((row) => row.id === buyId)).toMatchObject({ deletedAt: AT });
+    await expect(offlineStore.listTransactions(PORTFOLIO_ID)).resolves.toMatchObject({ items: [] });
+
+    await first.reconnect();
+    expect(first.state.active?.document.entities.transaction).toEqual(
+      second.state.active?.document.entities.transaction,
+    );
+  });
+
+  it('fails closed when holdings reconciliation receives an invalid instant', () => {
+    const transactionId = GENERATED_IDS[0];
+    const remote = initialDocument();
+    const invalid = transactionEntity(transactionId, {
+      side: 'buy',
+      executedAt: 'not-an-instant',
+    });
+    const local: VaultDocumentV1 = {
+      ...remote,
+      entities: {
+        ...remote.entities,
+        transaction: [invalid],
+      },
+    };
+
+    let error: unknown;
+    try {
+      reconcilePortfolioDocument(local, {
+        local,
+        remote,
+        mutations: [
+          {
+            sequence: 0,
+            changes: [
+              {
+                kind: 'transaction',
+                id: transactionId,
+                before: undefined,
+                after: invalid,
+              },
+            ],
+          },
+        ],
+        deviceId: DEVICE_ID,
+        reconciledAt: AT,
+      });
+    } catch (cause) {
+      error = cause;
+    }
+
+    expect(error).toBeInstanceOf(VaultPortfolioStoreError);
+    expect(error).toMatchObject({ code: 'VAULT_DATA_INVALID' });
   });
 
   it.each(['transaction', 'cash movement'] as const)(

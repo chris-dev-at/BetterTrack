@@ -824,9 +824,7 @@ function sameJsonValue(left: unknown, right: unknown): boolean {
   );
 }
 
-interface ReconcileChange {
-  kind: VaultEntityKind;
-  id: string;
+interface ReconcileChange extends VaultMutationEntityDelta {
   local: VaultEntity | undefined;
   remote: VaultEntity | undefined;
 }
@@ -845,10 +843,11 @@ class VaultAggregateConflictError extends Error {
 
 /**
  * Reconcile portfolio-domain mutations before the sync engine encrypts or
- * publishes a divergent merge. Groups are built from complete mutation deltas,
- * before consulting the generic entity winners, and replayed against the
- * already-durable branch. A rejected group receives dominating compensation so
- * no winning subset can reappear on a later reconnect.
+ * publishes a divergent merge. Each complete mutation stays in its original
+ * sequence position: collapsing overlapping mutations would move later entity
+ * snapshots ahead of unrelated intervening work. A rejected group receives
+ * dominating compensation, and its entity lineage remains rejected, so no
+ * winning subset can reappear on a later reconnect.
  */
 export function reconcilePortfolioDocument(
   document: VaultDocumentV1,
@@ -863,18 +862,24 @@ export function reconcilePortfolioDocument(
   }
   assertPortfolioDocumentInvariants(reconciled, context.remote);
 
+  const rejectedEntityKeys = new Set<string>();
   for (const group of groups) {
-    const completeGroupWon = group.changes.every((change) =>
-      sameOptionalVaultEntity(findEntity(document, change.kind, change.id), change.local),
+    const completeGroupWon = group.changes.every(
+      (change) =>
+        !rejectedEntityKeys.has(entityRefKey(change.kind, change.id)) &&
+        sameOptionalVaultEntity(findEntity(document, change.kind, change.id), change.local),
     );
     if (!completeGroupWon) {
       reconciled = compensateRejectedGroup(reconciled, group, context);
+      for (const change of group.changes) {
+        rejectedEntityKeys.add(entityRefKey(change.kind, change.id));
+      }
       continue;
     }
 
     let candidate = reconciled;
     for (const change of group.changes) {
-      candidate = setEntity(candidate, change.kind, change.id, change.local);
+      candidate = setEntity(candidate, change.kind, change.id, change.after);
     }
     candidate = enforceDeletionCascades(candidate, context);
 
@@ -884,6 +889,9 @@ export function reconcilePortfolioDocument(
     } catch (cause) {
       if (!isAggregateConflict(cause)) throw cause;
       reconciled = compensateRejectedGroup(reconciled, group, context);
+      for (const change of group.changes) {
+        rejectedEntityKeys.add(entityRefKey(change.kind, change.id));
+      }
     }
   }
 
@@ -895,63 +903,32 @@ function reconcileGroups(
   mutations: readonly VaultAtomicMutation[],
   context: VaultDocumentReconcileContext,
 ): ReconcileGroup[] {
-  const components: { sequence: number; keys: Set<string> }[] = [];
-  const refs = new Map<string, Pick<VaultMutationEntityDelta, 'kind' | 'id'>>();
-
-  for (const mutation of [...mutations].sort((left, right) => left.sequence - right.sequence)) {
-    const mutationKeys = new Set(
-      mutation.changes.map((change) => {
-        const key = entityRefKey(change.kind, change.id);
-        refs.set(key, change);
-        return key;
+  return mutations
+    .filter((mutation) => mutation.changes.length > 0)
+    .map(
+      (mutation): ReconcileGroup => ({
+        sequence: mutation.sequence,
+        changes: [...mutation.changes]
+          .sort((left, right) =>
+            entityRefKey(left.kind, left.id).localeCompare(entityRefKey(right.kind, right.id)),
+          )
+          .map((change) => ({
+            ...change,
+            local: findEntity(context.local, change.kind, change.id),
+            remote: findEntity(context.remote, change.kind, change.id),
+          })),
       }),
-    );
-    if (mutationKeys.size === 0) continue;
-    const matching = components.filter((component) =>
-      [...mutationKeys].some((key) => component.keys.has(key)),
-    );
-    if (matching.length === 0) {
-      components.push({ sequence: mutation.sequence, keys: mutationKeys });
-      continue;
-    }
-
-    const target = matching[0]!;
-    target.sequence = Math.min(target.sequence, mutation.sequence);
-    for (const key of mutationKeys) target.keys.add(key);
-    for (const component of matching.slice(1)) {
-      target.sequence = Math.min(target.sequence, component.sequence);
-      for (const key of component.keys) target.keys.add(key);
-      components.splice(components.indexOf(component), 1);
-    }
-  }
-
-  return components
+    )
     .sort(
       (left, right) =>
         left.sequence - right.sequence ||
-        [...left.keys]
-          .sort()
+        left.changes
+          .map((change) => entityRefKey(change.kind, change.id))
           .join('\u0000')
-          .localeCompare([...right.keys].sort().join('\u0000')),
-    )
-    .map((component) => ({
-      sequence: component.sequence,
-      changes: [...component.keys].sort().map((key): ReconcileChange => {
-        const ref = refs.get(key);
-        if (ref == null) {
-          throw storeError(
-            'VAULT_DATA_INVALID',
-            'Vault mutation provenance references an unknown entity.',
-          );
-        }
-        return {
-          kind: ref.kind,
-          id: ref.id,
-          local: findEntity(context.local, ref.kind, ref.id),
-          remote: findEntity(context.remote, ref.kind, ref.id),
-        };
-      }),
-    }));
+          .localeCompare(
+            right.changes.map((change) => entityRefKey(change.kind, change.id)).join('\u0000'),
+          ),
+    );
 }
 
 function compensateRejectedGroup(
@@ -1418,13 +1395,28 @@ function assertValidAssetTimeline(
         stringField(entity.data, 'portfolioId') === portfolioId &&
         stringField(entity.data, 'assetId') === assetId,
     )
+    .map((entity) => ({
+      entity,
+      executedAtMs: transactionExecutedAtMs(entity),
+    }))
     .sort(
       (left, right) =>
-        stringField(left.data, 'executedAt').localeCompare(stringField(right.data, 'executedAt')) ||
-        left.id.localeCompare(right.id),
+        left.executedAtMs - right.executedAtMs || left.entity.id.localeCompare(right.entity.id),
     )
-    .map((entity) => transactionFromEntity(document, entity));
+    .map(({ entity }) => transactionFromEntity(document, entity));
   reducePosition(transactions);
+}
+
+function transactionExecutedAtMs(entity: VaultEntity): number {
+  const executedAt = stringField(entity.data, 'executedAt');
+  const executedAtMs = Date.parse(executedAt);
+  if (!Number.isFinite(executedAtMs)) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A vault transaction has an invalid execution timestamp.',
+    );
+  }
+  return executedAtMs;
 }
 
 function sameAssetTimeline(
