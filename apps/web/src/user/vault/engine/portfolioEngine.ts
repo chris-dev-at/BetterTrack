@@ -236,7 +236,7 @@ async function derive(
     today,
   });
   const fullTwr = timeWeightedReturn(netWorth, allFlows);
-  const start = rangeStart(today, range);
+  const start = portfolioRangeStartIso(today, range);
   const slicedValues = netWorth.filter((point) => point.date >= start);
   const rangedTwr = fullTwr.filter((point) => point.date >= start);
   const slicedTwr = range === 'MAX' ? rangedTwr : rebasePerformance(rangedTwr);
@@ -551,28 +551,44 @@ function missingPricesByDay(
   return result;
 }
 
-function rangeStart(today: string, range: ClientPortfolioRange): string {
+/**
+ * UTC day at which a portfolio range opens. Calendar spans clamp onto the
+ * target month's last real day so March 31 minus one month is February 28/29,
+ * never a rollover back into March.
+ */
+export function portfolioRangeStartIso(today: string, range: ClientPortfolioRange): string {
   if (range === 'MAX') return '0000-01-01';
-  const todayMs = Date.parse(`${today}T00:00:00.000Z`);
-  const date = new Date(todayMs);
   switch (range) {
     case '1D':
-      return new Date(todayMs - 86_400_000).toISOString().slice(0, 10);
+      return daysBeforeIso(today, 1);
     case '1W':
-      return new Date(todayMs - 7 * 86_400_000).toISOString().slice(0, 10);
+      return daysBeforeIso(today, 7);
     case '1M':
-      date.setUTCMonth(date.getUTCMonth() - 1);
-      break;
+      return monthsBeforeIso(today, 1);
     case '6M':
-      date.setUTCMonth(date.getUTCMonth() - 6);
-      break;
+      return monthsBeforeIso(today, 6);
     case '1Y':
-      date.setUTCFullYear(date.getUTCFullYear() - 1);
-      break;
+      return monthsBeforeIso(today, 12);
     case '5Y':
-      date.setUTCFullYear(date.getUTCFullYear() - 5);
-      break;
+      return monthsBeforeIso(today, 60);
   }
+}
+
+function daysBeforeIso(today: string, days: number): string {
+  const date = new Date(`${today}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+
+function monthsBeforeIso(today: string, months: number): string {
+  const date = new Date(`${today}T00:00:00.000Z`);
+  const dayOfMonth = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() - months);
+  const lastDayOfTargetMonth = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  date.setUTCDate(Math.min(dayOfMonth, lastDayOfTargetMonth));
   return date.toISOString().slice(0, 10);
 }
 

@@ -4,6 +4,15 @@ import { getAssetDailyCloses, getAssetQuote } from './assetApi';
 import { searchAssets } from './searchApi';
 
 const DAY_MS = 86_400_000;
+const HISTORY_LOOKBACK_DAYS: Record<Exclude<HistoryRange, 'MAX'>, number> = {
+  '1D': 1,
+  '1W': 7,
+  '1M': 31,
+  '3M': 93,
+  '6M': 186,
+  '1Y': 366,
+  '5Y': 1830,
+};
 const FX_NEAREST_PRIOR_MAX_DAYS = 7;
 const FX_HISTORY_MEMO_MS = 60_000;
 const FX_HISTORY_DAY_INDEX = new WeakMap<readonly PricePoint[], ReadonlyMap<string, number>>();
@@ -305,28 +314,7 @@ function filterRange(
 }
 
 function rangeStartMs(nowMs: number, range: Exclude<HistoryRange, 'MAX'>): number {
-  const date = new Date(nowMs);
-  switch (range) {
-    case '1D':
-      return nowMs - DAY_MS;
-    case '1W':
-      return nowMs - 7 * DAY_MS;
-    case '1M':
-      date.setUTCMonth(date.getUTCMonth() - 1);
-      return date.getTime();
-    case '3M':
-      date.setUTCMonth(date.getUTCMonth() - 3);
-      return date.getTime();
-    case '6M':
-      date.setUTCMonth(date.getUTCMonth() - 6);
-      return date.getTime();
-    case '1Y':
-      date.setUTCFullYear(date.getUTCFullYear() - 1);
-      return date.getTime();
-    case '5Y':
-      date.setUTCFullYear(date.getUTCFullYear() - 5);
-      return date.getTime();
-  }
+  return nowMs - HISTORY_LOOKBACK_DAYS[range] * DAY_MS;
 }
 
 function nearestPriorClose(points: readonly PricePoint[], date: string): number | null {

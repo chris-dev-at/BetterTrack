@@ -23,7 +23,7 @@ import {
   type LocalVaultRecord,
 } from '../localDataHome';
 import { createMemoryVaultQuarantineStore } from '../quarantine';
-import { createVaultSyncEngine } from '../sync';
+import { createVaultSyncEngine, type VaultSyncEngine } from '../sync';
 import {
   createVaultPortfolioStore,
   reconcilePortfolioDocument,
@@ -658,6 +658,110 @@ describe('paranoid standing-order materialization', () => {
     },
   );
 
+  it('rejects a standing-order mutation queued behind reconnect-to-conflict', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(DAILY_ADD_ID, {
+        kind: 'cash-add',
+        amount: '25',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const encrypted = await encryptVaultDocument({
+      document,
+      vaultKey: fixture.vaultKey,
+      header: {
+        keyId: fixture.header.keyId,
+        wrappedKeys: fixture.header.wrappedKeys,
+        vaultVersion: fixture.header.vaultVersion,
+        deviceId: fixture.header.deviceId,
+        writeId: fixture.header.writeId,
+        writtenAt: fixture.header.writtenAt,
+      },
+    });
+    const racingLocal = createReconnectConflictStorage();
+    const local = createLocalDataHome({
+      scope: 'standing-order-reconnect-conflict',
+      storage: racingLocal.storage,
+    });
+    await expect(local.write(encrypted.envelope, { ifVersion: null })).resolves.toMatchObject({
+      status: 'ok',
+    });
+    const primary = createMemoryPrimary(encrypted.envelope);
+    let writeSequence = 0x400;
+    const sync = createVaultSyncEngine({
+      local,
+      primary: primary.home,
+      vaultKey: fixture.vaultKey,
+      deviceId: DEVICE_ID,
+      writeId: () => `018f0000-0000-7000-8000-${(writeSequence++).toString(16).padStart(12, '0')}`,
+      now: () => BOOKED_AT,
+      quarantine: createMemoryVaultQuarantineStore(() => BOOKED_AT),
+      documentReconciler: reconcilePortfolioDocument,
+      requiresCompleteMutationProvenance: true,
+    });
+    await expect(sync.start()).resolves.toMatchObject({ status: 'synced' });
+
+    const mutationQueued = deferred<void>();
+    let mutationCallbackCalls = 0;
+    const observedSync: VaultSyncEngine = {
+      get deviceId() {
+        return sync.deviceId;
+      },
+      get state() {
+        return sync.state;
+      },
+      start: () => sync.start(),
+      reconnect: () => sync.reconnect(),
+      mutate(mutator) {
+        mutationQueued.resolve();
+        return sync.mutate((context) => {
+          mutationCallbackCalls += 1;
+          return mutator(context);
+        });
+      },
+    };
+    const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
+
+    racingLocal.armReconnectConflict();
+    const reconnecting = sync.reconnect();
+    await racingLocal.readStarted;
+    const materializing = createVaultPortfolioStore(
+      observedSync,
+    ).materializeStandingOrderOccurrence({
+      occurrenceId,
+      orderId: DAILY_ADD_ID,
+      dueDate: '2026-07-27',
+      calendarDay: '2026-07-27',
+      timezone: 'Europe/Vienna',
+      executedAt: BOOKED_AT,
+    });
+    const materialized = materializing.then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await mutationQueued.promise;
+    expect(sync.state.status).toBe('synced');
+
+    racingLocal.releaseRead();
+    await expect(reconnecting).resolves.toMatchObject({ status: 'conflict' });
+    const outcome = await materialized;
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.error).toMatchObject({
+      name: 'VaultCryptoError',
+      code: 'storage-failed',
+    });
+    expect(mutationCallbackCalls).toBe(0);
+    expect(racingLocal.currentVersion).toBe(fixture.header.vaultVersion);
+    expect(primary.version).toBe(fixture.header.vaultVersion);
+    expect(primary.writeCount).toBe(0);
+    expect(live(sync.state.active!.document, 'cashMovement', occurrenceId)).toBeUndefined();
+    expect(live(sync.state.active!.document, 'standingOrderRun', occurrenceId)).toBeUndefined();
+  });
+
   it('keeps calendar math deterministic across month ends and timezone boundaries', () => {
     expect(
       dueStandingOrderOccurrence(
@@ -835,8 +939,73 @@ function createFailingCommitStorage(): {
   };
 }
 
+function createReconnectConflictStorage(): {
+  storage: LocalDataHomeStorage;
+  armReconnectConflict(): void;
+  readonly readStarted: Promise<void>;
+  releaseRead(): void;
+  readonly currentVersion: number | null;
+} {
+  const readStarted = deferred<void>();
+  const releaseRead = deferred<void>();
+  let record: LocalVaultRecord | null = null;
+  let blockNextRead = false;
+  let conflictsRemaining = 0;
+  const storage: LocalDataHomeStorage = {
+    async read() {
+      if (blockNextRead) {
+        blockNextRead = false;
+        readStarted.resolve();
+        await releaseRead.promise;
+      }
+      return cloneLocalRecord(record);
+    },
+    async compareAndSwap(_scope, ifVersion, build) {
+      const currentVersion = record?.version ?? null;
+      if (conflictsRemaining > 0) {
+        conflictsRemaining -= 1;
+        return { status: 'conflict', currentVersion };
+      }
+      if (currentVersion !== ifVersion) {
+        return { status: 'conflict', currentVersion };
+      }
+      record = cloneLocalRecord(build(cloneLocalRecord(record)));
+      return { status: 'ok' };
+    },
+  };
+  return {
+    storage,
+    armReconnectConflict() {
+      blockNextRead = true;
+      // Exhaust the sync engine's bounded reconcile retry loop, then allow the
+      // queued mutation's storage path to proceed if its status gate is wrong.
+      conflictsRemaining = 16;
+    },
+    get readStarted() {
+      return readStarted.promise;
+    },
+    releaseRead() {
+      releaseRead.resolve();
+    },
+    get currentVersion() {
+      return record?.version ?? null;
+    },
+  };
+}
+
 function cloneLocalRecord(record: LocalVaultRecord | null): LocalVaultRecord | null {
   return record === null ? null : structuredClone(record);
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 function createMemoryPrimary(initialEnvelope: Uint8Array): {

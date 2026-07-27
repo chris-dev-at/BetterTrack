@@ -91,6 +91,32 @@ describe('BetterTrack public market-data source', () => {
     expect(corrected.watermark).not.toBe(first.watermark);
   });
 
+  it.each([
+    ['1M', '2026-03-31T12:00:00.000Z', '2026-02-28T12:00:00.000Z'],
+    ['3M', '2026-03-31T12:00:00.000Z', '2025-12-28T12:00:00.000Z'],
+    ['6M', '2026-03-31T12:00:00.000Z', '2025-09-26T12:00:00.000Z'],
+    ['1Y', '2024-02-29T12:00:00.000Z', '2023-02-28T12:00:00.000Z'],
+    ['5Y', '2024-02-29T12:00:00.000Z', '2019-02-25T12:00:00.000Z'],
+  ] as const)(
+    'uses the provider-compatible generous %s history window at calendar boundaries',
+    async (range, nowIso, expectedStart) => {
+      const beforeStart = new Date(Date.parse(expectedStart) - 1).toISOString();
+      vi.mocked(getAssetDailyCloses).mockResolvedValue({
+        points: [
+          { time: beforeStart, close: 10 },
+          { time: expectedStart, close: 11 },
+        ],
+        stale: false,
+        asOf: nowIso,
+      });
+      const source = createBetterTrackMarketDataSource({ now: () => Date.parse(nowIso) });
+
+      await expect(source.history(FX_ID, range)).resolves.toMatchObject({
+        value: [{ time: expectedStart, close: 11 }],
+      });
+    },
+  );
+
   it('resolves spot and historical FX through exact Yahoo catalog pairs', async () => {
     vi.mocked(searchAssets).mockImplementation(async (query) => ({
       results: [

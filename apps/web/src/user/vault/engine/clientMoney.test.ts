@@ -24,6 +24,7 @@ import {
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createVaultMoneyEngine } from './index';
+import { portfolioRangeStartIso } from './portfolioEngine';
 import {
   CLIENT_MONEY_IDS,
   createClientMoneyMarket,
@@ -555,6 +556,16 @@ describe('paranoid client money engine', () => {
     });
     expect(bounded.value.series[0]?.twrPct).toBe(0);
     expect(maximum.value.series[0]?.twrPct).toBeCloseTo(auditedServerVector[0]!, 12);
+  });
+
+  it.each([
+    ['2026-03-31', '1M', '2026-02-28'],
+    ['2024-03-31', '1M', '2024-02-29'],
+    ['2026-03-31', '6M', '2025-09-30'],
+    ['2024-02-29', '1Y', '2023-02-28'],
+    ['2024-02-29', '5Y', '2019-02-28'],
+  ] as const)('matches the server range clamp for %s minus %s', (today, range, expectedStart) => {
+    expect(portfolioRangeStartIso(today, range)).toBe(expectedStart);
   });
 
   it('matches the audited split-date cash-buy compensators', async () => {

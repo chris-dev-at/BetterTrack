@@ -296,6 +296,12 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     if (state.status === 'corrupt') {
       throw new VaultCryptoError('locked', 'A readable unlocked vault is required for a mutation.');
     }
+    if (state.status === 'conflict') {
+      throw new VaultCryptoError(
+        'storage-failed',
+        'The vault synchronization conflict requires explicit resolution before mutation.',
+      );
+    }
     if (state.status === 'unresolved') {
       throw new VaultCryptoError(
         'storage-failed',
@@ -316,10 +322,11 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       ) + 1;
     const candidate = await encryptCandidate(document, nextVersion, active.header);
     if (!(await commitLocal(candidate, localHeadVersion))) {
-      if (state.status === 'conflict') return cloneState(state);
+      const failedState = cloneState(state);
+      if (failedState.status === 'conflict') return failedState;
       throw new VaultCryptoError(
         'storage-failed',
-        state.lastFailure ?? 'Vault mutation could not be committed locally.',
+        failedState.lastFailure ?? 'Vault mutation could not be committed locally.',
       );
     }
 
