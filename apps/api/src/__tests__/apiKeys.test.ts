@@ -141,6 +141,45 @@ describe('bearer auth boundaries', () => {
     expect(await auditActions()).toContain('api_key.revoked');
   });
 
+  it('rejects a suspended account key and never revives it after re-enable', async () => {
+    const { token, id } = await mintKey(['portfolio:read']);
+    const auth = `Bearer ${token}`;
+
+    // An existing active-user key retains its granted scope before suspension.
+    expect(
+      (await request(harness.app).get('/api/v1/portfolios').set('Authorization', auth)).status,
+    ).toBe(200);
+
+    const [key] = await harness.db.select().from(schema.apiKeys).where(eq(schema.apiKeys.id, id));
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const disabled = await adminAgent
+      .patch(`/api/v1/admin/users/${key!.userId}`)
+      .set(...XRW)
+      .send({ status: 'disabled' });
+    expect(disabled.status).toBe(200);
+
+    const suspended = await request(harness.app)
+      .get('/api/v1/portfolios')
+      .set('Authorization', auth);
+    expect(suspended.status).toBe(401);
+
+    const [revoked] = await harness.db
+      .select()
+      .from(schema.apiKeys)
+      .where(eq(schema.apiKeys.id, id));
+    expect(revoked!.revokedAt).not.toBeNull();
+
+    const enabled = await adminAgent
+      .patch(`/api/v1/admin/users/${key!.userId}`)
+      .set(...XRW)
+      .send({ status: 'active' });
+    expect(enabled.status).toBe(200);
+
+    const revived = await request(harness.app).get('/api/v1/portfolios').set('Authorization', auth);
+    expect(revived.status).toBe(401);
+  });
+
   it('401s an unknown / malformed token', async () => {
     const res = await request(harness.app)
       .get('/api/v1/portfolios')

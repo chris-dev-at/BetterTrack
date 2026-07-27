@@ -16,6 +16,8 @@ import type {
 } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
+import type { ApiKeyService } from '../apiKeys/apiKeyService';
+import type { OAuthService } from '../oauth/oauthService';
 import type { EmailLogPage, EmailLogRepository } from '../../data/repositories/emailLogRepository';
 import type { IdentityRepository } from '../../data/repositories/identityRepository';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
@@ -56,6 +58,10 @@ export interface AdminServiceDeps {
   portfolioRepo: PortfolioRepository;
   /** Per-(channel, type) override seeding for the V4-P0d account-defaults matrix. */
   notificationRepo: Pick<NotificationRepository, 'upsertChannelConfig'>;
+  /** Suspension cleanup for non-session bearer credentials. */
+  apiKeys: Pick<ApiKeyService, 'revokeAllForUser'>;
+  /** Suspension cleanup for delegated OAuth credentials. */
+  oauth: Pick<OAuthService, 'revokeAllForUser'>;
   sessions: SessionService;
   audit: AuditService;
   passwordHasher: PasswordHasher;
@@ -90,6 +96,8 @@ export function createAdminService(deps: AdminServiceDeps) {
     identityRepo,
     portfolioRepo,
     notificationRepo,
+    apiKeys,
+    oauth,
     sessions,
     audit,
     passwordHasher,
@@ -123,6 +131,59 @@ export function createAdminService(deps: AdminServiceDeps) {
   }
 
   /**
+   * Revoke bearer credentials in a fixed order. The caller deliberately changes
+   * user status first, so any failure here is fail-closed: authentication and
+   * exchange choke points reject the disabled user until a retry completes.
+   */
+  async function revokeBearerCredentials(userId: string): Promise<void> {
+    await apiKeys.revokeAllForUser(userId);
+    await oauth.revokeAllForUser(userId);
+  }
+
+  /**
+   * Status is the immediate kill switch; physical revocation follows it. If a
+   * revocation/session write throws, this operation throws too while preserving
+   * `disabled`. Re-enabling repeats revocation before restoring `active`, so a
+   * partial failure can never revive an old bearer credential.
+   */
+  async function disableUser(target: UserRow, actor: AdminActor, via?: 'bulk'): Promise<void> {
+    const changedStatus = target.status !== 'disabled';
+    if (changedStatus) {
+      await userRepo.setStatus(target.id, 'disabled');
+    }
+    await revokeBearerCredentials(target.id);
+    await sessions.destroyAllForUser(target.id);
+    if (changedStatus) {
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.UserDisabled,
+        targetType: 'user',
+        targetId: target.id,
+        ip: actor.ip,
+        ...(via ? { meta: { via } } : {}),
+      });
+    }
+  }
+
+  async function enableUser(target: UserRow, actor: AdminActor): Promise<void> {
+    // A failed disable can leave rows physically present but unreachable under
+    // the status gate. Finish the same invalidation before making them reachable
+    // again; revocation is idempotent for already-revoked rows.
+    await revokeBearerCredentials(target.id);
+    await userRepo.setStatus(target.id, 'active');
+    // Re-enabling must let the user back in immediately — drop any failed-login
+    // / lockout state accrued before they were disabled.
+    await clearLoginThrottle(redis, target.id);
+    await audit.record({
+      actorId: actor.id,
+      action: AuditAction.UserEnabled,
+      targetType: 'user',
+      targetId: target.id,
+      ip: actor.ip,
+    });
+  }
+
+  /**
    * Bulk-disable (§6.12, §13.2): best-effort over a set — an id that can't be
    * disabled (unknown, the actor themselves, already disabled, or the last
    * active admin) is skipped rather than failing the whole batch. Each success
@@ -134,7 +195,7 @@ export function createAdminService(deps: AdminServiceDeps) {
   ): Promise<{ disabled: number; skipped: number }> {
     const unique = [...new Set(userIds)];
     let activeAdmins = await userRepo.countActiveAdmins();
-    const toDisable: string[] = [];
+    const toDisable: UserRow[] = [];
     let skipped = 0;
 
     for (const id of unique) {
@@ -147,23 +208,12 @@ export function createAdminService(deps: AdminServiceDeps) {
         skipped += 1;
         continue;
       }
-      toDisable.push(target.id);
+      toDisable.push(target);
       if (target.role === 'admin') activeAdmins -= 1;
     }
 
-    if (toDisable.length > 0) {
-      await userRepo.setStatusMany(toDisable, 'disabled');
-      for (const id of toDisable) {
-        await sessions.destroyAllForUser(id);
-        await audit.record({
-          actorId: actor.id,
-          action: AuditAction.UserDisabled,
-          targetType: 'user',
-          targetId: id,
-          ip: actor.ip,
-          meta: { via: 'bulk' },
-        });
-      }
+    for (const target of toDisable) {
+      await disableUser(target, actor, 'bulk');
     }
 
     return { disabled: toDisable.length, skipped };
@@ -224,34 +274,18 @@ export function createAdminService(deps: AdminServiceDeps) {
     async updateUser(id: string, input: UpdateUserRequest, actor: AdminActor): Promise<UserRow> {
       const target = await loadUser(id);
 
-      if (input.status && input.status !== target.status) {
-        if (input.status === 'disabled') {
+      if (input.status === 'disabled') {
+        if (target.status !== 'disabled') {
           if (target.id === actor.id) {
             throw badRequest('You cannot disable your own account.', 'SELF_ACTION');
           }
           await ensureNotLastActiveAdmin(target);
-          await userRepo.setStatus(target.id, 'disabled');
-          await sessions.destroyAllForUser(target.id);
-          await audit.record({
-            actorId: actor.id,
-            action: AuditAction.UserDisabled,
-            targetType: 'user',
-            targetId: target.id,
-            ip: actor.ip,
-          });
-        } else {
-          await userRepo.setStatus(target.id, 'active');
-          // Re-enabling must let the user back in immediately — drop any
-          // failed-login / lockout state accrued before they were disabled.
-          await clearLoginThrottle(redis, target.id);
-          await audit.record({
-            actorId: actor.id,
-            action: AuditAction.UserEnabled,
-            targetType: 'user',
-            targetId: target.id,
-            ip: actor.ip,
-          });
         }
+        // An explicit repeat disable repairs a previous fail-closed cleanup
+        // failure without ever making the account active again.
+        await disableUser(target, actor);
+      } else if (input.status === 'active' && target.status !== 'active') {
+        await enableUser(target, actor);
       }
 
       if (input.role && input.role !== target.role) {
