@@ -1024,6 +1024,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     identityRepo,
     portfolioRepo,
     notificationRepo,
+    apiKeys,
+    oauth,
     sessions,
     audit,
     passwordHasher,

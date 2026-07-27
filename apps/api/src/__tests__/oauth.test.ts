@@ -482,6 +482,118 @@ describe('grant revocation', () => {
     expect(refresh.status).toBe(400);
     expect(await auditActions()).toContain('oauth.grant_revoked');
   });
+
+  it('invalidates access, refresh, and pending code credentials on suspension permanently', async () => {
+    const { agent, clientId, clientSecret } = await registerClient({ scopes: ['portfolio:read'] });
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+    });
+    const issued = oauthTokenResponseSchema.parse(
+      (
+        await tokenRequest({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: HTTPS_REDIRECT,
+          client_id: clientId,
+          client_secret: clientSecret,
+        })
+      ).body,
+    );
+    const { code: pendingCode } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+    });
+
+    // Existing active-user access remains authorized with its original scope.
+    expect(
+      (
+        await request(harness.app)
+          .get('/api/v1/portfolios')
+          .set(...bearer(issued.access_token))
+      ).status,
+    ).toBe(200);
+
+    const [client] = await harness.db
+      .select()
+      .from(schema.oauthClients)
+      .where(eq(schema.oauthClients.clientId, clientId));
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const disabled = await adminAgent
+      .patch(`/api/v1/admin/users/${client!.userId}`)
+      .set(...XRW)
+      .send({ status: 'disabled' });
+    expect(disabled.status).toBe(200);
+
+    const [grant] = await harness.db
+      .select()
+      .from(schema.oauthGrants)
+      .where(eq(schema.oauthGrants.userId, client!.userId!));
+    expect(grant!.revokedAt).not.toBeNull();
+    const [consumedCode] = await harness.db
+      .select()
+      .from(schema.oauthAuthCodes)
+      .where(eq(schema.oauthAuthCodes.codeHash, hashToken(pendingCode)));
+    expect(consumedCode!.consumedAt).not.toBeNull();
+
+    const access = await request(harness.app)
+      .get('/api/v1/portfolios')
+      .set(...bearer(issued.access_token));
+    expect(access.status).toBe(401);
+    const refresh = await tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: issued.refresh_token,
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+    expect(refresh.status).toBe(400);
+    const codeExchange = await tokenRequest({
+      grant_type: 'authorization_code',
+      code: pendingCode,
+      redirect_uri: HTTPS_REDIRECT,
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+    expect(codeExchange.status).toBe(400);
+
+    const enabled = await adminAgent
+      .patch(`/api/v1/admin/users/${client!.userId}`)
+      .set(...XRW)
+      .send({ status: 'active' });
+    expect(enabled.status).toBe(200);
+
+    expect(
+      (
+        await request(harness.app)
+          .get('/api/v1/portfolios')
+          .set(...bearer(issued.access_token))
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await tokenRequest({
+          grant_type: 'refresh_token',
+          refresh_token: issued.refresh_token,
+          client_id: clientId,
+          client_secret: clientSecret,
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await tokenRequest({
+          grant_type: 'authorization_code',
+          code: pendingCode,
+          redirect_uri: HTTPS_REDIRECT,
+          client_id: clientId,
+          client_secret: clientSecret,
+        })
+      ).status,
+    ).toBe(400);
+  });
 });
 
 describe('refresh-token rotation', () => {

@@ -251,6 +251,23 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
+    /**
+     * Administrative account suspension invalidates every OAuth credential the
+     * user could otherwise resume with: live grants kill access/refresh tokens,
+     * and pending authorization codes are consumed permanently.
+     */
+    async revokeAllForUser(userId: string): Promise<void> {
+      const invalidatedAt = new Date();
+      await db
+        .update(oauthGrants)
+        .set({ revokedAt: invalidatedAt })
+        .where(and(eq(oauthGrants.userId, userId), isNull(oauthGrants.revokedAt)));
+      await db
+        .update(oauthAuthCodes)
+        .set({ consumedAt: invalidatedAt })
+        .where(and(eq(oauthAuthCodes.userId, userId), isNull(oauthAuthCodes.consumedAt)));
+    },
+
     async touchGrantLastUsed(grantId: string, at: Date): Promise<void> {
       await db.update(oauthGrants).set({ lastUsedAt: at }).where(eq(oauthGrants.id, grantId));
     },
@@ -262,10 +279,13 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
-    async findAuthCodeByHash(codeHash: string): Promise<OAuthAuthCodeRow | undefined> {
+    async findAuthCodeByHash(
+      codeHash: string,
+    ): Promise<{ code: OAuthAuthCodeRow; user: UserRow } | undefined> {
       const [row] = await db
-        .select()
+        .select({ code: oauthAuthCodes, user: users })
         .from(oauthAuthCodes)
+        .innerJoin(users, eq(oauthAuthCodes.userId, users.id))
         .where(eq(oauthAuthCodes.codeHash, codeHash))
         .limit(1);
       return row;
@@ -333,14 +353,15 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
-    /** Resolve a refresh token by hash joined to its grant (any grant state). */
+    /** Resolve a refresh token by hash joined to its grant + owning user (any grant state). */
     async findRefreshTokenByHash(
       tokenHash: string,
-    ): Promise<{ token: OAuthRefreshTokenRow; grant: OAuthGrantRow } | undefined> {
+    ): Promise<{ token: OAuthRefreshTokenRow; grant: OAuthGrantRow; user: UserRow } | undefined> {
       const [row] = await db
-        .select({ token: oauthRefreshTokens, grant: oauthGrants })
+        .select({ token: oauthRefreshTokens, grant: oauthGrants, user: users })
         .from(oauthRefreshTokens)
         .innerJoin(oauthGrants, eq(oauthRefreshTokens.grantId, oauthGrants.id))
+        .innerJoin(users, eq(oauthGrants.userId, users.id))
         .where(eq(oauthRefreshTokens.tokenHash, tokenHash))
         .limit(1);
       return row;

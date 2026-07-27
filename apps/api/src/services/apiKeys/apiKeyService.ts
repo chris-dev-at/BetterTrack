@@ -63,6 +63,8 @@ export interface ApiKeyService {
   }): Promise<CreateApiKeyResponse>;
   list(userId: string): Promise<ApiKeySummary[]>;
   revoke(input: { userId: string; id: string; ip?: string | null }): Promise<void>;
+  /** Administrative suspension: revoke all of one user's personal keys. */
+  revokeAllForUser(userId: string): Promise<void>;
   /** Bearer-auth lookup: resolve an active key by its plaintext token, else null. */
   authenticate(token: string): Promise<ApiKeyPrincipal | null>;
   /** Record a scope-denied bearer attempt (called by the enforcement middleware). */
@@ -221,10 +223,16 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       });
     },
 
+    async revokeAllForUser(userId) {
+      await repo.revokeAllForUser(userId);
+    },
+
     async authenticate(token) {
       if (!token.startsWith(API_KEY_TOKEN_PREFIX)) return null;
       const found = await repo.findActiveByTokenHash(hashToken(token));
-      if (!found) return null;
+      // The personal-key choke point must fail closed even if an administrative
+      // suspension has not yet completed physical key revocation.
+      if (!found || found.user.status !== 'active') return null;
 
       // Throttle the lastUsedAt write: only the first hit within the window
       // touches the DB, so a busy key doesn't write on every request.

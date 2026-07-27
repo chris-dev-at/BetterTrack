@@ -123,6 +123,14 @@ export function createApiKeyRepository(db: Database) {
       return row;
     },
 
+    /** Revoke every still-active personal key for an administratively suspended user. */
+    async revokeAllForUser(userId: string): Promise<void> {
+      await db
+        .update(apiKeys)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(apiKeys.userId, userId), isNull(apiKeys.revokedAt)));
+    },
+
     /** Stamp `lastUsedAt` (throttled by the service, not written per request). */
     async touchLastUsed(id: string, at: Date): Promise<void> {
       await db.update(apiKeys).set({ lastUsedAt: at }).where(eq(apiKeys.id, id));

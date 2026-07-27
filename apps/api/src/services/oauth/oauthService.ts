@@ -87,6 +87,8 @@ export interface OAuthService {
   }): Promise<OAuthClientSummary>;
   listGrants(userId: string): Promise<OAuthGrantSummary[]>;
   revokeGrant(input: { userId: string; id: string; ip?: string | null }): Promise<void>;
+  /** Administrative suspension: revoke grants and invalidate pending auth codes. */
+  revokeAllForUser(userId: string): Promise<void>;
   /** Consent-screen data: validates the authorize request, plain-language scopes. */
   getAuthorizationDetails(
     query: OAuthAuthorizationDetailsQuery,
@@ -490,6 +492,10 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       });
     },
 
+    async revokeAllForUser(userId) {
+      await repo.revokeAllForUser(userId);
+    },
+
     async getAuthorizationDetails(query) {
       const { client, scopes } = await validateAuthorize({
         clientId: query.client_id,
@@ -561,7 +567,10 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     async authenticateToken(token) {
       if (!token.startsWith(OAUTH_ACCESS_TOKEN_PREFIX)) return null;
       const found = await repo.findAccessTokenByHash(hashToken(token));
-      if (!found) return null;
+      // This is the access-token choke point. Status is checked independently
+      // of grant revocation so a disabled account can never use a bearer token
+      // while a suspension cleanup is retrying.
+      if (!found || found.user.status !== 'active') return null;
       if (found.token.expiresAt.getTime() <= now().getTime()) return null;
 
       // Throttle the grant lastUsedAt write, mirroring the personal-key path.
@@ -604,49 +613,53 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     });
     const found = await repo.findAuthCodeByHash(hashToken(body.code));
     // A code bound to a different client, or none, is an invalid grant.
-    if (!found || found.clientId !== client.id) {
+    if (!found || found.code.clientId !== client.id || found.user.status !== 'active') {
       throw badRequest('Invalid authorization code.', 'INVALID_GRANT');
     }
-    if (found.redirectUri !== body.redirect_uri) {
+    if (found.code.redirectUri !== body.redirect_uri) {
       throw badRequest('redirect_uri does not match the authorization request.', 'INVALID_GRANT');
     }
-    if (found.expiresAt.getTime() <= now().getTime()) {
+    if (found.code.expiresAt.getTime() <= now().getTime()) {
       throw badRequest('Authorization code has expired.', 'INVALID_GRANT');
     }
     // PKCE verification (RFC 7636). A stored challenge demands a matching verifier.
-    if (found.codeChallenge) {
+    if (found.code.codeChallenge) {
       if (
         !body.code_verifier ||
-        !safeEqual(sha256Base64Url(body.code_verifier), found.codeChallenge)
+        !safeEqual(sha256Base64Url(body.code_verifier), found.code.codeChallenge)
       ) {
         throw badRequest('PKCE verification failed.', 'INVALID_GRANT');
       }
     }
     // Single-use: the atomic consume is the guard against replay / double-spend.
-    const consumed = await repo.consumeAuthCode(found.id);
+    const consumed = await repo.consumeAuthCode(found.code.id);
     if (!consumed) {
       throw badRequest('Authorization code has already been used.', 'INVALID_GRANT');
     }
     // Clamp the consented scopes to the app's CURRENT allowed set: if the admin
     // narrowed the app during the code's brief lifetime, the grant + token
     // reflect the reduced set immediately (consent-safe narrowing).
-    const scopes = clampToAllowed(found.scopes as ApiKeyScope[], client.scopes);
+    const scopes = clampToAllowed(found.code.scopes as ApiKeyScope[], client.scopes);
     if (scopes.length === 0) {
       throw badRequest('No requested scope is still permitted for this app.', 'INVALID_SCOPE');
     }
     // Establish (or reuse) the grant for this app↔user pair.
-    const existing = await repo.findActiveGrant(client.id, found.userId);
+    const existing = await repo.findActiveGrant(client.id, found.code.userId);
     let grantId: string;
     if (existing) {
       grantId = existing.id;
       await repo.updateGrantScopes(existing.id, scopes);
     } else {
-      const grant = await repo.createGrant({ clientId: client.id, userId: found.userId, scopes });
+      const grant = await repo.createGrant({
+        clientId: client.id,
+        userId: found.code.userId,
+        scopes,
+      });
       grantId = grant.id;
     }
     const tokens = await issueTokenPair(grantId, scopes);
     await audit.record({
-      actorId: found.userId,
+      actorId: found.code.userId,
       action: AuditAction.OAuthTokenIssued,
       targetType: 'oauth_grant',
       targetId: grantId,
@@ -665,7 +678,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       clientSecret: body.client_secret,
     });
     const found = await repo.findRefreshTokenByHash(hashToken(body.refresh_token));
-    if (!found || found.grant.clientId !== client.id) {
+    if (!found || found.grant.clientId !== client.id || found.user.status !== 'active') {
       throw badRequest('Invalid refresh token.', 'INVALID_GRANT');
     }
     if (found.grant.revokedAt) {
