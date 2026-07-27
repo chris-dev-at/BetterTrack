@@ -7,7 +7,11 @@ import {
 import { localizedMessage } from '../../../i18n';
 import type { VaultSyncEngine } from '../sync';
 import { asMoneyFailure, type VaultMoneyOutcome } from '../engine/errors';
-import { assertVaultSnapshotCurrent, validatedVaultSnapshot } from '../engine/session';
+import {
+  assertTaxReportScope,
+  assertVaultSnapshotCurrent,
+  validatedVaultSnapshot,
+} from '../engine/session';
 import type { ClientTaxReport } from '../engine/types';
 
 interface CsvCopy {
@@ -29,14 +33,13 @@ export interface ClientTaxCsv {
 /** Guarded client CSV generation over the same in-memory report used by print. */
 export function createClientTaxCsv(
   sync: VaultSyncEngine,
+  portfolioId: string,
   tax: ClientTaxReport,
   locale: TaxExportLocale = 'en',
 ): VaultMoneyOutcome<ClientTaxCsv> {
   try {
     const snapshot = validatedVaultSnapshot(sync);
-    if (snapshot.vaultVersion !== tax.vaultVersion) {
-      throw new DOMException('The vault changed during report generation.', 'AbortError');
-    }
+    assertTaxReportScope(snapshot, portfolioId, tax);
     const report = taxYearReportResponseSchema.parse(tax.report);
     const text = serializeTaxYearReportCsv(report, locale);
     assertVaultSnapshotCurrent(sync, snapshot);

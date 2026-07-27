@@ -96,6 +96,8 @@ export function createClientTaxEngine(
           fxWatermarks || 'EUR-only'
         }`;
         const key = {
+          ownerUserId: snapshot.ownerUserId,
+          vaultKeyId: snapshot.vaultKeyId,
           portfolioId,
           vaultVersion: snapshot.vaultVersion,
           assetPriceWatermark,
@@ -109,6 +111,9 @@ export function createClientTaxEngine(
 
         const report = buildTaxReport(model, converted.rows, settings, year, currentYear);
         const value: ClientTaxReport = {
+          ownerUserId: snapshot.ownerUserId,
+          vaultKeyId: snapshot.vaultKeyId,
+          portfolioId,
           report: report.report,
           computedTaxTargetEur: report.computedTaxTargetEur,
           vaultVersion: snapshot.vaultVersion,
@@ -606,7 +611,11 @@ function strategyForReportRow(
   currentYear: number,
   settings: EffectiveTaxSettings,
 ): CostBasisStrategy {
-  if (year >= currentYear && transaction.taxMode !== 'manual_per_trade') {
+  if (
+    year >= currentYear &&
+    transaction.taxMode !== 'manual_per_trade' &&
+    settings.mode !== 'manual_per_trade'
+  ) {
     if (settings.mode === 'country_specific') {
       return costBasisStrategyForCountry(settings.country);
     }

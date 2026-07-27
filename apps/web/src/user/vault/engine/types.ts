@@ -49,6 +49,9 @@ export interface ClientPortfolioDerivation {
 }
 
 export interface ClientTaxReport {
+  ownerUserId: string;
+  vaultKeyId: string;
+  portfolioId: string;
   report: TaxYearReportResponse;
   computedTaxTargetEur: number;
   vaultVersion: number;

@@ -5,7 +5,7 @@ import {
   type VaultEntity,
   type VaultEntityKind,
 } from '@bettertrack/contracts';
-import { strToU8, zipSync } from 'fflate';
+import { strToU8, zip } from 'fflate';
 
 import { localizedMessage } from '../../../i18n';
 import type { VaultSyncEngine } from '../sync';
@@ -112,12 +112,15 @@ export async function createClientCleartextExport(
       files[`data/${name}.json`] = strToU8(JSON.stringify(rows, null, 2));
     }
 
-    // Let a lock event queued by the UI run before cleartext is compressed.
-    await Promise.resolve();
+    // Cross a browser task boundary before starting worker-backed compression.
+    // This lets a pending click/idle lock run, not only queued microtasks.
+    await yieldToBrowserTask();
     options.signal?.throwIfAborted();
     assertVaultSnapshotCurrent(sync, snapshot);
-    archive = zipSync(files);
-    await Promise.resolve();
+    archive = await zipArchive(files, options.signal);
+    // The worker callback resumes in a microtask. Yield once more so a lock task
+    // queued during compression is observed before any bytes leave this method.
+    await yieldToBrowserTask();
     options.signal?.throwIfAborted();
     assertVaultSnapshotCurrent(sync, snapshot);
     return {
@@ -133,6 +136,50 @@ export async function createClientCleartextExport(
     archive?.fill(0);
     return { ok: false, error: asMoneyFailure(cause) };
   }
+}
+
+function yieldToBrowserTask(): Promise<void> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(resolve, 0);
+  });
+}
+
+function zipArchive(files: Record<string, Uint8Array>, signal?: AbortSignal): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let terminate: (() => void) | null = null;
+    const cleanup = () => signal?.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      terminate?.();
+      cleanup();
+      reject(new DOMException('Cleartext export generation was aborted.', 'AbortError'));
+    };
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      terminate = zip(files, (error, data) => {
+        if (settled) {
+          data.fill(0);
+          return;
+        }
+        settled = true;
+        cleanup();
+        if (error !== null) {
+          reject(error);
+          return;
+        }
+        resolve(data);
+      });
+    } catch (cause) {
+      settled = true;
+      cleanup();
+      reject(cause);
+      return;
+    }
+    if (signal?.aborted === true) onAbort();
+  });
 }
 
 function collectEntities(document: VaultDocumentV1): Record<string, unknown[]> {

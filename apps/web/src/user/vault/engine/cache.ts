@@ -1,4 +1,6 @@
 export interface DerivedCacheKey {
+  ownerUserId: string;
+  vaultKeyId: string;
   portfolioId: string;
   vaultVersion: number;
   assetPriceWatermark: string;
@@ -30,6 +32,8 @@ export class VaultDerivedCache<T> {
 
 function cacheKey(key: DerivedCacheKey): string {
   return [
+    key.ownerUserId,
+    key.vaultKeyId,
     key.portfolioId,
     key.vaultVersion,
     key.assetPriceWatermark,
