@@ -226,6 +226,37 @@ describe('standing orders — exactly-once per period (the gate criterion)', () 
     expect(m!.note).toBe('salary');
     expect(m!.source).toBe('standing-order');
   });
+
+  it('skips a stale due row after its account enters paranoid mode', async () => {
+    const { user, agent, pid } = await setup();
+    await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 100,
+      label: 'must not book',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(schema.users.id, user.id));
+
+    expect(await run('2026-04-01T12:00:00Z')).toEqual({
+      scanned: 1,
+      booked: 0,
+      skippedDuplicate: 0,
+      deferred: 0,
+    });
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(0);
+    await expect(harness.ctx.standingOrders.list(user.id)).rejects.toMatchObject({
+      code: 'PARANOID_MODE',
+    });
+  });
 });
 
 describe('standing orders — pause / resume', () => {

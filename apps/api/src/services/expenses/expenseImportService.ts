@@ -23,6 +23,7 @@ import { parseCsv, type ParsedCsv } from '../imports/csv';
 import { createBankMapperRegistry, type BankStatementMapper } from '../imports/expenseBank';
 import type { ExpenseWriteHook } from './expenseService';
 import { categorizeByRules } from './ruleEngine';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 
 /**
  * Bank-statement CSV import (PROJECTPLAN.md §13.5 V5-P9, issue 2/3). Upload →
@@ -47,6 +48,7 @@ export interface ExpenseImportServiceDeps {
   mappers: readonly BankStatementMapper[];
   /** Budget re-evaluation hook (issue 3/3) — run once after a non-empty apply. */
   onApply?: ExpenseWriteHook;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
 }
 
 export interface ExpenseImportPreviewInput {
@@ -155,6 +157,7 @@ export function createExpenseImportService(deps: ExpenseImportServiceDeps): Expe
     },
 
     async preview(userId, input) {
+      await deps.paranoid?.assertAllowed(userId, 'imports');
       const { csv, mapper } = parseAndResolve(input);
       const mapped = mapper.map(csv);
 
@@ -214,6 +217,7 @@ export function createExpenseImportService(deps: ExpenseImportServiceDeps): Expe
     },
 
     async apply(userId, input) {
+      await deps.paranoid?.assertAllowed(userId, 'imports');
       const { csv, mapper } = parseAndResolve(input);
       const mapped = mapper.map(csv);
 

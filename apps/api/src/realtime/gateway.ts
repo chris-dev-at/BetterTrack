@@ -124,6 +124,8 @@ export interface RealtimeGatewayDeps {
    * indistinguishable, exactly like the HTTP 404 (§10 no-leak rule).
    */
   resolveWatchableAsset(userId: string, assetId: string): Promise<AssetRef | null>;
+  /** Hold the account privacy lock across live-watch authorization and ring reads. */
+  withAccountPrivacyLock?<T>(userId: string, action: () => Promise<T>): Promise<T>;
   /**
    * Active-view presence store (#368): `presence.enter`/`presence.leave` write
    * here, the notification dispatcher reads it (cross-process, via Redis) to
@@ -153,6 +155,9 @@ export interface RealtimeGateway {
 
 export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGateway {
   const { config, bus, logger } = deps;
+  const withAccountPrivacyLock =
+    deps.withAccountPrivacyLock ??
+    (<T>(_userId: string, action: () => Promise<T>): Promise<T> => action());
   let io: SocketIOServer | null = null;
   const unsubscribers: Unsubscribe[] = [];
 
@@ -271,11 +276,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
 
   /**
    * The assets this socket holds a live watch on (one registration each,
-   * §6.3): the resolved provider ref (re-watches and stitched backfills reuse
-   * it without re-resolving) and the rate registered with the shared loop —
-   * an unwatch must release exactly the rate it registered (#372).
+   * §6.3) and the rate registered with the shared loop. Provider refs are
+   * deliberately never retained here: every watch/backfill re-resolves under
+   * the account transition lock. An unwatch must release exactly the rate it
+   * registered (#372).
    */
-  type LiveWatchEntry = { ref: AssetRef; rateMs: number | undefined };
+  type LiveWatchEntry = { rateMs: number | undefined };
   const liveAssetsOf = (socket: Socket): Map<string, LiveWatchEntry> =>
     (socket.data.liveAssets as Map<string, LiveWatchEntry> | undefined) ??
     (socket.data.liveAssets = new Map<string, LiveWatchEntry>());
@@ -332,42 +338,49 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       respond({ ok: false, error: 'UNAVAILABLE' });
       return;
     }
-    const { assetId, window } = parsed.data;
-    // No requested rate ⇒ undefined, so the live-mode service's configured
-    // default applies (contract {@link DEFAULT_LIVE_RATE} in production).
-    const rateMs = parsed.data.rate === undefined ? undefined : LIVE_RATE_MS[parsed.data.rate];
-    const watched = liveAssetsOf(socket);
-    let entry = watched.get(assetId);
-    if (!entry) {
+    await withAccountPrivacyLock(userId, async () => {
+      const { assetId, window } = parsed.data;
+      // Re-resolve on EVERY watch, including a window/rate switch. A paranoid
+      // transition detaches an owned custom asset while an existing socket may
+      // still hold its old provider ref; that stale ref must never reach backfill.
       const ref = await deps.resolveWatchableAsset(userId, assetId).catch(() => null);
       if (!ref) {
         // Missing and someone-else's-custom look identical (§10). Fails closed.
         respond({ ok: false, error: 'NOT_FOUND' });
         return;
       }
-      if (socket.disconnected) {
-        // The socket vanished during the resolve: registering now would leave a
-        // watch the disconnect cleanup (already queued behind this op) has to
-        // undo, and the room join would outlive the adapter's own cleanup.
-        respond({ ok: false, error: 'GONE' });
-        return;
+      // No requested rate ⇒ undefined, so the live-mode service's configured
+      // default applies (contract {@link DEFAULT_LIVE_RATE} in production).
+      const rateMs = parsed.data.rate === undefined ? undefined : LIVE_RATE_MS[parsed.data.rate];
+      const watched = liveAssetsOf(socket);
+      let entry = watched.get(assetId);
+      if (!entry) {
+        if (socket.disconnected) {
+          // The socket vanished during the resolve: registering now would leave a
+          // watch the disconnect cleanup (already queued behind this op) has to
+          // undo, and the room join would outlive the adapter's own cleanup.
+          respond({ ok: false, error: 'GONE' });
+          return;
+        }
+        liveMode.watch(assetId, ref, rateMs);
+        entry = { rateMs };
+        watched.set(assetId, entry);
+        await socket.join(assetRoom(assetId));
+      } else {
+        if (entry.rateMs !== rateMs) {
+          liveMode.watch(assetId, ref, rateMs);
+          liveMode.unwatch(assetId, entry.rateMs);
+          entry.rateMs = rateMs;
+        }
       }
-      liveMode.watch(assetId, ref, rateMs);
-      entry = { ref, rateMs };
-      watched.set(assetId, entry);
-      await socket.join(assetRoom(assetId));
-    } else if (entry.rateMs !== rateMs) {
-      liveMode.watch(assetId, entry.ref, rateMs);
-      liveMode.unwatch(assetId, entry.rateMs);
-      entry.rateMs = rateMs;
-    }
-    const frames = await liveMode.backfill(assetId, entry.ref, window);
-    // The oldest frame is the earliest instant the backfill honestly covers
-    // (§13.5 V5-P1 §5): when the seed reaches the window start it is ~now−window,
-    // when history is genuinely short (new listing, market just opened) it is
-    // later, and the client renders from here instead of padding an empty edge.
-    const coverageFrom = frames[0]?.at;
-    respond({ ok: true, frames, coverageFrom });
+      const frames = await liveMode.backfill(assetId, ref, window);
+      // The oldest frame is the earliest instant the backfill honestly covers
+      // (§13.5 V5-P1 §5): when the seed reaches the window start it is ~now−window,
+      // when history is genuinely short (new listing, market just opened) it is
+      // later, and the client renders from here instead of padding an empty edge.
+      const coverageFrom = frames[0]?.at;
+      respond({ ok: true, frames, coverageFrom });
+    });
   }
 
   /**

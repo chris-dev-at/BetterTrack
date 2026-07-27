@@ -8,6 +8,7 @@ import type {
 } from '../../data/repositories/workboardRepository';
 import { badRequest, conflict, notFound } from '../../errors';
 import type { Logger } from '../../logger';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
@@ -24,6 +25,8 @@ export interface WorkboardServiceDeps {
   /** The central notification pipeline (#368) — watchlist-add activity events. */
   notify: NotificationCenter;
   logger?: Logger;
+  /** Resolve and hold a shared watchlist owner's transition boundary through the read. */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany'>;
 }
 
 export interface WorkboardService {
@@ -31,7 +34,7 @@ export interface WorkboardService {
   list(userId: string): Promise<WorkboardItemWithAsset[]>;
   /** Items in one of the caller's lists (404 when the list isn't theirs). */
   listInWatchlist(userId: string, watchlistId: string): Promise<WorkboardItemWithAsset[]>;
-  /** Items in one list by id — for the authorized shared read (authorization is upstream). */
+  /** Items in one list by id — owner mode is resolved and locked here too. */
   itemsForSharedView(watchlistId: string): Promise<WorkboardItemWithAsset[]>;
   /** Add an asset to `watchlistId` (or the default General list when omitted). */
   addItem(userId: string, assetId: string, watchlistId?: string): Promise<WorkboardItemWithAsset>;
@@ -110,8 +113,18 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
       return repo.listByWatchlistForUser(userId, watchlistId);
     },
 
-    itemsForSharedView(watchlistId) {
-      return repo.listByWatchlist(watchlistId);
+    async itemsForSharedView(watchlistId) {
+      const ownerId = await repo.watchlistOwner(watchlistId);
+      if (!ownerId) throw notFound('Watchlist not found.', 'WATCHLIST_NOT_FOUND');
+      const read = async () => {
+        // Re-check ownership after taking the account boundary and keep the SQL
+        // owner-scoped, so this helper is never an unscoped below-HTTP read.
+        if (!(await repo.findWatchlist(ownerId, watchlistId))) {
+          throw notFound('Watchlist not found.', 'WATCHLIST_NOT_FOUND');
+        }
+        return repo.listByWatchlistForUser(ownerId, watchlistId);
+      };
+      return deps.paranoid ? deps.paranoid.runAllowedMany([ownerId], 'sharing', read) : read();
     },
 
     async addItem(userId, assetId, watchlistId) {
@@ -179,14 +192,17 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
         throw conflict('A watchlist with this name already exists.', 'WATCHLIST_NAME_TAKEN');
       }
       await repo.renameWatchlist(userId, watchlistId, trimmed);
-      const audienceState = await audience.getAudience(userId, 'watchlist', watchlistId);
+      // Keep private watchlist management usable in paranoid mode without
+      // crossing the disabled sharing rail. The enable transition removes every
+      // audience row, so an absent entry is authoritatively private.
+      const audiences = await audience.audiencesForSubjects('watchlist', [watchlistId]);
       const items = await repo.listByWatchlistForUser(userId, watchlistId);
       return {
         id: watchlistId,
         name: trimmed,
         isDefault: false,
         itemCount: items.length,
-        audience: audienceState?.audience ?? 'private',
+        audience: audiences.get(watchlistId) ?? 'private',
       };
     },
 

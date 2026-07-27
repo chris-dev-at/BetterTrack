@@ -50,6 +50,7 @@ import type {
 } from '../../data/repositories/userFollowsRepository';
 import { badRequest, notFound } from '../../errors';
 import type { Logger } from '../../logger';
+import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { ConglomerateService } from '../conglomerate/conglomerateService';
 import type { IdeasService } from '../ideas/ideasService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -93,6 +94,7 @@ export interface SocialServiceDeps {
   /** The central notification pipeline (#368) — friend.request/accepted enter here. */
   notify: NotificationCenter;
   logger?: Logger;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'runAllowedMany'>;
 }
 
 export interface SocialService {
@@ -325,6 +327,16 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     return toFriendGroup(found);
   }
 
+  async function authorizeSharedItem(viewerId: string, kind: ShareKind, subjectId: string) {
+    return kind === 'portfolio'
+      ? audience.authorizePortfolioRead(viewerId, subjectId)
+      : kind === 'conglomerate'
+        ? audience.authorizeConglomerateRead(viewerId, subjectId)
+        : kind === 'idea'
+          ? audience.authorizeIdeaRead(viewerId, subjectId)
+          : audience.authorizeWatchlistRead(viewerId, subjectId);
+  }
+
   // Owner-scoped read-view builders, reused by both the friend endpoints and the
   // public-link resolver so the two never diverge (authorization differs; the
   // rendered read-only view is identical).
@@ -399,6 +411,148 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         },
       })),
     };
+  }
+
+  async function loadSharedWithMeRows(userId: string) {
+    const [portfolioRows, conglomerateRows, watchlistRows, ideaRows, activityPrefs] =
+      await Promise.all([
+        audience.listFriendPortfolios(userId),
+        audience.listFriendConglomerates(userId),
+        audience.listFriendWatchlists(userId),
+        audience.listFriendIdeas(userId),
+        profile.listActivityPrefs(userId),
+      ]);
+    return { portfolioRows, conglomerateRows, watchlistRows, ideaRows, activityPrefs };
+  }
+
+  type SharedWithMeRows = Awaited<ReturnType<typeof loadSharedWithMeRows>>;
+
+  function sharedWithMeOwnerIds(rows: SharedWithMeRows): string[] {
+    return [
+      ...new Set(
+        [
+          ...rows.portfolioRows,
+          ...rows.conglomerateRows,
+          ...rows.watchlistRows,
+          ...rows.ideaRows,
+        ].map((row) => row.ownerId),
+      ),
+    ];
+  }
+
+  async function buildSharedWithMeResponse(
+    rows: SharedWithMeRows,
+    opts?: { baseCurrency?: string },
+  ): Promise<SharedWithMeResponse> {
+    const alertsOn = (kind: ShareKind, subjectId: string): boolean =>
+      rows.activityPrefs.has(`${kind}:${subjectId}`);
+    const ownerFrom = (row: {
+      ownerId: string;
+      ownerUsername: string;
+      ownerProfileIcon: string | null;
+    }) => ({
+      id: row.ownerId,
+      username: row.ownerUsername,
+      profileIcon: coerceProfileIcon(row.ownerProfileIcon),
+    });
+    const portfolios = await Promise.all(
+      rows.portfolioRows.map(async (row) => {
+        const overview = await portfolio.getPortfolio(row.ownerId, row.portfolioId, {
+          baseCurrency: opts?.baseCurrency,
+        });
+        return {
+          portfolioId: row.portfolioId,
+          name: row.name,
+          owner: ownerFrom(row),
+          totalValueEur: overview.totals.totalValueEur,
+          activityAlertsEnabled: alertsOn('portfolio', row.portfolioId),
+        };
+      }),
+    );
+    const conglomerates = rows.conglomerateRows.map((row) => ({
+      conglomerateId: row.conglomerateId,
+      name: row.name,
+      owner: ownerFrom(row),
+      status: row.status,
+      positionCount: row.positionCount,
+      activityAlertsEnabled: alertsOn('conglomerate', row.conglomerateId),
+    }));
+    const watchlists = rows.watchlistRows.map((row) => ({
+      watchlistId: row.watchlistId,
+      name: row.name,
+      owner: ownerFrom(row),
+      itemCount: row.itemCount,
+      activityAlertsEnabled: alertsOn('watchlist', row.watchlistId),
+    }));
+    const ideas = rows.ideaRows.map((row) => ({
+      ideaId: row.ideaId,
+      name: row.name,
+      owner: ownerFrom(row),
+      hasThesis: row.hasThesis,
+      activityAlertsEnabled: alertsOn('idea', row.ideaId),
+    }));
+    return { portfolios, conglomerates, watchlists, ideas };
+  }
+
+  async function listSharedWithMeLocked(
+    userId: string,
+    opts?: { baseCurrency?: string },
+  ): Promise<SharedWithMeResponse> {
+    const initial = await loadSharedWithMeRows(userId);
+    if (!deps.paranoid) return buildSharedWithMeResponse(initial, opts);
+
+    // Candidate discovery happens before locking, then every authorization row
+    // is reloaded under viewer + owner locks. A share from an owner who was not
+    // in the candidate snapshot is omitted until the next read; returning a
+    // briefly stale list is safer than reading that owner's content unlocked.
+    const lockedOwnerIds = new Set(sharedWithMeOwnerIds(initial));
+    return deps.paranoid.runAllowedMany([userId, ...lockedOwnerIds], 'sharing', async () => {
+      const current = await loadSharedWithMeRows(userId);
+      const ownerWasLocked = (row: { ownerId: string }) => lockedOwnerIds.has(row.ownerId);
+      return buildSharedWithMeResponse(
+        {
+          ...current,
+          portfolioRows: current.portfolioRows.filter(ownerWasLocked),
+          conglomerateRows: current.conglomerateRows.filter(ownerWasLocked),
+          watchlistRows: current.watchlistRows.filter(ownerWasLocked),
+          ideaRows: current.ideaRows.filter(ownerWasLocked),
+        },
+        opts,
+      );
+    });
+  }
+
+  async function readSharedItemLocked<T, TShared extends { ownerId: string }>(
+    viewerId: string,
+    authorize: () => Promise<TShared | undefined>,
+    missing: () => Error,
+    read: (shared: TShared) => Promise<T>,
+  ): Promise<T> {
+    const candidate = await authorize();
+    if (!candidate) throw missing();
+    if (!deps.paranoid) return read(candidate);
+    return deps.paranoid.runAllowedMany([viewerId, candidate.ownerId], 'sharing', async () => {
+      const current = await authorize();
+      if (!current || current.ownerId !== candidate.ownerId) throw missing();
+      return read(current);
+    });
+  }
+
+  async function readPublicOwnerLocked<T>(
+    ownerId: string,
+    capability: 'publicProfile' | 'sharing',
+    missing: () => Error,
+    read: () => Promise<T>,
+  ): Promise<T> {
+    if (!deps.paranoid) return read();
+    try {
+      return await deps.paranoid.runAllowedMany([ownerId], capability, read);
+    } catch (error) {
+      // Anonymous/public reads preserve their indistinguishable not-found
+      // response; a privacy-mode change must never become an account oracle.
+      if (error instanceof ParanoidModeError) throw missing();
+      throw error;
+    }
   }
 
   /**
@@ -552,8 +706,13 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // reaches a non-friend (§6.9). Idempotent: re-adding is a no-op.
       if (!(await groups.ownsGroup(userId, groupId))) throw GROUP_NOT_FOUND();
       if (!(await groups.isFriend(userId, memberId))) throw NOT_A_FRIEND();
-      await groups.addMember(groupId, memberId);
-      return groupOrThrow(userId, groupId);
+      const add = async () => {
+        await groups.addMember(groupId, memberId);
+        return groupOrThrow(userId, groupId);
+      };
+      return deps.paranoid
+        ? deps.paranoid.runAllowedMany([userId, memberId], 'sharing', add)
+        : add();
     },
 
     async removeGroupMember(userId, groupId, memberId) {
@@ -564,28 +723,39 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
 
     async followUser(userId, targetId, opts) {
       if (userId === targetId) throw CANNOT_FOLLOW_SELF();
-      // The target must be a real, active, non-admin account. Validating first
-      // turns an unknown/admin/disabled id into a uniform 404 (never an FK crash),
-      // and keeps admins out of the social graph like friend requests do.
-      const target = await follows.findFollowTarget(targetId);
-      if (!target) throw FOLLOW_TARGET_NOT_FOUND();
-      // Follow eligibility (V4-P0b): a person is followable when they are the
-      // caller's FRIEND — the Friends-tab follow path, no public profile needed —
-      // OR they expose a public profile (the follow path for non-friends). A
-      // non-friend without a public profile has no follow surface and 404s here,
-      // with the same opaque "not a follow target" code as an unknown user so the
-      // check can't be used to probe friendships or profiles.
-      const followable =
-        (await repo.areFriends(userId, targetId)) || (await profile.isProfilePublic(targetId));
-      if (!followable) throw FOLLOW_TARGET_NOT_FOUND();
-      // Idempotent: a repeat follow is a silent no-op — following grants no access
-      // and emits nothing on its own, so there is nothing to re-fire. A repeat
-      // follow also never flips prefs; changing those is PATCH's job (#439/#455).
-      await follows.follow(userId, targetId, {
-        autoFollowItems: opts?.autoFollowItems,
-        notifyOnAlertCreate: opts?.notifyOnAlertCreate,
-        notifyOnAlertFire: opts?.notifyOnAlertFire,
-      });
+      // Preserve the existing opaque 404 for a statically missing/admin/disabled
+      // target. The same lookup runs again inside the transition lock below, so
+      // this compatibility precheck never becomes a check-then-write gap.
+      if (!(await follows.findFollowTarget(targetId))) throw FOLLOW_TARGET_NOT_FOUND();
+      const follow = async () => {
+        // The target must be a real, active, non-admin account. Validating first
+        // turns an unknown/admin/disabled id into a uniform 404 (never an FK crash),
+        // and keeps admins out of the social graph like friend requests do.
+        const target = await follows.findFollowTarget(targetId);
+        if (!target) throw FOLLOW_TARGET_NOT_FOUND();
+        // Follow eligibility (V4-P0b): a person is followable when they are the
+        // caller's FRIEND — the Friends-tab follow path, no public profile needed —
+        // OR they expose a public profile (the follow path for non-friends). A
+        // non-friend without a public profile has no follow surface and 404s here,
+        // with the same opaque "not a follow target" code as an unknown user so the
+        // check can't be used to probe friendships or profiles.
+        const followable =
+          (await repo.areFriends(userId, targetId)) || (await profile.isProfilePublic(targetId));
+        if (!followable) throw FOLLOW_TARGET_NOT_FOUND();
+        // Idempotent: a repeat follow is a silent no-op — following grants no access
+        // and emits nothing on its own, so there is nothing to re-fire. A repeat
+        // follow also never flips prefs; changing those is PATCH's job (#439/#455).
+        await follows.follow(userId, targetId, {
+          autoFollowItems: opts?.autoFollowItems,
+          notifyOnAlertCreate: opts?.notifyOnAlertCreate,
+          notifyOnAlertFire: opts?.notifyOnAlertFire,
+        });
+      };
+      if (deps.paranoid) {
+        await deps.paranoid.runAllowedMany([userId, targetId], 'sharing', follow);
+      } else {
+        await follow();
+      }
     },
 
     async unfollowUser(userId, targetId) {
@@ -628,7 +798,20 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // never 403). Idempotent afterwards, like the person-follow.
       const visible = await audience.authorizeItemFollowRead(userId, kind, subjectId);
       if (!visible) throw SUBJECT_NOT_FOUND();
-      await itemFollows.follow(userId, kind, subjectId);
+      const follow = async () => {
+        // Authorization is intentionally repeated after both account rows are
+        // locked. If enable won while the first lookup resolved the target, the
+        // guard rejects; if sharing changed, this re-read returns the same opaque
+        // 404 as every other shared-item path.
+        const current = await audience.authorizeItemFollowRead(userId, kind, subjectId);
+        if (!current || current.ownerId !== visible.ownerId) throw SUBJECT_NOT_FOUND();
+        await itemFollows.follow(userId, kind, subjectId);
+      };
+      if (deps.paranoid) {
+        await deps.paranoid.runAllowedMany([userId, visible.ownerId], 'sharing', follow);
+      } else {
+        await follow();
+      }
     },
 
     async unfollowItem(userId, kind, subjectId) {
@@ -639,138 +822,120 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async listItemFollows(userId) {
-      // Visibility is re-derived through the enforcement layer PER ROW at read
-      // time (§6.9 no-caching): an item that was unshared/narrowed/deleted or
-      // whose owner vanished renders as the chat-chip-style `viewable: false`
-      // shell — subjectId only, no name/owner — never a stale view.
-      const rows = await itemFollows.list(userId);
-      const items: FollowedItem[] = await Promise.all(
-        rows.map(async (row: ItemFollowListRow): Promise<FollowedItem> => {
-          const base = {
-            kind: row.kind,
-            subjectId: row.subjectId,
-            followedAt: row.createdAt.toISOString(),
-          };
-          const visible = await audience.authorizeItemFollowRead(userId, row.kind, row.subjectId);
-          if (!visible) return { ...base, viewable: false, name: null, owner: null, via: null };
-          return {
-            ...base,
-            viewable: true,
-            name: visible.name,
-            owner: {
-              id: visible.ownerId,
-              username: visible.ownerUsername,
-              profileIcon: coerceProfileIcon(visible.ownerProfileIcon),
-            },
-            via: visible.via,
-          };
-        }),
-      );
-      return { items };
+      const list = async (): Promise<ItemFollowsListResponse> => {
+        // Visibility is re-derived through the enforcement layer PER ROW at read
+        // time (§6.9 no-caching): an item that was unshared/narrowed/deleted or
+        // whose owner vanished renders as the chat-chip-style `viewable: false`
+        // shell — subjectId only, no name/owner — never a stale view.
+        const rows = await itemFollows.list(userId);
+        const items: FollowedItem[] = await Promise.all(
+          rows.map(async (row: ItemFollowListRow): Promise<FollowedItem> => {
+            const base = {
+              kind: row.kind,
+              subjectId: row.subjectId,
+              followedAt: row.createdAt.toISOString(),
+            };
+            const hidden = (): FollowedItem => ({
+              ...base,
+              viewable: false,
+              name: null,
+              owner: null,
+              via: null,
+            });
+            const candidate = await audience.authorizeItemFollowRead(
+              userId,
+              row.kind,
+              row.subjectId,
+            );
+            if (!candidate) return hidden();
+            const render = async (): Promise<FollowedItem> => {
+              const visible = await audience.authorizeItemFollowRead(
+                userId,
+                row.kind,
+                row.subjectId,
+              );
+              if (!visible || visible.ownerId !== candidate.ownerId) return hidden();
+              return {
+                ...base,
+                viewable: true,
+                name: visible.name,
+                owner: {
+                  id: visible.ownerId,
+                  username: visible.ownerUsername,
+                  profileIcon: coerceProfileIcon(visible.ownerProfileIcon),
+                },
+                via: visible.via,
+              };
+            };
+            if (!deps.paranoid) return render();
+            try {
+              return await deps.paranoid.runAllowedMany([candidate.ownerId], 'sharing', render);
+            } catch (error) {
+              if (error instanceof ParanoidModeError) return hidden();
+              throw error;
+            }
+          }),
+        );
+        return { items };
+      };
+      return deps.paranoid ? deps.paranoid.runAllowedMany([userId], 'sharing', list) : list();
     },
 
     async listSharedWithMe(userId, opts) {
-      // Every list is authorization-derived by the enforcement layer (friendship
-      // AND audience, in the SQL join), so unfriending or narrowing instantly
-      // drops the row — nothing to invalidate. The viewer's activity-alert prefs
-      // are stamped on top (a pure preference; delivery is #368).
-      const [portfolioRows, conglomerateRows, watchlistRows, ideaRows, activityPrefs] =
-        await Promise.all([
-          audience.listFriendPortfolios(userId),
-          audience.listFriendConglomerates(userId),
-          audience.listFriendWatchlists(userId),
-          audience.listFriendIdeas(userId),
-          profile.listActivityPrefs(userId),
-        ]);
-      const alertsOn = (kind: ShareKind, subjectId: string): boolean =>
-        activityPrefs.has(`${kind}:${subjectId}`);
-      const ownerFrom = (row: {
-        ownerId: string;
-        ownerUsername: string;
-        ownerProfileIcon: string | null;
-      }) => ({
-        id: row.ownerId,
-        username: row.ownerUsername,
-        profileIcon: coerceProfileIcon(row.ownerProfileIcon),
-      });
-      const portfolios = await Promise.all(
-        portfolioRows.map(async (row) => {
-          const overview = await portfolio.getPortfolio(row.ownerId, row.portfolioId, {
-            baseCurrency: opts?.baseCurrency,
-          });
-          return {
-            portfolioId: row.portfolioId,
-            name: row.name,
-            owner: ownerFrom(row),
-            totalValueEur: overview.totals.totalValueEur,
-            activityAlertsEnabled: alertsOn('portfolio', row.portfolioId),
-          };
-        }),
-      );
-      const conglomerates = conglomerateRows.map((row) => ({
-        conglomerateId: row.conglomerateId,
-        name: row.name,
-        owner: ownerFrom(row),
-        status: row.status,
-        positionCount: row.positionCount,
-        activityAlertsEnabled: alertsOn('conglomerate', row.conglomerateId),
-      }));
-      const watchlists = watchlistRows.map((row) => ({
-        watchlistId: row.watchlistId,
-        name: row.name,
-        owner: ownerFrom(row),
-        itemCount: row.itemCount,
-        activityAlertsEnabled: alertsOn('watchlist', row.watchlistId),
-      }));
-      const ideas = ideaRows.map((row) => ({
-        ideaId: row.ideaId,
-        name: row.name,
-        owner: ownerFrom(row),
-        hasThesis: row.hasThesis,
-        activityAlertsEnabled: alertsOn('idea', row.ideaId),
-      }));
-      return { portfolios, conglomerates, watchlists, ideas };
+      return listSharedWithMeLocked(userId, opts);
     },
 
     async getSharedPortfolio(viewerId, portfolioId, opts) {
-      const shared = await audience.authorizePortfolioRead(viewerId, portfolioId);
-      if (!shared) throw SHARED_NOT_FOUND();
-      return buildPortfolioView(
-        {
-          id: shared.ownerId,
-          username: shared.ownerUsername,
-          profileIcon: shared.ownerProfileIcon,
-        },
-        portfolioId,
-        shared.name,
-        opts,
+      return readSharedItemLocked(
+        viewerId,
+        () => audience.authorizePortfolioRead(viewerId, portfolioId),
+        SHARED_NOT_FOUND,
+        (shared) =>
+          buildPortfolioView(
+            {
+              id: shared.ownerId,
+              username: shared.ownerUsername,
+              profileIcon: shared.ownerProfileIcon,
+            },
+            portfolioId,
+            shared.name,
+            opts,
+          ),
       );
     },
 
     async getSharedConglomerate(viewerId, conglomerateId) {
-      const shared = await audience.authorizeConglomerateRead(viewerId, conglomerateId);
-      if (!shared) throw SHARED_CONGLOMERATE_NOT_FOUND();
-      return buildConglomerateView(
-        {
-          id: shared.ownerId,
-          username: shared.ownerUsername,
-          profileIcon: shared.ownerProfileIcon,
-        },
-        conglomerateId,
+      return readSharedItemLocked(
+        viewerId,
+        () => audience.authorizeConglomerateRead(viewerId, conglomerateId),
+        SHARED_CONGLOMERATE_NOT_FOUND,
+        (shared) =>
+          buildConglomerateView(
+            {
+              id: shared.ownerId,
+              username: shared.ownerUsername,
+              profileIcon: shared.ownerProfileIcon,
+            },
+            conglomerateId,
+          ),
       );
     },
 
     async getSharedWatchlist(viewerId, watchlistId) {
-      const shared = await audience.authorizeWatchlistRead(viewerId, watchlistId);
-      if (!shared) throw SHARED_WATCHLIST_NOT_FOUND();
-      return buildWatchlistView(
-        {
-          id: shared.ownerId,
-          username: shared.ownerUsername,
-          profileIcon: shared.ownerProfileIcon,
-        },
-        watchlistId,
-        shared.name,
+      return readSharedItemLocked(
+        viewerId,
+        () => audience.authorizeWatchlistRead(viewerId, watchlistId),
+        SHARED_WATCHLIST_NOT_FOUND,
+        (shared) =>
+          buildWatchlistView(
+            {
+              id: shared.ownerId,
+              username: shared.ownerUsername,
+              profileIcon: shared.ownerProfileIcon,
+            },
+            watchlistId,
+            shared.name,
+          ),
       );
     },
 
@@ -887,18 +1052,29 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async getByPublicLink(token) {
-      const resolved = await audience.resolvePublicLink(token);
-      if (!resolved) throw LINK_NOT_FOUND();
-      return buildLinkResponse(
-        {
-          id: resolved.ownerId,
-          username: resolved.ownerUsername,
-          profileIcon: resolved.ownerProfileIcon,
-        },
-        resolved.kind,
-        resolved.subjectId,
-        resolved.name,
-      );
+      const candidate = await audience.resolvePublicLink(token);
+      if (!candidate) throw LINK_NOT_FOUND();
+      return readPublicOwnerLocked(candidate.ownerId, 'sharing', LINK_NOT_FOUND, async () => {
+        const resolved = await audience.resolvePublicLink(token);
+        if (
+          !resolved ||
+          resolved.ownerId !== candidate.ownerId ||
+          resolved.kind !== candidate.kind ||
+          resolved.subjectId !== candidate.subjectId
+        ) {
+          throw LINK_NOT_FOUND();
+        }
+        return buildLinkResponse(
+          {
+            id: resolved.ownerId,
+            username: resolved.ownerUsername,
+            profileIcon: resolved.ownerProfileIcon,
+          },
+          resolved.kind,
+          resolved.subjectId,
+          resolved.name,
+        );
+      });
     },
 
     async setActivityAlert(viewerId, kind, subjectId, enabled) {
@@ -906,97 +1082,124 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // the item — the same enforcement join every read uses. This keeps the
       // toggle from doubling as a probe for a private/unshared item (404, never
       // 403) and prevents stranded prefs on things you can't see.
-      const authorized =
-        kind === 'portfolio'
-          ? await audience.authorizePortfolioRead(viewerId, subjectId)
-          : kind === 'conglomerate'
-            ? await audience.authorizeConglomerateRead(viewerId, subjectId)
-            : kind === 'idea'
-              ? await audience.authorizeIdeaRead(viewerId, subjectId)
-              : await audience.authorizeWatchlistRead(viewerId, subjectId);
+      const authorized = await authorizeSharedItem(viewerId, kind, subjectId);
       if (!authorized) throw SUBJECT_NOT_FOUND();
-      await profile.setActivityPref(viewerId, kind, subjectId, enabled);
-      return { kind, subjectId, enabled };
+      const update = async () => {
+        const current = await authorizeSharedItem(viewerId, kind, subjectId);
+        if (!current || current.ownerId !== authorized.ownerId) throw SUBJECT_NOT_FOUND();
+        await profile.setActivityPref(viewerId, kind, subjectId, enabled);
+        return { kind, subjectId, enabled };
+      };
+      return deps.paranoid
+        ? deps.paranoid.runAllowedMany([viewerId, authorized.ownerId], 'sharing', update)
+        : update();
     },
 
     getProfileSettings: (userId) => loadProfileSettings(userId),
 
     async updateProfileSettings(userId, input) {
-      // §16 friction ladder, mirrored server-side: enabling a public profile needs
-      // the explicit acknowledgment, defense-in-depth behind the UI warning.
-      if (input.isPublic && input.acknowledgePublic !== true) throw PROFILE_ACK_REQUIRED();
-      // `bio: undefined` (omitted) leaves the current bio untouched; `null`/empty
-      // clears it. Only touch the column when the caller actually sent a bio.
-      let bio: string | null | undefined;
-      if (input.bio !== undefined) {
-        const trimmed = input.bio?.trim() ?? '';
-        bio = trimmed.length > 0 ? trimmed.slice(0, PROFILE_BIO_MAX) : null;
-      }
-      const current = await profile.getProfileSettings(userId);
-      if (!current) throw PROFILE_NOT_FOUND();
-      await profile.updateProfileSettings(userId, {
-        isPublic: input.isPublic,
-        bio: bio === undefined ? current.bio : bio,
-      });
-      // Profile-icon picker (§13.5 V5-P0c). `undefined` = untouched; `null` clears
-      // the choice; a valid id from the finite allow-list persists. The service
-      // re-validates the id against {@link profileIconIdSchema} — the request
-      // body already did, but defense-in-depth keeps a hand-crafted call honest.
-      if (input.profileIcon !== undefined) {
-        if (input.profileIcon === null) {
-          await userRepo.setProfileIcon(userId, null);
-        } else {
-          const parsed = profileIconIdSchema.safeParse(input.profileIcon);
-          if (!parsed.success) throw INVALID_PROFILE_ICON();
-          await userRepo.setProfileIcon(userId, parsed.data);
+      const update = async () => {
+        // §16 friction ladder, mirrored server-side: enabling a public profile needs
+        // the explicit acknowledgment, defense-in-depth behind the UI warning.
+        if (input.isPublic && input.acknowledgePublic !== true) throw PROFILE_ACK_REQUIRED();
+        // `bio: undefined` (omitted) leaves the current bio untouched; `null`/empty
+        // clears it. Only touch the column when the caller actually sent a bio.
+        let bio: string | null | undefined;
+        if (input.bio !== undefined) {
+          const trimmed = input.bio?.trim() ?? '';
+          bio = trimmed.length > 0 ? trimmed.slice(0, PROFILE_BIO_MAX) : null;
         }
-      }
-      return loadProfileSettings(userId);
+        const current = await profile.getProfileSettings(userId);
+        if (!current) throw PROFILE_NOT_FOUND();
+        await profile.updateProfileSettings(userId, {
+          isPublic: input.isPublic,
+          bio: bio === undefined ? current.bio : bio,
+        });
+        // Profile-icon picker (§13.5 V5-P0c). `undefined` = untouched; `null` clears
+        // the choice; a valid id from the finite allow-list persists. The service
+        // re-validates the id against {@link profileIconIdSchema} — the request
+        // body already did, but defense-in-depth keeps a hand-crafted call honest.
+        if (input.profileIcon !== undefined) {
+          if (input.profileIcon === null) {
+            await userRepo.setProfileIcon(userId, null);
+          } else {
+            const parsed = profileIconIdSchema.safeParse(input.profileIcon);
+            if (!parsed.success) throw INVALID_PROFILE_ICON();
+            await userRepo.setProfileIcon(userId, parsed.data);
+          }
+        }
+        return loadProfileSettings(userId);
+      };
+
+      // The profile-icon/private-profile path stays available. A public opt-in
+      // holds the account transition lock through the final write so an update
+      // that started before enable cannot republish after enable commits.
+      return input.isPublic && deps.paranoid
+        ? deps.paranoid.runAllowedMany([userId], 'publicProfile', update)
+        : update();
     },
 
     async getPublicProfile(username) {
-      const owner = await profile.findPublicProfileOwner(username);
-      if (!owner) throw PROFILE_NOT_FOUND();
-      const [items, followerCount] = await Promise.all([
-        audience.listPublicProfileItems(owner.ownerId),
-        follows.countFollowers(owner.ownerId),
-      ]);
-      const portfolios = await Promise.all(
-        items.portfolios.map(async (p) => {
-          const overview = await portfolio.getPortfolio(owner.ownerId, p.portfolioId);
+      const candidate = await profile.findPublicProfileOwner(username);
+      if (!candidate) throw PROFILE_NOT_FOUND();
+      return readPublicOwnerLocked(
+        candidate.ownerId,
+        'publicProfile',
+        PROFILE_NOT_FOUND,
+        async () => {
+          const owner = await profile.findPublicProfileOwner(username);
+          if (!owner || owner.ownerId !== candidate.ownerId) throw PROFILE_NOT_FOUND();
+          const [items, followerCount] = await Promise.all([
+            audience.listPublicProfileItems(owner.ownerId),
+            follows.countFollowers(owner.ownerId),
+          ]);
+          const portfolios = await Promise.all(
+            items.portfolios.map(async (p) => {
+              const overview = await portfolio.getPortfolio(owner.ownerId, p.portfolioId);
+              return {
+                portfolioId: p.portfolioId,
+                name: p.name,
+                totalValueEur: overview.totals.totalValueEur,
+              };
+            }),
+          );
           return {
-            portfolioId: p.portfolioId,
-            name: p.name,
-            totalValueEur: overview.totals.totalValueEur,
+            // The owner id is public-safe and lets a logged-in visitor follow the
+            // person straight from their profile (#438).
+            userId: owner.ownerId,
+            username: owner.username,
+            bio: owner.bio,
+            profileIcon: coerceProfileIcon(owner.profileIcon),
+            followerCount,
+            portfolios,
+            conglomerates: items.conglomerates,
+            watchlists: items.watchlists,
           };
-        }),
+        },
       );
-      return {
-        // The owner id is public-safe and lets a logged-in visitor follow the
-        // person straight from their profile (#438).
-        userId: owner.ownerId,
-        username: owner.username,
-        bio: owner.bio,
-        profileIcon: coerceProfileIcon(owner.profileIcon),
-        followerCount,
-        portfolios,
-        conglomerates: items.conglomerates,
-        watchlists: items.watchlists,
-      };
     },
 
     async getPublicProfileItem(username, kind, subjectId) {
-      const owner = await profile.findPublicProfileOwner(username);
-      if (!owner) throw PROFILE_NOT_FOUND();
-      // The SAME `public_link` gate as the listing — a non-public (or non-owned,
-      // or dead) item 404s, so the drill-in can never render a private item.
-      const item = await audience.authorizePublicItemRead(owner.ownerId, kind, subjectId);
-      if (!item) throw PROFILE_NOT_FOUND();
-      return buildLinkResponse(
-        { id: owner.ownerId, username: owner.username, profileIcon: owner.profileIcon },
-        kind,
-        subjectId,
-        item.name,
+      const candidate = await profile.findPublicProfileOwner(username);
+      if (!candidate) throw PROFILE_NOT_FOUND();
+      return readPublicOwnerLocked(
+        candidate.ownerId,
+        'publicProfile',
+        PROFILE_NOT_FOUND,
+        async () => {
+          const owner = await profile.findPublicProfileOwner(username);
+          if (!owner || owner.ownerId !== candidate.ownerId) throw PROFILE_NOT_FOUND();
+          // The SAME `public_link` gate as the listing — a non-public (or non-owned,
+          // or dead) item 404s, so the drill-in can never render a private item.
+          const item = await audience.authorizePublicItemRead(owner.ownerId, kind, subjectId);
+          if (!item) throw PROFILE_NOT_FOUND();
+          return buildLinkResponse(
+            { id: owner.ownerId, username: owner.username, profileIcon: owner.profileIcon },
+            kind,
+            subjectId,
+            item.name,
+          );
+        },
       );
     },
   };

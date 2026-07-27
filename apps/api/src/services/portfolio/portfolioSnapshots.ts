@@ -83,6 +83,10 @@ export interface PortfolioSnapshotServiceDeps {
    * refill covers correctness either way; the job only accelerates it.
    */
   requestRecompute?: (portfolioId: string) => Promise<void>;
+  /** Fail-safe for stale reads/jobs after a user enters paranoid mode. */
+  isParanoidPortfolio?: (portfolioId: string) => Promise<boolean>;
+  /** Hold the account transition lock across each snapshot write path. */
+  runIfAllowedPortfolio?: (portfolioId: string, action: () => Promise<void>) => Promise<boolean>;
   logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
@@ -730,41 +734,60 @@ export function createPortfolioSnapshotService(
   }
 
   async function invalidate(portfolioId: string, fromDay: string): Promise<void> {
-    // Dirty marker BEFORE the row delete: a reader that interleaves sees the
-    // marker and falls back to the engine rather than serving a gap.
-    await snapshotRepo.markDirty(portfolioId, fromDay);
-    await snapshotRepo.deleteFrom(portfolioId, fromDay);
-    if (requestRecompute) {
-      try {
-        await requestRecompute(portfolioId);
-      } catch (err) {
-        // The read path's lazy refill covers correctness; log and move on.
-        logger?.warn({ err, portfolioId }, 'snapshot recompute enqueue failed');
+    const apply = async () => {
+      if (await deps.isParanoidPortfolio?.(portfolioId)) return;
+      // Dirty marker BEFORE the row delete: a reader that interleaves sees the
+      // marker and falls back to the engine rather than serving a gap.
+      await snapshotRepo.markDirty(portfolioId, fromDay);
+      await snapshotRepo.deleteFrom(portfolioId, fromDay);
+      if (requestRecompute) {
+        try {
+          await requestRecompute(portfolioId);
+        } catch (err) {
+          // The read path's lazy refill covers correctness; log and move on.
+          logger?.warn({ err, portfolioId }, 'snapshot recompute enqueue failed');
+        }
       }
+    };
+    if (deps.runIfAllowedPortfolio) {
+      await deps.runIfAllowedPortfolio(portfolioId, apply);
+    } else {
+      await apply();
     }
   }
 
   async function recompute(portfolioId: string, opts: RecomputeOptions = {}): Promise<void> {
-    const state = await snapshotRepo.getState(portfolioId);
-    const artifacts = await computeArtifacts(portfolioId);
-    if (artifacts === null) {
-      // History vanished entirely (last transaction/movement deleted).
-      await snapshotRepo.clear(portfolioId);
-      return;
-    }
-    const result = await persist(
-      portfolioId,
-      artifacts,
-      { updatedAt: state?.updatedAt ?? null, dirtyFrom: state?.dirtyFrom ?? null },
-      opts.healFrom ?? null,
-    );
-    if (!result.applied) {
-      logger?.info({ portfolioId }, 'snapshot recompute raced an invalidation; skipped persist');
+    const apply = async () => {
+      if (await deps.isParanoidPortfolio?.(portfolioId)) return;
+      const state = await snapshotRepo.getState(portfolioId);
+      const artifacts = await computeArtifacts(portfolioId);
+      if (artifacts === null) {
+        // History vanished entirely (last transaction/movement deleted).
+        await snapshotRepo.clear(portfolioId);
+        return;
+      }
+      const result = await persist(
+        portfolioId,
+        artifacts,
+        { updatedAt: state?.updatedAt ?? null, dirtyFrom: state?.dirtyFrom ?? null },
+        opts.healFrom ?? null,
+      );
+      if (!result.applied) {
+        logger?.info({ portfolioId }, 'snapshot recompute raced an invalidation; skipped persist');
+      }
+    };
+    if (deps.runIfAllowedPortfolio) {
+      await deps.runIfAllowedPortfolio(portfolioId, apply);
+    } else {
+      await apply();
     }
   }
 
   return {
     async getSeries(portfolioId) {
+      if (await deps.isParanoidPortfolio?.(portfolioId)) {
+        return { points: [], flows: [], assets: [], fromSnapshots: false };
+      }
       // State FIRST: everything computed after this read is at least as fresh,
       // so the persist CAS can reject any computation an invalidation raced.
       const state = await snapshotRepo.getState(portfolioId);
@@ -827,6 +850,7 @@ export function createPortfolioSnapshotService(
     },
 
     async getOverlays(portfolioId) {
+      if (await deps.isParanoidPortfolio?.(portfolioId)) return [];
       const txns = await transactionRepo.listForPortfolio(portfolioId);
       if (txns.length === 0) return [];
       const today = todayIso();

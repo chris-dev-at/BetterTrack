@@ -71,6 +71,7 @@ import type { MirrorChainMemberRow, MirrorChainOpRow, MirrorChainRow } from '../
 import { ApiError, badRequest, forbidden, notFound } from '../../errors';
 import type { EventBus, MirrorNotificationEvent } from '../../events';
 import type { Logger } from '../../logger';
+import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { PortfolioService } from '../portfolio/portfolioService';
@@ -192,6 +193,8 @@ export interface MirrorServiceDeps {
   logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
+  /** Defense in depth: paranoid accounts cannot create, join, or mutate chains. */
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'runAllowedMany'>;
 }
 
 export interface ReplicateChainResult {
@@ -502,6 +505,26 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   } = deps;
   const now = deps.now ?? Date.now;
   const maxMembers = deps.maxMembers ?? MIRROR_MAX_MEMBERS;
+  const assertMirrorAllowed = async (userId: string) => {
+    await deps.paranoid?.assertAllowed(userId, 'mirrorchain');
+  };
+  const runMirrorAllowedMany = <T>(
+    userIds: readonly string[],
+    action: () => Promise<T>,
+  ): Promise<T> =>
+    deps.paranoid ? deps.paranoid.runAllowedMany(userIds, 'mirrorchain', action) : action();
+  const runMirrorIfAllowedMany = async (
+    userIds: readonly string[],
+    action: () => Promise<void>,
+  ): Promise<boolean> => {
+    try {
+      await runMirrorAllowedMany(userIds, action);
+      return true;
+    } catch (error) {
+      if (error instanceof ParanoidModeError) return false;
+      throw error;
+    }
+  };
 
   // ── Infrastructure ─────────────────────────────────────────────────────────
 
@@ -1691,6 +1714,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async convertToChain(userId, portfolioId, opts) {
+      await assertMirrorAllowed(userId);
       const row = await portfolioRepo.findByIdForUser(userId, portfolioId);
       if (!row) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
       if (await repo.findActiveMembershipByPortfolio(portfolioId)) {
@@ -1950,87 +1974,92 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async attachMemberCopy(chainId, userId, opts) {
-      const chain = await repo.getChain(chainId);
-      if (!chain || chain.status !== 'active') {
-        throw notFound('Group portfolio not found.', 'MIRROR_CHAIN_NOT_FOUND');
-      }
-      if (await repo.findActiveMembership(chainId, userId)) {
-        throw badRequest('Already a member of this group portfolio.', 'MIRROR_ALREADY_MEMBER');
-      }
-      const username = await usernameOf(userId);
-
-      // The chain's Main identity: every copy's Main is linked to it (§8) —
-      // derive it from any active member's copy (there is always ≥1).
-      const existingMembers = await repo.listActiveMembers(chainId);
-      const anchor = existingMembers.find((m) => m.portfolioId);
-      if (!anchor?.portfolioId) {
-        throw badRequest('This group portfolio has no active copies to join.', 'MIRROR_NO_MEMBERS');
-      }
-      const anchorMain = await cashSourceRepo.getOrCreateMain(anchor.portfolioId);
-      const mainLink = await repo.findMirrorRowByLocal('cash_source', anchorMain.id);
-      if (!mainLink) throw new Error(`mirror: chain ${chainId} has no linked Main source`);
-
-      // Auto-created, auto-named copy with the §1 collision suffix (§4).
-      let copyId: string | undefined;
-      for (let attempt = 1; attempt <= NAME_SUFFIX_ATTEMPTS && !copyId; attempt++) {
-        const name = attempt === 1 ? chain.name : `${chain.name} (${attempt})`;
-        try {
-          copyId = (await portfolio.createPortfolio(userId, { name })).id;
-        } catch (err) {
-          if (!isApiError(err, 'PORTFOLIO_NAME_TAKEN', 'CONFLICT')) throw err;
+      return runMirrorAllowedMany([userId], async () => {
+        const chain = await repo.getChain(chainId);
+        if (!chain || chain.status !== 'active') {
+          throw notFound('Group portfolio not found.', 'MIRROR_CHAIN_NOT_FOUND');
         }
-      }
-      if (!copyId) {
-        throw new Error(`mirror: could not find a free portfolio name for "${chain.name}"`);
-      }
+        if (await repo.findActiveMembership(chainId, userId)) {
+          throw badRequest('Already a member of this group portfolio.', 'MIRROR_ALREADY_MEMBER');
+        }
+        const username = await usernameOf(userId);
 
-      // Chain Main ↔ copy Main (§8): pre-linked so genesis' Main `source.create`
-      // op replays as an idempotent skip — one code path, no special casing.
-      const copyMain = await cashSourceRepo.getOrCreateMain(copyId);
-      await repo.insertMirrorRow({
-        chainId,
-        kind: 'cash_source',
-        mirrorId: mainLink.mirrorId,
-        portfolioId: copyId,
-        localId: copyMain.id,
-        createdBy: chain.createdBy,
-        createdByUsername: chain.createdByUsername,
-      });
+        // The chain's Main identity: every copy's Main is linked to it (§8) —
+        // derive it from any active member's copy (there is always ≥1).
+        const existingMembers = await repo.listActiveMembers(chainId);
+        const anchor = existingMembers.find((m) => m.portfolioId);
+        if (!anchor?.portfolioId) {
+          throw badRequest(
+            'This group portfolio has no active copies to join.',
+            'MIRROR_NO_MEMBERS',
+          );
+        }
+        const anchorMain = await cashSourceRepo.getOrCreateMain(anchor.portfolioId);
+        const mainLink = await repo.findMirrorRowByLocal('cash_source', anchorMain.id);
+        if (!mainLink) throw new Error(`mirror: chain ${chainId} has no linked Main source`);
 
-      const member = await repo.insertMember({
-        chainId,
-        userId,
-        username,
-        portfolioId: copyId,
-        role: opts?.role ?? 'member',
-        invitedBy: opts?.invitedBy ?? null,
-      });
-      const joined = await repo.appendOpsChecked(chainId, userId, [
-        {
-          kind: 'member.joined',
-          actorUserId: userId,
-          actorUsername: username,
-          payload: {
-            opVersion: MIRROR_OP_VERSION,
+        // Auto-created, auto-named copy with the §1 collision suffix (§4).
+        let copyId: string | undefined;
+        for (let attempt = 1; attempt <= NAME_SUFFIX_ATTEMPTS && !copyId; attempt++) {
+          const name = attempt === 1 ? chain.name : `${chain.name} (${attempt})`;
+          try {
+            copyId = (await portfolio.createPortfolio(userId, { name })).id;
+          } catch (err) {
+            if (!isApiError(err, 'PORTFOLIO_NAME_TAKEN', 'CONFLICT')) throw err;
+          }
+        }
+        if (!copyId) {
+          throw new Error(`mirror: could not find a free portfolio name for "${chain.name}"`);
+        }
+
+        // Chain Main ↔ copy Main (§8): pre-linked so genesis' Main `source.create`
+        // op replays as an idempotent skip — one code path, no special casing.
+        const copyMain = await cashSourceRepo.getOrCreateMain(copyId);
+        await repo.insertMirrorRow({
+          chainId,
+          kind: 'cash_source',
+          mirrorId: mainLink.mirrorId,
+          portfolioId: copyId,
+          localId: copyMain.id,
+          createdBy: chain.createdBy,
+          createdByUsername: chain.createdByUsername,
+        });
+
+        const member = await repo.insertMember({
+          chainId,
+          userId,
+          username,
+          portfolioId: copyId,
+          role: opts?.role ?? 'member',
+          invitedBy: opts?.invitedBy ?? null,
+        });
+        const joined = await repo.appendOpsChecked(chainId, userId, [
+          {
             kind: 'member.joined',
-            userId,
-            username,
-            role: opts?.role ?? 'member',
+            actorUserId: userId,
+            actorUsername: username,
+            payload: {
+              opVersion: MIRROR_OP_VERSION,
+              kind: 'member.joined',
+              userId,
+              username,
+              role: opts?.role ?? 'member',
+            },
           },
-        },
-      ]);
-      if ('refused' in joined) {
-        // The membership row was inserted just above, so any refusal here is a
-        // bug-level inconsistency — fail loudly rather than leave a member
-        // whose join never reached the oplog.
-        throw new Error(
-          `mirror: member.joined append refused (${joined.refused}) for chain ${chainId}`,
-        );
-      }
-      // Join = plain oplog replay through the joiner's services (§2), driven by
-      // the replicate job; the copy shows its syncing state via the watermark.
-      await scheduleReplicate(chainId);
-      return { member, portfolioId: copyId };
+        ]);
+        if ('refused' in joined) {
+          // The membership row was inserted just above, so any refusal here is a
+          // bug-level inconsistency — fail loudly rather than leave a member
+          // whose join never reached the oplog.
+          throw new Error(
+            `mirror: member.joined append refused (${joined.refused}) for chain ${chainId}`,
+          );
+        }
+        // Join = plain oplog replay through the joiner's services (§2), driven by
+        // the replicate job; the copy shows its syncing state via the watermark.
+        await scheduleReplicate(chainId);
+        return { member, portfolioId: copyId };
+      });
     },
 
     async replicateChain(chainId) {
@@ -2043,21 +2072,26 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         if (!member.userId || !member.portfolioId) continue;
         if (member.appliedSeq >= chain.lastSeq) continue;
         try {
-          // Each copy's replay holds the same per-chain lock the submit path
-          // does — never a second applier next to a submit's origin catch-up.
-          // The membership is re-read INSIDE the lock (the pre-lock rows are
-          // only a cheap skip): a concurrent submit may have advanced this
-          // copy's watermark while we waited.
-          applied += await withChainLock(
-            chainId,
-            async () => {
-              const fresh = await repo.findActiveMembership(chainId, member.userId!);
-              if (!fresh?.portfolioId) return 0;
-              const ops = await repo.listOpsSince(chainId, fresh.appliedSeq);
-              return applyOpsToMember(fresh, ops);
-            },
-            REPLICATE_LOCK_WAIT_MS,
-          );
+          let memberApplied = 0;
+          const ran = await runMirrorIfAllowedMany([member.userId], async () => {
+            // Each copy's replay holds the same per-chain lock the submit path
+            // does — never a second applier next to a submit's origin catch-up.
+            // The membership is re-read INSIDE both locks (the pre-lock rows are
+            // only a cheap skip): a concurrent submit may have advanced this
+            // copy's watermark while we waited.
+            memberApplied = await withChainLock(
+              chainId,
+              async () => {
+                const fresh = await repo.findActiveMembership(chainId, member.userId!);
+                if (!fresh?.portfolioId) return 0;
+                const ops = await repo.listOpsSince(chainId, fresh.appliedSeq);
+                return applyOpsToMember(fresh, ops);
+              },
+              REPLICATE_LOCK_WAIT_MS,
+            );
+          });
+          if (!ran) continue;
+          applied += memberApplied;
         } catch (err) {
           // This copy lags (never diverges, §2) — the others still catch up.
           failures.push({ memberId: member.id, err });
@@ -2104,9 +2138,13 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         if (!stalled.userId || !stalled.portfolioId) continue;
         if (stalled.appliedSeq >= chain.lastSeq) continue; // caught up — not stalled
         const refId = `${stalled.userId}:${stalled.appliedSeq}`;
-        await emitMirror('mirror.sync_stalled', stalled.userId, chain, stalled.username, refId);
+        await runMirrorIfAllowedMany([stalled.userId], async () => {
+          await emitMirror('mirror.sync_stalled', stalled.userId!, chain, stalled.username, refId);
+        });
         if (owner?.userId && owner.userId !== stalled.userId) {
-          await emitMirror('mirror.sync_stalled', owner.userId, chain, stalled.username, refId);
+          await runMirrorIfAllowedMany([owner.userId], async () => {
+            await emitMirror('mirror.sync_stalled', owner.userId!, chain, stalled.username, refId);
+          });
         }
       }
     },
@@ -2114,6 +2152,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     // ── M3 membership lifecycle (design §§4–7, §11) ────────────────────────────
 
     async createChain(userId, name) {
+      await assertMirrorAllowed(userId);
       // "New group portfolio": a fresh empty portfolio becomes the origin copy,
       // then convert synthesizes just the chain.genesis (+ Main source.create).
       const created = await portfolio.createPortfolio(userId, { name });
@@ -2121,6 +2160,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async convertChain(userId, portfolioId, opts) {
+      await assertMirrorAllowed(userId);
       const { chain, member } = await service.convertToChain(userId, portfolioId, opts);
       await audit.record({
         actorId: userId,
@@ -2133,6 +2173,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async listChainsForUser(userId) {
+      await assertMirrorAllowed(userId);
       const memberships = await repo.listActiveMembershipsForUser(userId);
       const summaries: MirrorChainSummary[] = [];
       for (const member of memberships) {
@@ -2145,6 +2186,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async getMemberList(userId, chainId) {
+      await assertMirrorAllowed(userId);
       const chain = await repo.getChain(chainId);
       if (!chain) throw chainNotFound();
       // Severed members lose chain access (design §6): a non-active membership
@@ -2163,6 +2205,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async getActivity(userId, chainId, opts) {
+      await assertMirrorAllowed(userId);
       const chain = await repo.getChain(chainId);
       if (!chain) throw chainNotFound();
       const caller = await repo.findActiveMembership(chainId, userId);
@@ -2181,6 +2224,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async listInvites(userId) {
+      await assertMirrorAllowed(userId);
       const rows = await repo.listInvitesForUserDetailed(userId);
       const incoming: MirrorInvite[] = [];
       const outgoing: MirrorInvite[] = [];
@@ -2195,65 +2239,74 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async inviteMember(actorId, chainId, inviteeId) {
-      if (actorId === inviteeId) {
-        throw badRequest('You cannot invite yourself.', MIRROR_CANNOT_INVITE_SELF);
-      }
-      // Friends-only (design §4) — checked here at send AND again at accept.
-      if (!(await friendship.areFriends(actorId, inviteeId))) {
-        throw badRequest('You can only invite friends to a group portfolio.', MIRROR_NOT_FRIENDS);
-      }
-      const { chain, invite } = await withAuthorizedMember(
-        chainId,
-        actorId,
-        (actor) => {
-          if (!roleCan(actor.role, 'invite')) throw mirrorForbidden();
-        },
-        async ({ chain, members }) => {
-          if (members.some((m) => m.userId === inviteeId)) {
-            throw badRequest(
-              'That user is already a member of this group portfolio.',
-              'MIRROR_ALREADY_MEMBER',
-            );
-          }
-          // Cap enforced at send (design §4) — active members only.
-          if (members.length >= maxMembers) {
-            throw new ApiError(
-              409,
-              MIRROR_MEMBER_CAP_REACHED,
-              `This group portfolio is full (max ${maxMembers} members).`,
-            );
-          }
-          // Pending-unique per (chain, invitee); declining/expiry allows a
-          // re-invite (§4). An expired-but-not-yet-swept pending invite no longer
-          // blocks — retire it so the pending-unique slot frees for a fresh send.
-          const pending = await repo.findPendingInvite(chainId, inviteeId);
-          if (pending) {
-            if (inviteExpired(pending)) {
-              await repo.setInviteStatus(pending.id, 'expired', new Date(now()));
-            } else {
-              throw new ApiError(
-                409,
-                MIRROR_INVITE_EXISTS,
-                'That user already has a pending invite to this group portfolio.',
+      return runMirrorAllowedMany([actorId, inviteeId], async () => {
+        await assertMirrorAllowed(actorId);
+        await assertMirrorAllowed(inviteeId);
+        if (actorId === inviteeId) {
+          throw badRequest('You cannot invite yourself.', MIRROR_CANNOT_INVITE_SELF);
+        }
+        // Friends-only (design §4) — checked here at send AND again at accept.
+        if (!(await friendship.areFriends(actorId, inviteeId))) {
+          throw badRequest('You can only invite friends to a group portfolio.', MIRROR_NOT_FRIENDS);
+        }
+        const { chain, invite } = await withAuthorizedMember(
+          chainId,
+          actorId,
+          (actor) => {
+            if (!roleCan(actor.role, 'invite')) throw mirrorForbidden();
+          },
+          async ({ chain, members }) => {
+            if (members.some((m) => m.userId === inviteeId)) {
+              throw badRequest(
+                'That user is already a member of this group portfolio.',
+                'MIRROR_ALREADY_MEMBER',
               );
             }
-          }
-          const invite = await repo.createInvite({ chainId, fromUser: actorId, toUser: inviteeId });
-          return { chain, invite };
-        },
-      );
-      const inviterName = await usernameOf(actorId);
-      await emitMirror('mirror.invite', inviteeId, chain, inviterName, invite.id);
-      await audit.record({
-        actorId,
-        action: AuditAction.MirrorMemberInvited,
-        targetType: 'user',
-        targetId: inviteeId,
-        meta: { chainId, inviteId: invite.id },
+            // Cap enforced at send (design §4) — active members only.
+            if (members.length >= maxMembers) {
+              throw new ApiError(
+                409,
+                MIRROR_MEMBER_CAP_REACHED,
+                `This group portfolio is full (max ${maxMembers} members).`,
+              );
+            }
+            // Pending-unique per (chain, invitee); declining/expiry allows a
+            // re-invite (§4). An expired-but-not-yet-swept pending invite no longer
+            // blocks — retire it so the pending-unique slot frees for a fresh send.
+            const pending = await repo.findPendingInvite(chainId, inviteeId);
+            if (pending) {
+              if (inviteExpired(pending)) {
+                await repo.setInviteStatus(pending.id, 'expired', new Date(now()));
+              } else {
+                throw new ApiError(
+                  409,
+                  MIRROR_INVITE_EXISTS,
+                  'That user already has a pending invite to this group portfolio.',
+                );
+              }
+            }
+            const invite = await repo.createInvite({
+              chainId,
+              fromUser: actorId,
+              toUser: inviteeId,
+            });
+            return { chain, invite };
+          },
+        );
+        const inviterName = await usernameOf(actorId);
+        await emitMirror('mirror.invite', inviteeId, chain, inviterName, invite.id);
+        await audit.record({
+          actorId,
+          action: AuditAction.MirrorMemberInvited,
+          targetType: 'user',
+          targetId: inviteeId,
+          meta: { chainId, inviteId: invite.id },
+        });
       });
     },
 
     async acceptInvite(userId, inviteId) {
+      await assertMirrorAllowed(userId);
       const invite = await repo.getInvite(inviteId);
       if (!invite || invite.status !== 'pending' || invite.toUser !== userId) {
         throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
@@ -2327,6 +2380,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async declineInvite(userId, inviteId) {
+      await assertMirrorAllowed(userId);
       const invite = await repo.getInvite(inviteId);
       if (!invite || invite.status !== 'pending' || invite.toUser !== userId) {
         throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
@@ -2335,6 +2389,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async revokeInvite(actorId, inviteId) {
+      await assertMirrorAllowed(actorId);
       const invite = await repo.getInvite(inviteId);
       if (!invite || invite.status !== 'pending') {
         throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
@@ -2346,6 +2401,8 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async setMemberRole(actorId, chainId, targetUserId, role) {
+      await assertMirrorAllowed(actorId);
+      await assertMirrorAllowed(targetUserId);
       await withAuthorizedMember(
         chainId,
         actorId,
@@ -2400,6 +2457,8 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async transferOwnership(actorId, chainId, toUserId) {
+      await assertMirrorAllowed(actorId);
+      await assertMirrorAllowed(toUserId);
       const { chain, seq } = await withAuthorizedMember(
         chainId,
         actorId,
@@ -2461,6 +2520,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async removeMember(actorId, chainId, targetUserId) {
+      await assertMirrorAllowed(actorId);
       const { chain, targetName, seq, notifyOwnerId } = await withAuthorizedMember(
         chainId,
         actorId,
@@ -2530,6 +2590,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async leaveChain(userId, chainId) {
+      await assertMirrorAllowed(userId);
       const outcome = await withAuthorizedMember(
         chainId,
         userId,
@@ -2610,6 +2671,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async renameChain(actorId, chainId, name) {
+      await assertMirrorAllowed(actorId);
       const trimmed = name.trim();
       await withAuthorizedMember(
         chainId,
@@ -2638,6 +2700,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async dissolveChain(actorId, chainId) {
+      await assertMirrorAllowed(actorId);
       const { chain, members } = await withAuthorizedMember(
         chainId,
         actorId,
@@ -2680,6 +2743,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitPortfolioDelete(userId, portfolioId) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.deletePortfolio(userId, portfolioId);
       // A synced copy is intercepted as leave-then-delete (§6): the copy leaves
@@ -2774,15 +2838,29 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const ownerlessRepaired: MirrorConsistencySweepResult['ownerlessRepaired'] = [];
       // (0) Ownerless active chains → §7 succession (design §7 defense-in-depth).
       for (const chain of await repo.listOwnerlessActiveChains()) {
-        const repaired = await withChainLock(chain.id, async () => {
-          const fresh = await repo.getChain(chain.id);
-          if (!fresh || fresh.status !== 'active') return null;
-          const members = await repo.listActiveMembers(chain.id);
-          // A concurrent real transfer may have re-owned it between the scan and
-          // the lock — re-check under the lock before repairing.
-          if (members.some((m) => m.role === 'owner')) return null;
-          return runOwnerSuccession(fresh, members, null, 'repair_sweep');
+        const candidateMembers = await repo.listActiveMembers(chain.id);
+        const lockedUserIds = new Set(
+          candidateMembers.flatMap((member) => (member.userId ? [member.userId] : [])),
+        );
+        const repair = {
+          result: null as Awaited<ReturnType<typeof runOwnerSuccession>> | null,
+        };
+        const ran = await runMirrorIfAllowedMany([...lockedUserIds], async () => {
+          repair.result = await withChainLock(chain.id, async () => {
+            const fresh = await repo.getChain(chain.id);
+            if (!fresh || fresh.status !== 'active') return null;
+            const members = await repo.listActiveMembers(chain.id);
+            if (members.some((member) => member.userId && !lockedUserIds.has(member.userId))) {
+              return null;
+            }
+            // A concurrent real transfer may have re-owned it between the scan
+            // and the lock — re-check before repairing.
+            if (members.some((m) => m.role === 'owner')) return null;
+            return runOwnerSuccession(fresh, members, null, 'repair_sweep');
+          });
         });
+        if (!ran) continue;
+        const repaired = repair.result;
         if (repaired) {
           ownerlessRepaired.push({
             chainId: chain.id,
@@ -2811,6 +2889,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     // ── Submits ──────────────────────────────────────────────────────────────
 
     async submitTransactionsCreate(userId, portfolioId, inputs, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.createTransactions(userId, portfolioId, inputs, opts);
       await assertSyncableAssets(inputs.map((i) => i.assetId));
@@ -2880,6 +2959,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitTransactionUpdate(userId, portfolioId, txId, patch, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.updateTransaction(userId, portfolioId, txId, patch);
       const username = await usernameOf(userId);
@@ -2945,6 +3025,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitTransactionDelete(userId, portfolioId, txId, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.deleteTransaction(userId, portfolioId, txId);
       const username = await usernameOf(userId);
@@ -2990,6 +3071,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitDividendRecord(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return tax.recordDividend(userId, portfolioId, input);
       await assertSyncableAssets([input.assetId]);
@@ -3040,6 +3122,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitDividendDelete(userId, portfolioId, dividendId, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return tax.deleteDividend(userId, portfolioId, dividendId);
       const username = await usernameOf(userId);
@@ -3083,14 +3166,17 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitCashDeposit(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       return submitCashEntry(userId, portfolioId, input, 'cash.deposit');
     },
 
     async submitCashWithdraw(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       return submitCashEntry(userId, portfolioId, input, 'cash.withdraw');
     },
 
     async submitCashTransfer(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.transferCash(userId, portfolioId, input);
       const username = await usernameOf(userId);
@@ -3142,6 +3228,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitSetCashBalance(userId, portfolioId, sourceId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.setCashBalance(userId, portfolioId, sourceId, input);
       const username = await usernameOf(userId);
@@ -3190,6 +3277,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitSourceCreate(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.createCashSource(userId, portfolioId, input);
       const username = await usernameOf(userId);
@@ -3233,6 +3321,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitSourceUpdate(userId, portfolioId, sourceId, patch, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.updateCashSource(userId, portfolioId, sourceId, patch);
       const username = await usernameOf(userId);
@@ -3286,10 +3375,12 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async submitSourceArchive(userId, portfolioId, sourceId, opts) {
+      await assertMirrorAllowed(userId);
       return submitSourceFlip(userId, portfolioId, sourceId, 'source.archive', opts);
     },
 
     async submitSourceRestore(userId, portfolioId, sourceId, opts) {
+      await assertMirrorAllowed(userId);
       return submitSourceFlip(userId, portfolioId, sourceId, 'source.restore', opts);
     },
   };

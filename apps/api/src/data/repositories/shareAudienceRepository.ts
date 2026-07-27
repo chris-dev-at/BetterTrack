@@ -643,6 +643,40 @@ export function createShareAudienceRepository(db: Database) {
       return row;
     },
 
+    /** Authoritative owner lookup for multi-principal privacy guards. */
+    async getSubjectOwner(kind: ShareKind, subjectId: string): Promise<string | undefined> {
+      if (kind === 'idea') {
+        const [row] = await db
+          .select({ ownerId: ideas.ownerId })
+          .from(ideas)
+          .where(eq(ideas.id, subjectId))
+          .limit(1);
+        return row?.ownerId;
+      }
+      if (kind === 'portfolio') {
+        const [row] = await db
+          .select({ ownerId: portfolios.userId })
+          .from(portfolios)
+          .where(eq(portfolios.id, subjectId))
+          .limit(1);
+        return row?.ownerId;
+      }
+      if (kind === 'conglomerate') {
+        const [row] = await db
+          .select({ ownerId: conglomerates.ownerId })
+          .from(conglomerates)
+          .where(eq(conglomerates.id, subjectId))
+          .limit(1);
+        return row?.ownerId;
+      }
+      const [row] = await db
+        .select({ ownerId: watchlists.userId })
+        .from(watchlists)
+        .where(eq(watchlists.id, subjectId))
+        .limit(1);
+      return row?.ownerId;
+    },
+
     // ── Owner-facing audience management ────────────────────────────────────
 
     /**

@@ -1,6 +1,7 @@
 import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+import { eq } from 'drizzle-orm';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +19,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { createAssetRepository } from '../../data/repositories/assetRepository';
+import { assets, users } from '../../data/schema';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import { createStubMarketData, type StubMarketData } from '../../testing/marketDataStubs';
 
@@ -86,7 +88,10 @@ async function seedAsset(): Promise<string> {
   return row.id;
 }
 
-async function connectUser(email: string, username: string): Promise<ClientSocket> {
+async function connectAccount(
+  email: string,
+  username: string,
+): Promise<{ socket: ClientSocket; user: Awaited<ReturnType<TestHarness['seedUser']>> }> {
   const user = await harness.seedUser({ email, username });
   const agent = request.agent(harness.app);
   const res = await agent
@@ -109,7 +114,11 @@ async function connectUser(email: string, username: string): Promise<ClientSocke
     socket.once('connect', () => resolve());
     socket.once('connect_error', (err) => reject(err));
   });
-  return socket;
+  return { socket, user };
+}
+
+async function connectUser(email: string, username: string): Promise<ClientSocket> {
+  return (await connectAccount(email, username)).socket;
 }
 
 function watch(
@@ -398,5 +407,37 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     await unwatch(alice, assetId);
     await unwatch(alice, assetId); // repeat: must not steal bob's count
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
+  });
+
+  it('blocks an owned custom-asset live read for paranoid accounts but keeps global quotes', async () => {
+    const { socket, user } = await connectAccount('private-live@bt.test', 'private_live');
+    const [customAsset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'manual',
+        providerRef: `live:${user.id}`,
+        ownerId: user.id,
+        type: 'custom',
+        symbol: 'PRIVATE',
+        name: 'Private live asset',
+        currency: 'EUR',
+      })
+      .returning();
+    const globalAssetId = await seedAsset();
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(users.id, user.id));
+
+    await expect(watch(socket, customAsset!.id, '10m')).resolves.toEqual({
+      ok: false,
+      error: 'NOT_FOUND',
+    });
+    expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(0);
+    await expect(watch(socket, globalAssetId, '10m')).resolves.toMatchObject({ ok: true });
   });
 });

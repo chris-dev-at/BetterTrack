@@ -15,6 +15,7 @@ import type {
 } from '../../data/repositories/itemReactionRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import { notFound } from '../../errors';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { AudienceService } from './audienceService';
 
 /**
@@ -40,6 +41,8 @@ export interface CommentServiceDeps {
   audience: AudienceService;
   /** Public-safe author identity for the just-posted comment echo. */
   userRepo: Pick<UserRepository, 'findById'>;
+  /** Locks both viewer and item owner across authorization plus persistence. */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany'>;
 }
 
 export interface CommentService {
@@ -111,87 +114,123 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     return { ownerId: shared.ownerId, isOwner: false };
   }
 
+  async function withLockedAccess<T>(
+    viewerId: string,
+    kind: ShareKind,
+    subjectId: string,
+    action: (access: ThreadAccess) => Promise<T>,
+  ): Promise<T> {
+    const candidate = await resolveAccess(viewerId, kind, subjectId);
+    if (!candidate) throw THREAD_NOT_FOUND();
+    const revalidateAndRun = async () => {
+      const access = await resolveAccess(viewerId, kind, subjectId);
+      if (!access || access.ownerId !== candidate.ownerId) throw THREAD_NOT_FOUND();
+      return action(access);
+    };
+    return deps.paranoid
+      ? deps.paranoid.runAllowedMany([viewerId, candidate.ownerId], 'sharing', revalidateAndRun)
+      : revalidateAndRun();
+  }
+
   return {
     async getThread(viewerId, kind, subjectId) {
-      const access = await resolveAccess(viewerId, kind, subjectId);
-      if (!access) throw THREAD_NOT_FOUND();
-      const rows = await comments.listForItem(kind, subjectId);
-      const reactionMap = await reactions.summaryForComments(
-        viewerId,
-        rows.map((r) => r.id),
-      );
-      const itemReactions = await reactions.summaryForItem(viewerId, kind, subjectId);
-      const commentList: ItemComment[] = rows.map((row) => ({
-        id: row.id,
-        author: {
-          id: row.authorId,
-          username: row.authorUsername,
-          profileIcon: coerceProfileIcon(row.authorProfileIcon),
-        },
-        body: row.body,
-        createdAt: row.createdAt.toISOString(),
-        // Author deletes their own; the item owner moderates every comment.
-        canDelete: access.isOwner || row.authorId === viewerId,
-        reactions: toReactionSummaries(reactionMap.get(row.id) ?? []),
-      }));
-      return {
-        kind,
-        subjectId,
-        commentCount: commentList.length,
-        comments: commentList,
-        reactions: toReactionSummaries(itemReactions),
-      };
+      return withLockedAccess(viewerId, kind, subjectId, async (access) => {
+        const rows = await comments.listForItem(kind, subjectId);
+        const reactionMap = await reactions.summaryForComments(
+          viewerId,
+          rows.map((r) => r.id),
+        );
+        const itemReactions = await reactions.summaryForItem(viewerId, kind, subjectId);
+        const commentList: ItemComment[] = rows.map((row) => ({
+          id: row.id,
+          author: {
+            id: row.authorId,
+            username: row.authorUsername,
+            profileIcon: coerceProfileIcon(row.authorProfileIcon),
+          },
+          body: row.body,
+          createdAt: row.createdAt.toISOString(),
+          // Author deletes their own; the item owner moderates every comment.
+          canDelete: access.isOwner || row.authorId === viewerId,
+          reactions: toReactionSummaries(reactionMap.get(row.id) ?? []),
+        }));
+        return {
+          kind,
+          subjectId,
+          commentCount: commentList.length,
+          comments: commentList,
+          reactions: toReactionSummaries(itemReactions),
+        };
+      });
     },
 
     async addComment(viewerId, kind, subjectId, body) {
-      const access = await resolveAccess(viewerId, kind, subjectId);
-      if (!access) throw THREAD_NOT_FOUND();
-      const created = await comments.create(kind, subjectId, viewerId, body);
-      const author = await userRepo.findById(viewerId);
-      return {
-        id: created.id,
-        author: {
-          id: viewerId,
-          username: author?.username ?? '',
-          profileIcon: coerceProfileIcon(author?.profileIcon ?? null),
-        },
-        body,
-        createdAt: created.createdAt.toISOString(),
-        canDelete: true,
-        reactions: [],
-      };
+      return withLockedAccess(viewerId, kind, subjectId, async () => {
+        const created = await comments.create(kind, subjectId, viewerId, body);
+        const author = await userRepo.findById(viewerId);
+        return {
+          id: created.id,
+          author: {
+            id: viewerId,
+            username: author?.username ?? '',
+            profileIcon: coerceProfileIcon(author?.profileIcon ?? null),
+          },
+          body,
+          createdAt: created.createdAt.toISOString(),
+          canDelete: true,
+          reactions: [],
+        };
+      });
     },
 
     async deleteComment(viewerId, commentId) {
-      const comment = await comments.getById(commentId);
+      const candidate = await comments.getById(commentId);
       // A tombstoned or unknown comment is a uniform 404 (idempotent re-delete).
-      if (!comment || comment.deletedAt) throw COMMENT_NOT_FOUND();
-      // Author deletes their own regardless of current visibility (cleanup);
-      // the item owner moderates any comment on their item. Anyone else → 404.
-      const isAuthor = comment.authorId === viewerId;
-      const isOwner = await audience.ownsSubject(viewerId, comment.kind, comment.subjectId);
-      if (!isAuthor && !isOwner) throw COMMENT_NOT_FOUND();
-      const removed = await comments.softDelete(commentId, viewerId);
-      if (!removed) throw COMMENT_NOT_FOUND();
+      if (!candidate || candidate.deletedAt) throw COMMENT_NOT_FOUND();
+      const ownerId = await audience.subjectOwner(candidate.kind, candidate.subjectId);
+      if (!ownerId) throw COMMENT_NOT_FOUND();
+      const remove = async () => {
+        const comment = await comments.getById(commentId);
+        if (
+          !comment ||
+          comment.deletedAt ||
+          comment.kind !== candidate.kind ||
+          comment.subjectId !== candidate.subjectId
+        ) {
+          throw COMMENT_NOT_FOUND();
+        }
+        const currentOwnerId = await audience.subjectOwner(comment.kind, comment.subjectId);
+        if (currentOwnerId !== ownerId) throw COMMENT_NOT_FOUND();
+        // Author deletes their own regardless of current visibility (cleanup);
+        // the item owner moderates any comment on their item. Anyone else → 404.
+        const isAuthor = comment.authorId === viewerId;
+        const isOwner = ownerId === viewerId;
+        if (!isAuthor && !isOwner) throw COMMENT_NOT_FOUND();
+        const removed = await comments.softDelete(commentId, viewerId);
+        if (!removed) throw COMMENT_NOT_FOUND();
+      };
+      return deps.paranoid
+        ? deps.paranoid.runAllowedMany([viewerId, ownerId], 'sharing', remove)
+        : remove();
     },
 
     async toggleItemReaction(viewerId, kind, subjectId, emoji) {
-      const access = await resolveAccess(viewerId, kind, subjectId);
-      if (!access) throw THREAD_NOT_FOUND();
-      await reactions.toggleItem(viewerId, kind, subjectId, emoji);
-      const summary = await reactions.summaryForItem(viewerId, kind, subjectId);
-      return { reactions: toReactionSummaries(summary) };
+      return withLockedAccess(viewerId, kind, subjectId, async () => {
+        await reactions.toggleItem(viewerId, kind, subjectId, emoji);
+        const summary = await reactions.summaryForItem(viewerId, kind, subjectId);
+        return { reactions: toReactionSummaries(summary) };
+      });
     },
 
     async toggleCommentReaction(viewerId, commentId, emoji) {
       const comment = await comments.getById(commentId);
       if (!comment || comment.deletedAt) throw COMMENT_NOT_FOUND();
       // Reacting needs the SAME access as reading the thread the comment lives in.
-      const access = await resolveAccess(viewerId, comment.kind, comment.subjectId);
-      if (!access) throw COMMENT_NOT_FOUND();
-      await reactions.toggleComment(viewerId, commentId, emoji);
-      const summary = await reactions.summaryForComment(viewerId, commentId);
-      return { reactions: toReactionSummaries(summary) };
+      return withLockedAccess(viewerId, comment.kind, comment.subjectId, async () => {
+        await reactions.toggleComment(viewerId, commentId, emoji);
+        const summary = await reactions.summaryForComment(viewerId, commentId);
+        return { reactions: toReactionSummaries(summary) };
+      });
     },
   };
 }

@@ -56,6 +56,8 @@ export interface ConglomerateServiceDeps {
   audience: AudienceService;
 }
 
+type ConglomerateMetadataPatch = Omit<UpdateConglomerateRequest, 'visibility'>;
+
 export interface ConglomerateService {
   list(ownerId: string): Promise<ConglomerateListResponse>;
   get(ownerId: string, id: string): Promise<ConglomerateDetail>;
@@ -63,7 +65,13 @@ export interface ConglomerateService {
   update(
     ownerId: string,
     id: string,
-    patch: UpdateConglomerateRequest,
+    patch: ConglomerateMetadataPatch,
+  ): Promise<ConglomerateDetail>;
+  /** Mixed metadata + legacy sharing mutation, guarded before either write. */
+  updateWithVisibility(
+    ownerId: string,
+    id: string,
+    patch: UpdateConglomerateRequest & { visibility: 'private' | 'friends' },
   ): Promise<ConglomerateDetail>;
   replacePositions(
     ownerId: string,
@@ -144,6 +152,24 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     const row = await repo.findByIdForOwner(ownerId, id);
     if (!row) throw NOT_FOUND();
     return toDetail(row);
+  }
+
+  async function updateRecord(
+    ownerId: string,
+    id: string,
+    patch: UpdateConglomerateRequest,
+  ): Promise<ConglomerateDetail> {
+    let updated: boolean;
+    try {
+      updated = await repo.update(ownerId, id, patch);
+    } catch (err) {
+      if (err instanceof ConglomerateNameConflictError) {
+        throw conflict('A conglomerate with this name already exists.', 'CONGLOMERATE_NAME_TAKEN');
+      }
+      throw err;
+    }
+    if (!updated) throw NOT_FOUND();
+    return detailOrThrow(ownerId, id);
   }
 
   /**
@@ -263,20 +289,24 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     },
 
     async update(ownerId, id, patch) {
-      let updated: boolean;
-      try {
-        updated = await repo.update(ownerId, id, patch);
-      } catch (err) {
-        if (err instanceof ConglomerateNameConflictError) {
-          throw conflict(
-            'A conglomerate with this name already exists.',
-            'CONGLOMERATE_NAME_TAKEN',
-          );
-        }
-        throw err;
+      // Private local metadata stays usable in paranoid mode. A hand-crafted
+      // below-HTTP call must not smuggle the sharing-bearing legacy visibility
+      // field through this deliberately kept entry point.
+      if ('visibility' in patch) {
+        throw badRequest(
+          'Visibility changes require the guarded sharing mutation.',
+          'CONGLOMERATE_VISIBILITY_GUARD_REQUIRED',
+        );
       }
-      if (!updated) throw NOT_FOUND();
-      return detailOrThrow(ownerId, id);
+      return updateRecord(ownerId, id, patch);
+    },
+
+    async updateWithVisibility(ownerId, id, patch) {
+      return audience.withVisibilityMutation(ownerId, patch.visibility, async () => {
+        const detail = await updateRecord(ownerId, id, patch);
+        await audience.applyVisibility(ownerId, 'conglomerate', id, patch.visibility);
+        return detail;
+      });
     },
 
     async replacePositions(ownerId, id, positions) {

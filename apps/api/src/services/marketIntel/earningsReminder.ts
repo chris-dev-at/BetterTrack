@@ -53,6 +53,13 @@ export interface EarningsReminderScanDeps {
   notify: NotificationCenter;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ the scan is a no-op. */
   enabled: boolean;
+  /** Paranoid users keep watchlist reminders, but stale holding-only rows are skipped. */
+  isParanoid?: (userId: string) => Promise<boolean>;
+  /**
+   * Registry-bound transition lock for held-only reminder side effects. Returns
+   * false when enable won the race and the action was not run.
+   */
+  runIfAllowed?: (userId: string, action: () => Promise<void>) => Promise<boolean>;
   logger?: Logger;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
@@ -83,7 +90,12 @@ export async function runEarningsReminderScan(
 
   if (!enabled) return { scanned: 0, reminded: 0 };
 
-  const inScope = await intelRepo.listAllWatchAndHoldAssets();
+  const allInScope = await intelRepo.listAllWatchAndHoldAssets();
+  const inScope = [];
+  for (const row of allInScope) {
+    if (row.held && !row.watched && (await deps.isParanoid?.(row.userId))) continue;
+    inScope.push(row);
+  }
   if (inScope.length === 0) return { scanned: 0, reminded: 0 };
 
   // The next earnings report per distinct asset, fetched once and reused across
@@ -119,28 +131,41 @@ export async function runEarningsReminderScan(
     // reminder (the ahead-of-time fires already landed on earlier scan days).
     if (dueMs < now || dueMs - now > EARNINGS_REMINDER_LEAD_MS) continue;
 
-    const dateKey = next.date.slice(0, 10);
-    const lockKey = earningsReminderLockKey(a.userId, a.assetId, dateKey);
-    const acquired = await redis.set(lockKey, '1', 'EX', EARNINGS_REMINDER_LOCK_TTL_SECONDS, 'NX');
-    if (acquired !== 'OK') continue;
+    const emitReminder = async () => {
+      const dateKey = next!.date!.slice(0, 10);
+      const lockKey = earningsReminderLockKey(a.userId, a.assetId, dateKey);
+      const acquired = await redis.set(
+        lockKey,
+        '1',
+        'EX',
+        EARNINGS_REMINDER_LOCK_TTL_SECONDS,
+        'NX',
+      );
+      if (acquired !== 'OK') return;
 
-    const emitted = await notify.emit({
-      type: 'earnings.reminder',
-      userId: a.userId,
-      assetId: a.assetId,
-      symbol: a.symbol,
-      name: a.name,
-      earningsDate: next.date,
-      estimated: next.estimated,
-      occurredAt,
-    });
-    if (!emitted) {
-      // Enqueue failed (the center logged it): release the lock so the next
-      // scan retries — a hiccup delays, never drops (the #367 rule).
-      await redis.del(lockKey);
-      continue;
+      const emitted = await notify.emit({
+        type: 'earnings.reminder',
+        userId: a.userId,
+        assetId: a.assetId,
+        symbol: a.symbol,
+        name: a.name,
+        earningsDate: next!.date!,
+        estimated: next!.estimated,
+        occurredAt,
+      });
+      if (!emitted) {
+        // Enqueue failed (the center logged it): release the lock so the next
+        // scan retries — a hiccup delays, never drops (the #367 rule).
+        await redis.del(lockKey);
+        return;
+      }
+      reminded += 1;
+    };
+    if (a.held && !a.watched && deps.runIfAllowed) {
+      await deps.runIfAllowed(a.userId, emitReminder);
+    } else {
+      await emitReminder();
     }
-    reminded += 1;
   }
 
   return { scanned: inScope.length, reminded };

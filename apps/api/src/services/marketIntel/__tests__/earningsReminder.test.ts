@@ -174,4 +174,32 @@ describe('runEarningsReminderScan (V5-P5)', () => {
     expect(res).toEqual({ scanned: 0, reminded: 0 });
     expect(notify.emit).not.toHaveBeenCalled();
   });
+
+  it('skips paranoid holding-only rows but preserves their private watchlist reminders', async () => {
+    const notify = stubNotify();
+    const res = await runEarningsReminderScan({
+      intelRepo: {
+        listAllWatchAndHoldAssets: async () => [
+          asset({ assetId: 'held', providerRef: 'HELD', symbol: 'HELD' }),
+          asset({
+            assetId: 'watched',
+            providerRef: 'WATCH',
+            symbol: 'WATCH',
+            held: true,
+            watched: true,
+          }),
+        ],
+      },
+      marketData: marketDataWithEarnings({ HELD: day(1), WATCH: day(1) }),
+      redis,
+      notify,
+      enabled: true,
+      isParanoid: async () => true,
+      now: () => NOW,
+    });
+
+    expect(res).toEqual({ scanned: 1, reminded: 1 });
+    expect(notify.events).toHaveLength(1);
+    expect(notify.events[0]).toMatchObject({ assetId: 'watched', symbol: 'WATCH' });
+  });
 });

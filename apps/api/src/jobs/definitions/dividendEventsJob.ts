@@ -42,6 +42,10 @@ export interface DividendEventsScanDeps {
   notify: NotificationCenter;
   /** Per-user opt-in gate (skip a holder who never enabled the type). */
   isEnabled: DividendNotifyGate;
+  /** Defense in depth for stale holding rows after a paranoid transition. */
+  isParanoid?: (userId: string) => Promise<boolean>;
+  /** Transition-lock the per-user opt-in + emit sequence. */
+  runIfAllowed?: (userId: string, action: () => Promise<void>) => Promise<boolean>;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ the scan is a no-op. */
   enabled: boolean;
   horizonDays?: number;
@@ -103,6 +107,7 @@ export async function runDividendEventsScan(
   // Group holders by asset so each asset's events are fetched exactly once.
   const groups = new Map<string, AssetGroup>();
   for (const row of await repo.listHeldAssetHoldersAllUsers()) {
+    if (await deps.isParanoid?.(row.userId)) continue;
     let group = groups.get(row.assetId);
     if (!group) {
       group = {
@@ -139,23 +144,30 @@ export async function runDividendEventsScan(
     if (dueEvents.length === 0) continue;
 
     for (const userId of group.userIds) {
-      // Opt-in gate: skip a holder who never enabled the type — the dispatcher
-      // would otherwise write a hidden dedupe marker that later masks an enable.
-      if (!(await isEnabled(userId))) continue;
-      for (const event of dueEvents) {
-        const notice: DividendEventNotice = {
-          type: 'dividend.event',
-          userId,
-          assetId,
-          symbol: group.symbol,
-          exDate: event.exDate!,
-          payDate: event.payDate,
-          amount: event.amount,
-          currency: event.currency ?? events.currency,
-          occurredAt,
-        };
-        await notify.emit(notice);
-        emitted += 1;
+      const emitForUser = async () => {
+        // Opt-in gate: skip a holder who never enabled the type — the dispatcher
+        // would otherwise write a hidden dedupe marker that later masks an enable.
+        if (!(await isEnabled(userId))) return;
+        for (const event of dueEvents) {
+          const notice: DividendEventNotice = {
+            type: 'dividend.event',
+            userId,
+            assetId,
+            symbol: group.symbol,
+            exDate: event.exDate!,
+            payDate: event.payDate,
+            amount: event.amount,
+            currency: event.currency ?? events.currency,
+            occurredAt,
+          };
+          await notify.emit(notice);
+          emitted += 1;
+        }
+      };
+      if (deps.runIfAllowed) {
+        await deps.runIfAllowed(userId, emitForUser);
+      } else {
+        await emitForUser();
       }
     }
   }
