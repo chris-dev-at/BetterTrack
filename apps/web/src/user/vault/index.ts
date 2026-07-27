@@ -16,3 +16,4 @@ export * from './restore';
 export * from './serverBlobDataHome';
 export * from './sync';
 export * from './vectors';
+export * from './VaultRuntimeProvider';

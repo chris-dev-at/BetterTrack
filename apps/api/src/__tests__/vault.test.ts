@@ -15,7 +15,12 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { paranoidVaultHistory, paranoidVaults, users } from '../data/schema';
+import {
+  paranoidVaultHistory,
+  paranoidVaultServerCandidates,
+  paranoidVaults,
+  users,
+} from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -66,12 +71,18 @@ function envelope(vaultVersion: number, ciphertext: Uint8Array): Buffer {
   return Buffer.from(encodeVaultEnvelope(header, ciphertext));
 }
 
-function mediaProof(medium: 'server' | 'drive', vaultVersion: number, blob: Buffer) {
+function mediaProof(
+  medium: 'server' | 'drive',
+  vaultVersion: number,
+  blob: Buffer,
+  serverCandidateId?: string,
+) {
   return {
     medium,
     vaultVersion,
     envelopeSha256: createHash('sha256').update(blob).digest('hex'),
     verifiedAt: new Date().toISOString(),
+    ...(serverCandidateId ? { serverCandidateId } : {}),
   };
 }
 
@@ -539,5 +550,95 @@ describe('vault blob store', () => {
     expect(stale.body.error.code).toBe('VAULT_MALFORMED');
     expect((await agent.get('/api/v1/vault')).status).toBe(404);
     expect((await agent.get('/api/v1/vault/history/2')).status).toBe(200);
+  });
+
+  it('keeps server staging inactive on PATCH failure and repeats the unchanged media cycle', async () => {
+    const agent = await seedAndLogin('candidate@bt.test', 'candidate', 'paranoid');
+    const v2 = envelope(2, new Uint8Array([2]));
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(v2);
+    await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expectedMediaSet: ['server'],
+        mediaSet: ['server', 'drive'],
+        verification: mediaProof('drive', 2, v2),
+      });
+    await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expectedMediaSet: ['server', 'drive'],
+        mediaSet: ['drive'],
+        verification: mediaProof('drive', 2, v2),
+      });
+
+    const staged = await agent
+      .put('/api/v1/account/paranoid/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .send(v2);
+    expect(staged.status).toBe(201);
+    expect(staged.body).toMatchObject({ version: 2, sizeBytes: v2.length });
+    const candidateId = staged.body.candidateId as string;
+    const readBack = await agent
+      .get(`/api/v1/account/paranoid/media/server-candidate/${candidateId}`)
+      .responseType('blob');
+    expect(readBack.status).toBe(200);
+    expect((readBack.body as Buffer).equals(v2)).toBe(true);
+
+    const rejected = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expectedMediaSet: ['drive'],
+        mediaSet: ['server', 'drive'],
+        verification: {
+          ...mediaProof('server', 2, v2, candidateId),
+          envelopeSha256: 'f'.repeat(64),
+        },
+      });
+    expect(rejected.status).toBe(422);
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+
+    const [candidateUser] = await harness.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, 'candidate@bt.test'));
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidVaultServerCandidates)
+        .where(eq(paranoidVaultServerCandidates.userId, candidateUser!.id)),
+    ).toHaveLength(1);
+
+    const promoted = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expectedMediaSet: ['drive'],
+        mediaSet: ['server', 'drive'],
+        verification: mediaProof('server', 2, v2, candidateId),
+      });
+    expect(promoted.status).toBe(200);
+    expect((await agent.get('/api/v1/vault')).status).toBe(200);
+
+    const retiredAgain = await agent
+      .patch('/api/v1/account/paranoid/media')
+      .set(...XRW)
+      .send({
+        expectedMediaSet: ['server', 'drive'],
+        mediaSet: ['drive'],
+        verification: mediaProof('drive', 2, v2),
+      });
+    expect(retiredAgain.status).toBe(200);
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+    const history = await agent.get('/api/v1/vault/history');
+    expect(history.body.items.map((item: { version: number }) => item.version)).toEqual([2]);
   });
 });

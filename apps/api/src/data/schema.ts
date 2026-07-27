@@ -3228,6 +3228,30 @@ export const paranoidVaultHistory = pgTable(
   ],
 );
 
+// One inactive, expiring candidate used only by Drive-only → both. Staging
+// ciphertext here never makes the server DataHome live: the browser must read
+// this exact row back and authenticate it before the media transaction promotes
+// it into `paranoid_vaults`.
+export const paranoidVaultServerCandidates = pgTable(
+  'paranoid_vault_server_candidates',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    formatVersion: integer('format_version').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    blob: bytea('blob').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('paranoid_vault_server_candidates_user_unique').on(t.userId),
+    index('paranoid_vault_server_candidates_expires_idx').on(t.expiresAt),
+  ],
+);
+
 export type ParanoidVaultRow = typeof paranoidVaults.$inferSelect;
 export type NewParanoidVaultRow = typeof paranoidVaults.$inferInsert;
 /**
@@ -3249,6 +3273,8 @@ export const paranoidRehydrationReceipts = pgTable(
 
 export type ParanoidVaultHistoryRow = typeof paranoidVaultHistory.$inferSelect;
 export type NewParanoidVaultHistoryRow = typeof paranoidVaultHistory.$inferInsert;
+export type ParanoidVaultServerCandidateRow = typeof paranoidVaultServerCandidates.$inferSelect;
+export type NewParanoidVaultServerCandidateRow = typeof paranoidVaultServerCandidates.$inferInsert;
 export type ParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferSelect;
 export type NewParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferInsert;
 
@@ -3332,6 +3358,7 @@ export const schema = {
   webhookDeliveries,
   paranoidVaults,
   paranoidVaultHistory,
+  paranoidVaultServerCandidates,
   paranoidRehydrationReceipts,
   userRoleEnum,
   userStatusEnum,

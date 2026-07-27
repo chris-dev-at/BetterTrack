@@ -70,6 +70,9 @@ export const VAULT_VERSION_MAX = 2_147_483_647;
 export const VAULT_RETIRED_PURGE_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /** A media proof must describe a round trip completed in the last five minutes. */
 export const VAULT_MEDIA_PROOF_MAX_AGE_MS = 5 * 60 * 1000;
+/** Headers binding a raw server-candidate read to its staging receipt. */
+export const VAULT_SERVER_CANDIDATE_ID_HEADER = 'X-Vault-Candidate-Id';
+export const VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER = 'X-Vault-Candidate-Expires-At';
 
 // ── Privacy mode + media set ─────────────────────────────────────────────────
 
@@ -136,6 +139,11 @@ export const vaultMediaVerificationSchema = z
     vaultVersion: z.number().int().min(1).max(VAULT_VERSION_MAX),
     envelopeSha256: vaultEnvelopeSha256Schema,
     verifiedAt: z.string().datetime(),
+    /**
+     * Present only while promoting an inactive Drive-only → server candidate.
+     * It binds the proof to the exact staged bytes the browser read back.
+     */
+    serverCandidateId: z.string().uuid().optional(),
   })
   .strict();
 export type VaultMediaVerification = z.infer<typeof vaultMediaVerificationSchema>;
@@ -194,6 +202,27 @@ export const retiredServerVaultPurgeResponseSchema = z
   })
   .strict();
 export type RetiredServerVaultPurgeResponse = z.infer<typeof retiredServerVaultPurgeResponseSchema>;
+
+/**
+ * Portfolio-free receipt for an inactive server candidate. Ciphertext is read
+ * separately as raw bytes before the media PATCH promotes it into the live
+ * server DataHome.
+ */
+export const paranoidServerCandidateMetadataSchema = z
+  .object({
+    candidateId: z.string().uuid(),
+    version: z.number().int().min(1).max(VAULT_VERSION_MAX),
+    formatVersion: z.number().int().positive(),
+    sizeBytes: z.number().int().positive(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type ParanoidServerCandidateMetadata = z.infer<typeof paranoidServerCandidateMetadataSchema>;
+
+export const paranoidServerCandidateParamSchema = z
+  .object({ candidateId: z.string().uuid() })
+  .strict();
+export type ParanoidServerCandidateParam = z.infer<typeof paranoidServerCandidateParamSchema>;
 
 // ── Version + envelope header ────────────────────────────────────────────────
 

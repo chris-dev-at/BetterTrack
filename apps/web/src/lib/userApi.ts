@@ -1,14 +1,17 @@
 import {
+  apiErrorSchema,
   googleLinkStatusResponseSchema,
   googleRegisterTicketResponseSchema,
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
+  paranoidServerCandidateMetadataSchema,
   passkeyListResponseSchema,
   passkeyLoginOptionsResponseSchema,
   passkeyRegisterOptionsResponseSchema,
   passkeySchema,
   pinQuickAuthResponseSchema,
+  parseVaultEtag,
   publicRegistrationInfoResponseSchema,
   registerResponseSchema,
   rememberedDeviceResponseSchema,
@@ -16,6 +19,9 @@ import {
   retiredServerVaultPurgeResponseSchema,
   sessionInfoResponseSchema,
   sessionListResponseSchema,
+  VAULT_CONTENT_TYPE,
+  VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER,
+  VAULT_SERVER_CANDIDATE_ID_HEADER,
   vaultMediaStateResponseSchema,
   exportRequestResponseSchema,
   exportStatusResponseSchema,
@@ -40,6 +46,7 @@ import {
   type PasskeyRegisterVerifyRequest,
   type PasswordResetComplete,
   type PasswordResetRequest,
+  type ParanoidServerCandidateMetadata,
   type PublicRegistrationInfoResponse,
   type RegisterRequest,
   type RegisterResponse,
@@ -60,7 +67,7 @@ import {
   type VaultMediaVerification,
 } from '@bettertrack/contracts';
 
-import { apiRequest } from './apiClient';
+import { ApiError, apiRequest } from './apiClient';
 import { apiBaseUrl } from './runtimeConfig';
 
 /**
@@ -146,6 +153,91 @@ export async function purgeRetiredVaultServer(
     body: { proof },
   });
   return retiredServerVaultPurgeResponseSchema.parse(data);
+}
+
+/** Stage opaque Drive bytes without creating an active server vault row. */
+export async function stageVaultServerCandidate(
+  envelope: Uint8Array,
+): Promise<ParanoidServerCandidateMetadata> {
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl()}/account/paranoid/media/server-candidate`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': VAULT_CONTENT_TYPE,
+        'X-Requested-With': 'BetterTrack',
+      },
+      credentials: 'include',
+      body: envelope.slice(),
+    });
+  } catch {
+    throw new ApiError(0, 'NETWORK_ERROR', 'Unable to reach the server. Check your connection.');
+  }
+  const payload: unknown = await response.json().catch(() => undefined);
+  if (!response.ok) throwRawApiError(response.status, payload);
+  return paranoidServerCandidateMetadataSchema.parse(payload);
+}
+
+/** Read the exact inactive candidate back before authorizing its promotion. */
+export async function readVaultServerCandidate(
+  candidate: ParanoidServerCandidateMetadata,
+): Promise<Uint8Array> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${apiBaseUrl()}/account/paranoid/media/server-candidate/${encodeURIComponent(candidate.candidateId)}`,
+      { credentials: 'include' },
+    );
+  } catch {
+    throw new ApiError(0, 'NETWORK_ERROR', 'Unable to reach the server. Check your connection.');
+  }
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => undefined);
+    throwRawApiError(response.status, payload);
+  }
+  const responseId = response.headers.get(VAULT_SERVER_CANDIDATE_ID_HEADER);
+  const responseVersion = parseVaultEtag(response.headers.get('ETag'));
+  const responseExpiry = response.headers.get(VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER);
+  if (
+    responseId !== candidate.candidateId ||
+    responseVersion !== candidate.version ||
+    responseExpiry !== candidate.expiresAt
+  ) {
+    throw new ApiError(
+      response.status,
+      'INVALID_SERVER_CANDIDATE',
+      'The server candidate read did not match its staging receipt.',
+    );
+  }
+  const envelope = new Uint8Array(await response.arrayBuffer());
+  if (envelope.byteLength !== candidate.sizeBytes) {
+    throw new ApiError(
+      response.status,
+      'INVALID_SERVER_CANDIDATE',
+      'The server candidate size did not match its staging receipt.',
+    );
+  }
+  return envelope;
+}
+
+/** Best-effort cleanup for a candidate that failed authenticated verification. */
+export async function discardVaultServerCandidate(candidateId: string): Promise<void> {
+  await apiRequest<unknown>(
+    `/account/paranoid/media/server-candidate/${encodeURIComponent(candidateId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+function throwRawApiError(status: number, payload: unknown): never {
+  const parsed = apiErrorSchema.safeParse(payload);
+  throw parsed.success
+    ? new ApiError(
+        status,
+        parsed.data.error.code,
+        parsed.data.error.message,
+        parsed.data.error.details,
+      )
+    : new ApiError(status, 'UNKNOWN', 'Request failed.');
 }
 
 /**

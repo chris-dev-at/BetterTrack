@@ -1,4 +1,5 @@
 import type {
+  ParanoidServerCandidateMetadata,
   RetiredServerVaultPurgeResponse,
   VaultMediaPatchRequest,
   VaultMediaStateResponse,
@@ -106,6 +107,7 @@ class FakeMediaApi implements VaultMediaApi {
   failPurge = false;
   serverDisposition: 'active' | 'retired' | 'absent';
   retiredPresent = false;
+  candidate: { metadata: ParanoidServerCandidateMetadata; envelope: Uint8Array } | null = null;
 
   constructor(
     mediaSet: VaultMediaStateResponse['mediaSet'],
@@ -136,6 +138,14 @@ class FakeMediaApi implements VaultMediaApi {
       this.retiredPresent = true;
       this.server.value = null;
     } else if (addedServer) {
+      if (
+        !this.candidate ||
+        request.verification?.serverCandidateId !== this.candidate.metadata.candidateId
+      ) {
+        throw new Error('missing candidate');
+      }
+      this.server.value = this.candidate.envelope.slice();
+      this.candidate = null;
       this.serverDisposition = 'active';
     }
     this.state = {
@@ -152,6 +162,29 @@ class FakeMediaApi implements VaultMediaApi {
         : null,
     };
     return this.getState();
+  }
+
+  async stageServerCandidate(envelope: Uint8Array): Promise<ParanoidServerCandidateMetadata> {
+    const metadata = {
+      candidateId: '018f0000-0000-7000-8000-00000000000a',
+      version: envelope[0]!,
+      formatVersion: 1,
+      sizeBytes: envelope.byteLength,
+      expiresAt: '2026-07-27T10:15:00.000Z',
+    };
+    this.candidate = { metadata, envelope: envelope.slice() };
+    return metadata;
+  }
+
+  async readServerCandidate(candidate: ParanoidServerCandidateMetadata): Promise<Uint8Array> {
+    if (!this.candidate || candidate.candidateId !== this.candidate.metadata.candidateId) {
+      throw new Error('candidate missing');
+    }
+    return this.candidate.envelope.slice();
+  }
+
+  async discardServerCandidate(candidateId: string): Promise<void> {
+    if (this.candidate?.metadata.candidateId === candidateId) this.candidate = null;
   }
 
   async purgeDriveRetired(): Promise<RetiredServerVaultPurgeResponse> {
@@ -280,6 +313,27 @@ describe('verified vault media switch matrix', () => {
     interrupted.api.failPatch = false;
     expect(await interrupted.switcher.add('drive')).toMatchObject({ status: 'ok' });
     expect(interrupted.drive.writes).toBe(1);
+  });
+
+  it('keeps Drive-only authoritative when server-candidate promotion is interrupted', async () => {
+    const interrupted = setup(['drive'], null, bytes(1, 1));
+    interrupted.api.failPatch = true;
+
+    expect(await interrupted.switcher.add('server')).toMatchObject({
+      status: 'failed',
+      stage: 'patch-media',
+      media: { mediaSet: ['drive'] },
+    });
+    expect(interrupted.server.value).toBeNull();
+    expect(interrupted.api.serverDisposition).toBe('absent');
+    expect(interrupted.api.candidate).toBeNull();
+
+    interrupted.api.failPatch = false;
+    expect(await interrupted.switcher.add('server')).toMatchObject({
+      status: 'ok',
+      media: { mediaSet: ['server', 'drive'] },
+    });
+    expect(interrupted.server.value).toEqual(bytes(1, 1));
   });
 
   it('surfaces a failed Drive delete after the server-only PATCH and retries cleanup', async () => {

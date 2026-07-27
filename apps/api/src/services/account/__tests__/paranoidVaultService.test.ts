@@ -58,6 +58,16 @@ function fakeRepo(options: FakeRepoOptions = {}) {
     async transitionMedia() {
       return { status: 'not_found' };
     },
+    async stageServerCandidate() {
+      return { status: 'not_found' };
+    },
+    async getServerCandidate() {
+      return null;
+    },
+    async discardServerCandidate() {},
+    async deleteExpiredServerCandidates() {
+      return 0;
+    },
     async purgeRetired() {
       return { status: 'not_found' };
     },

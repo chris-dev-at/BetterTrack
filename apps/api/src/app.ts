@@ -149,7 +149,7 @@ export function createApp(ctx: AppContext) {
   // Paranoid media-set transitions use the binding account path. The client
   // sends only media metadata/read-back proofs here; Google credentials remain
   // entirely in the browser.
-  app.use('/api/v1/account/paranoid', createParanoidMediaRouter(ctx));
+  app.use('/api/v1/account/paranoid', createParanoidMediaRouter(ctx, limiters));
   app.use('/api/v1/account', createAccountRouter(ctx, limiters));
   // bull-board queue inspector (§13.4 V4-P5a), mounted admin-only and BEFORE the
   // admin router so `/api/v1/admin/queues` resolves here (a non-admin/anonymous

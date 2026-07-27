@@ -18,7 +18,14 @@ import type {
   ParanoidVaultRepository,
   ParanoidVaultRetention,
 } from '../../data/repositories/paranoidVaultRepository';
-import type { ParanoidVaultHistoryRow, ParanoidVaultRow } from '../../data/schema';
+import type {
+  ParanoidVaultHistoryRow,
+  ParanoidVaultRow,
+  ParanoidVaultServerCandidateRow,
+} from '../../data/schema';
+
+/** Inactive server candidates expire quickly and can never become authoritative by themselves. */
+export const PARANOID_SERVER_CANDIDATE_TTL_MS = 15 * 60 * 1000;
 
 /**
  * Paranoid-vault service (§13.5 V5-P13 arc b, `docs/paranoid-design.md` §2, §4).
@@ -58,6 +65,14 @@ export type ParanoidVaultPutResult =
   | { status: 'too_large'; sizeBytes: number; maxBytes: number }
   | { status: 'malformed'; reason: string };
 
+export type ParanoidVaultServerCandidateMutationResult =
+  | { status: 'ok'; candidate: ParanoidVaultServerCandidateRow; idempotent: boolean }
+  | { status: 'not_found' }
+  | { status: 'mode_required' }
+  | { status: 'media_invalid' }
+  | { status: 'too_large'; sizeBytes: number; maxBytes: number }
+  | { status: 'malformed'; reason: string };
+
 export type ParanoidVaultMediaMutationResult =
   | { status: 'ok'; media: VaultMediaStateResponse; idempotent: boolean }
   | { status: 'not_found' }
@@ -91,6 +106,18 @@ export interface ParanoidVaultService {
   getHistory(userId: string, version: number): Promise<ParanoidVaultHistoryRow | null>;
   /** Compare-and-swap write. Never overwrites newer ciphertext. */
   put(input: ParanoidVaultPutInput): Promise<ParanoidVaultPutResult>;
+  /** Stage Drive bytes without activating the live server DataHome. */
+  stageServerCandidate(
+    userId: string,
+    blob: Buffer,
+  ): Promise<ParanoidVaultServerCandidateMutationResult>;
+  /** Read one exact unexpired candidate for browser round-trip authentication. */
+  getServerCandidate(
+    userId: string,
+    candidateId: string,
+  ): Promise<ParanoidVaultServerCandidateRow | null>;
+  /** Best-effort cleanup for an abandoned inactive candidate. */
+  discardServerCandidate(userId: string, candidateId: string): Promise<void>;
   /** Portfolio-free durable media state for the current paranoid account. */
   getMediaState(userId: string): Promise<VaultMediaStateResponse | null>;
   /** One-medium-at-a-time verified migrate-then-drop transition. */
@@ -126,6 +153,26 @@ function proofIsFresh(proof: VaultMediaVerification, now: Date): boolean {
   const verifiedAt = new Date(proof.verifiedAt).getTime();
   const delta = now.getTime() - verifiedAt;
   return Number.isFinite(verifiedAt) && delta >= -60_000 && delta <= VAULT_MEDIA_PROOF_MAX_AGE_MS;
+}
+
+function inspectServerBlob(
+  blob: Buffer,
+  maxBytes: number,
+):
+  | { status: 'ok'; header: { formatVersion: number; vaultVersion: number } }
+  | { status: 'too_large'; sizeBytes: number; maxBytes: number }
+  | { status: 'malformed'; reason: string } {
+  if (blob.length > maxBytes) {
+    return { status: 'too_large', sizeBytes: blob.length, maxBytes };
+  }
+  try {
+    return { status: 'ok', header: readVaultServerHeader(blob) };
+  } catch (err) {
+    if (err instanceof VaultEnvelopeError) {
+      return { status: 'malformed', reason: err.message };
+    }
+    throw err;
+  }
 }
 
 export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): ParanoidVaultService {
@@ -182,22 +229,10 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
     },
 
     async put({ userId, expectedVersion, blob }) {
-      // Size cap FIRST — an oversized payload is rejected before any parse or
-      // persistence.
-      if (blob.length > deps.maxBytes) {
-        return { status: 'too_large', sizeBytes: blob.length, maxBytes: deps.maxBytes };
-      }
-
-      // Read ONLY the safe header fields the blind store is entitled to.
-      let header: { formatVersion: number; vaultVersion: number };
-      try {
-        header = readVaultServerHeader(blob);
-      } catch (err) {
-        if (err instanceof VaultEnvelopeError) {
-          return { status: 'malformed', reason: err.message };
-        }
-        throw err;
-      }
+      // Size cap stays before header parsing or persistence.
+      const inspected = inspectServerBlob(blob, deps.maxBytes);
+      if (inspected.status !== 'ok') return inspected;
+      const { header } = inspected;
 
       // The envelope's version must strictly advance the precondition — a
       // client always writes `last seen + 1` (or a merged max(parents)+1). A
@@ -225,6 +260,16 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
             reason: 'staged server vaultVersion is older than the durable Drive state',
           };
         }
+        if (
+          media?.privacyMode === 'paranoid' &&
+          media.mediaSet !== null &&
+          !media.mediaSet.includes('server')
+        ) {
+          return {
+            status: 'malformed',
+            reason: 'the inactive server medium requires a verified staging candidate',
+          };
+        }
       }
 
       const result = await deps.vaults.compareAndSwap({
@@ -238,6 +283,40 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
         now: now(),
       });
       return result;
+    },
+
+    async stageServerCandidate(userId, blob) {
+      const inspected = inspectServerBlob(blob, deps.maxBytes);
+      if (inspected.status !== 'ok') return inspected;
+      const stagedAt = now();
+      const result = await deps.vaults.stageServerCandidate({
+        userId,
+        version: inspected.header.vaultVersion,
+        formatVersion: inspected.header.formatVersion,
+        sizeBytes: blob.length,
+        blob,
+        now: stagedAt,
+        expiresAt: new Date(stagedAt.getTime() + PARANOID_SERVER_CANDIDATE_TTL_MS),
+      });
+      switch (result.status) {
+        case 'ok':
+          return result;
+        case 'not_found':
+          return { status: 'not_found' };
+        case 'mode_required':
+          return { status: 'mode_required' };
+        case 'media_invalid':
+        case 'version_invalid':
+          return { status: 'media_invalid' };
+      }
+    },
+
+    getServerCandidate(userId, candidateId) {
+      return deps.vaults.getServerCandidate(userId, candidateId, now());
+    },
+
+    discardServerCandidate(userId, candidateId) {
+      return deps.vaults.discardServerCandidate(userId, candidateId);
     },
 
     getMediaState(userId) {
@@ -279,12 +358,40 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
       if (
         verification.medium !== expectedVerifiedMedium ||
         !proofIsFresh(verification, checkedAt) ||
-        snapshot.current === null ||
-        verification.vaultVersion !== snapshot.current.version ||
-        verification.vaultVersion < minimumKnownVersion ||
-        verification.envelopeSha256 !== envelopeSha256(snapshot.current.blob)
+        verification.vaultVersion < minimumKnownVersion
       ) {
         return { status: 'verification_invalid' };
+      }
+
+      const addsServer = added[0] === 'server';
+      let expectedServerVersion: number;
+      if (addsServer) {
+        if (snapshot.current !== null || !verification.serverCandidateId) {
+          return { status: 'verification_invalid' };
+        }
+        const candidate = await deps.vaults.getServerCandidate(
+          userId,
+          verification.serverCandidateId,
+          checkedAt,
+        );
+        if (
+          !candidate ||
+          candidate.version !== verification.vaultVersion ||
+          envelopeSha256(candidate.blob) !== verification.envelopeSha256
+        ) {
+          return { status: 'verification_invalid' };
+        }
+        expectedServerVersion = candidate.version;
+      } else {
+        if (
+          verification.serverCandidateId !== undefined ||
+          snapshot.current === null ||
+          verification.vaultVersion !== snapshot.current.version ||
+          verification.envelopeSha256 !== envelopeSha256(snapshot.current.blob)
+        ) {
+          return { status: 'verification_invalid' };
+        }
+        expectedServerVersion = snapshot.current.version;
       }
 
       const transition = await deps.vaults.transitionMedia({
@@ -292,7 +399,8 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
         expectedMediaSet: request.expectedMediaSet,
         mediaSet: request.mediaSet,
         driveAttestedVersion: request.mediaSet.includes('drive') ? verification.vaultVersion : null,
-        expectedServerVersion: snapshot.current.version,
+        expectedServerVersion,
+        serverCandidateId: verification.serverCandidateId,
         now: checkedAt,
       });
       switch (transition.status) {
@@ -336,6 +444,7 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
       const checkedAt = now();
       if (
         proof.medium !== 'drive' ||
+        proof.serverCandidateId !== undefined ||
         !proofIsFresh(proof, checkedAt) ||
         proof.vaultVersion < retired.version ||
         (proof.vaultVersion === retired.version &&

@@ -1,4 +1,5 @@
 import type {
+  ParanoidServerCandidateMetadata,
   RetiredServerVaultPurgeResponse,
   VaultMediaPatchRequest,
   VaultMediaStateResponse,
@@ -17,6 +18,9 @@ import {
 export interface VaultMediaApi {
   getState(): Promise<VaultMediaStateResponse>;
   patch(request: VaultMediaPatchRequest): Promise<VaultMediaStateResponse>;
+  stageServerCandidate(envelope: Uint8Array): Promise<ParanoidServerCandidateMetadata>;
+  readServerCandidate(candidate: ParanoidServerCandidateMetadata): Promise<Uint8Array>;
+  discardServerCandidate(candidateId: string): Promise<void>;
   purgeDriveRetired(
     proof: ReturnType<typeof mediaVerification>,
   ): Promise<RetiredServerVaultPurgeResponse>;
@@ -104,6 +108,9 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
         return failure(media, sourceResult.stage, sourceResult.message, sourceResult.cause);
       }
       const source = sourceResult.copy;
+      if (medium === 'server' && sourceMedium === 'drive') {
+        return addServerFromDrive(media, source);
+      }
       const target = homes[medium];
       const targetBefore = await target.read();
       let targetCopy: AuthenticatedVaultCopy | null = null;
@@ -239,6 +246,86 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       }
     },
   };
+
+  async function addServerFromDrive(
+    media: VaultMediaStateResponse,
+    source: AuthenticatedVaultCopy,
+  ): Promise<VaultMediaSwitchResult> {
+    let candidate: ParanoidServerCandidateMetadata;
+    try {
+      candidate = await options.api.stageServerCandidate(source.envelope);
+    } catch (cause) {
+      return failure(
+        media,
+        'write-target',
+        'The encrypted server candidate could not be staged.',
+        cause,
+      );
+    }
+
+    let staged: AuthenticatedVaultCopy;
+    try {
+      const stagedEnvelope = await options.api.readServerCandidate(candidate);
+      staged = await options.authenticate(stagedEnvelope);
+    } catch (cause) {
+      await safeDiscardCandidate(candidate.candidateId);
+      return failure(
+        media,
+        'read-back',
+        'The staged server candidate could not be authenticated.',
+        cause,
+      );
+    }
+    if (staged.vaultVersion !== candidate.version || !copiesMatch(source, staged)) {
+      await safeDiscardCandidate(candidate.candidateId);
+      return failure(
+        media,
+        'verify-round-trip',
+        'The staged server candidate did not match the authenticated Drive source.',
+      );
+    }
+
+    // Re-read Drive immediately before promotion. A candidate is immutable, so
+    // an intervening Drive write leaves it inactive and retryable.
+    const freshDrive = await readAuthenticated(options.drive);
+    if (freshDrive.status === 'failed' || !copiesMatch(staged, freshDrive.copy)) {
+      await safeDiscardCandidate(candidate.candidateId);
+      return failure(
+        media,
+        'verify-round-trip',
+        'The Drive source changed before the server candidate could be promoted.',
+        freshDrive.status === 'failed' ? freshDrive.cause : undefined,
+      );
+    }
+
+    try {
+      const updated = await options.api.patch({
+        expectedMediaSet: media.mediaSet,
+        mediaSet: canonicalMediaSet([...media.mediaSet, 'server']),
+        verification: {
+          ...mediaVerification('server', staged, now()),
+          serverCandidateId: candidate.candidateId,
+        },
+      });
+      return success('ok', updated);
+    } catch (cause) {
+      await safeDiscardCandidate(candidate.candidateId);
+      return failure(
+        media,
+        'patch-media',
+        'The inactive server candidate was not promoted.',
+        cause,
+      );
+    }
+  }
+
+  async function safeDiscardCandidate(candidateId: string): Promise<void> {
+    try {
+      await options.api.discardServerCandidate(candidateId);
+    } catch {
+      // The row is inactive and expires; cleanup failure cannot activate it.
+    }
+  }
 
   async function readAuthenticated(home: DataHome): Promise<
     | { status: 'ok'; copy: AuthenticatedVaultCopy }

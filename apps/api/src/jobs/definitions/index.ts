@@ -86,6 +86,14 @@ export {
 } from './apiKeyJobs';
 
 export {
+  createVaultServerCandidateCleanupJob,
+  VAULT_SERVER_CANDIDATE_CLEANUP_SCHEDULER_ID,
+  VAULT_SERVER_CANDIDATE_CLEANUP_INTERVAL_MS,
+  VAULT_SERVER_CANDIDATE_CLEANUP_BATCH_SIZE,
+  type VaultServerCandidateCleanupJobDeps,
+} from './vaultJobs';
+
+export {
   createDigestDailyJob,
   createDigestWeeklyJob,
   createDeferredDeliveryJob,

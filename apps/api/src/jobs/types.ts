@@ -64,6 +64,8 @@ export const QUEUE_NAMES = {
   // V5-P10 API-key governance (issue 2/2): daily retention sweep over the
   // bounded per-key request-log audit trail.
   apiKeyRequestLogCleanup: 'apiKeys.requestLogCleanup',
+  // V5-P13 PD6: bounded physical purge of abandoned inactive staging bytes.
+  vaultServerCandidateCleanup: 'vault.serverCandidateCleanup',
   systemHeartbeat: 'system.heartbeat',
 } as const;
 
@@ -102,6 +104,7 @@ export interface JobPayloads {
   'webhooks.deliver': { subscriptionId: string; deliveryId: string; event: DomainEvent };
   'webhooks.deliveryCleanup': Record<string, never>;
   'apiKeys.requestLogCleanup': Record<string, never>;
+  'vault.serverCandidateCleanup': Record<string, never>;
   'system.heartbeat': Record<string, never>;
 }
 

@@ -18,6 +18,7 @@ import { createEmailLogRepository } from '../data/repositories/emailLogRepositor
 import { createMarketIntelRepository } from '../data/repositories/marketIntelRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
+import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
 import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
@@ -34,6 +35,7 @@ import {
   createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
   createApiKeyRequestLogCleanupJob,
+  createVaultServerCandidateCleanupJob,
   createNotificationsDispatchJob,
   createDigestDailyJob,
   createDigestWeeklyJob,
@@ -460,6 +462,9 @@ const definitions = [
   // V5-P10 API-key governance (issue 2/2): the daily retention sweep over the
   // bounded per-key request-log audit trail.
   createApiKeyRequestLogCleanupJob({ requestLog: createApiKeyRequestLogRepository(db) }),
+  // Inactive Drive-only → server candidates expire even if the owner never
+  // returns after an interrupted switch.
+  createVaultServerCandidateCleanupJob({ vaults: createParanoidVaultRepository(db) }),
 ];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };

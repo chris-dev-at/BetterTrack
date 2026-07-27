@@ -2,7 +2,12 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Database } from '../../db';
-import { paranoidVaultHistory, paranoidVaults, users } from '../../schema';
+import {
+  paranoidVaultHistory,
+  paranoidVaultServerCandidates,
+  paranoidVaults,
+  users,
+} from '../../schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import {
   createParanoidVaultRepository,
@@ -363,6 +368,108 @@ describe('paranoid vault media retirement', () => {
       driveAttestedVersion: null,
       retiredHead: null,
     });
+  });
+
+  it('promotes an inactive candidate and re-retires an unchanged retained version', async () => {
+    await makeParanoidServerVault();
+    const firstRetirement = new Date(T0.getTime() + DAY_MS);
+    await repo.transitionMedia({
+      userId,
+      expectedMediaSet: ['server'],
+      mediaSet: ['drive'],
+      driveAttestedVersion: 2,
+      expectedServerVersion: 2,
+      now: firstRetirement,
+    });
+
+    const staged = await repo.stageServerCandidate({
+      userId,
+      version: 2,
+      formatVersion: 1,
+      sizeBytes: 2,
+      blob: blob('v2'),
+      now: new Date(firstRetirement.getTime() + DAY_MS),
+      expiresAt: new Date(firstRetirement.getTime() + 2 * DAY_MS),
+    });
+    expect(staged.status).toBe('ok');
+    if (staged.status !== 'ok') throw new Error('candidate staging failed');
+
+    expect(
+      await repo.transitionMedia({
+        userId,
+        expectedMediaSet: ['drive'],
+        mediaSet: ['server', 'drive'],
+        driveAttestedVersion: 2,
+        expectedServerVersion: 2,
+        serverCandidateId: staged.candidate.id,
+        now: new Date(firstRetirement.getTime() + DAY_MS),
+      }),
+    ).toEqual({ status: 'ok', idempotent: false });
+    expect((await repo.getCurrent(userId))?.blob.equals(blob('v2'))).toBe(true);
+    expect(
+      await db
+        .select()
+        .from(paranoidVaultServerCandidates)
+        .where(eq(paranoidVaultServerCandidates.userId, userId)),
+    ).toHaveLength(0);
+
+    const secondRetirement = new Date(firstRetirement.getTime() + 3 * DAY_MS);
+    expect(
+      await repo.transitionMedia({
+        userId,
+        expectedMediaSet: ['server', 'drive'],
+        mediaSet: ['drive'],
+        driveAttestedVersion: 2,
+        expectedServerVersion: 2,
+        now: secondRetirement,
+      }),
+    ).toEqual({ status: 'ok', idempotent: false });
+
+    expect(await repo.getCurrent(userId)).toBeNull();
+    const retained = await db
+      .select()
+      .from(paranoidVaultHistory)
+      .where(eq(paranoidVaultHistory.userId, userId))
+      .orderBy(paranoidVaultHistory.version);
+    expect(retained.map((row) => row.version)).toEqual([1, 2]);
+    expect(retained.filter((row) => row.version === 2)).toHaveLength(1);
+    expect(retained.every((row) => row.retiredAt?.getTime() === secondRetirement.getTime())).toBe(
+      true,
+    );
+  });
+
+  it('physically expires an untouched inactive candidate without owner traffic', async () => {
+    await makeParanoidServerVault();
+    await repo.transitionMedia({
+      userId,
+      expectedMediaSet: ['server'],
+      mediaSet: ['drive'],
+      driveAttestedVersion: 2,
+      expectedServerVersion: 2,
+      now: T0,
+    });
+    const expiresAt = new Date(T0.getTime() + DAY_MS);
+    const staged = await repo.stageServerCandidate({
+      userId,
+      version: 2,
+      formatVersion: 1,
+      sizeBytes: 2,
+      blob: blob('v2'),
+      now: T0,
+      expiresAt,
+    });
+    expect(staged.status).toBe('ok');
+
+    expect(await repo.deleteExpiredServerCandidates(new Date(expiresAt.getTime() - 1), 100)).toBe(
+      0,
+    );
+    expect(await repo.deleteExpiredServerCandidates(expiresAt, 100)).toBe(1);
+    expect(
+      await db
+        .select()
+        .from(paranoidVaultServerCandidates)
+        .where(eq(paranoidVaultServerCandidates.userId, userId)),
+    ).toHaveLength(0);
   });
 
   it('rejects both purge gates, then removes every retired byte after the window', async () => {

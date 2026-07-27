@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, isNull, lt, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, lte } from 'drizzle-orm';
 
 import {
   VAULT_HISTORY_PAGE_DEFAULT,
@@ -10,10 +10,12 @@ import type { Database } from '../db';
 import {
   paranoidRehydrationReceipts,
   paranoidVaultHistory,
+  paranoidVaultServerCandidates,
   paranoidVaults,
   users,
   type ParanoidVaultHistoryRow,
   type ParanoidVaultRow,
+  type ParanoidVaultServerCandidateRow,
 } from '../schema';
 
 /**
@@ -71,6 +73,9 @@ export function createParanoidRehydrationTransactionRepository(
     },
 
     async deleteServerCiphertext(userId) {
+      await executor
+        .delete(paranoidVaultServerCandidates)
+        .where(eq(paranoidVaultServerCandidates.userId, userId));
       await executor.delete(paranoidVaultHistory).where(eq(paranoidVaultHistory.userId, userId));
       await executor.delete(paranoidVaults).where(eq(paranoidVaults.userId, userId));
     },
@@ -171,6 +176,8 @@ export interface ParanoidVaultMediaTransitionInput {
   driveAttestedVersion: number | null;
   /** The live/staged server version the service verified before this transaction. */
   expectedServerVersion: number;
+  /** Exact inactive row to promote for Drive-only → both. */
+  serverCandidateId?: string;
   now: Date;
 }
 
@@ -180,6 +187,19 @@ export type ParanoidVaultMediaTransitionResult =
   | { status: 'mode_required' }
   | { status: 'precondition_failed'; mediaSet: VaultMediaSet }
   | { status: 'server_version_changed'; currentVersion: number | null };
+
+export interface ParanoidVaultServerCandidateInput extends ParanoidVaultBlobInput {
+  userId: string;
+  now: Date;
+  expiresAt: Date;
+}
+
+export type ParanoidVaultServerCandidateResult =
+  | { status: 'ok'; candidate: ParanoidVaultServerCandidateRow; idempotent: boolean }
+  | { status: 'not_found' }
+  | { status: 'mode_required' }
+  | { status: 'media_invalid'; mediaSet: VaultMediaSet }
+  | { status: 'version_invalid'; minimumVersion: number };
 
 export interface ParanoidVaultRetiredPurgeInput {
   userId: string;
@@ -208,6 +228,17 @@ export interface ParanoidVaultRepository {
   transitionMedia(
     input: ParanoidVaultMediaTransitionInput,
   ): Promise<ParanoidVaultMediaTransitionResult>;
+  stageServerCandidate(
+    input: ParanoidVaultServerCandidateInput,
+  ): Promise<ParanoidVaultServerCandidateResult>;
+  getServerCandidate(
+    userId: string,
+    candidateId: string,
+    now: Date,
+  ): Promise<ParanoidVaultServerCandidateRow | null>;
+  discardServerCandidate(userId: string, candidateId: string): Promise<void>;
+  /** Independently purge a bounded batch of expired inactive ciphertext. */
+  deleteExpiredServerCandidates(now: Date, limit: number): Promise<number>;
   purgeRetired(input: ParanoidVaultRetiredPurgeInput): Promise<ParanoidVaultRetiredPurgeResult>;
   compareAndSwap(input: ParanoidVaultCasInput): Promise<ParanoidVaultCasResult>;
 }
@@ -220,6 +251,18 @@ function historyPageSize(requested: number | undefined): number {
 
 function sameMediaSet(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((medium) => right.includes(medium));
+}
+
+function sameStoredVault(
+  left: Pick<ParanoidVaultRow, 'version' | 'formatVersion' | 'sizeBytes' | 'blob'>,
+  right: Pick<ParanoidVaultRow, 'version' | 'formatVersion' | 'sizeBytes' | 'blob'>,
+): boolean {
+  return (
+    left.version === right.version &&
+    left.formatVersion === right.formatVersion &&
+    left.sizeBytes === right.sizeBytes &&
+    left.blob.equals(right.blob)
+  );
 }
 
 function storedMediaSet(value: string[] | null): VaultMediaSet | null {
@@ -331,44 +374,108 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           } as const;
         }
 
+        const addsServer = !currentMediaSet.includes('server') && input.mediaSet.includes('server');
+        const removesServer =
+          currentMediaSet.includes('server') && !input.mediaSet.includes('server');
         const [current] = await tx
           .select()
           .from(paranoidVaults)
           .where(eq(paranoidVaults.userId, input.userId))
           .for('update');
-        if (!current || current.version !== input.expectedServerVersion) {
+
+        let serverCandidate: ParanoidVaultServerCandidateRow | undefined;
+        if (addsServer) {
+          if (!input.serverCandidateId || current) {
+            return {
+              status: 'server_version_changed',
+              currentVersion: current?.version ?? null,
+            } as const;
+          }
+          [serverCandidate] = await tx
+            .select()
+            .from(paranoidVaultServerCandidates)
+            .where(
+              and(
+                eq(paranoidVaultServerCandidates.userId, input.userId),
+                eq(paranoidVaultServerCandidates.id, input.serverCandidateId),
+              ),
+            )
+            .for('update');
+          if (serverCandidate && serverCandidate.expiresAt <= input.now) {
+            await tx
+              .delete(paranoidVaultServerCandidates)
+              .where(eq(paranoidVaultServerCandidates.id, serverCandidate.id));
+            serverCandidate = undefined;
+          }
+          if (!serverCandidate || serverCandidate.version !== input.expectedServerVersion) {
+            return {
+              status: 'server_version_changed',
+              currentVersion: null,
+            } as const;
+          }
+        } else if (
+          input.serverCandidateId !== undefined ||
+          !current ||
+          current.version !== input.expectedServerVersion
+        ) {
           return {
             status: 'server_version_changed',
             currentVersion: current?.version ?? null,
           } as const;
         }
 
-        const removesServer =
-          currentMediaSet.includes('server') && !input.mediaSet.includes('server');
         if (removesServer) {
           // The current envelope becomes the newest history candidate, and
           // every previously bounded row joins the same retired recovery set.
           // The live row is removed only after its bytes are durably copied, so
           // this assertion-driven transaction never destroys ciphertext.
-          await tx.insert(paranoidVaultHistory).values({
-            userId: input.userId,
-            version: current.version,
-            formatVersion: current.formatVersion,
-            sizeBytes: current.sizeBytes,
-            blob: current.blob,
-            createdAt: current.updatedAt,
-            retiredAt: input.now,
-          });
-          await tx
-            .update(paranoidVaultHistory)
-            .set({ retiredAt: input.now })
+          const [retainedVersion] = await tx
+            .select()
+            .from(paranoidVaultHistory)
             .where(
               and(
                 eq(paranoidVaultHistory.userId, input.userId),
-                isNull(paranoidVaultHistory.retiredAt),
+                eq(paranoidVaultHistory.version, current!.version),
               ),
-            );
+            )
+            .for('update');
+          if (retainedVersion && !sameStoredVault(current!, retainedVersion)) {
+            return {
+              status: 'server_version_changed',
+              currentVersion: current!.version,
+            } as const;
+          }
+          if (!retainedVersion) {
+            await tx.insert(paranoidVaultHistory).values({
+              userId: input.userId,
+              version: current!.version,
+              formatVersion: current!.formatVersion,
+              sizeBytes: current!.sizeBytes,
+              blob: current!.blob,
+              createdAt: current!.updatedAt,
+              retiredAt: input.now,
+            });
+          }
+          await tx
+            .update(paranoidVaultHistory)
+            .set({ retiredAt: input.now })
+            .where(eq(paranoidVaultHistory.userId, input.userId));
           await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, input.userId));
+        }
+
+        if (serverCandidate) {
+          await tx.insert(paranoidVaults).values({
+            userId: input.userId,
+            version: serverCandidate.version,
+            formatVersion: serverCandidate.formatVersion,
+            sizeBytes: serverCandidate.sizeBytes,
+            blob: serverCandidate.blob,
+            createdAt: input.now,
+            updatedAt: input.now,
+          });
+          await tx
+            .delete(paranoidVaultServerCandidates)
+            .where(eq(paranoidVaultServerCandidates.id, serverCandidate.id));
         }
 
         await tx
@@ -380,6 +487,140 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           })
           .where(eq(users.id, input.userId));
         return { status: 'ok', idempotent: false } as const;
+      });
+    },
+
+    async stageServerCandidate(input) {
+      return db.transaction(async (tx) => {
+        const [user] = await tx
+          .select({
+            privacyMode: users.privacyMode,
+            mediaSet: users.paranoidMediaSet,
+            driveAttestedVersion: users.paranoidDriveAttestedVersion,
+          })
+          .from(users)
+          .where(eq(users.id, input.userId))
+          .for('update');
+        if (!user) return { status: 'not_found' } as const;
+        if (user.privacyMode !== 'paranoid' || user.mediaSet === null) {
+          return { status: 'mode_required' } as const;
+        }
+        const mediaSet = storedMediaSet(user.mediaSet)!;
+        if (!sameMediaSet(mediaSet, ['drive'])) {
+          return { status: 'media_invalid', mediaSet } as const;
+        }
+
+        const [current] = await tx
+          .select({ version: paranoidVaults.version })
+          .from(paranoidVaults)
+          .where(eq(paranoidVaults.userId, input.userId))
+          .for('update');
+        const [retiredHead] = await tx
+          .select({ version: paranoidVaultHistory.version })
+          .from(paranoidVaultHistory)
+          .where(
+            and(
+              eq(paranoidVaultHistory.userId, input.userId),
+              isNotNull(paranoidVaultHistory.retiredAt),
+            ),
+          )
+          .orderBy(desc(paranoidVaultHistory.version))
+          .limit(1);
+        const minimumVersion = Math.max(user.driveAttestedVersion ?? 0, retiredHead?.version ?? 0);
+        if (current || input.version < minimumVersion) {
+          return { status: 'version_invalid', minimumVersion } as const;
+        }
+
+        let [existing] = await tx
+          .select()
+          .from(paranoidVaultServerCandidates)
+          .where(eq(paranoidVaultServerCandidates.userId, input.userId))
+          .for('update');
+        if (existing && existing.expiresAt <= input.now) {
+          await tx
+            .delete(paranoidVaultServerCandidates)
+            .where(eq(paranoidVaultServerCandidates.id, existing.id));
+          existing = undefined;
+        }
+        if (existing && sameStoredVault(existing, input)) {
+          return { status: 'ok', candidate: existing, idempotent: true } as const;
+        }
+        if (existing) {
+          await tx
+            .delete(paranoidVaultServerCandidates)
+            .where(eq(paranoidVaultServerCandidates.id, existing.id));
+        }
+        const [candidate] = await tx
+          .insert(paranoidVaultServerCandidates)
+          .values({
+            userId: input.userId,
+            version: input.version,
+            formatVersion: input.formatVersion,
+            sizeBytes: input.sizeBytes,
+            blob: input.blob,
+            createdAt: input.now,
+            expiresAt: input.expiresAt,
+          })
+          .returning();
+        return { status: 'ok', candidate: candidate!, idempotent: false } as const;
+      });
+    },
+
+    async getServerCandidate(userId, candidateId, now) {
+      return db.transaction(async (tx) => {
+        const [candidate] = await tx
+          .select()
+          .from(paranoidVaultServerCandidates)
+          .where(
+            and(
+              eq(paranoidVaultServerCandidates.userId, userId),
+              eq(paranoidVaultServerCandidates.id, candidateId),
+            ),
+          )
+          .for('update');
+        if (!candidate) return null;
+        if (candidate.expiresAt <= now) {
+          await tx
+            .delete(paranoidVaultServerCandidates)
+            .where(eq(paranoidVaultServerCandidates.id, candidate.id));
+          return null;
+        }
+        return candidate;
+      });
+    },
+
+    async discardServerCandidate(userId, candidateId) {
+      await db
+        .delete(paranoidVaultServerCandidates)
+        .where(
+          and(
+            eq(paranoidVaultServerCandidates.userId, userId),
+            eq(paranoidVaultServerCandidates.id, candidateId),
+          ),
+        );
+    },
+
+    async deleteExpiredServerCandidates(now, limit) {
+      const boundedLimit = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, 1_000) : 100;
+      return db.transaction(async (tx) => {
+        const expired = await tx
+          .select({ id: paranoidVaultServerCandidates.id })
+          .from(paranoidVaultServerCandidates)
+          .where(lte(paranoidVaultServerCandidates.expiresAt, now))
+          .orderBy(asc(paranoidVaultServerCandidates.expiresAt))
+          .limit(boundedLimit)
+          .for('update', { skipLocked: true });
+        if (expired.length === 0) return 0;
+        const deleted = await tx
+          .delete(paranoidVaultServerCandidates)
+          .where(
+            inArray(
+              paranoidVaultServerCandidates.id,
+              expired.map((row) => row.id),
+            ),
+          )
+          .returning({ id: paranoidVaultServerCandidates.id });
+        return deleted.length;
       });
     },
 

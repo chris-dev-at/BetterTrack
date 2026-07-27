@@ -4,6 +4,8 @@ import {
   decodeVaultEnvelope,
   encodeVaultEnvelope,
   parseVaultEtag,
+  paranoidServerCandidateMetadataSchema,
+  paranoidServerCandidateParamSchema,
   privacyModeSchema,
   readVaultServerHeader,
   VAULT_CONTENT_CIPHER,
@@ -97,6 +99,19 @@ describe('media set', () => {
       }).success,
     ).toBe(false);
     expect(
+      vaultMediaPatchRequestSchema.parse({
+        expectedMediaSet: ['drive'],
+        mediaSet: ['server', 'drive'],
+        verification: {
+          ...proof,
+          medium: 'server',
+          serverCandidateId: UUID_A,
+        },
+      }),
+    ).toMatchObject({
+      verification: { medium: 'server', serverCandidateId: UUID_A },
+    });
+    expect(
       vaultMediaPatchRequestSchema.safeParse({
         expectedMediaSet: ['server'],
         mediaSet: ['server', 'drive'],
@@ -125,6 +140,26 @@ describe('media set', () => {
           envelopeSha256: 'a'.repeat(64),
           verifiedAt: '2026-08-03T10:00:00.000Z',
         },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('pins the portfolio-free inactive server-candidate receipt', () => {
+    const receipt = {
+      candidateId: UUID_A,
+      version: 7,
+      formatVersion: 1,
+      sizeBytes: 4096,
+      expiresAt: '2026-07-27T10:15:00.000Z',
+    };
+    expect(paranoidServerCandidateMetadataSchema.parse(receipt)).toEqual(receipt);
+    expect(paranoidServerCandidateParamSchema.parse({ candidateId: UUID_A })).toEqual({
+      candidateId: UUID_A,
+    });
+    expect(
+      paranoidServerCandidateMetadataSchema.safeParse({
+        ...receipt,
+        accessToken: 'must-never-cross',
       }).success,
     ).toBe(false);
   });

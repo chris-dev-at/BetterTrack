@@ -502,8 +502,22 @@
     {
       "idx": 71,
       "version": "7",
+      "when": 1785105246594,
+      "tag": "0071_asset_identities",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
       "when": 1785109200000,
-      "tag": "0071_paranoid_vault_retirement",
+      "tag": "0072_paranoid_vault_retirement",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1785195600000,
+      "tag": "0073_paranoid_vault_server_candidates",
       "breakpoints": true
     }
   ]

@@ -2,11 +2,15 @@ import express, { Router, type RequestHandler } from 'express';
 
 import {
   parseVaultEtag,
+  paranoidServerCandidateMetadataSchema,
+  paranoidServerCandidateParamSchema,
   VAULT_CONTENT_TYPE,
   VAULT_ERROR_CODES,
   VAULT_HISTORY_CREATED_AT_HEADER,
   VAULT_HISTORY_MEDIUM_HEADER,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
+  VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER,
+  VAULT_SERVER_CANDIDATE_ID_HEADER,
   vaultEtag,
   vaultHistoryListResponseSchema,
   vaultHistoryListQuerySchema,
@@ -16,6 +20,7 @@ import {
   retiredServerVaultPurgeRequestSchema,
   retiredServerVaultPurgeResponseSchema,
   type RetiredServerVaultPurgeRequest,
+  type ParanoidServerCandidateParam,
   type VaultHistoryListQuery,
   type VaultHistoryVersionParam,
   type VaultMediaPatchRequest,
@@ -223,10 +228,12 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
  * Drive credentials never cross this router: only the non-sensitive media set
  * and a short-lived opaque-envelope read-back attestation are accepted.
  */
-export function createParanoidMediaRouter(ctx: AppContext): Router {
+export function createParanoidMediaRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
   router.use(requireUser, requireParanoidMode);
+
+  const rawCandidateBody = express.raw({ type: () => true, limit: ctx.config.vault.maxBytes });
 
   router.get('/media', async (req, res) => {
     const state = await ctx.paranoidVault.getMediaState(req.authUser!.id);
@@ -279,6 +286,92 @@ export function createParanoidMediaRouter(ctx: AppContext): Router {
         );
     }
   });
+
+  // Drive-only → both stages inactive bytes first. The live `/vault` row stays
+  // absent until the verified media PATCH promotes this exact candidate in the
+  // same transaction as the durable media-set update.
+  router.put(
+    '/media/server-candidate',
+    limiters.vault,
+    (req, res, next) => {
+      rawCandidateBody(req, res, (err?: unknown) => {
+        if ((err as { type?: string } | undefined)?.type === 'entity.too.large') {
+          next(payloadTooLarge());
+          return;
+        }
+        if (err) {
+          next(err);
+          return;
+        }
+        next();
+      });
+    },
+    async (req, res) => {
+      const blob = Buffer.isBuffer(req.body) ? req.body : null;
+      if (!blob || blob.length === 0) {
+        throw malformed('The server-candidate body must be non-empty envelope bytes.');
+      }
+      const result = await ctx.paranoidVault.stageServerCandidate(req.authUser!.id, blob);
+      switch (result.status) {
+        case 'ok':
+          res.status(201).json(
+            paranoidServerCandidateMetadataSchema.parse({
+              candidateId: result.candidate.id,
+              version: result.candidate.version,
+              formatVersion: result.candidate.formatVersion,
+              sizeBytes: result.candidate.sizeBytes,
+              expiresAt: result.candidate.expiresAt.toISOString(),
+            }),
+          );
+          return;
+        case 'not_found':
+          throw notFound('No account found.', VAULT_ERROR_CODES.notFound);
+        case 'mode_required':
+          throw forbidden(
+            'Server staging is available only in paranoid mode.',
+            VAULT_ERROR_CODES.modeRequired,
+          );
+        case 'media_invalid':
+          throw new ApiError(
+            409,
+            VAULT_ERROR_CODES.mediaTransitionInvalid,
+            'A server candidate can be staged only while Drive is the sole live medium.',
+          );
+        case 'too_large':
+          throw payloadTooLarge();
+        case 'malformed':
+          throw malformed(result.reason);
+      }
+    },
+  );
+
+  router.get(
+    '/media/server-candidate/:candidateId',
+    validateParams(paranoidServerCandidateParamSchema),
+    async (req, res) => {
+      const { candidateId } = req.valid?.params as ParanoidServerCandidateParam;
+      const candidate = await ctx.paranoidVault.getServerCandidate(req.authUser!.id, candidateId);
+      if (!candidate) {
+        throw notFound('No active server vault candidate found.', VAULT_ERROR_CODES.notFound);
+      }
+      res.setHeader('ETag', vaultEtag(candidate.version));
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Content-Type', VAULT_CONTENT_TYPE);
+      res.setHeader(VAULT_SERVER_CANDIDATE_ID_HEADER, candidate.id);
+      res.setHeader(VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER, candidate.expiresAt.toISOString());
+      res.status(200).send(candidate.blob);
+    },
+  );
+
+  router.delete(
+    '/media/server-candidate/:candidateId',
+    validateParams(paranoidServerCandidateParamSchema),
+    async (req, res) => {
+      const { candidateId } = req.valid?.params as ParanoidServerCandidateParam;
+      await ctx.paranoidVault.discardServerCandidate(req.authUser!.id, candidateId);
+      res.status(204).end();
+    },
+  );
 
   router.post(
     '/media/server/purge',

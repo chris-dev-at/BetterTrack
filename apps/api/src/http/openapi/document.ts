@@ -45,6 +45,7 @@ const componentSchemas = {
   VaultMediaStateResponse: contracts.vaultMediaStateResponseSchema,
   RetiredServerVaultPurgeRequest: contracts.retiredServerVaultPurgeRequestSchema,
   RetiredServerVaultPurgeResponse: contracts.retiredServerVaultPurgeResponseSchema,
+  ParanoidServerCandidateMetadata: contracts.paranoidServerCandidateMetadataSchema,
 
   // Auth (§6.1)
   LoginRequest: contracts.loginRequestSchema,
@@ -3814,6 +3815,44 @@ const endpoints: EndpointDef[] = [
     body: R.RetiredServerVaultPurgeRequest,
     status: 200,
     response: R.RetiredServerVaultPurgeResponse,
+  },
+  {
+    method: 'put',
+    path: '/account/paranoid/media/server-candidate',
+    tag: 'Vault',
+    summary:
+      'Stage an inactive opaque server candidate for a Drive-only account. This never creates the live server DataHome; a later verified media PATCH promotes the exact candidate atomically.',
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque AES-256-GCM vault envelope bytes (never interpreted server-side).',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 201,
+    response: R.ParanoidServerCandidateMetadata,
+  },
+  {
+    method: 'get',
+    path: '/account/paranoid/media/server-candidate/{candidateId}',
+    tag: 'Vault',
+    summary:
+      'Read one exact unexpired inactive server candidate for browser-side authenticated verification.',
+    params: contracts.paranoidServerCandidateParamSchema,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Inactive opaque vault candidate bytes.',
+    }),
+    responseContentType: 'application/octet-stream',
+  },
+  {
+    method: 'delete',
+    path: '/account/paranoid/media/server-candidate/{candidateId}',
+    tag: 'Vault',
+    summary: 'Discard one failed or abandoned inactive server candidate.',
+    params: contracts.paranoidServerCandidateParamSchema,
+    status: 204,
   },
   {
     method: 'get',

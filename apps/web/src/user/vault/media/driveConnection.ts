@@ -46,6 +46,7 @@ export function createDriveConnectionController(
       const result = await options.switcher.remove('drive');
       if ((result.status === 'ok' || result.status === 'noop') && !result.driveLeftover) {
         options.tokens.clear();
+        await options.resumeSync?.();
       }
       return result;
     },
