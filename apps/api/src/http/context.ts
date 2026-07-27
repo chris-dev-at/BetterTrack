@@ -853,6 +853,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     vaults: createParanoidVaultRepository(db),
     maxBytes: config.vault.maxBytes,
     retention: config.vault.history,
+    // Short-lived candidate/purge transcripts are domain-separated inside the
+    // service. Losing a rotated cookie secret only invalidates in-flight proofs;
+    // durable retirement bytes and their client-held signing keys are untouched.
+    proofSecret: config.sessionSecrets[0],
   });
 
   const webhookSubscriptionRepo = createWebhookSubscriptionRepository(db);

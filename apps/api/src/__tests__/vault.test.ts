@@ -1,19 +1,26 @@
+import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
+
 import { eq } from 'drizzle-orm';
 
 import {
   encodeVaultEnvelope,
+  createOAuthClientResponseSchema,
+  oauthTokenResponseSchema,
+  serializeRetiredServerPurgeTranscript,
   VAULT_CONTENT_CIPHER,
   VAULT_HISTORY_CREATED_AT_HEADER,
   VAULT_HISTORY_MEDIUM_HEADER,
   VAULT_HISTORY_PAGE_MAX,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
+  VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER,
+  VAULT_SERVER_CANDIDATE_READBACK_HEADER,
   VAULT_VERSION_MAX,
 } from '@bettertrack/contracts';
 import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { users } from '../data/schema';
+import { paranoidVaultRetirements, users } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -81,6 +88,87 @@ async function seedAndLogin(
       .where(eq(users.id, user.id));
   }
   return loginAgent(harness.app, user.email, 'user-strong-password-1');
+}
+
+async function seedParanoidAgent(email: string, username: string) {
+  const user = await harness.seedUser({ email, username, password: 'user-strong-password-1' });
+  await harness.db
+    .update(users)
+    .set({
+      privacyMode: 'paranoid',
+      paranoidMediaSet: ['server'],
+      paranoidDriveAttestedVersion: null,
+    })
+    .where(eq(users.id, user.id));
+  return { user, agent: await loginAgent(harness.app, user.email, 'user-strong-password-1') };
+}
+
+function retirementProofKey() {
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  return {
+    privateKey,
+    publicKey: publicKey.export({ type: 'spki', format: 'der' }).toString('base64url'),
+  };
+}
+
+function purgeSignature(
+  privateKey: ReturnType<typeof generateKeyPairSync>['privateKey'],
+  retiredVersion: number,
+  observedVersion: number,
+  challenge: string,
+): string {
+  return sign(
+    null,
+    Buffer.from(
+      serializeRetiredServerPurgeTranscript({ retiredVersion, observedVersion, challenge }),
+    ),
+    privateKey,
+  ).toString('base64url');
+}
+
+async function mintDelegatedSecurityToken(): Promise<string> {
+  const tag = randomBytes(5).toString('hex');
+  const user = await harness.seedUser({
+    email: `oauth-vault-${tag}@bt.test`,
+    username: `oauthvault${tag}`,
+    password: 'user-strong-password-1',
+  });
+  const agent = await loginAgent(harness.app, user.email, 'user-strong-password-1');
+  const registered = await agent
+    .post('/api/v1/settings/oauth-clients')
+    .set(...XRW)
+    .send({
+      name: 'Vault bearer test',
+      redirectUris: ['https://app.example/vault-callback'],
+      scopes: ['account:security'],
+      public: true,
+    });
+  expect(registered.status).toBe(201);
+  const client = createOAuthClientResponseSchema.parse(registered.body).client;
+  const verifier = randomBytes(32).toString('base64url');
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  const authorized = await agent
+    .post('/api/v1/oauth/authorize')
+    .set(...XRW)
+    .send({
+      client_id: client.clientId,
+      redirect_uri: 'https://app.example/vault-callback',
+      scope: 'account:security',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+  expect(authorized.status).toBe(200);
+  const code = new URL(authorized.body.redirectTo as string).searchParams.get('code');
+  expect(code).toBeTruthy();
+  const exchanged = await request(harness.app).post('/api/v1/oauth/token').send({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: 'https://app.example/vault-callback',
+    client_id: client.clientId,
+    code_verifier: verifier,
+  });
+  expect(exchanged.status).toBe(200);
+  return oauthTokenResponseSchema.parse(exchanged.body).access_token;
 }
 
 describe('vault blob store', () => {
@@ -367,5 +455,359 @@ describe('vault blob store', () => {
     const over = await hit();
     expect(over.status).toBe(429);
     expect(over.headers['retry-after']).toBeDefined();
+  });
+});
+
+describe('durable paranoid server-media lifecycle', () => {
+  it('rejects personal and delegated account-security bearers from every vault-media surface', async () => {
+    const user = await harness.seedUser({ email: 'key-vault@bt.test', username: 'keyvault' });
+    const personal = await harness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'vault test key',
+      scopes: ['account:security'],
+    });
+    const personalResult = await request(harness.app)
+      .get('/api/v1/vault/media')
+      .set('Authorization', `Bearer ${personal.token}`);
+    expect(personalResult.status).toBe(403);
+    expect(personalResult.body.error.code).toBe('API_KEY_FORBIDDEN');
+
+    const delegated = await mintDelegatedSecurityToken();
+    const delegatedResult = await request(harness.app)
+      .post('/api/v1/vault/media/retired/purge/challenge')
+      .set('Authorization', `Bearer ${delegated}`)
+      .send({ retiredVersion: 1 });
+    expect(delegatedResult.status).toBe(403);
+    expect(delegatedResult.body.error.code).toBe('API_KEY_FORBIDDEN');
+  });
+
+  it('enrols a legacy active vault into the immutable retirement verifier on its first CAS update', async () => {
+    const { agent } = await seedParanoidAgent('legacy-proof@bt.test', 'legacyproof');
+    const { publicKey } = retirementProofKey();
+    const { publicKey: replacementKey } = retirementProofKey();
+    const v1 = envelope(1, new Uint8Array([1]));
+    const v2 = envelope(2, new Uint8Array([2]));
+    const v3 = envelope(3, new Uint8Array([3]));
+
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(v1)
+      .expect(204);
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+      .send(v2)
+      .expect(204);
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"2"')
+      .send(v3)
+      .expect(204);
+    await agent
+      .patch('/api/v1/vault/media')
+      .set(...XRW)
+      .send({
+        expected: { mediaSet: ['server'], driveAttestedVersion: null },
+        nextMediaSet: ['server', 'drive'],
+        verification: { kind: 'drive', version: 3 },
+      })
+      .expect(200);
+    const replacement = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"3"')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, replacementKey)
+      .send(envelope(4, new Uint8Array([4])));
+    expect(replacement.status).toBe(409);
+  });
+
+  it('moves bytes through candidate and retirement states before a retained, advanced-version purge', async () => {
+    const { user, agent } = await seedParanoidAgent('lifecycle@bt.test', 'lifecycle');
+    const { privateKey, publicKey } = retirementProofKey();
+    const v1 = envelope(1, new Uint8Array([1, 2, 3]));
+    const serverOnly = { mediaSet: ['server'], driveAttestedVersion: null };
+    const both = { mediaSet: ['server', 'drive'], driveAttestedVersion: 1 };
+    const driveOnly = { mediaSet: ['drive'], driveAttestedVersion: 1 };
+    const patchMedia = (body: Record<string, unknown>) =>
+      agent
+        .patch('/api/v1/vault/media')
+        .set(...XRW)
+        .send(body);
+
+    expect(
+      (
+        await agent
+          .put('/api/v1/vault')
+          .set(...XRW)
+          .set(...OCTET)
+          .set('If-None-Match', '*')
+          .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+          .send(v1)
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await patchMedia({
+          expected: serverOnly,
+          nextMediaSet: both.mediaSet,
+          verification: { kind: 'drive', version: 1 },
+        })
+      ).status,
+    ).toBe(200);
+    const retired = await patchMedia({
+      expected: both,
+      nextMediaSet: driveOnly.mediaSet,
+      verification: { kind: 'drive', version: 1 },
+    });
+    expect(retired.status).toBe(200);
+    expect(retired.body.server.disposition).toBe('retired');
+    expect(JSON.stringify(retired.body)).not.toContain('ciphertext');
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+    expect((await agent.get('/api/v1/vault/history/1').responseType('blob')).body.equals(v1)).toBe(
+      true,
+    );
+
+    const staged = await agent
+      .put('/api/v1/vault/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+      .send(v1);
+    expect(staged.status).toBe(200);
+    const candidateId = staged.body.candidateId as string;
+
+    // A fabricated verification cannot activate staged bytes; the durable
+    // selection remains Drive-only and there is still no active server blob.
+    const failedPromotion = await patchMedia({
+      expected: driveOnly,
+      nextMediaSet: both.mediaSet,
+      verification: {
+        kind: 'server-candidate',
+        candidateId,
+        readback: 'fabricated-candidate-readback-token'.repeat(2),
+      },
+    });
+    expect(failedPromotion.status).toBe(412);
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+
+    const candidate = await agent
+      .get(`/api/v1/vault/media/server-candidate/${candidateId}`)
+      .responseType('blob');
+    expect(candidate.status).toBe(200);
+    expect((candidate.body as Buffer).equals(v1)).toBe(true);
+    const readback = candidate.headers[
+      VAULT_SERVER_CANDIDATE_READBACK_HEADER.toLowerCase()
+    ] as string;
+    const promoted = await patchMedia({
+      expected: driveOnly,
+      nextMediaSet: both.mediaSet,
+      verification: { kind: 'server-candidate', candidateId, readback },
+    });
+    expect(promoted.status).toBe(200);
+    expect(promoted.body.server.disposition).toBe('active');
+    expect((await agent.get('/api/v1/vault').responseType('blob')).body.equals(v1)).toBe(true);
+
+    const serverOnlyAgain = await patchMedia({
+      expected: both,
+      nextMediaSet: serverOnly.mediaSet,
+      verification: { kind: 'server', version: 1 },
+    });
+    expect(serverOnlyAgain.status).toBe(200);
+    expect(serverOnlyAgain.body.mediaSet).toEqual(['server']);
+    const staleTransition = await patchMedia({
+      expected: both,
+      nextMediaSet: driveOnly.mediaSet,
+      verification: { kind: 'drive', version: 1 },
+    });
+    expect(staleTransition.status).toBe(409);
+    expect(
+      (
+        await patchMedia({
+          expected: serverOnly,
+          nextMediaSet: both.mediaSet,
+          verification: { kind: 'drive', version: 1 },
+        })
+      ).status,
+    ).toBe(200);
+    // Same-version re-retirement reuses the byte-identical retirement row
+    // deterministically instead of raising a uniqueness error.
+    expect(
+      (
+        await patchMedia({
+          expected: both,
+          nextMediaSet: driveOnly.mediaSet,
+          verification: { kind: 'drive', version: 1 },
+        })
+      ).status,
+    ).toBe(200);
+    // A lost response retries idempotently once the target is already durable.
+    expect(
+      (
+        await patchMedia({
+          expected: both,
+          nextMediaSet: driveOnly.mediaSet,
+          verification: { kind: 'drive', version: 1 },
+        })
+      ).status,
+    ).toBe(200);
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+
+    const prepared = await agent
+      .post('/api/v1/vault/media/retired/purge/challenge')
+      .set(...XRW)
+      .send({ retiredVersion: 1 });
+    expect(prepared.status).toBe(200);
+    const challenge = prepared.body.challenge as string;
+    const advancedProof = {
+      retiredVersion: 1,
+      observedVersion: 2,
+      challenge,
+      signature: purgeSignature(privateKey, 1, 2, challenge),
+    };
+    const beforeRetention = await agent
+      .post('/api/v1/vault/media/retired/purge')
+      .set(...XRW)
+      .send(advancedProof);
+    expect(beforeRetention.status).toBe(409);
+    expect(beforeRetention.body.error.code).toBe('VAULT_RETIRED_SERVER_RETENTION');
+    expect((await agent.get('/api/v1/vault/history/1')).status).toBe(200);
+
+    await harness.db
+      .update(paranoidVaultRetirements)
+      .set({ retiredAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) })
+      .where(eq(paranoidVaultRetirements.userId, user.id));
+    const purged = await agent
+      .post('/api/v1/vault/media/retired/purge')
+      .set(...XRW)
+      .send(advancedProof);
+    expect(purged.status).toBe(200);
+    expect(purged.body).toEqual({ purged: true });
+    expect((await agent.get('/api/v1/vault/history')).body).toEqual({
+      items: [],
+      nextCursor: null,
+    });
+    expect((await agent.get('/api/v1/vault/history/1')).status).toBe(404);
+  });
+
+  it('fails closed for a conflicting same-version candidate and proofs derived without the vault key', async () => {
+    const { agent } = await seedParanoidAgent('proofs@bt.test', 'proofs');
+    const { privateKey, publicKey } = retirementProofKey();
+    const { privateKey: fabricatedPrivateKey } = retirementProofKey();
+    const v1 = envelope(1, new Uint8Array([1]));
+    const v2 = envelope(2, new Uint8Array([2]));
+    const serverOnly = { mediaSet: ['server'], driveAttestedVersion: null };
+    const both = { mediaSet: ['server', 'drive'], driveAttestedVersion: 2 };
+    const driveOnly = { mediaSet: ['drive'], driveAttestedVersion: 2 };
+    const patchMedia = (body: Record<string, unknown>) =>
+      agent
+        .patch('/api/v1/vault/media')
+        .set(...XRW)
+        .send(body);
+
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+      .send(v1)
+      .expect(204);
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(v2)
+      .expect(204);
+    await patchMedia({
+      expected: serverOnly,
+      nextMediaSet: both.mediaSet,
+      verification: { kind: 'drive', version: 2 },
+    }).expect(200);
+    await patchMedia({
+      expected: both,
+      nextMediaSet: driveOnly.mediaSet,
+      verification: { kind: 'drive', version: 2 },
+    }).expect(200);
+
+    // Downloading the raw retired envelope gives only opaque bytes. A different
+    // signing key cannot turn that history response into a destructive proof.
+    const retiredRead = await agent.get('/api/v1/vault/history/2').responseType('blob');
+    expect(retiredRead.status).toBe(200);
+    expect((retiredRead.body as Buffer).equals(v2)).toBe(true);
+    const staleCandidate = await agent
+      .put('/api/v1/vault/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+      .send(v1);
+    expect(staleCandidate.status).toBe(412);
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+    const staged = await agent
+      .put('/api/v1/vault/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+      .send(envelope(2, new Uint8Array([9, 9, 9])));
+    expect(staged.status).toBe(200);
+    const candidateId = staged.body.candidateId as string;
+    const candidate = await agent
+      .get(`/api/v1/vault/media/server-candidate/${candidateId}`)
+      .responseType('blob');
+    const conflict = await patchMedia({
+      expected: driveOnly,
+      nextMediaSet: both.mediaSet,
+      verification: {
+        kind: 'server-candidate',
+        candidateId,
+        readback: candidate.headers[VAULT_SERVER_CANDIDATE_READBACK_HEADER.toLowerCase()] as string,
+      },
+    });
+    expect(conflict.status).toBe(409);
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+    expect((await agent.get('/api/v1/vault/history/2').responseType('blob')).body.equals(v2)).toBe(
+      true,
+    );
+
+    const prepared = await agent
+      .post('/api/v1/vault/media/retired/purge/challenge')
+      .set(...XRW)
+      .send({ retiredVersion: 2 });
+    const challenge = prepared.body.challenge as string;
+    const fabricated = await agent
+      .post('/api/v1/vault/media/retired/purge')
+      .set(...XRW)
+      .send({
+        retiredVersion: 2,
+        observedVersion: 2,
+        challenge,
+        signature: purgeSignature(fabricatedPrivateKey, 2, 2, challenge),
+      });
+    expect(fabricated.status).toBe(412);
+    const lower = await agent
+      .post('/api/v1/vault/media/retired/purge')
+      .set(...XRW)
+      .send({
+        retiredVersion: 2,
+        observedVersion: 1,
+        challenge,
+        signature: purgeSignature(privateKey, 2, 1, challenge),
+      });
+    expect(lower.status).toBe(412);
+    const malformed = await agent
+      .post('/api/v1/vault/media/retired/purge')
+      .set(...XRW)
+      .send({ retiredVersion: 2, observedVersion: 2, challenge, signature: 'bad' });
+    expect(malformed.status).toBe(400);
+    expect((await agent.get('/api/v1/vault/history/2')).status).toBe(200);
   });
 });
