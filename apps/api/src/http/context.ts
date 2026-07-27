@@ -1482,6 +1482,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     userRepo,
     chatRepo,
     sessions,
+    events,
+    logger,
     audit,
     passwordHasher,
     twoFactor,

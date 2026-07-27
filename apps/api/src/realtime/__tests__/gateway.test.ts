@@ -806,6 +806,21 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     await reset;
   });
 
+  it('disconnects a socket when its account self-deletes after connect', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const loginState = await login(user.email, user.password);
+    const socket = await connect(loginState.cookie);
+
+    const disconnected = waitForDisconnect(socket);
+    await loginState.agent
+      .delete('/api/v1/account')
+      .set(...XRW)
+      .send({ confirmUsername: user.username, password: user.password })
+      .expect(200);
+    await disconnected;
+  });
+
   it('disconnects the prior account socket when a cookie signs in as another user', async () => {
     await listenWithGateway();
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
