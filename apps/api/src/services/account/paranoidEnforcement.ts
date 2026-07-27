@@ -95,7 +95,6 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'updateFollow',
     'listFollowing',
     'listFollowers',
-    'followItem',
     'unfollowItem',
     'listItemFollows',
     'listSharedWithMe',
@@ -106,7 +105,6 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'getAudience',
     'setAudience',
     'applyAudienceVisibility',
-    'setActivityAlert',
   ]),
   serviceBinding('sharing', 'social', 'intrinsic', ['getByPublicLink']),
   serviceBinding('mirrorchain', 'mirror', 'userIdFirst', [
@@ -214,7 +212,6 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     methods: [
       'list',
       'listInWatchlist',
-      'itemsForSharedView',
       'addItem',
       'removeItem',
       'reorder',
@@ -224,6 +221,11 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
       'deleteWatchlist',
     ],
     handling: 'kept',
+  },
+  {
+    service: 'workboard',
+    methods: ['itemsForSharedView'],
+    handling: 'internallyFiltered',
   },
   {
     service: 'ideas',
@@ -245,6 +247,8 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
       'cancel',
       'listFriends',
       'removeFriend',
+      'followItem',
+      'setActivityAlert',
       'getProfileSettings',
       'updateProfileSettings',
     ],

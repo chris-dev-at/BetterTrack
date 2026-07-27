@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { rename, rm } from 'node:fs/promises';
 
 import { eq, inArray } from 'drizzle-orm';
 import type { Application } from 'express';
@@ -11,6 +12,7 @@ import {
   paranoidDisableResponseSchema,
   paranoidEnableResponseSchema,
   VAULT_CONTENT_CIPHER,
+  type ParanoidEnableRequest,
 } from '@bettertrack/contracts';
 
 import {
@@ -1117,6 +1119,72 @@ describe('public paranoid transitions', () => {
     expect(download.body.error.code).toBe('EXPORT_NOT_FOUND');
   });
 
+  it('recovers a committed staged export retirement on an idempotent retry', async () => {
+    const { user, agent } = await seedNormalAccount();
+    await putServerVault(agent);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { jobId } = exportRequestResponseSchema.parse(requested.body);
+    const [before] = await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId));
+    expect(before?.filePath).toBeTruthy();
+
+    let stagedPath = '';
+    let commitAttempts = 0;
+    const prepareExportFile = vi.fn(async (artifact: { id: string; filePath: string }) => {
+      stagedPath = `${artifact.filePath}.test-staged`;
+      if (existsSync(artifact.filePath)) await rename(artifact.filePath, stagedPath);
+      return {
+        rollback: async () => {
+          if (existsSync(stagedPath)) await rename(stagedPath, artifact.filePath);
+        },
+        commit: async () => {
+          commitAttempts += 1;
+          if (commitAttempts === 1) throw new Error('injected staged unlink failure');
+          await rm(stagedPath, { force: true });
+        },
+      };
+    });
+    const transition = createParanoidTransitionService({
+      db: harness.db,
+      rehydration: {} as ParanoidRehydrationService,
+      audit: { record: vi.fn(async () => {}) } as unknown as AuditService,
+      prepareExportFile,
+    });
+    const request: ParanoidEnableRequest = {
+      mediaSet: ['server'],
+      vaultVersion: 1,
+      driveAttestation: null,
+    };
+
+    await expect(transition.enable(user.id, request)).rejects.toMatchObject({
+      code: 'TRANSITION_CONFLICT',
+    });
+    expect(
+      (await harness.db.select().from(users).where(eq(users.id, user.id)))[0]?.privacyMode,
+    ).toBe('paranoid');
+    expect(
+      (await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId)))[0],
+    ).toMatchObject({
+      status: 'failed',
+      filePath: before!.filePath,
+      error: 'RETIRED_FOR_PARANOID_MODE',
+    });
+    expect(existsSync(before!.filePath!)).toBe(false);
+    expect(existsSync(stagedPath)).toBe(true);
+
+    await expect(transition.enable(user.id, request)).resolves.toMatchObject({
+      mode: 'paranoid',
+      idempotent: true,
+    });
+    expect(prepareExportFile).toHaveBeenCalledTimes(2);
+    expect(existsSync(stagedPath)).toBe(false);
+    expect(
+      (await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId)))[0]?.filePath,
+    ).toBeNull();
+  });
+
   it('keeps the account normal when a cleartext export artifact cannot be retired', async () => {
     const { user, agent } = await seedNormalAccount();
     await putServerVault(agent);
@@ -1266,6 +1334,193 @@ describe('public paranoid transitions', () => {
     });
     expect(
       await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+    ).toEqual([]);
+  });
+
+  it('rejects a member-copy attach that was waiting behind target enable', async () => {
+    const actor = await harness.seedUser({
+      email: 'attach-actor@bettertrack.test',
+      username: 'attach_actor',
+    });
+    const target = await harness.seedUser({
+      email: 'attach-target@bettertrack.test',
+      username: 'attach_target',
+    });
+    const chain = await harness.ctx.mirror.createChain(actor.id, 'Enable wins attach');
+    const targetEnable = startPausedDriveEnable(target.id);
+    await targetEnable.locked;
+
+    const attaching = harness.ctx.mirror.attachMemberCopy(chain.chainId, target.id);
+    targetEnable.release.resolve();
+
+    await expect(targetEnable.enabling).resolves.toMatchObject({ mode: 'paranoid' });
+    await expect(attaching).rejects.toMatchObject({ code: 'PARANOID_MODE' });
+    expect(
+      await harness.db
+        .select()
+        .from(mirrorChainMembers)
+        .where(eq(mirrorChainMembers.userId, target.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.userId, target.id)),
+    ).toEqual([]);
+  });
+
+  it('holds shared-item owners and auto-follow recipients through social writes', async () => {
+    const followOwner = await harness.seedUser({
+      email: 'follow-owner@bettertrack.test',
+      username: 'follow_owner',
+    });
+    const follower = await harness.seedUser({
+      email: 'item-follower@bettertrack.test',
+      username: 'item_follower',
+    });
+    const [followUserA, followUserB] = [followOwner.id, follower.id].sort();
+    await harness.db.insert(friendships).values({ userA: followUserA!, userB: followUserB! });
+    const [followPortfolio] = await harness.db
+      .insert(portfolios)
+      .values({ userId: followOwner.id, name: 'Follow target' })
+      .returning();
+    const [followAudience] = await harness.db
+      .insert(shareAudiences)
+      .values({
+        ownerId: followOwner.id,
+        kind: 'portfolio',
+        subjectId: followPortfolio!.id,
+        audience: 'specific_friends',
+      })
+      .returning();
+    await harness.db
+      .insert(shareAudienceMembers)
+      .values({ audienceId: followAudience!.id, friendId: follower.id });
+
+    const followGate = pauseGuardedAction(followOwner.id, 'sharing');
+    const following = harness.ctx.social.followItem(follower.id, 'portfolio', followPortfolio!.id);
+    await followGate.entered;
+    const followOwnerEnable = startPausedDriveEnable(followOwner.id);
+    let followOwnerEnableLocked = false;
+    void followOwnerEnable.locked.then(() => {
+      followOwnerEnableLocked = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(followOwnerEnableLocked).toBe(false);
+    followGate.release.resolve();
+    await expect(following).resolves.toBeUndefined();
+    await followOwnerEnable.locked;
+    followOwnerEnable.release.resolve();
+    await expect(followOwnerEnable.enabling).resolves.toMatchObject({ mode: 'paranoid' });
+    followGate.restore();
+    expect(
+      await harness.db
+        .select()
+        .from(itemFollows)
+        .where(eq(itemFollows.subjectId, followPortfolio!.id)),
+    ).toEqual([]);
+
+    const alertOwner = await harness.seedUser({
+      email: 'activity-owner@bettertrack.test',
+      username: 'activity_owner',
+    });
+    const alertViewer = await harness.seedUser({
+      email: 'activity-viewer@bettertrack.test',
+      username: 'activity_viewer',
+    });
+    const [alertUserA, alertUserB] = [alertOwner.id, alertViewer.id].sort();
+    await harness.db.insert(friendships).values({ userA: alertUserA!, userB: alertUserB! });
+    const [alertPortfolio] = await harness.db
+      .insert(portfolios)
+      .values({ userId: alertOwner.id, name: 'Activity target' })
+      .returning();
+    const [alertAudience] = await harness.db
+      .insert(shareAudiences)
+      .values({
+        ownerId: alertOwner.id,
+        kind: 'portfolio',
+        subjectId: alertPortfolio!.id,
+        audience: 'specific_friends',
+      })
+      .returning();
+    await harness.db
+      .insert(shareAudienceMembers)
+      .values({ audienceId: alertAudience!.id, friendId: alertViewer.id });
+
+    const alertGate = pauseGuardedAction(alertOwner.id, 'sharing');
+    const settingAlert = harness.ctx.social.setActivityAlert(
+      alertViewer.id,
+      'portfolio',
+      alertPortfolio!.id,
+      true,
+    );
+    await alertGate.entered;
+    const alertOwnerEnable = startPausedDriveEnable(alertOwner.id);
+    let alertOwnerEnableLocked = false;
+    void alertOwnerEnable.locked.then(() => {
+      alertOwnerEnableLocked = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(alertOwnerEnableLocked).toBe(false);
+    alertGate.release.resolve();
+    await expect(settingAlert).resolves.toMatchObject({ enabled: true });
+    await alertOwnerEnable.locked;
+    alertOwnerEnable.release.resolve();
+    await expect(alertOwnerEnable.enabling).resolves.toMatchObject({ mode: 'paranoid' });
+    alertGate.restore();
+    expect(
+      await harness.db
+        .select()
+        .from(sharedItemActivityPrefs)
+        .where(eq(sharedItemActivityPrefs.subjectId, alertPortfolio!.id)),
+    ).toEqual([]);
+
+    const publisher = await harness.seedUser({
+      email: 'publisher@bettertrack.test',
+      username: 'publisher',
+    });
+    const autoFollower = await harness.seedUser({
+      email: 'auto-follower@bettertrack.test',
+      username: 'auto_follower',
+    });
+    await harness.db.update(users).set({ profilePublic: true }).where(eq(users.id, publisher.id));
+    await harness.db.insert(userFollows).values({
+      followerId: autoFollower.id,
+      followedId: publisher.id,
+      autoFollowItems: true,
+    });
+    const [publicPortfolio] = await harness.db
+      .insert(portfolios)
+      .values({ userId: publisher.id, name: 'Newly public' })
+      .returning();
+
+    const autoFollowGate = pauseGuardedAction(autoFollower.id, 'sharing');
+    const publishing = harness.ctx.social.setAudience(
+      publisher.id,
+      'portfolio',
+      publicPortfolio!.id,
+      {
+        audience: 'public_link',
+        acknowledgePublic: true,
+      },
+    );
+    await autoFollowGate.entered;
+    const followerEnable = harness.ctx.paranoidTransitions.enable(autoFollower.id, {
+      mediaSet: ['drive'],
+      vaultVersion: 1,
+      driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
+    });
+    let followerEnableCompleted = false;
+    void followerEnable.then(() => {
+      followerEnableCompleted = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(followerEnableCompleted).toBe(false);
+    autoFollowGate.release.resolve();
+    await expect(publishing).resolves.toMatchObject({
+      state: { audience: 'public_link' },
+    });
+    await expect(followerEnable).resolves.toMatchObject({ mode: 'paranoid' });
+    autoFollowGate.restore();
+    expect(
+      await harness.db.select().from(itemFollows).where(eq(itemFollows.userId, autoFollower.id)),
     ).toEqual([]);
   });
 

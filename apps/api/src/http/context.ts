@@ -1169,6 +1169,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     friendship: friendshipRepo,
     notify,
     logger,
+    paranoid: paranoidGuard,
   });
 
   // Local-first search (§6.2): answers from the Postgres catalog; a thin result

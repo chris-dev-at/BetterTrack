@@ -457,6 +457,9 @@ describe('paranoid kill registry', () => {
     await expect(
       harness.ctx.workboard.renameWatchlist(user.id, watchlist.id, 'Still private'),
     ).resolves.toMatchObject({ name: 'Still private', audience: 'private' });
+    await expect(harness.ctx.workboard.itemsForSharedView(watchlist.id)).rejects.toMatchObject({
+      code: PARANOID_TRANSITION_ERROR_CODES.mode,
+    });
   });
 
   it('rejects group and all-friends targeting of paranoid accounts before any write', async () => {
@@ -520,6 +523,12 @@ describe('paranoid kill registry', () => {
       .send({ name: 'Must stay private', visibility: 'friends' });
     expect(response.status).toBe(403);
     expect(response.body.error.code).toBe(PARANOID_TRANSITION_ERROR_CODES.mode);
+    await expect(
+      harness.ctx.conglomerate.update(user.id, conglomerate!.id, {
+        name: 'Direct bypass',
+        visibility: 'friends',
+      } as Parameters<typeof harness.ctx.conglomerate.update>[2]),
+    ).rejects.toMatchObject({ code: 'CONGLOMERATE_VISIBILITY_GUARD_REQUIRED' });
     expect(
       (
         await harness.db

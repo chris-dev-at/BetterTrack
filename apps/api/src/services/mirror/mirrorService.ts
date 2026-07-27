@@ -1962,88 +1962,92 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async attachMemberCopy(chainId, userId, opts) {
-      await assertMirrorAllowed(userId);
-      const chain = await repo.getChain(chainId);
-      if (!chain || chain.status !== 'active') {
-        throw notFound('Group portfolio not found.', 'MIRROR_CHAIN_NOT_FOUND');
-      }
-      if (await repo.findActiveMembership(chainId, userId)) {
-        throw badRequest('Already a member of this group portfolio.', 'MIRROR_ALREADY_MEMBER');
-      }
-      const username = await usernameOf(userId);
-
-      // The chain's Main identity: every copy's Main is linked to it (§8) —
-      // derive it from any active member's copy (there is always ≥1).
-      const existingMembers = await repo.listActiveMembers(chainId);
-      const anchor = existingMembers.find((m) => m.portfolioId);
-      if (!anchor?.portfolioId) {
-        throw badRequest('This group portfolio has no active copies to join.', 'MIRROR_NO_MEMBERS');
-      }
-      const anchorMain = await cashSourceRepo.getOrCreateMain(anchor.portfolioId);
-      const mainLink = await repo.findMirrorRowByLocal('cash_source', anchorMain.id);
-      if (!mainLink) throw new Error(`mirror: chain ${chainId} has no linked Main source`);
-
-      // Auto-created, auto-named copy with the §1 collision suffix (§4).
-      let copyId: string | undefined;
-      for (let attempt = 1; attempt <= NAME_SUFFIX_ATTEMPTS && !copyId; attempt++) {
-        const name = attempt === 1 ? chain.name : `${chain.name} (${attempt})`;
-        try {
-          copyId = (await portfolio.createPortfolio(userId, { name })).id;
-        } catch (err) {
-          if (!isApiError(err, 'PORTFOLIO_NAME_TAKEN', 'CONFLICT')) throw err;
+      return runMirrorAllowedMany([userId], async () => {
+        const chain = await repo.getChain(chainId);
+        if (!chain || chain.status !== 'active') {
+          throw notFound('Group portfolio not found.', 'MIRROR_CHAIN_NOT_FOUND');
         }
-      }
-      if (!copyId) {
-        throw new Error(`mirror: could not find a free portfolio name for "${chain.name}"`);
-      }
+        if (await repo.findActiveMembership(chainId, userId)) {
+          throw badRequest('Already a member of this group portfolio.', 'MIRROR_ALREADY_MEMBER');
+        }
+        const username = await usernameOf(userId);
 
-      // Chain Main ↔ copy Main (§8): pre-linked so genesis' Main `source.create`
-      // op replays as an idempotent skip — one code path, no special casing.
-      const copyMain = await cashSourceRepo.getOrCreateMain(copyId);
-      await repo.insertMirrorRow({
-        chainId,
-        kind: 'cash_source',
-        mirrorId: mainLink.mirrorId,
-        portfolioId: copyId,
-        localId: copyMain.id,
-        createdBy: chain.createdBy,
-        createdByUsername: chain.createdByUsername,
-      });
+        // The chain's Main identity: every copy's Main is linked to it (§8) —
+        // derive it from any active member's copy (there is always ≥1).
+        const existingMembers = await repo.listActiveMembers(chainId);
+        const anchor = existingMembers.find((m) => m.portfolioId);
+        if (!anchor?.portfolioId) {
+          throw badRequest(
+            'This group portfolio has no active copies to join.',
+            'MIRROR_NO_MEMBERS',
+          );
+        }
+        const anchorMain = await cashSourceRepo.getOrCreateMain(anchor.portfolioId);
+        const mainLink = await repo.findMirrorRowByLocal('cash_source', anchorMain.id);
+        if (!mainLink) throw new Error(`mirror: chain ${chainId} has no linked Main source`);
 
-      const member = await repo.insertMember({
-        chainId,
-        userId,
-        username,
-        portfolioId: copyId,
-        role: opts?.role ?? 'member',
-        invitedBy: opts?.invitedBy ?? null,
-      });
-      const joined = await repo.appendOpsChecked(chainId, userId, [
-        {
-          kind: 'member.joined',
-          actorUserId: userId,
-          actorUsername: username,
-          payload: {
-            opVersion: MIRROR_OP_VERSION,
+        // Auto-created, auto-named copy with the §1 collision suffix (§4).
+        let copyId: string | undefined;
+        for (let attempt = 1; attempt <= NAME_SUFFIX_ATTEMPTS && !copyId; attempt++) {
+          const name = attempt === 1 ? chain.name : `${chain.name} (${attempt})`;
+          try {
+            copyId = (await portfolio.createPortfolio(userId, { name })).id;
+          } catch (err) {
+            if (!isApiError(err, 'PORTFOLIO_NAME_TAKEN', 'CONFLICT')) throw err;
+          }
+        }
+        if (!copyId) {
+          throw new Error(`mirror: could not find a free portfolio name for "${chain.name}"`);
+        }
+
+        // Chain Main ↔ copy Main (§8): pre-linked so genesis' Main `source.create`
+        // op replays as an idempotent skip — one code path, no special casing.
+        const copyMain = await cashSourceRepo.getOrCreateMain(copyId);
+        await repo.insertMirrorRow({
+          chainId,
+          kind: 'cash_source',
+          mirrorId: mainLink.mirrorId,
+          portfolioId: copyId,
+          localId: copyMain.id,
+          createdBy: chain.createdBy,
+          createdByUsername: chain.createdByUsername,
+        });
+
+        const member = await repo.insertMember({
+          chainId,
+          userId,
+          username,
+          portfolioId: copyId,
+          role: opts?.role ?? 'member',
+          invitedBy: opts?.invitedBy ?? null,
+        });
+        const joined = await repo.appendOpsChecked(chainId, userId, [
+          {
             kind: 'member.joined',
-            userId,
-            username,
-            role: opts?.role ?? 'member',
+            actorUserId: userId,
+            actorUsername: username,
+            payload: {
+              opVersion: MIRROR_OP_VERSION,
+              kind: 'member.joined',
+              userId,
+              username,
+              role: opts?.role ?? 'member',
+            },
           },
-        },
-      ]);
-      if ('refused' in joined) {
-        // The membership row was inserted just above, so any refusal here is a
-        // bug-level inconsistency — fail loudly rather than leave a member
-        // whose join never reached the oplog.
-        throw new Error(
-          `mirror: member.joined append refused (${joined.refused}) for chain ${chainId}`,
-        );
-      }
-      // Join = plain oplog replay through the joiner's services (§2), driven by
-      // the replicate job; the copy shows its syncing state via the watermark.
-      await scheduleReplicate(chainId);
-      return { member, portfolioId: copyId };
+        ]);
+        if ('refused' in joined) {
+          // The membership row was inserted just above, so any refusal here is a
+          // bug-level inconsistency — fail loudly rather than leave a member
+          // whose join never reached the oplog.
+          throw new Error(
+            `mirror: member.joined append refused (${joined.refused}) for chain ${chainId}`,
+          );
+        }
+        // Join = plain oplog replay through the joiner's services (§2), driven by
+        // the replicate job; the copy shows its syncing state via the watermark.
+        await scheduleReplicate(chainId);
+        return { member, portfolioId: copyId };
+      });
     },
 
     async replicateChain(chainId) {

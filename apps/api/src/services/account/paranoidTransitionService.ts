@@ -1,5 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { rename, rm } from 'node:fs/promises';
+import { lstat, rename, rm } from 'node:fs/promises';
 
 import {
   paranoidDisableRequestSchema,
@@ -15,6 +14,7 @@ import {
 import type { Database } from '../../data/db';
 import {
   createParanoidTransitionTransactionRepository,
+  finalizeRetiredCleartextExports,
   getParanoidAdminMetadata,
   serverVaultMatches,
   withParanoidTransitionTransaction,
@@ -58,7 +58,12 @@ export interface ParanoidTransitionServiceDeps {
   /** Test-only failure injection proving enable's database transaction rolls back. */
   afterEnableStage?: (stage: ParanoidEnableStage) => void | Promise<void>;
   /** Test seam for reversible pre-commit retirement of cleartext export ZIPs. */
-  prepareExportFile?: (filePath: string) => Promise<PreparedExportFileRetirement>;
+  prepareExportFile?: (artifact: CleartextExportArtifact) => Promise<PreparedExportFileRetirement>;
+}
+
+export interface CleartextExportArtifact {
+  id: string;
+  filePath: string;
 }
 
 export interface PreparedExportFileRetirement {
@@ -122,22 +127,41 @@ export function createParanoidTransitionService(
   const stage = async (value: ParanoidEnableStage) => deps.afterEnableStage?.(value);
   const prepareExportFile =
     deps.prepareExportFile ??
-    (async (filePath: string) => {
-      const stagedPath = `${filePath}.paranoid-retiring-${randomUUID()}`;
-      try {
-        await rename(filePath, stagedPath);
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          'code' in error &&
-          (error as NodeJS.ErrnoException).code === 'ENOENT'
-        ) {
-          return;
+    (async (artifact: CleartextExportArtifact) => {
+      const stagedPath = `${artifact.filePath}.paranoid-retiring-${artifact.id}`;
+      const exists = async (path: string): Promise<boolean> => {
+        try {
+          await lstat(path);
+          return true;
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            'code' in error &&
+            (error as NodeJS.ErrnoException).code === 'ENOENT'
+          ) {
+            return false;
+          }
+          throw error;
         }
-        throw error;
+      };
+      const [sourceExists, stagedExists] = await Promise.all([
+        exists(artifact.filePath),
+        exists(stagedPath),
+      ]);
+      if (sourceExists && stagedExists) {
+        throw new Error('Both the export archive and its retirement stage exist.');
+      }
+      if (sourceExists) {
+        await rename(artifact.filePath, stagedPath);
       }
       return {
-        rollback: () => rename(stagedPath, filePath),
+        rollback: async () => {
+          if (!(await exists(stagedPath))) return;
+          if (await exists(artifact.filePath)) {
+            throw new Error('The original export path was recreated during retirement.');
+          }
+          await rename(stagedPath, artifact.filePath);
+        },
         commit: () => rm(stagedPath, { force: true }),
       };
     });
@@ -156,6 +180,8 @@ export function createParanoidTransitionService(
       const input = parsed.data;
       const completedAt = now();
       const preparedRetirements: PreparedExportFileRetirement[] = [];
+      let retirementArtifacts: CleartextExportArtifact[] = [];
+      let restoreRetirementsOnFailure = true;
 
       const rollbackRetirements = async (): Promise<void> => {
         let rollbackError: unknown;
@@ -168,6 +194,13 @@ export function createParanoidTransitionService(
         }
         preparedRetirements.length = 0;
         if (rollbackError) throw rollbackError;
+      };
+      const prepareRetirements = async (
+        artifacts: readonly CleartextExportArtifact[],
+      ): Promise<void> => {
+        for (const artifact of artifacts) {
+          preparedRetirements.push(await prepareExportFile(artifact));
+        }
       };
 
       let result: ParanoidEnableResponse;
@@ -188,6 +221,21 @@ export function createParanoidTransitionService(
               ? serverVaultMatches(state, input.vaultVersion)
               : state.currentServerVault === null && state.serverVaultHistoryCount === 0;
             if (sameMedia(state.mediaSet, input.mediaSet) && matchingDrive && matchingServer) {
+              // A prior enable may have committed before staged ZIP deletion or
+              // the final file_path clear succeeded. The failed export row keeps
+              // the original path as a durable pointer to the deterministic
+              // staging name, so an idempotent retry must finish that cleanup
+              // before it can report success.
+              restoreRetirementsOnFailure = false;
+              retirementArtifacts = state.cleartextExports;
+              try {
+                await prepareRetirements(retirementArtifacts);
+              } catch {
+                throw new ParanoidTransitionError(
+                  'TRANSITION_CONFLICT',
+                  'A retired account export still needs cleanup.',
+                );
+              }
               return {
                 mode: 'paranoid' as const,
                 mediaSet: input.mediaSet,
@@ -233,11 +281,9 @@ export function createParanoidTransitionService(
           // the account lock is held. A later database/stage failure restores
           // each original path before the transaction unwinds; only a committed
           // enable permanently removes the staged files.
+          retirementArtifacts = state.cleartextExports;
           try {
-            for (const artifact of state.cleartextExports) {
-              const retirement = await prepareExportFile(artifact.filePath);
-              if (retirement) preparedRetirements.push(retirement);
-            }
+            await prepareRetirements(retirementArtifacts);
           } catch {
             await rollbackRetirements();
             throw new ParanoidTransitionError(
@@ -249,7 +295,7 @@ export function createParanoidTransitionService(
           try {
             await transition.retireCleartextExports(
               userId,
-              state.cleartextExports.map((artifact) => artifact.id),
+              retirementArtifacts.map((artifact) => artifact.id),
             );
 
             await transition.revokeSharing(userId);
@@ -287,8 +333,10 @@ export function createParanoidTransitionService(
       } catch (error) {
         // Covers a transaction-level failure after its callback returned (for
         // example a commit failure), while the inner catch covers every injected
-        // stage/database failure before the row lock is released.
-        if (preparedRetirements.length > 0) {
+        // stage/database failure before the row lock is released. Recovery for
+        // an account that was already paranoid deliberately stays staged: its
+        // failed export row is the durable cleanup pointer for the next retry.
+        if (restoreRetirementsOnFailure && preparedRetirements.length > 0) {
           try {
             await rollbackRetirements();
           } catch {
@@ -305,14 +353,18 @@ export function createParanoidTransitionService(
         for (const retirement of preparedRetirements) {
           await retirement.commit();
         }
+        await finalizeRetiredCleartextExports(
+          deps.db,
+          userId,
+          retirementArtifacts.map((artifact) => artifact.id),
+        );
       } catch {
         throw new ParanoidTransitionError(
           'TRANSITION_CONFLICT',
           'Paranoid mode was enabled, but a retired export artifact still needs cleanup.',
         );
-      } finally {
-        preparedRetirements.length = 0;
       }
+      preparedRetirements.length = 0;
 
       await deps.audit.record({
         actorId: userId,

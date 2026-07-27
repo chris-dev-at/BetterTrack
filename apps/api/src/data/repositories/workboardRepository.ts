@@ -110,6 +110,16 @@ export function createWorkboardRepository(db: Database) {
       return row;
     },
 
+    /** Resolve the actual owner before an authorized shared read is locked. */
+    async watchlistOwner(watchlistId: string): Promise<string | undefined> {
+      const [row] = await db
+        .select({ userId: watchlists.userId })
+        .from(watchlists)
+        .where(eq(watchlists.id, watchlistId))
+        .limit(1);
+      return row?.userId;
+    },
+
     /**
      * The caller's default (General) list id, creating it on first need so a
      * post-migration account (or a fresh signup) always has a target list.
@@ -204,17 +214,6 @@ export function createWorkboardRepository(db: Database) {
         .from(workboardItems)
         .innerJoin(assets, eq(workboardItems.assetId, assets.id))
         .where(and(eq(workboardItems.userId, userId), eq(workboardItems.watchlistId, watchlistId)))
-        .orderBy(workboardItems.sortOrder);
-      return rows.map(toItem);
-    },
-
-    /** Items in one list by id (owner-agnostic) — for the authorized shared read. */
-    async listByWatchlist(watchlistId: string): Promise<WorkboardItemWithAsset[]> {
-      const rows = await db
-        .select(ITEM_COLUMNS)
-        .from(workboardItems)
-        .innerJoin(assets, eq(workboardItems.assetId, assets.id))
-        .where(eq(workboardItems.watchlistId, watchlistId))
         .orderBy(workboardItems.sortOrder);
       return rows.map(toItem);
     },

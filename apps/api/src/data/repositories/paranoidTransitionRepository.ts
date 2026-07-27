@@ -89,6 +89,8 @@ export interface ParanoidTransitionTransactionRepository {
   }): Promise<void>;
 }
 
+export const PARANOID_RETIRED_EXPORT_ERROR = 'RETIRED_FOR_PARANOID_MODE';
+
 type PurgeHandler = (scope: PurgeScope) => PromiseLike<unknown> | Promise<void>;
 type ProbeHandler = (scope: PurgeScope) => Promise<number>;
 
@@ -453,6 +455,7 @@ export function createParanoidTransitionTransactionRepository(
               id: exportJobs.id,
               status: exportJobs.status,
               filePath: exportJobs.filePath,
+              error: exportJobs.error,
             })
             .from(exportJobs)
             .where(eq(exportJobs.userId, userId))
@@ -469,7 +472,11 @@ export function createParanoidTransitionTransactionRepository(
         pendingImport: Boolean(pendingImport),
         pendingExport: accountExports.some((row) => row.status === 'pending'),
         cleartextExports: accountExports
-          .filter((row): row is typeof row & { filePath: string } => row.filePath !== null)
+          .filter(
+            (row): row is typeof row & { filePath: string } =>
+              row.filePath !== null &&
+              (user.privacyMode === 'normal' || row.error === PARANOID_RETIRED_EXPORT_ERROR),
+          )
           .map((row) => ({
             id: row.id,
             filePath: row.filePath,
@@ -587,11 +594,10 @@ export function createParanoidTransitionTransactionRepository(
           .update(exportJobs)
           .set({
             status: 'failed',
-            filePath: null,
             fileSize: null,
             expiresAt: null,
             readyAt: null,
-            error: 'RETIRED_FOR_PARANOID_MODE',
+            error: PARANOID_RETIRED_EXPORT_ERROR,
           })
           .where(and(eq(exportJobs.userId, userId), inArray(exportJobs.id, ids))),
       );
@@ -667,6 +673,31 @@ export function createParanoidTransitionTransactionRepository(
         .where(eq(users.id, input.userId));
     },
   };
+}
+
+/**
+ * Clear the durable recovery pointer only after every same-filesystem staged
+ * archive has been removed. A crash or unlink failure before this update leaves
+ * the original path on the failed export row, allowing the next idempotent
+ * enable to derive and retire the same staging path.
+ */
+export async function finalizeRetiredCleartextExports(
+  db: Database,
+  userId: string,
+  exportIds: readonly string[],
+): Promise<void> {
+  await ifIds(exportIds, (ids) =>
+    db
+      .update(exportJobs)
+      .set({ filePath: null })
+      .where(
+        and(
+          eq(exportJobs.userId, userId),
+          inArray(exportJobs.id, ids),
+          eq(exportJobs.error, PARANOID_RETIRED_EXPORT_ERROR),
+        ),
+      ),
+  );
 }
 
 export async function withParanoidTransitionTransaction<T>(

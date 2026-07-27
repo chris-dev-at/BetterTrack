@@ -23,9 +23,9 @@ import type { ProfileRepository } from '../../data/repositories/profileRepositor
 import type { UserFollowsRepository } from '../../data/repositories/userFollowsRepository';
 import { badRequest } from '../../errors';
 import type { Logger } from '../../logger';
+import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import { generateToken, hashToken } from '../crypto/tokens';
 import type { NotificationCenter } from '../notifications/notificationCenter';
-import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 
 /**
  * The ONE server-side sharing-enforcement layer (PROJECTPLAN.md §13.3 V3-P5,
@@ -334,25 +334,42 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       const actorUsername = (await friendship.getUsername(ownerId)) ?? '';
       const occurredAt = new Date().toISOString();
       for (const { followerId, autoFollowItems } of recipients) {
-        // Auto-follow (#439): an opted-in follower gets the item bookmarked in
-        // the SAME newly-visible pass that produces their news — insert BEFORE
-        // the emit so acting on the bell already finds the bookmark. Idempotent
-        // (PK upsert), so a same-day republish never duplicates it. The event
-        // matrix is deliberately identical to follow.published's: a follower
-        // who could already see the item is neither notified nor auto-added.
-        if (autoFollowItems && itemFollows) {
-          await itemFollows.follow(followerId, kind, subjectId);
+        const publish = async () => {
+          // Auto-follow (#439): an opted-in follower gets the item bookmarked in
+          // the SAME newly-visible pass that produces their news — insert BEFORE
+          // the emit so acting on the bell already finds the bookmark. Idempotent
+          // (PK upsert), so a same-day republish never duplicates it. The event
+          // matrix is deliberately identical to follow.published's: a follower
+          // who could already see the item is neither notified nor auto-added.
+          if (autoFollowItems && itemFollows) {
+            await itemFollows.follow(followerId, kind, subjectId);
+          }
+          await notify.emit({
+            type: 'follow.published',
+            userId: followerId,
+            actorId: ownerId,
+            actorUsername,
+            itemKind: kind,
+            itemId: subjectId,
+            itemName: identity.name,
+            occurredAt,
+          });
+        };
+        try {
+          // The audience owner is held by the outer mutation. Hold the follower
+          // too through bookmark persistence so their concurrent enable either
+          // waits and purges this row or wins and prevents it from being written.
+          if (paranoid) {
+            await paranoid.runAllowedMany([ownerId, followerId], 'sharing', publish);
+          } else {
+            await publish();
+          }
+        } catch (error) {
+          // A follower entering paranoid mode simply stops receiving this
+          // best-effort social fan-out; it must not suppress other recipients.
+          if (error instanceof ParanoidModeError) continue;
+          throw error;
         }
-        await notify.emit({
-          type: 'follow.published',
-          userId: followerId,
-          actorId: ownerId,
-          actorUsername,
-          itemKind: kind,
-          itemId: subjectId,
-          itemName: identity.name,
-          occurredAt,
-        });
       }
     } catch (err) {
       logger?.error({ err, kind, subjectId }, 'follow publish emit failed');

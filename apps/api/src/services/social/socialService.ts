@@ -327,6 +327,16 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     return toFriendGroup(found);
   }
 
+  async function authorizeSharedItem(viewerId: string, kind: ShareKind, subjectId: string) {
+    return kind === 'portfolio'
+      ? audience.authorizePortfolioRead(viewerId, subjectId)
+      : kind === 'conglomerate'
+        ? audience.authorizeConglomerateRead(viewerId, subjectId)
+        : kind === 'idea'
+          ? audience.authorizeIdeaRead(viewerId, subjectId)
+          : audience.authorizeWatchlistRead(viewerId, subjectId);
+  }
+
   // Owner-scoped read-view builders, reused by both the friend endpoints and the
   // public-link resolver so the two never diverge (authorization differs; the
   // rendered read-only view is identical).
@@ -646,7 +656,20 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // never 403). Idempotent afterwards, like the person-follow.
       const visible = await audience.authorizeItemFollowRead(userId, kind, subjectId);
       if (!visible) throw SUBJECT_NOT_FOUND();
-      await itemFollows.follow(userId, kind, subjectId);
+      const follow = async () => {
+        // Authorization is intentionally repeated after both account rows are
+        // locked. If enable won while the first lookup resolved the target, the
+        // guard rejects; if sharing changed, this re-read returns the same opaque
+        // 404 as every other shared-item path.
+        const current = await audience.authorizeItemFollowRead(userId, kind, subjectId);
+        if (!current || current.ownerId !== visible.ownerId) throw SUBJECT_NOT_FOUND();
+        await itemFollows.follow(userId, kind, subjectId);
+      };
+      if (deps.paranoid) {
+        await deps.paranoid.runAllowedMany([userId, visible.ownerId], 'sharing', follow);
+      } else {
+        await follow();
+      }
     },
 
     async unfollowItem(userId, kind, subjectId) {
@@ -924,17 +947,17 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // the item — the same enforcement join every read uses. This keeps the
       // toggle from doubling as a probe for a private/unshared item (404, never
       // 403) and prevents stranded prefs on things you can't see.
-      const authorized =
-        kind === 'portfolio'
-          ? await audience.authorizePortfolioRead(viewerId, subjectId)
-          : kind === 'conglomerate'
-            ? await audience.authorizeConglomerateRead(viewerId, subjectId)
-            : kind === 'idea'
-              ? await audience.authorizeIdeaRead(viewerId, subjectId)
-              : await audience.authorizeWatchlistRead(viewerId, subjectId);
+      const authorized = await authorizeSharedItem(viewerId, kind, subjectId);
       if (!authorized) throw SUBJECT_NOT_FOUND();
-      await profile.setActivityPref(viewerId, kind, subjectId, enabled);
-      return { kind, subjectId, enabled };
+      const update = async () => {
+        const current = await authorizeSharedItem(viewerId, kind, subjectId);
+        if (!current || current.ownerId !== authorized.ownerId) throw SUBJECT_NOT_FOUND();
+        await profile.setActivityPref(viewerId, kind, subjectId, enabled);
+        return { kind, subjectId, enabled };
+      };
+      return deps.paranoid
+        ? deps.paranoid.runAllowedMany([viewerId, authorized.ownerId], 'sharing', update)
+        : update();
     },
 
     getProfileSettings: (userId) => loadProfileSettings(userId),

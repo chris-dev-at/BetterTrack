@@ -56,6 +56,8 @@ export interface ConglomerateServiceDeps {
   audience: AudienceService;
 }
 
+type ConglomerateMetadataPatch = Omit<UpdateConglomerateRequest, 'visibility'>;
+
 export interface ConglomerateService {
   list(ownerId: string): Promise<ConglomerateListResponse>;
   get(ownerId: string, id: string): Promise<ConglomerateDetail>;
@@ -63,7 +65,7 @@ export interface ConglomerateService {
   update(
     ownerId: string,
     id: string,
-    patch: UpdateConglomerateRequest,
+    patch: ConglomerateMetadataPatch,
   ): Promise<ConglomerateDetail>;
   /** Mixed metadata + legacy sharing mutation, guarded before either write. */
   updateWithVisibility(
@@ -287,6 +289,15 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     },
 
     async update(ownerId, id, patch) {
+      // Private local metadata stays usable in paranoid mode. A hand-crafted
+      // below-HTTP call must not smuggle the sharing-bearing legacy visibility
+      // field through this deliberately kept entry point.
+      if ('visibility' in patch) {
+        throw badRequest(
+          'Visibility changes require the guarded sharing mutation.',
+          'CONGLOMERATE_VISIBILITY_GUARD_REQUIRED',
+        );
+      }
       return updateRecord(ownerId, id, patch);
     },
 
