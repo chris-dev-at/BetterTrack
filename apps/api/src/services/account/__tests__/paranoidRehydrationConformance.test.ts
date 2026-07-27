@@ -968,6 +968,112 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     );
   });
 
+  it('composes a pre-transition normal PATCH before a later rounding CREATE batch', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = '018f0000-0900-7000-8000-000000000901';
+    const assetId = '018f0000-0900-7000-8000-000000000902';
+    const cutoffAssetId = '018f0000-0900-7000-8000-000000000903';
+    await seedGlobalAsset(harness, assetId, 'PATCH-BEFORE-CREATE');
+    await seedGlobalAsset(harness, cutoffAssetId, 'PATCH-BEFORE-CREATE-CUTOFF');
+
+    const writeIds = ['018f0000-0900-7000-8000-000000000904'];
+    writeIds.push(nextUuidV7WriteId(writeIds[0]!));
+    writeIds.push(nextUuidV7WriteId(writeIds[1]!));
+    const legacyDocument = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: writeIds[0]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+      transactionEntity({
+        id: writeIds[1]!,
+        portfolioId,
+        assetId,
+        side: 'sell',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:01:00.000Z',
+      }),
+      // This unrelated exact legacy row has no public-number preimage, so the
+      // final document must model the earlier sell as a pre-cutoff PATCH.
+      transactionEntity({
+        id: writeIds[2]!,
+        portfolioId,
+        assetId: cutoffAssetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:02:00.000Z',
+      }),
+    ]);
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      legacyDocument,
+      FIRST_REHYDRATION_ID,
+      'initial exact history before PATCH and CREATE operations',
+    );
+
+    const transactionRepo = createTransactionRepository(harness.db);
+    const legacyRows = await transactionRepo.listForAsset(portfolioId, assetId);
+    const legacySell = legacyRows.find((transaction) => transaction.id === writeIds[1]);
+    if (!legacySell) throw new Error('expected pre-transition legacy sell');
+    expect(legacySell.quantity).toBe(90071992547.12346);
+
+    // This real PATCH runs while the original exact buy/sell are the only rows
+    // for the asset. It remains valid because both values read back as the same
+    // public number.
+    await harness.ctx.portfolio.updateTransaction(user.id, portfolioId, legacySell.id, {
+      quantity: legacySell.quantity,
+    });
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId,
+        side: 'buy',
+        quantity: 1.0000000046,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:03:00.000Z',
+      },
+      {
+        assetId,
+        side: 'sell',
+        quantity: 1.0000000051,
+        price: 11,
+        fee: 0,
+        executedAt: '2026-07-23T10:04:00.000Z',
+      },
+    ]);
+
+    const resultingDocument = await capturePortfolioDocument(harness, portfolioId);
+    const revisedSell = quantityEntities(resultingDocument).find(
+      (transaction) => transaction.id === legacySell.id,
+    );
+    if (!revisedSell) throw new Error('expected patched sell in the strict document');
+    revisedSell.rev = 1;
+    revisedSell.editedAt = '2026-07-25T10:00:00.000Z';
+    expect(revisedSell.data.quantity).toBe('90071992547.12346000');
+    expect(
+      quantityEntities(resultingDocument).some(
+        (transaction) =>
+          transaction.data.side === 'sell' && transaction.data.quantity === '1.00000001',
+      ),
+    ).toBe(true);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      resultingDocument,
+      SECOND_REHYDRATION_ID,
+      'PATCH before later normal rounding batch',
+    );
+  });
+
   it('rejects multiple revised pre-cutoff rows that only pass as simultaneous raw inputs', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();

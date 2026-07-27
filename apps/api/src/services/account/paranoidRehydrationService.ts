@@ -300,6 +300,13 @@ function normalCreateOperationCanReplay(
   return true;
 }
 
+interface NormalCreatePartition {
+  /** A legal CREATE partition can reach this completed-write boundary. */
+  readonly reachableBoundaries: readonly boolean[];
+  /** This boundary can still finish through a legal CREATE partition. */
+  readonly reachesDocumentEnd: readonly boolean[];
+}
+
 /**
  * Validate one shared CREATE partition for every persisted-insolvent group,
  * instead of independently finding a favorable window per group. Unaffected
@@ -308,23 +315,29 @@ function normalCreateOperationCanReplay(
  * read back, so one reachable boundary is enough regardless of the path that
  * reached it. Each transition is capped by the public contract.
  */
-function normalCreatePartitionCanReplay(
+function normalCreatePartition(
   replayGroups: readonly (readonly QuantityReplayRow[])[],
   writeHistory: readonly QuantityReplayRow[],
   legacyCutoff: number,
-): boolean {
-  if (legacyCutoff >= writeHistory.length) return true;
+): NormalCreatePartition | null {
+  const reachableBoundaries = Array.from({ length: writeHistory.length + 1 }, () => false);
+  const transitions = Array.from({ length: writeHistory.length + 1 }, () => [] as number[]);
+  reachableBoundaries[legacyCutoff] = true;
+
+  if (legacyCutoff >= writeHistory.length) {
+    return {
+      reachableBoundaries,
+      reachesDocumentEnd: [...reachableBoundaries],
+    };
+  }
 
   const groupsByTransactionId = new Map<string, readonly QuantityReplayRow[]>();
   for (const group of replayGroups) {
     for (const row of group) groupsByTransactionId.set(row.transaction.id, group);
   }
 
-  const reachableBoundary = Array.from({ length: writeHistory.length + 1 }, () => false);
-  reachableBoundary[legacyCutoff] = true;
-
   for (let start = legacyCutoff; start < writeHistory.length; start += 1) {
-    if (!reachableBoundary[start]) continue;
+    if (!reachableBoundaries[start]) continue;
     const portfolioId = writeHistory[start]!.transaction.data.portfolioId;
     const maximumEnd = Math.min(
       writeHistory.length - 1,
@@ -334,22 +347,35 @@ function normalCreatePartitionCanReplay(
       // The normal CREATE endpoint is portfolio-scoped; a different portfolio
       // is a mandatory operation boundary even if UUIDv7 timestamps interleave.
       if (writeHistory[end]!.transaction.data.portfolioId !== portfolioId) break;
-      if (reachableBoundary[end + 1]) continue;
       if (normalCreateOperationCanReplay(groupsByTransactionId, writeHistory, start, end)) {
-        reachableBoundary[end + 1] = true;
+        transitions[start]!.push(end + 1);
+        reachableBoundaries[end + 1] = true;
       }
     }
   }
 
-  return reachableBoundary[writeHistory.length]!;
+  const reachesDocumentEnd = Array.from({ length: writeHistory.length + 1 }, () => false);
+  reachesDocumentEnd[writeHistory.length] = true;
+  for (let start = writeHistory.length - 1; start >= legacyCutoff; start -= 1) {
+    reachesDocumentEnd[start] = transitions[start]!.some((end) => reachesDocumentEnd[end]);
+  }
+
+  return reachesDocumentEnd[legacyCutoff] ? { reachableBoundaries, reachesDocumentEnd } : null;
 }
 
-/** A revised strict-v1 row can only contribute one normal-mode PATCH input. */
-function normalRevisionCanReplay(
+/**
+ * A revised strict-v1 row can only contribute one normal-mode PATCH input.
+ * Its update must be checked at an actual completed CREATE boundary: rows from
+ * later CREATE calls did not exist when updateTransaction ran and cannot make
+ * that PATCH appear insolvent.
+ */
+function normalRevisionCanReplayAtBoundary(
   rows: readonly QuantityReplayRow[],
   revision: QuantityReplayRow,
+  boundary: number,
 ): boolean {
-  return normalRowsCanReplay(rows, (row) => row.transaction.id === revision.transaction.id);
+  const visibleRows = rows.filter((row) => row.writeOrder < boundary);
+  return normalRowsCanReplay(visibleRows, (row) => row.transaction.id === revision.transaction.id);
 }
 
 /**
@@ -362,14 +388,25 @@ function normalOperationsCanReplay(
   writeHistory: readonly QuantityReplayRow[],
   legacyCutoff: number,
 ): boolean {
-  if (!normalCreatePartitionCanReplay(replayGroups, writeHistory, legacyCutoff)) return false;
+  const createPartition = normalCreatePartition(replayGroups, writeHistory, legacyCutoff);
+  if (!createPartition) return false;
   for (const group of replayGroups) {
     for (const row of group) {
-      if (
-        row.writeOrder < legacyCutoff &&
-        row.revisionCandidate &&
-        !normalRevisionCanReplay(group, row)
-      ) {
+      if (row.writeOrder >= legacyCutoff || !row.revisionCandidate) continue;
+      let patchCanReplay = false;
+      for (let boundary = legacyCutoff; boundary <= writeHistory.length; boundary += 1) {
+        if (
+          !createPartition.reachableBoundaries[boundary] ||
+          !createPartition.reachesDocumentEnd[boundary]
+        ) {
+          continue;
+        }
+        if (normalRevisionCanReplayAtBoundary(group, row, boundary)) {
+          patchCanReplay = true;
+          break;
+        }
+      }
+      if (!patchCanReplay) {
         return false;
       }
     }
