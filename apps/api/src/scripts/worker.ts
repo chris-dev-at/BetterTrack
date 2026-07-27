@@ -459,6 +459,7 @@ const definitions = [
     db,
     marketData,
     notify,
+    paranoid: paranoidGuard,
     // Custom assets (the `manual` provider) are durable in our own DB; the price
     // jobs must not fetch them (see MarketDataJobDeps.isLocalProvider).
     isLocalProvider: (providerId) =>

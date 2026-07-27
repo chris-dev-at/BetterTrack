@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Quote } from '@bettertrack/contracts';
 
+import { withExclusiveParanoidTransitionTestLock } from '../data/repositories/paranoidEnforcementRepository';
 import { createAlertRepository } from '../data/repositories/alertRepository';
 import { createUserFollowsRepository } from '../data/repositories/userFollowsRepository';
 import * as schema from '../data/schema';
@@ -44,6 +45,43 @@ async function loginAgent(app: Application, identifier: string, password: string
     .send({ identifier, password });
   expect(res.status).toBe(200);
   return agent;
+}
+
+async function setPrivacyMode(userId: string, privacyMode: 'normal' | 'paranoid'): Promise<void> {
+  await harness.db
+    .update(schema.users)
+    .set({
+      privacyMode,
+      paranoidMediaSet: privacyMode === 'paranoid' ? ['drive'] : null,
+      paranoidDriveAttestedVersion: privacyMode === 'paranoid' ? 1 : null,
+      profilePublic: false,
+    })
+    .where(eq(schema.users.id, userId));
+}
+
+async function startWinningParanoidTransition(userId: string): Promise<{
+  finish(): Promise<void>;
+}> {
+  let releaseTransition!: () => void;
+  let transitionLocked!: () => void;
+  const release = new Promise<void>((resolve) => {
+    releaseTransition = resolve;
+  });
+  const locked = new Promise<void>((resolve) => {
+    transitionLocked = resolve;
+  });
+  const transition = withExclusiveParanoidTransitionTestLock(harness.db, userId, async () => {
+    await setPrivacyMode(userId, 'paranoid');
+    transitionLocked();
+    await release;
+  });
+  await locked;
+  return {
+    async finish() {
+      releaseTransition();
+      await transition;
+    },
+  };
 }
 
 /** Seed the global catalog asset alerts reference. */
@@ -131,7 +169,8 @@ async function evaluate(now: number, price = 500) {
     redis: harness.ctx.redis,
     notify: harness.ctx.notify,
     followFanout: {
-      listFireRecipients: (ownerId) => followsRepo.listAlertFollowRecipients(ownerId, 'fire'),
+      follows: followsRepo,
+      paranoid: harness.ctx.paranoidGuard,
     },
     logger: harness.ctx.logger,
     now: () => now,
@@ -225,6 +264,49 @@ describe('alert sharing endpoint — the §16 friction ladder', () => {
     expect(off.status).toBe(200);
     expect(off.body).toEqual({ visibleToFollowers: false });
   });
+
+  it('kills sharing routes and direct methods while preserving private alert CRUD', async () => {
+    const owner = await harness.seedUser({
+      email: 'paranoid-alert-owner@bt.test',
+      username: 'paranoid_alert_owner',
+    });
+    const follower = await harness.seedUser({
+      email: 'paranoid-alert-follower@bt.test',
+      username: 'paranoid_alert_follower',
+    });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    const followerAgent = await loginAgent(harness.app, follower.email, follower.password);
+    await enablePublicProfile(ownerAgent);
+    await shareAlerts(ownerAgent);
+    await follow(followerAgent, owner.id, { notifyOnAlertCreate: true });
+    const assetId = await seedAsset('PRIVATE-ALERT');
+    await setPrivacyMode(owner.id, 'paranoid');
+
+    const getSharing = await ownerAgent.get('/api/v1/alerts/sharing');
+    expect(getSharing.status).toBe(403);
+    expect(getSharing.body.error.code).toBe('PARANOID_MODE');
+    const setSharing = await ownerAgent
+      .put('/api/v1/alerts/sharing')
+      .set(...XRW)
+      .send({ visibleToFollowers: true, acknowledgeFollowers: true });
+    expect(setSharing.status).toBe(403);
+    expect(setSharing.body.error.code).toBe('PARANOID_MODE');
+    await expect(harness.ctx.alerts.getSharing(owner.id)).rejects.toMatchObject({
+      code: 'PARANOID_MODE',
+    });
+    await expect(
+      harness.ctx.alerts.setSharing(owner.id, {
+        visibleToFollowers: true,
+        acknowledgeFollowers: true,
+      }),
+    ).rejects.toMatchObject({ code: 'PARANOID_MODE' });
+
+    await createAlert(ownerAgent, assetId, 100);
+    expect(await notifs(follower.id, 'follow.alert.created')).toHaveLength(0);
+    expect(
+      await harness.db.select().from(schema.alerts).where(eq(schema.alerts.userId, owner.id)),
+    ).toHaveLength(1);
+  });
 });
 
 describe('trigger matrix — created-only, fired-only, both, neither (all four combinations)', () => {
@@ -296,6 +378,57 @@ describe('trigger matrix — created-only, fired-only, both, neither (all four c
 });
 
 describe('visibility — the owner controls whether followers get anything', () => {
+  it('serializes create/fire fan-out against winning recipient and owner transitions', async () => {
+    const owner = await harness.seedUser({
+      email: 'alert-race-owner@bt.test',
+      username: 'alert_race_owner',
+    });
+    const follower = await harness.seedUser({
+      email: 'alert-race-follower@bt.test',
+      username: 'alert_race_follower',
+    });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    const followerAgent = await loginAgent(harness.app, follower.email, follower.password);
+    await enablePublicProfile(ownerAgent);
+    await shareAlerts(ownerAgent);
+    await follow(followerAgent, owner.id, {
+      notifyOnAlertCreate: true,
+      notifyOnAlertFire: true,
+    });
+    const assetId = await seedAsset('ALERT-RACE');
+
+    const followerTransition = await startWinningParanoidTransition(follower.id);
+    const create = createAlert(ownerAgent, assetId, 100);
+    let createSettled = false;
+    void create
+      .finally(() => {
+        createSettled = true;
+      })
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(createSettled).toBe(false);
+    await followerTransition.finish();
+    await create;
+    expect(await notifs(follower.id, 'follow.alert.created')).toHaveLength(0);
+
+    await setPrivacyMode(follower.id, 'normal');
+    await createAlert(ownerAgent, assetId, 200);
+    const ownerTransition = await startWinningParanoidTransition(owner.id);
+    const tick = evaluate(Date.parse('2026-07-14T13:00:00.000Z'));
+    let tickSettled = false;
+    void tick
+      .finally(() => {
+        tickSettled = true;
+      })
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(tickSettled).toBe(false);
+    await ownerTransition.finish();
+    await expect(tick).resolves.toEqual({ evaluated: 2, fired: 2 });
+    expect(await notifs(follower.id, 'follow.alert.fired')).toHaveLength(0);
+    expect(await notifs(owner.id, 'alert.triggered')).toHaveLength(2);
+  });
+
   it('no sharing → no news; unsharing stops delivery immediately; owner unchanged', async () => {
     const owner = await harness.seedUser({ email: 'owner@bt.test', username: 'owner' });
     const follower = await harness.seedUser({ email: 'fan@bt.test', username: 'fan' });

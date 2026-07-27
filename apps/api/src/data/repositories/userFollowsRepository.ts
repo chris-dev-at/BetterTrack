@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { userFollows, users } from '../schema';
@@ -239,10 +239,33 @@ export function createUserFollowsRepository(db: Database) {
      * stops delivery immediately. The owner can never appear (self-follows are
      * CHECK-rejected), so their own `alert.triggered` delivery is never doubled.
      */
+    async listAlertFollowRecipientIds(
+      followedId: string,
+      trigger: 'create' | 'fire',
+    ): Promise<string[]> {
+      const pref =
+        trigger === 'create' ? userFollows.notifyOnAlertCreate : userFollows.notifyOnAlertFire;
+      const rows = await db
+        .select({ followerId: userFollows.followerId })
+        .from(userFollows)
+        .innerJoin(
+          users,
+          and(eq(users.id, userFollows.followedId), eq(users.alertsVisibleToFollowers, true)),
+        )
+        .where(and(eq(userFollows.followedId, followedId), eq(pref, true)));
+      return rows.map((row) => row.followerId);
+    },
+
+    /**
+     * Enriched alert recipients, optionally restricted to the exact follower
+     * snapshot admitted by the account privacy guards.
+     */
     async listAlertFollowRecipients(
       followedId: string,
       trigger: 'create' | 'fire',
+      followerIds?: readonly string[],
     ): Promise<AlertFollowRecipient[]> {
+      if (followerIds?.length === 0) return [];
       const pref =
         trigger === 'create' ? userFollows.notifyOnAlertCreate : userFollows.notifyOnAlertFire;
       return db
@@ -252,7 +275,13 @@ export function createUserFollowsRepository(db: Database) {
           users,
           and(eq(users.id, userFollows.followedId), eq(users.alertsVisibleToFollowers, true)),
         )
-        .where(and(eq(userFollows.followedId, followedId), eq(pref, true)));
+        .where(
+          and(
+            eq(userFollows.followedId, followedId),
+            eq(pref, true),
+            followerIds ? inArray(userFollows.followerId, [...followerIds]) : undefined,
+          ),
+        );
     },
 
     /** How many users follow `userId` (public follower count on the profile). */

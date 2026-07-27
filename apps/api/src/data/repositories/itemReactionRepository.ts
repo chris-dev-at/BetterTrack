@@ -33,6 +33,32 @@ function toAggregates(
 
 export function createItemReactionRepository(db: Database) {
   return {
+    /** Identity-only discovery for actors contributing to one item aggregate. */
+    async listActorIdsForItem(kind: ShareKind, subjectId: string): Promise<string[]> {
+      const rows = await db
+        .selectDistinct({ userId: itemReactions.userId })
+        .from(itemReactions)
+        .where(
+          and(
+            eq(itemReactions.targetType, 'item'),
+            eq(itemReactions.kind, kind),
+            eq(itemReactions.subjectId, subjectId),
+          ),
+        );
+      return rows.map((row) => row.userId);
+    },
+
+    /** Identity-only discovery for actors contributing to one comment aggregate. */
+    async listActorIdsForComment(commentId: string): Promise<string[]> {
+      const rows = await db
+        .selectDistinct({ userId: itemReactions.userId })
+        .from(itemReactions)
+        .where(
+          and(eq(itemReactions.targetType, 'comment'), eq(itemReactions.commentId, commentId)),
+        );
+      return rows.map((row) => row.userId);
+    },
+
     /**
      * Identity-only discovery for every live participant whose reaction could
      * contribute to an item thread. No emoji, body, profile, or aggregate is
@@ -181,8 +207,12 @@ export function createItemReactionRepository(db: Database) {
     },
 
     /** Aggregate one comment's reactions (the toggle response). */
-    async summaryForComment(viewerId: string, commentId: string): Promise<ReactionAggregate[]> {
-      const map = await this.summaryForComments(viewerId, [commentId]);
+    async summaryForComment(
+      viewerId: string,
+      commentId: string,
+      actorIds?: readonly string[],
+    ): Promise<ReactionAggregate[]> {
+      const map = await this.summaryForComments(viewerId, [commentId], actorIds);
       return map.get(commentId) ?? [];
     },
   };

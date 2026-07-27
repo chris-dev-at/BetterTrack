@@ -85,6 +85,7 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
   serviceBinding('sharing', 'ideas', 'userIdFirst', ['clone']),
   serviceBinding('sharing', 'backtest', 'userIdFirst', ['runSharedSandboxPreview']),
   serviceBinding('sharing', 'comments', 'userIdFirst', ['*']),
+  serviceBinding('sharing', 'alerts', 'userIdFirst', ['getSharing', 'setSharing']),
   serviceBinding('sharing', 'social', 'userIdFirst', [
     'listGroups',
     'createGroup',
@@ -328,13 +329,29 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     handling: 'kept',
   },
   {
+    service: 'alerts',
+    methods: ['list', 'update', 'rearm', 'remove'],
+    handling: 'kept',
+  },
+  {
+    service: 'alerts',
+    methods: ['create'],
+    handling: 'internallyFiltered',
+  },
+  {
     service: 'standingOrders',
     methods: ['processDueOrders'],
     handling: 'internallyFiltered',
   },
 ] as const;
 
-export type ParanoidJobMode = 'kept' | 'portfolio' | 'perUser' | 'serviceFiltered' | 'event';
+export type ParanoidJobMode =
+  | 'kept'
+  | 'internallyFiltered'
+  | 'portfolio'
+  | 'perUser'
+  | 'serviceFiltered'
+  | 'event';
 
 export interface ParanoidJobPolicy {
   readonly capability: ParanoidKilledCapability | null;
@@ -346,7 +363,7 @@ export interface ParanoidJobPolicy {
  * so adding a queue without choosing kept/killed behavior fails the matrix.
  */
 export const PARANOID_JOB_POLICIES: Readonly<Record<string, ParanoidJobPolicy>> = {
-  'alerts.evaluate': { capability: null, mode: 'kept' },
+  'alerts.evaluate': { capability: null, mode: 'internallyFiltered' },
   'prices.refreshDaily': { capability: null, mode: 'kept' },
   'prices.backfill': { capability: null, mode: 'kept' },
   'fx.refreshSpot': { capability: null, mode: 'kept' },
@@ -418,6 +435,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
       { prefix: '/social/audience/' },
       { prefix: '/social/items/' },
       { prefix: '/social/comments/' },
+      { exact: '/alerts/sharing' },
       { exact: '/workboard/sharing' },
       { pattern: /^\/ideas\/[^/]+\/clone$/ },
       { prefix: '/backtest/shared/' },
@@ -512,6 +530,8 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
       'conglomerate.shared',
       'friend.activity',
       'follow.published',
+      'follow.alert.created',
+      'follow.alert.fired',
       'dividend.event',
       'budget.exceeded',
       'mirror.invite',
@@ -548,7 +568,7 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidRouteRule[] = [
   { exact: '/notifications' },
   { prefix: '/notifications/' },
   { exact: '/alerts' },
-  { prefix: '/alerts/' },
+  { pattern: /^\/alerts\/(?!sharing$)[^/]+(?:\/rearm)?$/ },
   { exact: '/vault' },
   { prefix: '/vault/' },
   { exact: '/workboard' },
@@ -604,6 +624,8 @@ export const PARANOID_WEBHOOK_SUBJECT_POLICIES = {
   'conglomerate.shared': 'recipientAndActor',
   'friend.activity': 'recipientAndActor',
   'follow.published': 'recipientAndActor',
+  'follow.alert.created': 'recipientAndActor',
+  'follow.alert.fired': 'recipientAndActor',
   'mirror.invite': 'mirrorPrincipals',
   'mirror.member_joined': 'mirrorPrincipals',
   'mirror.member_left': 'mirrorPrincipals',

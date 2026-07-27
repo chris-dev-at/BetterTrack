@@ -9,6 +9,7 @@ import {
 } from '../../../data/repositories/paranoidEnforcementRepository';
 import {
   assets,
+  portfolioCashMovements,
   conglomerates,
   friendGroupMembers,
   friendGroups,
@@ -17,6 +18,7 @@ import {
   mirrorChainMembers,
   mirrorChainOps,
   notifications,
+  itemReactions,
   portfolios,
   shareAudiences,
   transactions,
@@ -861,6 +863,64 @@ describe('paranoid kill registry', () => {
     ).toBe(opCountBefore);
   });
 
+  it('blocks a synced money submit when any active member transition wins first', async () => {
+    const owner = await harness.seedUser({
+      email: 'submit-owner-principal@bettertrack.test',
+      username: 'submit_owner_principal',
+    });
+    const member = await harness.seedUser({
+      email: 'submit-member-principal@bettertrack.test',
+      username: 'submit_member_principal',
+    });
+    const ownerPortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
+    const { chain } = await harness.ctx.mirror.convertToChain(owner.id, ownerPortfolioId);
+    await harness.ctx.mirror.attachMemberCopy(chain.id, member.id, { role: 'member' });
+    const opCountBefore = (
+      await harness.db
+        .select({ id: mirrorChainOps.id })
+        .from(mirrorChainOps)
+        .where(eq(mirrorChainOps.chainId, chain.id))
+    ).length;
+    const movementCountBefore = (
+      await harness.db
+        .select({ id: portfolioCashMovements.id })
+        .from(portfolioCashMovements)
+        .where(eq(portfolioCashMovements.portfolioId, ownerPortfolioId))
+    ).length;
+
+    const transition = await startWinningParanoidTransition(member.id);
+    const deposit = harness.ctx.mirror.submitCashDeposit(owner.id, ownerPortfolioId, {
+      amountEur: 75,
+    });
+    let settled = false;
+    void deposit
+      .finally(() => {
+        settled = true;
+      })
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    await transition.finish();
+    await expect(deposit).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+    expect(
+      (
+        await harness.db
+          .select({ id: mirrorChainOps.id })
+          .from(mirrorChainOps)
+          .where(eq(mirrorChainOps.chainId, chain.id))
+      ).length,
+    ).toBe(opCountBefore);
+    expect(
+      (
+        await harness.db
+          .select({ id: portfolioCashMovements.id })
+          .from(portfolioCashMovements)
+          .where(eq(portfolioCashMovements.portfolioId, ownerPortfolioId))
+      ).length,
+    ).toBe(movementCountBefore);
+  });
+
   it('filters both directions of an established follow after the counterpart transition wins', async () => {
     const viewer = await harness.seedUser({
       email: 'follow-viewer-race@bettertrack.test',
@@ -1027,6 +1087,80 @@ describe('paranoid kill registry', () => {
     expect(thread.comments.map((comment) => comment.body)).toEqual(['visible comment']);
     expect(thread.comments[0]?.reactions).toEqual([{ emoji: '👍', count: 1, reacted: true }]);
     expect(thread.reactions).toEqual([{ emoji: '🔥', count: 1, reacted: true }]);
+  });
+
+  it('guards comment authors and filters item reaction responses across winning transitions', async () => {
+    const owner = await harness.seedUser({
+      email: 'reaction-owner-race@bettertrack.test',
+      username: 'reaction_owner_race',
+    });
+    const viewer = await harness.seedUser({
+      email: 'reaction-viewer-race@bettertrack.test',
+      username: 'reaction_viewer_race',
+    });
+    const author = await harness.seedUser({
+      email: 'reaction-author-race@bettertrack.test',
+      username: 'reaction_author_race',
+    });
+    const reactor = await harness.seedUser({
+      email: 'reaction-reactor-race@bettertrack.test',
+      username: 'reaction_reactor_race',
+    });
+    for (const friendId of [viewer.id, author.id, reactor.id]) {
+      const [userA, userB] = owner.id < friendId ? [owner.id, friendId] : [friendId, owner.id];
+      await harness.db.insert(friendships).values({ userA, userB });
+    }
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
+    await harness.ctx.social.setAudience(owner.id, 'portfolio', portfolioId, {
+      audience: 'all_friends',
+    });
+    const comment = await harness.ctx.comments.addComment(
+      author.id,
+      'portfolio',
+      portfolioId,
+      'transition-owned comment',
+    );
+    await harness.ctx.comments.toggleItemReaction(reactor.id, 'portfolio', portfolioId, '🔥');
+
+    const authorTransition = await startWinningParanoidTransition(author.id);
+    const commentReaction = harness.ctx.comments.toggleCommentReaction(viewer.id, comment.id, '👍');
+    let commentSettled = false;
+    void commentReaction
+      .finally(() => {
+        commentSettled = true;
+      })
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(commentSettled).toBe(false);
+
+    await authorTransition.finish();
+    await expect(commentReaction).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+    expect(
+      (
+        await harness.db.select().from(itemReactions).where(eq(itemReactions.userId, viewer.id))
+      ).filter((row) => row.commentId === comment.id),
+    ).toEqual([]);
+
+    const reactorTransition = await startWinningParanoidTransition(reactor.id);
+    const itemReaction = harness.ctx.comments.toggleItemReaction(
+      viewer.id,
+      'portfolio',
+      portfolioId,
+      '🔥',
+    );
+    let itemSettled = false;
+    void itemReaction
+      .finally(() => {
+        itemSettled = true;
+      })
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(itemSettled).toBe(false);
+
+    await reactorTransition.finish();
+    await expect(itemReaction).resolves.toEqual({
+      reactions: [{ emoji: '🔥', count: 1, reacted: true }],
+    });
   });
 
   it('serializes mixed asset/search/earnings reads and keeps only global or watched data', async () => {

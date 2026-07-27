@@ -26,6 +26,8 @@ import {
 import type {
   AlertTriggeredEvent,
   DividendEventNotice,
+  FollowAlertCreatedEvent,
+  FollowAlertFiredEvent,
   MirrorNotificationEvent,
   PortfolioSharedEvent,
   WatchlistSharedEvent,
@@ -64,6 +66,11 @@ const MIRROR_WEBHOOK_TYPES: readonly MirrorNotificationEvent['type'][] = [
   'mirror.ownership_transferred',
   'mirror.chain_dissolved',
   'mirror.sync_stalled',
+];
+type FollowAlertEvent = FollowAlertCreatedEvent | FollowAlertFiredEvent;
+const FOLLOW_ALERT_WEBHOOK_TYPES: readonly FollowAlertEvent['type'][] = [
+  'follow.alert.created',
+  'follow.alert.fired',
 ];
 
 type Agent = ReturnType<typeof request.agent>;
@@ -405,6 +412,100 @@ describe('signed delivery', () => {
     await bridge.handleEvent(recipientEvent);
 
     expect(enqueued).toEqual([]);
+  });
+
+  it('checks alert owner and follower before enqueueing either follow-alert webhook', async () => {
+    const recipient = await createSubscription([...FOLLOW_ALERT_WEBHOOK_TYPES]);
+    const owner = await harness.seedUser({
+      email: 'webhook-alert-owner@bettertrack.test',
+      username: 'webhook_alert_owner',
+    });
+    const enqueued: WebhookDeliveryJob[] = [];
+    const bridge = createWebhookBridge({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      enqueue: async (job) => {
+        enqueued.push(job);
+      },
+      logger: harness.ctx.logger,
+      paranoid: harness.ctx.paranoidGuard,
+    });
+    const event = (type: FollowAlertEvent['type']): FollowAlertEvent => ({
+      type,
+      userId: recipient.userId,
+      actorId: owner.id,
+      actorUsername: owner.username,
+      alertId: '00000000-0000-7000-8000-000000000073',
+      assetId: '00000000-0000-7000-8000-000000000074',
+      occurredAt: '2026-07-27T00:00:00.000Z',
+    });
+    const setMode = async (userId: string, privacyMode: 'normal' | 'paranoid') => {
+      await harness.db
+        .update(schema.users)
+        .set({
+          privacyMode,
+          paranoidMediaSet: privacyMode === 'paranoid' ? ['drive'] : null,
+          paranoidDriveAttestedVersion: privacyMode === 'paranoid' ? 1 : null,
+        })
+        .where(eq(schema.users.id, userId));
+    };
+
+    await setMode(owner.id, 'paranoid');
+    for (const type of FOLLOW_ALERT_WEBHOOK_TYPES) await bridge.handleEvent(event(type));
+    await setMode(owner.id, 'normal');
+    await setMode(recipient.userId, 'paranoid');
+    for (const type of FOLLOW_ALERT_WEBHOOK_TYPES) await bridge.handleEvent(event(type));
+
+    expect(enqueued).toEqual([]);
+  });
+
+  it('checks alert owner and follower again at queued delivery for both follow-alert events', async () => {
+    const delivered: string[] = [];
+    const definition = {
+      name: 'webhooks.deliver',
+      async handler(job) {
+        delivered.push(job.data.event.type);
+      },
+    } as JobDefinition<'webhooks.deliver'>;
+    const checked: Array<{ type: string; userIds: readonly string[] }> = [];
+    let pendingType = '';
+    const guarded = bindParanoidJob(definition, {
+      mode: 'event',
+      runIfAllowed: async (userIds) => {
+        checked.push({ type: pendingType, userIds });
+        return false;
+      },
+    });
+
+    for (const [index, type] of FOLLOW_ALERT_WEBHOOK_TYPES.entries()) {
+      pendingType = type;
+      const event: FollowAlertEvent = {
+        type,
+        userId: `follower-${index}`,
+        actorId: `owner-${index}`,
+        actorUsername: 'owner',
+        alertId: '00000000-0000-7000-8000-000000000075',
+        assetId: '00000000-0000-7000-8000-000000000076',
+        occurredAt: '2026-07-27T00:00:00.000Z',
+      };
+      await guarded.handler(
+        {
+          data: {
+            subscriptionId: `subscription-${index}`,
+            deliveryId: `delivery-${index}`,
+            event,
+          },
+        } as never,
+        { logger: harness.ctx.logger } as never,
+      );
+    }
+
+    expect(delivered).toEqual([]);
+    expect(checked).toEqual(
+      FOLLOW_ALERT_WEBHOOK_TYPES.map((type, index) => ({
+        type,
+        userIds: [`follower-${index}`, `owner-${index}`],
+      })),
+    );
   });
 
   it('checks mirror recipient, actor, owner, and affected subjects before webhook enqueue', async () => {

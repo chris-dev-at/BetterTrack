@@ -1711,6 +1711,34 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     );
   }
 
+  /**
+   * A synced ledger submit changes one logical portfolio, so every active copy
+   * owner is an affected principal even though only the origin copy is written
+   * synchronously. Hold the complete, revalidated active-member set through
+   * origin catch-up, mutation/op append, replication enqueue, and response
+   * construction. A join racing discovery triggers the lifecycle helper's
+   * bounded retry before any submit side effect.
+   */
+  async function withSubmitPrincipalGuards<T>(
+    userId: string,
+    membership: MirrorChainMemberRow,
+    action: (member: MirrorChainMemberRow) => Promise<T>,
+  ): Promise<T> {
+    return withLifecyclePrincipalGuards(membership.chainId, [userId], async ({ members }) => {
+      const current = members.find(
+        (member) =>
+          member.id === membership.id &&
+          member.userId === userId &&
+          member.portfolioId === membership.portfolioId,
+      );
+      if (!current) throw forbidden('You are no longer a member of this group portfolio.');
+      const caughtUp = await catchUpOrigin(current);
+      const result = await action(caughtUp);
+      await scheduleReplicate(membership.chainId);
+      return result;
+    });
+  }
+
   async function attachMemberCopyUnderLock(
     chain: MirrorChainRow,
     existingMembers: MirrorChainMemberRow[],
@@ -3117,8 +3145,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       if (!membership) return portfolio.createTransactions(userId, portfolioId, inputs, opts);
       await assertSyncableAssets(inputs.map((i) => i.assetId));
       const username = await usernameOf(userId);
-      const dtos = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const dtos = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         // The origin's normal, fully-validated write — it mints the row ids
         // that become the ops' mirror ids (§1); a rejection appends nothing.
         const created = await portfolio.createTransactions(userId, portfolioId, inputs, {
@@ -3177,7 +3204,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return created;
       });
-      await scheduleReplicate(membership.chainId);
       return dtos;
     },
 
@@ -3186,8 +3212,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.updateTransaction(userId, portfolioId, txId, patch);
       const username = await usernameOf(userId);
-      const dto = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const dto = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const local = await transactionRepo.findByIdForUser(userId, txId);
         if (!local || local.portfolioId !== portfolioId) {
           throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
@@ -3243,7 +3268,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return outcome.result as TransactionDto;
       });
-      await scheduleReplicate(membership.chainId);
       return dto;
     },
 
@@ -3252,8 +3276,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.deleteTransaction(userId, portfolioId, txId);
       const username = await usernameOf(userId);
-      await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const local = await transactionRepo.findByIdForUser(userId, txId);
         if (!local || local.portfolioId !== portfolioId) {
           throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
@@ -3290,7 +3313,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           [outcome],
         );
       });
-      await scheduleReplicate(membership.chainId);
     },
 
     async submitDividendRecord(userId, portfolioId, input) {
@@ -3299,8 +3321,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       if (!membership) return tax.recordDividend(userId, portfolioId, input);
       await assertSyncableAssets([input.assetId]);
       const username = await usernameOf(userId);
-      const res = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const created = await tax.recordDividend(userId, portfolioId, input);
         await repo.insertMirrorRow({
           chainId: member.chainId,
@@ -3340,7 +3361,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return created;
       });
-      await scheduleReplicate(membership.chainId);
       return res;
     },
 
@@ -3349,8 +3369,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return tax.deleteDividend(userId, portfolioId, dividendId);
       const username = await usernameOf(userId);
-      await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const local = await taxRepo.findByIdForPortfolio(portfolioId, dividendId);
         if (!local) throw notFound('Dividend not found.', 'DIVIDEND_NOT_FOUND');
         const link = await repo.findMirrorRowByLocal('dividend', dividendId);
@@ -3385,7 +3404,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           [outcome],
         );
       });
-      await scheduleReplicate(membership.chainId);
     },
 
     async submitCashDeposit(userId, portfolioId, input) {
@@ -3403,8 +3421,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.transferCash(userId, portfolioId, input);
       const username = await usernameOf(userId);
-      const res = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const created = await portfolio.transferCash(userId, portfolioId, input);
         // One statement — a crash can never strand the pair half-linked.
         await repo.insertMirrorRows(
@@ -3446,7 +3463,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return created;
       });
-      await scheduleReplicate(membership.chainId);
       return res;
     },
 
@@ -3455,8 +3471,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.setCashBalance(userId, portfolioId, sourceId, input);
       const username = await usernameOf(userId);
-      const res = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const created = await portfolio.setCashBalance(userId, portfolioId, sourceId, input);
         // A zero delta records nothing, so no op is appended (design §8).
         if (!created.movement) return created;
@@ -3495,7 +3510,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return created;
       });
-      await scheduleReplicate(membership.chainId);
       return res;
     },
 
@@ -3504,8 +3518,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.createCashSource(userId, portfolioId, input);
       const username = await usernameOf(userId);
-      const res = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const dto = await portfolio.createCashSource(userId, portfolioId, input);
         await repo.insertMirrorRow({
           chainId: member.chainId,
@@ -3539,7 +3552,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return dto;
       });
-      await scheduleReplicate(membership.chainId);
       return res;
     },
 
@@ -3548,8 +3560,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.updateCashSource(userId, portfolioId, sourceId, patch);
       const username = await usernameOf(userId);
-      const res = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const current = await cashSourceRepo.findByIdForPortfolio(portfolioId, sourceId);
         if (!current) throw notFound('Cash source not found.', 'CASH_SOURCE_NOT_FOUND');
         const link = await repo.findMirrorRowByLocal('cash_source', sourceId);
@@ -3593,7 +3604,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return outcome.result as CashSourceDto;
       });
-      await scheduleReplicate(membership.chainId);
       return res;
     },
 
@@ -3622,8 +3632,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         : portfolio.withdrawCash(userId, portfolioId, input);
     }
     const username = await usernameOf(userId);
-    const res = await withChainLock(membership.chainId, async () => {
-      const member = await catchUpOrigin(membership);
+    const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
       const created =
         kind === 'cash.deposit'
           ? await portfolio.depositCash(userId, portfolioId, input)
@@ -3663,7 +3672,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       );
       return created;
     });
-    await scheduleReplicate(membership.chainId);
     return res;
   }
 
@@ -3682,8 +3690,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         : portfolio.restoreCashSource(userId, portfolioId, sourceId);
     }
     const username = await usernameOf(userId);
-    const res = await withChainLock(membership.chainId, async () => {
-      const member = await catchUpOrigin(membership);
+    const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
       const link = await repo.findMirrorRowByLocal('cash_source', sourceId);
       if (!link) throw new Error(`mirror: cash source ${sourceId} is not mirror-linked`);
       const baseSeq = await checkEntityGuard(member.chainId, link.mirrorId, opts?.baseSeq);
@@ -3717,7 +3724,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       );
       return outcome.result as CashSourceDto;
     });
-    await scheduleReplicate(membership.chainId);
     return res;
   }
 

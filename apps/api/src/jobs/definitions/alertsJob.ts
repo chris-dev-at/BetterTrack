@@ -2,6 +2,7 @@ import type { Database } from '../../data/db';
 import { createAlertRepository } from '../../data/repositories/alertRepository';
 import { createUserFollowsRepository } from '../../data/repositories/userFollowsRepository';
 import type { MarketDataService } from '../../providers';
+import type { ParanoidModeGuard } from '../../services/account/paranoidEnforcement';
 import { runAlertsEvaluation } from '../../services/alerts/alertEvaluator';
 import type { NotificationCenter } from '../../services/notifications/notificationCenter';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
@@ -27,6 +28,8 @@ export interface AlertsJobDeps {
   marketData: MarketDataService;
   /** The central notification pipeline (#368) — fires are enqueued durably. */
   notify: NotificationCenter;
+  /** Filters the otherwise-kept evaluator's follower-sharing side rail. */
+  paranoid: Pick<ParanoidModeGuard, 'runAllowed' | 'runAllowedWithOptional'>;
 }
 
 export function createAlertsEvaluateJob(deps: AlertsJobDeps): JobDefinition<'alerts.evaluate'> {
@@ -47,7 +50,8 @@ export function createAlertsEvaluateJob(deps: AlertsJobDeps): JobDefinition<'ale
         redis: ctx.redis,
         notify: deps.notify,
         followFanout: {
-          listFireRecipients: (ownerId) => followsRepo.listAlertFollowRecipients(ownerId, 'fire'),
+          follows: followsRepo,
+          paranoid: deps.paranoid,
         },
         logger: ctx.logger,
         now: () => now,

@@ -1589,6 +1589,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     notify,
     marketData,
     logger,
+    paranoid: paranoidGuard,
   });
 
   // Idempotency-key store (§13.4 V4-P2a, #417): the durable claim/replay backing
@@ -1708,6 +1709,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       expenseImports,
       standingOrders,
       webhookBridge,
+      alerts,
     },
     paranoidGuard,
     paranoidSubjects,
@@ -1759,7 +1761,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     accountSettings,
     accountDeletion,
     dataExport,
-    alerts,
+    alerts: guarded.alerts,
     announcements,
     notificationDispatcher,
     digestService,

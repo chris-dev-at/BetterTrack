@@ -132,6 +132,38 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
       : revalidateAndRun();
   }
 
+  async function withLockedAccessAndOptionalActors<T>(
+    viewerId: string,
+    kind: ShareKind,
+    subjectId: string,
+    optionalActorIds: readonly string[],
+    action: (access: ThreadAccess, allowedActorIds: readonly string[]) => Promise<T>,
+    additionalRequiredActorIds: readonly string[] = [],
+  ): Promise<T> {
+    const candidate = await resolveAccess(viewerId, kind, subjectId);
+    if (!candidate) throw THREAD_NOT_FOUND();
+    if (!deps.paranoid) {
+      return action(candidate, []);
+    }
+    return deps.paranoid.runAllowedWithOptional(
+      [viewerId, candidate.ownerId, ...additionalRequiredActorIds],
+      optionalActorIds,
+      'sharing',
+      async (allowedOptionalActorIds) => {
+        const access = await resolveAccess(viewerId, kind, subjectId);
+        if (!access || access.ownerId !== candidate.ownerId) throw THREAD_NOT_FOUND();
+        return action(access, [
+          ...new Set([
+            viewerId,
+            candidate.ownerId,
+            ...additionalRequiredActorIds,
+            ...allowedOptionalActorIds,
+          ]),
+        ]);
+      },
+    );
+  }
+
   async function buildThread(
     viewerId: string,
     kind: ShareKind,
@@ -263,22 +295,66 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     },
 
     async toggleItemReaction(viewerId, kind, subjectId, emoji) {
-      return withLockedAccess(viewerId, kind, subjectId, async () => {
-        await reactions.toggleItem(viewerId, kind, subjectId, emoji);
-        const summary = await reactions.summaryForItem(viewerId, kind, subjectId);
-        return { reactions: toReactionSummaries(summary) };
-      });
+      if (!deps.paranoid) {
+        return withLockedAccess(viewerId, kind, subjectId, async () => {
+          await reactions.toggleItem(viewerId, kind, subjectId, emoji);
+          const summary = await reactions.summaryForItem(viewerId, kind, subjectId);
+          return { reactions: toReactionSummaries(summary) };
+        });
+      }
+      const reactionActorIds = await reactions.listActorIdsForItem(kind, subjectId);
+      return withLockedAccessAndOptionalActors(
+        viewerId,
+        kind,
+        subjectId,
+        reactionActorIds,
+        async (_access, allowedActorIds) => {
+          await reactions.toggleItem(viewerId, kind, subjectId, emoji);
+          const summary = await reactions.summaryForItem(
+            viewerId,
+            kind,
+            subjectId,
+            allowedActorIds,
+          );
+          return { reactions: toReactionSummaries(summary) };
+        },
+      );
     },
 
     async toggleCommentReaction(viewerId, commentId, emoji) {
-      const comment = await comments.getById(commentId);
-      if (!comment || comment.deletedAt) throw COMMENT_NOT_FOUND();
-      // Reacting needs the SAME access as reading the thread the comment lives in.
-      return withLockedAccess(viewerId, comment.kind, comment.subjectId, async () => {
-        await reactions.toggleComment(viewerId, commentId, emoji);
-        const summary = await reactions.summaryForComment(viewerId, commentId);
-        return { reactions: toReactionSummaries(summary) };
-      });
+      const candidate = await comments.getById(commentId);
+      if (!candidate || candidate.deletedAt) throw COMMENT_NOT_FOUND();
+      if (!deps.paranoid) {
+        // Reacting needs the SAME access as reading the thread the comment lives in.
+        return withLockedAccess(viewerId, candidate.kind, candidate.subjectId, async () => {
+          await reactions.toggleComment(viewerId, commentId, emoji);
+          const summary = await reactions.summaryForComment(viewerId, commentId);
+          return { reactions: toReactionSummaries(summary) };
+        });
+      }
+      const reactionActorIds = await reactions.listActorIdsForComment(commentId);
+      return withLockedAccessAndOptionalActors(
+        viewerId,
+        candidate.kind,
+        candidate.subjectId,
+        reactionActorIds,
+        async (_access, allowedActorIds) => {
+          const comment = await comments.getById(commentId);
+          if (
+            !comment ||
+            comment.deletedAt ||
+            comment.kind !== candidate.kind ||
+            comment.subjectId !== candidate.subjectId ||
+            comment.authorId !== candidate.authorId
+          ) {
+            throw COMMENT_NOT_FOUND();
+          }
+          await reactions.toggleComment(viewerId, commentId, emoji);
+          const summary = await reactions.summaryForComment(viewerId, commentId, allowedActorIds);
+          return { reactions: toReactionSummaries(summary) };
+        },
+        [candidate.authorId],
+      );
     },
   };
 }

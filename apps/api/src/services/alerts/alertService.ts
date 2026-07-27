@@ -7,12 +7,13 @@ import {
 
 import type { AlertRecord, AlertRepository } from '../../data/repositories/alertRepository';
 import type { AssetRepository } from '../../data/repositories/assetRepository';
-import type { UserFollowsRepository } from '../../data/repositories/userFollowsRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import { badGateway, badRequest, notFound } from '../../errors';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { NotificationCenter } from '../notifications/notificationCenter';
+import { withAlertFollowRecipients, type AlertFollowRepository } from './alertFollowerFanout';
 
 /**
  * Price-alert CRUD (PROJECTPLAN.md §14, V3-P10 arc b). Every read/write is
@@ -34,13 +35,15 @@ export interface AlertServiceDeps {
   repo: AlertRepository;
   assetRepo: AssetRepository;
   /** Alert-follow recipients (#455): opted-in followers of a visible owner. */
-  follows: Pick<UserFollowsRepository, 'listAlertFollowRecipients'>;
+  follows: AlertFollowRepository;
   /** The owner's `alertsVisibleToFollowers` opt-in (#455). */
   users: Pick<UserRepository, 'getAlertsVisibleToFollowers' | 'setAlertsVisibleToFollowers'>;
   /** The central notification pipeline (#368) — `follow.alert.created` enters here. */
   notify: NotificationCenter;
   marketData: Pick<MarketDataService, 'getQuote'>;
   logger: Logger;
+  /** Suppresses the social fan-out while preserving private alert CRUD. */
+  paranoid: Pick<ParanoidModeGuard, 'runAllowed' | 'runAllowedWithOptional'>;
 }
 
 export interface AlertService {
@@ -117,19 +120,25 @@ export function createAlertService(deps: AlertServiceDeps): AlertService {
       // out to nobody. Best-effort AFTER the insert — the center never throws,
       // and a recipient-query failure must not fail the creation.
       try {
-        const recipients = await follows.listAlertFollowRecipients(userId, 'create');
-        const occurredAt = new Date().toISOString();
-        for (const recipient of recipients) {
-          await notify.emit({
-            type: 'follow.alert.created',
-            userId: recipient.followerId,
-            actorId: userId,
-            actorUsername: recipient.ownerUsername,
-            alertId: record.id,
-            assetId: record.assetId,
-            occurredAt,
-          });
-        }
+        await withAlertFollowRecipients(
+          { follows, paranoid: deps.paranoid },
+          userId,
+          'create',
+          async (recipients) => {
+            const occurredAt = new Date().toISOString();
+            for (const recipient of recipients) {
+              await notify.emit({
+                type: 'follow.alert.created',
+                userId: recipient.followerId,
+                actorId: userId,
+                actorUsername: recipient.ownerUsername,
+                alertId: record.id,
+                assetId: record.assetId,
+                occurredAt,
+              });
+            }
+          },
+        );
       } catch (err) {
         logger.warn(
           { alertId: record.id, err: err instanceof Error ? err.message : String(err) },

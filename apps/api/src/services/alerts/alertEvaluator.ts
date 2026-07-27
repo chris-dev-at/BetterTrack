@@ -2,10 +2,10 @@ import type { AlertKind, AlertStatus } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
 import type { AlertRepository } from '../../data/repositories/alertRepository';
-import type { AlertFollowRecipient } from '../../data/repositories/userFollowsRepository';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import type { NotificationCenter } from '../notifications/notificationCenter';
+import { withAlertFollowRecipients, type AlertFollowerFanoutDeps } from './alertFollowerFanout';
 
 /**
  * The price-alert evaluator (PROJECTPLAN.md §14, V3-P10 arc b). A BullMQ
@@ -104,9 +104,7 @@ export interface AlertsEvaluatorDeps {
    * Optional: absent = no follower fan-out (the owner's own delivery is
    * untouched either way).
    */
-  followFanout?: {
-    listFireRecipients(ownerId: string): Promise<AlertFollowRecipient[]>;
-  };
+  followFanout?: AlertFollowerFanoutDeps;
   logger: Logger;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
@@ -230,18 +228,24 @@ export async function runAlertsEvaluation(
       // window downstream), never strand the followers of a one-shot alert.
       if (deps.followFanout) {
         try {
-          const recipients = await deps.followFanout.listFireRecipients(alert.userId);
-          for (const recipient of recipients) {
-            await notify.emit({
-              type: 'follow.alert.fired',
-              userId: recipient.followerId,
-              actorId: alert.userId,
-              actorUsername: recipient.ownerUsername,
-              alertId: alert.id,
-              assetId: alert.assetId,
-              occurredAt,
-            });
-          }
+          await withAlertFollowRecipients(
+            deps.followFanout,
+            alert.userId,
+            'fire',
+            async (recipients) => {
+              for (const recipient of recipients) {
+                await notify.emit({
+                  type: 'follow.alert.fired',
+                  userId: recipient.followerId,
+                  actorId: alert.userId,
+                  actorUsername: recipient.ownerUsername,
+                  alertId: alert.id,
+                  assetId: alert.assetId,
+                  occurredAt,
+                });
+              }
+            },
+          );
         } catch (err) {
           logger.warn(
             { alertId: alert.id, err: errorMessage(err) },
