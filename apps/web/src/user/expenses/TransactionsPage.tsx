@@ -43,6 +43,7 @@ export function TransactionsPage() {
   });
 
   const categories = useMemo(() => categoriesQuery.data?.categories ?? [], [categoriesQuery.data]);
+  const categoriesReady = categoriesQuery.isSuccess;
   const categoryById = useMemo(() => {
     const map = new Map<string, ExpenseCategory>();
     for (const c of categories) map.set(c.id, c);
@@ -65,11 +66,21 @@ export function TransactionsPage() {
 
   const transactions = transactionsQuery.data?.transactions ?? [];
 
+  function retryTransactions() {
+    void transactionsQuery.refetch();
+  }
+
+  function retryCategories() {
+    void categoriesQuery.refetch();
+  }
+
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-neutral-500">{t('expenses.transactions.subtitle')}</p>
-        <Button onClick={() => setCreating(true)}>{t('expenses.transactions.new')}</Button>
+        <Button onClick={() => setCreating(true)} disabled={!categoriesReady}>
+          {t('expenses.transactions.new')}
+        </Button>
       </div>
 
       {transactionsQuery.isLoading ? (
@@ -79,7 +90,12 @@ export function TransactionsPage() {
           <Skeleton height="h-14" />
         </div>
       ) : transactionsQuery.isError ? (
-        <Alert tone="error">{t('expenses.transactions.loadError')}</Alert>
+        <div className="flex flex-wrap items-center gap-3">
+          <Alert tone="error">{t('expenses.transactions.loadError')}</Alert>
+          <Button variant="secondary" onClick={retryTransactions}>
+            {t('common.retry')}
+          </Button>
+        </div>
       ) : transactions.length === 0 ? (
         <EmptyState
           icon="🧾"
@@ -89,6 +105,7 @@ export function TransactionsPage() {
             <button
               type="button"
               onClick={() => setCreating(true)}
+              disabled={!categoriesReady}
               className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
               {t('expenses.transactions.emptyCta')}
@@ -109,7 +126,9 @@ export function TransactionsPage() {
                 />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-neutral-200">{tx.description}</p>
-                  <p className="text-xs text-neutral-500">{formatDate(tx.bookedOn)}</p>
+                  <p className="text-xs text-neutral-500">
+                    {formatDate(tx.bookedOn)} · {t(`expenses.direction.${tx.direction}`)}
+                  </p>
                 </div>
                 <span
                   className={cx(
@@ -125,8 +144,8 @@ export function TransactionsPage() {
                 </label>
                 <select
                   id={`recat-${tx.id}`}
-                  value={tx.categoryId ?? ''}
-                  disabled={recategorize.isPending}
+                  value={categoriesReady ? (tx.categoryId ?? '') : ''}
+                  disabled={!categoriesReady || recategorize.isPending}
                   onChange={(e) =>
                     recategorize.mutate({
                       id: tx.id,
@@ -135,12 +154,22 @@ export function TransactionsPage() {
                   }
                   className="shrink-0 rounded-md bg-neutral-950 px-2 py-1 text-xs text-neutral-200 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
                 >
-                  <option value="">{t('expenses.transactions.uncategorized')}</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
+                  {categoriesReady ? (
+                    <>
+                      <option value="">{t('expenses.transactions.uncategorized')}</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </>
+                  ) : (
+                    <option value="">
+                      {categoriesQuery.isError
+                        ? t('expenses.transactions.categoryLoadError')
+                        : t('common.loading')}
                     </option>
-                  ))}
+                  )}
                 </select>
                 {confirmDeleteId === tx.id ? (
                   <span className="flex shrink-0 items-center gap-1">
@@ -165,6 +194,7 @@ export function TransactionsPage() {
                     <button
                       type="button"
                       onClick={() => setEditing(tx)}
+                      disabled={!categoriesReady}
                       className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
                     >
                       {t('common.edit')}
@@ -183,6 +213,20 @@ export function TransactionsPage() {
           })}
         </ul>
       )}
+
+      {transactionsQuery.isSuccess && categoriesQuery.isError ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <Alert tone="error">{t('expenses.transactions.categoryLoadError')}</Alert>
+          <Button variant="secondary" onClick={retryCategories}>
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : null}
+
+      {recategorize.isError ? (
+        <Alert tone="error">{t('expenses.transactions.recategorizeError')}</Alert>
+      ) : null}
+      {remove.isError ? <Alert tone="error">{t('expenses.transactions.deleteError')}</Alert> : null}
 
       {creating ? (
         <TransactionDialog categories={categories} onClose={() => setCreating(false)} />
