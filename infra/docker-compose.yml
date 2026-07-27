@@ -88,6 +88,12 @@ services:
       DATABASE_URL: '${DATABASE_URL}'
       REDIS_URL: '${REDIS_URL}'
       SESSION_SECRET: '${SESSION_SECRET}'
+      # Long-lived stored-record encryption (#879). These exact values are also
+      # passed to the worker below; Compose refuses production startup when the
+      # active id/key are missing.
+      BT_DATA_ENCRYPTION_KEY_ID: '${BT_DATA_ENCRYPTION_KEY_ID:?set BT_DATA_ENCRYPTION_KEY_ID}'
+      BT_DATA_ENCRYPTION_KEY: '${BT_DATA_ENCRYPTION_KEY:?set BT_DATA_ENCRYPTION_KEY}'
+      BT_DATA_ENCRYPTION_DECRYPT_KEYS: '${BT_DATA_ENCRYPTION_DECRYPT_KEYS:-}'
       # Topology (§11): the api derives api/web/admin origins → CORS + cookies.
       BT_MODE: '${BT_MODE:-subdomains}'
       BT_DOMAIN: '${BT_DOMAIN:-localhost}'
@@ -172,6 +178,11 @@ services:
       DATABASE_URL: '${DATABASE_URL}'
       REDIS_URL: '${REDIS_URL}'
       SESSION_SECRET: '${SESSION_SECRET}'
+      # Must match the api service exactly so every process reads the same
+      # active/transition envelopes.
+      BT_DATA_ENCRYPTION_KEY_ID: '${BT_DATA_ENCRYPTION_KEY_ID:?set BT_DATA_ENCRYPTION_KEY_ID}'
+      BT_DATA_ENCRYPTION_KEY: '${BT_DATA_ENCRYPTION_KEY:?set BT_DATA_ENCRYPTION_KEY}'
+      BT_DATA_ENCRYPTION_DECRYPT_KEYS: '${BT_DATA_ENCRYPTION_DECRYPT_KEYS:-}'
       # Topology (§11): the worker generates the same origins/links as the api
       # (share links, email URLs) so they must match.
       BT_MODE: '${BT_MODE:-subdomains}'

@@ -672,6 +672,29 @@ export const assetTypeEnum = pgEnum('asset_type', [
   'custom',
 ]);
 
+/**
+ * Content-free identity anchor for an asset UUID.
+ *
+ * Paranoid mode removes a user's content-bearing custom `assets` row while
+ * server-kept watchlist/conglomerate/alert rows retain this opaque key. The
+ * database migration owns the lifecycle triggers: every successful asset
+ * insert creates this row in the same statement, an ordinary asset delete
+ * removes it (cascading kept references), and the dedicated paranoid detach
+ * operation preserves it for strict same-UUID rehydration.
+ *
+ * `ownerId` is the content-free authorization claim for a detached custom
+ * asset; NULL identifies a global catalog asset. No provider, symbol, value, or
+ * other asset/portfolio content may ever be added here.
+ */
+export const assetIdentities = pgTable(
+  'asset_identities',
+  {
+    id: uuid('id').primaryKey(),
+    ownerId: uuid('owner_id').references(() => users.id, { onDelete: 'cascade' }),
+  },
+  (t) => [index('asset_identities_owner_id_idx').on(t.ownerId)],
+);
+
 export const assets = pgTable(
   'assets',
   {
@@ -772,7 +795,7 @@ export const workboardItems = pgTable(
       .references(() => watchlists.id, { onDelete: 'cascade' }),
     assetId: uuid('asset_id')
       .notNull()
-      .references(() => assets.id, { onDelete: 'cascade' }),
+      .references(() => assetIdentities.id, { onDelete: 'cascade' }),
     sortOrder: integer('sort_order').notNull(),
     note: text('note'),
   },
@@ -796,7 +819,7 @@ export const alerts = pgTable('alerts', {
     .references(() => users.id, { onDelete: 'cascade' }),
   assetId: uuid('asset_id')
     .notNull()
-    .references(() => assets.id, { onDelete: 'cascade' }),
+    .references(() => assetIdentities.id, { onDelete: 'cascade' }),
   kind: alertKindEnum('kind').notNull(),
   threshold: numeric('threshold').notNull(),
   // Captured at creation for the *_from_ref kinds.
@@ -1064,7 +1087,7 @@ export const conglomeratePositions = pgTable(
     conglomerateId: uuid('conglomerate_id')
       .notNull()
       .references(() => conglomerates.id, { onDelete: 'cascade' }),
-    assetId: uuid('asset_id').references(() => assets.id, { onDelete: 'cascade' }),
+    assetId: uuid('asset_id').references(() => assetIdentities.id, { onDelete: 'cascade' }),
     childConglomerateId: uuid('child_conglomerate_id').references(() => conglomerates.id),
     weightPct: numeric('weight_pct', { precision: 6, scale: 3 }).notNull(),
     sortOrder: integer('sort_order').notNull(),
@@ -2271,6 +2294,7 @@ export type UsageEventRow = typeof usageEvents.$inferSelect;
 export type NewUsageEventRow = typeof usageEvents.$inferInsert;
 export type UsageDailyRow = typeof usageDaily.$inferSelect;
 export type NewUsageDailyRow = typeof usageDaily.$inferInsert;
+export type AssetIdentityRow = typeof assetIdentities.$inferSelect;
 export type AssetRow = typeof assets.$inferSelect;
 export type PriceHistoryRow = typeof priceHistory.$inferSelect;
 export type WorkboardItemRow = typeof workboardItems.$inferSelect;
@@ -3294,6 +3318,7 @@ export const schema = {
   passkeys,
   auditLog,
   problems,
+  assetIdentities,
   assets,
   priceHistory,
   watchlists,

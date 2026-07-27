@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, isNotNull, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { twoFactorRecoveryCodes, users } from '../schema';
@@ -26,6 +26,11 @@ export interface TwoFactorState {
    * the email method on.
    */
   twoFactorEmail: string | null;
+}
+
+export interface TwoFactorSecretEnvelope {
+  userId: string;
+  envelope: string;
 }
 
 export function createTwoFactorRepository(db: Database) {
@@ -69,6 +74,44 @@ export function createTwoFactorRepository(db: Database) {
           updatedAt: new Date(),
         })
         .where(eq(users.id, userId));
+    },
+
+    /**
+     * Stable cursor page for the online record-encryption command. Only the
+     * ciphertext and row identity leave the repository.
+     */
+    async listSecretEnvelopes(
+      afterUserId: string | null,
+      limit: number,
+    ): Promise<TwoFactorSecretEnvelope[]> {
+      const rows = await db
+        .select({ userId: users.id, envelope: users.twoFactorSecret })
+        .from(users)
+        .where(
+          afterUserId
+            ? and(isNotNull(users.twoFactorSecret), gt(users.id, afterUserId))
+            : isNotNull(users.twoFactorSecret),
+        )
+        .orderBy(asc(users.id))
+        .limit(limit);
+      return rows.map((row) => ({ userId: row.userId, envelope: row.envelope! }));
+    },
+
+    /**
+     * Compare-and-swap an encrypted secret. A concurrent enrollment wins and
+     * returns false; the migration never overwrites a value it did not inspect.
+     */
+    async replaceSecretEnvelope(
+      userId: string,
+      expectedEnvelope: string,
+      replacementEnvelope: string,
+    ): Promise<boolean> {
+      const replaced = await db
+        .update(users)
+        .set({ twoFactorSecret: replacementEnvelope, updatedAt: new Date() })
+        .where(and(eq(users.id, userId), eq(users.twoFactorSecret, expectedEnvelope)))
+        .returning({ id: users.id });
+      return replaced.length === 1;
     },
 
     /** Flip the TOTP method on and stamp the confirm time. */

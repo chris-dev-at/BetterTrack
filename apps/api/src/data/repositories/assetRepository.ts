@@ -174,6 +174,10 @@ export function createAssetRepository(db: Database) {
      * inserted it; an empty return means a concurrent caller won the race, so we
      * re-select the existing global row. Either way the caller learns whether the
      * insert happened, so a backfill is enqueued exactly once.
+     *
+     * The database's assets AFTER INSERT trigger owns the opaque identity
+     * insert. Because AFTER triggers do not run for an ON CONFLICT candidate
+     * that was skipped, this path can never strand a key for a losing upsert.
      */
     async upsertGlobal(input: GlobalAssetUpsert): Promise<UpsertGlobalResult> {
       const inserted = await db
