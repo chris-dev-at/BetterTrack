@@ -210,6 +210,48 @@ function liveEntities(document: ParanoidDisableRehydrationRequest['document']): 
   return document.entities.filter((entity) => entity.deletedAt === null);
 }
 
+function validateCustomAssetFacts(userId: string, entities: readonly Entity[]): void {
+  const seen = new Set<string>();
+  for (const asset of rows(entities, 'customAsset')) {
+    if (seen.has(asset.id)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'custom asset restore facts must be unique by id',
+      );
+    }
+    seen.add(asset.id);
+    if (
+      asset.data.ownerId !== userId ||
+      asset.data.providerId !== 'manual' ||
+      asset.data.providerRef !== asset.id
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'custom asset ownership or manual-provider identity is invalid',
+      );
+    }
+  }
+}
+
+function retainedCustomAssetRetireIds(
+  retainedIds: readonly string[],
+  entities: readonly Entity[],
+): readonly string[] {
+  const restoreFacts = new Map(rows(entities, 'customAsset').map((entity) => [entity.id, entity]));
+  const retireIds: string[] = [];
+  for (const retainedId of retainedIds) {
+    const fact = restoreFacts.get(retainedId);
+    if (!fact) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        `retained custom asset ${retainedId} requires a live row or tombstone`,
+      );
+    }
+    if (fact.deletedAt !== null) retireIds.push(retainedId);
+  }
+  return retireIds;
+}
+
 function ids<K extends Entity['kind']>(entities: readonly Entity[], kind: K): Set<string> {
   return new Set(rows(entities, kind).map((entity) => entity.id));
 }
@@ -280,18 +322,6 @@ function validateOwnedRows(userId: string, entities: readonly Entity[]): void {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
         'portfolio owner does not match the rehydrated account',
-      );
-    }
-  }
-  for (const asset of rows(entities, 'customAsset')) {
-    if (
-      asset.data.ownerId !== userId ||
-      asset.data.providerId !== 'manual' ||
-      asset.data.providerRef !== asset.id
-    ) {
-      throw new ParanoidRehydrationError(
-        'INVALID_REFERENCE',
-        'custom asset ownership or manual-provider identity is invalid',
       );
     }
   }
@@ -1316,6 +1346,7 @@ export function createParanoidRehydrationService(
         throw new ParanoidRehydrationError('INVALID_REFERENCE', 'rehydration request is malformed');
       }
       const normalizedRequest = parsed.data;
+      validateCustomAssetFacts(userId, normalizedRequest.document.entities);
       // Tombstones exist for client-side merge convergence only. Construct and
       // validate the restore graph from live facts before any database mutation.
       const entities = liveEntities(normalizedRequest.document);
@@ -1346,10 +1377,16 @@ export function createParanoidRehydrationService(
 
         const sourceRows = createParanoidRehydrationSourceRepository(tx);
         await ensureNoExistingRestorableRows(sourceRows, userId);
+        const retainedIdentityIds = await sourceRows.listRetainedCustomAssetIdentityIds(userId);
+        const retireIdentityIds = retainedCustomAssetRetireIds(
+          retainedIdentityIds,
+          normalizedRequest.document.entities,
+        );
         const referencedAssets = await resolveReferencedAssets(sourceRows, entities);
         validateStandingOrderCurrencies(entities, referencedAssets);
 
         await sourceRows.restoreCustomAssets(rows(entities, 'customAsset'));
+        await sourceRows.retireRetainedCustomAssetIdentities(userId, retireIdentityIds);
         await sourceRows.restoreCustomAssetValues(rows(entities, 'customAssetValue'));
         await stage('customAssets');
 
