@@ -14,6 +14,12 @@ describe('sniffDelimiter', () => {
   it('ignores delimiters inside quotes', () => {
     expect(sniffDelimiter('"a;b",c,d')).toBe(',');
   });
+
+  it('uses semicolon, then comma, then tab as deterministic tie precedence', () => {
+    expect(sniffDelimiter('left;middle,right\tend')).toBe(';');
+    expect(sniffDelimiter('left,right\tend')).toBe(',');
+    expect(sniffDelimiter('"quoted; delimiter",right\tend')).toBe(',');
+  });
 });
 
 describe('splitCells', () => {
@@ -44,6 +50,54 @@ describe('parseCsv', () => {
     const parsed = parseCsv('﻿A;B\n1;2');
     expect(parsed.header?.cells).toEqual(['A', 'B']);
   });
+
+  it('parses tab-delimited headers and records', () => {
+    const parsed = parseCsv(
+      'Date\tDescription\tAmount\n2024-01-15\t"Fees, tax; adjustment"\t-1.50',
+    );
+
+    expect(parsed.delimiter).toBe('\t');
+    expect(parsed.header?.cells).toEqual(['Date', 'Description', 'Amount']);
+    expect(parsed.records[0]?.cells).toEqual(['2024-01-15', 'Fees, tax; adjustment', '-1.50']);
+  });
+
+  it.each(['\n', '\r\n', '\r'])(
+    'preserves physical line numbers with %j line endings',
+    (lineEnding) => {
+      const parsed = parseCsv(
+        [
+          '',
+          'Date\tDescription\tAmount',
+          '',
+          '2024-01-15\t"Fees, tax; adjustment"\t-1.50',
+          ' \t ',
+          '2024-01-16\t"Dividend; adjustment, net"\t2.00',
+          '',
+        ].join(lineEnding),
+      );
+
+      expect(parsed).toEqual({
+        delimiter: '\t',
+        header: {
+          line: 2,
+          raw: 'Date\tDescription\tAmount',
+          cells: ['Date', 'Description', 'Amount'],
+        },
+        records: [
+          {
+            line: 4,
+            raw: '2024-01-15\t"Fees, tax; adjustment"\t-1.50',
+            cells: ['2024-01-15', 'Fees, tax; adjustment', '-1.50'],
+          },
+          {
+            line: 6,
+            raw: '2024-01-16\t"Dividend; adjustment, net"\t2.00',
+            cells: ['2024-01-16', 'Dividend; adjustment, net', '2.00'],
+          },
+        ],
+      });
+    },
+  );
 
   it('returns no header for an empty file', () => {
     expect(parseCsv('').header).toBeNull();
