@@ -6,6 +6,7 @@ import {
   type FlowPoint,
   type ValuePoint,
 } from '../../domain/holdings';
+import { buildIntradayBucketPrices } from './intradayBucketPrices';
 
 /**
  * Intraday portfolio value series (PROJECTPLAN §13.5 V5-P1 arc d, issue #556).
@@ -221,30 +222,6 @@ function bucketMs(atMs: number, stepMs: number): number {
 }
 
 /**
- * The asset's price to use at grid bucket `bucket`: the last same-day candle
- * whose instant falls at or before the bucket's end (`bucket + step`), i.e. the
- * price "as of" that bucket. Before the day's first candle the first candle is
- * carried back (an asset whose session opens later than another's). `candles`
- * is the day's candles, ascending.
- */
-function priceForBucket(
-  candles: readonly IntradayCandle[],
-  bucket: number,
-  stepMs: number,
-): number | null {
-  if (candles.length === 0) return null;
-  const cutoff = bucket + stepMs;
-  let chosen: number | null = null;
-  for (const candle of candles) {
-    if (candle.atMs < cutoff) chosen = candle.price;
-    else break;
-  }
-  // `bucket` sits before this asset's first candle (a later-opening market):
-  // carry the first candle back rather than dropping the asset from the curve.
-  return chosen ?? candles[0]!.price;
-}
-
-/**
  * Assemble the EUR intraday value curve for `[cutoffDay, today]`. Pure and
  * deterministic — the caller supplies the daily snapshot ingredients and the
  * already-fetched candles; re-denomination into a non-EUR base and the
@@ -301,10 +278,33 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     refCloseByAssetDay.set(assetId, refs);
   }
 
+  const sortedBuckets = [...bucketSet].sort((a, b) => a - b);
+  const bucketsByDay = new Map<string, number[]>();
+  for (const bucket of sortedBuckets) {
+    const day = dayOfMs(bucket);
+    if (!windowDaySet.has(day)) continue;
+    const buckets = bucketsByDay.get(day);
+    if (buckets) buckets.push(bucket);
+    else bucketsByDay.set(day, [bucket]);
+  }
+
+  // Each asset/day candle list advances one cursor across that day's sorted
+  // grid. Aggregation below then performs constant-time price lookups instead
+  // of restarting an as-of candle scan for every bucket.
+  const bucketPricesByAssetDay = new Map<string, Map<string, ReadonlyMap<number, number>>>();
+  for (const [assetId, byDay] of dayCandles) {
+    const pricesByDay = new Map<string, ReadonlyMap<number, number>>();
+    for (const [day, candles] of byDay) {
+      const buckets = bucketsByDay.get(day);
+      if (!buckets) continue;
+      pricesByDay.set(day, buildIntradayBucketPrices(candles, buckets, stepMs));
+    }
+    if (pricesByDay.size > 0) bucketPricesByAssetDay.set(assetId, pricesByDay);
+  }
+
   const points: IntradayValuePoint[] = [];
   const gridDays = new Set<string>();
-
-  for (const bucket of [...bucketSet].sort((a, b) => a - b)) {
+  for (const bucket of sortedBuckets) {
     const day = dayOfMs(bucket);
     if (!windowDaySet.has(day)) continue;
     gridDays.add(day);
@@ -312,14 +312,9 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     for (const [assetId, perDay] of perAssetEurByDay) {
       const vday = perDay.get(day);
       if (vday === undefined) continue; // asset not held on this day
-      const candles = dayCandles.get(assetId)?.get(day);
-      if (!candles || candles.length === 0) {
-        value += vday; // carry forward (custom/manual, or a missed session)
-        continue;
-      }
       const ref = refCloseByAssetDay.get(assetId)?.get(day);
-      const price = priceForBucket(candles, bucket, stepMs);
-      value += ref !== undefined && ref !== 0 && price !== null ? (vday * price) / ref : vday;
+      const price = bucketPricesByAssetDay.get(assetId)?.get(day)?.get(bucket);
+      value += ref !== undefined && ref !== 0 && price !== undefined ? (vday * price) / ref : vday;
     }
     points.push({ date: day, timeMs: bucket, valueEur: value });
   }

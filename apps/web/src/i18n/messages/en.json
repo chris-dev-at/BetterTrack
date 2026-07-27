@@ -345,6 +345,9 @@
       "new": "New category",
       "loadError": "Couldn't load your categories.",
       "deleteError": "Couldn't delete the category. Please try again.",
+      "emptyTitle": "No categories yet",
+      "emptyDescription": "Create a category to organize your spending and income.",
+      "emptyCta": "Create category",
       "dialog": {
         "newTitle": "New category",
         "editTitle": "Edit category",
