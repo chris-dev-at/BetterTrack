@@ -27,14 +27,11 @@ import { createLiveRingBuffer, type LiveRingBuffer } from './ringBuffer';
  * (mid-stream joiners backfill their window from there) and hands it to the
  * gateway for `asset:{id}` room fan-out.
  *
- * Refresh rates (#372): every watcher registers with its own requested
- * interval (down to 1 s) and the shared loop polls at the FINEST rate any
- * ACTIVE watcher requested — the minimum, never a common divisor (4 s + 2 s
- * viewers ⇒ one 2 s loop, NOT 1 s). When the finest watcher leaves, the loop
- * coarsens to the new minimum; when a finer one arrives, the pending tick is
- * rescheduled against the last tick so the tighter cadence applies at once.
- * Coarser viewers downsample client-side — the loop never polls faster than
- * the fastest active viewer needs, and never once per viewer.
+ * Refresh rates (#372): every watcher registers with its own effective
+ * interval and the shared loop polls at the FINEST rate any ACTIVE watcher
+ * requested — the minimum, never a common divisor. The realtime contract
+ * clamps client requests to a 5-second floor before they reach this service;
+ * direct callers may inject smaller cadences only as a test seam.
  *
  * Upstream distress never reaches viewers: a failed tick (429/tripped breaker/
  * timeout) doubles the poll interval (from the finest active rate) up to
@@ -51,10 +48,11 @@ import { createLiveRingBuffer, type LiveRingBuffer } from './ringBuffer';
  *
  * Hosting decision (§6.3 sketches the loop in the worker): the loop lives in
  * the API process next to the gateway, because the watcher lifecycle is
- * socket-driven and in-process counting makes start/auto-stop trivially
- * correct with no cross-process watcher registry. The ring buffer stays in
- * Redis, so relocating the loop to the worker later is a wiring change, not a
- * data-path change.
+ * socket-driven and local counts make start/auto-stop deterministic. Since
+ * #881 the gateway separately holds Redis leases for cross-process user/global
+ * admission; this service still owns only the loops hosted by this process.
+ * The ring buffer stays in Redis, so relocating loops later remains a wiring
+ * change rather than a data-path change.
  */
 
 /** Default watcher rate when none is requested (pre-#372 cadence). */
@@ -77,7 +75,8 @@ export interface LiveModeService {
    * the loop re-derives its cadence — the finest ACTIVE rate. The caller (the
    * gateway) has already authorized the user and resolved the provider ref.
    */
-  watch(assetId: string, ref: AssetRef, intervalMs?: number): void;
+  /** False only after service shutdown, when no loop can be registered. */
+  watch(assetId: string, ref: AssetRef, intervalMs?: number): boolean;
   /**
    * Deregister one watcher previously registered at `intervalMs` (same default
    * as {@link watch}); at zero watchers the loop stops and the asset goes cold.
@@ -250,7 +249,7 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
 
   return {
     watch(assetId, ref, intervalMs = defaultIntervalMs) {
-      if (closed) return;
+      if (closed) return false;
       const existing = loops.get(assetId);
       if (existing) {
         existing.rates.set(intervalMs, (existing.rates.get(intervalMs) ?? 0) + 1);
@@ -259,7 +258,7 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         // Only a finer cadence moves the pending tick — poll-rate changes must
         // never fire an extra upstream call, so coarsening waits its turn.
         if (existing.intervalMs < before) reschedule(assetId, existing);
-        return;
+        return true;
       }
       const loop: AssetLoop = {
         ref,
@@ -273,6 +272,7 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
       loops.set(assetId, loop);
       // Immediate first tick: the first watcher sees a frame right away.
       void tick(assetId, loop);
+      return true;
     },
 
     unwatch(assetId, intervalMs = defaultIntervalMs) {

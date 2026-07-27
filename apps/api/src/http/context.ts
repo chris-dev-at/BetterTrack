@@ -1568,6 +1568,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     config,
     bus: events,
     logger,
+    redis,
     resolveSession: async (sessionId, userAgent) => {
       const resolved = await auth.resolveSession(sessionId, userAgent);
       if (!resolved) return null;

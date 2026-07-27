@@ -8,8 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   REALTIME_CLIENT_EVENTS,
+  REALTIME_MAX_CONNECTIONS_PER_BEARER,
+  REALTIME_MAX_CONNECTIONS_PER_USER,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
+  REALTIME_SOCKET_COMMAND_BURST,
   twoFactorEnrollResponseSchema,
   type ApiKeyScope,
   type RealtimeChatMessage,
@@ -24,6 +27,7 @@ import { createOAuthRepository } from '../../data/repositories/oauthRepository';
 import * as schema from '../../data/schema';
 import { generateTotpCode } from '../../services/auth/totp';
 import { hashToken } from '../../services/crypto/tokens';
+import { realtimeAdmissionKeys } from '../../services/security/realtimeAdmission';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import {
   REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS,
@@ -347,6 +351,41 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
     const socket = await connect(cookie);
     expect(socket.connected).toBe(true);
   });
+
+  it('admits exactly five concurrent sockets per user and releases on disconnect', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const { cookie } = await login(user.email, user.password);
+    const sockets: ClientSocket[] = [];
+    for (let index = 0; index < REALTIME_MAX_CONNECTIONS_PER_USER; index += 1) {
+      sockets.push(await connect(cookie));
+    }
+
+    await expect(connect(cookie)).rejects.toThrow('USER_CONNECTION_LIMIT');
+    sockets[0]!.disconnect();
+    await vi.waitFor(async () => {
+      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.connectionUser(user.id))).toBe(
+        REALTIME_MAX_CONNECTIONS_PER_USER - 1,
+      );
+    });
+    await expect(connect(cookie)).resolves.toMatchObject({ connected: true });
+  });
+
+  it('admits exactly three sockets per bearer credential independent of other keys', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const token = await mintKey(user.id);
+    for (let index = 0; index < REALTIME_MAX_CONNECTIONS_PER_BEARER; index += 1) {
+      await expect(connectWith({ auth: { token } })).resolves.toMatchObject({ connected: true });
+    }
+    await expect(connectWith({ auth: { token } })).rejects.toThrow('BEARER_CONNECTION_LIMIT');
+
+    // A distinct credential for the same account still has its own bearer
+    // budget (and remains under the five-socket user budget).
+    await expect(connectWith({ auth: { token: await mintKey(user.id) } })).resolves.toMatchObject({
+      connected: true,
+    });
+  });
 });
 
 describe('realtime gateway — bearer handshake auth (mobile, §6.13/§14)', () => {
@@ -648,6 +687,48 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
   });
 });
 
+describe('realtime gateway — client command budgets (#881)', () => {
+  it('allows the socket burst and returns RATE_LIMITED for burst + 1', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const { cookie } = await login(user.email, user.password);
+    const socket = await connect(cookie);
+    const decisions = await Promise.all(
+      Array.from({ length: REALTIME_SOCKET_COMMAND_BURST + 1 }, () =>
+        emitRoom(socket, REALTIME_CLIENT_EVENTS.roomLeave, {
+          room: { kind: 'asset', id: SOME_UUID },
+        }),
+      ),
+    );
+
+    expect(decisions.filter((decision) => decision.ok)).toHaveLength(REALTIME_SOCKET_COMMAND_BURST);
+    expect(decisions.filter((decision) => !decision.ok)).toEqual([
+      { ok: false, error: 'RATE_LIMITED' },
+    ]);
+  });
+
+  it('does not charge server-to-client frames to either command bucket', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const { cookie } = await login(user.email, user.password);
+    const socket = await connect(cookie);
+    for (let index = 0; index <= REALTIME_SOCKET_COMMAND_BURST; index += 1) {
+      await harness.ctx.events.publish({
+        type: 'notification.created',
+        userId: user.id,
+        notificationId: SOME_UUID,
+        occurredAt: new Date().toISOString(),
+      });
+    }
+
+    await expect(
+      emitRoom(socket, REALTIME_CLIENT_EVENTS.roomLeave, {
+        room: { kind: 'asset', id: SOME_UUID },
+      }),
+    ).resolves.toEqual({ ok: true });
+  });
+});
+
 describe('realtime gateway — rooms (§4.5)', () => {
   it("a client is only in its OWN user room: 'user' is not a joinable kind and pushes stay per-recipient", async () => {
     await listenWithGateway();
@@ -808,6 +889,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     await disconnected;
     await vi.waitFor(async () => {
       await expect(harness.ctx.presence.isPresent(user.id, 'chat', SOME_UUID)).resolves.toBe(false);
+      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.connectionUser(user.id))).toBe(0);
     });
   });
 
