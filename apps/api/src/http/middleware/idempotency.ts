@@ -116,19 +116,40 @@ function captureAndPersist(
     return originalSend(body);
   }) as typeof res.send;
 
-  res.on('finish', () => {
-    const statusCode = res.statusCode;
-    const ct = res.getHeader('content-type');
-    const contentType = typeof ct === 'string' ? ct : null;
-    const persist = isSuccess(statusCode)
-      ? repo.complete(id, { statusCode, responseBody: captured, contentType })
-      : repo.release(id);
-    void persist.catch((err) =>
+  let settled = false;
+  let finished = false;
+  const settle = (persist: () => Promise<void>): void => {
+    if (settled) return;
+    settled = true;
+    try {
+      void persist().catch((err) =>
+        logger.warn(
+          { err: err instanceof Error ? err.message : 'unknown', id },
+          'idempotency response persist failed',
+        ),
+      );
+    } catch (err) {
       logger.warn(
         { err: err instanceof Error ? err.message : 'unknown', id },
         'idempotency response persist failed',
-      ),
+      );
+    }
+  };
+
+  res.once('finish', () => {
+    finished = true;
+    const statusCode = res.statusCode;
+    const ct = res.getHeader('content-type');
+    const contentType = typeof ct === 'string' ? ct : null;
+    settle(() =>
+      isSuccess(statusCode)
+        ? repo.complete(id, { statusCode, responseBody: captured, contentType })
+        : repo.release(id),
     );
+  });
+
+  res.once('close', () => {
+    if (!finished) settle(() => repo.release(id));
   });
 }
 

@@ -1,11 +1,20 @@
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
-import type { Application } from 'express';
-import { beforeEach, describe, expect, it } from 'vitest';
+import type { Application, Request, Response } from 'express';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as schema from '../data/schema';
+import type {
+  IdempotencyClaimInput,
+  IdempotencyClaimResult,
+  IdempotencyKeyRepository,
+  IdempotencyRecord,
+  IdempotencyResponse,
+} from '../data/repositories/idempotencyKeyRepository';
+import { createIdempotency } from '../http/middleware/idempotency';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -32,6 +41,105 @@ function tsOffset(offset: number): string {
 }
 
 type Agent = ReturnType<typeof request.agent>;
+
+class IdempotencyTestResponse extends EventEmitter {
+  statusCode = 200;
+  sentBody: unknown;
+  private readonly headers = new Map<string, unknown>();
+
+  status(statusCode: number): this {
+    this.statusCode = statusCode;
+    return this;
+  }
+
+  setHeader(name: string, value: unknown): this {
+    this.headers.set(name.toLowerCase(), value);
+    return this;
+  }
+
+  getHeader(name: string): unknown {
+    return this.headers.get(name.toLowerCase());
+  }
+
+  send(body?: unknown): this {
+    this.sentBody = body;
+    return this;
+  }
+}
+
+function idempotencyRequest(key: string): Request {
+  return {
+    get: (header: string) => (header.toLowerCase() === IK.toLowerCase() ? key : undefined),
+    authUser: { id: 'idempotency-test-user' },
+    method: 'POST',
+    baseUrl: '',
+    path: '/idempotency-test',
+    body: { amountEur: 100 },
+  } as unknown as Request;
+}
+
+function invokeIdempotency(
+  middleware: ReturnType<typeof createIdempotency>,
+  req: Request,
+  res: IdempotencyTestResponse,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const originalSend = res.send.bind(res);
+    res.send = (body?: unknown): IdempotencyTestResponse => {
+      const result = originalSend(body);
+      resolve();
+      return result;
+    };
+    middleware(req, res as unknown as Response, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function createMemoryIdempotencyRepository() {
+  let record: IdempotencyRecord | null = null;
+  let wonClaims = 0;
+  const claim = vi.fn(async (input: IdempotencyClaimInput): Promise<IdempotencyClaimResult> => {
+    if (record) return { won: false, record };
+    wonClaims += 1;
+    const claimed: IdempotencyRecord = {
+      id: `claim-${wonClaims}`,
+      method: input.method,
+      path: input.path,
+      requestHash: input.requestHash,
+      statusCode: null,
+      responseBody: null,
+      contentType: null,
+    };
+    record = claimed;
+    return { won: true, id: claimed.id };
+  });
+  const complete = vi.fn(async (id: string, response: IdempotencyResponse): Promise<void> => {
+    if (record?.id === id) Object.assign(record, response);
+  });
+  const release = vi.fn(async (id: string): Promise<void> => {
+    if (record?.id === id) record = null;
+  });
+
+  return {
+    repo: { claim, complete, release } as unknown as IdempotencyKeyRepository,
+    claim,
+    complete,
+    release,
+    wonClaims: (): number => wonClaims,
+  };
+}
+
+function responseSettlementMiddleware(repo: IdempotencyKeyRepository, logger: unknown) {
+  return createIdempotency(
+    { idempotency: repo, logger } as unknown as Parameters<typeof createIdempotency>[0],
+    { waitMs: 0 },
+  );
+}
 
 async function loginAgent(app: Application, identifier: string, password: string): Promise<Agent> {
   const agent = request.agent(app);
@@ -92,6 +200,112 @@ async function movementCount(pid: string): Promise<number> {
 
 beforeEach(async () => {
   harness = await createTestApp();
+});
+
+describe('idempotency — response settlement', () => {
+  it('releases a prematurely closed claim once so a matching retry can win', async () => {
+    const memory = createMemoryIdempotencyRepository();
+    const logger = { warn: vi.fn() };
+    const middleware = responseSettlementMiddleware(memory.repo, logger);
+    const key = randomUUID();
+    const abandoned = new IdempotencyTestResponse();
+
+    await invokeIdempotency(middleware, idempotencyRequest(key), abandoned);
+    abandoned.emit('close');
+    abandoned.emit('close');
+
+    expect(memory.release).toHaveBeenCalledTimes(1);
+    expect(memory.complete).not.toHaveBeenCalled();
+
+    const retry = new IdempotencyTestResponse();
+    await invokeIdempotency(middleware, idempotencyRequest(key), retry);
+
+    expect(memory.wonClaims()).toBe(2);
+    expect(memory.claim).toHaveBeenCalledTimes(2);
+  });
+
+  it('memoizes a finished success when close follows finish', async () => {
+    const memory = createMemoryIdempotencyRepository();
+    const logger = { warn: vi.fn() };
+    const middleware = responseSettlementMiddleware(memory.repo, logger);
+    const key = randomUUID();
+    const completed = new IdempotencyTestResponse();
+    const body = '{"movement":{"id":"memoized"}}';
+
+    await invokeIdempotency(middleware, idempotencyRequest(key), completed);
+    completed.statusCode = 201;
+    completed.setHeader('Content-Type', 'application/json');
+    completed.send(body);
+    completed.emit('finish');
+    completed.emit('close');
+
+    expect(memory.complete).toHaveBeenCalledTimes(1);
+    expect(memory.release).not.toHaveBeenCalled();
+
+    const replayed = new IdempotencyTestResponse();
+    await invokeIdempotency(middleware, idempotencyRequest(key), replayed);
+
+    expect(replayed.statusCode).toBe(201);
+    expect(replayed.sentBody).toBe(body);
+    expect(memory.wonClaims()).toBe(1);
+  });
+
+  it('releases a finished non-2xx response once even when close follows', async () => {
+    const memory = createMemoryIdempotencyRepository();
+    const logger = { warn: vi.fn() };
+    const middleware = responseSettlementMiddleware(memory.repo, logger);
+    const key = randomUUID();
+    const failed = new IdempotencyTestResponse();
+
+    await invokeIdempotency(middleware, idempotencyRequest(key), failed);
+    failed.statusCode = 422;
+    failed.emit('finish');
+    failed.emit('close');
+
+    expect(memory.complete).not.toHaveBeenCalled();
+    expect(memory.release).toHaveBeenCalledTimes(1);
+
+    const retry = new IdempotencyTestResponse();
+    await invokeIdempotency(middleware, idempotencyRequest(key), retry);
+
+    expect(memory.wonClaims()).toBe(2);
+  });
+
+  it('logs a settlement failure without changing an already-sent response', async () => {
+    const complete = vi.fn(async (): Promise<void> => {
+      throw new Error('storage unavailable');
+    });
+    const release = vi.fn(async (): Promise<void> => undefined);
+    const repo = {
+      claim: vi.fn(
+        async (): Promise<IdempotencyClaimResult> => ({
+          won: true,
+          id: 'claim-failure',
+        }),
+      ),
+      complete,
+      release,
+    } as unknown as IdempotencyKeyRepository;
+    const logger = { warn: vi.fn() };
+    const middleware = responseSettlementMiddleware(repo, logger);
+    const res = new IdempotencyTestResponse();
+
+    await invokeIdempotency(middleware, idempotencyRequest(randomUUID()), res);
+    res.statusCode = 201;
+    res.send('{"sent":true}');
+    expect(() => res.emit('finish')).not.toThrow();
+    res.emit('close');
+
+    await vi.waitFor(() => {
+      expect(logger.warn).toHaveBeenCalledWith(
+        { err: 'storage unavailable', id: 'claim-failure' },
+        'idempotency response persist failed',
+      );
+    });
+    expect(res.sentBody).toBe('{"sent":true}');
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(release).not.toHaveBeenCalled();
+  });
 });
 
 describe('idempotency — one execution + byte-identical replay per family', () => {
