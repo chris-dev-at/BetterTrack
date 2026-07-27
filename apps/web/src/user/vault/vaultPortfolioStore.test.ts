@@ -1069,6 +1069,89 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(localAfterRestart.envelope).toEqual(localBeforeRestart.envelope);
   });
 
+  it('keeps pending provenance incomplete after a new offline post-restart mutation', async () => {
+    const secondaryId = GENERATED_IDS[0];
+    const transactionId = GENERATED_IDS[1];
+    const document = initialDocument();
+    document.entities.portfolio = [
+      ...(document.entities.portfolio ?? []),
+      vaultEntity(secondaryId, {
+        userId: USER_ID,
+        name: 'Secondary',
+        visibility: 'private',
+        sortOrder: 1,
+        defaultPayFromCash: false,
+        archivedAt: null,
+      }),
+    ];
+    document.entities.transaction = [
+      transactionEntity(transactionId, {
+        portfolioId: secondaryId,
+        side: 'buy',
+        quantity: 1,
+        executedAt: '2026-07-25T09:00:00.000Z',
+      }),
+    ];
+    const { first, second, secondLocal, remote } = await createConcurrentSyncEngines(
+      document,
+      'portfolio-store-restart-post-mutation',
+    );
+    const durableStore = createVaultPortfolioStore(first, { now: () => COMPETING_AT });
+    const pendingStore = createVaultPortfolioStore(second, { now: () => AT });
+
+    remote.setOnline(false);
+    await expect(pendingStore.deletePortfolio(secondaryId)).resolves.toBeUndefined();
+
+    const documentReconciler = vi.fn(reconcilePortfolioDocument);
+    const restarted = createVaultSyncEngine({
+      local: secondLocal,
+      primary: remote,
+      vaultKey: KEY,
+      deviceId: REMOTE_DEVICE_ID,
+      writeId: writeIdSequence(0xa0),
+      now: () => AT,
+      quarantine: createMemoryVaultQuarantineStore(),
+      documentReconciler,
+      requiresCompleteMutationProvenance: true,
+    });
+    await expect(restarted.start()).resolves.toMatchObject({
+      status: 'pending-offline',
+      pending: { document: { entities: { portfolio: expect.any(Array) } } },
+    });
+
+    const restartedStore = createVaultPortfolioStore(restarted, { now: () => AT });
+    const remoteWritesBeforeLocalEdit = remote.expectedVersions.length;
+    await expect(
+      restartedStore.updatePortfolio(PORTFOLIO_ID, { name: 'Post-restart local edit' }),
+    ).resolves.toMatchObject({ name: 'Post-restart local edit' });
+    expect(documentReconciler).not.toHaveBeenCalled();
+    expect(remote.expectedVersions).toHaveLength(remoteWritesBeforeLocalEdit);
+    const localBeforeReconnect = await secondLocal.read();
+    expect(localBeforeReconnect.status).toBe('ok');
+
+    remote.setOnline(true);
+    await expect(
+      durableStore.updateTransaction(secondaryId, transactionId, {
+        note: 'Durable child edit',
+      }),
+    ).resolves.toMatchObject({ note: 'Durable child edit' });
+    const remoteWritesBeforeReconnect = remote.expectedVersions.length;
+
+    await expect(restarted.reconnect()).resolves.toMatchObject({
+      status: 'unresolved',
+      lastFailure: expect.stringContaining('provenance'),
+    });
+    expect(documentReconciler).not.toHaveBeenCalled();
+    expect(remote.expectedVersions).toHaveLength(remoteWritesBeforeReconnect);
+
+    const localAfterReconnect = await secondLocal.read();
+    expect(localAfterReconnect.status).toBe('ok');
+    if (localBeforeReconnect.status !== 'ok' || localAfterReconnect.status !== 'ok') {
+      throw new Error('Expected readable local vault candidates.');
+    }
+    expect(localAfterReconnect.envelope).toEqual(localBeforeReconnect.envelope);
+  });
+
   it('keeps a local transaction separate from an unrelated remote portfolio edit', async () => {
     const transactionId = GENERATED_IDS[0];
     const { first, second, remote } = await createConcurrentSyncEngines(

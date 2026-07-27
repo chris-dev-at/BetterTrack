@@ -324,7 +324,10 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     }
 
     mutationSequence += 1;
-    pendingMutationProvenanceAvailable = true;
+    // A new in-memory delta cannot restore the lost call boundaries of a
+    // persisted pending branch loaded after restart.
+    pendingMutationProvenanceAvailable =
+      pendingMutationProvenanceAvailable || state.pending == null;
     if (mutation.changes.length > 0) {
       pendingMutations = [...pendingMutations, mutation];
     }
