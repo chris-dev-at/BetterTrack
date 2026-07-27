@@ -448,6 +448,63 @@ describe('liveRingBuffer', () => {
     at: new Date(atMs).toISOString(),
   });
 
+  it('appends, trims, and refreshes retention in one Redis pipeline', async () => {
+    const pipeline = {
+      rpush: vi.fn(),
+      ltrim: vi.fn(),
+      pexpire: vi.fn(),
+      exec: vi.fn().mockResolvedValue([
+        [null, 1],
+        [null, 'OK'],
+        [null, 1],
+      ]),
+    };
+    pipeline.rpush.mockReturnValue(pipeline);
+    pipeline.ltrim.mockReturnValue(pipeline);
+    pipeline.pexpire.mockReturnValue(pipeline);
+    const redisPipeline = vi.fn(() => pipeline);
+    const pipelineRedis = { pipeline: redisPipeline } as unknown as Redis;
+    const retentionMs = 60_000;
+    const capacity = 3;
+    const appended = frame(Date.parse('2026-07-08T10:00:00.000Z'), 100);
+
+    await createLiveRingBuffer(pipelineRedis, { capacity, retentionMs }).append(appended);
+
+    const key = liveRingKey(ASSET_ID);
+    expect(redisPipeline).toHaveBeenCalledOnce();
+    expect(pipeline.rpush).toHaveBeenCalledWith(key, JSON.stringify(appended));
+    expect(pipeline.ltrim).toHaveBeenCalledWith(key, -capacity, -1);
+    expect(pipeline.pexpire).toHaveBeenCalledWith(key, retentionMs);
+    expect(pipeline.exec).toHaveBeenCalledOnce();
+  });
+
+  it('rejects when a resolved pipeline result contains a command error', async () => {
+    const commandError = new Error('LTRIM failed');
+    const rpush = vi.fn();
+    const ltrim = vi.fn();
+    const pexpire = vi.fn();
+    const exec = vi.fn().mockResolvedValue([
+      [null, 1],
+      [commandError, null],
+      [null, 1],
+    ]);
+    const pipeline = {
+      rpush,
+      ltrim,
+      pexpire,
+      exec,
+    };
+    rpush.mockReturnValue(pipeline);
+    ltrim.mockReturnValue(pipeline);
+    pexpire.mockReturnValue(pipeline);
+    const pipelineRedis = { pipeline: () => pipeline } as unknown as Redis;
+    const ring = createLiveRingBuffer(pipelineRedis, { capacity: 3, retentionMs: 60_000 });
+
+    await expect(ring.append(frame(Date.parse('2026-07-08T10:00:00.000Z'), 100))).rejects.toBe(
+      commandError,
+    );
+  });
+
   it('trims to capacity, keeps the newest frames, filters by window start', async () => {
     const ring = createLiveRingBuffer(redis, { capacity: 3, retentionMs: 60_000 });
     const t0 = Date.parse('2026-07-08T10:00:00.000Z');
