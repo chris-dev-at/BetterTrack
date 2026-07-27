@@ -22,7 +22,9 @@ const DEVICE_ID = '018f0000-0000-7000-8000-000000000101';
 const LEGACY_PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000102';
 const LEGACY_ASSET_ID = '018f0000-0000-7000-8000-000000000103';
 const LEGACY_BUY_ID = '018f0000-0000-7000-8000-000000000104';
+const BACKDATED_LEGACY_BUY_FIRST_ID = '018f0000-0000-7000-8000-000000000105';
 const NORMAL_ASSET_ID = '018f0000-0000-7000-8000-000000000106';
+const BACKDATED_LEGACY_BUY_SECOND_ID = '018f0000-0000-7000-8000-000000000107';
 const HIGH_MAGNITUDE_ASSET_ID = '018f0000-0000-7000-8000-000000000108';
 const HIGH_MAGNITUDE_SELL_ID = '018f0000-0000-7000-8000-00000000010a';
 const FIRST_REHYDRATION_ID = '018f0000-0000-7000-8000-00000000010b';
@@ -359,6 +361,86 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
       resultingDocument,
       SECOND_REHYDRATION_ID,
       'composed legacy/readback lifecycle',
+    );
+  });
+
+  it('keeps backdated legacy members in write history before a later normal sale', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    await seedGlobalAsset(harness, LEGACY_ASSET_ID, 'BACKDATED-LEGACY');
+
+    const legacyDocument = strictDocument([
+      portfolioEntity(user.id, LEGACY_PORTFOLIO_ID),
+      transactionEntity({
+        id: BACKDATED_LEGACY_BUY_FIRST_ID,
+        portfolioId: LEGACY_PORTFOLIO_ID,
+        assetId: LEGACY_ASSET_ID,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+      transactionEntity({
+        id: BACKDATED_LEGACY_BUY_SECOND_ID,
+        portfolioId: LEGACY_PORTFOLIO_ID,
+        assetId: LEGACY_ASSET_ID,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:02:00.000Z',
+      }),
+    ]);
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      legacyDocument,
+      FIRST_REHYDRATION_ID,
+      'backdated exact legacy history',
+    );
+
+    const transactionRepo = createTransactionRepository(harness.db);
+    const legacyBuys = await transactionRepo.listForAsset(LEGACY_PORTFOLIO_ID, LEGACY_ASSET_ID);
+    expect(legacyBuys).toHaveLength(2);
+    expect(legacyBuys.every((transaction) => transaction.quantity === 90071992547.12346)).toBe(
+      true,
+    );
+
+    await harness.ctx.portfolio.createTransactions(user.id, LEGACY_PORTFOLIO_ID, [
+      {
+        assetId: LEGACY_ASSET_ID,
+        side: 'sell',
+        quantity: legacyBuys[0]!.quantity,
+        price: 11,
+        fee: 0,
+        // The normal write is backdated between its two exact-v1 predecessors.
+        executedAt: '2026-07-23T10:01:00.000Z',
+      },
+    ]);
+
+    const persisted = await harness.db
+      .select({ id: transactions.id, side: transactions.side, quantity: transactions.quantity })
+      .from(transactions)
+      .where(eq(transactions.portfolioId, LEGACY_PORTFOLIO_ID));
+    const normalSell = persisted.find((transaction) => transaction.side === 'sell');
+    if (!normalSell) throw new Error('expected normal backdated sell');
+    expect(normalSell.id > BACKDATED_LEGACY_BUY_SECOND_ID).toBe(true);
+    expect(
+      persisted
+        .map((transaction) => ({ side: transaction.side, quantity: transaction.quantity }))
+        .sort((left, right) => left.side.localeCompare(right.side)),
+    ).toEqual([
+      { side: 'buy', quantity: '90071992547.12345678' },
+      { side: 'buy', quantity: '90071992547.12345678' },
+      { side: 'sell', quantity: '90071992547.12346000' },
+    ]);
+
+    const resultingDocument = await capturePortfolioDocument(harness, LEGACY_PORTFOLIO_ID);
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      resultingDocument,
+      SECOND_REHYDRATION_ID,
+      'backdated composed legacy/readback lifecycle',
     );
   });
 

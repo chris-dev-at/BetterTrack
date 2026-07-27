@@ -231,12 +231,13 @@ function isPersistedSolvent(rows: readonly QuantityReplayRow[]): boolean {
 
 function normalBatchCanReplay(
   rows: readonly QuantityReplayRow[],
-  legacyPrefixLength: number,
+  legacyTransactionIds: ReadonlySet<string>,
 ): boolean {
   const replayRows = [];
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index]!;
-    const quantity = index < legacyPrefixLength ? row.readbackQuantity : row.normalInputQuantity;
+  for (const row of rows) {
+    const quantity = legacyTransactionIds.has(row.transaction.id)
+      ? row.readbackQuantity
+      : row.normalInputQuantity;
     if (quantity === null) return false;
     replayRows.push({
       assetId: row.transaction.data.assetId,
@@ -277,10 +278,12 @@ function persistedShortfallSellIds(rows: readonly QuantityReplayRow[]): Readonly
 
 /**
  * A strict-v1 document may start with an exact persisted history that predates
- * public-number writes. Once a later normal batch is considered, its existing
- * rows are read through the repository Number(numeric), while its new rows must
- * have a real String(number) to numeric(20,8) preimage. Try every solvent
- * prefix so a normal batch may itself contain the rounding boundary.
+ * public-number writes. Its membership follows immutable UUIDv7 write order,
+ * not `executedAt`: normal writes may be deliberately backdated. Once a later
+ * normal batch is considered, its existing rows are read through the repository
+ * Number(numeric), while its new rows must have a real String(number) to
+ * numeric(20,8) preimage. Try every solvent write-history prefix so a normal
+ * batch may itself contain the rounding boundary.
  */
 function storageRoundingSellIdsFor(
   transactions: readonly EntityOf<'transaction'>[],
@@ -298,8 +301,13 @@ function storageRoundingSellIdsFor(
       ),
     };
   });
+  const replayRows = [...rows].sort(
+    (a, b) =>
+      Date.parse(a.transaction.data.executedAt) - Date.parse(b.transaction.data.executedAt) ||
+      a.transaction.id.localeCompare(b.transaction.id),
+  );
 
-  for (const row of rows) {
+  for (const row of replayRows) {
     if (
       testOnlyRejectPersistedTransactionQuantity?.({
         transactionId: row.transaction.id,
@@ -315,17 +323,25 @@ function storageRoundingSellIdsFor(
     }
   }
 
-  if (isPersistedSolvent(rows)) return new Set();
+  if (isPersistedSolvent(replayRows)) return new Set();
 
-  for (let prefixLength = 0; prefixLength < rows.length; prefixLength += 1) {
-    if (!isPersistedSolvent(rows.slice(0, prefixLength))) continue;
-    if (normalBatchCanReplay(rows, prefixLength)) {
-      return persistedShortfallSellIds(rows);
+  const legacyTransactionIds = new Set<string>();
+  const writeHistoryRows = [...rows].sort((a, b) =>
+    a.transaction.id.localeCompare(b.transaction.id),
+  );
+  for (let prefixLength = 0; prefixLength <= writeHistoryRows.length; prefixLength += 1) {
+    if (prefixLength > 0) {
+      legacyTransactionIds.add(writeHistoryRows[prefixLength - 1]!.transaction.id);
+    }
+    const legacyRows = replayRows.filter((row) => legacyTransactionIds.has(row.transaction.id));
+    if (!isPersistedSolvent(legacyRows)) continue;
+    if (normalBatchCanReplay(replayRows, legacyTransactionIds)) {
+      return persistedShortfallSellIds(replayRows);
     }
   }
 
   let held = 0n;
-  for (const row of rows) {
+  for (const row of replayRows) {
     if (row.transaction.data.side === 'buy') {
       held += row.quantity;
       continue;
@@ -1444,12 +1460,8 @@ function validateGraph(
       transactionsByPortfolioAsset.set(key, group);
     }
     for (const transactions of transactionsByPortfolioAsset.values()) {
-      const orderedTransactions = [...transactions].sort(
-        (a, b) =>
-          Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
-      );
       for (const sellId of storageRoundingSellIdsFor(
-        orderedTransactions,
+        transactions,
         testOnlyRejectPersistedTransactionQuantity,
       )) {
         storageRoundingSellIds.add(sellId);
