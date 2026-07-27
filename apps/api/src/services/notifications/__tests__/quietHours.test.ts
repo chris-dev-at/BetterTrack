@@ -165,6 +165,26 @@ describe('quiet-hours window end', () => {
     expect(isInQuietHours(ny, end)).toBe(false);
   });
 
+  it('closes at the first actual fall-back exit when the fold moves before the start', () => {
+    const ny: QuietHoursConfig = {
+      enabled: true,
+      startMinute: 90, // 01:30
+      endMinute: 150, // 02:30
+      timezone: 'America/New_York',
+    };
+    // 01:45 EDT is inside the first local interval. At 06:00 UTC the clock
+    // folds to 01:00 EST, which is before the 01:30 start and therefore awake.
+    const firstOccurrence = utc('2026-11-01T05:45:00.000Z');
+    const end = quietHoursWindowEnd(ny, firstOccurrence);
+
+    expect(isInQuietHours(ny, firstOccurrence)).toBe(true);
+    expect(end.toISOString()).toBe('2026-11-01T06:00:00.000Z');
+    expect(isInQuietHours(ny, utc('2026-11-01T05:59:00.000Z'))).toBe(true);
+    expect(isInQuietHours(ny, end)).toBe(false);
+    // The second 01:30 occurrence opens a separate later quiet interval.
+    expect(isInQuietHours(ny, utc('2026-11-01T06:30:00.000Z'))).toBe(true);
+  });
+
   it('resolves a spring-forward nonexistent end minute forward without a stale deadline', () => {
     const ny: QuietHoursConfig = {
       enabled: true,

@@ -71,6 +71,7 @@ export function zonedCalendarDate(
 const MINUTE_MS = 60_000;
 const OFFSET_PROBE_RANGE_MS = 36 * 60 * MINUTE_MS;
 const OFFSET_PROBE_STEP_MS = 6 * 60 * MINUTE_MS;
+const OFFSET_TRANSITION_PROBE_MS = 30 * MINUTE_MS;
 
 /** The UTC-millisecond representation of a local calendar minute. */
 function localMinuteAsUtc(parts: LocalParts): number {
@@ -248,6 +249,59 @@ function zonedWallTimeToUtc(
   return candidates.sort((a, b) => a.instant.getTime() - b.instant.getTime())[0]!.instant;
 }
 
+/**
+ * The zone offset at an instant, computed from calendar coordinates so it does
+ * not inherit the host timezone. `localParts` is minute-precision by design,
+ * matching the quiet-hours settings themselves.
+ */
+function timezoneOffsetAt(instant: Date, timezone: string): number {
+  const local = localParts(instant, timezone);
+  const utcMinuteMs = Date.UTC(
+    instant.getUTCFullYear(),
+    instant.getUTCMonth(),
+    instant.getUTCDate(),
+    instant.getUTCHours(),
+    instant.getUTCMinutes(),
+    0,
+  );
+  return localMinuteAsUtc(local) - utcMinuteMs;
+}
+
+/**
+ * Find the first offset transition after `after` through `until`. The coarse
+ * probe only locates a changed-offset interval; binary search then returns the
+ * exact first instant on the new offset. A quiet window can only acquire an
+ * earlier actual exit at such a transition: regular wall-clock exits are
+ * already represented by its configured end boundary.
+ */
+function nextOffsetTransition(timezone: string, after: Date, until: Date): Date | null {
+  const untilMs = until.getTime();
+  let beforeMs = after.getTime();
+  let beforeOffset = timezoneOffsetAt(after, timezone);
+
+  while (beforeMs < untilMs) {
+    const probeMs = Math.min(beforeMs + OFFSET_TRANSITION_PROBE_MS, untilMs);
+    const probeOffset = timezoneOffsetAt(new Date(probeMs), timezone);
+    if (probeOffset !== beforeOffset) {
+      let lower = beforeMs;
+      let upper = probeMs;
+      while (upper - lower > 1) {
+        const midpoint = lower + Math.floor((upper - lower) / 2);
+        if (timezoneOffsetAt(new Date(midpoint), timezone) === beforeOffset) {
+          lower = midpoint;
+        } else {
+          upper = midpoint;
+        }
+      }
+      return new Date(upper);
+    }
+    beforeMs = probeMs;
+    beforeOffset = probeOffset;
+  }
+
+  return null;
+}
+
 /** Whether the window is a real (non-empty) window. */
 function hasWindow(config: QuietHoursConfig): boolean {
   return config.enabled && config.startMinute !== config.endMinute;
@@ -270,7 +324,7 @@ export function quietHoursWindowEnd(config: QuietHoursConfig, at: Date): Date {
   const startDate = activeWindowStartDate(config, at) ?? fallbackStart;
   const endDate =
     config.startMinute > config.endMinute ? shiftCalendarDate(startDate, 1) : startDate;
-  return zonedWallTimeToUtc(
+  const configuredEnd = zonedWallTimeToUtc(
     endDate.year,
     endDate.month,
     endDate.day,
@@ -278,4 +332,18 @@ export function quietHoursWindowEnd(config: QuietHoursConfig, at: Date): Date {
     config.timezone,
     at,
   );
+  if (!config.timezone) return configuredEnd;
+
+  // A fall-back can move the wall clock from an active same-day interval back
+  // before its start. The configured end (for example 02:30) may then be much
+  // later than the first instant the recipient is awake (01:00 after the fold).
+  // Return that actual exit so a deferred notification cannot outlive the
+  // membership that caused it to be held.
+  let transitionAfter = at;
+  for (;;) {
+    const transition = nextOffsetTransition(config.timezone, transitionAfter, configuredEnd);
+    if (!transition) return configuredEnd;
+    if (!isInQuietHours(config, transition)) return transition;
+    transitionAfter = transition;
+  }
 }
