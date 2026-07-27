@@ -627,9 +627,16 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     userId: string;
     expiresAtMs: number;
   };
+  type WatchStartWorkLease = {
+    release(): Promise<void>;
+  };
   const liveAssetsOf = (socket: Socket): Map<string, LiveWatchEntry> =>
     (socket.data.liveAssets as Map<string, LiveWatchEntry> | undefined) ??
     (socket.data.liveAssets = new Map<string, LiveWatchEntry>());
+
+  const watchStartWorkLeasesOf = (socket: Socket): Set<WatchStartWorkLease> =>
+    (socket.data.watchStartWorkLeases as Set<WatchStartWorkLease> | undefined) ??
+    (socket.data.watchStartWorkLeases = new Set<WatchStartWorkLease>());
 
   const pendingLiveWatchAssetsOf = (socket: Socket): Map<string, number> =>
     (socket.data.pendingLiveWatchAssets as Map<string, number> | undefined) ??
@@ -802,6 +809,14 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     void task.finally(() => socketCleanupTasks.delete(task));
   }
 
+  function releaseWatchStartWorkLeases(socket: Socket): Promise<void> {
+    // `release()` fences and detaches synchronously before its Redis await.
+    // Starting every bounded release before awaiting any one of them prevents
+    // one delayed command from leaving another lease's renewal timer alive.
+    const releases = [...watchStartWorkLeasesOf(socket)].map((lease) => lease.release());
+    return Promise.all(releases).then(() => undefined);
+  }
+
   /**
    * Serialize a socket's live-mode ops. `live.watch` awaits an asset resolve
    * between reading and writing the socket's watch set, and clients re-emit
@@ -857,38 +872,53 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     ack: unknown,
   ): Promise<void> {
     const leaseId = randomUUID();
-    let acquired = false;
+    const socketWorkLeases = watchStartWorkLeasesOf(socket);
+    let acquireState: 'not-started' | 'pending' | 'acquired' | 'rejected' = 'not-started';
     let renewTimer: ReturnType<typeof setInterval> | null = null;
     let renewRunning = false;
     let released = false;
+    let releasePromise: Promise<void> | null = null;
     let expiresAtMs = 0;
-    const workLease = {
+    const releaseSemaphore = (): Promise<void> => {
+      if (acquireState === 'not-started' || acquireState === 'rejected') {
+        return Promise.resolve();
+      }
+      // Pending Redis acquire/renew commands were issued first on the same
+      // client. Queueing one token-scoped release now fences their late
+      // execution without requiring their promises to settle.
+      releasePromise ??= admission.releaseWatchStart(leaseId);
+      return releasePromise;
+    };
+    const workLease: WatchStartWorkLease = {
       async release(): Promise<void> {
-        if (released) return;
-        released = true;
-        if (renewTimer) clearInterval(renewTimer);
-        renewTimer = null;
-        if (!acquired) return;
-        await admission.releaseWatchStart(leaseId);
-      },
-      expire(): void {
-        if (released) return;
-        released = true;
-        if (renewTimer) clearInterval(renewTimer);
-        renewTimer = null;
-        // The lease id fences delayed renewal execution: Redis processes this
-        // release after that renewal, while the TTL remains the outage backstop.
-        if (acquired) {
-          void admission.releaseWatchStart(leaseId).catch((err) => {
-            logger.warn({ err, userId: principal.userId }, 'live work lease expiry release failed');
-          });
+        if (!released) {
+          released = true;
+          if (renewTimer) clearInterval(renewTimer);
+          renewTimer = null;
+          socketWorkLeases.delete(workLease);
         }
+        await releaseSemaphore();
       },
     };
+    // Disconnect owns in-flight provider work from this point onward. The set
+    // is bounded by REALTIME_MAX_PENDING_WATCH_STARTS_PER_SOCKET (and live ops
+    // are serialized), so hostile clients cannot grow socket-owned cleanup.
+    socketWorkLeases.add(workLease);
     try {
+      if (socket.disconnected) {
+        respondError(ack, 'GONE');
+        return;
+      }
       const acquireStartedAt = admissionNow();
       expiresAtMs = acquireStartedAt + admissionLeaseTtlMs;
-      acquired = await admission.acquireWatchStart(leaseId);
+      acquireState = 'pending';
+      const acquired = await admission.acquireWatchStart(leaseId);
+      acquireState = acquired ? 'acquired' : 'rejected';
+      if (released) {
+        await releaseSemaphore();
+        respondError(ack, 'GONE');
+        return;
+      }
       if (!acquired) {
         respondError(ack, 'LIVE_WORK_BUSY');
         return;
@@ -904,12 +934,29 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       }
       renewTimer = setInterval(() => {
         if (released || renewRunning) return;
+        if (socket.disconnected) {
+          void workLease.release().catch((err) => {
+            logger.warn({ err, userId: principal.userId }, 'live work lease release failed');
+          });
+          return;
+        }
         renewRunning = true;
         void renewBeforeDeadline(expiresAtMs, () => admission.renewWatchStart(leaseId))
           .then((renewal) => {
             if (released) return;
+            if (socket.disconnected) {
+              void workLease.release().catch((err) => {
+                logger.warn({ err, userId: principal.userId }, 'live work lease release failed');
+              });
+              return;
+            }
             if (!renewal.value) {
-              workLease.expire();
+              void workLease.release().catch((err) => {
+                logger.warn(
+                  { err, userId: principal.userId },
+                  'live work lease expiry release failed',
+                );
+              });
               if (!socket.disconnected) socket.disconnect(true);
               return;
             }
@@ -917,7 +964,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           })
           .catch((err) => {
             logger.warn({ err, userId: principal.userId }, 'live work lease renewal failed');
-            workLease.expire();
+            void workLease.release().catch((releaseErr) => {
+              logger.warn(
+                { err: releaseErr, userId: principal.userId },
+                'live work lease expiry release failed',
+              );
+            });
             if (!socket.disconnected) socket.disconnect(true);
           })
           .finally(() => {
@@ -1561,6 +1613,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           const cleanup = Promise.allSettled([
             clearPresence(socket, userId),
             releaseConnectionLease(socket),
+            releaseWatchStartWorkLeases(socket),
             (async () => {
               for (const [assetId, entry] of [...liveAssetsOf(socket)]) {
                 await releaseLiveWatch(socket, assetId, entry, false);

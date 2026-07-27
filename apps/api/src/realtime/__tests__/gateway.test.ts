@@ -29,6 +29,7 @@ import { generateTotpCode } from '../../services/auth/totp';
 import { hashToken } from '../../services/crypto/tokens';
 import type { LiveModeService } from '../../services/liveMode';
 import {
+  createRealtimeAdmission,
   realtimeAdmissionKeys,
   type RealtimeAdmission,
 } from '../../services/security/realtimeAdmission';
@@ -605,6 +606,67 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
       });
       await new Promise((resolve) => setTimeout(resolve, leaseTtlMs));
       expect(renewWatchStart).toHaveBeenCalledTimes(1);
+    } finally {
+      await closeControlledGateway(controlled.gateway, controlled.server, clientSockets);
+    }
+  });
+
+  it('releases renewing watch-start work when the client disconnects during backfill', async () => {
+    const leaseTtlMs = 300;
+    const admission = createRealtimeAdmission(harness.ctx.redis, { leaseTtlMs });
+    const renewWatchStart = vi.spyOn(admission, 'renewWatchStart');
+    const releaseWatchStart = vi.spyOn(admission, 'releaseWatchStart');
+    const backfill = vi.fn(() => new Promise<never>(() => undefined));
+    const liveMode: LiveModeService = {
+      watch: vi.fn(() => true),
+      unwatch: vi.fn(),
+      backfill,
+      onFrame: vi.fn(() => () => undefined),
+      watcherCount: vi.fn(() => 0),
+      pollIntervalMs: vi.fn(() => null),
+      reconcile: vi.fn(),
+      close: vi.fn(),
+    };
+    const controlled = await listenControlledGateway({
+      admission,
+      leaseTtlMs,
+      liveMode,
+    });
+    const clientSockets: ClientSocket[] = [];
+    try {
+      const client = ioClient(controlled.url, {
+        path: REALTIME_PATH,
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: 'controlled-token' },
+      });
+      clientSockets.push(client);
+      await new Promise<void>((resolve, reject) => {
+        client.once('connect', () => resolve());
+        client.once('connect_error', reject);
+      });
+      client.emit(REALTIME_CLIENT_EVENTS.liveWatch, {
+        assetId: SOME_UUID,
+        window: '10m',
+      });
+
+      await vi.waitFor(() => expect(backfill).toHaveBeenCalledTimes(1));
+      await vi.waitFor(async () => {
+        expect(renewWatchStart).toHaveBeenCalled();
+        expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.watchStarts)).toBe(1);
+      });
+
+      client.disconnect();
+
+      await vi.waitFor(async () => {
+        expect(releaseWatchStart).toHaveBeenCalledTimes(1);
+        expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.watchStarts)).toBe(0);
+      });
+      const renewalsAfterDisconnect = renewWatchStart.mock.calls.length;
+      const renewalIntervalMs = Math.floor(leaseTtlMs / 3);
+      await new Promise((resolve) => setTimeout(resolve, renewalIntervalMs * 2));
+      expect(renewWatchStart).toHaveBeenCalledTimes(renewalsAfterDisconnect);
+      expect(releaseWatchStart).toHaveBeenCalledTimes(1);
     } finally {
       await closeControlledGateway(controlled.gateway, controlled.server, clientSockets);
     }
