@@ -259,7 +259,7 @@ describe('googleVerifier — ID-token verification (§13.4 V4-P4b)', () => {
         clientId: CLIENT_ID,
         clientSecret,
         fetchImpl: (async () =>
-          new Response(`{\"id_token\":\"${tokenContents}`, {
+          new Response(`{"id_token":"${tokenContents}`, {
             headers: { 'content-type': 'application/json' },
           })) as typeof fetch,
         keyResolver,
