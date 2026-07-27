@@ -215,29 +215,17 @@ interface QuantityReplayRow {
   normalInputQuantity: number | null;
   /** Immutable UUIDv7 write position within the whole strict document. */
   writeOrder: number;
+  /**
+   * `rev` is bumped for every vault edit. A pre-transition row with a normal
+   * quantity preimage may therefore be an in-place normal-mode PATCH rather
+   * than an immutable exact-decimal legacy row.
+   */
+  normalRevision: boolean;
 }
 
 function isPersistedSolvent(rows: readonly QuantityReplayRow[]): boolean {
   let held = 0n;
   for (const row of rows) {
-    if (row.transaction.data.side === 'buy') {
-      held += row.quantity;
-      continue;
-    }
-    const shortfall = row.quantity - held;
-    if (shortfall > 0n && !row.transaction.data.allowUncovered) return false;
-    held = shortfall > 0n ? 0n : held - row.quantity;
-  }
-  return true;
-}
-
-function isPersistedPrefixSolvent(
-  rows: readonly QuantityReplayRow[],
-  legacyCutoff: number,
-): boolean {
-  let held = 0n;
-  for (const row of rows) {
-    if (row.writeOrder >= legacyCutoff) continue;
     if (row.transaction.data.side === 'buy') {
       held += row.quantity;
       continue;
@@ -257,7 +245,10 @@ function isPersistedPrefixSolvent(
 function normalBatchCanReplay(rows: readonly QuantityReplayRow[], legacyCutoff: number): boolean {
   let held = 0;
   for (const row of rows) {
-    const quantity = row.writeOrder < legacyCutoff ? row.readbackQuantity : row.normalInputQuantity;
+    const quantity =
+      row.normalRevision || row.writeOrder >= legacyCutoff
+        ? row.normalInputQuantity
+        : row.readbackQuantity;
     if (quantity === null) return false;
     if (row.transaction.data.side === 'buy') {
       held += quantity;
@@ -275,7 +266,115 @@ function normalBatchCanReplay(rows: readonly QuantityReplayRow[], legacyCutoff: 
 }
 
 const STORAGE_ROUNDING_QUANTUM = 1n;
-const MAX_QUANTITY_REACHABILITY_TRANSACTIONS = 2_048;
+
+interface ExactLegacyReplaySummary {
+  /** Net quantity delta when the sequence can run from its required opening balance. */
+  delta: bigint;
+  /** A clamp introduced by an allowed uncovered sell; null means no clamp. */
+  floor: bigint | null;
+  /** Minimum opening balance that keeps every ordinary sell covered. */
+  required: bigint;
+}
+
+const EXACT_LEGACY_IDENTITY: ExactLegacyReplaySummary = {
+  delta: 0n,
+  floor: null,
+  required: 0n,
+};
+
+function maxBigint(left: bigint, right: bigint): bigint {
+  return left > right ? left : right;
+}
+
+/**
+ * Compose two chronological exact-quantity sequences. Each sequence maps an
+ * opening holding `h` to `max(h + delta, floor)` while requiring `h >=
+ * required`; that makes a point activation in a chronological group O(log n).
+ */
+function composeExactLegacyReplay(
+  left: ExactLegacyReplaySummary,
+  right: ExactLegacyReplaySummary,
+): ExactLegacyReplaySummary {
+  const requiredForRight =
+    left.floor !== null && left.floor >= right.required
+      ? 0n
+      : maxBigint(0n, right.required - left.delta);
+  const shiftedLeftFloor = left.floor === null ? null : left.floor + right.delta;
+  const floor =
+    shiftedLeftFloor === null
+      ? right.floor
+      : right.floor === null
+        ? shiftedLeftFloor
+        : maxBigint(shiftedLeftFloor, right.floor);
+  return {
+    delta: left.delta + right.delta,
+    floor,
+    required: maxBigint(left.required, requiredForRight),
+  };
+}
+
+function exactLegacyReplaySummary(row: QuantityReplayRow): ExactLegacyReplaySummary {
+  if (row.transaction.data.side === 'buy') {
+    return { delta: row.quantity, floor: null, required: 0n };
+  }
+  if (row.transaction.data.allowUncovered) {
+    return { delta: -row.quantity, floor: 0n, required: 0n };
+  }
+  return { delta: -row.quantity, floor: null, required: row.quantity };
+}
+
+/** Incremental exact-prefix solvency for one chronological portfolio/asset group. */
+class ExactLegacySolvencyTree {
+  private readonly leafCount: number;
+  private readonly nodes: ExactLegacyReplaySummary[];
+
+  constructor(rowCount: number) {
+    let leafCount = 1;
+    while (leafCount < rowCount) leafCount *= 2;
+    this.leafCount = leafCount;
+    this.nodes = Array.from({ length: leafCount * 2 }, () => EXACT_LEGACY_IDENTITY);
+  }
+
+  activate(index: number, row: QuantityReplayRow): void {
+    let node = this.leafCount + index;
+    this.nodes[node] = exactLegacyReplaySummary(row);
+    while (node > 1) {
+      node = Math.floor(node / 2);
+      this.nodes[node] = composeExactLegacyReplay(this.nodes[node * 2]!, this.nodes[node * 2 + 1]!);
+    }
+  }
+
+  isSolvent(): boolean {
+    return this.nodes[1]!.required === 0n;
+  }
+}
+
+function maximumNormalReplayCutoff(
+  groups: readonly (readonly QuantityReplayRow[])[],
+  firstPossibleLegacyCutoff: number,
+  rowCount: number,
+): number | null {
+  if (!groups.every((group) => normalBatchCanReplay(group, firstPossibleLegacyCutoff))) {
+    return null;
+  }
+
+  // `quantityNumberPreimage` deliberately picks the outer input: moving the
+  // cutoff later replaces a normal buy with its no-larger repository readback,
+  // or a normal sell with its no-smaller readback. Holdings can only decrease,
+  // so normal replay validity is a contiguous cutoff range and binary search is
+  // sound. Normal revisions always keep their normal input on both sides.
+  let minimum = firstPossibleLegacyCutoff;
+  let maximum = rowCount;
+  while (minimum < maximum) {
+    const candidate = minimum + Math.ceil((maximum - minimum) / 2);
+    if (groups.every((group) => normalBatchCanReplay(group, candidate))) {
+      minimum = candidate;
+    } else {
+      maximum = candidate - 1;
+    }
+  }
+  return minimum;
+}
 
 /**
  * Tax replay intentionally has only a one-storage-quantum exception. Larger
@@ -306,16 +405,19 @@ function oneQuantumStorageRoundingSellIds(
 
 /**
  * A strict-v1 document may start with an exact persisted history that predates
- * public-number writes. Its membership follows one immutable UUIDv7 write
+ * public-number writes. Its membership follows one immutable UUIDv7 creation
  * cutoff for the entire document, not per asset and not `executedAt`: normal
- * writes may be deliberately backdated. Once a later normal batch is
- * considered, its existing rows are read through the repository Number(numeric),
- * while its new rows must have a real String(number) to numeric(20,8) preimage.
+ * writes may be deliberately backdated. A later normal-mode PATCH preserves
+ * its row ID, though; the strict entity's bumped `rev` distinguishes that
+ * normal revision from an untouched exact-decimal row. Once a normal batch is
+ * considered, existing rows are read through repository Number(numeric), while
+ * new rows and normal revisions need a real String(number) to numeric(20,8)
+ * preimage.
  *
- * Candidate validation is deliberately bounded. Each candidate does a linear
- * quantity replay over pre-sorted groups, so the cap limits an adversarial
- * malformed document to fewer than nine million simple quantity operations
- * before the pre-write rejection.
+ * The exact legacy prefix is maintained incrementally in chronological group
+ * trees. Combined with the monotonic normal-replay cutoff search, malformed
+ * documents take O(n log n) quantity work before the pre-write rejection,
+ * without imposing an artificial transaction-count limit on valid vaults.
  */
 function storageRoundingSellIdsFor(
   transactions: readonly EntityOf<'transaction'>[],
@@ -324,15 +426,17 @@ function storageRoundingSellIdsFor(
   const writeHistory = [...transactions].sort((a, b) => a.id.localeCompare(b.id));
   const rows = writeHistory.map((transaction, writeOrder): QuantityReplayRow => {
     const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+    const normalInputQuantity = quantityNumberPreimage(
+      quantity,
+      transaction.data.side === 'buy' ? 'upper' : 'lower',
+    );
     return {
       transaction,
       quantity,
       readbackQuantity: Number(fixedScaleDecimal(quantity, 8)),
-      normalInputQuantity: quantityNumberPreimage(
-        quantity,
-        transaction.data.side === 'buy' ? 'upper' : 'lower',
-      ),
+      normalInputQuantity,
       writeOrder,
+      normalRevision: transaction.rev > 0 && normalInputQuantity !== null,
     };
   });
 
@@ -369,14 +473,6 @@ function storageRoundingSellIdsFor(
 
   if (replayGroups.every((group) => isPersistedSolvent(group))) return new Set();
 
-  if (rows.length > MAX_QUANTITY_REACHABILITY_TRANSACTIONS) {
-    throw new Error(
-      'transaction quantity reachability supports at most ' +
-        MAX_QUANTITY_REACHABILITY_TRANSACTIONS +
-        ' transactions when persisted quantities are insolvent',
-    );
-  }
-
   // A row without a public-number preimage can only live in the strict-v1
   // prefix. Start at the first globally possible cutoff instead of trying
   // prefixes known to be impossible.
@@ -385,19 +481,55 @@ function storageRoundingSellIdsFor(
       row.normalInputQuantity === null ? Math.max(cutoff, row.writeOrder + 1) : cutoff,
     0,
   );
-  for (
-    let legacyCutoff = firstPossibleLegacyCutoff;
-    legacyCutoff <= rows.length;
-    legacyCutoff += 1
-  ) {
-    if (
-      replayGroups.every(
-        (group) =>
-          isPersistedPrefixSolvent(group, legacyCutoff) &&
-          normalBatchCanReplay(group, legacyCutoff),
-      )
-    ) {
+
+  const maximumCutoff = maximumNormalReplayCutoff(
+    replayGroups,
+    firstPossibleLegacyCutoff,
+    rows.length,
+  );
+  if (maximumCutoff !== null) {
+    const trees = replayGroups.map((group) => new ExactLegacySolvencyTree(group.length));
+    const treeLocations = new Map<string, { tree: ExactLegacySolvencyTree; index: number }>();
+    for (let groupIndex = 0; groupIndex < replayGroups.length; groupIndex += 1) {
+      const group = replayGroups[groupIndex]!;
+      const tree = trees[groupIndex]!;
+      for (let index = 0; index < group.length; index += 1) {
+        treeLocations.set(group[index]!.transaction.id, { tree, index });
+      }
+    }
+
+    let insolventLegacyGroups = 0;
+    const activateLegacyRow = (row: QuantityReplayRow): void => {
+      // A bumped revision with a normal-number preimage can be the normal-mode
+      // PATCH of a pre-transition UUID. Its old exact quantity is intentionally
+      // not reconstructed from the final row, so only unchanged rows join the
+      // exact strict-v1 prefix.
+      if (row.normalRevision) return;
+      const location = treeLocations.get(row.transaction.id);
+      if (!location) throw new Error('missing transaction replay-tree location');
+      const wasSolvent = location.tree.isSolvent();
+      location.tree.activate(location.index, row);
+      const isSolvent = location.tree.isSolvent();
+      if (wasSolvent && !isSolvent) insolventLegacyGroups += 1;
+      if (!wasSolvent && isSolvent) insolventLegacyGroups -= 1;
+    };
+
+    for (let legacyCutoff = 1; legacyCutoff <= firstPossibleLegacyCutoff; legacyCutoff += 1) {
+      activateLegacyRow(rows[legacyCutoff - 1]!);
+    }
+    if (insolventLegacyGroups === 0) {
       return oneQuantumStorageRoundingSellIds(replayGroups);
+    }
+
+    for (
+      let legacyCutoff = firstPossibleLegacyCutoff + 1;
+      legacyCutoff <= maximumCutoff;
+      legacyCutoff += 1
+    ) {
+      activateLegacyRow(rows[legacyCutoff - 1]!);
+      if (insolventLegacyGroups === 0) {
+        return oneQuantumStorageRoundingSellIds(replayGroups);
+      }
     }
   }
 

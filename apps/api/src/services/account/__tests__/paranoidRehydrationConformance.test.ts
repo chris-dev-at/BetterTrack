@@ -31,7 +31,7 @@ const HIGH_MAGNITUDE_ASSET_ID = '018f0000-0000-7000-8000-000000000108';
 const FIRST_REHYDRATION_ID = '018f0000-0000-7000-8000-00000000010b';
 const SECOND_REHYDRATION_ID = '018f0000-0000-7000-8000-00000000010c';
 const LEGACY_CASH_SOURCE_ID = '018f0000-0000-7000-8000-00000000010d';
-const QUANTITY_REACHABILITY_LIMIT = 2_048;
+const NORMAL_HISTORY_TRANSACTION_COUNT = 2_047;
 const EDITED_AT = '2026-07-24T10:00:00.000Z';
 
 type StrictEntity = ParanoidDisableRehydrationRequest['document']['entities'][number];
@@ -565,6 +565,95 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     );
   });
 
+  it('accepts a normal update of a pre-transition row without moving its UUID past the legacy cutoff', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = '018f0000-0300-7000-8000-000000000401';
+    const assetId = '018f0000-0300-7000-8000-000000000402';
+    await seedGlobalAsset(harness, assetId, 'PATCHED-LEGACY');
+
+    const writeIds = ['018f0000-0300-7000-8000-000000000403'];
+    writeIds.push(nextUuidV7WriteId(writeIds[0]!));
+    writeIds.push(nextUuidV7WriteId(writeIds[1]!));
+
+    // This is a solvent exact strict-v1 history. The last buy has no public
+    // number preimage, so the second rehydration must place the UUID cutoff
+    // after it even though the older sell is subsequently patched in normal
+    // mode.
+    const legacyDocument = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: writeIds[0]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+      transactionEntity({
+        id: writeIds[1]!,
+        portfolioId,
+        assetId,
+        side: 'sell',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:01:00.000Z',
+      }),
+      transactionEntity({
+        id: writeIds[2]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:02:00.000Z',
+      }),
+    ]);
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      legacyDocument,
+      FIRST_REHYDRATION_ID,
+      'initial exact history before normal update',
+    );
+
+    const transactionRepo = createTransactionRepository(harness.db);
+    const legacyRows = await transactionRepo.listForAsset(portfolioId, assetId);
+    const legacySell = legacyRows.find((transaction) => transaction.id === writeIds[1]);
+    if (!legacySell) throw new Error('expected pre-transition legacy sell');
+    expect(legacySell.quantity).toBe(90071992547.12346);
+
+    // Exercise the real normal PATCH path. It retains the old UUID but writes
+    // the repository-readback number as numeric(20,8).
+    await harness.ctx.portfolio.updateTransaction(user.id, portfolioId, legacySell.id, {
+      quantity: legacySell.quantity,
+    });
+    const [patchedSell] = await harness.db
+      .select({ id: transactions.id, quantity: transactions.quantity })
+      .from(transactions)
+      .where(eq(transactions.id, legacySell.id));
+    expect(patchedSell).toEqual({ id: legacySell.id, quantity: '90071992547.12346000' });
+
+    const resultingDocument = await capturePortfolioDocument(harness, portfolioId);
+    const revisedSell = quantityEntities(resultingDocument).find(
+      (transaction) => transaction.id === legacySell.id,
+    );
+    if (!revisedSell) throw new Error('expected patched sell in the strict document');
+    // Vault metadata is the only durable per-entity edit signal: rev bumps on
+    // every edit, including a normal-mode PATCH that keeps its original UUID.
+    revisedSell.rev = 1;
+    revisedSell.editedAt = '2026-07-25T10:00:00.000Z';
+    expect(revisedSell.id < writeIds[2]!).toBe(true);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      resultingDocument,
+      SECOND_REHYDRATION_ID,
+      'normal update of a pre-transition row',
+    );
+  });
+
   it('rejects a high-magnitude apparent oversell with no normal-write preimage before restore writes', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
@@ -664,7 +753,8 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
         quantity: '90071992547.12345678',
         executedAt: '2026-07-23T10:00:00.000Z',
       }),
-      // B's legacy buy, then B's normal repository-readback sale.
+      // B's legacy buy, then an unrevised readback-shaped sale. Its UUID and
+      // rev=0 mean it cannot pose as a later in-place normal PATCH.
       transactionEntity({
         id: writeIds[1]!,
         portfolioId,
@@ -717,47 +807,68 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     }
   });
 
-  it('bounds an insolvent quantity proof before it can rescan thousands of rows', async () => {
+  it('rehydrates a normal history larger than the old whole-document proof cap', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
-    const assetId = '018f0000-0000-7000-8000-00000000010e';
-    await seedGlobalAsset(harness, assetId, 'PROOF-LIMIT');
+    const roundingAssetId = '018f0000-0000-7000-8000-00000000010e';
+    const historyAssetId = '018f0000-0000-7000-8000-00000000010f';
+    await seedGlobalAsset(harness, roundingAssetId, 'LARGE-PROOF-ROUNDING');
+    await seedGlobalAsset(harness, historyAssetId, 'LARGE-PROOF-HISTORY');
 
-    const entities: StrictEntity[] = [portfolioEntity(user.id, portfolioId)];
-    let transactionId = '018f0000-0200-7000-8000-000000000301';
-    for (let index = 0; index <= QUANTITY_REACHABILITY_LIMIT; index += 1) {
-      entities.push(
-        transactionEntity({
-          id: transactionId,
-          portfolioId,
-          assetId,
-          // This first strict persisted sell keeps the full document insolvent,
-          // so it must enter the bounded composed-reachability proof.
-          side: index === 0 ? 'sell' : 'buy',
-          quantity: '1.00000000',
-          executedAt: '2026-07-23T10:00:00.000Z',
-        }),
+    // This accepted normal batch persists one scale-8 quantum apart, so the
+    // final strict document enters the composed reachability proof.
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId: roundingAssetId,
+        side: 'buy',
+        quantity: 1.0000000046,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:00:00.000Z',
+      },
+      {
+        assetId: roundingAssetId,
+        side: 'sell',
+        quantity: 1.0000000051,
+        price: 11,
+        fee: 0,
+        executedAt: '2026-07-23T10:01:00.000Z',
+      },
+    ]);
+
+    const normalHistory = Array.from({ length: NORMAL_HISTORY_TRANSACTION_COUNT }, (_, index) => ({
+      assetId: historyAssetId,
+      side: 'buy' as const,
+      quantity: 1,
+      price: 10,
+      fee: 0,
+      executedAt: new Date(Date.parse('2026-07-23T10:02:00.000Z') + index).toISOString(),
+    }));
+    // The HTTP contract caps one request at 500, while ordinary user history
+    // can accumulate indefinitely across requests.
+    for (let offset = 0; offset < normalHistory.length; offset += 500) {
+      await harness.ctx.portfolio.createTransactions(
+        user.id,
+        portfolioId,
+        normalHistory.slice(offset, offset + 500),
       );
-      transactionId = nextUuidV7WriteId(transactionId);
     }
+
+    const document = await capturePortfolioDocument(harness, portfolioId);
+    expect(quantityEntities(document)).toHaveLength(NORMAL_HISTORY_TRANSACTION_COUNT + 2);
 
     await replaceNormalRowsWithServerVault(harness, user.id);
-    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
-    try {
-      await expect(
-        createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
-          rehydrationId: FIRST_REHYDRATION_ID,
-          document: strictDocument(entities),
-        }),
-      ).rejects.toMatchObject({
-        code: 'INVALID_CASH_LEDGER',
-        message: expect.stringContaining(`at most ${QUANTITY_REACHABILITY_LIMIT} transactions`),
-      });
-      expect(mutationTransaction).not.toHaveBeenCalled();
-    } finally {
-      mutationTransaction.mockRestore();
-    }
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      document,
+      FIRST_REHYDRATION_ID,
+      'large normal-write history with a local rounding boundary',
+    );
+    expect(
+      await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
+    ).toHaveLength(NORMAL_HISTORY_TRANSACTION_COUNT + 2);
   });
 
   it('negative control: a temporarily tightened quantity rule rejects in rehydration preflight with the persisted entity path and value', async () => {
