@@ -170,6 +170,83 @@ describe('quiet hours — instant deferral (§13.5 V5-P3)', () => {
     expect(fcmCalls[0]!.message.type).toBe('friend.request');
   });
 
+  it('keeps a deferred push queued through the second repeated local hour', async () => {
+    const user = await harness.seedUser({ email: 'fold@bt.test', username: 'folduser' });
+    await enableQuietHours(user.id, {
+      startMinute: 60, // 01:00
+      endMinute: 90, // 01:30
+      timezone: 'America/New_York',
+    });
+
+    // 06:15 UTC is the second 01:15 local occurrence (EST) on the fall-back date.
+    clock = new Date('2026-11-01T06:15:00.000Z');
+    await makeDispatcher().dispatch(friendRequestEvent(user.id, 'fold-request'));
+
+    const rows = await deferredRows(user.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.deliverAfter?.toISOString()).toBe('2026-11-01T06:30:00.000Z');
+
+    clock = new Date('2026-11-01T06:29:00.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(0);
+    expect(fcmCalls).toHaveLength(0);
+
+    clock = new Date('2026-11-01T06:30:00.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(1);
+    expect(fcmCalls).toHaveLength(1);
+  });
+
+  it('delivers a first-fold deferral at the actual membership exit', async () => {
+    const user = await harness.seedUser({ email: 'fold-exit@bt.test', username: 'foldexituser' });
+    await enableQuietHours(user.id, {
+      startMinute: 90, // 01:30
+      endMinute: 150, // 02:30
+      timezone: 'America/New_York',
+    });
+
+    // 01:45 EDT is quiet, but the fall-back at 06:00 UTC becomes 01:00 EST —
+    // before the configured 01:30 start — so it is the first awake instant.
+    clock = new Date('2026-11-01T05:45:00.000Z');
+    await makeDispatcher().dispatch(friendRequestEvent(user.id, 'fold-exit-request'));
+
+    const rows = await deferredRows(user.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.deliverAfter?.toISOString()).toBe('2026-11-01T06:00:00.000Z');
+
+    clock = new Date('2026-11-01T05:59:00.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(0);
+    expect(fcmCalls).toHaveLength(0);
+
+    clock = new Date('2026-11-01T06:00:00.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(1);
+    expect(fcmCalls).toHaveLength(1);
+  });
+
+  it('keeps a deferred push queued through a spring-forward gap-resolved end', async () => {
+    const user = await harness.seedUser({ email: 'gap@bt.test', username: 'gapuser' });
+    await enableQuietHours(user.id, {
+      startMinute: 60, // 01:00 EST
+      endMinute: 150, // 02:30, skipped by the spring-forward transition
+      timezone: 'America/New_York',
+    });
+
+    // 07:00 UTC is 03:00 EDT. The configured 02:30 end resolves forward to
+    // 03:30 EDT, so this must defer rather than send immediately.
+    clock = new Date('2026-03-08T07:00:00.000Z');
+    await makeDispatcher().dispatch(friendRequestEvent(user.id, 'gap-request'));
+
+    const rows = await deferredRows(user.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.deliverAfter?.toISOString()).toBe('2026-03-08T07:30:00.000Z');
+    expect(fcmCalls).toHaveLength(0);
+
+    clock = new Date('2026-03-08T07:29:00.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(0);
+
+    clock = new Date('2026-03-08T07:30:00.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(1);
+    expect(fcmCalls).toHaveLength(1);
+  });
+
   it('delivers immediately when fired OUTSIDE the window (no deferral)', async () => {
     const user = await harness.seedUser({ email: 'o@bt.test', username: 'outuser' });
     await enableQuietHours(user.id);
