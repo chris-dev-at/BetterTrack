@@ -68,11 +68,50 @@ export function zonedCalendarDate(
   return { year, month, day };
 }
 
+const MINUTE_MS = 60_000;
+const OFFSET_PROBE_RANGE_MS = 36 * 60 * MINUTE_MS;
+const OFFSET_PROBE_STEP_MS = 6 * 60 * MINUTE_MS;
+
+/** The UTC-millisecond representation of a local calendar minute. */
+function localMinuteAsUtc(parts: LocalParts): number {
+  return Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0) + parts.minuteOfDay * MINUTE_MS;
+}
+
+/**
+ * The offsets around a local wall time. `Intl` exposes formatting only, so its
+ * inverse must account for both sides of a transition. The probe range covers
+ * every real-world offset around the requested local date while keeping the
+ * normal (single-offset) path small.
+ */
+function offsetsAroundWallTime(wallTimeMs: number, timezone: string): number[] {
+  const offsets = new Set<number>();
+  for (
+    let probe = wallTimeMs - OFFSET_PROBE_RANGE_MS;
+    probe <= wallTimeMs + OFFSET_PROBE_RANGE_MS;
+    probe += OFFSET_PROBE_STEP_MS
+  ) {
+    const local = localParts(new Date(probe), timezone);
+    offsets.add(localMinuteAsUtc(local) - probe);
+  }
+  return [...offsets];
+}
+
+interface WallTimeCandidate {
+  instant: Date;
+  localMinuteMs: number;
+}
+
 /**
  * The UTC instant for a wall-clock time (`minuteOfDay` on local Y/M/D) in
- * `timezone`. Resolves the zone offset AT that instant (so it is DST-correct to
- * the standard single-adjustment precision), then inverts it. `timezone` null ⇒
- * the wall time is UTC.
+ * `timezone`, strictly after `notBefore`. `Intl` does not provide an inverse
+ * timezone conversion, so enumerate each offset observed around the local time
+ * and validate it by formatting the candidate back into the zone.
+ *
+ * A repeated fall-back minute has two valid candidates; selecting the first
+ * candidate after `notBefore` keeps a window active through the second local
+ * occurrence. A spring-forward gap has no valid candidate; choose the first
+ * projected local minute after the requested one, the deterministic compatible
+ * (gap-forward) resolution. `timezone` null ⇒ the wall time is UTC.
  */
 function zonedWallTimeToUtc(
   year: number,
@@ -80,17 +119,36 @@ function zonedWallTimeToUtc(
   day: number,
   minuteOfDay: number,
   timezone: string | null,
+  notBefore: Date,
 ): Date {
-  const hour = Math.floor(minuteOfDay / 60);
-  const minute = minuteOfDay % 60;
-  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, 0);
-  if (!timezone) return new Date(utcGuess);
-  // Offset (localWall − UTC) at the guessed instant: format the guess back in
-  // the zone and diff against the UTC fields it stands for.
-  const p = localParts(new Date(utcGuess), timezone);
-  const wallAsUtc = Date.UTC(p.year, p.month - 1, p.day, 0, 0, 0) + p.minuteOfDay * 60_000;
-  const offsetMs = wallAsUtc - utcGuess;
-  return new Date(utcGuess - offsetMs);
+  const wallTimeMs = Date.UTC(year, month - 1, day, 0, 0, 0) + minuteOfDay * MINUTE_MS;
+  if (!timezone) return new Date(wallTimeMs);
+
+  const candidates = offsetsAroundWallTime(wallTimeMs, timezone).map((offsetMs) => {
+    const instant = new Date(wallTimeMs - offsetMs);
+    return { instant, localMinuteMs: localMinuteAsUtc(localParts(instant, timezone)) };
+  });
+  const future = (candidate: WallTimeCandidate): boolean =>
+    candidate.instant.getTime() > notBefore.getTime();
+
+  // Valid local wall minutes, including both instances during a fall-back.
+  const exact = candidates
+    .filter((candidate) => candidate.localMinuteMs === wallTimeMs && future(candidate))
+    .sort((a, b) => a.instant.getTime() - b.instant.getTime());
+  if (exact.length > 0) return exact[0]!.instant;
+
+  // A skipped spring-forward minute has no exact inverse. Of the projections
+  // produced by the offsets on each side of the transition, choose the first
+  // local minute after the gap, and still never return a stale deadline.
+  const compatible = candidates
+    .filter((candidate) => candidate.localMinuteMs > wallTimeMs && future(candidate))
+    .sort((a, b) => a.localMinuteMs - b.localMinuteMs || a.instant.getTime() - b.instant.getTime());
+  if (compatible.length > 0) return compatible[0]!.instant;
+
+  // `quietHoursWindowEnd` only calls us for an active half-open window, where
+  // one of the paths above is always future. Retain a deterministic fallback
+  // for direct/internal callers with an already-closed wall time.
+  return candidates.sort((a, b) => a.instant.getTime() - b.instant.getTime())[0]!.instant;
 }
 
 /** Whether the window is a real (non-empty) window. */
@@ -126,7 +184,7 @@ export function quietHoursWindowEnd(config: QuietHoursConfig, at: Date): Date {
   const overnightTail = config.startMinute > config.endMinute && minuteOfDay < config.endMinute;
   const endIsToday = config.startMinute < config.endMinute || overnightTail;
   if (endIsToday) {
-    return zonedWallTimeToUtc(year, month, day, config.endMinute, config.timezone);
+    return zonedWallTimeToUtc(year, month, day, config.endMinute, config.timezone, at);
   }
   // Tomorrow's local end minute. `Date.UTC` normalizes the month/year rollover;
   // resolving the offset on that calendar day keeps it DST-correct.
@@ -137,5 +195,6 @@ export function quietHoursWindowEnd(config: QuietHoursConfig, at: Date): Date {
     next.getUTCDate(),
     config.endMinute,
     config.timezone,
+    at,
   );
 }

@@ -170,6 +170,31 @@ describe('quiet hours — instant deferral (§13.5 V5-P3)', () => {
     expect(fcmCalls[0]!.message.type).toBe('friend.request');
   });
 
+  it('keeps a deferred push queued through the second repeated local hour', async () => {
+    const user = await harness.seedUser({ email: 'fold@bt.test', username: 'folduser' });
+    await enableQuietHours(user.id, {
+      startMinute: 60, // 01:00
+      endMinute: 90, // 01:30
+      timezone: 'America/New_York',
+    });
+
+    // 06:15 UTC is the second 01:15 local occurrence (EST) on the fall-back date.
+    clock = new Date('2026-11-01T06:15:00.000Z');
+    await makeDispatcher().dispatch(friendRequestEvent(user.id, 'fold-request'));
+
+    const rows = await deferredRows(user.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.deliverAfter?.toISOString()).toBe('2026-11-01T06:30:00.000Z');
+
+    clock = new Date('2026-11-01T06:29:00.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(0);
+    expect(fcmCalls).toHaveLength(0);
+
+    clock = new Date('2026-11-01T06:30:00.000Z');
+    expect((await makeDeferredDelivery().deliverDeferred()).sent).toBe(1);
+    expect(fcmCalls).toHaveLength(1);
+  });
+
   it('delivers immediately when fired OUTSIDE the window (no deferral)', async () => {
     const user = await harness.seedUser({ email: 'o@bt.test', username: 'outuser' });
     await enableQuietHours(user.id);

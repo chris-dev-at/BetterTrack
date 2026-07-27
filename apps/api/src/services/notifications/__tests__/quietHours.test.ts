@@ -116,6 +116,45 @@ describe('quiet-hours window end', () => {
     expect(isInQuietHours(ny, utc('2026-11-01T11:59:00Z'))).toBe(true);
     expect(isInQuietHours(ny, end)).toBe(false);
   });
+
+  it('uses the second repeated end minute when the active window is in the fall-back fold', () => {
+    const ny: QuietHoursConfig = {
+      enabled: true,
+      startMinute: 60, // 01:00
+      endMinute: 90, // 01:30
+      timezone: 'America/New_York',
+    };
+    // Both instants are local 01:15 on the fall-back date: first EDT, then EST.
+    const firstOccurrence = utc('2026-11-01T05:15:00.000Z');
+    const secondOccurrence = utc('2026-11-01T06:15:00.000Z');
+
+    expect(isInQuietHours(ny, firstOccurrence)).toBe(true);
+    expect(quietHoursWindowEnd(ny, firstOccurrence).toISOString()).toBe('2026-11-01T05:30:00.000Z');
+
+    expect(isInQuietHours(ny, secondOccurrence)).toBe(true);
+    const end = quietHoursWindowEnd(ny, secondOccurrence);
+    expect(end.toISOString()).toBe('2026-11-01T06:30:00.000Z');
+    expect(end.getTime()).toBeGreaterThan(secondOccurrence.getTime());
+    expect(isInQuietHours(ny, utc('2026-11-01T06:29:00.000Z'))).toBe(true);
+    expect(isInQuietHours(ny, end)).toBe(false);
+  });
+
+  it('resolves a spring-forward nonexistent end minute forward without a stale deadline', () => {
+    const ny: QuietHoursConfig = {
+      enabled: true,
+      startMinute: 60, // 01:00 EST
+      endMinute: 150, // 02:30, skipped by the spring-forward transition
+      timezone: 'America/New_York',
+    };
+    const beforeGap = utc('2026-03-08T06:15:00.000Z'); // 01:15 EST
+    const end = quietHoursWindowEnd(ny, beforeGap);
+
+    expect(isInQuietHours(ny, beforeGap)).toBe(true);
+    // Compatible gap-forward resolution keeps the 30-minute wall offset:
+    // nonexistent 02:30 resolves to 03:30 EDT.
+    expect(end.toISOString()).toBe('2026-03-08T07:30:00.000Z');
+    expect(end.getTime()).toBeGreaterThan(beforeGap.getTime());
+  });
 });
 
 describe('digest period bucketing by local day (§13.5 V5-P3)', () => {
