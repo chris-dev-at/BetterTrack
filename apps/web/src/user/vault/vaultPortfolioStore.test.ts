@@ -19,6 +19,7 @@ vi.mock('../../lib/portfolioApi', () => ({
 import {
   decodeVaultEnvelope,
   vaultEnvelopeHeaderSchema,
+  vaultStrictDocumentV1Schema,
   type PortfolioAsset,
   type PortfolioSummary,
   type Transaction,
@@ -304,6 +305,66 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(terminal.nextCursor).toBeNull();
     expect(pagedIds).toEqual(created.map((row) => row.id).reverse());
     expect(new Set(pagedIds).size).toBe(created.length);
+  });
+
+  it('persists a supported transaction in strict restore form and reads it back unchanged', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    const [created] = await store.createTransactions(PORTFOLIO_ID, [
+      {
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 1e-7,
+        price: 2e-7,
+        fee: 1e-8,
+        executedAt: AT,
+      },
+    ]);
+    await store.updateTransaction(PORTFOLIO_ID, created!.id, { price: 3e-7, fee: 2e-8 });
+
+    const entity = engine.state.active?.document.entities.transaction?.find(
+      (candidate) => candidate.id === created!.id,
+    );
+    expect(entity).toBeDefined();
+    const strict = vaultStrictDocumentV1Schema.parse({
+      schemaVersion: 1,
+      entities: [{ ...entity!, kind: 'transaction' }],
+      mergeLog: [],
+    });
+    const strictTransaction = strict.entities[0];
+    if (strictTransaction?.kind !== 'transaction') {
+      throw new Error('Expected the strict transaction row.');
+    }
+    expect(strictTransaction.data).toMatchObject({
+      quantity: '0.0000001',
+      price: '0.0000003',
+      fee: '0.00000002',
+      taxMode: null,
+      taxCountry: null,
+      taxAmountEur: null,
+      taxParams: null,
+    });
+
+    const restoredDocument = initialDocument();
+    const { kind: _kind, ...restoredEntity } = strictTransaction;
+    restoredDocument.entities.transaction = [restoredEntity];
+    const restoredStore = createVaultPortfolioStore(createMutableEngine(restoredDocument), {
+      now: () => AT,
+    });
+    await expect(restoredStore.listTransactions(PORTFOLIO_ID)).resolves.toMatchObject({
+      items: [
+        expect.objectContaining({
+          id: created!.id,
+          quantity: 1e-7,
+          price: 3e-7,
+          fee: 2e-8,
+        }),
+      ],
+    });
   });
 
   it('rejects a transaction before commit when its local asset snapshot is missing', async () => {
@@ -929,24 +990,36 @@ function vaultEntity(id: string, data: Record<string, unknown>): VaultEntity {
 }
 
 function transactionEntity(id: string, data: Record<string, unknown>): VaultEntity {
+  const {
+    quantity = 1,
+    price = 10,
+    fee = 0,
+    taxAmountEur = null,
+    uncoveredEntryPrice = null,
+    ...rest
+  } = data;
   return vaultEntity(id, {
     portfolioId: PORTFOLIO_ID,
     assetId: ASSET_ID,
     side: 'buy',
-    quantity: 1,
-    price: 10,
-    fee: 0,
+    quantity: fixtureDecimal(quantity),
+    price: fixtureDecimal(price),
+    fee: fixtureDecimal(fee),
     executedAt: AT,
     note: null,
     taxMode: null,
     taxCountry: null,
-    taxAmountEur: null,
+    taxAmountEur: fixtureDecimal(taxAmountEur),
     taxParams: null,
     allowUncovered: false,
-    uncoveredEntryPrice: null,
+    uncoveredEntryPrice: fixtureDecimal(uncoveredEntryPrice),
     source: 'manual',
-    ...data,
+    ...rest,
   });
+}
+
+function fixtureDecimal(value: unknown): unknown {
+  return typeof value === 'number' ? String(value) : value;
 }
 
 function configureEffectiveEngineTaxMode(

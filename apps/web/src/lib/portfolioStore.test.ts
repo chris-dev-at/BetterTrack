@@ -66,18 +66,18 @@ afterEach(() => {
 });
 
 describe('apiPortfolioStore compatibility', () => {
-  it('is a direct wrapper over every normal-account operation in the shared surface', () => {
-    expect(apiPortfolioStore.listPortfolios).toBe(portfolioApi.listPortfolios);
-    expect(apiPortfolioStore.createPortfolio).toBe(portfolioApi.createPortfolio);
-    expect(apiPortfolioStore.getPortfolio).toBe(portfolioApi.getPortfolio);
-    expect(apiPortfolioStore.updatePortfolio).toBe(portfolioApi.updatePortfolio);
-    expect(apiPortfolioStore.deletePortfolio).toBe(portfolioApi.deletePortfolio);
-    expect(apiPortfolioStore.listTransactions).toBe(portfolioApi.listTransactions);
-    expect(apiPortfolioStore.createTransactions).toBe(portfolioApi.createTransactions);
-    expect(apiPortfolioStore.updateTransaction).toBe(portfolioApi.updateTransaction);
-    expect(apiPortfolioStore.deleteTransaction).toBe(portfolioApi.deleteTransaction);
-    expect(apiPortfolioStore.depositCash).toBe(portfolioApi.depositCash);
-    expect(apiPortfolioStore.withdrawCash).toBe(portfolioApi.withdrawCash);
+  it('keeps every normal-account operation behind a lazy shared-store delegate', () => {
+    expect(apiPortfolioStore.listPortfolios).not.toBe(portfolioApi.listPortfolios);
+    expect(apiPortfolioStore.createPortfolio).not.toBe(portfolioApi.createPortfolio);
+    expect(apiPortfolioStore.getPortfolio).not.toBe(portfolioApi.getPortfolio);
+    expect(apiPortfolioStore.updatePortfolio).not.toBe(portfolioApi.updatePortfolio);
+    expect(apiPortfolioStore.deletePortfolio).not.toBe(portfolioApi.deletePortfolio);
+    expect(apiPortfolioStore.listTransactions).not.toBe(portfolioApi.listTransactions);
+    expect(apiPortfolioStore.createTransactions).not.toBe(portfolioApi.createTransactions);
+    expect(apiPortfolioStore.updateTransaction).not.toBe(portfolioApi.updateTransaction);
+    expect(apiPortfolioStore.deleteTransaction).not.toBe(portfolioApi.deleteTransaction);
+    expect(apiPortfolioStore.depositCash).not.toBe(portfolioApi.depositCash);
+    expect(apiPortfolioStore.withdrawCash).not.toBe(portfolioApi.withdrawCash);
   });
 
   it('produces the same requests and parsed results for representative operations', async () => {

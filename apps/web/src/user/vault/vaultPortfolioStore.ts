@@ -13,6 +13,7 @@ import {
   transactionSchema,
   updatePortfolioRequestSchema,
   updateTransactionRequestSchema,
+  VAULT_ENTITY_ROW_SCHEMAS,
   type CashEntryRequest,
   type CashMovementResponse,
   type PortfolioAsset,
@@ -186,23 +187,20 @@ export function createVaultPortfolioStore(
       const parsedRequest = createTransactionsRequestSchema.parse({ transactions: inputs });
       const parsedInputs =
         'transactions' in parsedRequest ? parsedRequest.transactions : [parsedRequest];
-      const candidates = parsedInputs.map((input) => ({ id: safeNewId(context), input }));
+      const candidates = parsedInputs.map((input) => ({
+        id: safeNewId(context),
+        input,
+        data: transactionDataForStorage(portfolioId, input),
+      }));
       assertLocallySupportedTransactions(current, portfolioId, candidates, context.now());
 
       await engine.mutate(({ document }) => {
         requirePortfolio(document, portfolioId);
         assertLocallySupportedTransactions(document, portfolioId, candidates, context.now());
         const timestamp = context.now();
-        const entities = candidates.map(({ id, input }) => {
+        const entities = candidates.map(({ id, input, data }) => {
           resolveTransactionAsset(document, input.assetId);
-          return entityRecord(id, engine.deviceId, timestamp, {
-            ...input,
-            portfolioId,
-            note: input.note ?? null,
-            allowUncovered: input.allowUncovered ?? false,
-            uncoveredEntryPrice: input.uncoveredEntryPrice ?? null,
-            source: 'manual',
-          });
+          return entityRecord(id, engine.deviceId, timestamp, data);
         });
         return appendEntities(document, 'transaction', entities);
       });
@@ -224,6 +222,7 @@ export function createVaultPortfolioStore(
       const parsedPatch = updateTransactionRequestSchema.parse(patch);
       const { baseSeq: _baseSeq, ...parsedDataPatch } = parsedPatch;
       const dataPatch = definedFields(parsedDataPatch);
+      const persistedDataPatch = transactionPatchForStorage(dataPatch);
       const financialEdit = hasFinancialTransactionPatch(dataPatch);
       const current = requireDocument(engine);
       requirePortfolio(current, portfolioId);
@@ -250,7 +249,7 @@ export function createVaultPortfolioStore(
             financialEdit,
             context.now(),
           );
-          return { ...data, ...dataPatch };
+          return { ...data, ...persistedDataPatch };
         },
       );
       return transactionFromEntity(requireDocument(engine), entity);
@@ -718,6 +717,77 @@ function transactionFromEntity(document: VaultDocumentV1, entity: VaultEntity): 
       }),
     'A vault transaction does not match the transaction contract.',
   );
+}
+
+/**
+ * Persist the transaction in the exact restore-source row shape. The live
+ * transaction API deliberately uses numbers, while an encrypted vault stores
+ * PostgreSQL-compatible decimal strings so strict rehydration can replay it
+ * without coercion.
+ */
+function transactionDataForStorage(
+  portfolioId: string,
+  input: ReturnType<typeof transactionInputSchema.parse>,
+): Record<string, unknown> {
+  return parseVaultData(
+    () =>
+      VAULT_ENTITY_ROW_SCHEMAS.transaction.parse({
+        portfolioId,
+        assetId: input.assetId,
+        side: input.side,
+        quantity: decimalStringFromNumber(input.quantity),
+        price: decimalStringFromNumber(input.price),
+        fee: decimalStringFromNumber(input.fee),
+        executedAt: input.executedAt,
+        note: input.note ?? null,
+        taxMode: null,
+        taxCountry: null,
+        taxAmountEur: null,
+        taxParams: null,
+        allowUncovered: input.allowUncovered ?? false,
+        uncoveredEntryPrice:
+          input.uncoveredEntryPrice === undefined
+            ? null
+            : decimalStringFromNumber(input.uncoveredEntryPrice),
+        source: 'manual',
+      }),
+    'A vault transaction does not match the strict restore contract.',
+  );
+}
+
+/** Keep financial patches in the same persisted decimal representation as creates. */
+function transactionPatchForStorage(patch: TransactionDataPatch): Record<string, unknown> {
+  return {
+    ...patch,
+    ...(patch.quantity === undefined ? {} : { quantity: decimalStringFromNumber(patch.quantity) }),
+    ...(patch.price === undefined ? {} : { price: decimalStringFromNumber(patch.price) }),
+    ...(patch.fee === undefined ? {} : { fee: decimalStringFromNumber(patch.fee) }),
+  };
+}
+
+/** Expand JavaScript's exponential notation into the strict decimal grammar. */
+function decimalStringFromNumber(value: number): string {
+  const source = String(value);
+  if (!/[eE]/.test(source)) return source;
+
+  const [coefficient, exponentSource] = source.toLowerCase().split('e');
+  const exponent = Number(exponentSource);
+  if (coefficient == null || !Number.isInteger(exponent)) {
+    throw storeError('VAULT_DATA_INVALID', 'A vault numeric field is not a finite decimal.');
+  }
+
+  const negative = coefficient.startsWith('-');
+  const unsigned = negative ? coefficient.slice(1) : coefficient;
+  const [whole, fraction = ''] = unsigned.split('.');
+  const digits = `${whole}${fraction}`;
+  const decimalIndex = whole.length + exponent;
+  const result =
+    decimalIndex <= 0
+      ? `0.${'0'.repeat(-decimalIndex)}${digits}`
+      : decimalIndex >= digits.length
+        ? `${digits}${'0'.repeat(decimalIndex - digits.length)}`
+        : `${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`;
+  return negative && result !== '0' ? `-${result}` : result;
 }
 
 function cashMovementFromEntity(entity: VaultEntity): CashMovementResponse['movement'] {

@@ -52,20 +52,22 @@ export interface PortfolioStore {
 }
 
 /**
- * Compatibility implementation for normal accounts. Direct function
- * references deliberately preserve request shaping, schema parsing, aborts and
- * typed API errors from the existing client.
+ * Compatibility implementation for normal accounts. Delegates resolve only
+ * when an operation runs, so a portfolio surface never eagerly loads unrelated
+ * API operations before an alternate store can be selected. The calls still
+ * preserve the existing request shaping, schema parsing, aborts and typed API
+ * errors from the client.
  */
 export const apiPortfolioStore: PortfolioStore = {
-  listPortfolios: portfolioApi.listPortfolios,
-  createPortfolio: portfolioApi.createPortfolio,
-  getPortfolio: portfolioApi.getPortfolio,
-  updatePortfolio: portfolioApi.updatePortfolio,
-  deletePortfolio: portfolioApi.deletePortfolio,
-  listTransactions: portfolioApi.listTransactions,
-  createTransactions: portfolioApi.createTransactions,
-  updateTransaction: portfolioApi.updateTransaction,
-  deleteTransaction: portfolioApi.deleteTransaction,
-  depositCash: portfolioApi.depositCash,
-  withdrawCash: portfolioApi.withdrawCash,
+  listPortfolios: (...args) => portfolioApi.listPortfolios(...args),
+  createPortfolio: (...args) => portfolioApi.createPortfolio(...args),
+  getPortfolio: (...args) => portfolioApi.getPortfolio(...args),
+  updatePortfolio: (...args) => portfolioApi.updatePortfolio(...args),
+  deletePortfolio: (...args) => portfolioApi.deletePortfolio(...args),
+  listTransactions: (...args) => portfolioApi.listTransactions(...args),
+  createTransactions: (...args) => portfolioApi.createTransactions(...args),
+  updateTransaction: (...args) => portfolioApi.updateTransaction(...args),
+  deleteTransaction: (...args) => portfolioApi.deleteTransaction(...args),
+  depositCash: (...args) => portfolioApi.depositCash(...args),
+  withdrawCash: (...args) => portfolioApi.withdrawCash(...args),
 };

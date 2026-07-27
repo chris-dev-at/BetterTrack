@@ -15,3 +15,4 @@ export * from './serverBlobDataHome';
 export * from './sync';
 export * from './vaultPortfolioStore';
 export * from './vectors';
+export * from './VaultUserApp';
