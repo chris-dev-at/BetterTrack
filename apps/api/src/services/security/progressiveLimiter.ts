@@ -11,8 +11,7 @@ import type { Redis } from 'ioredis';
  * The primitive is deliberately transport-agnostic and I/O-only-on-Redis so it
  * can drive both request-rate limiting (HTTP middleware, one {@link consume} per
  * request) and failure tracking (the auth service, one {@link consume} per failed
- * credential check). It uses plain Redis commands — no Lua — so it runs unchanged
- * on the in-memory ioredis-mock the API test suite uses.
+ * credential check).
  */
 export interface ProgressiveSchedule {
   /** Steady-state counting window, in seconds. */
@@ -58,10 +57,45 @@ export interface ProgressiveLimiter {
   reset(id: string): Promise<void>;
 }
 
-const asLevel = (raw: string | null): number => {
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : 0;
-};
+/**
+ * Keep the decision and every state mutation in one Redis script. `consume()` is
+ * called concurrently by requests that may land on different API replicas, so a
+ * process-local queue (or a sequence of ordinary Redis commands) would allow two
+ * requests to both cross the allowance boundary. Redis executes one script at a
+ * time, which gives each overflow window exactly one transition. `EVAL` is also
+ * implemented by the in-memory ioredis-mock used by the API test suite.
+ */
+const CONSUME_SCRIPT = `
+local cooldown = redis.call('TTL', KEYS[1])
+local level = tonumber(redis.call('GET', KEYS[3]) or '0')
+if not level or level <= 0 then
+  level = 0
+end
+
+if cooldown > 0 then
+  return { 0, cooldown, level }
+end
+
+local count = redis.call('INCR', KEYS[2])
+if count == 1 then
+  redis.call('EXPIRE', KEYS[2], ARGV[1])
+end
+
+if count <= tonumber(ARGV[2]) then
+  return { 1, 0, level }
+end
+
+local rungCount = tonumber(ARGV[4])
+local rungIndex = math.min(level + 1, rungCount)
+local retryAfterSec = tonumber(ARGV[4 + rungIndex])
+local nextLevel = math.min(level + 1, rungCount)
+
+redis.call('SET', KEYS[1], '1', 'EX', retryAfterSec)
+redis.call('SET', KEYS[3], tostring(nextLevel), 'EX', ARGV[3])
+redis.call('DEL', KEYS[2])
+
+return { 0, retryAfterSec, nextLevel }
+`;
 
 /** The three Redis keys a limiter uses for one `id` under `namespace`. */
 export const progressiveKeys = (namespace: string, id: string) => ({
@@ -98,40 +132,24 @@ export function createProgressiveLimiter(
     throw new Error(`Progressive schedule "${namespace}" needs at least one cooldown rung.`);
   }
   const keys = (id: string) => progressiveKeys(namespace, id);
-  const lastRung = schedule.cooldownsSec.length - 1;
 
   return {
     async consume(id) {
       const k = keys(id);
-      // Already cooling down: reject without counting so blocked retries don't
-      // themselves escalate the level — escalation only happens when a *fresh*
-      // window overflows after the previous cooldown has elapsed.
-      const cooling = await redis.ttl(k.cooldown);
-      if (cooling > 0) {
-        return { allowed: false, retryAfterSec: cooling, level: asLevel(await redis.get(k.level)) };
-      }
-
-      const count = await redis.incr(k.count);
-      if (count === 1) await redis.expire(k.count, schedule.windowSec);
-
-      if (count <= schedule.limit) {
-        return { allowed: true, retryAfterSec: 0, level: asLevel(await redis.get(k.level)) };
-      }
-
-      // Violation: pick this level's rung, arm the cooldown, bump-and-refresh the
-      // decaying level, and reset the window so a fresh allowance starts once the
-      // cooldown clears.
-      const level = asLevel(await redis.get(k.level));
-      // `rung` is clamped to a valid index and the ladder is non-empty (checked
-      // at construction), so the lookup is always defined.
-      const retryAfterSec = schedule.cooldownsSec[Math.min(level, lastRung)]!;
-      const nextLevel = Math.min(level + 1, schedule.cooldownsSec.length);
-
-      await redis.set(k.cooldown, '1', 'EX', retryAfterSec);
-      await redis.set(k.level, String(nextLevel), 'EX', schedule.decaySec);
-      await redis.del(k.count);
-
-      return { allowed: false, retryAfterSec, level: nextLevel };
+      const result = (await redis.eval(
+        CONSUME_SCRIPT,
+        3,
+        k.cooldown,
+        k.count,
+        k.level,
+        schedule.windowSec,
+        schedule.limit,
+        schedule.decaySec,
+        schedule.cooldownsSec.length,
+        ...schedule.cooldownsSec,
+      )) as [number, number, number];
+      const [allowed, retryAfterSec, level] = result;
+      return { allowed: allowed === 1, retryAfterSec, level };
     },
 
     async peek(id) {

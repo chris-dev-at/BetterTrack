@@ -34,6 +34,23 @@ const overflow = async (limiter: ReturnType<typeof createProgressiveLimiter>, id
   return limiter.consume(id); // the event that overflows the window
 };
 
+const consumeConcurrently = (
+  limiter: ReturnType<typeof createProgressiveLimiter>,
+  id: string,
+  events: number,
+) => {
+  let release: () => void;
+  const start = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const decisions = Array.from({ length: events }, async () => {
+    await start;
+    return limiter.consume(id);
+  });
+  release!();
+  return Promise.all(decisions);
+};
+
 describe('progressive limiter — steady state (§10)', () => {
   it('allows every request up to the window limit', async () => {
     const limiter = createProgressiveLimiter(redis, 't', SCHEDULE);
@@ -43,6 +60,23 @@ describe('progressive limiter — steady state (§10)', () => {
       expect(d.retryAfterSec).toBe(0);
       expect(d.level).toBe(0);
     }
+  });
+
+  it('allows exactly the limit of synchronized fresh requests without arming state', async () => {
+    const limiter = createProgressiveLimiter(redis, 't', SCHEDULE);
+    const decisions = await consumeConcurrently(limiter, 'ip', SCHEDULE.limit);
+    const keys = progressiveKeys('t', 'ip');
+
+    expect(decisions).toEqual(
+      Array.from({ length: SCHEDULE.limit }, () => ({
+        allowed: true,
+        retryAfterSec: 0,
+        level: 0,
+      })),
+    );
+    expect(await redis.get(keys.count)).toBe(String(SCHEDULE.limit));
+    expect(await redis.ttl(keys.cooldown)).toBe(-2);
+    expect(await redis.get(keys.level)).toBeNull();
   });
 });
 
@@ -62,6 +96,55 @@ describe('progressive limiter — escalation & decay (§10)', () => {
     expect(again.allowed).toBe(false);
     expect(again.retryAfterSec).toBeGreaterThan(0);
     expect(again.level).toBe(1); // still 1 — a blocked retry does not climb
+  });
+
+  it('linearizes a synchronized overflow and keeps blocked retries out of the counter', async () => {
+    const limiter = createProgressiveLimiter(redis, 't', SCHEDULE);
+    const keys = progressiveKeys('t', 'ip');
+    const firstWindow = await consumeConcurrently(limiter, 'ip', SCHEDULE.limit + 1);
+    const denied = firstWindow.filter((decision) => !decision.allowed);
+
+    expect(firstWindow.filter((decision) => decision.allowed)).toHaveLength(SCHEDULE.limit);
+    expect(denied).toEqual([
+      {
+        allowed: false,
+        retryAfterSec: SCHEDULE.cooldownsSec[0],
+        level: 1,
+      },
+    ]);
+    expect(await redis.get(keys.count)).toBeNull();
+    expect(await redis.ttl(keys.cooldown)).toBeGreaterThan(0);
+    expect(await redis.get(keys.level)).toBe('1');
+
+    const whileCooling = await consumeConcurrently(limiter, 'ip', SCHEDULE.limit + 1);
+    expect(whileCooling).toEqual(
+      Array.from({ length: SCHEDULE.limit + 1 }, () => ({
+        allowed: false,
+        retryAfterSec: expect.any(Number),
+        level: 1,
+      })),
+    );
+    expect(await redis.get(keys.count)).toBeNull();
+    expect(await redis.get(keys.level)).toBe('1');
+  });
+
+  it('starts one fresh window after cooldown expiry and advances one rung on its next overflow', async () => {
+    const limiter = createProgressiveLimiter(redis, 't', SCHEDULE);
+    const keys = progressiveKeys('t', 'ip');
+    await consumeConcurrently(limiter, 'ip', SCHEDULE.limit + 1); // level → 1
+    await redis.del(keys.cooldown); // simulate the first cooldown expiring
+
+    const nextWindow = await consumeConcurrently(limiter, 'ip', SCHEDULE.limit + 1);
+    expect(nextWindow.filter((decision) => decision.allowed)).toHaveLength(SCHEDULE.limit);
+    expect(nextWindow.filter((decision) => !decision.allowed)).toEqual([
+      {
+        allowed: false,
+        retryAfterSec: SCHEDULE.cooldownsSec[1],
+        level: 2,
+      },
+    ]);
+    expect(await redis.get(keys.count)).toBeNull();
+    expect(await redis.get(keys.level)).toBe('2');
   });
 
   it('sustained violations climb the ladder and cap at the last rung', async () => {
@@ -121,6 +204,23 @@ describe('progressive limiter — independence (§10)', () => {
     expect(await perIp.peek('user-1')).toBe(0);
     const stillOk = await perIp.consume('user-1');
     expect(stillOk.allowed).toBe(true);
+  });
+
+  it('keeps synchronized events for different callers and namespaces isolated', async () => {
+    const first = createProgressiveLimiter(redis, 'first', SCHEDULE);
+    const second = createProgressiveLimiter(redis, 'second', SCHEDULE);
+    const [firstId, otherId, secondNamespace] = await Promise.all([
+      consumeConcurrently(first, 'same-id', SCHEDULE.limit + 1),
+      consumeConcurrently(first, 'other-id', SCHEDULE.limit),
+      consumeConcurrently(second, 'same-id', SCHEDULE.limit + 1),
+    ]);
+
+    expect(firstId.filter((decision) => !decision.allowed)).toHaveLength(1);
+    expect(otherId.every((decision) => decision.allowed)).toBe(true);
+    expect(secondNamespace.filter((decision) => !decision.allowed)).toHaveLength(1);
+    expect(await first.peek('same-id')).toBeGreaterThan(0);
+    expect(await first.peek('other-id')).toBe(0);
+    expect(await second.peek('same-id')).toBeGreaterThan(0);
   });
 });
 
