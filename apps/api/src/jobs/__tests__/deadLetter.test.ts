@@ -87,10 +87,11 @@ describe('createDeadLetter', () => {
 
   it('skips corrupt entries on read', async () => {
     const dl = createDeadLetter(redis);
+    await dl.record(entry({ jobId: 'older' }));
     await redis.lpush(DEAD_LETTER_KEY, 'not json');
-    await dl.record(entry({ jobId: 'ok' }));
+    await dl.record(entry({ jobId: 'newer' }));
     const all = await dl.list();
-    expect(all.map((e) => e.jobId)).toEqual(['ok']);
+    expect(all.map((e) => e.jobId)).toEqual(['newer', 'older']);
   });
 });
 

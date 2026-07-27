@@ -41,7 +41,11 @@ export interface ValuePointRecord {
 
 export function createCustomAssetRepository(db: Database) {
   return {
-    /** Create a custom (`manual`) asset owned by the caller; ref = the new row id. */
+    /**
+     * Create a custom (`manual`) asset owned by the caller; ref = the new row id.
+     * The database's assets AFTER INSERT trigger creates the metadata-free
+     * identity in this same statement, so every writer shares one atomic seam.
+     */
     async create(input: NewCustomAsset): Promise<AssetRow> {
       const id = newId();
       const rows = await db
@@ -140,6 +144,26 @@ export function createCustomAssetRepository(db: Database) {
       }
       const rows = await db.update(assets).set(set).where(owned).returning();
       return rows[0] ?? null;
+    },
+
+    /**
+     * Remove only the content-bearing custom-asset row for paranoid enable.
+     *
+     * The owner-scoped database function is the sole lifecycle exception: it
+     * preserves the opaque identity and the three server-kept references while
+     * ordinary deletes continue through the database cascade contract below.
+     * The public transition orchestrator deliberately lands in #730.
+     */
+    async detachForParanoidPurge(userId: string, id: string): Promise<boolean> {
+      const result = (await db.execute(sql`
+        select bettertrack_detach_owned_asset_data(
+          cast(${id} as uuid),
+          cast(${userId} as uuid)
+        ) as "detached"
+      `)) as unknown as { rows?: { detached: boolean }[] } & { detached: boolean }[];
+      // postgres-js returns its RowList directly; PGlite wraps it in `rows`.
+      const rows = result.rows ?? result;
+      return rows[0]?.detached ?? false;
     },
 
     /** Delete a custom asset scoped to its owner. Cascades to value points + txns. */
