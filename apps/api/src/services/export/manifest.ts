@@ -70,6 +70,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   // Custom assets (owner_id set) + their user-entered value points.
   assets: exported('customAssets'),
   price_history: exported('customAssetPriceHistory'),
+  asset_identities: skipped(
+    'Content-free asset UUID integrity anchors plus opaque account claims; contain no asset or portfolio content.',
+  ),
 
   // ── Global / not user-owned ───────────────────────────────────────────────
   announcements: skipped('Global admin-authored content, not owned by any user.'),
@@ -341,6 +344,9 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
 
   // ── server: identity + auth (kept, unchanged) ──────────────────────────────
   users: 'server',
+  // Opaque asset UUID + nullable account UUID claim: preserves referential
+  // integrity and authorizes same-account restore while content is detached.
+  asset_identities: 'server',
   api_keys: 'server',
   api_key_tiers: 'server',
   api_key_request_log: 'server',

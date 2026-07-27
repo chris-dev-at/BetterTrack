@@ -10,7 +10,8 @@ import {
   valuePointsResponseSchema,
 } from '@bettertrack/contracts';
 
-import { assets } from '../data/schema';
+import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
+import { alerts, assetIdentities, assets } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -152,6 +153,40 @@ describe('PATCH/DELETE /api/v1/custom-assets/:id', () => {
 
     const after = await agent.get(`/api/v1/custom-assets/${id}/value-points`);
     expect(after.status).toBe(404);
+  });
+
+  it('detaches only the owner custom-asset data for paranoid purge', async () => {
+    const owner = await harness.seedUser({ email: 'detach@bt.test', username: 'detach_owner' });
+    const other = await harness.seedUser({
+      email: 'other-detach@bt.test',
+      username: 'detach_other',
+    });
+    const agent = await loginAgent(harness.app, owner.email, owner.password);
+    const created = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Detached house', category: 'other', currency: 'EUR' });
+    const id = created.body.asset.id as string;
+    const repo = createCustomAssetRepository(harness.db);
+    await harness.db.insert(alerts).values({
+      userId: owner.id,
+      assetId: id,
+      kind: 'price_above',
+      threshold: '1',
+      repeat: false,
+      status: 'active',
+    });
+
+    await expect(repo.detachForParanoidPurge(other.id, id)).resolves.toBe(false);
+    expect(await harness.db.select().from(assets).where(eq(assets.id, id))).toHaveLength(1);
+
+    await expect(repo.detachForParanoidPurge(owner.id, id)).resolves.toBe(true);
+    expect(await harness.db.select().from(assets).where(eq(assets.id, id))).toEqual([]);
+    expect(
+      await harness.db.select().from(assetIdentities).where(eq(assetIdentities.id, id)),
+    ).toHaveLength(1);
+    expect(await harness.db.select().from(alerts).where(eq(alerts.assetId, id))).toHaveLength(1);
+    await expect(repo.detachForParanoidPurge(owner.id, id)).resolves.toBe(false);
   });
 
   it('does not expose another user’s custom asset (IDOR)', async () => {

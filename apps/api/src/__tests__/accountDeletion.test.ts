@@ -1,6 +1,6 @@
 import request from 'supertest';
 import type { Application } from 'express';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -202,6 +202,18 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
       .set(...XRW)
       .send({ body: 'about to vanish' });
     expect(sent.status).toBe(201);
+    const customAsset = await user.agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Delete with account', category: 'other', currency: 'EUR' });
+    expect(customAsset.status).toBe(201);
+    const customAssetId = customAsset.body.asset.id as string;
+    expect(
+      await harness.db
+        .select()
+        .from(schema.assetIdentities)
+        .where(eq(schema.assetIdentities.id, customAssetId)),
+    ).toHaveLength(1);
 
     // The bearer works before deletion.
     const bearerBefore = await request(harness.app)
@@ -228,6 +240,13 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
         `${table}.${column} still keyed to the deleted user`,
       ).toBe(0);
     }
+    // The content-free identity claim participates in the account cascade too.
+    expect(
+      await harness.db
+        .select()
+        .from(schema.assetIdentities)
+        .where(eq(schema.assetIdentities.id, customAssetId)),
+    ).toEqual([]);
 
     // The cookie session is dead.
     expect((await user.agent.get('/api/v1/auth/me')).status).toBe(401);
