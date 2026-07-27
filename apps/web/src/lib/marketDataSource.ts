@@ -6,6 +6,7 @@ import { searchAssets } from './searchApi';
 const DAY_MS = 86_400_000;
 const FX_NEAREST_PRIOR_MAX_DAYS = 7;
 const FX_HISTORY_MEMO_MS = 60_000;
+const FX_HISTORY_DAY_INDEX = new WeakMap<readonly PricePoint[], ReadonlyMap<string, number>>();
 
 export const MARKET_DATA_SOURCE_ERROR_CODES = [
   'MARKET_DATA_INVALID',
@@ -330,7 +331,11 @@ function rangeStartMs(nowMs: number, range: Exclude<HistoryRange, 'MAX'>): numbe
 
 function nearestPriorClose(points: readonly PricePoint[], date: string): number | null {
   const targetMs = Date.parse(`${date}T00:00:00.000Z`);
-  const byDay = new Map(points.map((point) => [point.time.slice(0, 10), point.close]));
+  let byDay = FX_HISTORY_DAY_INDEX.get(points);
+  if (byDay === undefined) {
+    byDay = new Map(points.map((point) => [point.time.slice(0, 10), point.close]));
+    FX_HISTORY_DAY_INDEX.set(points, byDay);
+  }
   for (let back = 0; back <= FX_NEAREST_PRIOR_MAX_DAYS; back += 1) {
     const day = new Date(targetMs - back * DAY_MS).toISOString().slice(0, 10);
     const close = byDay.get(day);

@@ -25,7 +25,7 @@ import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
 import {
   MarketDataSourceError,
   type MarketDataSource,
-  type MarketDataValue,
+  type MarketFxValue,
 } from '../../../lib/marketDataSource';
 import type { VaultSyncEngine } from '../sync';
 import { VaultDerivedCache } from './cache';
@@ -41,6 +41,7 @@ import {
   type ClientAssetRecord,
   type ClientPortfolioModel,
 } from './model';
+import { localManualAssetMarket } from './manualAsset';
 import {
   assertVaultSnapshotCurrent,
   validatedVaultSnapshot,
@@ -62,6 +63,11 @@ interface LoadedAssetMarket {
 interface PortfolioEngineOptions {
   now?: () => number;
   cache?: VaultDerivedCache<ClientPortfolioDerivation>;
+}
+
+interface FxInputLoader {
+  converter: CurrencyConverter;
+  values(): ReadonlyMap<string, MarketFxValue>;
 }
 
 export interface PortfolioDerivationEngine {
@@ -90,26 +96,14 @@ export function createPortfolioDerivationEngine(
         const today = new Date(now()).toISOString().slice(0, 10);
         const loaded = await loadMarketInputs(snapshot.document, model, today, market, signal);
         signal?.throwIfAborted();
-
-        const fxInputs = await loadFxInputs(model, loaded, today, market, signal);
-        const assetPriceWatermark = [
-          ...loaded.map(
-            (entry) =>
-              `${entry.asset.id}:${entry.historyStale ? 'history-stale' : 'history-fresh'}:${
-                entry.quoteStale ? 'quote-stale' : 'quote-fresh'
-              }:${entry.watermark}`,
-          ),
-          ...[...fxInputs.entries()].map(
-            ([key, result]) => `${key}:EUR:${result.stale ? 'stale' : 'fresh'}:${result.watermark}`,
-          ),
-        ]
-          .sort()
-          .join('|');
+        const fx = createFxInputLoader(market, signal);
+        const value = await derive(snapshot, model, loaded, fx, range, today);
         const key = {
           portfolioId,
           vaultVersion: snapshot.vaultVersion,
-          assetPriceWatermark,
+          assetPriceWatermark: value.assetPriceWatermark,
           range,
+          effectiveDay: today,
         };
         const cached = cache.get(key);
         if (cached !== undefined) {
@@ -117,16 +111,6 @@ export function createPortfolioDerivationEngine(
           return { ok: true, value: cached };
         }
 
-        const value = await derive(
-          snapshot,
-          model,
-          loaded,
-          fxInputs,
-          range,
-          today,
-          assetPriceWatermark,
-          signal,
-        );
         assertVaultSnapshotCurrent(sync, snapshot);
         cache.set(key, value);
         return { ok: true, value };
@@ -145,31 +129,11 @@ async function derive(
   snapshot: ValidatedVaultSnapshot,
   model: ClientPortfolioModel,
   loaded: LoadedAssetMarket[],
-  fxInputs: ReadonlyMap<string, MarketDataValue<number>>,
+  fx: FxInputLoader,
   range: ClientPortfolioRange,
   today: string,
-  assetPriceWatermark: string,
-  signal?: AbortSignal,
 ): Promise<ClientPortfolioDerivation> {
-  const fxStale = [...fxInputs.values()].some((result) => result.stale);
-  const converter: CurrencyConverter = {
-    async toBase(amount, currency, conversionOptions) {
-      signal?.throwIfAborted();
-      const date = conversionOptions?.date;
-      const key = `${currency}|${date ?? 'spot'}`;
-      const result = fxInputs.get(key);
-      if (result === undefined) {
-        throw moneyFailure(
-          'MARKET_DATA_MISSING',
-          `A ${currency}->EUR rate was not loaded for ${date ?? 'spot'}.`,
-        );
-      }
-      if (!Number.isFinite(result.value) || result.value <= 0) {
-        throw moneyFailure('MARKET_DATA_INVALID', `Invalid ${currency}->EUR conversion rate.`);
-      }
-      return amount * result.value;
-    },
-  };
+  const converter = fx.converter;
 
   const domainTransactions = model.transactions;
   const holdingAssets: HoldingAssetInput[] = loaded.map((entry) => ({
@@ -258,7 +222,11 @@ async function derive(
           currencyByAsset: new Map(loaded.map((entry) => [entry.asset.id, entry.asset.currency])),
           converter,
         });
-  const allFlows = [...externalTransactionFlows, ...externalCashFlowsForTwr(sourcedMovements)];
+  const allFlows = [
+    ...externalTransactionFlows,
+    ...splitCashBuyFlows(model),
+    ...externalCashFlowsForTwr(sourcedMovements),
+  ];
   const netWorth = netWorthSeries({
     holdingsValues,
     movements: sourcedMovements,
@@ -267,7 +235,8 @@ async function derive(
   const fullTwr = timeWeightedReturn(netWorth, allFlows);
   const start = rangeStart(today, range);
   const slicedValues = netWorth.filter((point) => point.date >= start);
-  const slicedTwr = rebasePerformance(fullTwr.filter((point) => point.date >= start));
+  const rangedTwr = fullTwr.filter((point) => point.date >= start);
+  const slicedTwr = range === 'MAX' ? rangedTwr : rebasePerformance(rangedTwr);
   const twrByDate = new Map(slicedTwr.map((point) => [point.date, point.pct]));
   const holdingsByDate = new Map(holdingsValues.map((point) => [point.date, point.valueEur]));
   const costByDate = new Map(costs.map((point) => [point.date, point.costBasisEur]));
@@ -278,7 +247,10 @@ async function derive(
     today,
   );
   const hasAnyMissing = [...missingByDate.values()].some((ids) => ids.length > 0);
+  const fxInputs = fx.values();
+  const fxStale = [...fxInputs.values()].some((result) => result.stale);
   const stale = fxStale || loaded.some((entry) => entry.historyStale || entry.quoteStale);
+  const assetPriceWatermark = marketWatermark(loaded, fxInputs);
 
   const series = slicedValues.map((point) => {
     const missingAssetIds = missingByDate.get(point.date) ?? [];
@@ -346,19 +318,16 @@ async function loadMarketInputs(
       }
       const local = storedPrices(document, assetId);
       if (asset.providerId === 'manual') {
-        const latest = local.at(-1);
+        const manual = localManualAssetMarket(document, asset);
         return {
           asset,
-          prices: local,
-          quote:
-            latest === undefined
-              ? null
-              : { price: latest.close, prevClose: local.at(-2)?.close ?? null },
+          prices: manual.prices,
+          quote: manual.quote,
           historyStale: false,
           quoteStale: false,
-          historyMissing: local.length === 0,
-          quoteMissing: latest === undefined,
-          watermark: `manual:${local.map((point) => `${point.date}:${point.close}`).join(',')}`,
+          historyMissing: manual.prices.length === 0,
+          quoteMissing: manual.quote === null,
+          watermark: manual.watermark,
         };
       }
 
@@ -439,72 +408,105 @@ async function loadMarketInputs(
   );
 }
 
-async function loadFxInputs(
-  model: ClientPortfolioModel,
-  loaded: readonly LoadedAssetMarket[],
-  today: string,
-  market: MarketDataSource,
-  signal?: AbortSignal,
-): Promise<Map<string, MarketDataValue<number>>> {
-  const currencies = [...new Set(loaded.map((entry) => entry.asset.currency))];
-  const firstDay = model.transactions
-    .map((transaction) => transaction.executedAt.slice(0, 10))
-    .sort()
-    .at(0);
-  const days = firstDay === undefined ? [] : calendarDays(firstDay, today);
-  const requests = currencies.flatMap((currency) => [
-    { currency, date: undefined },
-    ...days.map((date) => ({ currency, date })),
-  ]);
-  const entries = await Promise.all(
-    requests.map(async ({ currency, date }) => {
-      try {
-        const result = await market.fx(currency, 'EUR', date, signal);
-        assertMarketWatermark(result.watermark, `${currency}->EUR`);
-        if (
-          result.from !== currency ||
-          result.to !== 'EUR' ||
-          result.date !== (date ?? null) ||
-          !Number.isFinite(result.value) ||
-          result.value <= 0
-        ) {
+function createFxInputLoader(market: MarketDataSource, signal?: AbortSignal): FxInputLoader {
+  const pending = new Map<string, Promise<MarketFxValue>>();
+  const resolved = new Map<string, MarketFxValue>();
+
+  async function rate(currency: string, date?: string): Promise<MarketFxValue> {
+    const key = `${currency}|${date ?? 'spot'}`;
+    let request = pending.get(key);
+    if (request === undefined) {
+      request = (async () => {
+        try {
+          const result = await market.fx(currency, 'EUR', date, signal);
+          assertMarketWatermark(result.watermark, `${currency}->EUR`);
+          if (
+            result.from !== currency ||
+            result.to !== 'EUR' ||
+            result.date !== (date ?? null) ||
+            !Number.isFinite(result.value) ||
+            result.value <= 0
+          ) {
+            throw moneyFailure(
+              'MARKET_DATA_INVALID',
+              `The ${currency}->EUR market-data response is invalid.`,
+            );
+          }
+          resolved.set(key, result);
+          return result;
+        } catch (cause) {
+          rethrowAbort(cause);
+          if (cause instanceof VaultMoneyEngineError) throw cause;
+          if (cause instanceof MarketDataSourceError) {
+            if (cause.code === 'MARKET_DATA_INVALID') {
+              throw moneyFailure('MARKET_DATA_INVALID', cause.message, { cause });
+            }
+            if (cause.code === 'MARKET_DATA_UNSUPPORTED') {
+              throw moneyFailure('MARKET_DATA_UNSUPPORTED', cause.message, { cause });
+            }
+          }
           throw moneyFailure(
-            'MARKET_DATA_INVALID',
-            `The ${currency}->EUR market-data response is invalid.`,
+            'MARKET_DATA_MISSING',
+            `A ${currency}->EUR rate is unavailable for ${date ?? 'spot'}.`,
+            { retryable: true, details: { currency, date: date ?? null }, cause },
           );
         }
-        return [`${currency}|${date ?? 'spot'}`, result] as const;
-      } catch (cause) {
-        rethrowAbort(cause);
-        if (cause instanceof VaultMoneyEngineError) throw cause;
-        if (cause instanceof MarketDataSourceError) {
-          if (cause.code === 'MARKET_DATA_INVALID') {
-            throw moneyFailure('MARKET_DATA_INVALID', cause.message, { cause });
-          }
-          if (cause.code === 'MARKET_DATA_UNSUPPORTED') {
-            throw moneyFailure('MARKET_DATA_UNSUPPORTED', cause.message, { cause });
-          }
-        }
-        throw moneyFailure(
-          'MARKET_DATA_MISSING',
-          `A ${currency}->EUR rate is unavailable for ${date ?? 'spot'}.`,
-          { retryable: true, details: { currency, date: date ?? null }, cause },
-        );
-      }
-    }),
-  );
-  return new Map(entries);
+      })();
+      pending.set(key, request);
+      request.catch(() => {
+        if (pending.get(key) === request) pending.delete(key);
+      });
+    }
+    return request;
+  }
+
+  return {
+    converter: {
+      async toBase(amount, currency, options) {
+        signal?.throwIfAborted();
+        const result = await rate(currency, options?.date);
+        return amount * result.value;
+      },
+    },
+    values() {
+      return resolved;
+    },
+  };
 }
 
-function calendarDays(firstDay: string, today: string): string[] {
-  const first = Date.parse(`${firstDay}T00:00:00.000Z`);
-  const last = Date.parse(`${today}T00:00:00.000Z`);
-  if (!Number.isFinite(first) || !Number.isFinite(last) || first > last) return [];
-  const days: string[] = [];
-  for (let cursor = first; cursor <= last; cursor += 86_400_000) {
-    days.push(new Date(cursor).toISOString().slice(0, 10));
-  }
-  return days;
+function splitCashBuyFlows(model: ClientPortfolioModel): Array<{ date: string; flowEur: number }> {
+  const transactionDayById = new Map(
+    model.transactions.map((transaction) => [transaction.id, transaction.executedAt.slice(0, 10)]),
+  );
+  return model.cashMovements.flatMap((movement) => {
+    if (movement.kind !== 'buy' || movement.transactionId === null) return [];
+    const buyDay = transactionDayById.get(movement.transactionId);
+    const settleDay = movement.occurredAt.slice(0, 10);
+    if (buyDay === undefined || buyDay === settleDay) return [];
+    return [
+      { date: buyDay, flowEur: -movement.amountEur },
+      { date: settleDay, flowEur: movement.amountEur },
+    ];
+  });
+}
+
+function marketWatermark(
+  loaded: readonly LoadedAssetMarket[],
+  fxInputs: ReadonlyMap<string, MarketFxValue>,
+): string {
+  return [
+    ...loaded.map(
+      (entry) =>
+        `${entry.asset.id}:${entry.historyStale ? 'history-stale' : 'history-fresh'}:${
+          entry.quoteStale ? 'quote-stale' : 'quote-fresh'
+        }:${entry.watermark}`,
+    ),
+    ...[...fxInputs.entries()].map(
+      ([key, result]) => `${key}:EUR:${result.stale ? 'stale' : 'fresh'}:${result.watermark}`,
+    ),
+  ]
+    .sort()
+    .join('|');
 }
 
 function missingPricesByDay(

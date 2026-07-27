@@ -10,7 +10,6 @@ import {
   costBasisOverTime,
   deriveHoldings,
   netFlowsOverTime,
-  rebasePerformance,
   timeWeightedReturn,
   valueOverTime,
   type Transaction,
@@ -414,6 +413,175 @@ describe('paranoid client money engine', () => {
     expect(mutated.value).not.toBe(reFx.value);
   });
 
+  it('keeps the audited since-inception TWR vector for MAX and rebases only bounded ranges', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    document.entities.transaction = [document.entities.transaction![0]!];
+    document.entities.cashMovement = [];
+    document.entities.dividend = [];
+    const engine = createVaultMoneyEngine(
+      createMutableTestSync(document, fixture.header),
+      createClientMoneyMarket().market,
+      { now: () => NOW },
+    );
+
+    const maximum = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+    const bounded = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, '1M');
+    expect(maximum.ok).toBe(true);
+    expect(bounded.ok).toBe(true);
+    if (!maximum.ok || !bounded.ok) return;
+
+    const auditedServerVector = [
+      -0.497512437810943, 4.47761194029852, 9.452736318407972, 14.427860696517424,
+      19.402985074626876, 24.37810945273633, 27.36318407960201, 29.35323383084578,
+    ];
+    expect(maximum.value.series).toHaveLength(auditedServerVector.length);
+    maximum.value.series.forEach((point, index) => {
+      expect(point.twrPct).toBeCloseTo(auditedServerVector[index]!, 12);
+    });
+    expect(bounded.value.series[0]?.twrPct).toBe(0);
+    expect(maximum.value.series[0]?.twrPct).toBeCloseTo(auditedServerVector[0]!, 12);
+  });
+
+  it('matches the audited split-date cash-buy compensators', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    const transaction = document.entities.transaction![0]!;
+    document.entities.transaction = [transaction];
+    document.entities.dividend = [];
+    const deposit = structuredClone(document.entities.cashMovement![0]!);
+    deposit.data.amountEur = '2000';
+    const settlement = structuredClone(deposit);
+    settlement.id = '018f0000-0000-7000-8000-000000000119';
+    settlement.data.kind = 'buy';
+    settlement.data.amountEur = '-1005';
+    settlement.data.transactionId = transaction.id;
+    settlement.data.executedAt = '2026-07-22T09:00:00.000Z';
+    settlement.data.createdAt = '2026-07-22T09:00:00.000Z';
+    settlement.editedAt = '2026-07-22T09:00:00.000Z';
+    document.entities.cashMovement = [deposit, settlement];
+
+    const result = await createVaultMoneyEngine(
+      createMutableTestSync(document, fixture.header),
+      createClientMoneyMarket().market,
+      { now: () => NOW },
+    ).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const auditedServerVector = [
+      0, -0.16638935108153063, 1.4975041597337757, 3.161397670549082, 5.623483533808016,
+      8.08556939706695, 10.547655260325882, 12.024906778281231, 13.009741123584796,
+    ];
+    expect(result.value.series.map((point) => point.date)).toEqual([
+      '2026-07-19',
+      '2026-07-20',
+      '2026-07-21',
+      '2026-07-22',
+      '2026-07-23',
+      '2026-07-24',
+      '2026-07-25',
+      '2026-07-26',
+      '2026-07-27',
+    ]);
+    result.value.series.forEach((point, index) => {
+      expect(point.twrPct).toBeCloseTo(auditedServerVector[index]!, 12);
+    });
+  });
+
+  it('uses shared manual smoothing and never fabricates a custom-asset day change', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    document.entities.transaction = [document.entities.transaction![0]!];
+    const asset = document.entities.customAsset!.find(
+      (entity) => entity.id === CLIENT_MONEY_IDS.eurAsset,
+    )!;
+    asset.data.providerId = 'manual';
+    asset.data.providerRef = asset.id;
+    asset.data.ownerId = CLIENT_MONEY_IDS.user;
+    asset.data.type = 'custom';
+    asset.data.meta = { smoothing: true };
+    document.entities.customAssetValue = [
+      manualValue('018f0000-0000-7000-8000-000000000120', asset.id, '2026-07-20', '100'),
+      manualValue('018f0000-0000-7000-8000-000000000121', asset.id, '2026-07-22', '200'),
+    ];
+    const market = createClientMoneyMarket();
+
+    const result = await createVaultMoneyEngine(
+      createMutableTestSync(document, fixture.header),
+      market.market,
+      { now: () => NOW },
+    ).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+
+    expect(result.ok, result.ok ? undefined : JSON.stringify(result.error)).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.series.find((point) => point.date === '2026-07-21')).toMatchObject({
+      valueEur: 2500,
+    });
+    expect(result.value.holdings[0]).toMatchObject({
+      price: 200,
+      dayChangeEur: null,
+      dayChangePct: null,
+    });
+    expect(market.calls.quote).not.toContain(CLIENT_MONEY_IDS.eurAsset);
+    expect(market.calls.history).not.toContain(CLIENT_MONEY_IDS.eurAsset);
+  });
+
+  it('loads FX only from the day each staggered foreign holding can contribute', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    const usdTransaction = document.entities.transaction!.find(
+      (entity) => entity.data.assetId === CLIENT_MONEY_IDS.usdAsset,
+    )!;
+    usdTransaction.data.executedAt = '2026-07-26T10:00:00.000Z';
+    usdTransaction.editedAt = '2026-07-26T10:00:00.000Z';
+    const market = createClientMoneyMarket();
+    const fx = market.market.fx;
+    market.market.fx = async (from, to, date, signal) => {
+      if (from === 'USD' && date !== undefined && date < '2026-07-26') {
+        throw new Error(`irrelevant USD history requested for ${date}`);
+      }
+      return fx(from, to, date, signal);
+    };
+
+    const result = await createVaultMoneyEngine(
+      createMutableTestSync(document, fixture.header),
+      market.market,
+      { now: () => NOW },
+    ).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+
+    expect(result.ok).toBe(true);
+    expect(
+      market.calls.fx.filter((call) => call.startsWith('USD:EUR:') && !call.endsWith(':spot')),
+    ).toEqual(['USD:EUR:2026-07-26', 'USD:EUR:2026-07-27']);
+  });
+
+  it('does not reuse a cash-only live point across a UTC day rollover', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    document.entities.transaction = [];
+    let now = NOW;
+    const engine = createVaultMoneyEngine(
+      createMutableTestSync(document, fixture.header),
+      createClientMoneyMarket().market,
+      { now: () => now },
+    );
+
+    const first = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+    now = Date.parse('2026-07-28T00:01:00.000Z');
+    const nextDay = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+
+    expect(first.ok, first.ok ? undefined : JSON.stringify(first.error)).toBe(true);
+    expect(nextDay.ok, nextDay.ok ? undefined : JSON.stringify(nextDay.error)).toBe(true);
+    if (!first.ok || !nextDay.ok) return;
+    expect(nextDay.value).not.toBe(first.value);
+    expect(first.value.series.at(-1)).toMatchObject({ date: '2026-07-27', isLiveToday: true });
+    expect(nextDay.value.series.at(-1)).toMatchObject({ date: '2026-07-28', isLiveToday: true });
+    expect(nextDay.value.series.find((point) => point.date === '2026-07-27')).toMatchObject({
+      isLiveToday: false,
+    });
+  });
+
   it('fails closed for lock/version races, malformed entities, and unsupported documents', async () => {
     const fixture = await decryptClientMoneyFixture();
     const lockedSync = createMutableTestSync(fixture.document, fixture.header);
@@ -654,9 +822,7 @@ async function expectedFixtureDerivation() {
     })),
     ...externalCashFlowsForTwr(movements),
   ];
-  const twr = new Map(
-    rebasePerformance(timeWeightedReturn(worth, flows)).map((point) => [point.date, point.pct]),
-  );
+  const twr = new Map(timeWeightedReturn(worth, flows).map((point) => [point.date, point.pct]));
   const holdingValues = new Map(values.map((point) => [point.date, point.valueEur]));
   const costValues = new Map(costs.map((point) => [point.date, point.costBasisEur]));
   expect([...cashBalancesBySource(movements).values()]).toEqual([1020]);
@@ -712,4 +878,15 @@ function withAdditionalTransaction(
     },
   ];
   return next;
+}
+
+function manualValue(id: string, assetId: string, date: string, close: string) {
+  return {
+    id,
+    rev: 0,
+    editedAt: `${date}T12:00:00.000Z`,
+    editedBy: CLIENT_MONEY_IDS.device,
+    deletedAt: null,
+    data: { assetId, date, close },
+  };
 }

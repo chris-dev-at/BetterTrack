@@ -9,7 +9,9 @@ import {
   createMutableTestSync,
   decryptClientMoneyFixture,
 } from '../engine/clientMoney.testSupport';
+import { createVaultMoneyEngine } from '../engine';
 import { createVaultPortfolioStore, type VaultPortfolioStore } from '../vaultPortfolioStore';
+import { createStandingOrderMaterializationLifecycle } from './lifecycle';
 import { materializeDueStandingOrders } from './materialize';
 import { standingOrderOccurrenceId } from './occurrenceId';
 import { calendarDayInTimezone, dueStandingOrderOccurrence } from './schedule';
@@ -356,6 +358,143 @@ describe('paranoid standing-order materialization', () => {
     });
   });
 
+  it('prices a vault-only manual asset locally instead of deferring to the server', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(MONTHLY_BUY_ID, {
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.eurAsset,
+        amount: '1',
+        currency: 'EUR',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const asset = document.entities.customAsset!.find(
+      (entity) => entity.id === CLIENT_MONEY_IDS.eurAsset,
+    )!;
+    asset.data.providerId = 'manual';
+    asset.data.providerRef = asset.id;
+    asset.data.ownerId = CLIENT_MONEY_IDS.user;
+    asset.data.type = 'custom';
+    asset.data.meta = { smoothing: true };
+    document.entities.customAssetValue = [
+      manualValue('018f0000-0000-7000-8000-000000000206', asset.id, '2026-07-20', '100'),
+      manualValue('018f0000-0000-7000-8000-000000000207', asset.id, '2026-07-26', '175'),
+    ];
+    const sync = createMutableTestSync(document, fixture.header);
+    const market = createClientMoneyMarket();
+
+    const outcome = await materializeDueStandingOrders(
+      sync,
+      createVaultPortfolioStore(sync),
+      market.market,
+      {
+        now: () => new Date(BOOKED_AT),
+        timezone: 'Europe/Vienna',
+      },
+    );
+
+    expect(outcome).toMatchObject({
+      ok: true,
+      value: {
+        booked: [{ orderId: MONTHLY_BUY_ID, kind: 'buy-asset' }],
+        deferred: [],
+      },
+    });
+    const occurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-27');
+    expect(live(sync.state.active!.document, 'transaction', occurrenceId)?.data).toMatchObject({
+      assetId: CLIENT_MONEY_IDS.eurAsset,
+      price: '175',
+      source: 'standing-order',
+    });
+    expect(market.calls.quote).not.toContain(CLIENT_MONEY_IDS.eurAsset);
+  });
+
+  it('runs catch-up at the public money-engine app-open boundary', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(DAILY_ADD_ID, {
+        kind: 'cash-add',
+        amount: '25',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const sync = createMutableTestSync(document, fixture.header);
+    const engine = createVaultMoneyEngine(sync, createClientMoneyMarket().market, {
+      now: () => new Date(BOOKED_AT).getTime(),
+    });
+
+    await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+
+    const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
+    expect(live(sync.state.active!.document, 'cashMovement', occurrenceId)?.data).toMatchObject({
+      kind: 'deposit',
+      amountEur: '25',
+      source: 'standing-order',
+    });
+  });
+
+  it('coalesces lifecycle work, retries transient failures, and waits for unlock after a lock', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const sync = createMutableTestSync(fixture.document, fixture.header);
+    const market = createClientMoneyMarket();
+    const success = {
+      ok: true as const,
+      value: { today: '2026-07-27', booked: [], deferred: [] },
+    };
+    let retryCalls = 0;
+    const retrying = createStandingOrderMaterializationLifecycle(sync, market.market, {
+      retryCount: 1,
+      async materialize() {
+        retryCalls += 1;
+        return retryCalls === 1
+          ? {
+              ok: false as const,
+              error: {
+                code: 'OPERATION_ABORTED' as const,
+                message: 'retry',
+                retryable: true,
+              },
+            }
+          : success;
+      },
+    });
+
+    const [opened, unlocked] = await Promise.all([retrying.onAppOpen(), retrying.afterUnlock()]);
+    expect(opened).toEqual(success);
+    expect(unlocked).toEqual(success);
+    expect(retryCalls).toBe(2);
+
+    let lockCalls = 0;
+    const locked = createStandingOrderMaterializationLifecycle(sync, market.market, {
+      retryCount: 3,
+      async materialize() {
+        lockCalls += 1;
+        return lockCalls === 1
+          ? {
+              ok: false as const,
+              error: {
+                code: 'VAULT_LOCKED' as const,
+                message: 'locked',
+                retryable: true,
+              },
+            }
+          : success;
+      },
+    });
+    await expect(locked.onAppOpen()).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'VAULT_LOCKED' },
+    });
+    expect(lockCalls).toBe(1);
+    await expect(locked.afterUnlock()).resolves.toEqual(success);
+    expect(lockCalls).toBe(2);
+  });
+
   it('keeps calendar math deterministic across month ends and timezone boundaries', () => {
     expect(
       dueStandingOrderOccurrence(
@@ -479,4 +618,15 @@ function order(document: VaultDocumentV1, id: string): VaultEntity {
   const entity = live(document, 'standingOrder', id);
   if (entity === undefined) throw new Error(`Missing standing order ${id}`);
   return entity;
+}
+
+function manualValue(id: string, assetId: string, date: string, close: string): VaultEntity {
+  return {
+    id,
+    rev: 0,
+    editedAt: `${date}T12:00:00.000Z`,
+    editedBy: DEVICE_ID,
+    deletedAt: null,
+    data: { assetId, date, close },
+  };
 }
