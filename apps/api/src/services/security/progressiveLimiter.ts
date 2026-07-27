@@ -66,14 +66,19 @@ export interface ProgressiveLimiter {
  * implemented by the in-memory ioredis-mock used by the API test suite.
  */
 const CONSUME_SCRIPT = `
-local cooldown = redis.call('TTL', KEYS[1])
+local cooldownMs = redis.call('PTTL', KEYS[1])
 local level = tonumber(redis.call('GET', KEYS[3]) or '0')
 if not level or level <= 0 then
   level = 0
 end
 
-if cooldown > 0 then
-  return { 0, cooldown, level }
+-- PTTL's -2 is the only value that means the marker is gone. A live marker can
+-- have less than a whole second left, which TTL truncates to 0; keep it closed
+-- and round Retry-After up. A persistent marker (-1) is an invariant violation,
+-- but failing closed is safer than allowing a request through it.
+if cooldownMs ~= -2 then
+  local retryAfterSec = math.max(1, math.ceil(math.max(cooldownMs, 0) / 1000))
+  return { 0, retryAfterSec, level }
 end
 
 local count = redis.call('INCR', KEYS[2])
@@ -153,8 +158,8 @@ export function createProgressiveLimiter(
     },
 
     async peek(id) {
-      const cooling = await redis.ttl(keys(id).cooldown);
-      return cooling > 0 ? cooling : 0;
+      const cooldownMs = await redis.pttl(keys(id).cooldown);
+      return cooldownMs === -2 ? 0 : Math.max(1, Math.ceil(Math.max(cooldownMs, 0) / 1000));
     },
 
     async reset(id) {

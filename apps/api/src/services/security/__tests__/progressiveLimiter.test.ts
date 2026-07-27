@@ -98,6 +98,25 @@ describe('progressive limiter — escalation & decay (§10)', () => {
     expect(again.level).toBe(1); // still 1 — a blocked retry does not climb
   });
 
+  it('keeps a live sub-second cooldown closed and rounds its retry-after up', async () => {
+    const limiter = createProgressiveLimiter(redis, 't', SCHEDULE);
+    const keys = progressiveKeys('t', 'ip');
+    await redis.set(keys.cooldown, '1', 'PX', 900);
+    await redis.set(keys.level, '2', 'EX', SCHEDULE.decaySec);
+
+    const cooldownMs = await redis.pttl(keys.cooldown);
+    expect(cooldownMs).toBeGreaterThan(0);
+    expect(cooldownMs).toBeLessThan(1_000);
+    expect(await limiter.peek('ip')).toBe(1);
+    expect(await limiter.consume('ip')).toEqual({
+      allowed: false,
+      retryAfterSec: 1,
+      level: 2,
+    });
+    expect(await redis.get(keys.count)).toBeNull();
+    expect(await redis.get(keys.level)).toBe('2');
+  });
+
   it('linearizes a synchronized overflow and keeps blocked retries out of the counter', async () => {
     const limiter = createProgressiveLimiter(redis, 't', SCHEDULE);
     const keys = progressiveKeys('t', 'ip');
