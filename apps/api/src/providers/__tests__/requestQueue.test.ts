@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   createRequestQueue,
@@ -11,6 +11,21 @@ function httpError(code: number): Error & { code: number } {
   const err = new Error(`HTTP ${code}`) as Error & { code: number };
   err.code = code;
   return err;
+}
+
+function deferred<T = void>() {
+  let resolvePromise!: (value: T | PromiseLike<T>) => void;
+  let rejectPromise!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+
+  return {
+    promise,
+    resolve: (value?: T | PromiseLike<T>) => resolvePromise(value as T | PromiseLike<T>),
+    reject: (reason?: unknown) => rejectPromise(reason),
+  };
 }
 
 describe('isRetryableUpstreamError (§5.2)', () => {
@@ -63,6 +78,70 @@ describe('createRequestQueue concurrency cap (§5.2)', () => {
 
     expect(started).toBe(N);
     expect(peak).toBe(4);
+  });
+
+  it('releases a rejected task slot to waiters and continues with later tasks', async () => {
+    const queue = createRequestQueue({ concurrency: 1, minSpacingMs: 0 });
+    const firstStarted = deferred();
+    const secondStarted = deferred();
+    const first = deferred();
+    const second = deferred();
+    const calls: string[] = [];
+
+    const rejected = queue.run(async () => {
+      calls.push('first');
+      firstStarted.resolve();
+      return first.promise;
+    });
+    await firstStarted.promise;
+
+    const waiting = queue.run(async () => {
+      calls.push('second');
+      secondStarted.resolve();
+      return second.promise;
+    });
+    const later = queue.run(async () => {
+      calls.push('later');
+      return 'complete';
+    });
+
+    first.reject(new Error('upstream rejected'));
+    await secondStarted.promise;
+    expect(calls).toEqual(['first', 'second']);
+
+    second.resolve();
+    await expect(rejected).rejects.toThrow('upstream rejected');
+    await expect(waiting).resolves.toBeUndefined();
+    await expect(later).resolves.toBe('complete');
+    expect(calls).toEqual(['first', 'second', 'later']);
+  });
+
+  it.each([0, -3])('clamps concurrency %d to one active task', async (concurrency) => {
+    const queue = createRequestQueue({ concurrency, minSpacingMs: 0 });
+    const firstStarted = deferred();
+    const secondStarted = deferred();
+    const first = deferred();
+    const calls: string[] = [];
+
+    const active = queue.run(async () => {
+      calls.push('first');
+      firstStarted.resolve();
+      return first.promise;
+    });
+    await firstStarted.promise;
+
+    const waiting = queue.run(async () => {
+      calls.push('second');
+      secondStarted.resolve();
+    });
+    await Promise.resolve();
+    expect(calls).toEqual(['first']);
+
+    first.resolve();
+    await secondStarted.promise;
+    await expect(active).resolves.toBeUndefined();
+    await expect(waiting).resolves.toBeUndefined();
+    expect(calls).toEqual(['first', 'second']);
   });
 });
 
@@ -222,5 +301,33 @@ describe('createRequestQueue minimum spacing (§5.3)', () => {
     // Attempt 1 at t=0 reserves the next start for t=100; the 10 ms backoff
     // elapses first, then the retry still waits for its spacing slot.
     expect(starts).toEqual([0, 100]);
+  });
+
+  it('bypasses the clock and sleeper when spacing is disabled', async () => {
+    const now = vi.fn(() => {
+      throw new Error('disabled spacing must not read the clock');
+    });
+    const sleep = vi.fn(async () => {
+      throw new Error('disabled spacing must not sleep');
+    });
+    const queue = createRequestQueue({
+      concurrency: 1,
+      minSpacingMs: 0,
+      now,
+      sleep,
+    });
+    const calls: number[] = [];
+
+    await Promise.all(
+      [1, 2, 3].map((value) =>
+        queue.run(async () => {
+          calls.push(value);
+        }),
+      ),
+    );
+
+    expect(calls).toEqual([1, 2, 3]);
+    expect(now).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
   });
 });
