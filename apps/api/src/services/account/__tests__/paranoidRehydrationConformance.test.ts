@@ -367,6 +367,110 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     ]);
   });
 
+  it('rehydrates an AT-taxed normal batch whose persisted rounding shortfall accumulates', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const assetId = '018f0000-0000-7000-8000-000000000110';
+    await seedGlobalAsset(harness, assetId, 'ACCUMULATING-ROUNDING');
+    await harness.ctx.tax.updateSettings(user.id, { mode: 'country_specific', country: 'AT' });
+    const deposit = await harness.ctx.portfolio.depositCash(user.id, portfolioId, {
+      amountEur: 100,
+      executedAt: '2026-07-22T10:00:00.000Z',
+    });
+
+    // The normal reducer sees the total buys and sell as equal. PostgreSQL
+    // persists the buys at 1.00000000 and the sell at 4.00000002, leaving a
+    // two-quantum apparent shortfall that must still reach tax replay safely.
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId,
+        side: 'buy',
+        quantity: 1.0000000049,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:00:00.000Z',
+      },
+      {
+        assetId,
+        side: 'buy',
+        quantity: 1.0000000049,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:01:00.000Z',
+      },
+      {
+        assetId,
+        side: 'buy',
+        quantity: 1.0000000049,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:02:00.000Z',
+      },
+      {
+        assetId,
+        side: 'buy',
+        quantity: 1.0000000049,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:03:00.000Z',
+      },
+      {
+        assetId,
+        side: 'sell',
+        quantity: 4.0000000196,
+        price: 11,
+        fee: 0,
+        executedAt: '2026-07-23T10:04:00.000Z',
+        cashSourceId: deposit.movement.sourceId,
+        addProceedsToCash: true,
+      },
+    ]);
+
+    const persisted = await harness.db
+      .select({
+        side: transactions.side,
+        quantity: transactions.quantity,
+        taxMode: transactions.taxMode,
+        taxCountry: transactions.taxCountry,
+      })
+      .from(transactions)
+      .where(eq(transactions.portfolioId, portfolioId));
+    const persistedBuys = persisted.filter((transaction) => transaction.side === 'buy');
+    expect(persistedBuys).toHaveLength(4);
+    expect(persistedBuys.every((transaction) => transaction.quantity === '1.00000000')).toBe(true);
+    const persistedSell = persisted.find((transaction) => transaction.side === 'sell');
+    expect(persistedSell).toMatchObject({
+      side: 'sell',
+      quantity: '4.00000002',
+      taxMode: 'country_specific',
+      taxCountry: 'AT',
+    });
+
+    const document = await capturePortfolioDocument(harness, portfolioId);
+    await replaceNormalRowsWithServerVault(harness, user.id);
+
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      document,
+      FIRST_REHYDRATION_ID,
+      'AT-taxed accumulating scale-8 rounding batch',
+    );
+
+    expect(
+      await harness.db
+        .select({
+          side: transactions.side,
+          quantity: transactions.quantity,
+          taxMode: transactions.taxMode,
+          taxCountry: transactions.taxCountry,
+        })
+        .from(transactions)
+        .where(eq(transactions.portfolioId, portfolioId)),
+    ).toContainEqual(persistedSell);
+  });
+
   it('keeps the normal-readback tax basis for an exact legacy prefix and later sale', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();

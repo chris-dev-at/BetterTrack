@@ -69,12 +69,12 @@ export interface ReplayRestoredTaxStateInput {
   now: Date;
   toEur: TaxReplayToEur;
   /**
-   * Sells proven by exact strict-document preflight to exceed their persisted
-   * holding by exactly one scale-8 storage quantum. Normal batch validation
-   * accepted the raw values before PostgreSQL rounded the rows apart; replay
-   * treats only that rounding suffix as uncovered at sale-price basis.
+   * Public-number quantities reconstructed by strict-document rehydration for
+   * a normal-write suffix whose scale-8 storage rounding appears insolvent.
+   * This keeps its tax basis covered instead of recasting a normal sale as an
+   * uncovered sale at the sale price.
    */
-  storageRoundingSellIds?: ReadonlySet<string>;
+  normalWriteQuantityOverrides?: ReadonlyMap<string, number>;
 }
 
 export interface ReplayedDeYearState {
@@ -161,7 +161,7 @@ async function taxableTransactions(
   transactions: readonly TransactionRecord[],
   assetsById: ReadonlyMap<string, AssetRow>,
   toEur: TaxReplayToEur,
-  storageRoundingSellIds: ReadonlySet<string>,
+  normalWriteQuantityOverrides: ReadonlyMap<string, number>,
 ): Promise<TaxableTransaction[]> {
   const neededAssetIds = new Set(
     transactions.filter((row) => row.side === 'sell').map((row) => row.assetId),
@@ -179,11 +179,11 @@ async function taxableTransactions(
           id: row.id,
           assetId: row.assetId,
           side: row.side,
-          quantity: row.quantity,
+          quantity: normalWriteQuantityOverrides.get(row.id) ?? row.quantity,
           priceEur: await toEur(row.price, asset.currency, day),
           feeEur: await toEur(row.fee, asset.currency, day),
           executedAt: row.executedAt.toISOString(),
-          allowUncovered: row.allowUncovered || storageRoundingSellIds.has(row.id),
+          allowUncovered: row.allowUncovered,
           uncoveredEntryPriceEur:
             row.uncoveredEntryPrice === null
               ? null
@@ -260,7 +260,7 @@ export async function replayRestoredTaxState(
       transactions,
       assetsById,
       input.toEur,
-      input.storageRoundingSellIds ?? new Set(),
+      input.normalWriteQuantityOverrides ?? new Map(),
     );
     const movingAverage = realizationsById(taxables);
     const fifo = realizationsById(taxables, 'fifo');
