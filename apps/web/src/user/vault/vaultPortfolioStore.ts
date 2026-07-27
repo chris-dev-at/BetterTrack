@@ -829,6 +829,9 @@ function assertTransactionUpdateTaxSupported(
   financialEdit: boolean,
   now: string,
 ): void {
+  if (isFrozenTaxSensitiveSell(transaction)) {
+    throw taxOperationUnavailable();
+  }
   if (!financialEdit) return;
   const assetId = stringField(transaction.data, 'assetId');
   const openFromYear = taxEngineOpenFromYear(effectivePortfolioTaxMode(document, portfolioId), now);
@@ -837,7 +840,6 @@ function assertTransactionUpdateTaxSupported(
     data: definedFields({ ...transaction.data, ...patch }),
   };
   if (
-    isFrozenTaxSensitiveSell(transaction) ||
     isFrozenTaxSensitiveSell(prospectiveTransaction) ||
     sellRequiresClientTaxEngine(transaction, openFromYear) ||
     sellRequiresClientTaxEngine(prospectiveTransaction, openFromYear) ||

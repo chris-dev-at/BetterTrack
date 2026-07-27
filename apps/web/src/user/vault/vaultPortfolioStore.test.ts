@@ -537,7 +537,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       },
     );
 
-    it('keeps note-only edits on frozen taxed rows on the vault path', async () => {
+    it('rejects note-only edits on frozen taxed rows before CAS', async () => {
       const frozenSellId = GENERATED_IDS[1];
       const document = initialDocument();
       document.entities.transaction = [
@@ -559,9 +559,10 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
 
       await expect(
         store.updateTransaction(PORTFOLIO_ID, frozenSellId, { note: 'Explanation only' }),
-      ).resolves.toMatchObject({ id: frozenSellId, note: 'Explanation only' });
+      ).rejects.toMatchObject({ code: 'VAULT_OPERATION_UNAVAILABLE' });
 
-      expect(engine.mutate).toHaveBeenCalledTimes(1);
+      expect(engine.mutate).not.toHaveBeenCalled();
+      expect(engine.state.active?.header.vaultVersion).toBe(1);
       expectPortfolioApiUnused();
     });
 
