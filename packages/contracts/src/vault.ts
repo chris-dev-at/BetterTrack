@@ -147,16 +147,72 @@ export type VaultMediaSelection = z.infer<typeof vaultMediaSelectionSchema>;
 export const vaultMediaStateSchema = vaultMediaSelectionSchema;
 export type VaultMediaState = z.infer<typeof vaultMediaStateSchema>;
 
+/** Canonical DER prefix of an Ed25519 SubjectPublicKeyInfo value. */
+const ED25519_SPKI_DER_PREFIX = new Uint8Array([
+  0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+]);
+const ED25519_SPKI_DER_BYTES = 44;
+const ED25519_SPKI_BASE64URL_CHARS = 59;
+
+/**
+ * Decode unpadded base64url without relying on Node's Buffer so this contract
+ * remains isomorphic. The caller performs its own character-set validation.
+ */
+function decodeBase64url(value: string): Uint8Array | null {
+  const bytes = new Uint8Array(Math.floor((value.length * 6) / 8));
+  let byteIndex = 0;
+  let bufferedBits = 0;
+  let buffer = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const charCode = value.charCodeAt(index);
+    const digit =
+      charCode >= 65 && charCode <= 90
+        ? charCode - 65
+        : charCode >= 97 && charCode <= 122
+          ? charCode - 97 + 26
+          : charCode >= 48 && charCode <= 57
+            ? charCode - 48 + 52
+            : charCode === 45
+              ? 62
+              : charCode === 95
+                ? 63
+                : -1;
+    if (digit < 0) return null;
+
+    buffer = (buffer << 6) | digit;
+    bufferedBits += 6;
+    if (bufferedBits >= 8) {
+      bufferedBits -= 8;
+      bytes[byteIndex] = (buffer >> bufferedBits) & 0xff;
+      byteIndex += 1;
+      buffer &= (1 << bufferedBits) - 1;
+    }
+  }
+
+  // Base64url's unused trailing bits must be zero, otherwise multiple strings
+  // could represent the same DER value.
+  if (buffer !== 0 || byteIndex !== bytes.length) return null;
+  return bytes;
+}
+
+function isEd25519SpkiBase64url(value: string): boolean {
+  if (value.length !== ED25519_SPKI_BASE64URL_CHARS) return false;
+  const der = decodeBase64url(value);
+  if (!der || der.length !== ED25519_SPKI_DER_BYTES) return false;
+  return ED25519_SPKI_DER_PREFIX.every((byte, index) => der[index] === byte);
+}
+
 /**
  * Public verifier for an Ed25519 key whose private half remains only inside the
- * client-decrypted vault. It is DER SPKI encoded as base64url; it is not a
- * Drive credential, vault key, token, file id, or portfolio datum.
+ * client-decrypted vault. It is canonical DER SPKI encoded as base64url; it is
+ * not a Drive credential, vault key, token, file id, or portfolio datum.
  */
 export const vaultRetirementProofPublicKeySchema = z
   .string()
   .regex(/^[A-Za-z0-9_-]+$/, 'must be base64url')
-  .min(40)
-  .max(2048);
+  .length(ED25519_SPKI_BASE64URL_CHARS, 'must encode a 44-byte DER SPKI key')
+  .refine(isEd25519SpkiBase64url, 'must be a DER SPKI encoded Ed25519 public key');
 export type VaultRetirementProofPublicKey = z.infer<typeof vaultRetirementProofPublicKeySchema>;
 
 /** Portfolio-free receipt for an inactive server candidate. */

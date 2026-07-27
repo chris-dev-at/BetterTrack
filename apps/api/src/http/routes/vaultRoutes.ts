@@ -1,3 +1,5 @@
+import { createPublicKey } from 'node:crypto';
+
 import express, { Router, type RequestHandler } from 'express';
 
 import {
@@ -100,10 +102,28 @@ function parseRetirementProofPublicKey(req: Parameters<RequestHandler>[0]): stri
   const raw = req.get(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER);
   if (!raw) return null;
   const parsed = vaultRetirementProofPublicKeySchema.safeParse(raw);
-  if (!parsed.success) {
+  if (!parsed.success || !isEd25519SpkiPublicKey(parsed.data)) {
     throw malformed('The retirement proof public key header must be a base64url Ed25519 SPKI key.');
   }
   return parsed.data;
+}
+
+/**
+ * The isomorphic contract checks canonical DER shape. Parse it in Node as
+ * well so only a key OpenSSL recognizes as Ed25519 can be made immutable in
+ * active or staged server media.
+ */
+function isEd25519SpkiPublicKey(value: string): boolean {
+  try {
+    const key = createPublicKey({
+      key: Buffer.from(value, 'base64url'),
+      format: 'der',
+      type: 'spki',
+    });
+    return key.asymmetricKeyType === 'ed25519';
+  } catch {
+    return false;
+  }
 }
 
 function rawVaultBody(ctx: AppContext): RequestHandler {

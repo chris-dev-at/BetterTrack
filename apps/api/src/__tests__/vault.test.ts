@@ -20,7 +20,7 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { paranoidVaultRetirements, users } from '../data/schema';
+import { paranoidVaultRetirements, paranoidVaultServerCandidates, users } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -530,6 +530,41 @@ describe('durable paranoid server-media lifecycle', () => {
     expect(replacement.status).toBe(409);
   });
 
+  it('rejects a non-Ed25519 verifier before active or candidate server media is enrolled', async () => {
+    const { user, agent } = await seedParanoidAgent('invalid-proof@bt.test', 'invalidproof');
+    const x25519ProofKey = generateKeyPairSync('x25519')
+      .publicKey.export({ type: 'spki', format: 'der' })
+      .toString('base64url');
+    const v1 = envelope(1, new Uint8Array([1]));
+
+    const active = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, x25519ProofKey)
+      .send(v1);
+    expect(active.status).toBe(400);
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+
+    await harness.db
+      .update(users)
+      .set({ paranoidMediaSet: ['drive'], paranoidDriveAttestedVersion: 1 })
+      .where(eq(users.id, user.id));
+    const candidate = await agent
+      .put('/api/v1/vault/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, x25519ProofKey)
+      .send(v1);
+    expect(candidate.status).toBe(400);
+    const rows = await harness.db
+      .select()
+      .from(paranoidVaultServerCandidates)
+      .where(eq(paranoidVaultServerCandidates.userId, user.id));
+    expect(rows).toHaveLength(0);
+  });
+
   it('moves bytes through candidate and retirement states before a retained, advanced-version purge', async () => {
     const { user, agent } = await seedParanoidAgent('lifecycle@bt.test', 'lifecycle');
     const { privateKey, publicKey } = retirementProofKey();
@@ -733,6 +768,82 @@ describe('durable paranoid server-media lifecycle', () => {
       nextCursor: null,
     });
     expect((await agent.get('/api/v1/vault/history/1')).status).toBe(404);
+  });
+
+  it('removes an expired candidate while purging a retained server retirement', async () => {
+    const { user, agent } = await seedParanoidAgent(
+      'expired-candidate@bt.test',
+      'expiredcandidate',
+    );
+    const { privateKey, publicKey } = retirementProofKey();
+    const v1 = envelope(1, new Uint8Array([1, 2, 3]));
+    const serverOnly = { mediaSet: ['server'], driveAttestedVersion: null };
+    const both = { mediaSet: ['server', 'drive'], driveAttestedVersion: 1 };
+    const driveOnly = { mediaSet: ['drive'], driveAttestedVersion: 1 };
+    const patchMedia = (body: Record<string, unknown>) =>
+      agent
+        .patch('/api/v1/vault/media')
+        .set(...XRW)
+        .send(body);
+
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+      .send(v1)
+      .expect(204);
+    await patchMedia({
+      expected: serverOnly,
+      nextMediaSet: both.mediaSet,
+      verification: { kind: 'drive', version: 1 },
+    }).expect(200);
+    await patchMedia({
+      expected: both,
+      nextMediaSet: driveOnly.mediaSet,
+      verification: { kind: 'drive', version: 1 },
+    }).expect(200);
+
+    const staged = await agent
+      .put('/api/v1/vault/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+      .send(v1);
+    expect(staged.status).toBe(200);
+    const candidateId = staged.body.candidateId as string;
+    await harness.db
+      .update(paranoidVaultServerCandidates)
+      .set({ expiresAt: new Date(Date.now() - 1) })
+      .where(eq(paranoidVaultServerCandidates.userId, user.id));
+    await harness.db
+      .update(paranoidVaultRetirements)
+      .set({ retiredAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) })
+      .where(eq(paranoidVaultRetirements.userId, user.id));
+
+    const prepared = await agent
+      .post('/api/v1/vault/media/retired/purge/challenge')
+      .set(...XRW)
+      .send({ retiredVersion: 1 });
+    expect(prepared.status).toBe(200);
+    const challenge = prepared.body.challenge as string;
+    const purged = await agent
+      .post('/api/v1/vault/media/retired/purge')
+      .set(...XRW)
+      .send({
+        retiredVersion: 1,
+        observedVersion: 2,
+        challenge,
+        signature: purgeSignature(privateKey, 1, 2, challenge),
+      });
+    expect(purged.status).toBe(200);
+    expect((await agent.get('/api/v1/vault/history/1')).status).toBe(404);
+    expect((await agent.get(`/api/v1/vault/media/server-candidate/${candidateId}`)).status).toBe(
+      404,
+    );
+    const media = await agent.get('/api/v1/vault/media');
+    expect(media.body.mediaState.server.disposition).toBe('empty');
   });
 
   it('fails closed for a conflicting same-version candidate and proofs derived without the vault key', async () => {

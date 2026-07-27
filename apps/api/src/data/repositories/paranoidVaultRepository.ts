@@ -850,11 +850,21 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           .from(paranoidVaults)
           .where(eq(paranoidVaults.userId, input.userId))
           .for('update');
-        const [candidate] = await tx
+        let [candidate] = await tx
           .select()
           .from(paranoidVaultServerCandidates)
           .where(eq(paranoidVaultServerCandidates.userId, input.userId))
           .for('update');
+        // Candidate reads and transitions clean this up on access. Purge must
+        // do the same under its lock: an expired staging row is no longer a
+        // recoverable candidate and must not indefinitely block retirement
+        // cleanup when no background sweeper has run.
+        if (candidate && candidate.expiresAt.getTime() <= input.now.getTime()) {
+          await tx
+            .delete(paranoidVaultServerCandidates)
+            .where(eq(paranoidVaultServerCandidates.id, candidate.id));
+          candidate = undefined;
+        }
         const [retirement] = await tx
           .select()
           .from(paranoidVaultRetirements)

@@ -1,3 +1,5 @@
+import { generateKeyPairSync } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -25,6 +27,7 @@ import {
   paranoidVaultMediaStateSchema,
   retiredServerPurgeRequestSchema,
   vaultMediaSetSchema,
+  vaultRetirementProofPublicKeySchema,
   vaultServerHeaderSchema,
   vaultVersionSchema,
 } from './vault';
@@ -162,6 +165,19 @@ describe('durable media transition contracts', () => {
         signature: 'not base64url!',
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts only canonical Ed25519 SPKI retirement verifiers', () => {
+    const ed25519 = generateKeyPairSync('ed25519')
+      .publicKey.export({ type: 'spki', format: 'der' })
+      .toString('base64url');
+    const x25519 = generateKeyPairSync('x25519')
+      .publicKey.export({ type: 'spki', format: 'der' })
+      .toString('base64url');
+
+    expect(vaultRetirementProofPublicKeySchema.safeParse(ed25519).success).toBe(true);
+    expect(vaultRetirementProofPublicKeySchema.safeParse(x25519).success).toBe(false);
+    expect(vaultRetirementProofPublicKeySchema.safeParse('a'.repeat(59)).success).toBe(false);
   });
 });
 
