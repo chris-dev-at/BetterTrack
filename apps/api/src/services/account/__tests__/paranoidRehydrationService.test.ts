@@ -398,6 +398,10 @@ async function replaceNormalPortfolioGraphWithServerVault(
 }
 
 async function storageRoundedQuantityFixture() {
+  const rawQuantities = {
+    buy: '1.0000000046',
+    sell: '1.0000000051',
+  } as const;
   const harness = await createTestApp();
   const user = await harness.seedUser();
   const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
@@ -421,7 +425,7 @@ async function storageRoundedQuantityFixture() {
       {
         assetId: asset.id,
         side: 'buy',
-        quantity: 1.0000000046,
+        quantity: Number(rawQuantities.buy),
         price: 10,
         fee: 0,
         executedAt: '2026-07-23T10:00:00.000Z',
@@ -429,7 +433,7 @@ async function storageRoundedQuantityFixture() {
       {
         assetId: asset.id,
         side: 'sell',
-        quantity: 1.0000000051,
+        quantity: Number(rawQuantities.sell),
         price: 11,
         fee: 0,
         executedAt: '2026-07-23T10:01:00.000Z',
@@ -459,6 +463,15 @@ async function storageRoundedQuantityFixture() {
     { side: 'sell', quantity: '1.00000001' },
   ]);
 
+  // Paranoid-mode input preserves the raw user decimals. The normal write
+  // above is the storage oracle: disable must validate these values as the same
+  // numeric(20,8) rows that the repository will restore.
+  const transactionEntities = sourceTransactions.map((row) => {
+    const transaction = strictTransactionEntity(row);
+    transaction.data.quantity = rawQuantities[row.side];
+    return transaction;
+  });
+
   const input: ParanoidDisableRehydrationRequest = {
     rehydrationId: REHYDRATION_ID,
     document: {
@@ -466,14 +479,14 @@ async function storageRoundedQuantityFixture() {
       entities: [
         strictPortfolioEntity(sourcePortfolio),
         ...sourceCashSources.map(strictCashSourceEntity),
-        ...sourceTransactions.map(strictTransactionEntity),
+        ...transactionEntities,
       ],
       mergeLog: [],
     },
   };
 
   await replaceNormalPortfolioGraphWithServerVault(harness, user.id);
-  return { harness, user, portfolioId, sourceTransactions, input };
+  return { harness, user, portfolioId, rawQuantities, sourceTransactions, input };
 }
 
 function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequest {
@@ -1209,7 +1222,7 @@ describe('paranoid rehydration service', () => {
     });
   });
 
-  it('round-trips an epsilon-valid transaction batch after scale-8 quantities round apart', async () => {
+  it('rehydrates raw vault quantities to the same numeric(20,8) rows as normal writes', async () => {
     const { harness, user, portfolioId, sourceTransactions, input } =
       await storageRoundedQuantityFixture();
     await expect(
@@ -1241,13 +1254,39 @@ describe('paranoid rehydration service', () => {
     );
   });
 
-  it('negative control: rejects a two-quantum persisted sell before restore and names its quantity', async () => {
+  it('negative control: tightening the quantized quantity rule rejects the raw sell before restore', async () => {
+    const { harness, user, portfolioId, rawQuantities, input } =
+      await storageRoundedQuantityFixture();
+    const stages: string[] = [];
+
+    await expect(
+      createParanoidRehydrationService({
+        db: harness.db,
+        testOnlyTransactionQuantityRoundingTolerance: 0n,
+        afterStage(stage) {
+          stages.push(stage);
+        },
+      }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({
+      code: 'INVALID_CASH_LEDGER',
+      message: `transaction quantity ${JSON.stringify(rawQuantities.sell)} would oversell its position`,
+    });
+    expect(stages).toEqual([]);
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
+    ).toEqual([]);
+  });
+
+  it('rejects a genuine two-quantum transaction oversell before restore', async () => {
     const { harness, user, portfolioId, input } = await storageRoundedQuantityFixture();
     const sell = input.document.entities.find(
       (entry): entry is StrictTransactionEntity =>
         entry.kind === 'transaction' && entry.data.side === 'sell',
     );
-    if (!sell) throw new Error('expected persisted sell transaction');
+    if (!sell) throw new Error('expected raw sell transaction');
     sell.data.quantity = '1.00000002';
     const stages: string[] = [];
 
