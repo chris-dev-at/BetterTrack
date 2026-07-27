@@ -30,6 +30,15 @@ export const GOOGLE_JWKS_URI = 'https://www.googleapis.com/oauth2/v3/certs';
 // Google issues tokens under either form; accept both (documented on both sides).
 const GOOGLE_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
 
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function idTokenFromResponse(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  return (value as Record<string, unknown>).id_token;
+}
+
 export interface CreateGoogleVerifierDeps {
   clientId: string;
   clientSecret: string;
@@ -87,23 +96,32 @@ export function createGoogleVerifier(deps: CreateGoogleVerifierDeps): GoogleToke
       if (!res.ok) {
         throw new Error(`Google token exchange failed (${res.status})`);
       }
-      const json = (await res.json()) as { id_token?: unknown };
-      if (typeof json.id_token !== 'string' || json.id_token.length === 0) {
+      let tokenResponse: unknown;
+      try {
+        tokenResponse = await res.json();
+      } catch {
+        // JSON parser errors can echo a prefix of the response body. The caller
+        // logs thrown errors, so map them to the same safe malformed-response
+        // error used when an id_token is absent or invalid.
+        throw new Error('Google token response missing id_token');
+      }
+      const idToken = idTokenFromResponse(tokenResponse);
+      if (typeof idToken !== 'string' || idToken.length === 0) {
         throw new Error('Google token response missing id_token');
       }
       // jose checks the signature against Google's JWKS and rejects a bad
       // `iss`/`aud`/`exp` before we ever read a claim.
-      const { payload } = await jwtVerify(json.id_token, jwks, {
+      const { payload } = await jwtVerify(idToken, jwks, {
         issuer: GOOGLE_ISSUERS,
         audience: deps.clientId,
       });
-      const sub = typeof payload.sub === 'string' ? payload.sub : '';
-      const email = typeof payload.email === 'string' ? payload.email : '';
-      if (!sub || !email) throw new Error('Google ID token missing sub/email');
+      if (!isNonBlankString(payload.sub) || !isNonBlankString(payload.email)) {
+        throw new Error('Google ID token missing sub/email');
+      }
       // Google may serialize email_verified as a boolean or a "true"/"false" string.
       const emailVerified = payload.email_verified === true || payload.email_verified === 'true';
       const name = typeof payload.name === 'string' ? payload.name : undefined;
-      return { sub, email, emailVerified, name };
+      return { sub: payload.sub, email: payload.email, emailVerified, name };
     },
   };
 }
