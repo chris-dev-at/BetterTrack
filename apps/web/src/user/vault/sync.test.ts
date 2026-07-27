@@ -66,12 +66,21 @@ const WRAPPED = {
   wrappedVk: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
 };
 
-type TestVaultSyncEngineOptions = Omit<VaultSyncEngineOptions, 'documentReconciler'> &
-  Partial<Pick<VaultSyncEngineOptions, 'documentReconciler'>>;
+type TestVaultSyncEngineOptions = Omit<
+  VaultSyncEngineOptions,
+  'documentReconciler' | 'requiresCompleteMutationProvenance'
+> &
+  Partial<
+    Pick<VaultSyncEngineOptions, 'documentReconciler' | 'requiresCompleteMutationProvenance'>
+  >;
 
 function createVaultSyncEngine(options: TestVaultSyncEngineOptions) {
   return createBaseVaultSyncEngine({
-    documentReconciler: (value) => value,
+    documentReconciler: (document, context) => ({
+      document,
+      mutations: context.mutations,
+    }),
+    requiresCompleteMutationProvenance: false,
     ...options,
   });
 }
@@ -493,7 +502,10 @@ describe('CAS-aware vault synchronization', () => {
           expect.objectContaining({ id: ENTITY_A, deletedAt: null }),
           expect.objectContaining({ id: ENTITY_B, deletedAt: null }),
         ]);
-        return { ...merged, entities: context.remote.entities };
+        return {
+          document: { ...merged, entities: context.remote.entities },
+          mutations: [],
+        };
       },
     });
     await engine.start();

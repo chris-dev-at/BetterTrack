@@ -45,6 +45,7 @@ import { VaultCryptoError } from './errors';
 import type {
   VaultAtomicMutation,
   VaultDocumentReconcileContext,
+  VaultDocumentReconcileResult,
   VaultMutationEntityDelta,
   VaultSyncEngine,
   VaultSyncState,
@@ -246,19 +247,35 @@ export function createVaultPortfolioStore(
         data: transactionDataForStorage(portfolioId, input),
       }));
       assertLocallySupportedTransactions(current, portfolioId, candidates, context.now());
+      const initialCandidate = appendTransactionCandidates(
+        current,
+        candidates,
+        engine.deviceId,
+        context.now(),
+      );
+      assertProspectiveAssetTimelines(
+        initialCandidate.document,
+        portfolioId,
+        candidates.map(({ input }) => input.assetId),
+      );
       let expectedEntities: VaultEntity[] = [];
 
       const mutationState = await engine.mutate(({ document }) => {
         requirePortfolio(document, portfolioId);
         assertLocallySupportedTransactions(document, portfolioId, candidates, context.now());
-        const timestamp = context.now();
-        const entities = candidates.map(({ id, input, data }) => {
-          resolveTransactionAsset(document, input.assetId);
-          return entityRecord(id, engine.deviceId, timestamp, data);
-        });
-        const next = appendEntities(document, 'transaction', entities);
-        expectedEntities = entities;
-        return next;
+        const candidate = appendTransactionCandidates(
+          document,
+          candidates,
+          engine.deviceId,
+          context.now(),
+        );
+        assertProspectiveAssetTimelines(
+          candidate.document,
+          portfolioId,
+          candidates.map(({ input }) => input.assetId),
+        );
+        expectedEntities = candidate.entities;
+        return candidate.document;
       });
 
       return expectedEntities.map((expected) => {
@@ -296,6 +313,20 @@ export function createVaultPortfolioStore(
         financialEdit,
         context.now(),
       );
+      if (financialEdit) {
+        const prospective: VaultEntity = {
+          ...currentEntity,
+          rev: currentEntity.rev + 1,
+          editedAt: context.now(),
+          editedBy: engine.deviceId,
+          data: { ...currentEntity.data, ...persistedDataPatch },
+        };
+        assertProspectiveAssetTimelines(
+          replaceEntity(current, 'transaction', prospective),
+          portfolioId,
+          [stringField(currentEntity.data, 'assetId')],
+        );
+      }
       const entity = await updateEntity(
         context,
         'transaction',
@@ -311,6 +342,12 @@ export function createVaultPortfolioStore(
           );
           return { ...data, ...persistedDataPatch };
         },
+        financialEdit
+          ? (document) =>
+              assertProspectiveAssetTimelines(document, portfolioId, [
+                stringField(currentEntity.data, 'assetId'),
+              ])
+          : undefined,
       );
       return transactionFromEntity(requireDocument(engine), entity);
     },
@@ -320,6 +357,15 @@ export function createVaultPortfolioStore(
       requirePortfolio(document, portfolioId);
       const transaction = requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
       assertTransactionDeleteTaxSupported(document, portfolioId, transaction, context.now());
+      const prospective = tombstoneTransactionTree(
+        document,
+        transaction,
+        engine.deviceId,
+        context.now(),
+      );
+      assertProspectiveAssetTimelines(prospective, portfolioId, [
+        stringField(transaction.data, 'assetId'),
+      ]);
       await deleteTransactionTree(context, portfolioId, transactionId);
     },
 
@@ -407,6 +453,7 @@ async function updateEntity(
     document: VaultDocumentV1,
     entity: VaultEntity,
   ) => Record<string, unknown>,
+  validateDocument?: (document: VaultDocumentV1) => void,
 ): Promise<VaultEntity> {
   requireDocument(context.engine);
   let expected: VaultEntity | null = null;
@@ -424,6 +471,7 @@ async function updateEntity(
       data: mutateData(existing.data, document, existing),
     };
     const next = replaceEntity(document, kind, updated);
+    validateDocument?.(next);
     expected = updated;
     return next;
   });
@@ -501,21 +549,13 @@ async function deleteTransactionTree(
     requirePortfolio(document, portfolioId);
     const transaction = requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
     assertTransactionDeleteTaxSupported(document, portfolioId, transaction, context.now());
-    const timestamp = context.now();
-    let next = replaceEntity(
+    const next = tombstoneTransactionTree(
       document,
-      'transaction',
-      tombstoneEntity(transaction, context.engine.deviceId, timestamp),
+      transaction,
+      context.engine.deviceId,
+      context.now(),
     );
-    for (const movement of liveEntities(next, 'cashMovement').filter(
-      (entity) => nullableStringField(entity.data, 'transactionId') === transactionId,
-    )) {
-      next = replaceEntity(
-        next,
-        'cashMovement',
-        tombstoneEntity(movement, context.engine.deviceId, timestamp),
-      );
-    }
+    assertProspectiveAssetTimelines(next, portfolioId, [stringField(transaction.data, 'assetId')]);
     return next;
   });
   const committedDocument = mutationState.active?.document;
@@ -535,6 +575,25 @@ async function deleteTransactionTree(
       'The transaction deletion was not committed locally.',
     );
   }
+}
+
+function tombstoneTransactionTree(
+  document: VaultDocumentV1,
+  transaction: VaultEntity,
+  deviceId: string,
+  timestamp: string,
+): VaultDocumentV1 {
+  let next = replaceEntity(
+    document,
+    'transaction',
+    tombstoneEntity(transaction, deviceId, timestamp),
+  );
+  for (const movement of liveEntities(next, 'cashMovement').filter(
+    (entity) => nullableStringField(entity.data, 'transactionId') === transaction.id,
+  )) {
+    next = replaceEntity(next, 'cashMovement', tombstoneEntity(movement, deviceId, timestamp));
+  }
+  return next;
 }
 
 async function createCashMovement(
@@ -852,7 +911,7 @@ class VaultAggregateConflictError extends Error {
 export function reconcilePortfolioDocument(
   document: VaultDocumentV1,
   context: VaultDocumentReconcileContext,
-): VaultDocumentV1 {
+): VaultDocumentReconcileResult {
   const groups = reconcileGroups(context.mutations, context);
   let reconciled = document;
   for (const group of groups) {
@@ -863,7 +922,9 @@ export function reconcilePortfolioDocument(
   assertPortfolioDocumentInvariants(reconciled, context.remote);
 
   const rejectedEntityKeys = new Set<string>();
+  const rebasedMutations: VaultAtomicMutation[] = [];
   for (const group of groups) {
+    const beforeGroup = reconciled;
     const completeGroupWon = group.changes.every(
       (change) =>
         !rejectedEntityKeys.has(entityRefKey(change.kind, change.id)) &&
@@ -874,29 +935,31 @@ export function reconcilePortfolioDocument(
       for (const change of group.changes) {
         rejectedEntityKeys.add(entityRefKey(change.kind, change.id));
       }
-      continue;
-    }
-
-    let candidate = reconciled;
-    for (const change of group.changes) {
-      candidate = setEntity(candidate, change.kind, change.id, change.after);
-    }
-    candidate = enforceDeletionCascades(candidate, context);
-
-    try {
-      assertPortfolioDocumentInvariants(candidate, context.remote);
-      reconciled = candidate;
-    } catch (cause) {
-      if (!isAggregateConflict(cause)) throw cause;
-      reconciled = compensateRejectedGroup(reconciled, group, context);
+    } else {
+      let candidate = reconciled;
       for (const change of group.changes) {
-        rejectedEntityKeys.add(entityRefKey(change.kind, change.id));
+        candidate = setEntity(candidate, change.kind, change.id, change.after);
+      }
+      candidate = enforceDeletionCascades(candidate, context);
+
+      try {
+        assertPortfolioDocumentInvariants(candidate, context.remote);
+        reconciled = candidate;
+      } catch (cause) {
+        if (!isAggregateConflict(cause)) throw cause;
+        reconciled = compensateRejectedGroup(reconciled, group, context);
+        for (const change of group.changes) {
+          rejectedEntityKeys.add(entityRefKey(change.kind, change.id));
+        }
       }
     }
+
+    const rebased = rebaseReconcileGroup(group, beforeGroup, reconciled);
+    if (rebased != null) rebasedMutations.push(rebased);
   }
 
   assertPortfolioDocumentInvariants(reconciled, context.remote);
-  return reconciled;
+  return { document: reconciled, mutations: rebasedMutations };
 }
 
 function reconcileGroups(
@@ -929,6 +992,46 @@ function reconcileGroups(
             right.changes.map((change) => entityRefKey(change.kind, change.id)).join('\u0000'),
           ),
     );
+}
+
+function rebaseReconcileGroup(
+  group: ReconcileGroup,
+  before: VaultDocumentV1,
+  after: VaultDocumentV1,
+): VaultAtomicMutation | null {
+  const refs = new Map<string, VaultEntityRef>();
+  for (const change of group.changes) {
+    refs.set(entityRefKey(change.kind, change.id), { kind: change.kind, id: change.id });
+  }
+
+  const kinds = new Set<VaultEntityKind>([
+    ...(Object.keys(before.entities) as VaultEntityKind[]),
+    ...(Object.keys(after.entities) as VaultEntityKind[]),
+  ]);
+  for (const kind of kinds) {
+    const beforeById = new Map((before.entities[kind] ?? []).map((entity) => [entity.id, entity]));
+    const afterById = new Map((after.entities[kind] ?? []).map((entity) => [entity.id, entity]));
+    for (const id of new Set([...beforeById.keys(), ...afterById.keys()])) {
+      if (sameOptionalVaultEntity(beforeById.get(id), afterById.get(id))) continue;
+      refs.set(entityRefKey(kind, id), { kind, id });
+    }
+  }
+
+  const changes = [...refs.values()]
+    .sort((left, right) =>
+      entityRefKey(left.kind, left.id).localeCompare(entityRefKey(right.kind, right.id)),
+    )
+    .map(
+      ({ kind, id }): VaultMutationEntityDelta => ({
+        kind,
+        id,
+        before: findEntity(before, kind, id),
+        after: findEntity(after, kind, id),
+      }),
+    );
+  return changes.some((change) => !sameOptionalVaultEntity(change.before, change.after))
+    ? { sequence: group.sequence, changes }
+    : null;
 }
 
 function compensateRejectedGroup(
@@ -1308,6 +1411,28 @@ function transactionDataForStorage(
   );
 }
 
+interface TransactionCreateCandidate {
+  id: string;
+  input: ReturnType<typeof transactionInputSchema.parse>;
+  data: Record<string, unknown>;
+}
+
+function appendTransactionCandidates(
+  document: VaultDocumentV1,
+  candidates: readonly TransactionCreateCandidate[],
+  deviceId: string,
+  timestamp: string,
+): { document: VaultDocumentV1; entities: VaultEntity[] } {
+  const entities = candidates.map(({ id, input, data }) => {
+    resolveTransactionAsset(document, input.assetId);
+    return entityRecord(id, deviceId, timestamp, data);
+  });
+  return {
+    document: appendEntities(document, 'transaction', entities),
+    entities,
+  };
+}
+
 /** Keep financial patches in the same persisted decimal representation as creates. */
 function transactionPatchForStorage(patch: TransactionDataPatch): Record<string, unknown> {
   return {
@@ -1405,6 +1530,25 @@ function assertValidAssetTimeline(
     )
     .map(({ entity }) => transactionFromEntity(document, entity));
   reducePosition(transactions);
+}
+
+function assertProspectiveAssetTimelines(
+  document: VaultDocumentV1,
+  portfolioId: string,
+  assetIds: readonly string[],
+): void {
+  try {
+    for (const assetId of new Set(assetIds)) {
+      assertValidAssetTimeline(document, portfolioId, assetId);
+    }
+  } catch (cause) {
+    if (!(cause instanceof OversellError)) throw cause;
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'The transaction mutation would oversell the available holding.',
+      cause,
+    );
+  }
 }
 
 function transactionExecutedAtMs(entity: VaultEntity): number {
