@@ -937,13 +937,13 @@ function completePendingProvenance(
       latestByEntity.set(entityDeltaKey(change), change);
     }
   }
-  const provenanceIsComplete = completeDelta.changes.every((change) =>
-    sameJsonValue(latestByEntity.get(entityDeltaKey(change))?.after, change.after),
+  const uncoveredChanges = completeDelta.changes.filter(
+    (change) => !sameJsonValue(latestByEntity.get(entityDeltaKey(change))?.after, change.after),
   );
-  if (provenanceIsComplete) return [...known];
+  if (uncoveredChanges.length === 0) return [...known];
 
   const sequence = Math.max(fallbackSequence, ...known.map((mutation) => mutation.sequence + 1));
-  return [...known, { ...completeDelta, sequence }];
+  return [...known, { sequence, changes: uncoveredChanges }];
 }
 
 function entityDeltaKey(change: Pick<VaultMutationEntityDelta, 'kind' | 'id'>): string {

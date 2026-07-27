@@ -1059,6 +1059,60 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     );
   });
 
+  it('keeps a local transaction separate from an unrelated remote portfolio edit', async () => {
+    const transactionId = GENERATED_IDS[0];
+    const { first, second, remote } = await createConcurrentSyncEngines(
+      initialDocument(),
+      'portfolio-store-unrelated-remote-winner',
+    );
+    const remoteStore = createVaultPortfolioStore(first, { now: () => COMPETING_AT });
+    const localStore = createVaultPortfolioStore(second, {
+      now: () => AT,
+      newId: () => transactionId,
+    });
+
+    remote.setOnline(false);
+    await expect(
+      localStore.createTransactions(PORTFOLIO_ID, [
+        {
+          assetId: ASSET_ID,
+          side: 'buy',
+          quantity: 1,
+          price: 10,
+          fee: 0,
+          executedAt: AT,
+        },
+      ]),
+    ).resolves.toMatchObject([{ id: transactionId }]);
+
+    remote.setOnline(true);
+    await expect(
+      remoteStore.updatePortfolio(PORTFOLIO_ID, { name: 'Remote winner' }),
+    ).resolves.toMatchObject({ name: 'Remote winner' });
+    await expect(second.reconnect()).resolves.toMatchObject({ status: 'synced' });
+
+    expect(
+      second.state.active?.document.entities.portfolio?.find((row) => row.id === PORTFOLIO_ID),
+    ).toMatchObject({
+      deletedAt: null,
+      data: expect.objectContaining({ name: 'Remote winner' }),
+    });
+    expect(
+      second.state.active?.document.entities.transaction?.find((row) => row.id === transactionId),
+    ).toMatchObject({ deletedAt: null });
+    await expect(localStore.listTransactions(PORTFOLIO_ID)).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: transactionId, side: 'buy' })],
+    });
+
+    await first.reconnect();
+    expect(first.state.active?.document.entities.portfolio).toEqual(
+      second.state.active?.document.entities.portfolio,
+    );
+    expect(first.state.active?.document.entities.transaction).toEqual(
+      second.state.active?.document.entities.transaction,
+    );
+  });
+
   it('retains an original atomic batch after a later edit and rejects the whole batch', async () => {
     const buyId = GENERATED_IDS[0];
     const remoteSellId = GENERATED_IDS[1];
