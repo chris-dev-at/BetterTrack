@@ -98,6 +98,71 @@ describe('secretBox (AES-256-GCM)', () => {
     expect(encryptSecret(secret, key)).not.toBe(encryptSecret(secret, key));
   });
 
+  it('requires exactly a 32-byte key for encryption and decryption', () => {
+    const envelope = encryptSecret('JBSWY3DPEHPK3PXP', key);
+
+    for (const invalidKey of [randomBytes(31), randomBytes(33)]) {
+      const message = `secretBox key must be 32 bytes, got ${invalidKey.length}`;
+      expect(() => encryptSecret('JBSWY3DPEHPK3PXP', invalidKey)).toThrow(message);
+      expect(() => decryptSecret(envelope, invalidKey)).toThrow(message);
+    }
+  });
+
+  it('rejects unsupported versions and invalid envelope segment counts', () => {
+    const envelope = encryptSecret('JBSWY3DPEHPK3PXP', key);
+    const parts = envelope.split('.');
+
+    expect(() => decryptSecret(envelope.replace(/^v1\./, 'v2.'), key)).toThrow(
+      'secretBox: malformed envelope',
+    );
+    expect(() => decryptSecret(parts.slice(0, -1).join('.'), key)).toThrow(
+      'secretBox: malformed envelope',
+    );
+    expect(() => decryptSecret(`${envelope}.extra`, key)).toThrow('secretBox: malformed envelope');
+  });
+
+  it('fails closed for invalid IV, authentication-tag, and ciphertext material', () => {
+    const envelope = encryptSecret('JBSWY3DPEHPK3PXP', key);
+    const [version, iv, authTag, ciphertext] = envelope.split('.') as [
+      string,
+      string,
+      string,
+      string,
+    ];
+
+    for (const malformedEnvelope of [
+      [version, `${iv}!`, authTag, ciphertext].join('.'),
+      [version, iv, `${authTag}!`, ciphertext].join('.'),
+      [version, iv, authTag, `${ciphertext}!`].join('.'),
+    ]) {
+      expect(() => decryptSecret(malformedEnvelope, key)).toThrow();
+    }
+  });
+
+  it('rejects a canonical truncated authentication tag', () => {
+    const envelope = encryptSecret('JBSWY3DPEHPK3PXP', key);
+    const [version, iv, authTag, ciphertext] = envelope.split('.') as [
+      string,
+      string,
+      string,
+      string,
+    ];
+    const truncatedAuthTag = Buffer.from(authTag, 'base64url')
+      .subarray(0, 15)
+      .toString('base64url');
+
+    expect(Buffer.from(truncatedAuthTag, 'base64url')).toHaveLength(15);
+    expect(() => decryptSecret([version, iv, truncatedAuthTag, ciphertext].join('.'), key)).toThrow(
+      'secretBox: malformed envelope',
+    );
+  });
+
+  it('round-trips empty and non-ASCII plaintext', () => {
+    for (const plaintext of ['', 'Grüße aus Österreich 🔐']) {
+      expect(decryptSecret(encryptSecret(plaintext, key), key)).toBe(plaintext);
+    }
+  });
+
   it('fails to decrypt with the wrong key or a tampered envelope', () => {
     const envelope = encryptSecret('JBSWY3DPEHPK3PXP', key);
     expect(() => decryptSecret(envelope, randomBytes(32))).toThrow();
