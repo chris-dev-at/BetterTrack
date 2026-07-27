@@ -68,9 +68,14 @@ async function loginAgent(app: Application, identifier: string, password: string
 }
 
 /** Seed a fresh user and mint a personal key with the given scopes. */
-async function mintKey(
-  scopes: string[],
-): Promise<{ token: string; id: string; userId: string; email: string; username: string }> {
+async function mintKey(scopes: string[]): Promise<{
+  token: string;
+  id: string;
+  userId: string;
+  email: string;
+  username: string;
+  password: string;
+}> {
   const user = await seedFreshUser();
   const agent = await loginAgent(harness.app, user.email, user.password);
   const res = await agent
@@ -85,6 +90,7 @@ async function mintKey(
     userId: user.id,
     email: user.email,
     username: user.username,
+    password: user.password,
   };
 }
 
@@ -334,6 +340,36 @@ describe('#361 route × scope matrix', () => {
     const res = await request(harness.app).get('/api/v1/settings/api-keys').set(bearer(token));
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
+  });
+
+  it('changes a password with account:security without minting a cookie session', async () => {
+    const { token, email, password } = await mintKey(['account:security']);
+    const sibling = await loginAgent(harness.app, email, password);
+    const newPassword = 'Bearer-New-Str0ng-Pass!';
+
+    const changed = await request(harness.app)
+      .post('/api/v1/auth/change-password')
+      .set(bearer(token))
+      .send({ currentPassword: password, newPassword });
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    expect(meResponseSchema.parse(changed.body).email).toBe(email);
+    expect(changed.headers['set-cookie']).toBeUndefined();
+
+    // The durable generation invalidates existing cookie sessions, while the
+    // bearer caller receives no replacement cookie.
+    expect((await sibling.get('/api/v1/auth/me')).status).toBe(401);
+    const oldLogin = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: email, password });
+    expect(oldLogin.status).toBe(401);
+
+    const fresh = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: email, password: newPassword });
+    expect(fresh.status).toBe(200);
+    expect(meResponseSchema.safeParse(fresh.body).success).toBe(true);
   });
 });
 

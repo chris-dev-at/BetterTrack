@@ -96,6 +96,15 @@ export interface SessionResult {
   persistent: boolean;
 }
 
+export interface PasswordChangeResult {
+  user: UserRow;
+  /**
+   * A cookie-authenticated caller is reissued at the committed generation.
+   * Bearer callers invalidate every cookie but never receive a cookie session.
+   */
+  reissuedSession: Pick<SessionResult, 'sessionId' | 'persistent'> | null;
+}
+
 /** The login-time 2FA challenge handed back when an account has 2FA enabled (§6.1). */
 export interface TwoFactorChallenge {
   /** Opaque bearer accepted only by the verify / email-code endpoints. */
@@ -192,9 +201,9 @@ export interface AuthService {
   changePassword(
     userId: string,
     input: ChangePasswordRequest,
-    session: SessionSecurityContext,
+    session: SessionSecurityContext | undefined,
     ip?: string | null,
-  ): Promise<SessionResult>;
+  ): Promise<PasswordChangeResult>;
   validateInvite(token: string): Promise<{ valid: boolean; email: string | null }>;
   acceptInvite(input: AcceptInviteRequest, ip?: string | null): Promise<SessionResult>;
   /**
@@ -850,9 +859,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     },
 
     async changePassword(userId, input, session, ip) {
-      // The target is always THIS session's account (`userId` came from the
-      // session cookie), so the outcome never depends on any admin session
-      // elsewhere — no context leakage (§6.1, #248 item 6).
+      // The target is always the authenticated principal's own account. Cookie
+      // callers carry their exact session generation; bearer callers carry no
+      // cookie-session authority and are fenced against the freshly read row.
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
 
@@ -875,16 +884,24 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         user.id,
         passwordHash,
         false,
-        session.securityGeneration,
+        session?.securityGeneration ?? user.securityGeneration,
       );
       if (securityGeneration === null) throw unauthorized();
 
       // Cleanup is best effort: even a Redis failure leaves every prior cookie
-      // fenced by the committed generation. Re-establish only this explicitly
-      // authenticated device at the returned exact generation.
+      // fenced by the committed generation. Only an explicitly authenticated
+      // cookie session is re-established; a bearer must never mint a cookie.
       await destroyAllSessionsBestEffort(user.id);
-      const sessionId = await sessions.create(user.id, securityGeneration);
-      await destroySessionBestEffort(session.sessionId);
+      let reissuedSession: PasswordChangeResult['reissuedSession'] = null;
+      if (session) {
+        const sessionId = await sessions.create(user.id, securityGeneration);
+        await destroySessionBestEffort(session.sessionId);
+        reissuedSession = {
+          sessionId,
+          // A password change re-establishes a normal persistent session (§6.1).
+          persistent: true,
+        };
+      }
 
       await audit.record({
         actorId: user.id,
@@ -902,9 +919,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           mustChangePassword: false,
           securityGeneration,
         },
-        sessionId,
-        // A password change re-establishes a normal persistent session (§6.1).
-        persistent: true,
+        reissuedSession,
       };
     },
 

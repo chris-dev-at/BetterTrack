@@ -225,16 +225,15 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(changePasswordRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as ChangePasswordRequest;
-      const { user, sessionId, persistent } = await ctx.auth.changePassword(
+      const { user, reissuedSession } = await ctx.auth.changePassword(
         req.authUser!.id,
         body,
-        {
-          sessionId: req.sessionId!,
-          securityGeneration: req.sessionSecurityGeneration!,
-        },
+        sessionSecurityContextOf(req),
         req.ip,
       );
-      setSessionCookie(res, ctx.config, sessionId, persistent);
+      if (reissuedSession) {
+        setSessionCookie(res, ctx.config, reissuedSession.sessionId, reissuedSession.persistent);
+      }
       res.json(toMeResponseFromRow(user));
     },
   );

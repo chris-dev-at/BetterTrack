@@ -330,7 +330,7 @@ describe('mandatory admin-login 2FA — email OTP to the 2FA email (§6.12, #400
 });
 
 describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§6.12, #400)', () => {
-  it('rejects a change without proof once enrolled, and accepts it with a valid TOTP', async () => {
+  it('rejects enrollment without proof and changes an enabled address with valid TOTP', async () => {
     const transport = recordingTransport();
     const harness = await createTestApp({ env: SMTP_ENV, emailTransport: transport });
     const admin = await harness.seedAdmin();
@@ -366,10 +366,36 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
       .send({ code: lastEmailedCode(transport) });
     expect(confirm.status).toBe(200);
 
-    const status = adminTwoFactorStatusResponseSchema.parse(
+    const firstStatus = adminTwoFactorStatusResponseSchema.parse(
       (await agent.get('/api/v1/admin/security/2fa/status')).body,
     );
-    expect(status.twoFactorEmail).toBe('first@ops.test');
+    expect(firstStatus).toMatchObject({
+      emailEnabled: true,
+      twoFactorEmail: 'first@ops.test',
+    });
+
+    // Confirming another freshly-proved address is an update of the already
+    // enabled method, not a second enrollment.
+    const change = await agent
+      .post('/api/v1/admin/security/2fa/email/start')
+      .set(...XRW)
+      .send({ email: 'changed@ops.test', proof: generateTotpCode(secret) });
+    expect(change.status).toBe(204);
+    expect(transport.sent.at(-1)!.to).toBe('changed@ops.test');
+
+    const changeConfirm = await agent
+      .post('/api/v1/admin/security/2fa/email/confirm')
+      .set(...XRW)
+      .send({ code: lastEmailedCode(transport) });
+    expect(changeConfirm.status).toBe(200);
+
+    const changedStatus = adminTwoFactorStatusResponseSchema.parse(
+      (await agent.get('/api/v1/admin/security/2fa/status')).body,
+    );
+    expect(changedStatus).toMatchObject({
+      emailEnabled: true,
+      twoFactorEmail: 'changed@ops.test',
+    });
   });
 });
 

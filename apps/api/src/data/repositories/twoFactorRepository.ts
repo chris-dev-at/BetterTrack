@@ -227,6 +227,11 @@ export function createTwoFactorRepository(db: Database) {
       expectedSecurityGeneration?: number,
     ): Promise<number | null> {
       return db.transaction(async (tx) => {
+        // User enrollment may only turn a disabled factor on. Supplying an
+        // admin-only target also represents confirmation of an address change,
+        // so an already-enabled email factor must remain updateable.
+        const emailStateFence =
+          twoFactorEmail === undefined ? eq(users.twoFactorEmailEnabled, false) : undefined;
         const [updated] = await tx
           .update(users)
           .set({
@@ -235,12 +240,7 @@ export function createTwoFactorRepository(db: Database) {
             securityGeneration: sql`${users.securityGeneration} + 1`,
             updatedAt: new Date(),
           })
-          .where(
-            and(
-              securityFence(userId, expectedSecurityGeneration),
-              eq(users.twoFactorEmailEnabled, false),
-            ),
-          )
+          .where(and(securityFence(userId, expectedSecurityGeneration), emailStateFence))
           .returning({ securityGeneration: users.securityGeneration });
         if (!updated) return null;
 
