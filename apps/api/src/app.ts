@@ -2,8 +2,6 @@ import cookieParser from 'cookie-parser';
 import express from 'express';
 import helmet from 'helmet';
 
-import { VAULT_MAX_BYTES_DEFAULT } from '@bettertrack/contracts';
-
 import { createBullBoardRouter } from './http/bullBoard';
 import { createErrorHandler } from './http/errorHandler';
 import { createFeatureFlagsRouter } from './http/routes/featureFlagsRoutes';
@@ -63,7 +61,8 @@ import './http/types';
  * `rehydrationId`) while keeping every other JSON endpoint on the 100 KiB
  * application-wide limit.
  */
-export const PARANOID_DISABLE_JSON_LIMIT_BYTES = VAULT_MAX_BYTES_DEFAULT + 64 * 1024;
+export const paranoidDisableJsonLimitBytes = (vaultMaxBytes: number): number =>
+  vaultMaxBytes + 64 * 1024;
 
 /**
  * Builds the Express application from a wired context. Kept separate from
@@ -87,7 +86,9 @@ export function createApp(ctx: AppContext) {
   // (§4.6, §10). The allowlist is the derived web+admin origins.
   app.use(createCorsMiddleware(ctx.config.corsOrigins));
   const regularJson = express.json({ limit: '100kb' });
-  const paranoidDisableJson = express.json({ limit: PARANOID_DISABLE_JSON_LIMIT_BYTES });
+  const paranoidDisableJson = express.json({
+    limit: paranoidDisableJsonLimitBytes(ctx.config.vault.maxBytes),
+  });
   app.use((req, res, next) => {
     const parser =
       req.method === 'POST' && req.path === '/api/v1/account/paranoid/disable'

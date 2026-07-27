@@ -296,6 +296,8 @@ const dataExportService = createExportService({
   enqueueBuild: async (jobId) => {
     await registry.enqueue('data.export', { jobId });
   },
+  withAccountTransitionLock: (userId, action) =>
+    withLockedPrivacyModes(lockDb, [userId], () => action()),
   logger,
 });
 

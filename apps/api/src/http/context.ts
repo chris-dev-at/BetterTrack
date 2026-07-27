@@ -196,6 +196,7 @@ import {
   createParanoidModeGuard,
   guardRegisteredServices,
   isParanoidOwnedSubjectBlocked,
+  ParanoidModeError,
   runIfParanoidOwnedSubjectAllowed,
   type ParanoidModeGuard,
 } from '../services/account/paranoidEnforcement';
@@ -568,6 +569,8 @@ export interface BuildContextDeps {
    * synchronous build under test (BullMQ can't run on ioredis-mock).
    */
   exportEnqueue?: (jobId: string) => Promise<void>;
+  /** Pause an export build after collection while its account lock is held. */
+  exportAfterCollect?: (jobId: string) => void | Promise<void>;
   /**
    * Test seam (#437): the notification service's clock, so the auto-archive
    * sweep threshold is provable under a controlled clock. Defaults to the
@@ -893,6 +896,20 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     vaults: createParanoidVaultRepository(db),
     maxBytes: config.vault.maxBytes,
     retention: config.vault.history,
+    runWriteAllowed: (userId, action) =>
+      withLockedPrivacyModes(deps.lockDb ?? db, [userId], async (modes) => {
+        const mode = modes.get(userId);
+        if (mode === null || mode === undefined) {
+          throw new ParanoidModeError('portfolioServer');
+        }
+        if (mode === 'paranoid') {
+          const account = await userRepo.findById(userId);
+          if (!account?.paranoidMediaSet?.includes('server')) {
+            throw new ParanoidModeError('portfolioServer');
+          }
+        }
+        return action();
+      }),
   });
 
   const webhookSubscriptionRepo = createWebhookSubscriptionRepository(db);
@@ -1473,6 +1490,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     reactions: itemReactionRepo,
     audience,
     userRepo,
+    paranoid: paranoidGuard,
   });
 
   // Friend chat (§13.3 V3-P8): 1:1 DMs, unread, share-in-chat. Chip resolution
@@ -1585,6 +1603,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     notify,
     enqueueBuild: exportEnqueue,
+    withAccountTransitionLock: (userId, action) =>
+      withLockedPrivacyModes(deps.lockDb ?? db, [userId], () => action()),
+    afterCollect: deps.exportAfterCollect,
     logger,
   });
   exportHolder.service = dataExport;

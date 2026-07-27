@@ -46,6 +46,10 @@ export interface ExportServiceDeps {
    * the request — the row exists and the job (or a manual re-drive) builds it.
    */
   enqueueBuild(jobId: string): Promise<void>;
+  /** Serialize build/download file access with paranoid account transitions. */
+  withAccountTransitionLock<T>(userId: string, action: () => Promise<T>): Promise<T>;
+  /** Test-only pause after collection, while the transition lock is still held. */
+  afterCollect?: (jobId: string) => void | Promise<void>;
   logger?: Logger;
   /** Test seam: controllable clock. */
   now?: () => Date;
@@ -84,6 +88,11 @@ export interface ExportService {
   buildExport(jobId: string): Promise<void>;
   /** Resolve a download for `(user, token)`; throws 404 when it fails closed. */
   resolveDownload(input: { userId: string; token: string }): Promise<ExportDownload>;
+  /** Hold the transition lock until the caller finishes streaming the resolved file. */
+  withDownload<T>(
+    input: { userId: string; token: string },
+    use: (download: ExportDownload) => Promise<T>,
+  ): Promise<T>;
   /** Delete every expired export's file + row; returns how many were pruned. */
   cleanupExpired(): Promise<number>;
 }
@@ -104,6 +113,7 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
   } = deps;
   const now = deps.now ?? (() => new Date());
   const dir = config.dataExport.dir;
+  const withAccountTransitionLock = deps.withAccountTransitionLock;
 
   const throttle = createProgressiveLimiter(
     redis,
@@ -182,6 +192,32 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     };
   }
 
+  async function resolveDownloadUnlocked(input: {
+    userId: string;
+    token: string;
+  }): Promise<ExportDownload> {
+    if (!input.token) {
+      throw badRequest('A download token is required.', 'EXPORT_TOKEN_REQUIRED');
+    }
+    const row = await exportRepo.findDownloadable({
+      userId: input.userId,
+      downloadTokenHash: hashToken(input.token),
+      now: now(),
+    });
+    // Fail closed: a foreign, expired, unknown or not-yet-ready token is an
+    // indistinguishable 404 — never a distinct signal to a probing caller.
+    if (!row || !row.filePath) {
+      throw notFound('This export is no longer available.', 'EXPORT_NOT_FOUND');
+    }
+    const stamp = row.readyAt ?? row.createdAt;
+    const day = stamp.toISOString().slice(0, 10);
+    return {
+      filePath: row.filePath,
+      fileName: `bettertrack-export-${day}.zip`,
+      fileSize: row.fileSize ?? 0,
+    };
+  }
+
   return {
     async requestExport({ userId, body, ip }) {
       await verifyReauth(userId, body, ip);
@@ -229,106 +265,108 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     },
 
     async buildExport(jobId) {
-      const job = await exportRepo.findById(jobId);
-      if (!job) {
+      const owner = await exportRepo.findById(jobId);
+      if (!owner) {
         logger?.warn({ jobId }, 'export build: job gone');
         return;
       }
-      // Idempotent under BullMQ's at-least-once: a job already ready with its
-      // file on disk is a no-op (a retry after a successful build).
-      if (job.status === 'ready' && job.filePath) return;
+      await withAccountTransitionLock(owner.userId, async () => {
+        // Re-read after acquiring the account boundary. Enable may have retired
+        // the row while this retry waited; that terminal failure must never be
+        // rebuilt as a post-enable cleartext archive.
+        const job = await exportRepo.findById(jobId);
+        if (!job) {
+          logger?.warn({ jobId }, 'export build: job gone');
+          return;
+        }
+        if (job.status === 'ready' && job.filePath) return;
+        if (job.status === 'failed' && job.error === 'RETIRED_FOR_PARANOID_MODE') return;
 
-      try {
-        const collected = await collectUserExport(db, job.userId);
-        const generatedAt = now();
-        const [privacy] = await db
-          .select({
-            privacyMode: users.privacyMode,
-            mediaSet: users.paranoidMediaSet,
-          })
-          .from(users)
-          .where(eq(users.id, job.userId))
-          .limit(1);
-        const [currentVault] =
-          privacy?.privacyMode === 'paranoid' && privacy.mediaSet?.includes('server')
-            ? await db
-                .select({
-                  version: paranoidVaults.version,
-                  formatVersion: paranoidVaults.formatVersion,
-                  sizeBytes: paranoidVaults.sizeBytes,
-                  updatedAt: paranoidVaults.updatedAt,
-                  blob: paranoidVaults.blob,
-                })
-                .from(paranoidVaults)
-                .where(eq(paranoidVaults.userId, job.userId))
-                .limit(1)
-            : [];
-        const zip = buildExportZip({
-          userId: job.userId,
-          collected,
-          generatedAt,
-          ...(currentVault ? { currentVault } : {}),
-        });
-        await mkdir(dir, { recursive: true });
         const filePath = filePathFor(jobId);
-        await writeFile(filePath, zip);
-        await exportRepo.markReady({
-          id: jobId,
-          filePath,
-          fileSize: zip.byteLength,
-          expiresAt: new Date(generatedAt.getTime() + EXPORT_DOWNLOAD_TTL_MS),
-          readyAt: generatedAt,
-        });
-        // Inform the owner (inbox / push): the notice deep-links to the export
-        // block in Settings → Account. It carries NO token — the requester
-        // already holds it from the request response, so no secret rides the
-        // durable queue or lands in the inbox row.
-        await notify.emit({
-          type: 'account.data_export',
-          userId: job.userId,
-          occurredAt: generatedAt.toISOString(),
-        });
-      } catch (err) {
-        logger?.error({ err, jobId }, 'export build failed');
-        await exportRepo.markFailed(jobId, 'BUILD_FAILED');
-        throw err;
-      }
+        try {
+          const collected = await collectUserExport(db, job.userId);
+          await deps.afterCollect?.(jobId);
+          const generatedAt = now();
+          const [privacy] = await db
+            .select({
+              privacyMode: users.privacyMode,
+              mediaSet: users.paranoidMediaSet,
+            })
+            .from(users)
+            .where(eq(users.id, job.userId))
+            .limit(1);
+          const [currentVault] =
+            privacy?.privacyMode === 'paranoid' && privacy.mediaSet?.includes('server')
+              ? await db
+                  .select({
+                    version: paranoidVaults.version,
+                    formatVersion: paranoidVaults.formatVersion,
+                    sizeBytes: paranoidVaults.sizeBytes,
+                    updatedAt: paranoidVaults.updatedAt,
+                    blob: paranoidVaults.blob,
+                  })
+                  .from(paranoidVaults)
+                  .where(eq(paranoidVaults.userId, job.userId))
+                  .limit(1)
+              : [];
+          const zip = buildExportZip({
+            userId: job.userId,
+            collected,
+            generatedAt,
+            ...(currentVault ? { currentVault } : {}),
+          });
+          await mkdir(dir, { recursive: true });
+          await writeFile(filePath, zip);
+          await exportRepo.markReady({
+            id: jobId,
+            filePath,
+            fileSize: zip.byteLength,
+            expiresAt: new Date(generatedAt.getTime() + EXPORT_DOWNLOAD_TTL_MS),
+            readyAt: generatedAt,
+          });
+          // Inform the owner (inbox / push): the notice deep-links to the export
+          // block in Settings → Account. It carries NO token — the requester
+          // already holds it from the request response, so no secret rides the
+          // durable queue or lands in the inbox row.
+          await notify.emit({
+            type: 'account.data_export',
+            userId: job.userId,
+            occurredAt: generatedAt.toISOString(),
+          });
+        } catch (err) {
+          logger?.error({ err, jobId }, 'export build failed');
+          await rm(filePath, { force: true });
+          await exportRepo.markFailed(jobId, 'BUILD_FAILED');
+          throw err;
+        }
+      });
     },
 
     async resolveDownload({ userId, token }) {
-      if (!token) throw badRequest('A download token is required.', 'EXPORT_TOKEN_REQUIRED');
-      const row = await exportRepo.findDownloadable({
-        userId,
-        downloadTokenHash: hashToken(token),
-        now: now(),
-      });
-      // Fail closed: a foreign, expired, unknown or not-yet-ready token is an
-      // indistinguishable 404 — never a distinct signal to a probing caller.
-      if (!row || !row.filePath) {
-        throw notFound('This export is no longer available.', 'EXPORT_NOT_FOUND');
-      }
-      const stamp = row.readyAt ?? row.createdAt;
-      const day = stamp.toISOString().slice(0, 10);
-      return {
-        filePath: row.filePath,
-        fileName: `bettertrack-export-${day}.zip`,
-        fileSize: row.fileSize ?? 0,
-      };
+      return withAccountTransitionLock(userId, () => resolveDownloadUnlocked({ userId, token }));
+    },
+
+    async withDownload(input, use) {
+      return withAccountTransitionLock(input.userId, async () =>
+        use(await resolveDownloadUnlocked(input)),
+      );
     },
 
     async cleanupExpired() {
       const expired = await exportRepo.findExpired(now());
       let pruned = 0;
       for (const row of expired) {
-        if (row.filePath) {
-          // `force` swallows ENOENT so a missing file (already gone) still
-          // prunes its row cleanly.
-          await rm(row.filePath, { force: true }).catch((err) => {
-            logger?.warn({ err, jobId: row.id }, 'export cleanup: file unlink failed');
-          });
-        }
-        await exportRepo.deleteById(row.id);
-        pruned += 1;
+        await withAccountTransitionLock(row.userId, async () => {
+          if (row.filePath) {
+            // `force` swallows ENOENT so a missing file (already gone) still
+            // prunes its row cleanly.
+            await rm(row.filePath, { force: true }).catch((err) => {
+              logger?.warn({ err, jobId: row.id }, 'export cleanup: file unlink failed');
+            });
+          }
+          await exportRepo.deleteById(row.id);
+          pruned += 1;
+        });
       }
       return pruned;
     },

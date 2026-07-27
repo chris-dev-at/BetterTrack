@@ -204,6 +204,8 @@ export interface CreateTestAppOptions {
    * direct dispatch under test.
    */
   notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
+  /** Pause an export retry after collection while its transition lock is held. */
+  exportAfterCollect?: (jobId: string) => void | Promise<void>;
   /**
    * Controlled clock for the notification service (#437) — makes the
    * auto-archive sweep threshold provable deterministically.
@@ -281,6 +283,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     passkeyEngine: options.passkeyEngine,
     liveModeOptions: options.liveModeOptions,
     notificationEnqueue: options.notificationEnqueue,
+    exportAfterCollect: options.exportAfterCollect,
     notificationNow: options.notificationNow,
     taxNow: options.taxNow,
     budgetNow: options.budgetNow,

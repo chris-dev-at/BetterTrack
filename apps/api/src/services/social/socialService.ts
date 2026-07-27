@@ -570,8 +570,12 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async followUser(userId, targetId, opts) {
+      if (userId === targetId) throw CANNOT_FOLLOW_SELF();
+      // Preserve the existing opaque 404 for a statically missing/admin/disabled
+      // target. The same lookup runs again inside the transition lock below, so
+      // this compatibility precheck never becomes a check-then-write gap.
+      if (!(await follows.findFollowTarget(targetId))) throw FOLLOW_TARGET_NOT_FOUND();
       const follow = async () => {
-        if (userId === targetId) throw CANNOT_FOLLOW_SELF();
         // The target must be a real, active, non-admin account. Validating first
         // turns an unknown/admin/disabled id into a uniform 404 (never an FK crash),
         // and keeps admins out of the social graph like friend requests do.
@@ -936,39 +940,45 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     getProfileSettings: (userId) => loadProfileSettings(userId),
 
     async updateProfileSettings(userId, input) {
-      // The profile-icon picker remains part of the kept social identity
-      // surface. Only the public-profile opt-in is killed in paranoid mode.
-      if (input.isPublic) await deps.paranoid?.assertAllowed(userId, 'publicProfile');
-      // §16 friction ladder, mirrored server-side: enabling a public profile needs
-      // the explicit acknowledgment, defense-in-depth behind the UI warning.
-      if (input.isPublic && input.acknowledgePublic !== true) throw PROFILE_ACK_REQUIRED();
-      // `bio: undefined` (omitted) leaves the current bio untouched; `null`/empty
-      // clears it. Only touch the column when the caller actually sent a bio.
-      let bio: string | null | undefined;
-      if (input.bio !== undefined) {
-        const trimmed = input.bio?.trim() ?? '';
-        bio = trimmed.length > 0 ? trimmed.slice(0, PROFILE_BIO_MAX) : null;
-      }
-      const current = await profile.getProfileSettings(userId);
-      if (!current) throw PROFILE_NOT_FOUND();
-      await profile.updateProfileSettings(userId, {
-        isPublic: input.isPublic,
-        bio: bio === undefined ? current.bio : bio,
-      });
-      // Profile-icon picker (§13.5 V5-P0c). `undefined` = untouched; `null` clears
-      // the choice; a valid id from the finite allow-list persists. The service
-      // re-validates the id against {@link profileIconIdSchema} — the request
-      // body already did, but defense-in-depth keeps a hand-crafted call honest.
-      if (input.profileIcon !== undefined) {
-        if (input.profileIcon === null) {
-          await userRepo.setProfileIcon(userId, null);
-        } else {
-          const parsed = profileIconIdSchema.safeParse(input.profileIcon);
-          if (!parsed.success) throw INVALID_PROFILE_ICON();
-          await userRepo.setProfileIcon(userId, parsed.data);
+      const update = async () => {
+        // §16 friction ladder, mirrored server-side: enabling a public profile needs
+        // the explicit acknowledgment, defense-in-depth behind the UI warning.
+        if (input.isPublic && input.acknowledgePublic !== true) throw PROFILE_ACK_REQUIRED();
+        // `bio: undefined` (omitted) leaves the current bio untouched; `null`/empty
+        // clears it. Only touch the column when the caller actually sent a bio.
+        let bio: string | null | undefined;
+        if (input.bio !== undefined) {
+          const trimmed = input.bio?.trim() ?? '';
+          bio = trimmed.length > 0 ? trimmed.slice(0, PROFILE_BIO_MAX) : null;
         }
-      }
-      return loadProfileSettings(userId);
+        const current = await profile.getProfileSettings(userId);
+        if (!current) throw PROFILE_NOT_FOUND();
+        await profile.updateProfileSettings(userId, {
+          isPublic: input.isPublic,
+          bio: bio === undefined ? current.bio : bio,
+        });
+        // Profile-icon picker (§13.5 V5-P0c). `undefined` = untouched; `null` clears
+        // the choice; a valid id from the finite allow-list persists. The service
+        // re-validates the id against {@link profileIconIdSchema} — the request
+        // body already did, but defense-in-depth keeps a hand-crafted call honest.
+        if (input.profileIcon !== undefined) {
+          if (input.profileIcon === null) {
+            await userRepo.setProfileIcon(userId, null);
+          } else {
+            const parsed = profileIconIdSchema.safeParse(input.profileIcon);
+            if (!parsed.success) throw INVALID_PROFILE_ICON();
+            await userRepo.setProfileIcon(userId, parsed.data);
+          }
+        }
+        return loadProfileSettings(userId);
+      };
+
+      // The profile-icon/private-profile path stays available. A public opt-in
+      // holds the account transition lock through the final write so an update
+      // that started before enable cannot republish after enable commits.
+      return input.isPublic && deps.paranoid
+        ? deps.paranoid.runAllowedMany([userId], 'publicProfile', update)
+        : update();
     },
 
     async getPublicProfile(username) {

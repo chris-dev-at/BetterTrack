@@ -28,6 +28,7 @@ import {
   itemFollows,
   itemReactions,
   mirrorChainMembers,
+  mirrorChainInvites,
   mirrorChains,
   notifications,
   paranoidVaultHistory,
@@ -45,6 +46,7 @@ import {
   workboardItems,
 } from '../data/schema';
 import type { ParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
+import type { ParanoidKilledCapability } from '../services/account/paranoidEnforcement';
 import { createParanoidTransitionService } from '../services/account/paranoidTransitionService';
 import type { AuditService } from '../services/audit/auditService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -70,11 +72,14 @@ const KEPT_VALUE_IDS = [
 
 let harness: TestHarness;
 let importAfterApplyClaim: ((userId: string, batchId: string) => void | Promise<void>) | undefined;
+let exportAfterCollect: ((jobId: string) => void | Promise<void>) | undefined;
 
 beforeEach(async () => {
   importAfterApplyClaim = undefined;
+  exportAfterCollect = undefined;
   harness = await createTestApp({
     importAfterApplyClaim: (userId, batchId) => importAfterApplyClaim?.(userId, batchId),
+    exportAfterCollect: (jobId) => exportAfterCollect?.(jobId),
   });
 });
 
@@ -142,12 +147,72 @@ async function putServerVault(agent: Agent, version = 1) {
   return blob;
 }
 
+async function stageServerVault(userId: string, version = 1) {
+  const blob = envelope(version);
+  await harness.db.insert(paranoidVaults).values({
+    userId,
+    version,
+    formatVersion: 1,
+    sizeBytes: blob.length,
+    blob,
+  });
+}
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
     resolve = done;
   });
   return { promise, resolve };
+}
+
+function startPausedDriveEnable(userId: string) {
+  const locked = deferred();
+  const release = deferred();
+  const transition = createParanoidTransitionService({
+    db: harness.db,
+    rehydration: {} as ParanoidRehydrationService,
+    audit: { record: vi.fn(async () => {}) } as unknown as AuditService,
+    async afterEnableStage(stage) {
+      if (stage !== 'locked') return;
+      locked.resolve();
+      await release.promise;
+    },
+  });
+  const enabling = transition.enable(userId, {
+    mediaSet: ['drive'],
+    vaultVersion: 1,
+    driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
+  });
+  return { enabling, locked: locked.promise, release };
+}
+
+function pauseGuardedAction(targetId: string, capability: ParanoidKilledCapability) {
+  const guard = harness.ctx.paranoidGuard;
+  const original = guard.runAllowedMany.bind(guard);
+  const entered = deferred();
+  const release = deferred();
+  let paused = false;
+  guard.runAllowedMany = async <T>(
+    userIds: readonly string[],
+    guardedCapability: ParanoidKilledCapability,
+    action: () => Promise<T>,
+  ): Promise<T> =>
+    original(userIds, guardedCapability, async () => {
+      if (!paused && guardedCapability === capability && userIds.includes(targetId)) {
+        paused = true;
+        entered.resolve();
+        await release.promise;
+      }
+      return action();
+    });
+  return {
+    entered: entered.promise,
+    release,
+    restore() {
+      guard.runAllowedMany = original;
+    },
+  };
 }
 
 describe('public paranoid transitions', () => {
@@ -533,6 +598,31 @@ describe('public paranoid transitions', () => {
     );
   });
 
+  it('derives the disable transport limit from a raised vault size cap', async () => {
+    const raisedCap = 17 * 1024 * 1024;
+    harness = await createTestApp({
+      env: { BT_VAULT_MAX_BYTES: String(raisedCap) },
+    });
+    const user = await harness.seedUser({
+      email: 'raised-cap@bettertrack.test',
+      username: 'raised_cap',
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const body = {
+      confirm: true,
+      padding: 'x'.repeat(16 * 1024 * 1024 + 1024),
+    };
+
+    const response = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send(body);
+    // The runtime-sized parser accepted the body and strict contract validation
+    // rejected it. The old hard-coded 16 MiB parser returned 413 before this.
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).not.toBe('PAYLOAD_TOO_LARGE');
+  });
+
   it('accepts exact Drive-only evidence and removes all BetterTrack vault bytes', async () => {
     const { user, agent } = await seedNormalAccount();
     await putServerVault(agent, 1);
@@ -573,6 +663,100 @@ describe('public paranoid transitions', () => {
       paranoidMediaSet: ['drive'],
       paranoidDriveAttestedVersion: 2,
     });
+
+    const forbiddenWrite = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(envelope(3));
+    expect(forbiddenWrite.status).toBe(403);
+    expect(forbiddenWrite.body.error.code).toBe('PARANOID_MODE');
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidVaultHistory)
+        .where(eq(paranoidVaultHistory.userId, user.id)),
+    ).toEqual([]);
+
+    await harness.db.insert(paranoidVaultHistory).values({
+      userId: user.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 1,
+      blob: Buffer.from([1]),
+    });
+    const inconsistentRetry = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send({
+        mediaSet: ['drive'],
+        vaultVersion: 2,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 2 },
+      });
+    expect(inconsistentRetry.status).toBe(409);
+    expect(inconsistentRetry.body.error.code).toBe('PARANOID_TRANSITION_CONFLICT');
+  });
+
+  it('rejects a server-vault write that was already waiting on a Drive-only enable', async () => {
+    const { user, agent } = await seedNormalAccount();
+    await putServerVault(agent);
+    const { enabling, locked, release } = startPausedDriveEnable(user.id);
+    await locked;
+
+    const writing = harness.ctx.paranoidVault
+      .put({
+        userId: user.id,
+        expectedVersion: 1,
+        blob: envelope(2),
+      })
+      .then(
+        (value) => ({ value, error: null }),
+        (error: unknown) => ({ value: null, error }),
+      );
+    release.resolve();
+
+    await expect(enabling).resolves.toMatchObject({ mode: 'paranoid' });
+    expect((await writing).error).toMatchObject({ code: 'PARANOID_MODE' });
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidVaultHistory)
+        .where(eq(paranoidVaultHistory.userId, user.id)),
+    ).toEqual([]);
+  });
+
+  it('keeps server-medium vault synchronization available after enable', async () => {
+    const { user, agent } = await seedNormalAccount();
+    await putServerVault(agent);
+    const enabled = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send({ mediaSet: ['server'], vaultVersion: 1 });
+    expect(enabled.status).toBe(200);
+
+    const updated = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(envelope(2));
+    expect(updated.status).toBe(204);
+    expect(updated.headers.etag).toBe('"2"');
+    expect(
+      (
+        await harness.db
+          .select({ version: paranoidVaults.version })
+          .from(paranoidVaults)
+          .where(eq(paranoidVaults.userId, user.id))
+      )[0],
+    ).toEqual({ version: 2 });
   });
 
   it('revokes every outbound and inbound sharing edge while preserving kept account data', async () => {
@@ -856,6 +1040,46 @@ describe('public paranoid transitions', () => {
     ).toEqual([]);
   });
 
+  it('serializes a failed export retry through mark-ready before enable retires it', async () => {
+    const { user, agent } = await seedNormalAccount();
+    await putServerVault(agent);
+    const [job] = await harness.db
+      .insert(exportJobs)
+      .values({ userId: user.id, status: 'failed', error: 'BUILD_FAILED' })
+      .returning();
+    const collected = deferred();
+    const releaseBuild = deferred();
+    exportAfterCollect = async (jobId) => {
+      if (jobId !== job!.id) return;
+      collected.resolve();
+      await releaseBuild.promise;
+    };
+
+    const building = harness.ctx.dataExport.buildExport(job!.id);
+    await collected.promise;
+    const transition = createParanoidTransitionService({
+      db: harness.db,
+      rehydration: {} as ParanoidRehydrationService,
+      audit: { record: vi.fn(async () => {}) } as unknown as AuditService,
+    });
+    const enabling = transition.enable(user.id, {
+      mediaSet: ['server'],
+      vaultVersion: 1,
+      driveAttestation: null,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseBuild.resolve();
+
+    await expect(building).resolves.toBeUndefined();
+    await expect(enabling).resolves.toMatchObject({ mode: 'paranoid' });
+    const [after] = await harness.db.select().from(exportJobs).where(eq(exportJobs.id, job!.id));
+    expect(after).toMatchObject({
+      status: 'failed',
+      filePath: null,
+      error: 'RETIRED_FOR_PARANOID_MODE',
+    });
+  });
+
   it('retires a ready normal-account cleartext export before enable can commit', async () => {
     const { user, agent } = await seedNormalAccount();
     await putServerVault(agent);
@@ -908,7 +1132,7 @@ describe('public paranoid transitions', () => {
       db: harness.db,
       rehydration: {} as ParanoidRehydrationService,
       audit: { record: vi.fn(async () => {}) } as unknown as AuditService,
-      retireExportFile: vi.fn(async () => {
+      prepareExportFile: vi.fn(async () => {
         throw new Error('injected unlink failure');
       }),
     });
@@ -934,6 +1158,17 @@ describe('public paranoid transitions', () => {
       const { user, agent } = await seedNormalAccount();
       await putServerVault(agent);
       await harness.db.update(users).set({ profilePublic: true }).where(eq(users.id, user.id));
+      const requested = await agent
+        .post('/api/v1/account/export')
+        .set(...XRW)
+        .send({ password: user.password });
+      const { jobId } = exportRequestResponseSchema.parse(requested.body);
+      const [exportBefore] = await harness.db
+        .select()
+        .from(exportJobs)
+        .where(eq(exportJobs.id, jobId));
+      expect(exportBefore).toMatchObject({ status: 'ready' });
+      expect(existsSync(exportBefore!.filePath!)).toBe(true);
 
       const audit = { record: vi.fn(async () => {}) } as unknown as AuditService;
       const transition = createParanoidTransitionService({
@@ -960,6 +1195,10 @@ describe('public paranoid transitions', () => {
       expect(
         await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
       ).toHaveLength(1);
+      expect(
+        (await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId)))[0],
+      ).toEqual(exportBefore);
+      expect(existsSync(exportBefore!.filePath!)).toBe(true);
       expect(audit.record).not.toHaveBeenCalled();
     },
   );
@@ -1028,5 +1267,136 @@ describe('public paranoid transitions', () => {
     expect(
       await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
     ).toEqual([]);
+  });
+
+  it('holds affected target accounts across invite, comment, and public-profile writes', async () => {
+    const mirrorActor = await harness.seedUser({
+      email: 'mirror-actor@bettertrack.test',
+      username: 'mirror_actor',
+    });
+    const mirrorTarget = await harness.seedUser({
+      email: 'mirror-target@bettertrack.test',
+      username: 'mirror_target',
+    });
+    const [mirrorUserA, mirrorUserB] = [mirrorActor.id, mirrorTarget.id].sort();
+    await harness.db.insert(friendships).values({ userA: mirrorUserA!, userB: mirrorUserB! });
+    const chain = await harness.ctx.mirror.createChain(mirrorActor.id, 'Target lock');
+    await stageServerVault(mirrorTarget.id);
+
+    const mirrorGate = pauseGuardedAction(mirrorTarget.id, 'mirrorchain');
+    const inviting = harness.ctx.mirror.inviteMember(
+      mirrorActor.id,
+      chain.chainId,
+      mirrorTarget.id,
+    );
+    await mirrorGate.entered;
+    const mirrorEnable = startPausedDriveEnable(mirrorTarget.id);
+    let mirrorEnableLocked = false;
+    void mirrorEnable.locked.then(() => {
+      mirrorEnableLocked = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mirrorEnableLocked).toBe(false);
+    mirrorGate.release.resolve();
+    await expect(inviting).resolves.toBeUndefined();
+    await mirrorEnable.locked;
+    mirrorEnable.release.resolve();
+    await expect(mirrorEnable.enabling).resolves.toMatchObject({ mode: 'paranoid' });
+    mirrorGate.restore();
+    expect(
+      await harness.db
+        .select({ status: mirrorChainInvites.status })
+        .from(mirrorChainInvites)
+        .where(eq(mirrorChainInvites.toUser, mirrorTarget.id)),
+    ).toEqual([{ status: 'revoked' }]);
+
+    const commentOwner = await harness.seedUser({
+      email: 'comment-owner@bettertrack.test',
+      username: 'comment_owner',
+    });
+    const commenter = await harness.seedUser({
+      email: 'commenter@bettertrack.test',
+      username: 'commenter',
+    });
+    const [commentUserA, commentUserB] = [commentOwner.id, commenter.id].sort();
+    await harness.db.insert(friendships).values({ userA: commentUserA!, userB: commentUserB! });
+    const [sharedPortfolio] = await harness.db
+      .insert(portfolios)
+      .values({ userId: commentOwner.id, name: 'Shared before enable' })
+      .returning();
+    const [audience] = await harness.db
+      .insert(shareAudiences)
+      .values({
+        ownerId: commentOwner.id,
+        kind: 'portfolio',
+        subjectId: sharedPortfolio!.id,
+        audience: 'specific_friends',
+      })
+      .returning();
+    await harness.db
+      .insert(shareAudienceMembers)
+      .values({ audienceId: audience!.id, friendId: commenter.id });
+    await stageServerVault(commentOwner.id);
+
+    const commentGate = pauseGuardedAction(commentOwner.id, 'sharing');
+    const commenting = harness.ctx.comments.addComment(
+      commenter.id,
+      'portfolio',
+      sharedPortfolio!.id,
+      'Must finish before enable',
+    );
+    await commentGate.entered;
+    const commentEnable = startPausedDriveEnable(commentOwner.id);
+    let commentEnableLocked = false;
+    void commentEnable.locked.then(() => {
+      commentEnableLocked = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(commentEnableLocked).toBe(false);
+    commentGate.release.resolve();
+    await expect(commenting).resolves.toMatchObject({ body: 'Must finish before enable' });
+    await commentEnable.locked;
+    commentEnable.release.resolve();
+    await expect(commentEnable.enabling).resolves.toMatchObject({ mode: 'paranoid' });
+    commentGate.restore();
+    expect(
+      await harness.db
+        .select()
+        .from(itemComments)
+        .where(eq(itemComments.subjectId, sharedPortfolio!.id)),
+    ).toEqual([]);
+
+    const profileTarget = await harness.seedUser({
+      email: 'profile-target@bettertrack.test',
+      username: 'profile_target',
+    });
+    await stageServerVault(profileTarget.id);
+    const profileGate = pauseGuardedAction(profileTarget.id, 'publicProfile');
+    const publishing = harness.ctx.social.updateProfileSettings(profileTarget.id, {
+      isPublic: true,
+      acknowledgePublic: true,
+    });
+    await profileGate.entered;
+    const profileEnable = startPausedDriveEnable(profileTarget.id);
+    let profileEnableLocked = false;
+    void profileEnable.locked.then(() => {
+      profileEnableLocked = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(profileEnableLocked).toBe(false);
+    profileGate.release.resolve();
+    await expect(publishing).resolves.toMatchObject({ isPublic: true });
+    await profileEnable.locked;
+    profileEnable.release.resolve();
+    await expect(profileEnable.enabling).resolves.toMatchObject({ mode: 'paranoid' });
+    profileGate.restore();
+    expect(
+      (
+        await harness.db
+          .select({ profilePublic: users.profilePublic })
+          .from(users)
+          .where(eq(users.id, profileTarget.id))
+      )[0],
+    ).toEqual({ profilePublic: false });
   });
 });

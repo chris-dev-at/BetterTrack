@@ -96,8 +96,16 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     validateQuery(exportDownloadQuerySchema),
     async (req, res) => {
       const { token } = req.valid?.query as ExportDownloadQuery;
-      const file = await ctx.dataExport.resolveDownload({ userId: req.authUser!.id, token });
-      res.download(file.filePath, file.fileName);
+      await ctx.dataExport.withDownload(
+        { userId: req.authUser!.id, token },
+        (file) =>
+          new Promise<void>((resolve, reject) => {
+            res.download(file.filePath, file.fileName, (error) => {
+              if (error) reject(error);
+              else resolve();
+            });
+          }),
+      );
     },
   );
 

@@ -194,7 +194,7 @@ export interface MirrorServiceDeps {
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
   /** Defense in depth: paranoid accounts cannot create, join, or mutate chains. */
-  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'runAllowedMany'>;
 }
 
 export interface ReplicateChainResult {
@@ -508,6 +508,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   const assertMirrorAllowed = async (userId: string) => {
     await deps.paranoid?.assertAllowed(userId, 'mirrorchain');
   };
+  const runMirrorAllowedMany = <T>(
+    userIds: readonly string[],
+    action: () => Promise<T>,
+  ): Promise<T> =>
+    deps.paranoid ? deps.paranoid.runAllowedMany(userIds, 'mirrorchain', action) : action();
 
   // ── Infrastructure ─────────────────────────────────────────────────────────
 
@@ -2209,63 +2214,69 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async inviteMember(actorId, chainId, inviteeId) {
-      await assertMirrorAllowed(actorId);
-      await assertMirrorAllowed(inviteeId);
-      if (actorId === inviteeId) {
-        throw badRequest('You cannot invite yourself.', MIRROR_CANNOT_INVITE_SELF);
-      }
-      // Friends-only (design §4) — checked here at send AND again at accept.
-      if (!(await friendship.areFriends(actorId, inviteeId))) {
-        throw badRequest('You can only invite friends to a group portfolio.', MIRROR_NOT_FRIENDS);
-      }
-      const { chain, invite } = await withAuthorizedMember(
-        chainId,
-        actorId,
-        (actor) => {
-          if (!roleCan(actor.role, 'invite')) throw mirrorForbidden();
-        },
-        async ({ chain, members }) => {
-          if (members.some((m) => m.userId === inviteeId)) {
-            throw badRequest(
-              'That user is already a member of this group portfolio.',
-              'MIRROR_ALREADY_MEMBER',
-            );
-          }
-          // Cap enforced at send (design §4) — active members only.
-          if (members.length >= maxMembers) {
-            throw new ApiError(
-              409,
-              MIRROR_MEMBER_CAP_REACHED,
-              `This group portfolio is full (max ${maxMembers} members).`,
-            );
-          }
-          // Pending-unique per (chain, invitee); declining/expiry allows a
-          // re-invite (§4). An expired-but-not-yet-swept pending invite no longer
-          // blocks — retire it so the pending-unique slot frees for a fresh send.
-          const pending = await repo.findPendingInvite(chainId, inviteeId);
-          if (pending) {
-            if (inviteExpired(pending)) {
-              await repo.setInviteStatus(pending.id, 'expired', new Date(now()));
-            } else {
-              throw new ApiError(
-                409,
-                MIRROR_INVITE_EXISTS,
-                'That user already has a pending invite to this group portfolio.',
+      return runMirrorAllowedMany([actorId, inviteeId], async () => {
+        await assertMirrorAllowed(actorId);
+        await assertMirrorAllowed(inviteeId);
+        if (actorId === inviteeId) {
+          throw badRequest('You cannot invite yourself.', MIRROR_CANNOT_INVITE_SELF);
+        }
+        // Friends-only (design §4) — checked here at send AND again at accept.
+        if (!(await friendship.areFriends(actorId, inviteeId))) {
+          throw badRequest('You can only invite friends to a group portfolio.', MIRROR_NOT_FRIENDS);
+        }
+        const { chain, invite } = await withAuthorizedMember(
+          chainId,
+          actorId,
+          (actor) => {
+            if (!roleCan(actor.role, 'invite')) throw mirrorForbidden();
+          },
+          async ({ chain, members }) => {
+            if (members.some((m) => m.userId === inviteeId)) {
+              throw badRequest(
+                'That user is already a member of this group portfolio.',
+                'MIRROR_ALREADY_MEMBER',
               );
             }
-          }
-          const invite = await repo.createInvite({ chainId, fromUser: actorId, toUser: inviteeId });
-          return { chain, invite };
-        },
-      );
-      const inviterName = await usernameOf(actorId);
-      await emitMirror('mirror.invite', inviteeId, chain, inviterName, invite.id);
-      await audit.record({
-        actorId,
-        action: AuditAction.MirrorMemberInvited,
-        targetType: 'user',
-        targetId: inviteeId,
-        meta: { chainId, inviteId: invite.id },
+            // Cap enforced at send (design §4) — active members only.
+            if (members.length >= maxMembers) {
+              throw new ApiError(
+                409,
+                MIRROR_MEMBER_CAP_REACHED,
+                `This group portfolio is full (max ${maxMembers} members).`,
+              );
+            }
+            // Pending-unique per (chain, invitee); declining/expiry allows a
+            // re-invite (§4). An expired-but-not-yet-swept pending invite no longer
+            // blocks — retire it so the pending-unique slot frees for a fresh send.
+            const pending = await repo.findPendingInvite(chainId, inviteeId);
+            if (pending) {
+              if (inviteExpired(pending)) {
+                await repo.setInviteStatus(pending.id, 'expired', new Date(now()));
+              } else {
+                throw new ApiError(
+                  409,
+                  MIRROR_INVITE_EXISTS,
+                  'That user already has a pending invite to this group portfolio.',
+                );
+              }
+            }
+            const invite = await repo.createInvite({
+              chainId,
+              fromUser: actorId,
+              toUser: inviteeId,
+            });
+            return { chain, invite };
+          },
+        );
+        const inviterName = await usernameOf(actorId);
+        await emitMirror('mirror.invite', inviteeId, chain, inviterName, invite.id);
+        await audit.record({
+          actorId,
+          action: AuditAction.MirrorMemberInvited,
+          targetType: 'user',
+          targetId: inviteeId,
+          meta: { chainId, inviteId: invite.id },
+        });
       });
     },
 

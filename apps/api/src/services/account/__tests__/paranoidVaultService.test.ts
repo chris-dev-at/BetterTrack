@@ -7,7 +7,7 @@ import type {
   ParanoidVaultRepository,
 } from '../../../data/repositories/paranoidVaultRepository';
 import type { ParanoidVaultRow } from '../../../data/schema';
-import { createParanoidVaultService } from '../paranoidVaultService';
+import { createParanoidVaultService, type ParanoidVaultServiceDeps } from '../paranoidVaultService';
 
 const UUID_A = '018f0000-0000-7000-8000-00000000000a';
 const UUID_B = '018f0000-0000-7000-8000-00000000000b';
@@ -67,11 +67,16 @@ function fakeRepo(options: FakeRepoOptions = {}) {
 }
 
 const retention = { maxVersions: 10, maxAgeMs: 30 * 24 * 60 * 60 * 1000 };
+const createService = (deps: Omit<ParanoidVaultServiceDeps, 'runWriteAllowed'>) =>
+  createParanoidVaultService({
+    ...deps,
+    runWriteAllowed: (_userId, action) => action(),
+  });
 
 describe('paranoid vault service', () => {
   it('rejects an oversized payload before any parse or persistence', async () => {
     const { repo, calls } = fakeRepo();
-    const service = createParanoidVaultService({ vaults: repo, maxBytes: 10, retention });
+    const service = createService({ vaults: repo, maxBytes: 10, retention });
     const result = await service.put({
       userId: UUID_A,
       expectedVersion: null,
@@ -83,7 +88,7 @@ describe('paranoid vault service', () => {
 
   it('rejects bytes that are not a well-formed envelope', async () => {
     const { repo, calls } = fakeRepo();
-    const service = createParanoidVaultService({ vaults: repo, maxBytes: 1_000_000, retention });
+    const service = createService({ vaults: repo, maxBytes: 1_000_000, retention });
     const result = await service.put({
       userId: UUID_A,
       expectedVersion: null,
@@ -95,7 +100,7 @@ describe('paranoid vault service', () => {
 
   it('delegates a valid create to the repository with the header version', async () => {
     const { repo, calls } = fakeRepo();
-    const service = createParanoidVaultService({
+    const service = createService({
       vaults: repo,
       maxBytes: 1_000_000,
       retention,
@@ -119,7 +124,7 @@ describe('paranoid vault service', () => {
 
   it('refuses a non-advancing version against the If-Match precondition', async () => {
     const { repo, calls } = fakeRepo();
-    const service = createParanoidVaultService({ vaults: repo, maxBytes: 1_000_000, retention });
+    const service = createService({ vaults: repo, maxBytes: 1_000_000, retention });
     const result = await service.put({
       userId: UUID_A,
       expectedVersion: 5,
@@ -131,7 +136,7 @@ describe('paranoid vault service', () => {
 
   it('accepts an advancing replace and forwards the CAS precondition', async () => {
     const { repo, calls } = fakeRepo();
-    const service = createParanoidVaultService({ vaults: repo, maxBytes: 1_000_000, retention });
+    const service = createService({ vaults: repo, maxBytes: 1_000_000, retention });
     const result = await service.put({
       userId: UUID_A,
       expectedVersion: 5,
@@ -152,7 +157,7 @@ describe('paranoid vault service', () => {
       updatedAt: new Date('2026-07-24T10:00:00.000Z'),
     };
     const { repo } = fakeRepo({ current: row });
-    const service = createParanoidVaultService({ vaults: repo, maxBytes: 1_000_000, retention });
+    const service = createService({ vaults: repo, maxBytes: 1_000_000, retention });
     expect(await service.getMetadata(UUID_A)).toEqual({
       version: 3,
       formatVersion: 1,
@@ -161,7 +166,7 @@ describe('paranoid vault service', () => {
     });
 
     const { repo: emptyRepo } = fakeRepo({ current: null });
-    const emptyService = createParanoidVaultService({
+    const emptyService = createService({
       vaults: emptyRepo,
       maxBytes: 1_000_000,
       retention,

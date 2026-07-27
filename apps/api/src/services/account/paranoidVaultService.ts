@@ -27,6 +27,13 @@ export interface ParanoidVaultServiceDeps {
   maxBytes: number;
   /** Bounded ciphertext history window (§4, env-tunable). */
   retention: ParanoidVaultRetention;
+  /**
+   * Holds the account's transition lock across the complete CAS write and
+   * rejects paranoid Drive-only accounts. Normal accounts may stage their first
+   * server blob before enable; paranoid accounts may keep syncing only when
+   * their selected media still includes `server`.
+   */
+  runWriteAllowed<T>(userId: string, action: () => Promise<T>): Promise<T>;
   /** Injected clock so archive/prune timestamps stay deterministic in tests. */
   now?: () => Date;
 }
@@ -101,44 +108,47 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
     },
 
     async put({ userId, expectedVersion, blob }) {
-      // Size cap FIRST — an oversized payload is rejected before any parse or
-      // persistence.
-      if (blob.length > deps.maxBytes) {
-        return { status: 'too_large', sizeBytes: blob.length, maxBytes: deps.maxBytes };
-      }
-
-      // Read ONLY the safe header fields the blind store is entitled to.
-      let header: { formatVersion: number; vaultVersion: number };
-      try {
-        header = readVaultServerHeader(blob);
-      } catch (err) {
-        if (err instanceof VaultEnvelopeError) {
-          return { status: 'malformed', reason: err.message };
+      const write = async (): Promise<ParanoidVaultPutResult> => {
+        // Size cap FIRST inside the transition boundary — even malformed or
+        // oversized writes cannot use a pre-enable authorization decision after
+        // a Drive-only enable commits.
+        if (blob.length > deps.maxBytes) {
+          return { status: 'too_large', sizeBytes: blob.length, maxBytes: deps.maxBytes };
         }
-        throw err;
-      }
 
-      // The envelope's version must strictly advance the precondition — a
-      // client always writes `last seen + 1` (or a merged max(parents)+1). A
-      // non-advancing version is a malformed/stale write, never persisted.
-      if (expectedVersion !== null && header.vaultVersion <= expectedVersion) {
-        return {
-          status: 'malformed',
-          reason: 'envelope vaultVersion does not advance the If-Match version',
-        };
-      }
+        // Read ONLY the safe header fields the blind store is entitled to.
+        let header: { formatVersion: number; vaultVersion: number };
+        try {
+          header = readVaultServerHeader(blob);
+        } catch (err) {
+          if (err instanceof VaultEnvelopeError) {
+            return { status: 'malformed', reason: err.message };
+          }
+          throw err;
+        }
 
-      const result = await deps.vaults.compareAndSwap({
-        userId,
-        expectedVersion,
-        version: header.vaultVersion,
-        formatVersion: header.formatVersion,
-        sizeBytes: blob.length,
-        blob,
-        retention: deps.retention,
-        now: now(),
-      });
-      return result;
+        // The envelope's version must strictly advance the precondition — a
+        // client always writes `last seen + 1` (or a merged max(parents)+1). A
+        // non-advancing version is a malformed/stale write, never persisted.
+        if (expectedVersion !== null && header.vaultVersion <= expectedVersion) {
+          return {
+            status: 'malformed',
+            reason: 'envelope vaultVersion does not advance the If-Match version',
+          };
+        }
+
+        return deps.vaults.compareAndSwap({
+          userId,
+          expectedVersion,
+          version: header.vaultVersion,
+          formatVersion: header.formatVersion,
+          sizeBytes: blob.length,
+          blob,
+          retention: deps.retention,
+          now: now(),
+        });
+      };
+      return deps.runWriteAllowed(userId, write);
     },
   };
 }

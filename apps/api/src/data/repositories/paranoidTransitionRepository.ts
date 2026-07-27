@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, or } from 'drizzle-orm';
+import { and, count, eq, inArray, or, sql } from 'drizzle-orm';
 
 import { VAULT_FORMAT_VERSION, type VaultMediaSet } from '@bettertrack/contracts';
 
@@ -21,6 +21,7 @@ import {
   itemComments,
   itemFollows,
   itemReactions,
+  mirrorChainInvites,
   mirrorChainMembers,
   paranoidRehydrationReceipts,
   paranoidVaultHistory,
@@ -56,6 +57,7 @@ export interface LockedParanoidTransitionState {
     sizeBytes: number;
     updatedAt: Date;
   } | null;
+  serverVaultHistoryCount: number;
   activeMirrorchain: boolean;
   pendingImport: boolean;
   pendingExport: boolean;
@@ -121,10 +123,20 @@ const probe = async (query: PromiseLike<Array<{ value: number }>>): Promise<numb
  * manifest before a destructive transition can start.
  */
 const PURGE_HANDLERS: Record<string, PurgeHandler> = {
-  assets: ({ customAssetIds, tx, userId }) =>
-    ifIds(customAssetIds, (ids) =>
-      tx.delete(assets).where(and(eq(assets.ownerId, userId), inArray(assets.id, ids))),
-    ),
+  assets: async ({ customAssetIds, tx, userId }) => {
+    // #794's database-enforced identity seam is the only allowed way to remove
+    // content-bearing custom assets while preserving server-classified
+    // watchlist/conglomerate/alert references. Each call locks and owner-checks
+    // the asset row, then retains only its opaque (id, owner_id) identity.
+    for (const assetId of customAssetIds) {
+      await tx.execute(sql`
+        select bettertrack_detach_owned_asset_data(
+          cast(${assetId} as uuid),
+          cast(${userId} as uuid)
+        )
+      `);
+    }
+  },
   dividends: ({ portfolioIds, tx }) =>
     ifIds(portfolioIds, (ids) => tx.delete(dividends).where(inArray(dividends.portfolioId, ids))),
   expense_budget_fires: ({ expenseBudgetIds, tx }) =>
@@ -374,6 +386,24 @@ function activitySubjectCondition(
     : undefined;
 }
 
+function commentSubjectCondition(
+  kind: 'portfolio' | 'conglomerate' | 'watchlist' | 'idea',
+  ids: readonly string[],
+) {
+  return ids.length > 0
+    ? and(eq(itemComments.kind, kind), inArray(itemComments.subjectId, [...ids]))
+    : undefined;
+}
+
+function reactionSubjectCondition(
+  kind: 'portfolio' | 'conglomerate' | 'watchlist' | 'idea',
+  ids: readonly string[],
+) {
+  return ids.length > 0
+    ? and(eq(itemReactions.kind, kind), inArray(itemReactions.subjectId, [...ids]))
+    : undefined;
+}
+
 export function createParanoidTransitionTransactionRepository(
   tx: Database,
 ): ParanoidTransitionTransactionRepository {
@@ -390,45 +420,51 @@ export function createParanoidTransitionTransactionRepository(
         .for('update');
       if (!user) return null;
 
-      const [[vault], [membership], [pendingImport], accountExports] = await Promise.all([
-        tx
-          .select({
-            version: paranoidVaults.version,
-            formatVersion: paranoidVaults.formatVersion,
-            sizeBytes: paranoidVaults.sizeBytes,
-            updatedAt: paranoidVaults.updatedAt,
-          })
-          .from(paranoidVaults)
-          .where(eq(paranoidVaults.userId, userId))
-          .limit(1),
-        tx
-          .select({ id: mirrorChainMembers.id })
-          .from(mirrorChainMembers)
-          .where(
-            and(eq(mirrorChainMembers.userId, userId), eq(mirrorChainMembers.status, 'active')),
-          )
-          .limit(1),
-        tx
-          .select({ id: importBatches.id })
-          .from(importBatches)
-          .where(and(eq(importBatches.ownerId, userId), eq(importBatches.status, 'pending')))
-          .limit(1),
-        tx
-          .select({
-            id: exportJobs.id,
-            status: exportJobs.status,
-            filePath: exportJobs.filePath,
-          })
-          .from(exportJobs)
-          .where(eq(exportJobs.userId, userId))
-          .for('update'),
-      ]);
+      const [[vault], [historyCount], [membership], [pendingImport], accountExports] =
+        await Promise.all([
+          tx
+            .select({
+              version: paranoidVaults.version,
+              formatVersion: paranoidVaults.formatVersion,
+              sizeBytes: paranoidVaults.sizeBytes,
+              updatedAt: paranoidVaults.updatedAt,
+            })
+            .from(paranoidVaults)
+            .where(eq(paranoidVaults.userId, userId))
+            .limit(1),
+          tx
+            .select({ value: count() })
+            .from(paranoidVaultHistory)
+            .where(eq(paranoidVaultHistory.userId, userId)),
+          tx
+            .select({ id: mirrorChainMembers.id })
+            .from(mirrorChainMembers)
+            .where(
+              and(eq(mirrorChainMembers.userId, userId), eq(mirrorChainMembers.status, 'active')),
+            )
+            .limit(1),
+          tx
+            .select({ id: importBatches.id })
+            .from(importBatches)
+            .where(and(eq(importBatches.ownerId, userId), eq(importBatches.status, 'pending')))
+            .limit(1),
+          tx
+            .select({
+              id: exportJobs.id,
+              status: exportJobs.status,
+              filePath: exportJobs.filePath,
+            })
+            .from(exportJobs)
+            .where(eq(exportJobs.userId, userId))
+            .for('update'),
+        ]);
 
       return {
         privacyMode: user.privacyMode,
         mediaSet: user.mediaSet as VaultMediaSet | null,
         driveAttestedVersion: user.driveAttestedVersion,
         currentServerVault: vault ?? null,
+        serverVaultHistoryCount: Number(historyCount?.value ?? 0),
         activeMirrorchain: Boolean(membership),
         pendingImport: Boolean(pendingImport),
         pendingExport: accountExports.some((row) => row.status === 'pending'),
@@ -478,9 +514,33 @@ export function createParanoidTransitionTransactionRepository(
         activitySubjectCondition('watchlist', watchlistIds),
         activitySubjectCondition('idea', ideaIds),
       ].filter((condition): condition is NonNullable<typeof condition> => condition !== undefined);
+      const commentSubjects = [
+        commentSubjectCondition('portfolio', portfolioIds),
+        commentSubjectCondition('conglomerate', conglomerateIds),
+        commentSubjectCondition('watchlist', watchlistIds),
+        commentSubjectCondition('idea', ideaIds),
+      ].filter((condition): condition is NonNullable<typeof condition> => condition !== undefined);
+      const reactionSubjects = [
+        reactionSubjectCondition('portfolio', portfolioIds),
+        reactionSubjectCondition('conglomerate', conglomerateIds),
+        reactionSubjectCondition('watchlist', watchlistIds),
+        reactionSubjectCondition('idea', ideaIds),
+      ].filter((condition): condition is NonNullable<typeof condition> => condition !== undefined);
 
-      await tx.delete(itemReactions).where(eq(itemReactions.userId, userId));
-      await tx.delete(itemComments).where(eq(itemComments.authorId, userId));
+      await tx
+        .delete(itemReactions)
+        .where(
+          reactionSubjects.length > 0
+            ? or(eq(itemReactions.userId, userId), ...reactionSubjects)
+            : eq(itemReactions.userId, userId),
+        );
+      await tx
+        .delete(itemComments)
+        .where(
+          commentSubjects.length > 0
+            ? or(eq(itemComments.authorId, userId), ...commentSubjects)
+            : eq(itemComments.authorId, userId),
+        );
       await tx
         .delete(itemFollows)
         .where(
@@ -500,6 +560,15 @@ export function createParanoidTransitionTransactionRepository(
       await tx
         .delete(userFollows)
         .where(or(eq(userFollows.followerId, userId), eq(userFollows.followedId, userId)));
+      await tx
+        .update(mirrorChainInvites)
+        .set({ status: 'revoked', respondedAt: new Date() })
+        .where(
+          and(
+            eq(mirrorChainInvites.status, 'pending'),
+            or(eq(mirrorChainInvites.fromUser, userId), eq(mirrorChainInvites.toUser, userId)),
+          ),
+        );
       await ifIds(conglomerateIds, (ids) =>
         tx.delete(shareLinks).where(inArray(shareLinks.conglomerateId, ids)),
       );

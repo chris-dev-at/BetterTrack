@@ -1,4 +1,5 @@
-import { unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { rename, rm } from 'node:fs/promises';
 
 import {
   paranoidDisableRequestSchema,
@@ -56,8 +57,15 @@ export interface ParanoidTransitionServiceDeps {
   runPostCommit?: (userId: string, plan: ParanoidRehydrationPostCommitPlan) => void | Promise<void>;
   /** Test-only failure injection proving enable's database transaction rolls back. */
   afterEnableStage?: (stage: ParanoidEnableStage) => void | Promise<void>;
-  /** Test seam for the synchronous pre-enable retirement of cleartext export ZIPs. */
-  retireExportFile?: (filePath: string) => Promise<void>;
+  /** Test seam for reversible pre-commit retirement of cleartext export ZIPs. */
+  prepareExportFile?: (filePath: string) => Promise<PreparedExportFileRetirement>;
+}
+
+export interface PreparedExportFileRetirement {
+  /** Restore the original path before a failed database transaction unwinds. */
+  rollback(): Promise<void>;
+  /** Permanently remove the staged artifact only after the transaction commits. */
+  commit(): Promise<void>;
 }
 
 export interface ParanoidTransitionService {
@@ -112,11 +120,12 @@ export function createParanoidTransitionService(
 ): ParanoidTransitionService {
   const now = deps.now ?? (() => new Date());
   const stage = async (value: ParanoidEnableStage) => deps.afterEnableStage?.(value);
-  const retireExportFile =
-    deps.retireExportFile ??
+  const prepareExportFile =
+    deps.prepareExportFile ??
     (async (filePath: string) => {
+      const stagedPath = `${filePath}.paranoid-retiring-${randomUUID()}`;
       try {
-        await unlink(filePath);
+        await rename(filePath, stagedPath);
       } catch (error) {
         if (
           error instanceof Error &&
@@ -127,6 +136,10 @@ export function createParanoidTransitionService(
         }
         throw error;
       }
+      return {
+        rollback: () => rename(stagedPath, filePath),
+        commit: () => rm(stagedPath, { force: true }),
+      };
     });
 
   return {
@@ -142,103 +155,164 @@ export function createParanoidTransitionService(
       }
       const input = parsed.data;
       const completedAt = now();
+      const preparedRetirements: PreparedExportFileRetirement[] = [];
 
-      const result = await withParanoidTransitionTransaction(deps.db, userId, async (tx) => {
-        const transition = createParanoidTransitionTransactionRepository(tx);
-        const state = await transition.lockState(userId);
-        if (!state) {
-          throw new ParanoidTransitionError('ACCOUNT_NOT_FOUND', 'Account does not exist.');
+      const rollbackRetirements = async (): Promise<void> => {
+        let rollbackError: unknown;
+        for (const retirement of [...preparedRetirements].reverse()) {
+          try {
+            await retirement.rollback();
+          } catch (error) {
+            rollbackError ??= error;
+          }
         }
-        await stage('locked');
+        preparedRetirements.length = 0;
+        if (rollbackError) throw rollbackError;
+      };
 
-        if (state.privacyMode === 'paranoid') {
-          const matchingDrive =
-            !input.mediaSet.includes('drive') ||
-            state.driveAttestedVersion === input.driveAttestation?.vaultVersion;
-          const matchingServer =
-            !input.mediaSet.includes('server') || serverVaultMatches(state, input.vaultVersion);
-          if (sameMedia(state.mediaSet, input.mediaSet) && matchingDrive && matchingServer) {
+      let result: ParanoidEnableResponse;
+      try {
+        result = await withParanoidTransitionTransaction(deps.db, userId, async (tx) => {
+          const transition = createParanoidTransitionTransactionRepository(tx);
+          const state = await transition.lockState(userId);
+          if (!state) {
+            throw new ParanoidTransitionError('ACCOUNT_NOT_FOUND', 'Account does not exist.');
+          }
+          await stage('locked');
+
+          if (state.privacyMode === 'paranoid') {
+            const matchingDrive =
+              !input.mediaSet.includes('drive') ||
+              state.driveAttestedVersion === input.driveAttestation?.vaultVersion;
+            const matchingServer = input.mediaSet.includes('server')
+              ? serverVaultMatches(state, input.vaultVersion)
+              : state.currentServerVault === null && state.serverVaultHistoryCount === 0;
+            if (sameMedia(state.mediaSet, input.mediaSet) && matchingDrive && matchingServer) {
+              return {
+                mode: 'paranoid' as const,
+                mediaSet: input.mediaSet,
+                vaultVersion: input.vaultVersion,
+                completedAt: completedAt.toISOString(),
+                idempotent: true,
+              };
+            }
+            throw new ParanoidTransitionError(
+              'TRANSITION_CONFLICT',
+              'The account is already paranoid with different media evidence.',
+            );
+          }
+
+          // Preconditions are checked under the account lock and before the
+          // first destructive statement.
+          if (state.activeMirrorchain) {
+            throw new ParanoidTransitionError(
+              'MIRRORCHAIN_ACTIVE',
+              'Leave every active Mirrorchain with a fork before enabling paranoid mode.',
+            );
+          }
+          if (state.pendingImport) {
+            throw new ParanoidTransitionError(
+              'IMPORT_IN_FLIGHT',
+              'Finish or discard the pending import before enabling paranoid mode.',
+            );
+          }
+          if (state.pendingExport) {
+            throw new ParanoidTransitionError(
+              'EXPORT_IN_FLIGHT',
+              'Wait for the account export to finish before enabling paranoid mode.',
+            );
+          }
+          if (input.mediaSet.includes('server') && !serverVaultMatches(state, input.vaultVersion)) {
+            throw new ParanoidTransitionError(
+              'MEDIA_NOT_READY',
+              'The server vault does not contain the attested version.',
+            );
+          }
+
+          // Move every cleartext archive to a same-filesystem staging path while
+          // the account lock is held. A later database/stage failure restores
+          // each original path before the transaction unwinds; only a committed
+          // enable permanently removes the staged files.
+          try {
+            for (const artifact of state.cleartextExports) {
+              const retirement = await prepareExportFile(artifact.filePath);
+              if (retirement) preparedRetirements.push(retirement);
+            }
+          } catch {
+            await rollbackRetirements();
+            throw new ParanoidTransitionError(
+              'TRANSITION_CONFLICT',
+              'An existing account export could not be retired safely.',
+            );
+          }
+
+          try {
+            await transition.retireCleartextExports(
+              userId,
+              state.cleartextExports.map((artifact) => artifact.id),
+            );
+
+            await transition.revokeSharing(userId);
+            await stage('sharingRevoked');
+            await transition.purgeVaultRows(userId);
+            await stage('vaultPurged');
+            await transition.completeEnable({
+              userId,
+              mediaSet: input.mediaSet,
+              driveAttestedVersion: input.driveAttestation?.vaultVersion ?? null,
+              keepServerCiphertext: input.mediaSet.includes('server'),
+              completedAt,
+            });
+            await stage('modeEnabled');
+
             return {
               mode: 'paranoid' as const,
               mediaSet: input.mediaSet,
               vaultVersion: input.vaultVersion,
               completedAt: completedAt.toISOString(),
-              idempotent: true,
+              idempotent: false,
             };
+          } catch (error) {
+            try {
+              await rollbackRetirements();
+            } catch {
+              throw new ParanoidTransitionError(
+                'TRANSITION_CONFLICT',
+                'A cleartext export could not be restored after the transition failed.',
+              );
+            }
+            throw error;
           }
-          throw new ParanoidTransitionError(
-            'TRANSITION_CONFLICT',
-            'The account is already paranoid with different media evidence.',
-          );
-        }
-
-        // Preconditions are checked under the account lock and before the first
-        // destructive statement.
-        if (state.activeMirrorchain) {
-          throw new ParanoidTransitionError(
-            'MIRRORCHAIN_ACTIVE',
-            'Leave every active Mirrorchain with a fork before enabling paranoid mode.',
-          );
-        }
-        if (state.pendingImport) {
-          throw new ParanoidTransitionError(
-            'IMPORT_IN_FLIGHT',
-            'Finish or discard the pending import before enabling paranoid mode.',
-          );
-        }
-        if (state.pendingExport) {
-          throw new ParanoidTransitionError(
-            'EXPORT_IN_FLIGHT',
-            'Wait for the account export to finish before enabling paranoid mode.',
-          );
-        }
-        if (input.mediaSet.includes('server') && !serverVaultMatches(state, input.vaultVersion)) {
-          throw new ParanoidTransitionError(
-            'MEDIA_NOT_READY',
-            'The server vault does not contain the attested version.',
-          );
-        }
-
-        // A completed normal-account export is a cleartext ZIP outside the
-        // database. Unlink it while the account lock is held, then invalidate
-        // its token rows in this same transaction. The mode flip cannot commit
-        // with a downloadable or on-disk predecessor artifact.
-        try {
-          for (const artifact of state.cleartextExports) {
-            await retireExportFile(artifact.filePath);
-          }
-        } catch {
-          throw new ParanoidTransitionError(
-            'TRANSITION_CONFLICT',
-            'An existing account export could not be retired safely.',
-          );
-        }
-        await transition.retireCleartextExports(
-          userId,
-          state.cleartextExports.map((artifact) => artifact.id),
-        );
-
-        await transition.revokeSharing(userId);
-        await stage('sharingRevoked');
-        await transition.purgeVaultRows(userId);
-        await stage('vaultPurged');
-        await transition.completeEnable({
-          userId,
-          mediaSet: input.mediaSet,
-          driveAttestedVersion: input.driveAttestation?.vaultVersion ?? null,
-          keepServerCiphertext: input.mediaSet.includes('server'),
-          completedAt,
         });
-        await stage('modeEnabled');
+      } catch (error) {
+        // Covers a transaction-level failure after its callback returned (for
+        // example a commit failure), while the inner catch covers every injected
+        // stage/database failure before the row lock is released.
+        if (preparedRetirements.length > 0) {
+          try {
+            await rollbackRetirements();
+          } catch {
+            throw new ParanoidTransitionError(
+              'TRANSITION_CONFLICT',
+              'A cleartext export could not be restored after the transition failed.',
+            );
+          }
+        }
+        throw error;
+      }
 
-        return {
-          mode: 'paranoid' as const,
-          mediaSet: input.mediaSet,
-          vaultVersion: input.vaultVersion,
-          completedAt: completedAt.toISOString(),
-          idempotent: false,
-        };
-      });
+      try {
+        for (const retirement of preparedRetirements) {
+          await retirement.commit();
+        }
+      } catch {
+        throw new ParanoidTransitionError(
+          'TRANSITION_CONFLICT',
+          'Paranoid mode was enabled, but a retired export artifact still needs cleanup.',
+        );
+      } finally {
+        preparedRetirements.length = 0;
+      }
 
       await deps.audit.record({
         actorId: userId,
