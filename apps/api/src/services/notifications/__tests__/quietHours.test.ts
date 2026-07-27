@@ -61,6 +61,32 @@ describe('quiet-hours window membership', () => {
     // 18:00 UTC = 13:00 EST → awake.
     expect(isInQuietHours(ny, utc('2026-01-15T18:00:00Z'))).toBe(false);
   });
+
+  it('uses gap-forward boundaries for both membership edges', () => {
+    const endingInGap: QuietHoursConfig = {
+      enabled: true,
+      startMinute: 60, // 01:00 EST
+      endMinute: 150, // 02:30, skipped by spring-forward
+      timezone: 'America/New_York',
+    };
+    // The 02:30 end resolves to 03:30 EDT, so the window remains active
+    // through 03:29 rather than ending at the raw 02:30 minute.
+    expect(isInQuietHours(endingInGap, utc('2026-03-08T07:00:00.000Z'))).toBe(true); // 03:00 EDT
+    expect(isInQuietHours(endingInGap, utc('2026-03-08T07:29:00.000Z'))).toBe(true);
+    expect(isInQuietHours(endingInGap, utc('2026-03-08T07:30:00.000Z'))).toBe(false);
+
+    const startingInGap: QuietHoursConfig = {
+      enabled: true,
+      startMinute: 150, // 02:30, skipped by spring-forward
+      endMinute: 4 * 60, // 04:00 EDT
+      timezone: 'America/New_York',
+    };
+    // The skipped start follows the same rule: it opens at 03:30, never at
+    // the raw 02:30 boundary (which would incorrectly quiet 03:00).
+    expect(isInQuietHours(startingInGap, utc('2026-03-08T07:00:00.000Z'))).toBe(false);
+    expect(isInQuietHours(startingInGap, utc('2026-03-08T07:29:00.000Z'))).toBe(false);
+    expect(isInQuietHours(startingInGap, utc('2026-03-08T07:30:00.000Z'))).toBe(true);
+  });
 });
 
 describe('quiet-hours window end', () => {

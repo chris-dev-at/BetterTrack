@@ -101,6 +101,106 @@ interface WallTimeCandidate {
   localMinuteMs: number;
 }
 
+/** The UTC-millisecond calendar coordinate for a requested local wall minute. */
+function wallTimeMsFor(year: number, month: number, day: number, minuteOfDay: number): number {
+  return Date.UTC(year, month - 1, day, 0, 0, 0) + minuteOfDay * MINUTE_MS;
+}
+
+/** Every candidate instant the zone can map a requested local wall minute to. */
+function wallTimeCandidates(wallTimeMs: number, timezone: string): WallTimeCandidate[] {
+  return offsetsAroundWallTime(wallTimeMs, timezone).map((offsetMs) => {
+    const instant = new Date(wallTimeMs - offsetMs);
+    return { instant, localMinuteMs: localMinuteAsUtc(localParts(instant, timezone)) };
+  });
+}
+
+/**
+ * The effective local-calendar coordinate of a configured boundary. Exact
+ * wall times retain their requested coordinate. A spring-forward gap moves the
+ * boundary to the first compatible local coordinate after the gap, matching
+ * {@link zonedWallTimeToUtc}'s gap-forward instant resolution.
+ */
+function resolvedWallMinute(
+  year: number,
+  month: number,
+  day: number,
+  minuteOfDay: number,
+  timezone: string | null,
+): number {
+  const wallTimeMs = wallTimeMsFor(year, month, day, minuteOfDay);
+  if (!timezone) return wallTimeMs;
+
+  const candidates = wallTimeCandidates(wallTimeMs, timezone);
+  if (candidates.some((candidate) => candidate.localMinuteMs === wallTimeMs)) return wallTimeMs;
+
+  // No exact inverse means this is a skipped spring-forward minute. Use the
+  // same compatible, gap-forward local coordinate as deadline resolution.
+  return (
+    candidates
+      .filter((candidate) => candidate.localMinuteMs > wallTimeMs)
+      .sort(
+        (a, b) => a.localMinuteMs - b.localMinuteMs || a.instant.getTime() - b.instant.getTime(),
+      )[0]?.localMinuteMs ?? wallTimeMs
+  );
+}
+
+interface LocalDate {
+  year: number;
+  month: number;
+  day: number;
+}
+
+/** Offset a local calendar date without inheriting the host machine timezone. */
+function shiftCalendarDate(date: LocalDate, days: number): LocalDate {
+  const shifted = new Date(Date.UTC(date.year, date.month - 1, date.day + days));
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+  };
+}
+
+/**
+ * Find the local calendar date on which the currently active window started.
+ *
+ * Membership is deliberately evaluated against resolved local boundaries,
+ * rather than raw minutes-of-day. This keeps a 01:00→02:30 window active until
+ * 03:30 when 02:30 falls in a spring-forward gap, and delays a nonexistent
+ * start by the same rule. Repeated fall-back minutes retain their local
+ * coordinates, so each occurrence keeps the usual half-open wall-time
+ * semantics.
+ */
+function activeWindowStartDate(config: QuietHoursConfig, at: Date): LocalDate | null {
+  if (!hasWindow(config)) return null;
+
+  const local = localParts(at, config.timezone);
+  const today: LocalDate = { year: local.year, month: local.month, day: local.day };
+  const atWallMinute = localMinuteAsUtc(local);
+  const overnight = config.startMinute > config.endMinute;
+  const candidateStartDates = overnight ? [today, shiftCalendarDate(today, -1)] : [today];
+
+  for (const startDate of candidateStartDates) {
+    const endDate = overnight ? shiftCalendarDate(startDate, 1) : startDate;
+    const start = resolvedWallMinute(
+      startDate.year,
+      startDate.month,
+      startDate.day,
+      config.startMinute,
+      config.timezone,
+    );
+    const end = resolvedWallMinute(
+      endDate.year,
+      endDate.month,
+      endDate.day,
+      config.endMinute,
+      config.timezone,
+    );
+    if (atWallMinute >= start && atWallMinute < end) return startDate;
+  }
+
+  return null;
+}
+
 /**
  * The UTC instant for a wall-clock time (`minuteOfDay` on local Y/M/D) in
  * `timezone`, strictly after `notBefore`. `Intl` does not provide an inverse
@@ -121,13 +221,10 @@ function zonedWallTimeToUtc(
   timezone: string | null,
   notBefore: Date,
 ): Date {
-  const wallTimeMs = Date.UTC(year, month - 1, day, 0, 0, 0) + minuteOfDay * MINUTE_MS;
+  const wallTimeMs = wallTimeMsFor(year, month, day, minuteOfDay);
   if (!timezone) return new Date(wallTimeMs);
 
-  const candidates = offsetsAroundWallTime(wallTimeMs, timezone).map((offsetMs) => {
-    const instant = new Date(wallTimeMs - offsetMs);
-    return { instant, localMinuteMs: localMinuteAsUtc(localParts(instant, timezone)) };
-  });
+  const candidates = wallTimeCandidates(wallTimeMs, timezone);
   const future = (candidate: WallTimeCandidate): boolean =>
     candidate.instant.getTime() > notBefore.getTime();
 
@@ -156,43 +253,27 @@ function hasWindow(config: QuietHoursConfig): boolean {
   return config.enabled && config.startMinute !== config.endMinute;
 }
 
-/** Whether a local minute-of-day falls inside the (possibly overnight) window. */
-function minuteInWindow(minuteOfDay: number, startMinute: number, endMinute: number): boolean {
-  if (startMinute < endMinute) return minuteOfDay >= startMinute && minuteOfDay < endMinute;
-  // Overnight: [start, 1440) ∪ [0, end).
-  return minuteOfDay >= startMinute || minuteOfDay < endMinute;
-}
-
 /** Whether `at` is inside the user's quiet-hours window (false when disabled). */
 export function isInQuietHours(config: QuietHoursConfig, at: Date): boolean {
-  if (!hasWindow(config)) return false;
-  const { minuteOfDay } = localParts(at, config.timezone);
-  return minuteInWindow(minuteOfDay, config.startMinute, config.endMinute);
+  return activeWindowStartDate(config, at) !== null;
 }
 
 /**
- * The instant the CURRENT window closes, given `at` is inside it. For a same-day
- * window it is today's `endMinute`; for an overnight window it is today's
- * `endMinute` when `at` is in the post-midnight tail, else tomorrow's. Callers
- * MUST only invoke this when {@link isInQuietHours} is true.
+ * The instant the CURRENT resolved window closes, given `at` is inside it.
+ * Callers MUST only invoke this when {@link isInQuietHours} is true.
  */
 export function quietHoursWindowEnd(config: QuietHoursConfig, at: Date): Date {
-  const { year, month, day, minuteOfDay } = localParts(at, config.timezone);
-  // Overnight window and we are already past midnight (minuteOfDay < end) ⇒ the
-  // window closes later TODAY; every other in-window case closes on the local
-  // day whose `endMinute` comes next.
-  const overnightTail = config.startMinute > config.endMinute && minuteOfDay < config.endMinute;
-  const endIsToday = config.startMinute < config.endMinute || overnightTail;
-  if (endIsToday) {
-    return zonedWallTimeToUtc(year, month, day, config.endMinute, config.timezone, at);
-  }
-  // Tomorrow's local end minute. `Date.UTC` normalizes the month/year rollover;
-  // resolving the offset on that calendar day keeps it DST-correct.
-  const next = new Date(Date.UTC(year, month - 1, day + 1));
+  const local = localParts(at, config.timezone);
+  const fallbackStart: LocalDate = { year: local.year, month: local.month, day: local.day };
+  // Callers only invoke this for an active window. Keep a deterministic
+  // fallback for direct/internal callers that violate that precondition.
+  const startDate = activeWindowStartDate(config, at) ?? fallbackStart;
+  const endDate =
+    config.startMinute > config.endMinute ? shiftCalendarDate(startDate, 1) : startDate;
   return zonedWallTimeToUtc(
-    next.getUTCFullYear(),
-    next.getUTCMonth() + 1,
-    next.getUTCDate(),
+    endDate.year,
+    endDate.month,
+    endDate.day,
     config.endMinute,
     config.timezone,
     at,
