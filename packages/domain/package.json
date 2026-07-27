@@ -29,10 +29,6 @@
     "./settingsScope": {
       "types": "./src/settingsScope.ts",
       "default": "./src/settingsScope.ts"
-    },
-    "./manualAsset": {
-      "types": "./src/manualAsset.ts",
-      "default": "./src/manualAsset.ts"
     }
   },
   "scripts": {

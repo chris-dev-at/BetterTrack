@@ -15,6 +15,9 @@ import { createClientTaxCsv } from './taxCsv';
 import { createPrintableTaxReport } from './taxPrint';
 
 const NOW = Date.parse('2026-07-27T12:00:00.000Z');
+const OTHER_PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000301';
+const OTHER_VAULT_KEY_ID = '018f0000-0000-7000-8000-000000000302';
+const OTHER_OWNER_ID = '018f0000-0000-7000-8000-000000000303';
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
@@ -32,12 +35,12 @@ describe('paranoid client exports', () => {
     expect(tax.ok).toBe(true);
     if (!tax.ok) return;
 
-    const csv = createClientTaxCsv(sync, tax.value, 'en');
+    const csv = createClientTaxCsv(sync, CLIENT_MONEY_IDS.portfolio, tax.value, 'en');
     expect(csv.ok).toBe(true);
     if (!csv.ok) return;
     expect(csv.value.filename).toBe('tax-report-2026.csv');
     expect(csv.value.text).toBe(serverCsvFixture());
-    const deCsv = createClientTaxCsv(sync, tax.value, 'de');
+    const deCsv = createClientTaxCsv(sync, CLIENT_MONEY_IDS.portfolio, tax.value, 'de');
     expect(deCsv).toMatchObject({ ok: true });
     if (deCsv.ok) {
       expect(deCsv.value.text).toContain('Abschnitt,Zusammenfassung');
@@ -46,13 +49,19 @@ describe('paranoid client exports', () => {
     }
     const escapedTax = structuredClone(tax.value);
     escapedTax.report.positions[0]!.asset.name = 'Euro, "Asset"';
-    const escaped = createClientTaxCsv(sync, escapedTax, 'en');
+    const escaped = createClientTaxCsv(sync, CLIENT_MONEY_IDS.portfolio, escapedTax, 'en');
     expect(escaped.ok).toBe(true);
     if (escaped.ok) {
       expect(escaped.value.text).toContain('EURA,"Euro, ""Asset""",37.00,30.00,0.00');
     }
 
-    const printable = createPrintableTaxReport(sync, tax.value, 'de', 'Encrypted & <private>');
+    const printable = createPrintableTaxReport(
+      sync,
+      CLIENT_MONEY_IDS.portfolio,
+      tax.value,
+      'de',
+      'Encrypted & <private>',
+    );
     expect(printable.ok).toBe(true);
     if (!printable.ok) return;
     expect(printable.value.report).toBe(tax.value.report);
@@ -157,6 +166,72 @@ describe('paranoid client exports', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('binds tax exports to the producing owner, vault, and selected portfolio', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    const sourcePortfolio = document.entities.portfolio?.[0];
+    if (sourcePortfolio === undefined) throw new Error('Fixture portfolio is missing.');
+    document.entities.portfolio!.push({
+      ...structuredClone(sourcePortfolio),
+      id: OTHER_PORTFOLIO_ID,
+      data: { ...sourcePortfolio.data, name: 'Other encrypted portfolio' },
+    });
+    const sync = createMutableTestSync(document, fixture.header);
+    const engine = createVaultMoneyEngine(sync, createClientMoneyMarket().market, {
+      now: () => NOW,
+    });
+    const selected = await engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+    const otherPortfolio = await engine.deriveTaxReport(OTHER_PORTFOLIO_ID, 2026);
+    expect(selected.ok).toBe(true);
+    expect(otherPortfolio.ok).toBe(true);
+    if (!selected.ok || !otherPortfolio.ok) return;
+
+    expect(
+      createClientTaxCsv(sync, CLIENT_MONEY_IDS.portfolio, otherPortfolio.value),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'OPERATION_ABORTED' },
+    });
+    expect(
+      createPrintableTaxReport(sync, CLIENT_MONEY_IDS.portfolio, otherPortfolio.value),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'OPERATION_ABORTED' },
+    });
+
+    const priorVaultSync = createMutableTestSync(document, {
+      ...fixture.header,
+      keyId: OTHER_VAULT_KEY_ID,
+    });
+    const priorVault = await createVaultMoneyEngine(
+      priorVaultSync,
+      createClientMoneyMarket().market,
+      { now: () => NOW },
+    ).deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+    expect(priorVault.ok).toBe(true);
+    if (!priorVault.ok) return;
+    expect(createClientTaxCsv(sync, CLIENT_MONEY_IDS.portfolio, priorVault.value)).toMatchObject({
+      ok: false,
+      error: { code: 'OPERATION_ABORTED' },
+    });
+    expect(
+      createPrintableTaxReport(sync, CLIENT_MONEY_IDS.portfolio, priorVault.value),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'OPERATION_ABORTED' },
+    });
+
+    const otherOwner = { ...selected.value, ownerUserId: OTHER_OWNER_ID };
+    expect(createClientTaxCsv(sync, CLIENT_MONEY_IDS.portfolio, otherOwner)).toMatchObject({
+      ok: false,
+      error: { code: 'OPERATION_ABORTED' },
+    });
+    expect(createPrintableTaxReport(sync, CLIENT_MONEY_IDS.portfolio, otherOwner)).toMatchObject({
+      ok: false,
+      error: { code: 'OPERATION_ABORTED' },
+    });
+  });
+
   it('returns no file when a lock, version change, or abort races generation', async () => {
     const fixture = await decryptClientMoneyFixture();
     const versionSync = createMutableTestSync(fixture.document, fixture.header);
@@ -166,18 +241,20 @@ describe('paranoid client exports', () => {
     expect(tax.ok).toBe(true);
     if (!tax.ok) return;
     versionSync.setDocument(structuredClone(fixture.document));
-    expect(createClientTaxCsv(versionSync, tax.value)).toMatchObject({
+    expect(createClientTaxCsv(versionSync, CLIENT_MONEY_IDS.portfolio, tax.value)).toMatchObject({
       ok: false,
       error: { code: 'OPERATION_ABORTED' },
     });
-    expect(createPrintableTaxReport(versionSync, tax.value)).toMatchObject({
+    expect(
+      createPrintableTaxReport(versionSync, CLIENT_MONEY_IDS.portfolio, tax.value),
+    ).toMatchObject({
       ok: false,
       error: { code: 'OPERATION_ABORTED' },
     });
 
     const lockSync = createMutableTestSync(fixture.document, fixture.header);
     const lockPromise = createClientCleartextExport(lockSync);
-    queueMicrotask(() => lockSync.setLocked());
+    globalThis.setTimeout(() => lockSync.setLocked(), 0);
     await expect(lockPromise).resolves.toMatchObject({
       ok: false,
       error: { code: 'VAULT_LOCKED' },
@@ -206,12 +283,17 @@ describe('paranoid client exports', () => {
     }).deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
     expect(emptyTax.ok).toBe(true);
     if (!emptyTax.ok) return;
-    const printable = createPrintableTaxReport(emptySync, emptyTax.value, 'en');
+    const printable = createPrintableTaxReport(
+      emptySync,
+      CLIENT_MONEY_IDS.portfolio,
+      emptyTax.value,
+      'en',
+    );
     expect(printable).toMatchObject({ ok: true });
     if (printable.ok) {
       expect(printable.value.html).toContain('No sells or dividends in this year.');
     }
-    const csv = createClientTaxCsv(emptySync, emptyTax.value, 'en');
+    const csv = createClientTaxCsv(emptySync, CLIENT_MONEY_IDS.portfolio, emptyTax.value, 'en');
     expect(csv).toMatchObject({ ok: true });
     if (csv.ok) {
       expect(csv.value.text).toContain('Section,Positions\r\nSymbol,Name');

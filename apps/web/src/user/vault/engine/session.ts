@@ -10,10 +10,12 @@ import {
 
 import type { VaultSyncEngine } from '../sync';
 import { moneyFailure } from './errors';
+import type { ClientTaxReport } from './types';
 
 export interface ValidatedVaultSnapshot {
   document: VaultDocumentV1;
   vaultVersion: number;
+  vaultKeyId: string;
   ownerUserId: string;
 }
 
@@ -59,6 +61,7 @@ export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultS
   return {
     document: parsed.data,
     vaultVersion: candidate.header.vaultVersion,
+    vaultKeyId: candidate.header.keyId,
     ownerUserId,
   };
 }
@@ -75,10 +78,37 @@ export function assertVaultSnapshotCurrent(
   if (state.status === 'corrupt') {
     throw moneyFailure('VAULT_CORRUPT', 'The vault became unreadable during the client operation.');
   }
-  if (state.active.header.vaultVersion !== snapshot.vaultVersion) {
+  if (
+    state.active.header.vaultVersion !== snapshot.vaultVersion ||
+    state.active.header.keyId !== snapshot.vaultKeyId
+  ) {
     throw moneyFailure(
       'OPERATION_ABORTED',
       'The vault changed while the client operation was running.',
+      { retryable: true },
+    );
+  }
+}
+
+/** Bind an in-memory report to the authenticated vault and selected portfolio. */
+export function assertTaxReportScope(
+  snapshot: ValidatedVaultSnapshot,
+  portfolioId: string,
+  tax: ClientTaxReport,
+): void {
+  const portfolioExists = liveEntities(snapshot.document, 'portfolio').some(
+    (entity) => entity.id === portfolioId,
+  );
+  if (
+    !portfolioExists ||
+    tax.ownerUserId !== snapshot.ownerUserId ||
+    tax.vaultKeyId !== snapshot.vaultKeyId ||
+    tax.portfolioId !== portfolioId ||
+    tax.vaultVersion !== snapshot.vaultVersion
+  ) {
+    throw moneyFailure(
+      'OPERATION_ABORTED',
+      'The tax report does not belong to the active vault and portfolio.',
       { retryable: true },
     );
   }

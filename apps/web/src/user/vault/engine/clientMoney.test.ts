@@ -337,6 +337,48 @@ describe('paranoid client money engine', () => {
     });
   });
 
+  it('preserves frozen FIFO realizations after switching the current year to manual mode', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withAdditionalTransaction(
+      fixture.document,
+      '018f0000-0000-7000-8000-000000000122',
+      {
+        side: 'buy',
+        quantity: '2',
+        price: '200',
+        fee: '0',
+        executedAt: '2026-07-22T15:00:00.000Z',
+      },
+    );
+    const frozenSell = document.entities.transaction?.find(
+      (entity) => entity.id === '018f0000-0000-7000-8000-000000000112',
+    );
+    if (frozenSell === undefined) throw new Error('Fixture sell is missing.');
+    frozenSell.data.taxMode = 'country_specific';
+    frozenSell.data.taxCountry = 'DE';
+    frozenSell.data.taxParams = null;
+    const manual = withTaxSettings(document, 'manual_per_trade', null, null);
+
+    const result = await createVaultMoneyEngine(
+      createMutableTestSync(manual, fixture.header),
+      createClientMoneyMarket().market,
+      { now: () => NOW },
+    ).deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Audited server vector: the frozen DE row consumes the first 2 units from
+    // the 10 @ 100 lot plus its proportional fee, not the later 2 @ 200 lot.
+    expect(result.value.report.summary.realizedPnlEur).toBe(37);
+    expect(result.value.report.positions[0]?.sells[0]).toMatchObject({
+      transactionId: frozenSell.id,
+      proceedsEur: 238,
+      costBasisEur: 201,
+      realizedPnlEur: 37,
+      taxMode: 'country_specific',
+    });
+  });
+
   it('marks missing and stale market inputs explicitly instead of using a silent fallback', async () => {
     const fixture = await decryptClientMoneyFixture();
     const sync = createMutableTestSync(fixture.document, fixture.header);
@@ -489,7 +531,7 @@ describe('paranoid client money engine', () => {
     });
   });
 
-  it('uses shared manual smoothing and never fabricates a custom-asset day change', async () => {
+  it('matches audited manual smoothing and never fabricates a custom-asset day change', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = structuredClone(fixture.document);
     document.entities.transaction = [document.entities.transaction![0]!];

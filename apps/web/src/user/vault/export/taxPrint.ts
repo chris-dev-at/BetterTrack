@@ -7,7 +7,11 @@ import {
 import { localizedMessage } from '../../../i18n';
 import type { VaultSyncEngine } from '../sync';
 import { asMoneyFailure, type VaultMoneyOutcome } from '../engine/errors';
-import { assertVaultSnapshotCurrent, validatedVaultSnapshot } from '../engine/session';
+import {
+  assertTaxReportScope,
+  assertVaultSnapshotCurrent,
+  validatedVaultSnapshot,
+} from '../engine/session';
 import type { ClientTaxReport } from '../engine/types';
 
 interface PrintCopy {
@@ -49,15 +53,14 @@ export interface PrintableTaxReport {
  */
 export function createPrintableTaxReport(
   sync: VaultSyncEngine,
+  portfolioId: string,
   tax: ClientTaxReport,
   locale: TaxExportLocale = 'en',
   portfolioName?: string,
 ): VaultMoneyOutcome<PrintableTaxReport> {
   try {
     const snapshot = validatedVaultSnapshot(sync);
-    if (snapshot.vaultVersion !== tax.vaultVersion) {
-      throw new DOMException('The vault changed during report generation.', 'AbortError');
-    }
+    assertTaxReportScope(snapshot, portfolioId, tax);
     taxYearReportResponseSchema.parse(tax.report);
     const report = tax.report;
     const copy = printCopy(locale);

@@ -7,7 +7,6 @@ import type {
   PricePoint,
   Quote,
 } from '@bettertrack/contracts';
-import { interpolateDailyMarks } from '@bettertrack/domain/manualAsset';
 import { and, asc, eq } from 'drizzle-orm';
 
 import type { Database } from '../data/db';
@@ -109,6 +108,8 @@ export interface CreateManualProviderDeps {
   now?: () => number;
 }
 
+const MS_PER_DAY = 86_400_000;
+
 /** Epoch ms at UTC midnight of a `YYYY-MM-DD` day. */
 function dayStartMs(date: string): number {
   return Date.parse(`${date}T00:00:00.000Z`);
@@ -119,7 +120,46 @@ function dayIso(date: string): string {
   return `${date}T00:00:00.000Z`;
 }
 
-export { interpolateDailyMarks } from '@bettertrack/domain/manualAsset';
+/** `YYYY-MM-DD` for a UTC-midnight epoch-ms. */
+function msToDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * Value-smoothing (V3-P2): expand sparse value marks into **one point per
+ * calendar day** with the value linearly interpolated between consecutive marks.
+ *
+ * Endpoints are exact by construction — every original mark day reappears with
+ * its exact value (`t = 0` and `t = 1` of each segment) — so switching smoothing
+ * on never moves a mark-day valuation, only fills the gaps between them. Only the
+ * span `[firstMark, lastMark]` is densified; before/after the marks the caller's
+ * existing carry-forward windowing still applies. Input must be ascending by
+ * date with unique days (the value-point service guarantees both).
+ */
+export function interpolateDailyMarks(points: readonly ManualValuePoint[]): ManualValuePoint[] {
+  if (points.length <= 1) return points.map((p) => ({ date: p.date, value: p.value }));
+
+  const out: ManualValuePoint[] = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    const aMs = dayStartMs(a.date);
+    const bMs = dayStartMs(b.date);
+    const spanDays = Math.round((bMs - aMs) / MS_PER_DAY);
+    // Emit the segment's left endpoint exactly, then each interior day.
+    out.push({ date: a.date, value: a.value });
+    for (let k = 1; k < spanDays; k += 1) {
+      out.push({
+        date: msToDay(aMs + k * MS_PER_DAY),
+        value: a.value + ((b.value - a.value) * k) / spanDays,
+      });
+    }
+  }
+  // The final mark closes the series exactly.
+  const last = points[points.length - 1]!;
+  out.push({ date: last.date, value: last.value });
+  return out;
+}
 
 export function createManualProvider(deps: CreateManualProviderDeps): AssetProvider {
   const { source } = deps;

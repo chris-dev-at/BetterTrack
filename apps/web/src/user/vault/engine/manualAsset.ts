@@ -1,5 +1,4 @@
 import type { VaultDocumentV1 } from '@bettertrack/contracts';
-import { interpolateDailyMarks } from '@bettertrack/domain/manualAsset';
 import type { HoldingAssetInput, PricePoint } from '@bettertrack/domain/holdings';
 
 import { storedPrices, type ClientAssetRecord } from './model';
@@ -10,10 +9,12 @@ export interface LocalManualAssetMarket {
   watermark: string;
 }
 
+const MS_PER_DAY = 86_400_000;
+
 /**
- * Resolve a vault-only custom asset with the same rules as the server manual
- * provider: smoothing interpolates history, while the latest sparse mark is
- * the quote and intentionally has no fabricated previous close.
+ * Resolve a vault-only custom asset according to the audited manual-provider
+ * vector: smoothing interpolates each interior UTC day, while the latest sparse
+ * mark is the quote and intentionally has no fabricated previous close.
  */
 export function localManualAssetMarket(
   document: VaultDocumentV1,
@@ -21,11 +22,7 @@ export function localManualAssetMarket(
 ): LocalManualAssetMarket {
   const stored = storedPrices(document, asset.id);
   const smoothing = asset.dto.smoothing === true;
-  const prices = smoothing
-    ? interpolateDailyMarks(stored.map((point) => ({ date: point.date, value: point.close }))).map(
-        (point) => ({ date: point.date, close: point.value }),
-      )
-    : stored;
+  const prices = smoothing ? interpolateDailyPrices(stored) : stored;
   const latest = stored.at(-1);
 
   return {
@@ -35,4 +32,27 @@ export function localManualAssetMarket(
       .map((point) => `${point.date}:${point.close}`)
       .join(',')}`,
   };
+}
+
+function interpolateDailyPrices(points: readonly PricePoint[]): PricePoint[] {
+  if (points.length <= 1) return points.map((point) => ({ ...point }));
+
+  const result: PricePoint[] = [];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const left = points[index]!;
+    const right = points[index + 1]!;
+    const leftMs = Date.parse(`${left.date}T00:00:00.000Z`);
+    const rightMs = Date.parse(`${right.date}T00:00:00.000Z`);
+    const spanDays = Math.round((rightMs - leftMs) / MS_PER_DAY);
+
+    result.push({ ...left });
+    for (let offset = 1; offset < spanDays; offset += 1) {
+      result.push({
+        date: new Date(leftMs + offset * MS_PER_DAY).toISOString().slice(0, 10),
+        close: left.close + ((right.close - left.close) * offset) / spanDays,
+      });
+    }
+  }
+  result.push({ ...points[points.length - 1]! });
+  return result;
 }

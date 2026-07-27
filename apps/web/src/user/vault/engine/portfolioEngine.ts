@@ -99,6 +99,8 @@ export function createPortfolioDerivationEngine(
         const fx = createFxInputLoader(market, signal);
         const value = await derive(snapshot, model, loaded, fx, range, today);
         const key = {
+          ownerUserId: snapshot.ownerUserId,
+          vaultKeyId: snapshot.vaultKeyId,
           portfolioId,
           vaultVersion: snapshot.vaultVersion,
           assetPriceWatermark: value.assetPriceWatermark,
