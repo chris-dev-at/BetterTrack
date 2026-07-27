@@ -61,6 +61,32 @@ describe('quiet-hours window membership', () => {
     // 18:00 UTC = 13:00 EST → awake.
     expect(isInQuietHours(ny, utc('2026-01-15T18:00:00Z'))).toBe(false);
   });
+
+  it('uses gap-forward boundaries for both membership edges', () => {
+    const endingInGap: QuietHoursConfig = {
+      enabled: true,
+      startMinute: 60, // 01:00 EST
+      endMinute: 150, // 02:30, skipped by spring-forward
+      timezone: 'America/New_York',
+    };
+    // The 02:30 end resolves to 03:30 EDT, so the window remains active
+    // through 03:29 rather than ending at the raw 02:30 minute.
+    expect(isInQuietHours(endingInGap, utc('2026-03-08T07:00:00.000Z'))).toBe(true); // 03:00 EDT
+    expect(isInQuietHours(endingInGap, utc('2026-03-08T07:29:00.000Z'))).toBe(true);
+    expect(isInQuietHours(endingInGap, utc('2026-03-08T07:30:00.000Z'))).toBe(false);
+
+    const startingInGap: QuietHoursConfig = {
+      enabled: true,
+      startMinute: 150, // 02:30, skipped by spring-forward
+      endMinute: 4 * 60, // 04:00 EDT
+      timezone: 'America/New_York',
+    };
+    // The skipped start follows the same rule: it opens at 03:30, never at
+    // the raw 02:30 boundary (which would incorrectly quiet 03:00).
+    expect(isInQuietHours(startingInGap, utc('2026-03-08T07:00:00.000Z'))).toBe(false);
+    expect(isInQuietHours(startingInGap, utc('2026-03-08T07:29:00.000Z'))).toBe(false);
+    expect(isInQuietHours(startingInGap, utc('2026-03-08T07:30:00.000Z'))).toBe(true);
+  });
 });
 
 describe('quiet-hours window end', () => {
@@ -115,6 +141,65 @@ describe('quiet-hours window end', () => {
     expect(end.toISOString()).toBe('2026-11-01T12:00:00.000Z');
     expect(isInQuietHours(ny, utc('2026-11-01T11:59:00Z'))).toBe(true);
     expect(isInQuietHours(ny, end)).toBe(false);
+  });
+
+  it('uses the second repeated end minute when the active window is in the fall-back fold', () => {
+    const ny: QuietHoursConfig = {
+      enabled: true,
+      startMinute: 60, // 01:00
+      endMinute: 90, // 01:30
+      timezone: 'America/New_York',
+    };
+    // Both instants are local 01:15 on the fall-back date: first EDT, then EST.
+    const firstOccurrence = utc('2026-11-01T05:15:00.000Z');
+    const secondOccurrence = utc('2026-11-01T06:15:00.000Z');
+
+    expect(isInQuietHours(ny, firstOccurrence)).toBe(true);
+    expect(quietHoursWindowEnd(ny, firstOccurrence).toISOString()).toBe('2026-11-01T05:30:00.000Z');
+
+    expect(isInQuietHours(ny, secondOccurrence)).toBe(true);
+    const end = quietHoursWindowEnd(ny, secondOccurrence);
+    expect(end.toISOString()).toBe('2026-11-01T06:30:00.000Z');
+    expect(end.getTime()).toBeGreaterThan(secondOccurrence.getTime());
+    expect(isInQuietHours(ny, utc('2026-11-01T06:29:00.000Z'))).toBe(true);
+    expect(isInQuietHours(ny, end)).toBe(false);
+  });
+
+  it('closes at the first actual fall-back exit when the fold moves before the start', () => {
+    const ny: QuietHoursConfig = {
+      enabled: true,
+      startMinute: 90, // 01:30
+      endMinute: 150, // 02:30
+      timezone: 'America/New_York',
+    };
+    // 01:45 EDT is inside the first local interval. At 06:00 UTC the clock
+    // folds to 01:00 EST, which is before the 01:30 start and therefore awake.
+    const firstOccurrence = utc('2026-11-01T05:45:00.000Z');
+    const end = quietHoursWindowEnd(ny, firstOccurrence);
+
+    expect(isInQuietHours(ny, firstOccurrence)).toBe(true);
+    expect(end.toISOString()).toBe('2026-11-01T06:00:00.000Z');
+    expect(isInQuietHours(ny, utc('2026-11-01T05:59:00.000Z'))).toBe(true);
+    expect(isInQuietHours(ny, end)).toBe(false);
+    // The second 01:30 occurrence opens a separate later quiet interval.
+    expect(isInQuietHours(ny, utc('2026-11-01T06:30:00.000Z'))).toBe(true);
+  });
+
+  it('resolves a spring-forward nonexistent end minute forward without a stale deadline', () => {
+    const ny: QuietHoursConfig = {
+      enabled: true,
+      startMinute: 60, // 01:00 EST
+      endMinute: 150, // 02:30, skipped by the spring-forward transition
+      timezone: 'America/New_York',
+    };
+    const beforeGap = utc('2026-03-08T06:15:00.000Z'); // 01:15 EST
+    const end = quietHoursWindowEnd(ny, beforeGap);
+
+    expect(isInQuietHours(ny, beforeGap)).toBe(true);
+    // Compatible gap-forward resolution keeps the 30-minute wall offset:
+    // nonexistent 02:30 resolves to 03:30 EDT.
+    expect(end.toISOString()).toBe('2026-03-08T07:30:00.000Z');
+    expect(end.getTime()).toBeGreaterThan(beforeGap.getTime());
   });
 });
 

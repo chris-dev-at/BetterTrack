@@ -39,6 +39,52 @@ function candlesForDay(
   return Array.from({ length: count }, (_, i) => ({ atMs: base + i * stepMs, price: price(i) }));
 }
 
+interface LegacyAssetFixture {
+  dailyValue: number;
+  candles: readonly IntradayCandle[];
+}
+
+function legacyPriceForBucket(
+  candles: readonly IntradayCandle[],
+  bucket: number,
+  stepMs: number,
+): number {
+  const cutoff = bucket + stepMs;
+  let chosen: number | undefined;
+  for (const candle of candles) {
+    if (candle.atMs < cutoff) chosen = candle.price;
+    else break;
+  }
+  return chosen ?? candles[0]!.price;
+}
+
+function legacyDayPoints(
+  day: string,
+  stepMs: number,
+  cash: number,
+  flatAssetValue: number,
+  assets: readonly LegacyAssetFixture[],
+): IntradayValuePoint[] {
+  const buckets = [
+    ...new Set(
+      assets.flatMap((asset) =>
+        asset.candles.map((candle) => Math.floor(candle.atMs / stepMs) * stepMs),
+      ),
+    ),
+  ].sort((a, b) => a - b);
+
+  return buckets.map((bucket) => {
+    let valueEur = cash;
+    for (const asset of assets) {
+      const refClose = asset.candles[asset.candles.length - 1]!.price;
+      const price = legacyPriceForBucket(asset.candles, bucket, stepMs);
+      valueEur += refClose === 0 ? asset.dailyValue : (asset.dailyValue * price) / refClose;
+    }
+    valueEur += flatAssetValue;
+    return { date: day, timeMs: bucket, valueEur };
+  });
+}
+
 describe('point-budget range routing + config', () => {
   it('routes 1D/1W/1M through the intraday curve and 6M/1Y/5Y through the daily downsample', () => {
     for (const r of ['1D', '1W', '1M'] as const) {
@@ -263,6 +309,110 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
       (103).toFixed(4), // 10:00 bucket → last <11:00 is 10:30 (native 103)
       (104).toFixed(4), // 11:00 bucket → 11:00 (native 104), also refClose
     ]);
+  });
+
+  it.each(['1D', '1W', '1M'] as const)(
+    'matches the legacy scan for cash, missing assets, finite filtering, ordering, and the %s close',
+    (range) => {
+      const stepMs = intradayStepMs(range);
+      const dayStart = Date.parse(`${T}T00:00:00.000Z`);
+      const firstBucket = Math.ceil((dayStart + 6 * 60 * MIN) / stepMs) * stepMs;
+      const rawA: IntradayCandle[] = [
+        { atMs: firstBucket + 3.25 * stepMs, price: 130 },
+        { atMs: Number.NaN, price: 999 },
+        { atMs: firstBucket + 0.25 * stepMs, price: 100 },
+        { atMs: firstBucket + 2.25 * stepMs, price: 120 },
+        { atMs: firstBucket + 1.25 * stepMs, price: 110 },
+        { atMs: firstBucket + 2.5 * stepMs, price: Number.POSITIVE_INFINITY },
+      ];
+      const rawB: IntradayCandle[] = [
+        { atMs: firstBucket + 3.5 * stepMs, price: 220 },
+        { atMs: firstBucket + 1.5 * stepMs, price: 200 },
+        { atMs: firstBucket + 2.5 * stepMs, price: 210 },
+      ];
+      const clean = (candles: readonly IntradayCandle[]) =>
+        candles
+          .filter(
+            (candle) =>
+              Number.isFinite(candle.atMs) &&
+              Number.isFinite(candle.price) &&
+              candle.atMs >= dayStart &&
+              candle.atMs <= NOW_MS,
+          )
+          .sort((a, b) => a.atMs - b.atMs);
+      const assets = [
+        { dailyValue: 1200, candles: clean(rawA) },
+        { dailyValue: 700, candles: clean(rawB) },
+      ];
+      const cash = 200;
+      const flatAssetValue = 300;
+      const dailyValue = cash + flatAssetValue + assets.reduce((sum, a) => sum + a.dailyValue, 0);
+
+      const points = buildIntradayEurValuePoints({
+        range,
+        cutoffDay: T,
+        nowMs: NOW_MS,
+        dailyValueEurByDay: new Map([[T, dailyValue]]),
+        perAssetEurByDay: new Map([
+          ['a', new Map([[T, assets[0]!.dailyValue]])],
+          ['b', new Map([[T, assets[1]!.dailyValue]])],
+          ['missing', new Map([[T, flatAssetValue]])],
+        ]),
+        candlesByAsset: new Map([
+          ['a', rawA],
+          ['b', rawB],
+        ]),
+      });
+
+      expect(points).toEqual(legacyDayPoints(T, stepMs, cash, flatAssetValue, assets));
+      expect(points[points.length - 1]!.valueEur).toBe(dailyValue);
+      for (let index = 1; index < points.length; index += 1) {
+        expect(points[index]!.timeMs).toBeGreaterThan(points[index - 1]!.timeMs);
+      }
+    },
+  );
+
+  it('matches the legacy scan for a dense multi-asset 1D portfolio', () => {
+    const stepMs = intradayStepMs('1D');
+    const firstBucket = Date.parse(`${T}T09:00:00.000Z`);
+    const bucketCount = 32;
+    const assetCount = 24;
+    const assets: LegacyAssetFixture[] = [];
+    const perAssetEurByDay = new Map<string, ReadonlyMap<string, number>>();
+    const candlesByAsset = new Map<string, readonly IntradayCandle[]>();
+
+    for (let assetIndex = 0; assetIndex < assetCount; assetIndex += 1) {
+      const openBucket = assetIndex % 5;
+      const candles = Array.from({ length: bucketCount - openBucket }, (_, candleIndex) => ({
+        atMs: firstBucket + (openBucket + candleIndex) * stepMs + (assetIndex % 3) * MIN,
+        price: 100 + assetIndex + candleIndex,
+      }));
+      const dailyValue = 1000 + assetIndex * 10;
+      const assetId = `asset-${assetIndex}`;
+      assets.push({ dailyValue, candles });
+      perAssetEurByDay.set(assetId, new Map([[T, dailyValue]]));
+      candlesByAsset.set(assetId, candles);
+    }
+
+    const cash = 250;
+    const flatAssetValue = 500;
+    perAssetEurByDay.set('manual', new Map([[T, flatAssetValue]]));
+    const dailyValue =
+      cash + flatAssetValue + assets.reduce((sum, asset) => sum + asset.dailyValue, 0);
+
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: T,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([[T, dailyValue]]),
+      perAssetEurByDay,
+      candlesByAsset,
+    });
+
+    expect(points).toEqual(legacyDayPoints(T, stepMs, cash, flatAssetValue, assets));
+    expect(points).toHaveLength(bucketCount);
+    expect(points.length).toBeGreaterThanOrEqual(20);
+    expect(points[points.length - 1]!.valueEur).toBe(dailyValue);
   });
 });
 
