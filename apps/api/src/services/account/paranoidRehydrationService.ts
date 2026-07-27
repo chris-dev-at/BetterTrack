@@ -11,6 +11,7 @@ import {
   updateTaxSettingsRequestSchema,
 } from '@bettertrack/contracts';
 import { CASH_MOVEMENT_SIGN } from '@bettertrack/domain/cashLedger';
+import { OversellError, reducePosition } from '@bettertrack/domain/holdings';
 import { viennaYearOf } from '@bettertrack/domain/tax';
 
 import type { Database } from '../../data/db';
@@ -112,13 +113,211 @@ interface ExactDecimal {
 }
 
 const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
+const NUMBER_DECIMAL_PATTERN = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i;
 const pow10 = (scale: number): bigint => 10n ** BigInt(scale);
+
 /**
- * Normal batch validation runs against the unrounded client quantities with a
- * 1e-9 epsilon, then PostgreSQL rounds each row independently to scale 8. Two
- * epsilon-valid inputs can therefore persist one scale-8 quantum apart.
+ * Repository writes serialize public number inputs with String(value) and
+ * PostgreSQL then rounds them to the column scale. Reproduce that fixed-scale
+ * coercion without multiplying a binary float at the quantity's magnitude.
  */
-const PERSISTED_QUANTITY_ROUNDING_TOLERANCE = 1n;
+function persistedNumber(value: number, scale: number, label: string): bigint {
+  if (!Number.isFinite(value)) {
+    throw new Error(label + ' has no finite normal-write number');
+  }
+  const negative = value < 0;
+  const match = NUMBER_DECIMAL_PATTERN.exec(String(Math.abs(value)));
+  if (!match) {
+    throw new Error(label + ' has no normal-write decimal representation');
+  }
+  const fraction = match[2] ?? '';
+  const exponent = Number(match[3] ?? 0);
+  let coefficient = BigInt((match[1] ?? '') + fraction);
+  let decimalScale = fraction.length - exponent;
+  if (decimalScale < 0) {
+    coefficient *= pow10(-decimalScale);
+    decimalScale = 0;
+  }
+  if (decimalScale <= scale) {
+    coefficient *= pow10(scale - decimalScale);
+  } else {
+    const divisor = pow10(decimalScale - scale);
+    const quotient = coefficient / divisor;
+    const remainder = coefficient % divisor;
+    // PostgreSQL's numeric coercion rounds positive halfway values up. Quantity
+    // inputs are positive, so this is the only branch the reachability proof
+    // needs to model.
+    coefficient = quotient + (remainder * 2n >= divisor ? 1n : 0n);
+  }
+  return negative ? -coefficient : coefficient;
+}
+
+function fixedScaleDecimal(value: bigint, scale: number): string {
+  const negative = value < 0n;
+  const digits = (negative ? -value : value).toString().padStart(scale + 1, '0');
+  const whole = scale === 0 ? digits : digits.slice(0, -scale);
+  const fraction = scale === 0 ? '' : '.' + digits.slice(-scale);
+  return (negative ? '-' : '') + whole + fraction;
+}
+
+const FLOAT64_BYTES = new ArrayBuffer(8);
+const FLOAT64_VIEW = new DataView(FLOAT64_BYTES);
+
+function nextPositiveFloat(value: number, direction: 'up' | 'down'): number {
+  if (!(value > 0) || !Number.isFinite(value)) {
+    throw new Error('cannot step non-positive or non-finite quantity ' + value);
+  }
+  FLOAT64_VIEW.setFloat64(0, value);
+  const bits = FLOAT64_VIEW.getBigUint64(0);
+  FLOAT64_VIEW.setBigUint64(0, direction === 'up' ? bits + 1n : bits - 1n);
+  return FLOAT64_VIEW.getFloat64(0);
+}
+
+/**
+ * Return a public-number input that persists as this scale-8 quantity, using
+ * the outer edge that gives a normal reducer the most favorable holding. A
+ * missing preimage is meaningful: an older strict-v1 row may still be retained
+ * as an exact prefix, but it cannot be claimed as a later normal write.
+ */
+function quantityNumberPreimage(
+  persistedQuantity: bigint,
+  direction: 'upper' | 'lower',
+): number | null {
+  const halfQuantumBoundary = persistedQuantity * 10n + (direction === 'upper' ? 5n : -5n);
+  let candidate = Number(fixedScaleDecimal(halfQuantumBoundary, 9));
+  const outward = direction === 'upper' ? 'up' : 'down';
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    if (!(candidate > 0) || !Number.isFinite(candidate)) return null;
+    const stored = persistedNumber(candidate, 8, 'transaction quantity');
+    if (stored === persistedQuantity) {
+      const adjacent = nextPositiveFloat(candidate, outward);
+      return persistedNumber(adjacent, 8, 'transaction quantity') === persistedQuantity
+        ? adjacent
+        : candidate;
+    }
+    candidate = nextPositiveFloat(candidate, stored > persistedQuantity ? 'down' : 'up');
+  }
+  return null;
+}
+
+interface QuantityReplayRow {
+  transaction: EntityOf<'transaction'>;
+  quantity: bigint;
+  readbackQuantity: number;
+  normalInputQuantity: number | null;
+}
+
+function isPersistedSolvent(rows: readonly QuantityReplayRow[]): boolean {
+  let held = 0n;
+  for (const row of rows) {
+    if (row.transaction.data.side === 'buy') {
+      held += row.quantity;
+      continue;
+    }
+    const shortfall = row.quantity - held;
+    if (shortfall > 0n && !row.transaction.data.allowUncovered) return false;
+    held = shortfall > 0n ? 0n : held - row.quantity;
+  }
+  return true;
+}
+
+function normalBatchCanReplay(
+  rows: readonly QuantityReplayRow[],
+  legacyPrefixLength: number,
+): boolean {
+  const replayRows = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    const quantity = index < legacyPrefixLength ? row.readbackQuantity : row.normalInputQuantity;
+    if (quantity === null) return false;
+    replayRows.push({
+      assetId: row.transaction.data.assetId,
+      side: row.transaction.data.side,
+      quantity,
+      price: 0,
+      fee: 0,
+      executedAt: row.transaction.data.executedAt,
+      allowUncovered: row.transaction.data.allowUncovered,
+    });
+  }
+
+  try {
+    reducePosition(replayRows);
+    return true;
+  } catch (error) {
+    if (error instanceof OversellError) return false;
+    throw error;
+  }
+}
+
+function persistedShortfallSellIds(rows: readonly QuantityReplayRow[]): ReadonlySet<string> {
+  const sellIds = new Set<string>();
+  let held = 0n;
+  for (const row of rows) {
+    if (row.transaction.data.side === 'buy') {
+      held += row.quantity;
+      continue;
+    }
+    const shortfall = row.quantity - held;
+    if (shortfall > 0n && !row.transaction.data.allowUncovered) {
+      sellIds.add(row.transaction.id);
+    }
+    held = shortfall > 0n ? 0n : held - row.quantity;
+  }
+  return sellIds;
+}
+
+/**
+ * A strict-v1 document may start with an exact persisted history that predates
+ * public-number writes. Once a later normal batch is considered, its existing
+ * rows are read through the repository Number(numeric), while its new rows must
+ * have a real String(number) to numeric(20,8) preimage. Try every solvent
+ * prefix so a normal batch may itself contain the rounding boundary.
+ */
+function storageRoundingSellIdsFor(
+  transactions: readonly EntityOf<'transaction'>[],
+): ReadonlySet<string> {
+  const rows = transactions.map((transaction): QuantityReplayRow => {
+    const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+    return {
+      transaction,
+      quantity,
+      readbackQuantity: Number(fixedScaleDecimal(quantity, 8)),
+      normalInputQuantity: quantityNumberPreimage(
+        quantity,
+        transaction.data.side === 'buy' ? 'upper' : 'lower',
+      ),
+    };
+  });
+
+  if (isPersistedSolvent(rows)) return new Set();
+
+  for (let prefixLength = 0; prefixLength < rows.length; prefixLength += 1) {
+    if (!isPersistedSolvent(rows.slice(0, prefixLength))) continue;
+    if (normalBatchCanReplay(rows, prefixLength)) {
+      return persistedShortfallSellIds(rows);
+    }
+  }
+
+  let held = 0n;
+  for (const row of rows) {
+    if (row.transaction.data.side === 'buy') {
+      held += row.quantity;
+      continue;
+    }
+    if (row.quantity > held && !row.transaction.data.allowUncovered) {
+      throw new Error(
+        'transaction would oversell its position at transaction[' +
+          row.transaction.id +
+          '].quantity=' +
+          JSON.stringify(row.transaction.data.quantity),
+      );
+    }
+    held = row.quantity > held ? 0n : held - row.quantity;
+  }
+  throw new Error('transaction quantity reachability could not be established');
+}
 
 function exactDecimal(value: string, label: string): ExactDecimal {
   const match = DECIMAL_PATTERN.exec(value);
@@ -577,7 +776,7 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
  * as one clean failure and makes the no-write guarantee directly testable.
  */
 interface ValidatedGraph {
-  /** Sells whose apparent oversell is exactly one scale-8 storage quantum. */
+  /** Sells whose apparent persisted oversell is proven normal-write reachable. */
   storageRoundingSellIds: ReadonlySet<string>;
 }
 
@@ -1221,28 +1420,8 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
         (a, b) =>
           Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
       );
-      let held = 0n;
-      for (const transaction of orderedTransactions) {
-        const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
-        if (transaction.data.side === 'buy') {
-          held += quantity;
-        } else {
-          const shortfall = quantity - held;
-          if (
-            shortfall > 0n &&
-            shortfall <= PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
-            !transaction.data.allowUncovered
-          ) {
-            storageRoundingSellIds.add(transaction.id);
-          }
-          if (
-            shortfall > PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
-            !transaction.data.allowUncovered
-          ) {
-            throw new Error('transaction would oversell its position');
-          }
-          held = shortfall > 0n ? 0n : held - quantity;
-        }
+      for (const sellId of storageRoundingSellIdsFor(orderedTransactions)) {
+        storageRoundingSellIds.add(sellId);
       }
     }
   } catch (error) {
