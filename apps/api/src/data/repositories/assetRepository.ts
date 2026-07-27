@@ -229,6 +229,16 @@ export function createAssetRepository(db: Database) {
       return rows.length > 0;
     },
 
+    /** The global (owner-less) asset for its public id, or null. */
+    async findGlobalById(id: string): Promise<AssetRow | null> {
+      const rows = await db
+        .select()
+        .from(assets)
+        .where(and(eq(assets.id, id), isNull(assets.ownerId)))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
     /** The global (owner-less) asset for a provider ref, or null. */
     async findGlobal(providerId: string, providerRef: string): Promise<AssetRow | null> {
       const rows = await db

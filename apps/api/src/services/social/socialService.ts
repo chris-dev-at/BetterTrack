@@ -413,32 +413,19 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     };
   }
 
-  async function loadSharedWithMeRows(userId: string) {
+  async function loadSharedWithMeRows(userId: string, ownerIds?: readonly string[]) {
     const [portfolioRows, conglomerateRows, watchlistRows, ideaRows, activityPrefs] =
       await Promise.all([
-        audience.listFriendPortfolios(userId),
-        audience.listFriendConglomerates(userId),
-        audience.listFriendWatchlists(userId),
-        audience.listFriendIdeas(userId),
+        audience.listFriendPortfolios(userId, ownerIds),
+        audience.listFriendConglomerates(userId, ownerIds),
+        audience.listFriendWatchlists(userId, ownerIds),
+        audience.listFriendIdeas(userId, ownerIds),
         profile.listActivityPrefs(userId),
       ]);
     return { portfolioRows, conglomerateRows, watchlistRows, ideaRows, activityPrefs };
   }
 
   type SharedWithMeRows = Awaited<ReturnType<typeof loadSharedWithMeRows>>;
-
-  function sharedWithMeOwnerIds(rows: SharedWithMeRows): string[] {
-    return [
-      ...new Set(
-        [
-          ...rows.portfolioRows,
-          ...rows.conglomerateRows,
-          ...rows.watchlistRows,
-          ...rows.ideaRows,
-        ].map((row) => row.ownerId),
-      ),
-    ];
-  }
 
   async function buildSharedWithMeResponse(
     rows: SharedWithMeRows,
@@ -498,28 +485,25 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     userId: string,
     opts?: { baseCurrency?: string },
   ): Promise<SharedWithMeResponse> {
-    const initial = await loadSharedWithMeRows(userId);
-    if (!deps.paranoid) return buildSharedWithMeResponse(initial, opts);
+    if (!deps.paranoid) {
+      return buildSharedWithMeResponse(await loadSharedWithMeRows(userId), opts);
+    }
 
-    // Candidate discovery happens before locking, then every authorization row
-    // is reloaded under viewer + owner locks. A share from an owner who was not
-    // in the candidate snapshot is omitted until the next read; returning a
-    // briefly stale list is safer than reading that owner's content unlocked.
-    const lockedOwnerIds = new Set(sharedWithMeOwnerIds(initial));
-    return deps.paranoid.runAllowedMany([userId, ...lockedOwnerIds], 'sharing', async () => {
-      const current = await loadSharedWithMeRows(userId);
-      const ownerWasLocked = (row: { ownerId: string }) => lockedOwnerIds.has(row.ownerId);
-      return buildSharedWithMeResponse(
-        {
-          ...current,
-          portfolioRows: current.portfolioRows.filter(ownerWasLocked),
-          conglomerateRows: current.conglomerateRows.filter(ownerWasLocked),
-          watchlistRows: current.watchlistRows.filter(ownerWasLocked),
-          ideaRows: current.ideaRows.filter(ownerWasLocked),
-        },
-        opts,
-      );
-    });
+    // Discover owner ids without selecting any subject/profile fields while the
+    // viewer is locked. Then lock every candidate as optional: paranoid owners
+    // are silently omitted, while normal owners stay locked through an enriched
+    // SQL re-read and response construction. A share from a newly appearing
+    // owner waits for the next read because that account was not locked.
+    const candidateOwnerIds = await deps.paranoid.runAllowedMany([userId], 'sharing', () =>
+      audience.listFriendShareOwnerIds(userId),
+    );
+    return deps.paranoid.runAllowedWithOptional(
+      [userId],
+      candidateOwnerIds,
+      'sharing',
+      async (allowedOwnerIds) =>
+        buildSharedWithMeResponse(await loadSharedWithMeRows(userId, [...allowedOwnerIds]), opts),
+    );
   }
 
   async function readSharedItemLocked<T, TShared extends { ownerId: string }>(
@@ -759,20 +743,30 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async unfollowUser(userId, targetId) {
-      const removed = await follows.unfollow(userId, targetId);
-      if (!removed) throw NOT_FOLLOWING();
+      const unfollow = async () => {
+        const removed = await follows.unfollow(userId, targetId);
+        if (!removed) throw NOT_FOLLOWING();
+      };
+      return deps.paranoid
+        ? deps.paranoid.runAllowedMany([userId, targetId], 'sharing', unfollow)
+        : unfollow();
     },
 
     async updateFollow(userId, targetId, patch) {
-      const found = await follows.updateFollowPrefs(userId, targetId, {
-        autoFollowItems: patch.autoFollowItems,
-        notifyOnAlertCreate: patch.notifyOnAlertCreate,
-        notifyOnAlertFire: patch.notifyOnAlertFire,
-      });
-      if (!found) throw NOT_FOLLOWING();
-      const row = await follows.getFollowing(userId, targetId);
-      if (!row) throw NOT_FOLLOWING(); // unfollowed between the two statements
-      return toFollowingEntry(row);
+      const update = async () => {
+        const found = await follows.updateFollowPrefs(userId, targetId, {
+          autoFollowItems: patch.autoFollowItems,
+          notifyOnAlertCreate: patch.notifyOnAlertCreate,
+          notifyOnAlertFire: patch.notifyOnAlertFire,
+        });
+        if (!found) throw NOT_FOLLOWING();
+        const row = await follows.getFollowing(userId, targetId);
+        if (!row) throw NOT_FOLLOWING(); // unfollowed between the two statements
+        return toFollowingEntry(row);
+      };
+      return deps.paranoid
+        ? deps.paranoid.runAllowedMany([userId, targetId], 'sharing', update)
+        : update();
     },
 
     async listFollowing(userId) {

@@ -1,7 +1,7 @@
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { assets, portfolios, transactions, workboardItems } from '../schema';
+import { assets, portfolios, transactions, users, workboardItems } from '../schema';
 
 /**
  * Market-intelligence aggregation reads (PROJECTPLAN.md §13.5 V5-P5).
@@ -77,14 +77,22 @@ export interface HeldAssetHolderRow {
 export interface MarketIntelRepository {
   /** Held (net > 0) + watched assets for one user, deduped by asset (earnings). */
   listUserWatchAndHoldAssets(userId: string): Promise<UserIntelAsset[]>;
+  /** Watchlisted assets for one user, without touching portfolio transactions. */
+  listUserWatchAssets(userId: string): Promise<UserIntelAsset[]>;
   /** Held + watched assets across EVERY user, tagged with the owner (earnings). */
   listAllWatchAndHoldAssets(): Promise<UserIntelAssetWithUser[]>;
+  /** Watchlisted assets across every user, without touching portfolio transactions. */
+  listAllWatchAssets(): Promise<UserIntelAssetWithUser[]>;
+  /** Active normal user ids; holding jobs lock each id before reading transactions. */
+  listNormalUserIds(): Promise<string[]>;
   /** Net-held positions (qty + currency) for one user's active portfolios (dividends). */
   listHeldPositionsForUser(userId: string): Promise<HeldPositionRow[]>;
   /** Distinct watchlist assets for one user (dividend forward calendar). */
   listWatchlistAssetsForUser(userId: string): Promise<WatchedAssetRow[]>;
   /** Every (user, held-asset) pair across all users (dividend-event scan job). */
   listHeldAssetHoldersAllUsers(): Promise<HeldAssetHolderRow[]>;
+  /** One normal user's holding pairs; callers hold that user's transition lock. */
+  listHeldAssetHoldersForUser(userId: string): Promise<HeldAssetHolderRow[]>;
 }
 
 /** Signed quantity per transaction: +qty for a buy, −qty for a sell. */
@@ -153,6 +161,22 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
       return merge(held, watched);
     },
 
+    async listUserWatchAssets(userId) {
+      const watched = await db
+        .select({
+          assetId: assets.id,
+          symbol: assets.symbol,
+          name: assets.name,
+          providerId: assets.providerId,
+          providerRef: assets.providerRef,
+        })
+        .from(workboardItems)
+        .innerJoin(assets, eq(workboardItems.assetId, assets.id))
+        .where(eq(workboardItems.userId, userId))
+        .groupBy(assets.id, assets.symbol, assets.name, assets.providerId, assets.providerRef);
+      return merge([], watched);
+    },
+
     async listAllWatchAndHoldAssets() {
       const held = await db
         .select({
@@ -201,6 +225,39 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         else byKey.set(key, { ...row, held: false, watched: true });
       }
       return [...byKey.values()];
+    },
+
+    async listAllWatchAssets() {
+      const watched = await db
+        .select({
+          userId: workboardItems.userId,
+          assetId: assets.id,
+          symbol: assets.symbol,
+          name: assets.name,
+          providerId: assets.providerId,
+          providerRef: assets.providerRef,
+        })
+        .from(workboardItems)
+        .innerJoin(assets, eq(workboardItems.assetId, assets.id))
+        .groupBy(
+          workboardItems.userId,
+          assets.id,
+          assets.symbol,
+          assets.name,
+          assets.providerId,
+          assets.providerRef,
+        );
+      return watched.map((row) => ({ ...row, held: false, watched: true }));
+    },
+
+    async listNormalUserIds() {
+      return db
+        .select({ id: users.id })
+        .from(users)
+        .where(
+          and(eq(users.role, 'user'), eq(users.status, 'active'), eq(users.privacyMode, 'normal')),
+        )
+        .then((rows) => rows.map((row) => row.id));
     },
 
     async listHeldPositionsForUser(userId) {
@@ -271,6 +328,33 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         )
         .having(gt(signedQuantity, sql`0`));
       return rows;
+    },
+
+    async listHeldAssetHoldersForUser(userId) {
+      return db
+        .select({
+          userId: portfolios.userId,
+          assetId: transactions.assetId,
+          providerId: assets.providerId,
+          providerRef: assets.providerRef,
+          symbol: assets.symbol,
+          name: assets.name,
+          currency: assets.currency,
+        })
+        .from(transactions)
+        .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
+        .innerJoin(assets, eq(transactions.assetId, assets.id))
+        .where(and(eq(portfolios.userId, userId), isNull(portfolios.archivedAt)))
+        .groupBy(
+          portfolios.userId,
+          transactions.assetId,
+          assets.providerId,
+          assets.providerRef,
+          assets.symbol,
+          assets.name,
+          assets.currency,
+        )
+        .having(gt(signedQuantity, sql`0`));
     },
   };
 }

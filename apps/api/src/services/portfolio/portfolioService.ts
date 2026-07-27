@@ -605,17 +605,18 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
    * the durable notification center (#368) so each friend learns the portfolio
    * is now shared. Best-effort: a resolve failure never fails the update.
    */
-  async function emitPortfolioShared(ownerId: string, portfolioId: string): Promise<void> {
+  async function emitPortfolioShared(
+    ownerId: string,
+    portfolioId: string,
+    recipientIds: readonly string[],
+  ): Promise<void> {
     try {
-      const [ownerUsername, friends] = await Promise.all([
-        friendshipRepo.getUsername(ownerId),
-        friendshipRepo.listFriends(ownerId),
-      ]);
+      const ownerUsername = await friendshipRepo.getUsername(ownerId);
       const occurredAt = new Date(now()).toISOString();
-      for (const friend of friends) {
+      for (const userId of recipientIds) {
         await notify.emit({
           type: 'portfolio.shared',
-          userId: friend.id,
+          userId,
           actorId: ownerId,
           actorUsername: ownerUsername ?? '',
           portfolioId,
@@ -1255,14 +1256,31 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Discover and hold owner + every all-friends recipient before either
       // persistence model changes. A recipient whose paranoid transition won
       // rejects here, leaving portfolio visibility, audience, and events intact.
-      return audience.withVisibilityMutation(userId, patch.visibility, async () => {
-        const { portfolio, becameShared } = await updatePortfolioRecord(userId, portfolioId, patch);
-        await audience.applyVisibility(userId, 'portfolio', portfolioId, patch.visibility);
-        // Emit only after both writes succeeded, while all recipient locks remain
-        // held, so no bell can describe a share that the audience model lacks.
-        if (becameShared) await emitPortfolioShared(userId, portfolioId);
-        return portfolio;
-      });
+      return audience.withVisibilityMutation(
+        userId,
+        patch.visibility,
+        async (lockedRecipientIds) => {
+          const { portfolio, becameShared } = await updatePortfolioRecord(
+            userId,
+            portfolioId,
+            patch,
+          );
+          await audience.applyVisibility(
+            userId,
+            'portfolio',
+            portfolioId,
+            patch.visibility,
+            lockedRecipientIds,
+          );
+          // Emit only after both writes succeeded and only to the exact friend
+          // snapshot held above. Friendship churn cannot introduce an unlocked
+          // recipient between the portfolio and audience writes.
+          if (becameShared) {
+            await emitPortfolioShared(userId, portfolioId, lockedRecipientIds);
+          }
+          return portfolio;
+        },
+      );
     },
 
     getDefaultPortfolioId(userId) {

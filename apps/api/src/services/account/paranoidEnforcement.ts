@@ -1,7 +1,7 @@
 import type { RequestHandler } from 'express';
 
 import type { DomainEvent } from '../../events';
-import { ApiError, forbidden } from '../../errors';
+import { ApiError, forbidden, notFound } from '../../errors';
 
 /** Stable error code for every server-side surface killed in paranoid mode. */
 export const PARANOID_MODE_ERROR_CODE = 'PARANOID_MODE' as const;
@@ -295,6 +295,16 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
   {
     service: 'marketIntel',
     methods: ['earningsCalendar'],
+    handling: 'internallyFiltered',
+  },
+  {
+    service: 'chat',
+    methods: ['openConversation', 'listConversations', 'markRead'],
+    handling: 'kept',
+  },
+  {
+    service: 'chat',
+    methods: ['getThread', 'sendMessage'],
     handling: 'internallyFiltered',
   },
   {
@@ -594,18 +604,20 @@ export const PARANOID_WEBHOOK_SUBJECT_POLICIES = {
   'conglomerate.shared': 'recipientAndActor',
   'friend.activity': 'recipientAndActor',
   'follow.published': 'recipientAndActor',
-  'mirror.invite': 'recipient',
-  'mirror.member_joined': 'recipient',
-  'mirror.member_left': 'recipient',
-  'mirror.member_removed': 'recipient',
-  'mirror.removed': 'recipient',
-  'mirror.ownership_transferred': 'recipient',
-  'mirror.chain_dissolved': 'recipient',
-  'mirror.sync_stalled': 'recipient',
+  'mirror.invite': 'mirrorPrincipals',
+  'mirror.member_joined': 'mirrorPrincipals',
+  'mirror.member_left': 'mirrorPrincipals',
+  'mirror.member_removed': 'mirrorPrincipals',
+  'mirror.removed': 'mirrorPrincipals',
+  'mirror.ownership_transferred': 'mirrorPrincipals',
+  'mirror.chain_dissolved': 'mirrorPrincipals',
+  'mirror.sync_stalled': 'mirrorPrincipals',
   'portfolio.changed': 'recipient',
   'dividend.event': 'recipient',
   'budget.exceeded': 'recipient',
-} as const satisfies Partial<Record<DomainEvent['type'], 'recipient' | 'recipientAndActor'>>;
+} as const satisfies Partial<
+  Record<DomainEvent['type'], 'recipient' | 'recipientAndActor' | 'mirrorPrincipals'>
+>;
 
 function routeMatches(rule: ParanoidRouteRule, method: string, path: string): boolean {
   if (rule.method && rule.method !== method) return false;
@@ -655,8 +667,9 @@ export function isParanoidKilledWebhookEvent(event: DomainEvent): boolean {
 /**
  * Every account whose privacy mode can make a subscribable event unsafe.
  * `userId` is the subscription owner/recipient. Sharing events additionally
- * carry `actorId`, the shared item's owner; a stale queued event must be dropped
- * if either side entered paranoid mode.
+ * carry `actorId`, the shared item's owner. MIRRORCHAIN events carry the action
+ * actor, chain owner, and every other affected principal. A stale queued event
+ * must be dropped if any relevant account entered paranoid mode.
  */
 export function paranoidWebhookSubjectIds(event: DomainEvent): string[] {
   if (!isParanoidKilledWebhookEvent(event)) return [];
@@ -672,6 +685,21 @@ export function paranoidWebhookSubjectIds(event: DomainEvent): string[] {
       throw new Error(`missing paranoid webhook owner for ${event.type}`);
     }
     ids.push(event.actorId);
+  } else if (policy === 'mirrorPrincipals') {
+    if (
+      !('actorId' in event) ||
+      (event.actorId !== null && typeof event.actorId !== 'string') ||
+      !('ownerId' in event) ||
+      (event.ownerId !== null && typeof event.ownerId !== 'string') ||
+      !('subjectUserIds' in event) ||
+      !Array.isArray(event.subjectUserIds) ||
+      event.subjectUserIds.some((userId) => typeof userId !== 'string')
+    ) {
+      throw new Error(`missing paranoid webhook mirror principals for ${event.type}`);
+    }
+    if (event.actorId) ids.push(event.actorId);
+    if (event.ownerId) ids.push(event.ownerId);
+    ids.push(...event.subjectUserIds);
   }
   return [...new Set(ids)];
 }
@@ -995,6 +1023,15 @@ export function createParanoidRouteGuard(): RequestHandler {
     const capability = paranoidCapabilityForRoute(req.method, req.path);
     if (!capability) {
       next();
+      return;
+    }
+    // Public profiles deliberately preserve the same opaque 404 for a
+    // paranoid authenticated caller as they do for a missing/private target.
+    // Returning the generic PARANOID_MODE 403 here would turn this otherwise
+    // public lookup into an account-mode oracle before its intrinsic service
+    // authorization has a chance to run.
+    if (capability === 'publicProfile') {
+      next(notFound('This profile is not available.', 'PROFILE_NOT_FOUND'));
       return;
     }
     next(

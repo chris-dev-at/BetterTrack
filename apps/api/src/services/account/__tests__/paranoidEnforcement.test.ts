@@ -15,6 +15,7 @@ import {
   friendships,
   mirrorChainInvites,
   mirrorChainMembers,
+  mirrorChainOps,
   notifications,
   portfolios,
   shareAudiences,
@@ -87,6 +88,31 @@ async function setParanoid(userId: string): Promise<void> {
       profilePublic: false,
     })
     .where(eq(users.id, userId));
+}
+
+async function startWinningParanoidTransition(userId: string): Promise<{
+  finish(): Promise<void>;
+}> {
+  let releaseTransition!: () => void;
+  let transitionLocked!: () => void;
+  const release = new Promise<void>((resolve) => {
+    releaseTransition = resolve;
+  });
+  const locked = new Promise<void>((resolve) => {
+    transitionLocked = resolve;
+  });
+  const transition = withExclusiveParanoidTransitionTestLock(harness.db, userId, async () => {
+    await setParanoid(userId);
+    transitionLocked();
+    await release;
+  });
+  await locked;
+  return {
+    async finish() {
+      releaseTransition();
+      await transition;
+    },
+  };
 }
 
 async function paranoidAccount() {
@@ -271,6 +297,15 @@ describe('paranoid kill registry', () => {
         actorId: 'owner',
       } as DomainEvent),
     ).toEqual(['recipient', 'owner']);
+    expect(
+      paranoidWebhookSubjectIds({
+        type: 'mirror.member_removed',
+        userId: 'recipient',
+        actorId: 'manager',
+        ownerId: 'owner',
+        subjectUserIds: ['removed', 'owner'],
+      } as DomainEvent),
+    ).toEqual(['recipient', 'manager', 'owner', 'removed']);
   });
 
   it('classifies every queue and requires an executable binding for every killed job', async () => {
@@ -525,6 +560,119 @@ describe('paranoid kill registry', () => {
     expect(await harness.db.select().from(notifications)).toEqual([]);
   });
 
+  it('uses one locked friend snapshot for portfolio and conglomerate visibility writes', async () => {
+    async function mutateAcrossFriendChurn<T>(input: {
+      ownerId: string;
+      racedFriendId: string;
+      sharingCall: number;
+      mutate: () => Promise<T>;
+    }): Promise<T> {
+      const guard = harness.ctx.paranoidGuard;
+      const original = guard.runAllowedMany;
+      let sharingCalls = 0;
+      let injected = false;
+      guard.runAllowedMany = async <TResult>(
+        userIds: readonly string[],
+        capability: Parameters<typeof original>[1],
+        action: () => Promise<TResult>,
+      ): Promise<TResult> => {
+        if (capability === 'sharing' && userIds.includes(input.ownerId)) {
+          sharingCalls += 1;
+          if (sharingCalls === input.sharingCall) {
+            const [userA, userB] =
+              input.ownerId < input.racedFriendId
+                ? [input.ownerId, input.racedFriendId]
+                : [input.racedFriendId, input.ownerId];
+            await harness.db.insert(friendships).values({ userA, userB });
+            injected = true;
+          }
+        }
+        return original.call(guard, userIds, capability, action) as Promise<TResult>;
+      };
+      try {
+        const result = await input.mutate();
+        expect(injected).toBe(true);
+        return result;
+      } finally {
+        guard.runAllowedMany = original;
+      }
+    }
+
+    const portfolioOwner = await harness.seedUser({
+      email: 'portfolio-friend-churn@bettertrack.test',
+      username: 'portfolio_friend_churn',
+    });
+    const portfolioFriend = await harness.seedUser({
+      email: 'portfolio-raced-friend@bettertrack.test',
+      username: 'portfolio_raced_friend',
+    });
+    await setParanoid(portfolioFriend.id);
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(portfolioOwner.id);
+    await mutateAcrossFriendChurn({
+      ownerId: portfolioOwner.id,
+      racedFriendId: portfolioFriend.id,
+      sharingCall: 1,
+      mutate: () =>
+        harness.ctx.portfolio.updatePortfolioWithVisibility(portfolioOwner.id, portfolioId, {
+          visibility: 'friends',
+        }),
+    });
+
+    const [portfolioRow] = await harness.db
+      .select({ visibility: portfolios.visibility })
+      .from(portfolios)
+      .where(eq(portfolios.id, portfolioId));
+    const [portfolioAudience] = await harness.db
+      .select({ audience: shareAudiences.audience })
+      .from(shareAudiences)
+      .where(eq(shareAudiences.subjectId, portfolioId));
+    expect(portfolioRow?.visibility).toBe('friends');
+    expect(portfolioAudience?.audience).toBe('all_friends');
+    expect(
+      (
+        await harness.db
+          .select()
+          .from(notifications)
+          .where(eq(notifications.userId, portfolioFriend.id))
+      ).filter((row) => row.type === 'portfolio.shared'),
+    ).toEqual([]);
+
+    const conglomerateOwner = await harness.seedUser({
+      email: 'conglomerate-friend-churn@bettertrack.test',
+      username: 'conglomerate_friend_churn',
+    });
+    const conglomerateFriend = await harness.seedUser({
+      email: 'conglomerate-raced-friend@bettertrack.test',
+      username: 'conglomerate_raced_friend',
+    });
+    await setParanoid(conglomerateFriend.id);
+    const conglomerate = await harness.ctx.conglomerate.create(conglomerateOwner.id, {
+      name: 'Stable recipient snapshot',
+    });
+    await mutateAcrossFriendChurn({
+      ownerId: conglomerateOwner.id,
+      racedFriendId: conglomerateFriend.id,
+      // The registry proxy holds the owner first; the audience service's second
+      // sharing guard is the stable recipient snapshot under test.
+      sharingCall: 2,
+      mutate: () =>
+        harness.ctx.conglomerate.updateWithVisibility(conglomerateOwner.id, conglomerate.id, {
+          visibility: 'friends',
+        }),
+    });
+
+    const [conglomerateRow] = await harness.db
+      .select({ visibility: conglomerates.visibility })
+      .from(conglomerates)
+      .where(eq(conglomerates.id, conglomerate.id));
+    const [conglomerateAudience] = await harness.db
+      .select({ audience: shareAudiences.audience })
+      .from(shareAudiences)
+      .where(eq(shareAudiences.subjectId, conglomerate.id));
+    expect(conglomerateRow?.visibility).toBe('friends');
+    expect(conglomerateAudience?.audience).toBe('all_friends');
+  });
+
   it('rejects a stale invite after the chain owner enters paranoid mode without join writes', async () => {
     const owner = await harness.seedUser({
       email: 'mirror-owner-race@bettertrack.test',
@@ -571,6 +719,146 @@ describe('paranoid kill registry', () => {
         .from(portfolios)
         .where(eq(portfolios.userId, recipient.id)),
     ).toHaveLength(portfoliosBefore.length);
+  });
+
+  it('serializes every member lifecycle mutation against a winning affected-account transition', async () => {
+    const cases = [
+      {
+        name: 'setMemberRole target',
+        targetRole: 'member' as const,
+        mutate: (ownerId: string, chainId: string, targetId: string) =>
+          harness.ctx.mirror.setMemberRole(ownerId, chainId, targetId, 'manager'),
+      },
+      {
+        name: 'transferOwnership target',
+        targetRole: 'member' as const,
+        mutate: (ownerId: string, chainId: string, targetId: string) =>
+          harness.ctx.mirror.transferOwnership(ownerId, chainId, targetId),
+      },
+      {
+        name: 'removeMember target',
+        targetRole: 'member' as const,
+        mutate: (ownerId: string, chainId: string, targetId: string) =>
+          harness.ctx.mirror.removeMember(ownerId, chainId, targetId),
+      },
+      {
+        name: 'owner leave successor',
+        targetRole: 'manager' as const,
+        mutate: (ownerId: string, chainId: string) =>
+          harness.ctx.mirror.leaveChain(ownerId, chainId),
+      },
+      {
+        name: 'dissolve affected member',
+        targetRole: 'member' as const,
+        mutate: (ownerId: string, chainId: string) =>
+          harness.ctx.mirror.dissolveChain(ownerId, chainId),
+      },
+    ];
+
+    for (const [index, lifecycle] of cases.entries()) {
+      harness = await createTestApp();
+      const owner = await harness.seedUser({
+        email: `lifecycle-owner-${index}@bettertrack.test`,
+        username: `lifecycle_owner_${index}`,
+      });
+      const target = await harness.seedUser({
+        email: `lifecycle-target-${index}@bettertrack.test`,
+        username: `lifecycle_target_${index}`,
+      });
+      const ownerPortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
+      const { chain } = await harness.ctx.mirror.convertToChain(owner.id, ownerPortfolioId);
+      await harness.ctx.mirror.attachMemberCopy(chain.id, target.id, {
+        role: lifecycle.targetRole,
+      });
+      const opCountBefore = (
+        await harness.db
+          .select({ id: mirrorChainOps.id })
+          .from(mirrorChainOps)
+          .where(eq(mirrorChainOps.chainId, chain.id))
+      ).length;
+
+      const transition = await startWinningParanoidTransition(target.id);
+      const mutation = lifecycle.mutate(owner.id, chain.id, target.id);
+      let settled = false;
+      void mutation
+        .finally(() => {
+          settled = true;
+        })
+        .catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(settled, lifecycle.name).toBe(false);
+
+      await transition.finish();
+      await expect(mutation).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+      const [targetMembership] = await harness.db
+        .select()
+        .from(mirrorChainMembers)
+        .where(eq(mirrorChainMembers.userId, target.id));
+      expect(targetMembership?.status, lifecycle.name).toBe('active');
+      expect(targetMembership?.role, lifecycle.name).toBe(lifecycle.targetRole);
+      expect(targetMembership?.chainId, lifecycle.name).toBe(chain.id);
+      expect(
+        (
+          await harness.db
+            .select({ id: mirrorChainOps.id })
+            .from(mirrorChainOps)
+            .where(eq(mirrorChainOps.chainId, chain.id))
+        ).length,
+        lifecycle.name,
+      ).toBe(opCountBefore);
+    }
+  });
+
+  it('blocks a manager kick when the chain owner transition wins first', async () => {
+    const owner = await harness.seedUser({
+      email: 'lifecycle-owner-principal@bettertrack.test',
+      username: 'lifecycle_owner_principal',
+    });
+    const manager = await harness.seedUser({
+      email: 'lifecycle-manager-principal@bettertrack.test',
+      username: 'lifecycle_manager_principal',
+    });
+    const target = await harness.seedUser({
+      email: 'lifecycle-member-principal@bettertrack.test',
+      username: 'lifecycle_member_principal',
+    });
+    const ownerPortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
+    const { chain } = await harness.ctx.mirror.convertToChain(owner.id, ownerPortfolioId);
+    await harness.ctx.mirror.attachMemberCopy(chain.id, manager.id, { role: 'manager' });
+    await harness.ctx.mirror.attachMemberCopy(chain.id, target.id, { role: 'member' });
+    const opCountBefore = (
+      await harness.db
+        .select({ id: mirrorChainOps.id })
+        .from(mirrorChainOps)
+        .where(eq(mirrorChainOps.chainId, chain.id))
+    ).length;
+
+    const transition = await startWinningParanoidTransition(owner.id);
+    const kick = harness.ctx.mirror.removeMember(manager.id, chain.id, target.id);
+    let settled = false;
+    void kick
+      .finally(() => {
+        settled = true;
+      })
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    await transition.finish();
+    await expect(kick).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+    const [targetMembership] = await harness.db
+      .select()
+      .from(mirrorChainMembers)
+      .where(eq(mirrorChainMembers.userId, target.id));
+    expect(targetMembership?.status).toBe('active');
+    expect(
+      (
+        await harness.db
+          .select({ id: mirrorChainOps.id })
+          .from(mirrorChainOps)
+          .where(eq(mirrorChainOps.chainId, chain.id))
+      ).length,
+    ).toBe(opCountBefore);
   });
 
   it('filters both directions of an established follow after the counterpart transition wins', async () => {
@@ -626,6 +914,119 @@ describe('paranoid kill registry', () => {
       followerCount: 0,
     });
     await expect(followersRead).resolves.toEqual({ followers: [] });
+  });
+
+  it('guards the follow target through preference updates and unfollow mutations', async () => {
+    const follower = await harness.seedUser({
+      email: 'follow-mutation-viewer@bettertrack.test',
+      username: 'follow_mutation_viewer',
+    });
+    const alreadyParanoid = await harness.seedUser({
+      email: 'follow-mutation-paranoid@bettertrack.test',
+      username: 'follow_mutation_paranoid',
+    });
+    const racingTarget = await harness.seedUser({
+      email: 'follow-mutation-racing@bettertrack.test',
+      username: 'follow_mutation_racing',
+    });
+    await harness.db.insert(userFollows).values([
+      { followerId: follower.id, followedId: alreadyParanoid.id },
+      { followerId: follower.id, followedId: racingTarget.id },
+    ]);
+    await setParanoid(alreadyParanoid.id);
+
+    await expect(
+      harness.ctx.social.updateFollow(follower.id, alreadyParanoid.id, {
+        autoFollowItems: true,
+      }),
+    ).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+    await expect(
+      harness.ctx.social.unfollowUser(follower.id, alreadyParanoid.id),
+    ).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+
+    const transition = await startWinningParanoidTransition(racingTarget.id);
+    const update = harness.ctx.social.updateFollow(follower.id, racingTarget.id, {
+      notifyOnAlertFire: true,
+    });
+    const unfollow = harness.ctx.social.unfollowUser(follower.id, racingTarget.id);
+    let settled = 0;
+    for (const mutation of [update, unfollow]) {
+      void mutation
+        .finally(() => {
+          settled += 1;
+        })
+        .catch(() => undefined);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(0);
+
+    await transition.finish();
+    await expect(update).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+    await expect(unfollow).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+    const rows = await harness.db
+      .select()
+      .from(userFollows)
+      .where(eq(userFollows.followerId, follower.id));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.autoFollowItems === false)).toBe(true);
+    expect(rows.every((row) => row.notifyOnAlertFire === false)).toBe(true);
+  });
+
+  it('filters comments and reaction actors after a winning author transition', async () => {
+    const owner = await harness.seedUser({
+      email: 'thread-owner-race@bettertrack.test',
+      username: 'thread_owner_race',
+    });
+    const viewer = await harness.seedUser({
+      email: 'thread-viewer-race@bettertrack.test',
+      username: 'thread_viewer_race',
+    });
+    const author = await harness.seedUser({
+      email: 'thread-author-race@bettertrack.test',
+      username: 'thread_author_race',
+    });
+    for (const friendId of [viewer.id, author.id]) {
+      const [userA, userB] = owner.id < friendId ? [owner.id, friendId] : [friendId, owner.id];
+      await harness.db.insert(friendships).values({ userA, userB });
+    }
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
+    await harness.ctx.social.setAudience(owner.id, 'portfolio', portfolioId, {
+      audience: 'all_friends',
+    });
+    const visibleComment = await harness.ctx.comments.addComment(
+      viewer.id,
+      'portfolio',
+      portfolioId,
+      'visible comment',
+    );
+    await harness.ctx.comments.addComment(
+      author.id,
+      'portfolio',
+      portfolioId,
+      'private author comment',
+    );
+    await harness.ctx.comments.toggleItemReaction(viewer.id, 'portfolio', portfolioId, '🔥');
+    await harness.ctx.comments.toggleItemReaction(author.id, 'portfolio', portfolioId, '🔥');
+    await harness.ctx.comments.toggleCommentReaction(viewer.id, visibleComment.id, '👍');
+    await harness.ctx.comments.toggleCommentReaction(author.id, visibleComment.id, '👍');
+
+    const transition = await startWinningParanoidTransition(author.id);
+    const threadRead = harness.ctx.comments.getThread(viewer.id, 'portfolio', portfolioId);
+    let settled = false;
+    void threadRead
+      .finally(() => {
+        settled = true;
+      })
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    await transition.finish();
+    const thread = await threadRead;
+    expect(thread.commentCount).toBe(1);
+    expect(thread.comments.map((comment) => comment.body)).toEqual(['visible comment']);
+    expect(thread.comments[0]?.reactions).toEqual([{ emoji: '👍', count: 1, reacted: true }]);
+    expect(thread.reactions).toEqual([{ emoji: '🔥', count: 1, reacted: true }]);
   });
 
   it('serializes mixed asset/search/earnings reads and keeps only global or watched data', async () => {

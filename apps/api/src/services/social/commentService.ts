@@ -41,8 +41,8 @@ export interface CommentServiceDeps {
   audience: AudienceService;
   /** Public-safe author identity for the just-posted comment echo. */
   userRepo: Pick<UserRepository, 'findById'>;
-  /** Locks both viewer and item owner across authorization plus persistence. */
-  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany'>;
+  /** Locks viewer/owner plus optional thread actors across reads and writes. */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany' | 'runAllowedWithOptional'>;
 }
 
 export interface CommentService {
@@ -132,36 +132,84 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
       : revalidateAndRun();
   }
 
+  async function buildThread(
+    viewerId: string,
+    kind: ShareKind,
+    subjectId: string,
+    access: ThreadAccess,
+    allowedActorIds?: readonly string[],
+  ): Promise<CommentThreadResponse> {
+    const rows = await comments.listForItem(kind, subjectId, allowedActorIds);
+    const reactionMap = await reactions.summaryForComments(
+      viewerId,
+      rows.map((row) => row.id),
+      allowedActorIds,
+    );
+    const itemReactions = await reactions.summaryForItem(
+      viewerId,
+      kind,
+      subjectId,
+      allowedActorIds,
+    );
+    const commentList: ItemComment[] = rows.map((row) => ({
+      id: row.id,
+      author: {
+        id: row.authorId,
+        username: row.authorUsername,
+        profileIcon: coerceProfileIcon(row.authorProfileIcon),
+      },
+      body: row.body,
+      createdAt: row.createdAt.toISOString(),
+      // Author deletes their own; the item owner moderates every comment.
+      canDelete: access.isOwner || row.authorId === viewerId,
+      reactions: toReactionSummaries(reactionMap.get(row.id) ?? []),
+    }));
+    return {
+      kind,
+      subjectId,
+      commentCount: commentList.length,
+      comments: commentList,
+      reactions: toReactionSummaries(itemReactions),
+    };
+  }
+
   return {
     async getThread(viewerId, kind, subjectId) {
-      return withLockedAccess(viewerId, kind, subjectId, async (access) => {
-        const rows = await comments.listForItem(kind, subjectId);
-        const reactionMap = await reactions.summaryForComments(
-          viewerId,
-          rows.map((r) => r.id),
+      if (!deps.paranoid) {
+        return withLockedAccess(viewerId, kind, subjectId, (access) =>
+          buildThread(viewerId, kind, subjectId, access),
         );
-        const itemReactions = await reactions.summaryForItem(viewerId, kind, subjectId);
-        const commentList: ItemComment[] = rows.map((row) => ({
-          id: row.id,
-          author: {
-            id: row.authorId,
-            username: row.authorUsername,
-            profileIcon: coerceProfileIcon(row.authorProfileIcon),
-          },
-          body: row.body,
-          createdAt: row.createdAt.toISOString(),
-          // Author deletes their own; the item owner moderates every comment.
-          canDelete: access.isOwner || row.authorId === viewerId,
-          reactions: toReactionSummaries(reactionMap.get(row.id) ?? []),
-        }));
-        return {
-          kind,
-          subjectId,
-          commentCount: commentList.length,
-          comments: commentList,
-          reactions: toReactionSummaries(itemReactions),
-        };
-      });
+      }
+
+      const candidate = await resolveAccess(viewerId, kind, subjectId);
+      if (!candidate) throw THREAD_NOT_FOUND();
+      // Discover ids without selecting bodies, usernames, profile icons, emojis,
+      // or aggregates. Every candidate is optional: a paranoid third-party actor
+      // disappears from the thread instead of making unrelated rows fail or
+      // revealing their mode. Viewer + item owner remain required.
+      const [commentParticipants, reactionActorIds] = await Promise.all([
+        comments.listParticipantsForItem(kind, subjectId),
+        reactions.listActorIdsForThread(kind, subjectId),
+      ]);
+      const optionalActorIds = [
+        ...new Set([...commentParticipants.map((row) => row.authorId), ...reactionActorIds]),
+      ];
+      return deps.paranoid.runAllowedWithOptional(
+        [viewerId, candidate.ownerId],
+        optionalActorIds,
+        'sharing',
+        async (allowedOptionalActorIds) => {
+          const access = await resolveAccess(viewerId, kind, subjectId);
+          if (!access || access.ownerId !== candidate.ownerId) throw THREAD_NOT_FOUND();
+          // Required principals may themselves have authored/reacted; include
+          // them alongside the admitted optional set. SQL filters make a newly
+          // appearing, undiscovered actor invisible until the next locked read.
+          const allowedActorIds = [
+            ...new Set([viewerId, candidate.ownerId, ...allowedOptionalActorIds]),
+          ];
+          return buildThread(viewerId, kind, subjectId, access, allowedActorIds);
+        },
+      );
     },
 
     async addComment(viewerId, kind, subjectId, body) {

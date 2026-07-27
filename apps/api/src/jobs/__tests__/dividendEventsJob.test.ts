@@ -75,13 +75,19 @@ function scanDeps(opts: {
   const repo = createNotificationRepository(db);
   return {
     repo: {
-      listHeldAssetHoldersAllUsers: async () => opts.holders,
+      listNormalUserIds: async () => [...new Set(opts.holders.map((row) => row.userId))],
+      listHeldAssetHoldersForUser: async (userId: string) =>
+        opts.holders.filter((row) => row.userId === userId),
     },
     marketData: marketDataWith(opts.upcoming),
     notify: createNotificationCenter({
       enqueue: (event) => harness.ctx.notificationDispatcher.dispatch(event),
     }),
     isEnabled: dividendNotifyGate(repo),
+    runIfAllowed: async (_userId: string, action: () => Promise<void>) => {
+      await action();
+      return true;
+    },
     enabled: opts.enabled ?? true,
     now: () => NOW,
   };
@@ -169,7 +175,11 @@ describe('marketIntel.dividendScan (V5-P5)', () => {
 
     const result = await runDividendEventsScan({
       ...deps,
-      isParanoid: async (userId) => userId === user.id,
+      runIfAllowed: async (userId, action) => {
+        if (userId === user.id) return false;
+        await action();
+        return true;
+      },
     });
     expect(result).toEqual({ assetsScanned: 0, emitted: 0 });
     expect(await dividendRows(user.id)).toHaveLength(0);

@@ -302,11 +302,21 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     },
 
     async updateWithVisibility(ownerId, id, patch) {
-      return audience.withVisibilityMutation(ownerId, patch.visibility, async () => {
-        const detail = await updateRecord(ownerId, id, patch);
-        await audience.applyVisibility(ownerId, 'conglomerate', id, patch.visibility);
-        return detail;
-      });
+      return audience.withVisibilityMutation(
+        ownerId,
+        patch.visibility,
+        async (lockedRecipientIds) => {
+          const detail = await updateRecord(ownerId, id, patch);
+          await audience.applyVisibility(
+            ownerId,
+            'conglomerate',
+            id,
+            patch.visibility,
+            lockedRecipientIds,
+          );
+          return detail;
+        },
+      );
     },
 
     async replacePositions(ownerId, id, positions) {

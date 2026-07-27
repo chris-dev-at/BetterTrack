@@ -26,10 +26,16 @@ import {
 import type {
   AlertTriggeredEvent,
   DividendEventNotice,
+  MirrorNotificationEvent,
   PortfolioSharedEvent,
   WatchlistSharedEvent,
 } from '../events';
-import { WEBHOOK_DELIVERY_RETENTION_DAYS, createWebhookDeliveryCleanupJob } from '../jobs';
+import {
+  WEBHOOK_DELIVERY_RETENTION_DAYS,
+  bindParanoidJob,
+  createWebhookDeliveryCleanupJob,
+  type JobDefinition,
+} from '../jobs';
 import type { AuditService } from '../services/audit/auditService';
 import { decryptSecret, encryptSecret } from '../services/crypto/secretBox';
 import { DISPATCHABLE_EVENT_TYPES } from '../services/notifications/notificationDispatcher';
@@ -49,6 +55,16 @@ const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DELIVERY_A = '00000000-0000-7000-8000-0000000000aa';
 const DELIVERY_B = '00000000-0000-7000-8000-0000000000ab';
+const MIRROR_WEBHOOK_TYPES: readonly MirrorNotificationEvent['type'][] = [
+  'mirror.invite',
+  'mirror.member_joined',
+  'mirror.member_left',
+  'mirror.member_removed',
+  'mirror.removed',
+  'mirror.ownership_transferred',
+  'mirror.chain_dissolved',
+  'mirror.sync_stalled',
+];
 
 type Agent = ReturnType<typeof request.agent>;
 
@@ -389,6 +405,117 @@ describe('signed delivery', () => {
     await bridge.handleEvent(recipientEvent);
 
     expect(enqueued).toEqual([]);
+  });
+
+  it('checks mirror recipient, actor, owner, and affected subjects before webhook enqueue', async () => {
+    const recipient = await createSubscription([...MIRROR_WEBHOOK_TYPES]);
+    const actor = await harness.seedUser({
+      email: 'webhook-mirror-actor@bettertrack.test',
+      username: 'webhook_mirror_actor',
+    });
+    const owner = await harness.seedUser({
+      email: 'webhook-mirror-owner@bettertrack.test',
+      username: 'webhook_mirror_owner',
+    });
+    const subject = await harness.seedUser({
+      email: 'webhook-mirror-subject@bettertrack.test',
+      username: 'webhook_mirror_subject',
+    });
+    const enqueued: WebhookDeliveryJob[] = [];
+    const bridge = createWebhookBridge({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      enqueue: async (job) => {
+        enqueued.push(job);
+      },
+      logger: harness.ctx.logger,
+      paranoid: harness.ctx.paranoidGuard,
+    });
+    const event = (type: MirrorNotificationEvent['type']): MirrorNotificationEvent => ({
+      type,
+      userId: recipient.userId,
+      chainId: '00000000-0000-7000-8000-000000000081',
+      chainName: 'Private chain',
+      actorId: actor.id,
+      ownerId: owner.id,
+      subjectUserIds: [subject.id],
+      actorUsername: actor.username,
+      refId: `ref:${type}`,
+      occurredAt: '2026-07-27T00:00:00.000Z',
+    });
+    const setMode = async (userId: string, privacyMode: 'normal' | 'paranoid') => {
+      await harness.db
+        .update(schema.users)
+        .set({
+          privacyMode,
+          paranoidMediaSet: privacyMode === 'paranoid' ? ['drive'] : null,
+          paranoidDriveAttestedVersion: privacyMode === 'paranoid' ? 1 : null,
+        })
+        .where(eq(schema.users.id, userId));
+    };
+
+    await setMode(actor.id, 'paranoid');
+    for (const type of MIRROR_WEBHOOK_TYPES) await bridge.handleEvent(event(type));
+    await setMode(actor.id, 'normal');
+    await setMode(owner.id, 'paranoid');
+    await bridge.handleEvent(event('mirror.invite'));
+    await setMode(owner.id, 'normal');
+    await setMode(subject.id, 'paranoid');
+    await bridge.handleEvent(event('mirror.member_removed'));
+
+    expect(enqueued).toEqual([]);
+  });
+
+  it('checks every mirror principal again when each queued webhook delivery runs', async () => {
+    const delivered: string[] = [];
+    const definition = {
+      name: 'webhooks.deliver',
+      async handler(job) {
+        delivered.push(job.data.event.type);
+      },
+    } as JobDefinition<'webhooks.deliver'>;
+    const checked: Array<{ type: string; userIds: readonly string[] }> = [];
+    let pendingType = '';
+    const guarded = bindParanoidJob(definition, {
+      mode: 'event',
+      runIfAllowed: async (userIds, _action) => {
+        checked.push({ type: pendingType, userIds });
+        return false;
+      },
+    });
+
+    for (const [index, type] of MIRROR_WEBHOOK_TYPES.entries()) {
+      pendingType = type;
+      const event: MirrorNotificationEvent = {
+        type,
+        userId: `recipient-${index}`,
+        chainId: '00000000-0000-7000-8000-000000000082',
+        chainName: 'Queued chain',
+        actorId: `actor-${index}`,
+        ownerId: `owner-${index}`,
+        subjectUserIds: [`subject-${index}`, `owner-${index}`],
+        actorUsername: 'actor',
+        refId: `queued:${index}`,
+        occurredAt: '2026-07-27T00:00:00.000Z',
+      };
+      await guarded.handler(
+        {
+          data: {
+            subscriptionId: `subscription-${index}`,
+            deliveryId: `delivery-${index}`,
+            event,
+          },
+        } as never,
+        { logger: harness.ctx.logger } as never,
+      );
+    }
+
+    expect(delivered).toEqual([]);
+    expect(checked).toEqual(
+      MIRROR_WEBHOOK_TYPES.map((type, index) => ({
+        type,
+        userIds: [`recipient-${index}`, `actor-${index}`, `owner-${index}`, `subject-${index}`],
+      })),
+    );
   });
 
   it('isolates a failed enqueue, exposes it for retry, and preserves replay delivery ids', async () => {

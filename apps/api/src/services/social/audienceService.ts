@@ -112,10 +112,21 @@ export interface AudienceService {
     ideaId: string,
     read: (authorized: OwnerRef) => Promise<T>,
   ): Promise<T | undefined>;
-  listFriendPortfolios(viewerId: string): Promise<FriendPortfolioRow[]>;
-  listFriendConglomerates(viewerId: string): Promise<FriendConglomerateRow[]>;
-  listFriendWatchlists(viewerId: string): Promise<FriendWatchlistRow[]>;
-  listFriendIdeas(viewerId: string): Promise<FriendIdeaRow[]>;
+  /** Minimal owner-id discovery used before optional privacy-lock filtering. */
+  listFriendShareOwnerIds(viewerId: string): Promise<string[]>;
+  listFriendPortfolios(
+    viewerId: string,
+    ownerIds?: readonly string[],
+  ): Promise<FriendPortfolioRow[]>;
+  listFriendConglomerates(
+    viewerId: string,
+    ownerIds?: readonly string[],
+  ): Promise<FriendConglomerateRow[]>;
+  listFriendWatchlists(
+    viewerId: string,
+    ownerIds?: readonly string[],
+  ): Promise<FriendWatchlistRow[]>;
+  listFriendIdeas(viewerId: string, ownerIds?: readonly string[]): Promise<FriendIdeaRow[]>;
   /** Resolve a raw public-link token to its live subject, or `undefined` (→ 404). */
   resolvePublicLink(token: string): Promise<ResolvedPublicLink | undefined>;
   /** The owner's audience state for a subject, or `undefined` when not owned (→ 404). */
@@ -141,15 +152,22 @@ export interface AudienceService {
     kind: ShareKind,
     subjectId: string,
     visibility: 'private' | 'friends',
+    /**
+     * A recipient snapshot already locked by {@link withVisibilityMutation}.
+     * Omit for standalone legacy visibility writes.
+     */
+    lockedRecipientIds?: readonly string[],
   ): Promise<void>;
   /**
    * Hold owner + prospective-recipient transition locks around a legacy mixed
-   * mutation (currently Conglomerate PATCH visibility + metadata).
+   * mutation. The callback receives the exact recipient snapshot protected by
+   * those locks so its paired persistence writes and fan-out never rediscover a
+   * different friend set halfway through the operation.
    */
   withVisibilityMutation<T>(
     ownerId: string,
     visibility: 'private' | 'friends',
-    action: () => Promise<T>,
+    action: (lockedRecipientIds: readonly string[]) => Promise<T>,
   ): Promise<T>;
   /** Current audience per subject for a same-kind batch (missing = private) — list views. */
   audiencesForSubjects(
@@ -506,21 +524,25 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     async withAuthorizedIdeaRead(viewerId, ideaId, read) {
       return withAuthorizedRead(viewerId, () => repo.authorizeIdeaRead(viewerId, ideaId), read);
     },
-    async listFriendPortfolios(viewerId) {
+    async listFriendShareOwnerIds(viewerId) {
       await paranoid?.assertAllowed(viewerId, 'sharing');
-      return repo.listFriendPortfolios(viewerId);
+      return repo.listFriendShareOwnerIds(viewerId);
     },
-    async listFriendConglomerates(viewerId) {
+    async listFriendPortfolios(viewerId, ownerIds) {
       await paranoid?.assertAllowed(viewerId, 'sharing');
-      return repo.listFriendConglomerates(viewerId);
+      return repo.listFriendPortfolios(viewerId, ownerIds);
     },
-    async listFriendWatchlists(viewerId) {
+    async listFriendConglomerates(viewerId, ownerIds) {
       await paranoid?.assertAllowed(viewerId, 'sharing');
-      return repo.listFriendWatchlists(viewerId);
+      return repo.listFriendConglomerates(viewerId, ownerIds);
     },
-    async listFriendIdeas(viewerId) {
+    async listFriendWatchlists(viewerId, ownerIds) {
       await paranoid?.assertAllowed(viewerId, 'sharing');
-      return repo.listFriendIdeas(viewerId);
+      return repo.listFriendWatchlists(viewerId, ownerIds);
+    },
+    async listFriendIdeas(viewerId, ownerIds) {
+      await paranoid?.assertAllowed(viewerId, 'sharing');
+      return repo.listFriendIdeas(viewerId, ownerIds);
     },
 
     async resolvePublicLink(token) {
@@ -618,9 +640,10 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       });
     },
 
-    async applyVisibility(ownerId, kind, subjectId, visibility) {
+    async applyVisibility(ownerId, kind, subjectId, visibility, lockedRecipientIds) {
       const audience: ShareAudience = visibility === 'friends' ? 'all_friends' : 'private';
-      const recipients = visibility === 'friends' ? await allFriendRecipients(ownerId) : [];
+      const recipients =
+        lockedRecipientIds ?? (visibility === 'friends' ? await allFriendRecipients(ownerId) : []);
       await withNormalRecipients(ownerId, recipients, async () => {
         await repo.setAudience(ownerId, kind, subjectId, audience, []);
       });
@@ -628,7 +651,7 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
 
     async withVisibilityMutation(ownerId, visibility, action) {
       const recipients = visibility === 'friends' ? await allFriendRecipients(ownerId) : [];
-      return withNormalRecipients(ownerId, recipients, action);
+      return withNormalRecipients(ownerId, recipients, () => action(recipients));
     },
 
     audiencesForSubjects: (kind, subjectIds) => repo.audiencesForSubjects(kind, subjectIds),

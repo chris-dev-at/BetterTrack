@@ -16,6 +16,7 @@ import {
   mirrorChainOps,
   mirrorChains,
   mirrorRows,
+  portfolios,
   transactions,
   users,
 } from '../schema';
@@ -287,6 +288,31 @@ export function createMirrorchainRepository(db: Database) {
         .from(mirrorChainOps)
         .where(and(eq(mirrorChainOps.chainId, chainId), gt(mirrorChainOps.seq, afterSeq)))
         .orderBy(asc(mirrorChainOps.seq));
+    },
+
+    /**
+     * Account ids whose server-side content/attribution is carried by queued ops.
+     * This intentionally selects no payload or username: the replicate worker
+     * uses it only to acquire privacy locks before loading the full oplog window.
+     */
+    async listOpPrincipalIdsSince(chainId: string, afterSeq: number): Promise<string[]> {
+      const rows = await db
+        .select({
+          actorUserId: mirrorChainOps.actorUserId,
+          originOwnerId: portfolios.userId,
+        })
+        .from(mirrorChainOps)
+        .leftJoin(portfolios, eq(portfolios.id, mirrorChainOps.originPortfolioId))
+        .where(and(eq(mirrorChainOps.chainId, chainId), gt(mirrorChainOps.seq, afterSeq)));
+      return [
+        ...new Set(
+          rows.flatMap((row) =>
+            [row.actorUserId, row.originOwnerId].filter(
+              (userId): userId is string => typeof userId === 'string',
+            ),
+          ),
+        ),
+      ];
     },
 
     /**

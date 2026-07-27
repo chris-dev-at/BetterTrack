@@ -132,7 +132,7 @@ const LOCK_POLL_MS = 25;
 /** Renew well inside the TTL — a long apply (join replay) must not outlive it. */
 const LOCK_RENEW_INTERVAL_MS = LOCK_TTL_MS / 3;
 /** A racing ownership transfer is re-discovered before a join is allowed to write. */
-const JOIN_PRINCIPAL_RETRY_LIMIT = 4;
+const PRINCIPAL_GUARD_RETRY_LIMIT = 4;
 
 /** Compare-and-delete / compare-and-expire: only ever release or renew OUR lock. */
 const LOCK_RELEASE_SCRIPT =
@@ -1143,6 +1143,74 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     return appliedCount;
   }
 
+  type ReplayPrincipalAttempt =
+    | { retry: true; principalIds: string[] }
+    | { retry: false; applied: number };
+
+  /**
+   * Replay one destination only while its account, every current chain member
+   * (including the owner), and every queued op actor/origin owner are normal.
+   * Principal discovery selects metadata only. The full op payload is loaded
+   * under those locks and the chain mutex; a newly appended op from an
+   * undiscovered principal forces rediscovery before any watermark or ledger
+   * write.
+   */
+  async function replayMemberIfAllowed(
+    chainId: string,
+    candidate: MirrorChainMemberRow,
+  ): Promise<{ ran: boolean; applied: number }> {
+    if (!candidate.userId) return { ran: false, applied: 0 };
+    let discoveredPrincipalIds = [
+      candidate.userId,
+      ...(await repo.listActiveMembers(chainId))
+        .map((member) => member.userId)
+        .filter((userId): userId is string => typeof userId === 'string'),
+      ...(await repo.listOpPrincipalIdsSince(chainId, candidate.appliedSeq)),
+    ];
+
+    for (let attempt = 0; attempt < PRINCIPAL_GUARD_RETRY_LIMIT; attempt += 1) {
+      const guardedIds = [...new Set(discoveredPrincipalIds)];
+      const guardedSet = new Set(guardedIds);
+      let result: ReplayPrincipalAttempt | undefined;
+      const ran = await runMirrorIfAllowedMany(guardedIds, async () => {
+        result = await withChainLock(
+          chainId,
+          async (): Promise<ReplayPrincipalAttempt> => {
+            const fresh = await repo.findActiveMembership(chainId, candidate.userId!);
+            if (!fresh?.portfolioId) return { retry: false, applied: 0 };
+            const [members, opPrincipalIds] = await Promise.all([
+              repo.listActiveMembers(chainId),
+              repo.listOpPrincipalIdsSince(chainId, fresh.appliedSeq),
+            ]);
+            const currentPrincipalIds = [
+              fresh.userId!,
+              ...members
+                .map((member) => member.userId)
+                .filter((userId): userId is string => typeof userId === 'string'),
+              ...opPrincipalIds,
+            ];
+            if (currentPrincipalIds.some((userId) => !guardedSet.has(userId))) {
+              return { retry: true, principalIds: [...new Set(currentPrincipalIds)] };
+            }
+            const ops = await repo.listOpsSince(chainId, fresh.appliedSeq);
+            return { retry: false, applied: await applyOpsToMember(fresh, ops) };
+          },
+          REPLICATE_LOCK_WAIT_MS,
+        );
+      });
+      if (!ran) return { ran: false, applied: 0 };
+      if (!result) throw new Error(`mirror: replay principal guard returned no result`);
+      if (!result.retry) return { ran: true, applied: result.applied };
+      discoveredPrincipalIds = result.principalIds;
+    }
+
+    throw new ApiError(
+      503,
+      'MIRROR_BUSY',
+      'This group portfolio is busy applying another change. Try again shortly.',
+    );
+  }
+
   /** The per-copy audit row (§2/§10): actor = the acting member, target = the local row. */
   async function recordOpAudit(
     member: MirrorChainMemberRow,
@@ -1506,12 +1574,20 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     chain: { id: string; name: string },
     actorUsername: string,
     refId: string,
+    principals: {
+      actorId: string | null;
+      ownerId: string | null;
+      subjectUserIds?: readonly string[];
+    },
   ): Promise<void> {
     await notify.emit({
       type,
       userId: recipientUserId,
       chainId: chain.id,
       chainName: chain.name,
+      actorId: principals.actorId,
+      ownerId: principals.ownerId,
+      subjectUserIds: [...new Set(principals.subjectUserIds ?? [])],
       actorUsername,
       refId,
       occurredAt: new Date(now()).toISOString(),
@@ -1555,7 +1631,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     await Promise.all(directPrincipalIds.map((userId) => assertMirrorAllowed(userId)));
     let discoveredOwnerId = ownerOf(await repo.listActiveMembers(chainId))?.userId ?? null;
 
-    for (let attempt = 0; attempt < JOIN_PRINCIPAL_RETRY_LIMIT; attempt += 1) {
+    for (let attempt = 0; attempt < PRINCIPAL_GUARD_RETRY_LIMIT; attempt += 1) {
       const guardedIds = [
         ...new Set(
           [...directPrincipalIds, discoveredOwnerId].filter(
@@ -1577,6 +1653,55 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       );
       if (!result.retry) return result.value;
       discoveredOwnerId = result.ownerId;
+    }
+
+    throw new ApiError(
+      503,
+      'MIRROR_BUSY',
+      'This group portfolio is busy applying another change. Try again shortly.',
+    );
+  }
+
+  type LifecyclePrincipalAttempt<T> =
+    | { retry: true; memberIds: string[] }
+    | { retry: false; value: T };
+
+  /**
+   * Serialize a membership lifecycle mutation against every account whose row,
+   * role, copy, notification, or ownership can change. Candidate member ids are
+   * discovered before locking; under the account locks and chain mutex the
+   * active set is re-read. A join that won in between forces bounded
+   * rediscovery before any write. The callback runs through audit, fan-out,
+   * enqueue, and response construction while all principals remain held.
+   */
+  async function withLifecyclePrincipalGuards<T>(
+    chainId: string,
+    directPrincipalIds: readonly string[],
+    action: (context: { chain: MirrorChainRow; members: MirrorChainMemberRow[] }) => Promise<T>,
+  ): Promise<T> {
+    let discoveredMemberIds = (await repo.listActiveMembers(chainId))
+      .map((member) => member.userId)
+      .filter((userId): userId is string => typeof userId === 'string');
+
+    for (let attempt = 0; attempt < PRINCIPAL_GUARD_RETRY_LIMIT; attempt += 1) {
+      const guardedIds = [...new Set([...directPrincipalIds, ...discoveredMemberIds])];
+      const guardedSet = new Set(guardedIds);
+      const result = await runMirrorAllowedMany(guardedIds, () =>
+        withChainLock(chainId, async (): Promise<LifecyclePrincipalAttempt<T>> => {
+          const chain = await repo.getChain(chainId);
+          if (!chain || chain.status !== 'active') throw chainNotFound();
+          const members = await repo.listActiveMembers(chainId);
+          const currentMemberIds = members
+            .map((member) => member.userId)
+            .filter((userId): userId is string => typeof userId === 'string');
+          if (currentMemberIds.some((userId) => !guardedSet.has(userId))) {
+            return { retry: true, memberIds: currentMemberIds };
+          }
+          return { retry: false, value: await action({ chain, members }) };
+        }),
+      );
+      if (!result.retry) return result.value;
+      discoveredMemberIds = result.memberIds;
     }
 
     throw new ApiError(
@@ -1818,6 +1943,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
             chain,
             manager.username,
             refId,
+            {
+              actorId: departing?.userId ?? null,
+              ownerId: manager.userId,
+              subjectUserIds: manager.userId ? [manager.userId] : [],
+            },
           );
         }
       }
@@ -1836,7 +1966,10 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     await repo.markChainDissolved(chain.id, endedAt);
     for (const m of activeMembers) {
       if (m.userId && m.userId !== departing?.userId) {
-        await emitMirror('mirror.chain_dissolved', m.userId, chain, actor.username, chain.id);
+        await emitMirror('mirror.chain_dissolved', m.userId, chain, actor.username, chain.id, {
+          actorId: departing?.userId ?? null,
+          ownerId: departing?.userId ?? null,
+        });
       }
     }
     return { outcome: 'dissolved' };
@@ -2140,26 +2273,9 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         if (!member.userId || !member.portfolioId) continue;
         if (member.appliedSeq >= chain.lastSeq) continue;
         try {
-          let memberApplied = 0;
-          const ran = await runMirrorIfAllowedMany([member.userId], async () => {
-            // Each copy's replay holds the same per-chain lock the submit path
-            // does — never a second applier next to a submit's origin catch-up.
-            // The membership is re-read INSIDE both locks (the pre-lock rows are
-            // only a cheap skip): a concurrent submit may have advanced this
-            // copy's watermark while we waited.
-            memberApplied = await withChainLock(
-              chainId,
-              async () => {
-                const fresh = await repo.findActiveMembership(chainId, member.userId!);
-                if (!fresh?.portfolioId) return 0;
-                const ops = await repo.listOpsSince(chainId, fresh.appliedSeq);
-                return applyOpsToMember(fresh, ops);
-              },
-              REPLICATE_LOCK_WAIT_MS,
-            );
-          });
-          if (!ran) continue;
-          applied += memberApplied;
+          const replay = await replayMemberIfAllowed(chainId, member);
+          if (!replay.ran) continue;
+          applied += replay.applied;
         } catch (err) {
           // This copy lags (never diverges, §2) — the others still catch up.
           failures.push({ memberId: member.id, err });
@@ -2206,12 +2322,32 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         if (!stalled.userId || !stalled.portfolioId) continue;
         if (stalled.appliedSeq >= chain.lastSeq) continue; // caught up — not stalled
         const refId = `${stalled.userId}:${stalled.appliedSeq}`;
-        await runMirrorIfAllowedMany([stalled.userId], async () => {
-          await emitMirror('mirror.sync_stalled', stalled.userId!, chain, stalled.username, refId);
+        const principalIds = [stalled.userId, ...(owner?.userId ? [owner.userId] : [])];
+        const eventPrincipals = {
+          actorId: stalled.userId,
+          ownerId: owner?.userId ?? null,
+          subjectUserIds: [stalled.userId],
+        };
+        await runMirrorIfAllowedMany(principalIds, async () => {
+          await emitMirror(
+            'mirror.sync_stalled',
+            stalled.userId!,
+            chain,
+            stalled.username,
+            refId,
+            eventPrincipals,
+          );
         });
         if (owner?.userId && owner.userId !== stalled.userId) {
-          await runMirrorIfAllowedMany([owner.userId], async () => {
-            await emitMirror('mirror.sync_stalled', owner.userId!, chain, stalled.username, refId);
+          await runMirrorIfAllowedMany(principalIds, async () => {
+            await emitMirror(
+              'mirror.sync_stalled',
+              owner.userId!,
+              chain,
+              stalled.username,
+              refId,
+              eventPrincipals,
+            );
           });
         }
       }
@@ -2354,7 +2490,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           toUser: inviteeId,
         });
         const inviterName = await usernameOf(actorId);
-        await emitMirror('mirror.invite', inviteeId, chain, inviterName, invite.id);
+        await emitMirror('mirror.invite', inviteeId, chain, inviterName, invite.id, {
+          actorId,
+          ownerId: ownerOf(members)?.userId ?? null,
+          subjectUserIds: [inviteeId],
+        });
         await audit.record({
           actorId,
           action: AuditAction.MirrorMemberInvited,
@@ -2442,6 +2582,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
               chainAfter,
               joinerName,
               `${userId}:${chainAfter.lastSeq}`,
+              {
+                actorId: userId,
+                ownerId: owner.userId,
+                subjectUserIds: [userId],
+              },
             );
           }
           await audit.record({
@@ -2478,75 +2623,67 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async setMemberRole(actorId, chainId, targetUserId, role) {
-      await assertMirrorAllowed(actorId);
-      await assertMirrorAllowed(targetUserId);
-      await withAuthorizedMember(
-        chainId,
-        actorId,
-        (actor) => {
-          if (!roleCan(actor.role, 'manage_roles')) throw mirrorForbidden();
-        },
-        async ({ actor, members }) => {
-          if (targetUserId === actor.userId) {
-            throw badRequest('You cannot change your own role.', MIRROR_FORBIDDEN);
-          }
-          const target = members.find((m) => m.userId === targetUserId);
-          if (!target) {
-            throw notFound(
-              'That member is not part of this group portfolio.',
-              MIRROR_MEMBER_NOT_FOUND,
-            );
-          }
-          // The owner role changes only via transfer (design §5).
-          if (target.role === 'owner') throw mirrorForbidden();
-          if (target.role === role) return; // idempotent
-          await repo.updateMemberRole(target.id, role);
-          await appendMembershipOp(
-            chainId,
-            { userId: actorId, username: actor.username },
-            role === 'manager'
-              ? {
-                  opVersion: MIRROR_OP_VERSION,
-                  kind: 'role.granted',
-                  userId: target.userId!,
-                  username: target.username,
-                  role: 'manager',
-                }
-              : {
-                  opVersion: MIRROR_OP_VERSION,
-                  kind: 'role.revoked',
-                  userId: target.userId!,
-                  username: target.username,
-                },
+      await withLifecyclePrincipalGuards(chainId, [actorId, targetUserId], async ({ members }) => {
+        const actor = members.find((member) => member.userId === actorId);
+        if (!actor) throw forbidden('You are not a member of this group portfolio.');
+        if (!roleCan(actor.role, 'manage_roles')) throw mirrorForbidden();
+        if (targetUserId === actor.userId) {
+          throw badRequest('You cannot change your own role.', MIRROR_FORBIDDEN);
+        }
+        const target = members.find((member) => member.userId === targetUserId);
+        if (!target) {
+          throw notFound(
+            'That member is not part of this group portfolio.',
+            MIRROR_MEMBER_NOT_FOUND,
           );
-        },
-      );
-      await audit.record({
-        actorId,
-        action: AuditAction.MirrorRoleChanged,
-        targetType: 'user',
-        targetId: targetUserId,
-        meta: { chainId, role },
+        }
+        // The owner role changes only via transfer (design §5).
+        if (target.role === 'owner') throw mirrorForbidden();
+        if (target.role === role) return; // idempotent
+        await repo.updateMemberRole(target.id, role);
+        await appendMembershipOp(
+          chainId,
+          { userId: actorId, username: actor.username },
+          role === 'manager'
+            ? {
+                opVersion: MIRROR_OP_VERSION,
+                kind: 'role.granted',
+                userId: target.userId!,
+                username: target.username,
+                role: 'manager',
+              }
+            : {
+                opVersion: MIRROR_OP_VERSION,
+                kind: 'role.revoked',
+                userId: target.userId!,
+                username: target.username,
+              },
+        );
+        await audit.record({
+          actorId,
+          action: AuditAction.MirrorRoleChanged,
+          targetType: 'user',
+          targetId: targetUserId,
+          meta: { chainId, role },
+        });
+        // The role.* op bumped last_seq — replicate so every copy skip-acks it
+        // and the sync-state read models settle to 100% (design §11).
+        await scheduleReplicate(chainId);
       });
-      // The role.* op bumped last_seq — replicate so every copy skip-acks it and
-      // the sync-state read models settle to 100% (design §11).
-      await scheduleReplicate(chainId);
     },
 
     async transferOwnership(actorId, chainId, toUserId) {
-      await assertMirrorAllowed(actorId);
-      await assertMirrorAllowed(toUserId);
-      const { chain, seq } = await withAuthorizedMember(
+      await withLifecyclePrincipalGuards(
         chainId,
-        actorId,
-        (actor) => {
+        [actorId, toUserId],
+        async ({ chain, members }) => {
+          const actor = members.find((member) => member.userId === actorId);
+          if (!actor) throw forbidden('You are not a member of this group portfolio.');
           if (!roleCan(actor.role, 'transfer')) throw mirrorForbidden();
-        },
-        async ({ chain, actor, members }) => {
           if (toUserId === actor.userId) {
             throw badRequest('You are already the owner.', MIRROR_FORBIDDEN);
           }
-          const target = members.find((m) => m.userId === toUserId);
+          const target = members.find((member) => member.userId === toUserId);
           if (!target) {
             throw notFound(
               'The new owner must be an active member of this group portfolio.',
@@ -2569,47 +2706,50 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
               toUsername: target.username,
             },
           );
-          return { chain, seq: op!.seq };
+          // Notify every active member ownership changed (design §5). The acting
+          // old owner and new owner already know. Every member remains locked
+          // through the fan-out and enqueue.
+          const newOwnerName = await usernameOf(toUserId);
+          const refId = `${toUserId}:${op!.seq}`;
+          for (const member of members) {
+            if (member.userId && member.userId !== actorId && member.userId !== toUserId) {
+              await emitMirror(
+                'mirror.ownership_transferred',
+                member.userId,
+                chain,
+                newOwnerName,
+                refId,
+                {
+                  actorId,
+                  ownerId: toUserId,
+                  subjectUserIds: [toUserId],
+                },
+              );
+            }
+          }
+          await audit.record({
+            actorId,
+            action: AuditAction.MirrorOwnershipTransferred,
+            targetType: 'user',
+            targetId: toUserId,
+            meta: { chainId },
+          });
+          await scheduleReplicate(chainId);
         },
       );
-      // Notify every active member ownership changed (design §5). The acting old
-      // owner already knows; the NEW owner is skipped too — the copy reads
-      // "⟨actor⟩ is now the owner", which self-named reads wrong, and their own
-      // member sheet already shows the role. The op seq discriminates the notice
-      // so transferring ownership back to a prior owner is not silently deduped.
-      const newOwnerName = await usernameOf(toUserId);
-      const refId = `${toUserId}:${seq}`;
-      for (const m of await repo.listActiveMembers(chainId)) {
-        if (m.userId && m.userId !== actorId && m.userId !== toUserId) {
-          await emitMirror('mirror.ownership_transferred', m.userId, chain, newOwnerName, refId);
-        }
-      }
-      await audit.record({
-        actorId,
-        action: AuditAction.MirrorOwnershipTransferred,
-        targetType: 'user',
-        targetId: toUserId,
-        meta: { chainId },
-      });
-      // The owner.transferred op bumped last_seq — replicate so every copy
-      // skip-acks it and the sync-state read models settle to 100% (design §11).
-      await scheduleReplicate(chainId);
     },
 
     async removeMember(actorId, chainId, targetUserId) {
-      await assertMirrorAllowed(actorId);
-      const { chain, targetName, seq, notifyOwnerId } = await withAuthorizedMember(
+      await withLifecyclePrincipalGuards(
         chainId,
-        actorId,
-        () => {
-          // The capability depends on the target's role — checked inside once
-          // the target is resolved (kick_member vs kick_manager, §5).
-        },
-        async ({ chain, actor, members }) => {
+        [actorId, targetUserId],
+        async ({ chain, members }) => {
+          const actor = members.find((member) => member.userId === actorId);
+          if (!actor) throw forbidden('You are not a member of this group portfolio.');
           if (targetUserId === actor.userId) {
             throw badRequest('Use Leave to remove yourself.', MIRROR_FORBIDDEN);
           }
-          const target = members.find((m) => m.userId === targetUserId);
+          const target = members.find((member) => member.userId === targetUserId);
           if (!target) {
             throw notFound(
               'That member is not part of this group portfolio.',
@@ -2634,76 +2774,75 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
             },
           );
           const owner = ownerOf(members);
-          return {
-            chain,
-            targetName: target.username,
-            seq: op!.seq,
-            notifyOwnerId: owner && owner.userId !== actorId ? owner.userId : null,
+          const ownerId = owner?.userId ?? null;
+          const principals = {
+            actorId,
+            ownerId,
+            subjectUserIds: [targetUserId],
           };
+          // The removed member is told (design §6); a manager's kick also tells
+          // the owner (design §5). Seq discriminates a re-kick after re-invite.
+          await emitMirror(
+            'mirror.removed',
+            targetUserId,
+            chain,
+            target.username,
+            `${targetUserId}:${op!.seq}`,
+            principals,
+          );
+          if (ownerId && ownerId !== actorId) {
+            await emitMirror(
+              'mirror.member_removed',
+              ownerId,
+              chain,
+              target.username,
+              `${targetUserId}:${op!.seq}`,
+              principals,
+            );
+          }
+          await audit.record({
+            actorId,
+            action: AuditAction.MirrorMemberRemoved,
+            targetType: 'user',
+            targetId: targetUserId,
+            meta: { chainId },
+          });
+          await scheduleReplicate(chainId);
         },
       );
-      // The removed member is told (design §6); a manager's kick also tells the
-      // owner (design §5). Seq discriminates a re-kick after a re-invite.
-      await emitMirror('mirror.removed', targetUserId, chain, targetName, `${targetUserId}:${seq}`);
-      if (notifyOwnerId) {
-        await emitMirror(
-          'mirror.member_removed',
-          notifyOwnerId,
-          chain,
-          targetName,
-          `${targetUserId}:${seq}`,
-        );
-      }
-      await audit.record({
-        actorId,
-        action: AuditAction.MirrorMemberRemoved,
-        targetType: 'user',
-        targetId: targetUserId,
-        meta: { chainId },
-      });
-      // The member.removed op bumped last_seq — replicate so the remaining
-      // copies skip-ack it and their sync-state read models settle (design §11).
-      await scheduleReplicate(chainId);
     },
 
     async leaveChain(userId, chainId) {
-      await assertMirrorAllowed(userId);
-      const outcome = await withAuthorizedMember(
-        chainId,
-        userId,
-        () => {
-          // Every role may leave (design §5): a plain leave for a member/manager,
-          // and §7 succession for the owner — the M3 stopgap 409 is gone (M4).
-        },
-        async ({ chain, actor, members }) => {
-          if (actor.role === 'owner') {
-            // §7: the owner departs → ownership passes to the oldest manager (or
-            // the chain dissolves with no manager). Tombstone the owner FIRST so
-            // there is never a moment with two active owners, then succeed; the
-            // owner keeps their own copy as a fork (§6).
-            await repo.endMembership(actor.id, 'left', new Date(now()));
-            const remaining = await repo.listActiveMembers(chainId);
-            const result = await runOwnerSuccession(
-              chain,
-              remaining,
+      await withLifecyclePrincipalGuards(chainId, [userId], async ({ chain, members }) => {
+        const actor = members.find((member) => member.userId === userId);
+        if (!actor) throw forbidden('You are not a member of this group portfolio.');
+        if (actor.role === 'owner') {
+          // §7: the owner departs → ownership passes to the oldest manager (or
+          // the chain dissolves with no manager). Tombstone the owner FIRST so
+          // there is never a moment with two active owners, then succeed; the
+          // owner keeps their own copy as a fork (§6).
+          await repo.endMembership(actor.id, 'left', new Date(now()));
+          const remaining = await repo.listActiveMembers(chainId);
+          const result = await runOwnerSuccession(
+            chain,
+            remaining,
+            { userId, username: actor.username },
+            'owner_left',
+          );
+          if (result.outcome === 'transferred') {
+            // The departing owner's member.left-equivalent tombstone op (§7).
+            await appendMembershipOp(
+              chainId,
               { userId, username: actor.username },
-              'owner_left',
+              {
+                opVersion: MIRROR_OP_VERSION,
+                kind: 'member.left',
+                userId,
+                username: actor.username,
+              },
             );
-            if (result.outcome === 'transferred') {
-              // The departing owner's member.left-equivalent tombstone op (§7).
-              await appendMembershipOp(
-                chainId,
-                { userId, username: actor.username },
-                {
-                  opVersion: MIRROR_OP_VERSION,
-                  kind: 'member.left',
-                  userId,
-                  username: actor.username,
-                },
-              );
-            }
-            return { chain, kind: 'owner' as const };
           }
+        } else {
           await repo.endMembership(actor.id, 'left', new Date(now()));
           const [op] = await appendMembershipOp(
             chainId,
@@ -2715,36 +2854,33 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
               username: actor.username,
             },
           );
-          const owner = ownerOf(members);
-          return {
-            chain,
-            kind: 'member' as const,
-            leaverName: actor.username,
-            seq: op!.seq,
-            notifyOwnerId: owner?.userId ?? null,
-          };
-        },
-      );
-      if (outcome.kind === 'member' && outcome.notifyOwnerId && outcome.notifyOwnerId !== userId) {
-        await emitMirror(
-          'mirror.member_left',
-          outcome.notifyOwnerId,
-          outcome.chain,
-          outcome.leaverName,
-          `${userId}:${outcome.seq}`,
-        );
-      }
-      await audit.record({
-        actorId: userId,
-        action: AuditAction.MirrorMemberLeft,
-        targetType: 'mirror_chain',
-        targetId: chainId,
-        meta: { chainId },
+          const ownerId = ownerOf(members)?.userId ?? null;
+          if (ownerId && ownerId !== userId) {
+            await emitMirror(
+              'mirror.member_left',
+              ownerId,
+              chain,
+              actor.username,
+              `${userId}:${op!.seq}`,
+              {
+                actorId: userId,
+                ownerId,
+                subjectUserIds: [userId],
+              },
+            );
+          }
+        }
+        await audit.record({
+          actorId: userId,
+          action: AuditAction.MirrorMemberLeft,
+          targetType: 'mirror_chain',
+          targetId: chainId,
+          meta: { chainId },
+        });
+        // The member.left / owner.transferred / chain.dissolved op bumped
+        // last_seq — replicate while every affected account remains held.
+        await scheduleReplicate(chainId);
       });
-      // The member.left / owner.transferred / chain.dissolved op bumped last_seq —
-      // replicate so the remaining copies skip-ack it and their sync-state read
-      // models settle (design §11).
-      await scheduleReplicate(chainId);
     },
 
     async renameChain(actorId, chainId, name) {
@@ -2777,46 +2913,51 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async dissolveChain(actorId, chainId) {
-      await assertMirrorAllowed(actorId);
-      const { chain, members } = await withAuthorizedMember(
-        chainId,
-        actorId,
-        (actor) => {
-          if (!roleCan(actor.role, 'dissolve')) throw mirrorForbidden();
-        },
-        async ({ chain, actor, members }) => {
-          await appendMembershipOp(
-            chainId,
-            { userId: actorId, username: actor.username },
-            { opVersion: MIRROR_OP_VERSION, kind: 'chain.dissolved', reason: 'owner_dissolved' },
-          );
-          const endedAt = new Date(now());
-          for (const m of members) {
-            await repo.endMembership(m.id, 'dissolved', endedAt);
-          }
-          await repo.markChainDissolved(chainId, endedAt);
-          return { chain, members };
-        },
-      );
-      // Every copy becomes a fork (design §6); notify all former members but the
-      // acting owner.
-      const actorName = await usernameOf(actorId);
-      for (const m of members) {
-        if (m.userId && m.userId !== actorId) {
-          await emitMirror('mirror.chain_dissolved', m.userId, chain, actorName, chainId);
+      await withLifecyclePrincipalGuards(chainId, [actorId], async ({ chain, members }) => {
+        const actor = members.find((member) => member.userId === actorId);
+        if (!actor) throw forbidden('You are not a member of this group portfolio.');
+        if (!roleCan(actor.role, 'dissolve')) throw mirrorForbidden();
+        await appendMembershipOp(
+          chainId,
+          { userId: actorId, username: actor.username },
+          { opVersion: MIRROR_OP_VERSION, kind: 'chain.dissolved', reason: 'owner_dissolved' },
+        );
+        const endedAt = new Date(now());
+        for (const m of members) {
+          await repo.endMembership(m.id, 'dissolved', endedAt);
         }
-      }
-      await audit.record({
-        actorId,
-        action: AuditAction.MirrorChainDissolved,
-        targetType: 'mirror_chain',
-        targetId: chainId,
-        meta: { chainId },
+        await repo.markChainDissolved(chainId, endedAt);
+        // Every copy becomes a fork (design §6); notify all former members but
+        // the acting owner while those accounts remain locked.
+        for (const member of members) {
+          if (member.userId && member.userId !== actorId) {
+            await emitMirror(
+              'mirror.chain_dissolved',
+              member.userId,
+              chain,
+              actor.username,
+              chainId,
+              {
+                actorId,
+                ownerId: actorId,
+                subjectUserIds: members
+                  .map((row) => row.userId)
+                  .filter((userId): userId is string => typeof userId === 'string'),
+              },
+            );
+          }
+        }
+        await audit.record({
+          actorId,
+          action: AuditAction.MirrorChainDissolved,
+          targetType: 'mirror_chain',
+          targetId: chainId,
+          meta: { chainId },
+        });
+        // Every copy is now a fork, so replicate finds no active members and
+        // no-ops; enqueue still happens under the same principal locks.
+        await scheduleReplicate(chainId);
       });
-      // Uniform with the other membership ops (design §11). Every copy is now a
-      // fork, so this run finds no active members and no-ops — the sync-state
-      // read models no longer surface a dissolved chain anyway.
-      await scheduleReplicate(chainId);
     },
 
     async submitPortfolioDelete(userId, portfolioId) {
@@ -2896,6 +3037,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
                 chain,
                 username,
                 `${userId}:${leftOp!.seq}`,
+                {
+                  actorId: userId,
+                  ownerId: owner.userId,
+                  subjectUserIds: [userId],
+                },
               );
             }
             await audit.record({

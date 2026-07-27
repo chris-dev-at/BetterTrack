@@ -59,7 +59,7 @@ export interface MarketIntelServiceDeps {
   marketData: MarketDataService;
   assetRepo: AssetRepository;
   /** Held + watched asset aggregation for the earnings calendar (arc b). */
-  intelRepo: Pick<MarketIntelRepository, 'listUserWatchAndHoldAssets'>;
+  intelRepo: Pick<MarketIntelRepository, 'listUserWatchAndHoldAssets' | 'listUserWatchAssets'>;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ everything reports unconfigured. */
   enabled: boolean;
   /** Mixed kept/holding-derived calendar filtering under the account transition lock. */
@@ -133,13 +133,12 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
     // Invisible when unconfigured: the gate off ⇒ no book scan, no entries.
     if (!enabled) return { available: false, entries: [] };
 
-    const assets = (await intelRepo.listUserWatchAndHoldAssets(userId))
-      // Paranoid mode keeps the private watchlist surface, while a holding-only
-      // row is portfolio provenance and therefore absent.
-      .filter((asset) => includeHoldings || asset.watched)
-      // An asset that is both watched and held stays, but the held bit itself is
-      // holding-derived and must not cross the mixed kept surface.
-      .map((asset) => (includeHoldings ? asset : { ...asset, held: false }));
+    // The paranoid branch uses a physically watchlist-only query. Filtering a
+    // combined result after the fact would still make the kept calendar read
+    // killed transaction/holding rows from the server.
+    const assets = includeHoldings
+      ? await intelRepo.listUserWatchAndHoldAssets(userId)
+      : await intelRepo.listUserWatchAssets(userId);
     const entries: EarningsCalendarEntry[] = [];
     for (const a of assets) {
       const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
