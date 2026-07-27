@@ -69,6 +69,11 @@ export class ParanoidRehydrationError extends Error {
   }
 }
 
+type TestOnlyRejectPersistedTransactionQuantity = (input: {
+  transactionId: string;
+  quantity: bigint;
+}) => boolean;
+
 export interface ParanoidRehydrationServiceDeps {
   db: Database;
   now?: () => Date;
@@ -76,6 +81,8 @@ export interface ParanoidRehydrationServiceDeps {
   toCashEur?: (amount: number, currency: string, day: string) => Promise<number>;
   /** Test-only stage hook proving each transaction-stage rolls back completely. */
   afterStage?: (stage: ParanoidRehydrationStage) => void | Promise<void>;
+  /** Test-only quantity-rule override for differential conformance. */
+  testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity;
 }
 
 export type ParanoidRehydrationStage =
@@ -277,6 +284,7 @@ function persistedShortfallSellIds(rows: readonly QuantityReplayRow[]): Readonly
  */
 function storageRoundingSellIdsFor(
   transactions: readonly EntityOf<'transaction'>[],
+  testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity,
 ): ReadonlySet<string> {
   const rows = transactions.map((transaction): QuantityReplayRow => {
     const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
@@ -290,6 +298,22 @@ function storageRoundingSellIdsFor(
       ),
     };
   });
+
+  for (const row of rows) {
+    if (
+      testOnlyRejectPersistedTransactionQuantity?.({
+        transactionId: row.transaction.id,
+        quantity: row.quantity,
+      })
+    ) {
+      throw new Error(
+        'transaction quantity was rejected by the active reachability rule at transaction[' +
+          row.transaction.id +
+          '].quantity=' +
+          JSON.stringify(row.transaction.data.quantity),
+      );
+    }
+  }
 
   if (isPersistedSolvent(rows)) return new Set();
 
@@ -780,7 +804,11 @@ interface ValidatedGraph {
   storageRoundingSellIds: ReadonlySet<string>;
 }
 
-function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGraph {
+function validateGraph(
+  userId: string,
+  entities: readonly Entity[],
+  testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity,
+): ValidatedGraph {
   validateUniqueRestoredIds(entities);
   validateOwnedRows(userId, entities);
   validatePersistedDates(entities);
@@ -1420,7 +1448,10 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
         (a, b) =>
           Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
       );
-      for (const sellId of storageRoundingSellIdsFor(orderedTransactions)) {
+      for (const sellId of storageRoundingSellIdsFor(
+        orderedTransactions,
+        testOnlyRejectPersistedTransactionQuantity,
+      )) {
         storageRoundingSellIds.add(sellId);
       }
     }
@@ -1529,7 +1560,11 @@ export function createParanoidRehydrationService(
       // Tombstones exist for client-side merge convergence only. Construct and
       // validate the restore graph from live facts before any database mutation.
       const entities = liveEntities(normalizedRequest.document);
-      const validatedGraph = validateGraph(userId, entities);
+      const validatedGraph = validateGraph(
+        userId,
+        entities,
+        deps.testOnlyRejectPersistedTransactionQuantity,
+      );
 
       return withParanoidRehydrationTransaction(deps.db, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);

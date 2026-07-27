@@ -221,21 +221,7 @@ async function rehydrateReachableState(
   document: ParanoidDisableRehydrationRequest['document'],
   rehydrationId: string,
   name: string,
-  options: {
-    acceptQuantity?: (transaction: StrictTransactionEntity) => boolean;
-  } = {},
 ): Promise<void> {
-  const temporarilyRejected = quantityEntities(document).find(
-    (transaction) => options.acceptQuantity?.(transaction) === false,
-  );
-  if (temporarilyRejected) {
-    throw new Error(
-      name +
-        ' temporarily tightened quantity validation rejected field/value: ' +
-        quantityField(temporarilyRejected),
-    );
-  }
-
   try {
     await createParanoidRehydrationService({ db: harness.db }).rehydrate(userId, {
       rehydrationId,
@@ -447,30 +433,34 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     mutationTransaction.mockRestore();
   });
 
-  it('negative control: a temporarily tightened quantity rule names the persisted entity path and value', async () => {
+  it('negative control: a temporarily tightened quantity rule rejects in rehydration preflight with the persisted entity path and value', async () => {
     const arranged = await arrangeScaleEightRoundingBatch();
+    const mutationTransaction = vi.spyOn(arranged.harness.db, 'transaction');
+    let checkedSell = false;
 
-    await expect(
-      rehydrateReachableState(
-        arranged.harness,
-        arranged.userId,
-        arranged.document,
-        FIRST_REHYDRATION_ID,
-        'scale-8 rounding batch',
-        {
-          acceptQuantity(transaction) {
-            // Negative control: temporarily tighten the persisted scale-8
-            // ceiling from 1.00000001 to 1.00000000.
-            return Number(transaction.data.quantity) <= 1;
+    try {
+      await expect(
+        createParanoidRehydrationService({
+          db: arranged.harness.db,
+          // Tighten the normal scale-8 ceiling from 1.00000001 to
+          // 1.00000000 inside the service's real quantity preflight.
+          testOnlyRejectPersistedTransactionQuantity({ transactionId, quantity }) {
+            if (transactionId === arranged.sell.id) checkedSell = true;
+            return quantity > 100_000_000n;
           },
-        },
-      ),
-    ).rejects.toThrow(
-      'transaction[' +
-        arranged.sell.id +
-        '].quantity=' +
-        JSON.stringify(arranged.sell.data.quantity),
-    );
-    expect(await arranged.harness.db.select().from(transactions)).toEqual([]);
+        }).rehydrate(arranged.userId, {
+          rehydrationId: FIRST_REHYDRATION_ID,
+          document: arranged.document,
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_CASH_LEDGER',
+        message: expect.stringContaining(quantityField(arranged.sell)),
+      });
+      expect(checkedSell).toBe(true);
+      expect(mutationTransaction).not.toHaveBeenCalled();
+      expect(await arranged.harness.db.select().from(transactions)).toEqual([]);
+    } finally {
+      mutationTransaction.mockRestore();
+    }
   });
 });
