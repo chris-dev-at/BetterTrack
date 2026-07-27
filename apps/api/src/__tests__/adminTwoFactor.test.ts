@@ -126,6 +126,52 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     });
   });
 
+  it('requires a fresh login when a legacy session lacks trusted first-factor provenance', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    const legacyAgent = await loginAdminAgent(harness, admin);
+    const sessionKeys = await harness.ctx.redis.keys('sess:*');
+    expect(sessionKeys).toHaveLength(1);
+    const sessionKey = sessionKeys[0];
+    if (!sessionKey) throw new Error('fresh login did not create a session');
+    const sessionId = sessionKey.slice('sess:'.length);
+    const rawSession = JSON.parse((await harness.ctx.redis.get(sessionKey))!) as Record<
+      string,
+      unknown
+    >;
+    const ttl = await harness.ctx.redis.ttl(sessionKey);
+    expect(ttl).toBeGreaterThan(0);
+
+    // Sessions from before the provenance marker existed cannot be treated as
+    // password logins just because password was once the default creator.
+    delete rawSession.authenticationMethod;
+    await harness.ctx.redis.set(sessionKey, JSON.stringify(rawSession), 'EX', ttl);
+    expect(await harness.ctx.auth.isSessionAdminBootstrapEligible(admin.id, sessionId)).toBe(false);
+    const missingMarker = await legacyAgent.get('/api/v1/admin/security/2fa/status').set(...XRW);
+    expect(missingMarker.status).toBe(403);
+    expect(missingMarker.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+
+    // Unknown values are no safer than absent values. Neither can reach the
+    // first-enrollment endpoints without a direct new password login.
+    await harness.ctx.redis.set(
+      sessionKey,
+      JSON.stringify({ ...rawSession, authenticationMethod: 'legacy_shared_flow' }),
+      'EX',
+      ttl,
+    );
+    expect(await harness.ctx.auth.isSessionAdminBootstrapEligible(admin.id, sessionId)).toBe(false);
+    const unknownMarker = await legacyAgent
+      .post('/api/v1/admin/security/2fa/totp/enroll')
+      .set(...XRW);
+    expect(unknownMarker.status).toBe(403);
+    expect(unknownMarker.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+
+    const freshPasswordAgent = await loginAdminAgent(harness, admin);
+    expect(
+      (await freshPasswordAgent.get('/api/v1/admin/security/2fa/status').set(...XRW)).status,
+    ).toBe(200);
+  });
+
   it('completing enrollment lifts the gate and shows recovery codes exactly once', async () => {
     const harness = await createTestApp();
     const admin = await harness.seedAdmin();

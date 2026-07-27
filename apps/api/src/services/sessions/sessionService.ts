@@ -42,8 +42,12 @@ export interface SessionData {
    * created before this shipped — treated as persistent (see {@link isPersistent}).
    */
   persistent?: boolean;
-  /** The server-side first-factor flow that minted this session. */
-  authenticationMethod: SessionAuthenticationMethod;
+  /**
+   * The server-side first-factor flow that minted this session. Sessions from
+   * before this provenance was recorded (or with a corrupt marker) leave it
+   * absent; they are never eligible to bootstrap administrator MFA.
+   */
+  authenticationMethod?: SessionAuthenticationMethod;
   /** Present only when MFA was proved in this very session. */
   mfaAssurance?: SessionMfaAssurance;
 }
@@ -52,8 +56,12 @@ export interface SessionData {
 export const isPersistent = (data: Pick<SessionData, 'persistent'>): boolean =>
   data.persistent !== false;
 
-/** A legacy session without the marker was minted by the password flow. */
-const authenticationMethodFor = (value: unknown): SessionAuthenticationMethod => {
+/**
+ * Authentication provenance is an authority boundary. Never backfill a
+ * missing or unrecognized legacy value as a password login: it may have come
+ * from any of the old shared session-creation flows.
+ */
+const authenticationMethodFor = (value: unknown): SessionAuthenticationMethod | undefined => {
   switch (value) {
     case 'password':
     case 'password_reset':
@@ -63,7 +71,7 @@ const authenticationMethodFor = (value: unknown): SessionAuthenticationMethod =>
     case 'pin':
       return value;
     default:
-      return 'password';
+      return undefined;
   }
 };
 
@@ -91,9 +99,10 @@ const parseSessionData = (raw: string): SessionData => {
   };
   const { authenticationMethod, mfaAssurance: rawMfaAssurance, ...base } = parsed;
   const mfaAssurance = mfaAssuranceFor(rawMfaAssurance);
+  const knownAuthenticationMethod = authenticationMethodFor(authenticationMethod);
   return {
     ...base,
-    authenticationMethod: authenticationMethodFor(authenticationMethod),
+    ...(knownAuthenticationMethod ? { authenticationMethod: knownAuthenticationMethod } : {}),
     ...(mfaAssurance ? { mfaAssurance } : {}),
   };
 };
@@ -314,7 +323,14 @@ export function createSessionService(
       const data = await service.get(sessionId);
       // Never let a caller rotate another account's session. This is also a
       // fail-closed response for a missing/expired current session.
-      if (!data || data.userId !== userId) return null;
+      if (
+        !data ||
+        data.userId !== userId ||
+        data.authenticationMethod !== 'password' ||
+        data.mfaAssurance !== undefined
+      ) {
+        return null;
+      }
 
       // Enrollment changes the account's factor state. Every old session must
       // disappear before the new proof is usable; otherwise a password-only
