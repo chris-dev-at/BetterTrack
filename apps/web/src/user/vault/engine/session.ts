@@ -1,5 +1,7 @@
 import {
   customTaxParamsSchema,
+  taxSettingsResponseSchema,
+  updateTaxSettingsRequestSchema,
   VAULT_DOCUMENT_VERSION,
   VAULT_ENTITY_KINDS,
   VAULT_ENTITY_ROW_SCHEMAS,
@@ -60,6 +62,7 @@ export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultS
   }
   validateStrictEntities(parsed.data);
   validatePersistedTaxFacts(parsed.data);
+  validatePersistedTaxSettings(parsed.data);
   const ownerUserId = validateRelationships(parsed.data);
   return {
     document: parsed.data,
@@ -249,6 +252,111 @@ function isZeroDecimal(value: string): boolean {
 }
 
 function invalidTaxFacts(kind: 'transaction' | 'dividend', id: string, reason: string): never {
+  throw moneyFailure('VAULT_CORRUPT', `Vault ${kind} ${id} is unreachable: ${reason}.`);
+}
+
+function validatePersistedTaxSettings(document: VaultDocumentV1): void {
+  for (const entity of liveEntities(document, 'taxSetting')) {
+    const row = VAULT_ENTITY_ROW_SCHEMAS.taxSetting.parse(entity.data);
+    const amount =
+      row.manualDefaultAmountEur === null
+        ? null
+        : persistedTaxDecimal(
+            row.manualDefaultAmountEur,
+            20,
+            6,
+            'taxSetting',
+            entity.id,
+            'manual default amount',
+          );
+    const rate =
+      row.manualDefaultRatePct === null
+        ? null
+        : persistedTaxDecimal(
+            row.manualDefaultRatePct,
+            9,
+            6,
+            'taxSetting',
+            entity.id,
+            'manual default rate',
+          );
+    if (amount !== null && amount < 0n) {
+      invalidTaxSetting('taxSetting', entity.id, 'the manual default amount is negative');
+    }
+    if (rate !== null && (rate < 0n || rate > 100n * 10n ** 6n)) {
+      invalidTaxSetting('taxSetting', entity.id, 'the manual default rate is outside 0..100');
+    }
+
+    const countryPresent = row.country !== null;
+    const customPresent = row.customParams !== null;
+    const manualDefaultPresent = amount !== null || rate !== null;
+    if (
+      (row.mode === 'country_specific') !== countryPresent ||
+      (row.mode === 'custom') !== customPresent ||
+      (row.mode !== 'manual_per_trade' && manualDefaultPresent) ||
+      (amount !== null && rate !== null) ||
+      (row.mode === 'custom' && !customTaxParamsSchema.safeParse(row.customParams).success)
+    ) {
+      invalidTaxSetting(
+        'taxSetting',
+        entity.id,
+        'mode, country, custom parameters, and manual defaults are inconsistent',
+      );
+    }
+  }
+
+  for (const entity of liveEntities(document, 'portfolioSetting')) {
+    const row = VAULT_ENTITY_ROW_SCHEMAS.portfolioSetting.parse(entity.data);
+    if (row.key === 'tax' && !validPortfolioTaxOverride(row.value)) {
+      invalidTaxSetting('portfolioSetting', entity.id, 'the stored tax override is malformed');
+    }
+  }
+}
+
+/** Portfolio tax overrides are stored in response shape but obey request invariants. */
+function validPortfolioTaxOverride(value: unknown): boolean {
+  const stored = taxSettingsResponseSchema.safeParse(value);
+  if (!stored.success) return false;
+  const normalized = {
+    mode: stored.data.mode,
+    ...(stored.data.country === null ? {} : { country: stored.data.country }),
+    ...(stored.data.custom === undefined ? {} : { custom: stored.data.custom }),
+    ...(stored.data.manualDefaultAmountEur === undefined
+      ? {}
+      : { manualDefaultAmountEur: stored.data.manualDefaultAmountEur }),
+    ...(stored.data.manualDefaultRatePct === undefined
+      ? {}
+      : { manualDefaultRatePct: stored.data.manualDefaultRatePct }),
+  };
+  return updateTaxSettingsRequestSchema.safeParse(normalized).success;
+}
+
+function persistedTaxDecimal(
+  value: string,
+  precision: number,
+  scale: number,
+  kind: 'taxSetting' | 'portfolioSetting',
+  id: string,
+  label: string,
+): bigint {
+  const match = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/.exec(value);
+  if (match === null) {
+    invalidTaxSetting(kind, id, `${label} is not a decimal`);
+  }
+  const fraction = match[3] ?? '';
+  const integerDigits = match[2]!.replace(/^0+/, '');
+  if (fraction.length > scale || integerDigits.length > precision - scale) {
+    invalidTaxSetting(kind, id, `${label} exceeds its persisted numeric bounds`);
+  }
+  const magnitude = BigInt(`${match[2]}${fraction}`) * 10n ** BigInt(scale - fraction.length);
+  return match[1] === '-' ? -magnitude : magnitude;
+}
+
+function invalidTaxSetting(
+  kind: 'taxSetting' | 'portfolioSetting',
+  id: string,
+  reason: string,
+): never {
   throw moneyFailure('VAULT_CORRUPT', `Vault ${kind} ${id} is unreachable: ${reason}.`);
 }
 

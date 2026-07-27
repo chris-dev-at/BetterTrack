@@ -27,9 +27,11 @@ import { createVaultMoneyEngine } from './index';
 import { portfolioRangeStartIso } from './portfolioEngine';
 import {
   CLIENT_MONEY_IDS,
+  MALFORMED_TAX_SETTING_CASES,
   createClientMoneyMarket,
   createMutableTestSync,
   decryptClientMoneyFixture,
+  withMalformedTaxSetting,
   withTaxSettings,
 } from './clientMoney.testSupport';
 
@@ -195,21 +197,6 @@ describe('paranoid client money engine', () => {
       newEvents: [],
     });
     expect(at).toMatchObject({
-      ok: true,
-      value: {
-        computedTaxTargetEur: expectedAt.heldAfterEur,
-        report: { summary: { taxNetEur: expectedAt.heldAfterEur } },
-      },
-    });
-    const legacyAt = await createVaultMoneyEngine(
-      createMutableTestSync(
-        withTaxSettings(fixture.document, 'country_specific', null, null),
-        fixture.header,
-      ),
-      market.market,
-      { now: () => NOW },
-    ).deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
-    expect(legacyAt).toMatchObject({
       ok: true,
       value: {
         computedTaxTargetEur: expectedAt.heldAfterEur,
@@ -403,6 +390,37 @@ describe('paranoid client money engine', () => {
     expect(market.calls.history).toEqual([]);
     expect(market.calls.fx).toEqual([]);
   });
+
+  it.each(MALFORMED_TAX_SETTING_CASES)(
+    'rejects $scope with $state before portfolio, tax, or market output',
+    async (testCase) => {
+      const fixture = await decryptClientMoneyFixture();
+      const document = withMalformedTaxSetting(fixture.document, testCase);
+      const market = createClientMoneyMarket();
+      const engine = createVaultMoneyEngine(
+        createMutableTestSync(document, fixture.header),
+        market.market,
+        { now: () => NOW },
+      );
+
+      const portfolio = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+      const tax = await engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+
+      expect(portfolio).toMatchObject({
+        ok: false,
+        error: { code: 'VAULT_CORRUPT', retryable: false },
+      });
+      expect(tax).toMatchObject({
+        ok: false,
+        error: { code: 'VAULT_CORRUPT', retryable: false },
+      });
+      expect(portfolio).not.toHaveProperty('value');
+      expect(tax).not.toHaveProperty('value');
+      expect(market.calls.quote).toEqual([]);
+      expect(market.calls.history).toEqual([]);
+      expect(market.calls.fx).toEqual([]);
+    },
+  );
 
   it('preserves frozen FIFO realizations after switching the current year to manual mode', async () => {
     const fixture = await decryptClientMoneyFixture();

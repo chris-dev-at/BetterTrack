@@ -709,12 +709,16 @@ function validateSettings(input: {
   ) {
     throw moneyFailure('TAX_MODE_UNSUPPORTED', `Unsupported tax mode ${String(mode)}.`);
   }
+  const countryPresent = input.country !== null && input.country !== undefined;
+  const customPresent = input.custom !== null && input.custom !== undefined;
+  if ((mode === 'country_specific') !== countryPresent || (mode === 'custom') !== customPresent) {
+    throw moneyFailure(
+      'TAX_PARAMETERS_INVALID',
+      `Tax mode ${mode} has inconsistent country or custom parameters.`,
+    );
+  }
   if (mode === 'country_specific') {
-    if (
-      input.country !== null &&
-      input.country !== TAX_COUNTRY_AT &&
-      input.country !== TAX_COUNTRY_DE
-    ) {
+    if (input.country !== TAX_COUNTRY_AT && input.country !== TAX_COUNTRY_DE) {
       throw moneyFailure(
         'TAX_MODE_UNSUPPORTED',
         `Tax country ${String(input.country)} is unsupported by the paranoid client engine.`,
@@ -722,15 +726,12 @@ function validateSettings(input: {
     }
     return {
       mode,
-      country: input.country === null ? TAX_COUNTRY_AT : input.country,
+      country: input.country,
       custom: null,
     };
   }
   if (mode === 'custom') {
     return { mode, country: null, custom: parseCustom(input.custom) };
-  }
-  if (input.country !== null && input.country !== undefined) {
-    throw moneyFailure('TAX_PARAMETERS_INVALID', `Tax mode ${mode} cannot carry a country.`);
   }
   return { mode, country: null, custom: null };
 }

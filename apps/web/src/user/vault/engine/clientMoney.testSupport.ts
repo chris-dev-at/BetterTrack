@@ -22,6 +22,142 @@ export const CLIENT_MONEY_IDS = {
   taxSetting: '018f0000-0000-7000-8000-000000000117',
 } as const;
 
+const MALFORMED_TAX_OVERRIDE_ID = '018f0000-0000-7000-8000-000000000197';
+const VALID_CUSTOM_TAX_PARAMS = {
+  ratePct: 20,
+  lossOffset: true,
+  refund: true,
+  yearReset: true,
+  carryForward: false,
+  costBasis: 'fifo',
+} satisfies CustomTaxParams;
+
+interface TaxSettingInvariantCase {
+  state: string;
+  defaultData: Record<string, unknown>;
+  overrideValue: Record<string, unknown>;
+}
+
+export interface MalformedTaxSettingCase {
+  state: string;
+  scope: 'user default' | 'portfolio override';
+  data: Record<string, unknown>;
+}
+
+const TAX_SETTING_INVARIANT_CASES: readonly TaxSettingInvariantCase[] = [
+  {
+    state: 'country-specific mode without a country',
+    defaultData: defaultTaxSetting({ mode: 'country_specific' }),
+    overrideValue: portfolioTaxOverride({ mode: 'country_specific' }),
+  },
+  {
+    state: 'a country outside country-specific mode',
+    defaultData: defaultTaxSetting({ country: 'DE' }),
+    overrideValue: portfolioTaxOverride({ country: 'DE' }),
+  },
+  {
+    state: 'country-specific mode with custom parameters',
+    defaultData: defaultTaxSetting({
+      mode: 'country_specific',
+      country: 'DE',
+      customParams: VALID_CUSTOM_TAX_PARAMS,
+    }),
+    overrideValue: portfolioTaxOverride({
+      mode: 'country_specific',
+      country: 'DE',
+      custom: VALID_CUSTOM_TAX_PARAMS,
+    }),
+  },
+  {
+    state: 'custom mode without parameters',
+    defaultData: defaultTaxSetting({ mode: 'custom' }),
+    overrideValue: portfolioTaxOverride({ mode: 'custom' }),
+  },
+  {
+    state: 'custom mode with a non-strict parameter set',
+    defaultData: defaultTaxSetting({ mode: 'custom', customParams: { ratePct: 20 } }),
+    overrideValue: portfolioTaxOverride({ mode: 'custom', custom: { ratePct: 20 } }),
+  },
+  {
+    state: 'custom mode with a country',
+    defaultData: defaultTaxSetting({
+      mode: 'custom',
+      country: 'DE',
+      customParams: VALID_CUSTOM_TAX_PARAMS,
+    }),
+    overrideValue: portfolioTaxOverride({
+      mode: 'custom',
+      country: 'DE',
+      custom: VALID_CUSTOM_TAX_PARAMS,
+    }),
+  },
+  {
+    state: 'a manual amount outside manual mode',
+    defaultData: defaultTaxSetting({ manualDefaultAmountEur: '1' }),
+    overrideValue: portfolioTaxOverride({ manualDefaultAmountEur: 1 }),
+  },
+  {
+    state: 'both manual amount and rate defaults',
+    defaultData: defaultTaxSetting({
+      mode: 'manual_per_trade',
+      manualDefaultAmountEur: '1',
+      manualDefaultRatePct: '20',
+    }),
+    overrideValue: portfolioTaxOverride({
+      mode: 'manual_per_trade',
+      manualDefaultAmountEur: 1,
+      manualDefaultRatePct: 20,
+    }),
+  },
+  {
+    state: 'a negative manual amount',
+    defaultData: defaultTaxSetting({
+      mode: 'manual_per_trade',
+      manualDefaultAmountEur: '-0.000001',
+    }),
+    overrideValue: portfolioTaxOverride({
+      mode: 'manual_per_trade',
+      manualDefaultAmountEur: -0.000001,
+    }),
+  },
+  {
+    state: 'a negative manual rate',
+    defaultData: defaultTaxSetting({
+      mode: 'manual_per_trade',
+      manualDefaultRatePct: '-0.000001',
+    }),
+    overrideValue: portfolioTaxOverride({
+      mode: 'manual_per_trade',
+      manualDefaultRatePct: -0.000001,
+    }),
+  },
+  {
+    state: 'a manual rate above 100',
+    defaultData: defaultTaxSetting({
+      mode: 'manual_per_trade',
+      manualDefaultRatePct: '100.000001',
+    }),
+    overrideValue: portfolioTaxOverride({
+      mode: 'manual_per_trade',
+      manualDefaultRatePct: 100.000001,
+    }),
+  },
+];
+
+export const MALFORMED_TAX_SETTING_CASES: readonly MalformedTaxSettingCase[] =
+  TAX_SETTING_INVARIANT_CASES.flatMap((testCase) => [
+    {
+      state: testCase.state,
+      scope: 'user default',
+      data: testCase.defaultData,
+    },
+    {
+      state: testCase.state,
+      scope: 'portfolio override',
+      data: testCase.overrideValue,
+    },
+  ]);
+
 export async function decryptClientMoneyFixture(): Promise<{
   document: VaultDocumentV1;
   header: VaultEnvelopeHeader;
@@ -247,6 +383,66 @@ export function withTaxSettings(
     updatedAt: setting.editedAt,
   };
   return next;
+}
+
+export function withMalformedTaxSetting(
+  document: VaultDocumentV1,
+  testCase: MalformedTaxSettingCase,
+): VaultDocumentV1 {
+  const next = structuredClone(document);
+  const source = next.entities.taxSetting?.find(
+    (entity) => entity.id === CLIENT_MONEY_IDS.taxSetting,
+  );
+  if (source === undefined) throw new Error('Fixture tax setting is missing.');
+
+  if (testCase.scope === 'user default') {
+    source.data = {
+      ...source.data,
+      ...structuredClone(testCase.data),
+      updatedAt: source.editedAt,
+    };
+    return next;
+  }
+
+  const otherSettings = (next.entities.portfolioSetting ?? []).filter(
+    (entity) => entity.data.portfolioId !== CLIENT_MONEY_IDS.portfolio || entity.data.key !== 'tax',
+  );
+  next.entities.portfolioSetting = [
+    ...otherSettings,
+    {
+      id: MALFORMED_TAX_OVERRIDE_ID,
+      rev: 0,
+      editedAt: source.editedAt,
+      editedBy: source.editedBy,
+      deletedAt: null,
+      data: {
+        portfolioId: CLIENT_MONEY_IDS.portfolio,
+        key: 'tax',
+        value: structuredClone(testCase.data),
+        updatedAt: source.editedAt,
+      },
+    },
+  ];
+  return next;
+}
+
+function defaultTaxSetting(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    mode: 'none',
+    country: null,
+    manualDefaultAmountEur: null,
+    manualDefaultRatePct: null,
+    customParams: null,
+    ...overrides,
+  };
+}
+
+function portfolioTaxOverride(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    mode: 'none',
+    country: null,
+    ...overrides,
+  };
 }
 
 const MEMORY_HOME: DataHome = {

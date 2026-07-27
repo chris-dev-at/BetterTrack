@@ -6,9 +6,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createVaultMoneyEngine } from '../engine';
 import {
   CLIENT_MONEY_IDS,
+  MALFORMED_TAX_SETTING_CASES,
   createClientMoneyMarket,
   createMutableTestSync,
   decryptClientMoneyFixture,
+  withMalformedTaxSetting,
 } from '../engine/clientMoney.testSupport';
 import { createClientCleartextExport } from './cleartext';
 import { createClientTaxCsv } from './taxCsv';
@@ -167,6 +169,28 @@ describe('paranoid client exports', () => {
     expect(storageWrite).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it.each(MALFORMED_TAX_SETTING_CASES)(
+    'hands off no cleartext bytes for $scope with $state',
+    async (testCase) => {
+      const fixture = await decryptClientMoneyFixture();
+      const document = withMalformedTaxSetting(fixture.document, testCase);
+      const generatedAt = new Date('2026-07-27T12:00:00.000Z');
+      const exportStarted = vi.spyOn(generatedAt, 'getTime');
+
+      const exported = await createClientCleartextExport(
+        createMutableTestSync(document, fixture.header, fixture.envelope),
+        { generatedAt },
+      );
+
+      expect(exported).toMatchObject({
+        ok: false,
+        error: { code: 'VAULT_CORRUPT', retryable: false },
+      });
+      expect(exported).not.toHaveProperty('value');
+      expect(exportStarted).not.toHaveBeenCalled();
+    },
+  );
 
   it('binds tax exports to the producing owner, vault, and selected portfolio', async () => {
     const fixture = await decryptClientMoneyFixture();
