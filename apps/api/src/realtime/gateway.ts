@@ -6,6 +6,7 @@ import { Server as SocketIOServer, type Socket } from 'socket.io';
 
 import {
   LIVE_RATE_MS,
+  REALTIME_BEARER_SCOPE_REQUIREMENTS,
   REALTIME_CLIENT_EVENTS,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
@@ -13,9 +14,12 @@ import {
   realtimeLiveWatchRequestSchema,
   realtimePresenceRequestSchema,
   realtimeRoomRequestSchema,
+  scopeSatisfies,
   type AssetRef,
+  type ApiKeyScope,
   type FeatureFlagKey,
   type PresenceSurface,
+  type RealtimeBearerCapability,
   type RealtimeChatMessage,
   type RealtimeLiveWatchAck,
   type RealtimeNotificationNew,
@@ -26,8 +30,9 @@ import {
 } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../config/env';
-import type { EventBus, Unsubscribe } from '../events';
+import type { EventBus, RealtimePrincipalInvalidatedEvent, Unsubscribe } from '../events';
 import type { Logger } from '../logger';
+import { sha256Base64Url } from '../services/crypto/tokens';
 import type { LiveModeService } from '../services/liveMode';
 import type { PresenceStore } from '../services/notifications/presence';
 
@@ -36,15 +41,15 @@ import type { PresenceStore } from '../services/notifications/presence';
  * {@link REALTIME_PATH} on the API origin, bridging the typed domain event bus
  * into socket rooms:
  *
- *   - `user:{id}`      — joined automatically at connect, never on request; a
- *                         socket only ever sits in its OWN user room.
- *   - `asset:{id}`     — quote pushes; any authenticated user may join (quotes
- *                         are not per-user data).
+ *   - `user:{id}`      — full first-party cookie sessions only; bearer sockets
+ *                         use per-capability companion rooms instead.
+ *   - `asset:{id}`     — quote/live pushes; requires `market:read` for bearers.
  *   - `portfolio:{id}` — shared-view invalidation; joins enforce owner-or-shared
  *                         access, recomputed at join time (§6.9).
  *
- * Handshake auth accepts EITHER of two credentials, resolved to the same user id
- * that then owns the socket's `user:{id}` room:
+ * Handshake auth accepts EITHER of two credentials, resolved to one typed
+ * principal. Cookie sessions own the socket's `user:{id}` room; bearers enter
+ * only the capability-specific companion rooms their scopes permit:
  *
  *   - the **session cookie** — the web SPA path, resolved through the auth
  *     service's cookie→user resolution (verbatim the HTTP session path); or
@@ -54,10 +59,9 @@ import type { PresenceStore } from '../services/notifications/presence';
  *     and/or an `Authorization: Bearer …` upgrade header. The token is validated
  *     through the SAME service the HTTP bearer middleware uses (revocation,
  *     expiry and consent-scope clamping included), so socket auth can never
- *     drift from — or widen — the HTTP surface. The gateway pushes invalidation
- *     signals only (no data crosses the socket, §13.3), so an authenticated
- *     user in their own room is the correct bar; per-event scope filtering would
- *     over-engineer a socket that already carries nothing sensitive.
+ *     drift from — or widen — the HTTP surface. Bearer sockets are admitted only
+ *     to the scoped rooms and commands their effective scopes allow; lightweight
+ *     invalidations and quote frames still reveal data-family activity.
  *
  * Both transports are supported: a client may open the websocket transport
  * directly (the mobile app dials `transport=websocket` with no prior polling
@@ -69,14 +73,101 @@ import type { PresenceStore } from '../services/notifications/presence';
  * fallback carries every feature (§4.5 "V1 ships without the socket").
  */
 
-/** The user room — auto-joined at connect; clients can never request it. */
+/** The first-party session user room; clients can never request it. */
 export const userRoom = (userId: string): string => `user:${userId}`;
 export const assetRoom = (assetId: string): string => `asset:${assetId}`;
 export const portfolioRoom = (portfolioId: string): string => `portfolio:${portfolioId}`;
 
+/** Bounded fail-closed backstop when a lifecycle pub/sub signal is missed. */
+export const REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS = 30_000;
+export const REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS = 5_000;
+const MAX_TIMER_DELAY_MS = 2_147_000_000;
+
+/** Bearer-only user rooms prevent a narrow token entering the full user room. */
+const scopedUserRoom = (userId: string, capability: RealtimeBearerCapability): string =>
+  `user:${userId}:scope:${capability}`;
+
 function roomName(room: RealtimeRoom): string {
   return room.kind === 'asset' ? assetRoom(room.id) : portfolioRoom(room.id);
 }
+
+/** The user fields every connection resolver must freshly establish. */
+export interface RealtimeResolvedUser {
+  id: string;
+  role: 'user' | 'admin';
+  status: string;
+  mustChangePassword: boolean;
+}
+
+/** Cookie-session resolver result, including data required for later revocation. */
+export interface RealtimeSessionResolution {
+  user: RealtimeResolvedUser;
+  sessionId: string;
+  expiresAt: string | null;
+}
+
+/** Personal-key resolver result. Keys are revoke-only, so they have no deadline. */
+export interface RealtimePersonalResolution {
+  kind: 'personal';
+  user: RealtimeResolvedUser;
+  keyId: string;
+  scopes: ApiKeyScope[];
+}
+
+/** OAuth resolver result. A grant revokes the token; the token has its own expiry. */
+export interface RealtimeOAuthResolution {
+  kind: 'oauth';
+  user: RealtimeResolvedUser;
+  grantId: string;
+  accessTokenId: string;
+  expiresAt: string;
+  scopes: ApiKeyScope[];
+}
+
+export type RealtimeBearerResolution = RealtimePersonalResolution | RealtimeOAuthResolution;
+
+/**
+ * Auth state retained on `socket.data`. A socket never keeps a plaintext bearer
+ * token: key/grant ids plus a fresh service revalidation are enough to fail
+ * closed if the lifecycle bus misses an invalidation.
+ */
+export interface RealtimeSessionPrincipal {
+  kind: 'session';
+  /** Public hash used by lifecycle events — never the session cookie secret. */
+  credentialId: string;
+  sessionId: string;
+  userId: string;
+  userStatus: 'active';
+  scopes: 'all';
+  expiresAt: string | null;
+}
+
+export interface RealtimePersonalPrincipal {
+  kind: 'personal';
+  credentialId: string;
+  keyId: string;
+  userId: string;
+  userStatus: 'active';
+  scopes: ApiKeyScope[];
+  expiresAt: null;
+}
+
+export interface RealtimeOAuthPrincipal {
+  kind: 'oauth';
+  /** Grant id: revoking the grant invalidates every access token under it. */
+  credentialId: string;
+  grantId: string;
+  accessTokenId: string;
+  userId: string;
+  userStatus: 'active';
+  scopes: ApiKeyScope[];
+  expiresAt: string;
+}
+
+export type RealtimePrincipal =
+  | RealtimeSessionPrincipal
+  | RealtimePersonalPrincipal
+  | RealtimeOAuthPrincipal;
 
 export interface RealtimeGatewayDeps {
   config: AppConfig;
@@ -91,7 +182,7 @@ export interface RealtimeGatewayDeps {
   resolveSession(
     sessionId: string,
     userAgent?: string | null,
-  ): Promise<{ id: string; role: 'user' | 'admin'; mustChangePassword: boolean } | null>;
+  ): Promise<RealtimeSessionResolution | null>;
   /**
    * Bearer token → user resolution — the SAME path the HTTP bearer middleware
    * uses ({@link import('../http/middleware/bearerAuth').loadBearerAuth}): a
@@ -101,9 +192,20 @@ export interface RealtimeGatewayDeps {
    * session cookie (§6.13, §14). Returns null for a missing, malformed, unknown,
    * revoked or expired token — indistinguishable, exactly like the HTTP 401.
    */
-  resolveBearer(
-    token: string,
-  ): Promise<{ id: string; role: 'user' | 'admin'; mustChangePassword: boolean } | null>;
+  resolveBearer(token: string): Promise<RealtimeBearerResolution | null>;
+  /** Fail-closed, token-free revalidation for a connected personal key. */
+  revalidatePersonal(input: {
+    userId: string;
+    keyId: string;
+  }): Promise<RealtimePersonalResolution | null>;
+  /** Fail-closed, token-free revalidation for a connected OAuth access token. */
+  revalidateOAuth(input: {
+    userId: string;
+    grantId: string;
+    accessTokenId: string;
+    expiresAt: string;
+    scopes: ApiKeyScope[];
+  }): Promise<RealtimeOAuthResolution | null>;
   /** Owner-or-shared access check backing `portfolio:{id}` joins (§6.9). */
   canViewPortfolio(userId: string, portfolioId: string): Promise<boolean>;
   /**
@@ -154,6 +256,8 @@ export interface RealtimeGateway {
 export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGateway {
   const { config, bus, logger } = deps;
   let io: SocketIOServer | null = null;
+  let principalRevalidationTimer: ReturnType<typeof setInterval> | null = null;
+  let principalRevalidationRunning = false;
   const unsubscribers: Unsubscribe[] = [];
 
   // The exact cookie-parser the Express app mounts: same signing secrets, same
@@ -161,15 +265,59 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   // resolves identically to an HTTP request.
   const parseCookies: RequestHandler = cookieParser(config.sessionSecrets);
 
-  type ResolvedUser = { id: string; role: 'user' | 'admin'; mustChangePassword: boolean };
   const BEARER_PREFIX = 'Bearer ';
 
   /** Runtime kill-switch read — always-on when no evaluator was injected. */
   const featureEnabled = (key: FeatureFlagKey): Promise<boolean> =>
     deps.isFeatureEnabled ? deps.isFeatureEnabled(key) : Promise.resolve(true);
 
-  /** Resolve the handshake's session cookie to a user-app account, or null. */
-  async function resolveCookieUser(socket: Socket): Promise<ResolvedUser | null> {
+  function eligibleUser(user: RealtimeResolvedUser): boolean {
+    // Mirror the user-app HTTP surface: admin-kind accounts have no user
+    // surface, disabled accounts are closed, and a forced password change is
+    // limited to the change flow. Applied identically to every credential kind.
+    return user.role === 'user' && user.status === 'active' && !user.mustChangePassword;
+  }
+
+  function sessionPrincipal(resolved: RealtimeSessionResolution): RealtimeSessionPrincipal | null {
+    if (!eligibleUser(resolved.user)) return null;
+    return {
+      kind: 'session',
+      credentialId: sha256Base64Url(resolved.sessionId),
+      sessionId: resolved.sessionId,
+      userId: resolved.user.id,
+      userStatus: 'active',
+      scopes: 'all',
+      expiresAt: resolved.expiresAt,
+    };
+  }
+
+  function bearerPrincipal(resolved: RealtimeBearerResolution): RealtimePrincipal | null {
+    if (!eligibleUser(resolved.user)) return null;
+    if (resolved.kind === 'personal') {
+      return {
+        kind: 'personal',
+        credentialId: resolved.keyId,
+        keyId: resolved.keyId,
+        userId: resolved.user.id,
+        userStatus: 'active',
+        scopes: resolved.scopes,
+        expiresAt: null,
+      };
+    }
+    return {
+      kind: 'oauth',
+      credentialId: resolved.grantId,
+      grantId: resolved.grantId,
+      accessTokenId: resolved.accessTokenId,
+      userId: resolved.user.id,
+      userStatus: 'active',
+      scopes: resolved.scopes,
+      expiresAt: resolved.expiresAt,
+    };
+  }
+
+  /** Resolve the handshake's session cookie to a typed principal, or null. */
+  async function resolveCookiePrincipal(socket: Socket): Promise<RealtimePrincipal | null> {
     const request = socket.request as Parameters<RequestHandler>[0];
     await new Promise<void>((resolve, reject) => {
       parseCookies(request, {} as Parameters<RequestHandler>[1], (err?: unknown) =>
@@ -180,7 +328,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       config.cookie.name
     ];
     if (typeof sessionId !== 'string' || sessionId.length === 0) return null;
-    return deps.resolveSession(sessionId, socket.handshake.headers['user-agent'] ?? null);
+    const resolved = await deps.resolveSession(
+      sessionId,
+      socket.handshake.headers['user-agent'] ?? null,
+    );
+    return resolved ? sessionPrincipal(resolved) : null;
   }
 
   /**
@@ -201,34 +353,39 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     return null;
   }
 
-  /** Resolve the handshake's bearer token to a user-app account, or null. */
-  async function resolveBearerUser(socket: Socket): Promise<ResolvedUser | null> {
+  /** Resolve the handshake's bearer token to a typed principal, or null. */
+  async function resolveBearerPrincipal(socket: Socket): Promise<RealtimePrincipal | null> {
     const token = bearerTokenOf(socket);
     if (!token) return null;
-    return deps.resolveBearer(token);
+    const resolved = await deps.resolveBearer(token);
+    return resolved ? bearerPrincipal(resolved) : null;
   }
 
   /**
-   * Resolve the handshake to a user id — the session cookie (web SPA) first,
-   * then a bearer token (mobile). The two are mutually exclusive in practice
+   * Resolve the handshake to its complete principal — the session cookie (web
+   * SPA) first, then a bearer token (mobile). The two are mutually exclusive in practice
    * (the SPA holds only a cookie, the app only a token); trying the cookie first
    * keeps the web path byte-identical and never touches the bearer services for
    * a cookie request. Both credentials pass through ONE gate below.
    */
-  async function authenticate(socket: Socket): Promise<string | null> {
-    const user = (await resolveCookieUser(socket)) ?? (await resolveBearerUser(socket));
-    if (!user) return null;
-    // Mirror the user-app HTTP surface: admin-kind accounts have no user surface
-    // (§3, requireUser) and a forced-password-change principal is locked out of
-    // everything except the change flow (§6.1). Applied identically to cookie-
-    // and bearer-authenticated sockets so socket auth never widens HTTP auth.
-    if (user.role !== 'user' || user.mustChangePassword) return null;
-    return user.id;
+  async function authenticate(socket: Socket): Promise<RealtimePrincipal | null> {
+    return (await resolveCookiePrincipal(socket)) ?? (await resolveBearerPrincipal(socket));
+  }
+
+  /** Session principals have the whole first-party surface; bearer scopes gate every family. */
+  function hasCapability(
+    principal: RealtimePrincipal,
+    capability: RealtimeBearerCapability,
+  ): boolean {
+    return (
+      principal.kind === 'session' ||
+      scopeSatisfies(principal.scopes, REALTIME_BEARER_SCOPE_REQUIREMENTS[capability])
+    );
   }
 
   async function handleRoomJoin(
     socket: Socket,
-    userId: string,
+    principal: RealtimePrincipal,
     payload: unknown,
     ack: unknown,
   ): Promise<void> {
@@ -243,10 +400,18 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       return;
     }
     const { room } = parsed.data;
+    if (room.kind === 'asset' && !hasCapability(principal, 'assetRoom')) {
+      respond({ ok: false, error: 'FORBIDDEN' });
+      return;
+    }
     if (room.kind === 'portfolio') {
+      if (!hasCapability(principal, 'portfolioRoom')) {
+        respond({ ok: false, error: 'FORBIDDEN' });
+        return;
+      }
       // Owner-or-shared, recomputed at join time — revoking a share stops new
       // joins immediately (§6.9). Errors fail closed.
-      const allowed = await deps.canViewPortfolio(userId, room.id).catch(() => false);
+      const allowed = await deps.canViewPortfolio(principal.userId, room.id).catch(() => false);
       if (!allowed) {
         respond({ ok: false, error: 'FORBIDDEN' });
         return;
@@ -309,7 +474,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    */
   async function handleLiveWatch(
     socket: Socket,
-    userId: string,
+    principal: RealtimePrincipal,
     payload: unknown,
     ack: unknown,
   ): Promise<void> {
@@ -319,6 +484,10 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     const parsed = realtimeLiveWatchRequestSchema.safeParse(payload);
     if (!parsed.success) {
       respond({ ok: false, error: 'BAD_REQUEST' });
+      return;
+    }
+    if (!hasCapability(principal, 'liveWatch')) {
+      respond({ ok: false, error: 'FORBIDDEN' });
       return;
     }
     const liveMode = deps.liveMode;
@@ -339,7 +508,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     const watched = liveAssetsOf(socket);
     let entry = watched.get(assetId);
     if (!entry) {
-      const ref = await deps.resolveWatchableAsset(userId, assetId).catch(() => null);
+      const ref = await deps.resolveWatchableAsset(principal.userId, assetId).catch(() => null);
       if (!ref) {
         // Missing and someone-else's-custom look identical (§10). Fails closed.
         respond({ ok: false, error: 'NOT_FOUND' });
@@ -381,7 +550,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
 
   async function handlePresence(
     socket: Socket,
-    userId: string,
+    principal: RealtimePrincipal,
     payload: unknown,
     ack: unknown,
     mode: 'enter' | 'leave',
@@ -394,13 +563,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       respond({ ok: false, error: 'BAD_REQUEST' });
       return;
     }
+    if (!hasCapability(principal, 'chatPresence')) {
+      respond({ ok: false, error: 'FORBIDDEN' });
+      return;
+    }
     const { surface, id } = parsed.data;
     if (mode === 'enter') {
       // Idempotent — a re-enter IS the heartbeat that keeps the TTL alive.
-      await deps.presence.enter(userId, surface, id);
+      await deps.presence.enter(principal.userId, surface, id);
       presenceOf(socket).add(`${surface}:${id}`);
     } else {
-      await deps.presence.leave(userId, surface, id);
+      await deps.presence.leave(principal.userId, surface, id);
       presenceOf(socket).delete(`${surface}:${id}`);
     }
     respond({ ok: true });
@@ -437,6 +610,184 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     respond({ ok: true });
   }
 
+  const USER_EVENT_CAPABILITIES = [
+    'notificationNew',
+    'portfolioChanged',
+    'chatMessage',
+  ] as const satisfies readonly RealtimeBearerCapability[];
+
+  const principalOf = (socket: Socket): RealtimePrincipal | null =>
+    (socket.data.principal as RealtimePrincipal | undefined) ?? null;
+
+  async function joinPrincipalRooms(socket: Socket, principal: RealtimePrincipal): Promise<void> {
+    if (principal.kind === 'session') {
+      await socket.join(userRoom(principal.userId));
+      return;
+    }
+    const rooms = USER_EVENT_CAPABILITIES.filter((capability) =>
+      hasCapability(principal, capability),
+    ).map((capability) => scopedUserRoom(principal.userId, capability));
+    if (rooms.length > 0) await socket.join(rooms);
+  }
+
+  function clearPrincipalExpiry(socket: Socket): void {
+    const timer = socket.data.principalExpiryTimer as ReturnType<typeof setTimeout> | undefined;
+    if (timer) clearTimeout(timer);
+    delete socket.data.principalExpiryTimer;
+  }
+
+  function schedulePrincipalExpiry(socket: Socket, principal: RealtimePrincipal): void {
+    clearPrincipalExpiry(socket);
+    if (socket.disconnected || principal.expiresAt === null) return;
+    const deadline = Date.parse(principal.expiresAt);
+    if (!Number.isFinite(deadline)) {
+      socket.disconnect(true);
+      return;
+    }
+    // Session deadlines can exceed Node's maximum timeout. Revalidate at the
+    // safe cap and schedule the remaining time from the fresh principal.
+    const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(1, deadline - Date.now() + 1));
+    const timer = setTimeout(() => {
+      void revalidateSocket(socket);
+    }, delay);
+    timer.unref?.();
+    socket.data.principalExpiryTimer = timer;
+  }
+
+  function sameScopes(a: RealtimePrincipal['scopes'], b: RealtimePrincipal['scopes']): boolean {
+    if (a === 'all' || b === 'all') return a === b;
+    return a.length === b.length && a.every((scope) => b.includes(scope));
+  }
+
+  function samePrincipalAuthorization(a: RealtimePrincipal, b: RealtimePrincipal): boolean {
+    return (
+      a.kind === b.kind &&
+      a.userId === b.userId &&
+      a.userStatus === b.userStatus &&
+      a.credentialId === b.credentialId &&
+      sameScopes(a.scopes, b.scopes)
+    );
+  }
+
+  async function withPrincipalRevalidationDeadline<T>(operation: () => Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error('realtime principal revalidation timed out'));
+      }, REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([operation(), deadline]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Re-resolve an already-connected principal without keeping its plaintext
+   * bearer. Any resolver failure, account-status transition, revocation, expiry
+   * or effective-scope change disconnects fail closed.
+   */
+  async function revalidateSocket(socket: Socket): Promise<void> {
+    const previous = principalOf(socket);
+    if (!previous || socket.disconnected) return;
+    let next: RealtimePrincipal | null = null;
+    try {
+      next = await withPrincipalRevalidationDeadline(async () => {
+        if (previous.kind === 'session') {
+          const resolved = await deps.resolveSession(previous.sessionId);
+          return resolved ? sessionPrincipal(resolved) : null;
+        }
+        if (previous.kind === 'personal') {
+          const resolved = await deps.revalidatePersonal({
+            userId: previous.userId,
+            keyId: previous.keyId,
+          });
+          return resolved ? bearerPrincipal(resolved) : null;
+        }
+        const resolved = await deps.revalidateOAuth({
+          userId: previous.userId,
+          grantId: previous.grantId,
+          accessTokenId: previous.accessTokenId,
+          expiresAt: previous.expiresAt,
+          scopes: previous.scopes,
+        });
+        return resolved ? bearerPrincipal(resolved) : null;
+      });
+    } catch (err) {
+      logger.warn(
+        { err, userId: previous.userId, kind: previous.kind },
+        'realtime principal revalidation failed',
+      );
+      if (!socket.disconnected) socket.disconnect(true);
+      return;
+    }
+    // A lifecycle invalidation or another fail-closed path may have disconnected
+    // the socket while its resolver was in flight. Never let late settlement
+    // mutate socket state or install a fresh expiry timer.
+    if (socket.disconnected) return;
+    if (!next || !samePrincipalAuthorization(previous, next)) {
+      socket.disconnect(true);
+      return;
+    }
+    socket.data.principal = next;
+    schedulePrincipalExpiry(socket, next);
+  }
+
+  function startPrincipalRevalidation(server: SocketIOServer): void {
+    if (principalRevalidationTimer) return;
+    principalRevalidationTimer = setInterval(() => {
+      if (principalRevalidationRunning) return;
+      principalRevalidationRunning = true;
+      void Promise.allSettled(
+        [...server.sockets.sockets.values()].map((socket) => revalidateSocket(socket)),
+      ).finally(() => {
+        principalRevalidationRunning = false;
+      });
+    }, REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS);
+    principalRevalidationTimer.unref?.();
+  }
+
+  function stopPrincipalRevalidation(): void {
+    if (principalRevalidationTimer) clearInterval(principalRevalidationTimer);
+    principalRevalidationTimer = null;
+    principalRevalidationRunning = false;
+  }
+
+  function matchesInvalidation(
+    principal: RealtimePrincipal,
+    event: RealtimePrincipalInvalidatedEvent,
+  ): boolean {
+    if (principal.userId !== event.userId) return false;
+    if (event.kind === 'all') return true;
+    if (principal.kind !== event.kind) return false;
+    if (event.exceptCredentialId === principal.credentialId) return false;
+    return event.credentialId === null || event.credentialId === principal.credentialId;
+  }
+
+  function disconnectInvalidatedSockets(
+    server: SocketIOServer,
+    event: RealtimePrincipalInvalidatedEvent,
+  ): void {
+    for (const socket of server.sockets.sockets.values()) {
+      const principal = principalOf(socket);
+      if (principal && matchesInvalidation(principal, event)) socket.disconnect(true);
+    }
+  }
+
+  function emitUserCapability(
+    server: SocketIOServer,
+    userId: string,
+    capability: (typeof USER_EVENT_CAPABILITIES)[number],
+    event: string,
+    payload: unknown,
+  ): void {
+    // Cookie sessions occupy `user:{id}`; bearer principals only enter the
+    // capability-specific companion room, never the undifferentiated one.
+    server.to(userRoom(userId)).to(scopedUserRoom(userId, capability)).emit(event, payload);
+  }
+
   /** Bridge the typed domain events into room emissions (§4.5). */
   async function subscribeBus(server: SocketIOServer): Promise<void> {
     unsubscribers.push(
@@ -445,7 +796,13 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           notificationId: event.notificationId,
           occurredAt: event.occurredAt,
         };
-        server.to(userRoom(event.userId)).emit(REALTIME_SERVER_EVENTS.notificationNew, payload);
+        emitUserCapability(
+          server,
+          event.userId,
+          'notificationNew',
+          REALTIME_SERVER_EVENTS.notificationNew,
+          payload,
+        );
       }),
     );
     unsubscribers.push(
@@ -463,10 +820,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           portfolioId: event.portfolioId,
           occurredAt: event.occurredAt,
         };
-        // Owner's own tabs + any admitted shared viewers; `.to().to()` targets
-        // the union and Socket.IO dedupes sockets sitting in both rooms.
+        // Owner's cookie tabs + scoped portfolio bearers + any admitted shared
+        // viewers. `.to().to()` targets the union and Socket.IO dedupes seats.
         server
           .to(userRoom(event.userId))
+          .to(scopedUserRoom(event.userId, 'portfolioChanged'))
           .to(portfolioRoom(event.portfolioId))
           .emit(REALTIME_SERVER_EVENTS.portfolioChanged, payload);
       }),
@@ -484,7 +842,18 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           senderId: event.senderId,
           occurredAt: event.occurredAt,
         };
-        server.to(userRoom(event.userId)).emit(REALTIME_SERVER_EVENTS.chatMessage, payload);
+        emitUserCapability(
+          server,
+          event.userId,
+          'chatMessage',
+          REALTIME_SERVER_EVENTS.chatMessage,
+          payload,
+        );
+      }),
+    );
+    unsubscribers.push(
+      await bus.subscribe('realtime.principal.invalidated', (event) => {
+        disconnectInvalidatedSockets(server, event);
       }),
     );
   }
@@ -517,12 +886,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
               next(new Error('UNAVAILABLE'));
               return undefined;
             }
-            return authenticate(socket).then((userId) => {
-              if (!userId) {
+            return authenticate(socket).then((principal) => {
+              if (!principal) {
                 next(new Error('UNAUTHORIZED'));
                 return;
               }
-              socket.data.userId = userId;
+              socket.data.principal = principal;
               next();
             });
           })
@@ -533,11 +902,20 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       });
 
       io.on('connection', (socket) => {
-        const userId = socket.data.userId as string;
-        void socket.join(userRoom(userId));
+        const principal = principalOf(socket);
+        if (!principal) {
+          socket.disconnect(true);
+          return;
+        }
+        const { userId } = principal;
+        void joinPrincipalRooms(socket, principal).catch((err) => {
+          logger.warn({ err, userId, kind: principal.kind }, 'realtime principal room join failed');
+          socket.disconnect(true);
+        });
+        schedulePrincipalExpiry(socket, principal);
 
         socket.on(REALTIME_CLIENT_EVENTS.roomJoin, (payload: unknown, ack: unknown) => {
-          void handleRoomJoin(socket, userId, payload, ack).catch((err) => {
+          void handleRoomJoin(socket, principal, payload, ack).catch((err) => {
             logger.warn({ err, userId }, 'realtime room join failed');
           });
         });
@@ -547,7 +925,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.liveWatch, (payload: unknown, ack: unknown) => {
-          void enqueueLiveOp(socket, () => handleLiveWatch(socket, userId, payload, ack)).catch(
+          void enqueueLiveOp(socket, () => handleLiveWatch(socket, principal, payload, ack)).catch(
             (err) => {
               logger.warn({ err, userId }, 'live watch failed');
             },
@@ -559,12 +937,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.presenceEnter, (payload: unknown, ack: unknown) => {
-          void handlePresence(socket, userId, payload, ack, 'enter').catch((err) => {
+          void handlePresence(socket, principal, payload, ack, 'enter').catch((err) => {
             logger.warn({ err, userId }, 'presence enter failed');
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.presenceLeave, (payload: unknown, ack: unknown) => {
-          void handlePresence(socket, userId, payload, ack, 'leave').catch((err) => {
+          void handlePresence(socket, principal, payload, ack, 'leave').catch((err) => {
             logger.warn({ err, userId }, 'presence leave failed');
           });
         });
@@ -574,6 +952,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         // Presence claims clear too — a closed tab must never keep suppressing
         // notifications for the rest of the TTL (#368).
         socket.on('disconnect', () => {
+          clearPrincipalExpiry(socket);
           void clearPresence(socket, userId).catch((err) => {
             logger.warn({ err, userId }, 'presence cleanup failed');
           });
@@ -587,6 +966,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       });
 
       await subscribeBus(io);
+      startPrincipalRevalidation(io);
       // Live-frame fan-out (§6.3): every poll tick reaches every viewer in the
       // asset's room — N viewers, one upstream stream.
       if (deps.liveMode) {
@@ -608,6 +988,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     },
 
     async close(): Promise<void> {
+      stopPrincipalRevalidation();
       const pending = unsubscribers.splice(0, unsubscribers.length);
       await Promise.allSettled(pending.map((unsubscribe) => unsubscribe()));
       if (!io) return;

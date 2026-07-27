@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import type { ApiKeyScope } from './apiKeys';
 import { currencyCodeSchema, marketStateSchema } from './market';
 
 /**
@@ -12,8 +13,9 @@ import { currencyCodeSchema, marketStateSchema } from './market';
  * derives its types from them, exactly like the HTTP contracts.
  *
  * ── Handshake auth ──────────────────────────────────────────────────────────
- * The handshake authenticates with EITHER credential, resolved to the user id
- * that owns the socket's `user:{id}` room:
+ * The handshake authenticates with EITHER credential, resolved to one typed
+ * principal. Cookie sessions own the socket's `user:{id}` room; bearers enter
+ * only the capability-specific companion rooms their scopes permit:
  *
  *   - **Session cookie** — the web SPA path: the signed session cookie, resolved
  *     through the auth service's cookie→user resolution (verbatim the HTTP path).
@@ -23,11 +25,9 @@ import { currencyCodeSchema, marketStateSchema } from './market';
  *     and/or an `Authorization: Bearer …` upgrade header (either is accepted).
  *     The token is validated through the SAME service the HTTP bearer middleware
  *     uses — revocation, expiry and consent-scope clamping included — so socket
- *     auth never drifts from, or widens, the HTTP surface. Because the gateway
- *     pushes invalidation signals only (no data crosses the socket; the client
- *     refetches each payload through the HTTP enforcement layer), an
- *     authenticated user in their own room is the correct bar — the gateway does
- *     no per-event scope filtering.
+ *     auth never drifts from, or widens, the HTTP surface. The gateway enforces
+ *     the bearer scope matrix for every emitted family, room, and command;
+ *     invalidation and quote frames remain deliberately compact.
  *
  * ── Transports ──────────────────────────────────────────────────────────────
  * Both Engine.IO transports are supported: a client may open the websocket
@@ -46,6 +46,22 @@ import { currencyCodeSchema, marketStateSchema } from './market';
 
 /** Socket.IO `path` for the realtime gateway on the API origin (§4.5). */
 export const REALTIME_PATH = '/ws';
+
+/**
+ * The bearer authorization matrix for every realtime event or command. Keeping
+ * this adjacent to the socket protocol prevents a new frame from silently
+ * inheriting the old "any authenticated user" behavior.
+ */
+export const REALTIME_BEARER_SCOPE_REQUIREMENTS = {
+  notificationNew: 'notifications:read',
+  portfolioChanged: 'portfolio:read',
+  chatMessage: 'chat:read',
+  assetRoom: 'market:read',
+  portfolioRoom: 'portfolio:read',
+  liveWatch: 'market:read',
+  chatPresence: 'chat:read',
+} as const satisfies Readonly<Record<string, ApiKeyScope>>;
+export type RealtimeBearerCapability = keyof typeof REALTIME_BEARER_SCOPE_REQUIREMENTS;
 
 // ── Rooms ────────────────────────────────────────────────────────────────────
 
