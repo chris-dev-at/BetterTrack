@@ -11,7 +11,7 @@ import {
   updateTaxSettingsRequestSchema,
 } from '@bettertrack/contracts';
 import { CASH_MOVEMENT_SIGN } from '@bettertrack/domain/cashLedger';
-import { OversellError, reducePosition } from '@bettertrack/domain/holdings';
+import { QTY_EPSILON } from '@bettertrack/domain/holdings';
 import { viennaYearOf } from '@bettertrack/domain/tax';
 
 import type { Database } from '../../data/db';
@@ -213,6 +213,8 @@ interface QuantityReplayRow {
   quantity: bigint;
   readbackQuantity: number;
   normalInputQuantity: number | null;
+  /** Immutable UUIDv7 write position within the whole strict document. */
+  writeOrder: number;
 }
 
 function isPersistedSolvent(rows: readonly QuantityReplayRow[]): boolean {
@@ -229,67 +231,98 @@ function isPersistedSolvent(rows: readonly QuantityReplayRow[]): boolean {
   return true;
 }
 
-function normalBatchCanReplay(
+function isPersistedPrefixSolvent(
   rows: readonly QuantityReplayRow[],
-  legacyTransactionIds: ReadonlySet<string>,
+  legacyCutoff: number,
 ): boolean {
-  const replayRows = [];
-  for (const row of rows) {
-    const quantity = legacyTransactionIds.has(row.transaction.id)
-      ? row.readbackQuantity
-      : row.normalInputQuantity;
-    if (quantity === null) return false;
-    replayRows.push({
-      assetId: row.transaction.data.assetId,
-      side: row.transaction.data.side,
-      quantity,
-      price: 0,
-      fee: 0,
-      executedAt: row.transaction.data.executedAt,
-      allowUncovered: row.transaction.data.allowUncovered,
-    });
-  }
-
-  try {
-    reducePosition(replayRows);
-    return true;
-  } catch (error) {
-    if (error instanceof OversellError) return false;
-    throw error;
-  }
-}
-
-function persistedShortfallSellIds(rows: readonly QuantityReplayRow[]): ReadonlySet<string> {
-  const sellIds = new Set<string>();
   let held = 0n;
   for (const row of rows) {
+    if (row.writeOrder >= legacyCutoff) continue;
     if (row.transaction.data.side === 'buy') {
       held += row.quantity;
       continue;
     }
     const shortfall = row.quantity - held;
-    if (shortfall > 0n && !row.transaction.data.allowUncovered) {
-      sellIds.add(row.transaction.id);
-    }
+    if (shortfall > 0n && !row.transaction.data.allowUncovered) return false;
     held = shortfall > 0n ? 0n : held - row.quantity;
+  }
+  return true;
+}
+
+/**
+ * Quantity-only equivalent of reducePosition's oversell branch. The caller
+ * has already sorted rows by `(executedAt, id)`, prices and fees cannot affect
+ * the held amount, and every value is an admitted normal-write number.
+ */
+function normalBatchCanReplay(rows: readonly QuantityReplayRow[], legacyCutoff: number): boolean {
+  let held = 0;
+  for (const row of rows) {
+    const quantity = row.writeOrder < legacyCutoff ? row.readbackQuantity : row.normalInputQuantity;
+    if (quantity === null) return false;
+    if (row.transaction.data.side === 'buy') {
+      held += quantity;
+      continue;
+    }
+    if (quantity > held + QTY_EPSILON) {
+      if (!row.transaction.data.allowUncovered) return false;
+      held = 0;
+      continue;
+    }
+    held -= quantity;
+    if (Math.abs(held) <= QTY_EPSILON) held = 0;
+  }
+  return true;
+}
+
+const STORAGE_ROUNDING_QUANTUM = 1n;
+const MAX_QUANTITY_REACHABILITY_TRANSACTIONS = 2_048;
+
+/**
+ * Tax replay intentionally has only a one-storage-quantum exception. Larger
+ * exact-persisted shortfalls can be valid composed history, but their normal
+ * repository readback already carries the correct tax basis and must not be
+ * reclassified as an uncovered tax sale.
+ */
+function oneQuantumStorageRoundingSellIds(
+  groups: readonly (readonly QuantityReplayRow[])[],
+): ReadonlySet<string> {
+  const sellIds = new Set<string>();
+  for (const rows of groups) {
+    let held = 0n;
+    for (const row of rows) {
+      if (row.transaction.data.side === 'buy') {
+        held += row.quantity;
+        continue;
+      }
+      const shortfall = row.quantity - held;
+      if (shortfall === STORAGE_ROUNDING_QUANTUM && !row.transaction.data.allowUncovered) {
+        sellIds.add(row.transaction.id);
+      }
+      held = shortfall > 0n ? 0n : held - row.quantity;
+    }
   }
   return sellIds;
 }
 
 /**
  * A strict-v1 document may start with an exact persisted history that predates
- * public-number writes. Its membership follows immutable UUIDv7 write order,
- * not `executedAt`: normal writes may be deliberately backdated. Once a later
- * normal batch is considered, its existing rows are read through the repository
- * Number(numeric), while its new rows must have a real String(number) to
- * numeric(20,8) preimage. Try every solvent write-history prefix so a normal
- * batch may itself contain the rounding boundary.
+ * public-number writes. Its membership follows one immutable UUIDv7 write
+ * cutoff for the entire document, not per asset and not `executedAt`: normal
+ * writes may be deliberately backdated. Once a later normal batch is
+ * considered, its existing rows are read through the repository Number(numeric),
+ * while its new rows must have a real String(number) to numeric(20,8) preimage.
+ *
+ * Candidate validation is deliberately bounded. Each candidate does a linear
+ * quantity replay over pre-sorted groups, so the cap limits an adversarial
+ * malformed document to fewer than nine million simple quantity operations
+ * before the pre-write rejection.
  */
 function storageRoundingSellIdsFor(
   transactions: readonly EntityOf<'transaction'>[],
   testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity,
 ): ReadonlySet<string> {
-  const rows = transactions.map((transaction): QuantityReplayRow => {
+  const writeHistory = [...transactions].sort((a, b) => a.id.localeCompare(b.id));
+  const rows = writeHistory.map((transaction, writeOrder): QuantityReplayRow => {
     const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
     return {
       transaction,
@@ -299,15 +332,11 @@ function storageRoundingSellIdsFor(
         quantity,
         transaction.data.side === 'buy' ? 'upper' : 'lower',
       ),
+      writeOrder,
     };
   });
-  const replayRows = [...rows].sort(
-    (a, b) =>
-      Date.parse(a.transaction.data.executedAt) - Date.parse(b.transaction.data.executedAt) ||
-      a.transaction.id.localeCompare(b.transaction.id),
-  );
 
-  for (const row of replayRows) {
+  for (const row of rows) {
     if (
       testOnlyRejectPersistedTransactionQuantity?.({
         transactionId: row.transaction.id,
@@ -323,38 +352,72 @@ function storageRoundingSellIdsFor(
     }
   }
 
-  if (isPersistedSolvent(replayRows)) return new Set();
-
-  const legacyTransactionIds = new Set<string>();
-  const writeHistoryRows = [...rows].sort((a, b) =>
-    a.transaction.id.localeCompare(b.transaction.id),
+  const transactionsByPortfolioAsset = new Map<string, QuantityReplayRow[]>();
+  for (const row of rows) {
+    const key = `${row.transaction.data.portfolioId}\u0000${row.transaction.data.assetId}`;
+    const group = transactionsByPortfolioAsset.get(key) ?? [];
+    group.push(row);
+    transactionsByPortfolioAsset.set(key, group);
+  }
+  const replayGroups = [...transactionsByPortfolioAsset.values()].map((group) =>
+    group.sort(
+      (a, b) =>
+        Date.parse(a.transaction.data.executedAt) - Date.parse(b.transaction.data.executedAt) ||
+        a.transaction.id.localeCompare(b.transaction.id),
+    ),
   );
-  for (let prefixLength = 0; prefixLength <= writeHistoryRows.length; prefixLength += 1) {
-    if (prefixLength > 0) {
-      legacyTransactionIds.add(writeHistoryRows[prefixLength - 1]!.transaction.id);
-    }
-    const legacyRows = replayRows.filter((row) => legacyTransactionIds.has(row.transaction.id));
-    if (!isPersistedSolvent(legacyRows)) continue;
-    if (normalBatchCanReplay(replayRows, legacyTransactionIds)) {
-      return persistedShortfallSellIds(replayRows);
+
+  if (replayGroups.every((group) => isPersistedSolvent(group))) return new Set();
+
+  if (rows.length > MAX_QUANTITY_REACHABILITY_TRANSACTIONS) {
+    throw new Error(
+      'transaction quantity reachability supports at most ' +
+        MAX_QUANTITY_REACHABILITY_TRANSACTIONS +
+        ' transactions when persisted quantities are insolvent',
+    );
+  }
+
+  // A row without a public-number preimage can only live in the strict-v1
+  // prefix. Start at the first globally possible cutoff instead of trying
+  // prefixes known to be impossible.
+  const firstPossibleLegacyCutoff = rows.reduce(
+    (cutoff, row) =>
+      row.normalInputQuantity === null ? Math.max(cutoff, row.writeOrder + 1) : cutoff,
+    0,
+  );
+  for (
+    let legacyCutoff = firstPossibleLegacyCutoff;
+    legacyCutoff <= rows.length;
+    legacyCutoff += 1
+  ) {
+    if (
+      replayGroups.every(
+        (group) =>
+          isPersistedPrefixSolvent(group, legacyCutoff) &&
+          normalBatchCanReplay(group, legacyCutoff),
+      )
+    ) {
+      return oneQuantumStorageRoundingSellIds(replayGroups);
     }
   }
 
-  let held = 0n;
-  for (const row of replayRows) {
-    if (row.transaction.data.side === 'buy') {
-      held += row.quantity;
-      continue;
+  for (const group of replayGroups) {
+    let held = 0n;
+    for (const row of group) {
+      if (row.transaction.data.side === 'buy') {
+        held += row.quantity;
+        continue;
+      }
+      if (row.quantity > held && !row.transaction.data.allowUncovered) {
+        throw new Error(
+          'transaction would oversell its position at transaction[' +
+            row.transaction.id +
+            '].quantity=' +
+            JSON.stringify(row.transaction.data.quantity),
+        );
+      }
+      held = row.quantity > held ? 0n : held - row.quantity;
     }
-    if (row.quantity > held && !row.transaction.data.allowUncovered) {
-      throw new Error(
-        'transaction would oversell its position at transaction[' +
-          row.transaction.id +
-          '].quantity=' +
-          JSON.stringify(row.transaction.data.quantity),
-      );
-    }
-    held = row.quantity > held ? 0n : held - row.quantity;
   }
   throw new Error('transaction quantity reachability could not be established');
 }
@@ -1452,20 +1515,11 @@ function validateGraph(
       }
       balancesBySource.set(movement.data.sourceId, balance);
     }
-    const transactionsByPortfolioAsset = new Map<string, EntityOf<'transaction'>[]>();
-    for (const transaction of rows(entities, 'transaction')) {
-      const key = `${transaction.data.portfolioId}\u0000${transaction.data.assetId}`;
-      const group = transactionsByPortfolioAsset.get(key) ?? [];
-      group.push(transaction);
-      transactionsByPortfolioAsset.set(key, group);
-    }
-    for (const transactions of transactionsByPortfolioAsset.values()) {
-      for (const sellId of storageRoundingSellIdsFor(
-        transactions,
-        testOnlyRejectPersistedTransactionQuantity,
-      )) {
-        storageRoundingSellIds.add(sellId);
-      }
+    for (const sellId of storageRoundingSellIdsFor(
+      rows(entities, 'transaction'),
+      testOnlyRejectPersistedTransactionQuantity,
+    )) {
+      storageRoundingSellIds.add(sellId);
     }
   } catch (error) {
     if (error instanceof ParanoidRehydrationError) throw error;

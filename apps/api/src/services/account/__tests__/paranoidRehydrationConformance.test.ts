@@ -7,9 +7,11 @@ import {
   assets,
   paranoidRehydrationReceipts,
   paranoidVaults,
+  portfolioCashMovements,
   portfolioCashSources,
   portfolios,
   transactions,
+  userTaxSettings,
   users,
 } from '../../../data/schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
@@ -28,6 +30,8 @@ const BACKDATED_LEGACY_BUY_SECOND_ID = '018f0000-0000-7000-8000-000000000107';
 const HIGH_MAGNITUDE_ASSET_ID = '018f0000-0000-7000-8000-000000000108';
 const FIRST_REHYDRATION_ID = '018f0000-0000-7000-8000-00000000010b';
 const SECOND_REHYDRATION_ID = '018f0000-0000-7000-8000-00000000010c';
+const LEGACY_CASH_SOURCE_ID = '018f0000-0000-7000-8000-00000000010d';
+const QUANTITY_REACHABILITY_LIMIT = 2_048;
 const EDITED_AT = '2026-07-24T10:00:00.000Z';
 
 type StrictEntity = ParanoidDisableRehydrationRequest['document']['entities'][number];
@@ -57,6 +61,17 @@ function portfolioEntity(userId: string, portfolioId: string) {
     sortOrder: 0,
     defaultPayFromCash: false,
     archivedAt: null,
+  });
+}
+
+function cashSourceEntity(id: string, portfolioId: string) {
+  return entity(id, 'cashSource', {
+    portfolioId,
+    name: 'Main',
+    type: 'cash',
+    isMain: true,
+    archivedAt: null,
+    createdAt: EDITED_AT,
   });
 }
 
@@ -106,6 +121,39 @@ function strictCashSourceEntity(row: typeof portfolioCashSources.$inferSelect) {
     isMain: row.isMain,
     archivedAt: row.archivedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
+  });
+}
+
+function strictCashMovementEntity(row: typeof portfolioCashMovements.$inferSelect) {
+  return entity(row.id, 'cashMovement', {
+    portfolioId: row.portfolioId,
+    sourceId: row.sourceId,
+    kind: row.kind,
+    amountEur: row.amountEur,
+    transactionId: row.transactionId,
+    transferId: row.transferId,
+    counterpartSourceId: row.counterpartSourceId,
+    dividendId: row.dividendId,
+    taxYear: row.taxYear,
+    executedAt: row.executedAt.toISOString(),
+    createdAt: row.createdAt.toISOString(),
+    note: row.note,
+    source: row.source,
+  });
+}
+
+function strictTaxSettingEntity(row: typeof userTaxSettings.$inferSelect) {
+  return entity(row.userId, 'taxSetting', {
+    userId: row.userId,
+    mode: row.mode,
+    country: row.country as Extract<StrictEntity, { kind: 'taxSetting' }>['data']['country'],
+    manualDefaultAmountEur: row.manualDefaultAmountEur,
+    manualDefaultRatePct: row.manualDefaultRatePct,
+    customParams: row.customParams as Extract<
+      StrictEntity,
+      { kind: 'taxSetting' }
+    >['data']['customParams'],
+    updatedAt: row.updatedAt.toISOString(),
   });
 }
 
@@ -176,6 +224,7 @@ async function replaceNormalRowsWithServerVault(
   userId: string,
 ): Promise<void> {
   await harness.db.delete(portfolios).where(eq(portfolios.userId, userId));
+  await harness.db.delete(userTaxSettings).where(eq(userTaxSettings.userId, userId));
   await harness.db
     .delete(paranoidRehydrationReceipts)
     .where(eq(paranoidRehydrationReceipts.userId, userId));
@@ -214,11 +263,21 @@ async function capturePortfolioDocument(
     .select()
     .from(transactions)
     .where(eq(transactions.portfolioId, portfolioId));
+  const cashMovements = await harness.db
+    .select()
+    .from(portfolioCashMovements)
+    .where(eq(portfolioCashMovements.portfolioId, portfolioId));
+  const [taxSetting] = await harness.db
+    .select()
+    .from(userTaxSettings)
+    .where(eq(userTaxSettings.userId, portfolio.userId));
 
   return strictDocument([
     strictPortfolioEntity(portfolio),
     ...cashSources.map(strictCashSourceEntity),
     ...transactionRows.map(strictTransactionEntity),
+    ...cashMovements.map(strictCashMovementEntity),
+    ...(taxSetting ? [strictTaxSettingEntity(taxSetting)] : []),
   ]);
 }
 
@@ -308,13 +367,14 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     ]);
   });
 
-  it('keeps an exact legacy prefix and accepts the later repository-readback sale', async () => {
+  it('keeps the normal-readback tax basis for an exact legacy prefix and later sale', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
     await seedGlobalAsset(harness, LEGACY_ASSET_ID, 'LEGACY');
 
     const legacyDocument = strictDocument([
       portfolioEntity(user.id, LEGACY_PORTFOLIO_ID),
+      cashSourceEntity(LEGACY_CASH_SOURCE_ID, LEGACY_PORTFOLIO_ID),
       transactionEntity({
         id: LEGACY_BUY_ID,
         portfolioId: LEGACY_PORTFOLIO_ID,
@@ -338,6 +398,13 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     if (!legacyBuy) throw new Error('expected legacy transaction readback');
     expect(legacyBuy.quantity).toBe(90071992547.12346);
 
+    await harness.ctx.tax.updateSettings(user.id, { mode: 'country_specific', country: 'AT' });
+    const [mainCashSource] = await harness.db
+      .select()
+      .from(portfolioCashSources)
+      .where(eq(portfolioCashSources.portfolioId, LEGACY_PORTFOLIO_ID));
+    if (!mainCashSource) throw new Error('expected legacy Main cash source');
+
     await harness.ctx.portfolio.createTransactions(user.id, LEGACY_PORTFOLIO_ID, [
       {
         assetId: LEGACY_ASSET_ID,
@@ -346,17 +413,49 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
         price: 11,
         fee: 0,
         executedAt: '2026-07-23T10:01:00.000Z',
+        cashSourceId: mainCashSource.id,
+        addProceedsToCash: true,
       },
     ]);
 
     const persisted = await harness.db
-      .select({ side: transactions.side, quantity: transactions.quantity })
+      .select({ id: transactions.id, side: transactions.side, quantity: transactions.quantity })
       .from(transactions)
       .where(eq(transactions.portfolioId, LEGACY_PORTFOLIO_ID));
-    expect(persisted.sort((left, right) => left.side.localeCompare(right.side))).toEqual([
+    expect(
+      persisted
+        .map((transaction) => ({ side: transaction.side, quantity: transaction.quantity }))
+        .sort((left, right) => left.side.localeCompare(right.side)),
+    ).toEqual([
       { side: 'buy', quantity: '90071992547.12345678' },
       { side: 'sell', quantity: '90071992547.12346000' },
     ]);
+
+    const normalSell = persisted.find((transaction) => transaction.side === 'sell');
+    if (!normalSell) throw new Error('expected normal sale');
+    const [normalTaxedSell] = await harness.db
+      .select({
+        id: transactions.id,
+        taxMode: transactions.taxMode,
+        taxCountry: transactions.taxCountry,
+        taxAmountEur: transactions.taxAmountEur,
+      })
+      .from(transactions)
+      .where(eq(transactions.id, normalSell.id));
+    expect(normalTaxedSell).toMatchObject({ taxMode: 'country_specific', taxCountry: 'AT' });
+    expect(normalTaxedSell?.taxAmountEur).not.toBeNull();
+
+    const beforeReport = await harness.ctx.tax.getYearReport(user.id, LEGACY_PORTFOLIO_ID, 2026);
+    const beforeMovements = await harness.db
+      .select({
+        id: portfolioCashMovements.id,
+        kind: portfolioCashMovements.kind,
+        amountEur: portfolioCashMovements.amountEur,
+        transactionId: portfolioCashMovements.transactionId,
+        taxYear: portfolioCashMovements.taxYear,
+      })
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.portfolioId, LEGACY_PORTFOLIO_ID));
 
     const resultingDocument = await capturePortfolioDocument(harness, LEGACY_PORTFOLIO_ID);
     await replaceNormalRowsWithServerVault(harness, user.id);
@@ -366,6 +465,23 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
       resultingDocument,
       SECOND_REHYDRATION_ID,
       'composed legacy/readback lifecycle',
+    );
+
+    expect(await harness.ctx.tax.getYearReport(user.id, LEGACY_PORTFOLIO_ID, 2026)).toEqual(
+      beforeReport,
+    );
+    const afterMovements = await harness.db
+      .select({
+        id: portfolioCashMovements.id,
+        kind: portfolioCashMovements.kind,
+        amountEur: portfolioCashMovements.amountEur,
+        transactionId: portfolioCashMovements.transactionId,
+        taxYear: portfolioCashMovements.taxYear,
+      })
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.portfolioId, LEGACY_PORTFOLIO_ID));
+    expect(afterMovements.sort((left, right) => left.id.localeCompare(right.id))).toEqual(
+      beforeMovements.sort((left, right) => left.id.localeCompare(right.id)),
     );
   });
 
@@ -520,6 +636,128 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     ).toEqual([]);
     expect(await harness.db.select().from(transactions)).toEqual([]);
     mutationTransaction.mockRestore();
+  });
+
+  it('rejects interleaved asset provenance when no single document write cutoff can explain it', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const assetAId = '018f0000-0000-7000-8000-000000000109';
+    const assetBId = '018f0000-0000-7000-8000-00000000010a';
+    await seedGlobalAsset(harness, assetAId, 'INTERLEAVED-A');
+    await seedGlobalAsset(harness, assetBId, 'INTERLEAVED-B');
+
+    const writeIds = ['018f0000-0100-7000-8000-000000000201'];
+    for (let index = 1; index < 5; index += 1) {
+      writeIds.push(nextUuidV7WriteId(writeIds[index - 1]!));
+    }
+    expect(writeIds).toEqual([...writeIds].sort());
+
+    const document = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      // A's first legacy buy.
+      transactionEntity({
+        id: writeIds[0]!,
+        portfolioId,
+        assetId: assetAId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+      // B's legacy buy, then B's normal repository-readback sale.
+      transactionEntity({
+        id: writeIds[1]!,
+        portfolioId,
+        assetId: assetBId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+      transactionEntity({
+        id: writeIds[2]!,
+        portfolioId,
+        assetId: assetBId,
+        side: 'sell',
+        quantity: '90071992547.12346000',
+        executedAt: '2026-07-23T10:01:00.000Z',
+      }),
+      // A then receives another exact, non-public-number buy before its own
+      // normal repository-readback sale.
+      transactionEntity({
+        id: writeIds[3]!,
+        portfolioId,
+        assetId: assetAId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:02:00.000Z',
+      }),
+      transactionEntity({
+        id: writeIds[4]!,
+        portfolioId,
+        assetId: assetAId,
+        side: 'sell',
+        quantity: '90071992547.12346000',
+        executedAt: '2026-07-23T10:03:00.000Z',
+      }),
+    ]);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    try {
+      await expect(
+        createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
+          rehydrationId: FIRST_REHYDRATION_ID,
+          document,
+        }),
+      ).rejects.toMatchObject({ code: 'INVALID_CASH_LEDGER' });
+      expect(mutationTransaction).not.toHaveBeenCalled();
+      expect(await harness.db.select().from(transactions)).toEqual([]);
+    } finally {
+      mutationTransaction.mockRestore();
+    }
+  });
+
+  it('bounds an insolvent quantity proof before it can rescan thousands of rows', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const assetId = '018f0000-0000-7000-8000-00000000010e';
+    await seedGlobalAsset(harness, assetId, 'PROOF-LIMIT');
+
+    const entities: StrictEntity[] = [portfolioEntity(user.id, portfolioId)];
+    let transactionId = '018f0000-0200-7000-8000-000000000301';
+    for (let index = 0; index <= QUANTITY_REACHABILITY_LIMIT; index += 1) {
+      entities.push(
+        transactionEntity({
+          id: transactionId,
+          portfolioId,
+          assetId,
+          // This first strict persisted sell keeps the full document insolvent,
+          // so it must enter the bounded composed-reachability proof.
+          side: index === 0 ? 'sell' : 'buy',
+          quantity: '1.00000000',
+          executedAt: '2026-07-23T10:00:00.000Z',
+        }),
+      );
+      transactionId = nextUuidV7WriteId(transactionId);
+    }
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    try {
+      await expect(
+        createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
+          rehydrationId: FIRST_REHYDRATION_ID,
+          document: strictDocument(entities),
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_CASH_LEDGER',
+        message: expect.stringContaining(`at most ${QUANTITY_REACHABILITY_LIMIT} transactions`),
+      });
+      expect(mutationTransaction).not.toHaveBeenCalled();
+    } finally {
+      mutationTransaction.mockRestore();
+    }
   });
 
   it('negative control: a temporarily tightened quantity rule rejects in rehydration preflight with the persisted entity path and value', async () => {
