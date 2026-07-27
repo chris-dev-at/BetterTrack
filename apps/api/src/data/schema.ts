@@ -1632,6 +1632,15 @@ export const friendships = pgTable(
     userB: uuid('user_b')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * Per-side watermarks for implicit inbound sharing. Paranoid enable keeps
+     * the friendship/chat relationship, but stamps the enabling user's side so
+     * pre-transition `all_friends` and friend-visible `public_link` audiences
+     * cannot silently reappear after disable. A later audience update is an
+     * intentional re-share and is newer than the watermark.
+     */
+    userASharingRevokedAt: timestamp('user_a_sharing_revoked_at', { withTimezone: true }),
+    userBSharingRevokedAt: timestamp('user_b_sharing_revoked_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ name: 'friendships_pk', columns: [t.userA, t.userB] })],

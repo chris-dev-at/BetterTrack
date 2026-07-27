@@ -413,6 +413,131 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     };
   }
 
+  async function loadSharedWithMeRows(userId: string) {
+    const [portfolioRows, conglomerateRows, watchlistRows, ideaRows, activityPrefs] =
+      await Promise.all([
+        audience.listFriendPortfolios(userId),
+        audience.listFriendConglomerates(userId),
+        audience.listFriendWatchlists(userId),
+        audience.listFriendIdeas(userId),
+        profile.listActivityPrefs(userId),
+      ]);
+    return { portfolioRows, conglomerateRows, watchlistRows, ideaRows, activityPrefs };
+  }
+
+  type SharedWithMeRows = Awaited<ReturnType<typeof loadSharedWithMeRows>>;
+
+  function sharedWithMeOwnerIds(rows: SharedWithMeRows): string[] {
+    return [
+      ...new Set(
+        [
+          ...rows.portfolioRows,
+          ...rows.conglomerateRows,
+          ...rows.watchlistRows,
+          ...rows.ideaRows,
+        ].map((row) => row.ownerId),
+      ),
+    ];
+  }
+
+  async function buildSharedWithMeResponse(
+    rows: SharedWithMeRows,
+    opts?: { baseCurrency?: string },
+  ): Promise<SharedWithMeResponse> {
+    const alertsOn = (kind: ShareKind, subjectId: string): boolean =>
+      rows.activityPrefs.has(`${kind}:${subjectId}`);
+    const ownerFrom = (row: {
+      ownerId: string;
+      ownerUsername: string;
+      ownerProfileIcon: string | null;
+    }) => ({
+      id: row.ownerId,
+      username: row.ownerUsername,
+      profileIcon: coerceProfileIcon(row.ownerProfileIcon),
+    });
+    const portfolios = await Promise.all(
+      rows.portfolioRows.map(async (row) => {
+        const overview = await portfolio.getPortfolio(row.ownerId, row.portfolioId, {
+          baseCurrency: opts?.baseCurrency,
+        });
+        return {
+          portfolioId: row.portfolioId,
+          name: row.name,
+          owner: ownerFrom(row),
+          totalValueEur: overview.totals.totalValueEur,
+          activityAlertsEnabled: alertsOn('portfolio', row.portfolioId),
+        };
+      }),
+    );
+    const conglomerates = rows.conglomerateRows.map((row) => ({
+      conglomerateId: row.conglomerateId,
+      name: row.name,
+      owner: ownerFrom(row),
+      status: row.status,
+      positionCount: row.positionCount,
+      activityAlertsEnabled: alertsOn('conglomerate', row.conglomerateId),
+    }));
+    const watchlists = rows.watchlistRows.map((row) => ({
+      watchlistId: row.watchlistId,
+      name: row.name,
+      owner: ownerFrom(row),
+      itemCount: row.itemCount,
+      activityAlertsEnabled: alertsOn('watchlist', row.watchlistId),
+    }));
+    const ideas = rows.ideaRows.map((row) => ({
+      ideaId: row.ideaId,
+      name: row.name,
+      owner: ownerFrom(row),
+      hasThesis: row.hasThesis,
+      activityAlertsEnabled: alertsOn('idea', row.ideaId),
+    }));
+    return { portfolios, conglomerates, watchlists, ideas };
+  }
+
+  async function listSharedWithMeLocked(
+    userId: string,
+    opts?: { baseCurrency?: string },
+  ): Promise<SharedWithMeResponse> {
+    const initial = await loadSharedWithMeRows(userId);
+    if (!deps.paranoid) return buildSharedWithMeResponse(initial, opts);
+
+    // Candidate discovery happens before locking, then every authorization row
+    // is reloaded under viewer + owner locks. A share from an owner who was not
+    // in the candidate snapshot is omitted until the next read; returning a
+    // briefly stale list is safer than reading that owner's content unlocked.
+    const lockedOwnerIds = new Set(sharedWithMeOwnerIds(initial));
+    return deps.paranoid.runAllowedMany([userId, ...lockedOwnerIds], 'sharing', async () => {
+      const current = await loadSharedWithMeRows(userId);
+      const ownerWasLocked = (row: { ownerId: string }) => lockedOwnerIds.has(row.ownerId);
+      return buildSharedWithMeResponse(
+        {
+          ...current,
+          portfolioRows: current.portfolioRows.filter(ownerWasLocked),
+          conglomerateRows: current.conglomerateRows.filter(ownerWasLocked),
+          watchlistRows: current.watchlistRows.filter(ownerWasLocked),
+          ideaRows: current.ideaRows.filter(ownerWasLocked),
+        },
+        opts,
+      );
+    });
+  }
+
+  async function readSharedItemLocked<T, TShared extends { ownerId: string }>(
+    viewerId: string,
+    authorize: () => Promise<TShared | undefined>,
+    missing: () => Error,
+    read: (shared: TShared) => Promise<T>,
+  ): Promise<T> {
+    const candidate = await authorize();
+    if (!candidate) throw missing();
+    if (!deps.paranoid) return read(candidate);
+    return deps.paranoid.runAllowedMany([viewerId, candidate.ownerId], 'sharing', async () => {
+      const current = await authorize();
+      if (!current || current.ownerId !== candidate.ownerId) throw missing();
+      return read(current);
+    });
+  }
+
   /**
    * Render one already-authorized subject into the kind-tagged read-only shape
    * shared by the public-link resolver and the public-profile drill-in. The
@@ -711,107 +836,60 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async listSharedWithMe(userId, opts) {
-      // Every list is authorization-derived by the enforcement layer (friendship
-      // AND audience, in the SQL join), so unfriending or narrowing instantly
-      // drops the row — nothing to invalidate. The viewer's activity-alert prefs
-      // are stamped on top (a pure preference; delivery is #368).
-      const [portfolioRows, conglomerateRows, watchlistRows, ideaRows, activityPrefs] =
-        await Promise.all([
-          audience.listFriendPortfolios(userId),
-          audience.listFriendConglomerates(userId),
-          audience.listFriendWatchlists(userId),
-          audience.listFriendIdeas(userId),
-          profile.listActivityPrefs(userId),
-        ]);
-      const alertsOn = (kind: ShareKind, subjectId: string): boolean =>
-        activityPrefs.has(`${kind}:${subjectId}`);
-      const ownerFrom = (row: {
-        ownerId: string;
-        ownerUsername: string;
-        ownerProfileIcon: string | null;
-      }) => ({
-        id: row.ownerId,
-        username: row.ownerUsername,
-        profileIcon: coerceProfileIcon(row.ownerProfileIcon),
-      });
-      const portfolios = await Promise.all(
-        portfolioRows.map(async (row) => {
-          const overview = await portfolio.getPortfolio(row.ownerId, row.portfolioId, {
-            baseCurrency: opts?.baseCurrency,
-          });
-          return {
-            portfolioId: row.portfolioId,
-            name: row.name,
-            owner: ownerFrom(row),
-            totalValueEur: overview.totals.totalValueEur,
-            activityAlertsEnabled: alertsOn('portfolio', row.portfolioId),
-          };
-        }),
-      );
-      const conglomerates = conglomerateRows.map((row) => ({
-        conglomerateId: row.conglomerateId,
-        name: row.name,
-        owner: ownerFrom(row),
-        status: row.status,
-        positionCount: row.positionCount,
-        activityAlertsEnabled: alertsOn('conglomerate', row.conglomerateId),
-      }));
-      const watchlists = watchlistRows.map((row) => ({
-        watchlistId: row.watchlistId,
-        name: row.name,
-        owner: ownerFrom(row),
-        itemCount: row.itemCount,
-        activityAlertsEnabled: alertsOn('watchlist', row.watchlistId),
-      }));
-      const ideas = ideaRows.map((row) => ({
-        ideaId: row.ideaId,
-        name: row.name,
-        owner: ownerFrom(row),
-        hasThesis: row.hasThesis,
-        activityAlertsEnabled: alertsOn('idea', row.ideaId),
-      }));
-      return { portfolios, conglomerates, watchlists, ideas };
+      return listSharedWithMeLocked(userId, opts);
     },
 
     async getSharedPortfolio(viewerId, portfolioId, opts) {
-      const shared = await audience.authorizePortfolioRead(viewerId, portfolioId);
-      if (!shared) throw SHARED_NOT_FOUND();
-      return buildPortfolioView(
-        {
-          id: shared.ownerId,
-          username: shared.ownerUsername,
-          profileIcon: shared.ownerProfileIcon,
-        },
-        portfolioId,
-        shared.name,
-        opts,
+      return readSharedItemLocked(
+        viewerId,
+        () => audience.authorizePortfolioRead(viewerId, portfolioId),
+        SHARED_NOT_FOUND,
+        (shared) =>
+          buildPortfolioView(
+            {
+              id: shared.ownerId,
+              username: shared.ownerUsername,
+              profileIcon: shared.ownerProfileIcon,
+            },
+            portfolioId,
+            shared.name,
+            opts,
+          ),
       );
     },
 
     async getSharedConglomerate(viewerId, conglomerateId) {
-      const shared = await audience.authorizeConglomerateRead(viewerId, conglomerateId);
-      if (!shared) throw SHARED_CONGLOMERATE_NOT_FOUND();
-      return buildConglomerateView(
-        {
-          id: shared.ownerId,
-          username: shared.ownerUsername,
-          profileIcon: shared.ownerProfileIcon,
-        },
-        conglomerateId,
+      return readSharedItemLocked(
+        viewerId,
+        () => audience.authorizeConglomerateRead(viewerId, conglomerateId),
+        SHARED_CONGLOMERATE_NOT_FOUND,
+        (shared) =>
+          buildConglomerateView(
+            {
+              id: shared.ownerId,
+              username: shared.ownerUsername,
+              profileIcon: shared.ownerProfileIcon,
+            },
+            conglomerateId,
+          ),
       );
     },
 
     async getSharedWatchlist(viewerId, watchlistId) {
-      const shared = await audience.authorizeWatchlistRead(viewerId, watchlistId);
-      if (!shared) throw SHARED_WATCHLIST_NOT_FOUND();
-      return buildWatchlistView(
-        {
-          id: shared.ownerId,
-          username: shared.ownerUsername,
-          profileIcon: shared.ownerProfileIcon,
-        },
-        watchlistId,
-        shared.name,
+      return readSharedItemLocked(
+        viewerId,
+        () => audience.authorizeWatchlistRead(viewerId, watchlistId),
+        SHARED_WATCHLIST_NOT_FOUND,
+        (shared) =>
+          buildWatchlistView(
+            {
+              id: shared.ownerId,
+              username: shared.ownerUsername,
+              profileIcon: shared.ownerProfileIcon,
+            },
+            watchlistId,
+            shared.name,
+          ),
       );
     },
 

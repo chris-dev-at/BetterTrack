@@ -49,6 +49,7 @@ import {
   watchlists,
   workboardItems,
 } from '../data/schema';
+import { withParanoidTransitionTransaction } from '../data/repositories/paranoidTransitionRepository';
 import type { ParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
 import type { ParanoidKilledCapability } from '../services/account/paranoidEnforcement';
 import { createParanoidTransitionService } from '../services/account/paranoidTransitionService';
@@ -1065,6 +1066,85 @@ describe('public paranoid transitions', () => {
     ).toEqual(keptBefore);
   });
 
+  it('keeps pre-enable all-friends grants revoked after disable', async () => {
+    const { user, portfolio, agent } = await seedNormalAccount();
+    const owner = await harness.seedUser({
+      email: 'implicit-owner@bettertrack.test',
+      username: 'implicit_owner',
+    });
+    const [sharedPortfolio] = await harness.db
+      .insert(portfolios)
+      .values({ userId: owner.id, name: 'Previously shared' })
+      .returning();
+    const [userA, userB] = [user.id, owner.id].sort();
+    await harness.db.insert(friendships).values({ userA: userA!, userB: userB! });
+    await harness.db.insert(shareAudiences).values({
+      ownerId: owner.id,
+      kind: 'portfolio',
+      subjectId: sharedPortfolio!.id,
+      audience: 'all_friends',
+      updatedAt: new Date('2026-07-25T00:00:00.000Z'),
+    });
+    expect((await harness.ctx.social.listSharedWithMe(user.id)).portfolios).toHaveLength(1);
+
+    await putServerVault(agent);
+    const enabled = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send({ mediaSet: ['server'], vaultVersion: 1 });
+    expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
+
+    const [friendship] = await harness.db.select().from(friendships);
+    expect(
+      friendship!.userA === user.id
+        ? friendship!.userASharingRevokedAt
+        : friendship!.userBSharingRevokedAt,
+    ).not.toBeNull();
+
+    const disabled = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send({
+        confirm: true,
+        rehydrationId: REHYDRATION_ID,
+        document: {
+          schemaVersion: 1,
+          entities: [
+            {
+              id: portfolio.id,
+              kind: 'portfolio',
+              rev: 1,
+              editedAt: '2026-07-26T10:00:00.000Z',
+              editedBy: DEVICE_ID,
+              deletedAt: null,
+              data: {
+                userId: user.id,
+                name: 'Main',
+                visibility: 'private',
+                sortOrder: 0,
+                defaultPayFromCash: false,
+                archivedAt: null,
+              },
+            },
+          ],
+          mergeLog: [],
+        },
+      });
+    expect(disabled.status, JSON.stringify(disabled.body)).toBe(200);
+    expect(
+      await harness.db
+        .select()
+        .from(shareAudiences)
+        .where(eq(shareAudiences.subjectId, sharedPortfolio!.id)),
+    ).toMatchObject([{ audience: 'all_friends' }]);
+    expect((await harness.ctx.social.listSharedWithMe(user.id)).portfolios).toEqual([]);
+
+    await harness.ctx.social.setAudience(owner.id, 'portfolio', sharedPortfolio!.id, {
+      audience: 'all_friends',
+    });
+    expect((await harness.ctx.social.listSharedWithMe(user.id)).portfolios).toHaveLength(1);
+  });
+
   it('rejects malformed evidence before destructive work', async () => {
     const { user, agent } = await seedNormalAccount();
     const response = await agent
@@ -1283,7 +1363,7 @@ describe('public paranoid transitions', () => {
     expect(download.body.error.code).toBe('EXPORT_NOT_FOUND');
   });
 
-  it('recovers a committed staged export retirement on an idempotent retry', async () => {
+  it('recovers a failed pre-commit export retirement on retry', async () => {
     const { user, agent } = await seedNormalAccount();
     await putServerVault(agent);
     const requested = await agent
@@ -1327,26 +1407,75 @@ describe('public paranoid transitions', () => {
     });
     expect(
       (await harness.db.select().from(users).where(eq(users.id, user.id)))[0]?.privacyMode,
-    ).toBe('paranoid');
-    expect(
-      (await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId)))[0],
-    ).toMatchObject({
-      status: 'failed',
-      filePath: before!.filePath,
-      error: 'RETIRED_FOR_PARANOID_MODE',
-    });
+    ).toBe('normal');
+    expect((await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId)))[0]).toEqual(
+      before,
+    );
     expect(existsSync(before!.filePath!)).toBe(false);
     expect(existsSync(stagedPath)).toBe(true);
 
     await expect(transition.enable(user.id, request)).resolves.toMatchObject({
       mode: 'paranoid',
-      idempotent: true,
+      idempotent: false,
     });
     expect(prepareExportFile).toHaveBeenCalledTimes(2);
     expect(existsSync(stagedPath)).toBe(false);
     expect(
       (await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId)))[0]?.filePath,
     ).toBeNull();
+  });
+
+  it('never restores a cleartext archive after an outcome-ambiguous commit rejection', async () => {
+    const { user, agent } = await seedNormalAccount();
+    await putServerVault(agent);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { jobId } = exportRequestResponseSchema.parse(requested.body);
+    const [before] = await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId));
+    expect(before?.filePath).toBeTruthy();
+
+    let rejectCommittedOutcome = true;
+    const transition = createParanoidTransitionService({
+      db: harness.db,
+      rehydration: {} as ParanoidRehydrationService,
+      audit: { record: vi.fn(async () => {}) } as unknown as AuditService,
+      async withTransitionTransaction(db, lockedUserId, run) {
+        const result = await withParanoidTransitionTransaction(db, lockedUserId, run);
+        if (rejectCommittedOutcome) {
+          rejectCommittedOutcome = false;
+          throw new Error('injected ambiguous commit result');
+        }
+        return result;
+      },
+    });
+    const request: ParanoidEnableRequest = {
+      mediaSet: ['server'],
+      vaultVersion: 1,
+      driveAttestation: null,
+    };
+
+    await expect(transition.enable(user.id, request)).rejects.toThrow(
+      'injected ambiguous commit result',
+    );
+    expect(
+      (await harness.db.select().from(users).where(eq(users.id, user.id)))[0]?.privacyMode,
+    ).toBe('paranoid');
+    expect(existsSync(before!.filePath!)).toBe(false);
+    expect(
+      (await harness.db.select().from(exportJobs).where(eq(exportJobs.id, jobId)))[0],
+    ).toMatchObject({
+      status: 'failed',
+      filePath: null,
+      error: 'RETIRED_FOR_PARANOID_MODE',
+    });
+
+    await expect(transition.enable(user.id, request)).resolves.toMatchObject({
+      mode: 'paranoid',
+      idempotent: true,
+    });
+    expect(existsSync(before!.filePath!)).toBe(false);
   });
 
   it('keeps the account normal when a cleartext export artifact cannot be retired', async () => {
@@ -1500,6 +1629,82 @@ describe('public paranoid transitions', () => {
       await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
     ).toEqual([]);
   });
+
+  it.each(['list', 'portfolio', 'conglomerate', 'watchlist'] as const)(
+    'holds the shared-item owner across %s authorization and content reads',
+    async (readKind) => {
+      const owner = await harness.seedUser({
+        email: `shared-owner-${readKind}@bettertrack.test`,
+        username: `shared_owner_${readKind}`,
+      });
+      const viewer = await harness.seedUser({
+        email: `shared-viewer-${readKind}@bettertrack.test`,
+        username: `shared_viewer_${readKind}`,
+      });
+      const [userA, userB] = [owner.id, viewer.id].sort();
+      await harness.db.insert(friendships).values({ userA: userA!, userB: userB! });
+
+      let read: () => Promise<unknown>;
+      if (readKind === 'conglomerate') {
+        const [subject] = await harness.db
+          .insert(conglomerates)
+          .values({ ownerId: owner.id, name: 'Shared basket', status: 'draft' })
+          .returning();
+        await harness.db.insert(shareAudiences).values({
+          ownerId: owner.id,
+          kind: 'conglomerate',
+          subjectId: subject!.id,
+          audience: 'all_friends',
+        });
+        read = () => harness.ctx.social.getSharedConglomerate(viewer.id, subject!.id);
+      } else if (readKind === 'watchlist') {
+        const [subject] = await harness.db
+          .insert(watchlists)
+          .values({ userId: owner.id, name: 'Shared list', isDefault: false })
+          .returning();
+        await harness.db.insert(shareAudiences).values({
+          ownerId: owner.id,
+          kind: 'watchlist',
+          subjectId: subject!.id,
+          audience: 'all_friends',
+        });
+        read = () => harness.ctx.social.getSharedWatchlist(viewer.id, subject!.id);
+      } else {
+        const [subject] = await harness.db
+          .insert(portfolios)
+          .values({ userId: owner.id, name: 'Shared portfolio' })
+          .returning();
+        await harness.db.insert(shareAudiences).values({
+          ownerId: owner.id,
+          kind: 'portfolio',
+          subjectId: subject!.id,
+          audience: 'all_friends',
+        });
+        read =
+          readKind === 'list'
+            ? () => harness.ctx.social.listSharedWithMe(viewer.id)
+            : () => harness.ctx.social.getSharedPortfolio(viewer.id, subject!.id);
+      }
+
+      const gate = pauseGuardedAction(owner.id, 'sharing');
+      const guardedReading = read();
+      await gate.entered;
+      const ownerEnable = startPausedDriveEnable(owner.id);
+      let ownerEnableLocked = false;
+      void ownerEnable.locked.then(() => {
+        ownerEnableLocked = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(ownerEnableLocked).toBe(false);
+
+      gate.release.resolve();
+      await expect(guardedReading).resolves.toBeDefined();
+      await ownerEnable.locked;
+      ownerEnable.release.resolve();
+      await expect(ownerEnable.enabling).resolves.toMatchObject({ mode: 'paranoid' });
+      gate.restore();
+    },
+  );
 
   it('rejects a member-copy attach that was waiting behind target enable', async () => {
     const actor = await harness.seedUser({

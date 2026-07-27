@@ -57,6 +57,12 @@ export interface ParanoidTransitionServiceDeps {
   runPostCommit?: (userId: string, plan: ParanoidRehydrationPostCommitPlan) => void | Promise<void>;
   /** Test-only failure injection proving enable's database transaction rolls back. */
   afterEnableStage?: (stage: ParanoidEnableStage) => void | Promise<void>;
+  /** Test-only seam for an outcome-ambiguous transaction commit failure. */
+  withTransitionTransaction?: <T>(
+    db: Database,
+    userId: string,
+    run: (tx: Database) => Promise<T>,
+  ) => Promise<T>;
   /** Test seam for reversible pre-commit retirement of cleartext export ZIPs. */
   prepareExportFile?: (artifact: CleartextExportArtifact) => Promise<PreparedExportFileRetirement>;
   /**
@@ -77,9 +83,9 @@ export interface CleartextExportArtifact {
 }
 
 export interface PreparedExportFileRetirement {
-  /** Restore the original path before a failed database transaction unwinds. */
+  /** Restore the original path while retirement is still reversible. */
   rollback(): Promise<void>;
-  /** Permanently remove the staged artifact only after the transaction commits. */
+  /** Permanently remove the staged artifact before the mode flip can commit. */
   commit(): Promise<void>;
 }
 
@@ -135,6 +141,8 @@ export function createParanoidTransitionService(
 ): ParanoidTransitionService {
   const now = deps.now ?? (() => new Date());
   const stage = async (value: ParanoidEnableStage) => deps.afterEnableStage?.(value);
+  const withTransitionTransaction =
+    deps.withTransitionTransaction ?? withParanoidTransitionTransaction;
   const prepareExportFile =
     deps.prepareExportFile ??
     (async (artifact: CleartextExportArtifact) => {
@@ -212,6 +220,29 @@ export function createParanoidTransitionService(
           preparedRetirements.push(await prepareExportFile(artifact));
         }
       };
+      const permanentlyRetirePrepared = async (): Promise<void> => {
+        // From the first unlink attempt onward, never restore an archive. A
+        // filesystem error may be outcome-ambiguous, just like PostgreSQL can
+        // reject after COMMIT reached the server. Deterministic staging paths
+        // plus the retained DB pointer make a retry recoverable; restoring here
+        // could instead publish cleartext for an account whose mode flip landed.
+        restoreRetirementsOnFailure = false;
+        let retirementError: unknown;
+        for (const retirement of preparedRetirements) {
+          try {
+            await retirement.commit();
+          } catch (error) {
+            retirementError ??= error;
+          }
+        }
+        if (retirementError) {
+          throw new ParanoidTransitionError(
+            'TRANSITION_CONFLICT',
+            'An existing account export could not be retired safely.',
+          );
+        }
+        preparedRetirements.length = 0;
+      };
       const purgeDerivedState = async (customAssetIds: readonly string[]): Promise<void> => {
         try {
           await deps.beforeEnableCommit?.(userId, { customAssetIds });
@@ -225,7 +256,7 @@ export function createParanoidTransitionService(
 
       let result: ParanoidEnableResponse;
       try {
-        result = await withParanoidTransitionTransaction(deps.db, userId, async (tx) => {
+        result = await withTransitionTransaction(deps.db, userId, async (tx) => {
           const transition = createParanoidTransitionTransactionRepository(tx);
           const state = await transition.lockState(userId);
           if (!state) {
@@ -257,6 +288,12 @@ export function createParanoidTransitionService(
                 );
               }
               await purgeDerivedState(state.customAssetIds);
+              await permanentlyRetirePrepared();
+              await finalizeRetiredCleartextExports(
+                tx,
+                userId,
+                retirementArtifacts.map((artifact) => artifact.id),
+              );
               return {
                 mode: 'paranoid' as const,
                 mediaSet: input.mediaSet,
@@ -299,9 +336,9 @@ export function createParanoidTransitionService(
           }
 
           // Move every cleartext archive to a same-filesystem staging path while
-          // the account lock is held. A later database/stage failure restores
-          // each original path before the transaction unwinds; only a committed
-          // enable permanently removes the staged files.
+          // the account lock is held. Failures before the irreversible phase
+          // restore each original path. Once unlink begins, recovery is
+          // fail-closed and driven by the row's deterministic staging pointer.
           retirementArtifacts = state.cleartextExports;
           try {
             await prepareRetirements(retirementArtifacts);
@@ -332,6 +369,16 @@ export function createParanoidTransitionService(
               completedAt,
             });
             await stage('modeEnabled');
+            // The mode update is still uncommitted here. Remove every staged
+            // archive first, then clear its recovery pointer in this same
+            // transaction. Thus no committed paranoid state can precede file
+            // deletion, and an ambiguous commit outcome can never restore bytes.
+            await permanentlyRetirePrepared();
+            await finalizeRetiredCleartextExports(
+              tx,
+              userId,
+              retirementArtifacts.map((artifact) => artifact.id),
+            );
 
             return {
               mode: 'paranoid' as const,
@@ -341,23 +388,24 @@ export function createParanoidTransitionService(
               idempotent: false,
             };
           } catch (error) {
-            try {
-              await rollbackRetirements();
-            } catch {
-              throw new ParanoidTransitionError(
-                'TRANSITION_CONFLICT',
-                'A cleartext export could not be restored after the transition failed.',
-              );
+            if (restoreRetirementsOnFailure) {
+              try {
+                await rollbackRetirements();
+              } catch {
+                throw new ParanoidTransitionError(
+                  'TRANSITION_CONFLICT',
+                  'A cleartext export could not be restored after the transition failed.',
+                );
+              }
             }
             throw error;
           }
         });
       } catch (error) {
-        // Covers a transaction-level failure after its callback returned (for
-        // example a commit failure), while the inner catch covers every injected
-        // stage/database failure before the row lock is released. Recovery for
-        // an account that was already paranoid deliberately stays staged: its
-        // failed export row is the durable cleanup pointer for the next retry.
+        // Covers a transaction-level failure after its callback returned. Only
+        // the reversible prepare phase may restore a file. Once unlink begins,
+        // an ambiguous COMMIT rejection must leave bytes absent/staged and let
+        // the durable export-row pointer drive a retry.
         if (restoreRetirementsOnFailure && preparedRetirements.length > 0) {
           try {
             await rollbackRetirements();
@@ -370,23 +418,6 @@ export function createParanoidTransitionService(
         }
         throw error;
       }
-
-      try {
-        for (const retirement of preparedRetirements) {
-          await retirement.commit();
-        }
-        await finalizeRetiredCleartextExports(
-          deps.db,
-          userId,
-          retirementArtifacts.map((artifact) => artifact.id),
-        );
-      } catch {
-        throw new ParanoidTransitionError(
-          'TRANSITION_CONFLICT',
-          'Paranoid mode was enabled, but a retired export artifact still needs cleanup.',
-        );
-      }
-      preparedRetirements.length = 0;
 
       await deps.audit.record({
         actorId: userId,

@@ -16,6 +16,7 @@ import {
   expenseTransactions,
   exportJobs,
   friendGroupMembers,
+  friendships,
   ideas,
   idempotencyKeys,
   importBatches,
@@ -586,6 +587,18 @@ export function createParanoidTransitionTransactionRepository(
         );
       await tx.delete(shareAudienceMembers).where(eq(shareAudienceMembers.friendId, userId));
       await tx.delete(friendGroupMembers).where(eq(friendGroupMembers.memberId, userId));
+      // Friendships/chat are intentionally retained in paranoid mode. Stamp the
+      // enabling user's side so implicit all-friends/public-link grants that
+      // predate this transition stay revoked after disable. Later audience
+      // updates remain possible intentional re-shares.
+      await tx
+        .update(friendships)
+        .set({ userASharingRevokedAt: sql`clock_timestamp()` })
+        .where(eq(friendships.userA, userId));
+      await tx
+        .update(friendships)
+        .set({ userBSharingRevokedAt: sql`clock_timestamp()` })
+        .where(eq(friendships.userB, userId));
       await tx
         .delete(userFollows)
         .where(or(eq(userFollows.followerId, userId), eq(userFollows.followedId, userId)));
@@ -698,10 +711,10 @@ export function createParanoidTransitionTransactionRepository(
 }
 
 /**
- * Clear the durable recovery pointer only after every same-filesystem staged
- * archive has been removed. A crash or unlink failure before this update leaves
- * the original path on the failed export row, allowing the next idempotent
- * enable to derive and retire the same staging path.
+ * Clear the durable recovery pointer inside the enable transaction, only after
+ * every same-filesystem staged archive has been removed. A crash or unlink
+ * failure before this statement rolls the row update back, allowing the next
+ * enable to derive and retire the same deterministic staging path.
  */
 export async function finalizeRetiredCleartextExports(
   db: Database,

@@ -93,11 +93,11 @@ export function createShareAudienceRepository(db: Database) {
   /**
    * The audience-grant predicate — the heart of the enforcement layer, written
    * once and reused by every friend-mode query. A viewer is granted by audience
-   * when it is `all_friends`, `public_link` (public is strictly broader than
-   * friends), `specific_friends` with the viewer in the membership set, or
-   * `group` with the viewer in the referenced circle's CURRENT roster. It is
-   * ALWAYS combined with a friendship join by the caller, so `private` — and any
-   * audience the viewer isn't named in — grants nothing.
+   * when it is a post-revocation `all_friends`/`public_link` audience,
+   * `specific_friends` with the viewer in the membership set, or `group` with
+   * the viewer in the referenced circle's CURRENT roster. It is ALWAYS combined
+   * with a friendship join by the caller, so `private` — and any audience the
+   * viewer isn't named in — grants nothing.
    *
    * The `group` branch reads the live membership, so editing a circle instantly
    * changes who sees existing shares; a `group` share whose group was deleted
@@ -106,7 +106,25 @@ export function createShareAudienceRepository(db: Database) {
    */
   function audienceGrants(viewerId: string) {
     return sql`(
-      ${shareAudiences.audience} in ('all_friends', 'public_link')
+      (
+        ${shareAudiences.audience} in ('all_friends', 'public_link')
+        and (
+          (
+            ${friendships.userA} = ${viewerId}
+            and (
+              ${friendships.userASharingRevokedAt} is null
+              or ${shareAudiences.updatedAt} > ${friendships.userASharingRevokedAt}
+            )
+          )
+          or (
+            ${friendships.userB} = ${viewerId}
+            and (
+              ${friendships.userBSharingRevokedAt} is null
+              or ${shareAudiences.updatedAt} > ${friendships.userBSharingRevokedAt}
+            )
+          )
+        )
+      )
       or (
         ${shareAudiences.audience} = 'specific_friends'
         and exists (
@@ -815,7 +833,7 @@ export function createShareAudienceRepository(db: Database) {
           audienceId = existing.id;
           await tx
             .update(shareAudiences)
-            .set({ audience, groupId: groupRef, updatedAt: new Date() })
+            .set({ audience, groupId: groupRef, updatedAt: sql`clock_timestamp()` })
             .where(eq(shareAudiences.id, audienceId));
         } else {
           const [inserted] = await tx
