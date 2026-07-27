@@ -48,16 +48,25 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(twoFactorConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorConfirmRequest;
+      // Only the first factor must turn a fresh password session into an
+      // MFA-assured one. Confirming an additional factor already runs on an
+      // assured session, so retain that assurance and revoke sibling sessions
+      // like every other factor-set mutation.
+      const hadFactor = await ctx.twoFactor.isEnabled(req.authUser!.id);
       const result = await ctx.adminTwoFactor.confirmTotp(req.authUser!.id, code, req.ip);
-      // Completing enrollment is an MFA ceremony. Rotate the cookie and revoke
-      // every older session before returning success, so no other password-only
-      // session can inherit this new assurance.
-      const session = await ctx.auth.completeAdminMfaEnrollment(
-        req.authUser!.id,
-        req.sessionId!,
-        'totp',
-      );
-      setSessionCookie(res, ctx.config, session.sessionId, session.persistent);
+      if (hadFactor) {
+        await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId!);
+      } else {
+        // Completing first enrollment is an MFA ceremony. Rotate the cookie and
+        // revoke every older session before returning success, so no other
+        // password-only session can inherit this new assurance.
+        const session = await ctx.auth.completeAdminMfaEnrollment(
+          req.authUser!.id,
+          req.sessionId!,
+          'totp',
+        );
+        setSessionCookie(res, ctx.config, session.sessionId, session.persistent);
+      }
       res.json(result);
     },
   );
@@ -89,13 +98,18 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(twoFactorEmailConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorEmailConfirmRequest;
+      const hadFactor = await ctx.twoFactor.isEnabled(req.authUser!.id);
       const result = await ctx.adminTwoFactor.confirmEmail(req.authUser!.id, code, req.ip);
-      const session = await ctx.auth.completeAdminMfaEnrollment(
-        req.authUser!.id,
-        req.sessionId!,
-        'email',
-      );
-      setSessionCookie(res, ctx.config, session.sessionId, session.persistent);
+      if (hadFactor) {
+        await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId!);
+      } else {
+        const session = await ctx.auth.completeAdminMfaEnrollment(
+          req.authUser!.id,
+          req.sessionId!,
+          'email',
+        );
+        setSessionCookie(res, ctx.config, session.sessionId, session.persistent);
+      }
       res.json(result);
     },
   );

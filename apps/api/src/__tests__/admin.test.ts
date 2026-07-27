@@ -221,6 +221,47 @@ describe('administrator promotion invalidates old sessions', () => {
     ).toBe(200);
     expect((await freshAgent.get('/api/v1/admin/users')).status).toBe(200);
   });
+
+  it('does not let a remembered PIN device bootstrap MFA after promotion', async () => {
+    const owner = await harness.seedAdmin();
+    const ownerAgent = await harness.loginAdmin(owner);
+    const candidate = await harness.seedUser({
+      email: 'pin-promote@test.dev',
+      username: 'pin_promote',
+      password: 'pin-promote-strong-password-1',
+    });
+    await harness.ctx.auth.setPin(candidate.id, '4242');
+    const candidateAgent = await loginAgent(harness.app, candidate.email, candidate.password);
+    expect((await candidateAgent.post('/api/v1/auth/remembered-device').set(...XRW)).status).toBe(
+      200,
+    );
+
+    expect(
+      (
+        await ownerAgent
+          .patch(`/api/v1/admin/users/${candidate.id}`)
+          .set(...XRW)
+          .send({ role: 'admin' })
+      ).status,
+    ).toBe(200);
+
+    // Promotion kills the old cookie, but a remembered-device binding has no
+    // session to revoke. It must not mint a replacement admin session from the
+    // pre-promotion PIN, which could otherwise enroll the account's first MFA.
+    const quickAuth = await candidateAgent
+      .post('/api/v1/auth/pin/quick-auth')
+      .set(...XRW)
+      .send({ pin: '4242' });
+    expect(quickAuth.status).toBe(401);
+    expect(quickAuth.body.error.code).toBe('REMEMBER_DEVICE_UNKNOWN');
+
+    // The only remaining path is a direct password login, which may enter the
+    // narrowly-scoped first-enrollment bootstrap state.
+    const freshPasswordAgent = await loginAgent(harness.app, candidate.email, candidate.password);
+    expect(
+      (await freshPasswordAgent.get('/api/v1/admin/security/2fa/status').set(...XRW)).status,
+    ).toBe(200);
+  });
 });
 
 describe('admin creates user → forced password change (PROJECTPLAN.md §6.1)', () => {

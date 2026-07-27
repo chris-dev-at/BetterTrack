@@ -36,6 +36,7 @@ import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import { describeUserAgent } from '../sessions/deviceLabel';
 import {
   isPersistent,
+  type SessionData,
   type SessionMfaMethod,
   type SessionService,
 } from '../sessions/sessionService';
@@ -194,6 +195,13 @@ export interface AuthService {
    * completed MFA. Used exclusively by the administrator authorization gate.
    */
   isSessionMfaAssured(userId: string, sessionId: string): Promise<boolean>;
+  /**
+   * Whether this exact session is eligible to bootstrap an administrator's first
+   * MFA enrollment. Only a fresh password login may establish that boundary;
+   * PIN, passkey, social-login, reset, registration, and previously-assured
+   * sessions never become an administrator bootstrap credential.
+   */
+  isSessionAdminBootstrapEligible(userId: string, sessionId: string): Promise<boolean>;
   /**
    * Complete administrator first-factor enrollment by rotating the current
    * session into a newly MFA-assured one and revoking stale sessions.
@@ -541,6 +549,11 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
   // only once a second factor has actually verified.
   const clearPasswordFailures = (userId: string) => clearPasswordThrottle(redis, userId);
 
+  const isAdminBootstrapSession = (data: SessionData | null, userId: string): boolean =>
+    data?.userId === userId &&
+    data.authenticationMethod === 'password' &&
+    data.mfaAssurance === undefined;
+
   /**
    * Mint a fresh EPHEMERAL session for an OAuth PIN quick re-auth (§399 §B). A
    * Custom-Tab browser must never silently retain a persistent web session, so —
@@ -848,7 +861,18 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       return data?.userId === userId && data.mfaAssurance !== undefined;
     },
 
+    async isSessionAdminBootstrapEligible(userId, sessionId) {
+      return isAdminBootstrapSession(await sessions.get(sessionId), userId);
+    },
+
     async completeAdminMfaEnrollment(userId, sessionId, method) {
+      // Keep the policy at the service boundary as well as the HTTP gate. A
+      // future route must not be able to turn a PIN or another weak/indirect
+      // session into an MFA-assured administrator session merely by calling this
+      // helper directly.
+      if (!isAdminBootstrapSession(await sessions.get(sessionId), userId)) {
+        throw unauthorized();
+      }
       const rotated = await sessions.rotateWithMfa(userId, sessionId, method);
       if (!rotated) throw unauthorized();
       return { sessionId: rotated.sessionId, persistent: rotated.persistent };
@@ -1334,9 +1358,19 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (!boundUserId) throw unknownDevice();
 
       const user = await userRepo.findById(boundUserId);
-      // The bound account vanished, was suspended, or dropped its PIN — the
-      // memory is dead: clear the binding + window and fall back to full login.
-      if (!user || user.status !== 'active' || !user.pinEnabled || !user.pinHash) {
+      // PIN quick-auth is user-kind only. A remembered binding can outlive an
+      // administrator promotion even though promotion revokes all sessions, so
+      // never let it mint a new admin session from the old four-digit PIN. The
+      // memory is dead when the account vanished, changed kind, was suspended,
+      // or dropped its PIN: clear the binding + window and fall back to full
+      // password login without disclosing which condition applied.
+      if (
+        !user ||
+        user.role !== 'user' ||
+        user.status !== 'active' ||
+        !user.pinEnabled ||
+        !user.pinHash
+      ) {
         await redis.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
         throw unknownDevice();
       }
@@ -1392,7 +1426,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
     async rememberDevice(userId, ip) {
       const user = await userRepo.findById(userId);
-      if (!user || user.status !== 'active') throw unauthorized();
+      // This service is also called outside the HTTP route in tests and future
+      // integrations, so preserve the route's user-kind boundary here too.
+      if (!user || user.role !== 'user' || user.status !== 'active') throw unauthorized();
       if (!user.pinEnabled || !user.pinHash) {
         // Only PIN users can be remembered (owner spec §B): a no-PIN account gets
         // no remember-me and a blank login every time. The SPA only offers the

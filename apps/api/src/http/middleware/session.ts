@@ -216,8 +216,13 @@ export function requireAdminTwoFactorOrBootstrap(ctx: AppContext): RequestHandle
 
       // A break-glass reset removes the factor from the account. A session that
       // was previously MFA-assured must not turn into a bootstrap credential;
-      // it is downgraded until the admin performs a fresh password login.
-      if (assured) {
+      // nor may any PIN or other indirect sign-in path. Only the exact current
+      // session from a direct, fresh password login may begin first enrollment.
+      const bootstrapEligible =
+        !assured &&
+        req.sessionId !== undefined &&
+        (await ctx.auth.isSessionAdminBootstrapEligible(req.authUser.id, req.sessionId));
+      if (!bootstrapEligible) {
         next(adminSetupRequired());
         return;
       }
