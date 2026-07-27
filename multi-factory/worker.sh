@@ -353,6 +353,16 @@ run_checker(){ # $1=issue $2=pr $3=optional durable checkpoint file
       -e "s/{{N}}/$n/g" -e "s/{{PR}}/$pr/g" -e "s/{{HEAD}}/$head/g" \
       -e "s|{{RUN_ID}}|$run_id|g" -e "s|{{MANIFEST}}|$manifest|g" \
       "$MF_PROMPTS/checker.md")
+    if [ "${TRIAGE_RELOC:-false}" = true ]; then
+      prompt="$prompt
+
+HARD CONSTRAINT FOR THIS INVOCATION: issue #$n was itself created by an earlier
+checker relocation. The triage chain is capped at depth 1, so Case 2 (RELOCATE)
+is NOT available to you — do not create a follow-up issue and do not emit a
+RELOCATE verdict; orchestration will refuse it and the issue will go to a human.
+Choose Case 1 (RETRY_ESCALATED) with a precise diagnosis, or Case 3
+(NEEDS_HUMAN) if only a human can settle it."
+    fi
     prompt="$prompt
 
 $(checker_materials "$n" "$pr")"
@@ -528,11 +538,14 @@ close_pr_idempotent(){ # $1=pr
 
 triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked, 2=protocol
   local n=$1 pr=$2 reloc=$3 sf current esc
+  # The chain cap exists to stop relocate chains, not to deny a relocated issue
+  # any triage at all. Blanket-failing here meant a split child's FIRST rejection
+  # was terminal — no diagnosis, no escalated retry — which killed four children
+  # on 2026-07-27 after each had already paid for a full write+review cycle.
+  # A relocated issue now gets the normal one-pass triage; only the RELOCATE
+  # verdict is refused, so depth stays capped at 1.
+  TRIAGE_RELOC=$reloc
   sf=$(triage_state_file "$n" "$pr")
-  if [ "$reloc" = true ] && [ ! -f "$sf" ]; then
-    mark_human "$n" "relocated issue rejected again — triage chain cap (depth 1)"
-    return 1
-  fi
   hb_ensure
   wstatus triage "$n" "$pr"
 
@@ -629,6 +642,15 @@ $LAST_CHECKER_BODY"; then
         triage_state_save "$sf" "$n" "$pr" complete || return 2
         return 1;;
       relocate-publish-pending)
+        # Depth cap: a relocated issue may be diagnosed and retried, but may not
+        # spawn a further relocation. run_checker is told this up front, so
+        # reaching here means the checker ignored the instruction.
+        if [ "${TRIAGE_RELOC:-false}" = true ]; then
+          TRIAGE_OUTCOME=human
+          mark_human "$n" "relocated issue may not relocate again — triage chain cap (depth 1)"
+          triage_state_save "$sf" "$n" "$pr" complete || return 2
+          return 1
+        fi
         publish_relocation "$LAST_CHECKER_NEW" "$n" "$LAST_CHECKER_RUN_ID" || return 2
         TRIAGE_STAGE=relocate-action-pending
         triage_state_save "$sf" "$n" "$pr" "$TRIAGE_STAGE" || return 2
