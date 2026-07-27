@@ -40,7 +40,11 @@ import {
   type RestoreCandidate,
 } from './restore';
 import { createServerBlobDataHome } from './serverBlobDataHome';
-import { createVaultSyncEngine } from './sync';
+import {
+  createVaultSyncEngine as createBaseVaultSyncEngine,
+  type VaultDocumentReconcileContext,
+  type VaultSyncEngineOptions,
+} from './sync';
 import { deterministicRandom, VECTOR_DEVICE_ID, VECTOR_KEY_ID, VECTOR_WRITE_ID } from './vectors';
 
 const DEVICE_A = VECTOR_DEVICE_ID;
@@ -61,6 +65,16 @@ const WRAPPED = {
   },
   wrappedVk: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
 };
+
+type TestVaultSyncEngineOptions = Omit<VaultSyncEngineOptions, 'documentReconciler'> &
+  Partial<Pick<VaultSyncEngineOptions, 'documentReconciler'>>;
+
+function createVaultSyncEngine(options: TestVaultSyncEngineOptions) {
+  return createBaseVaultSyncEngine({
+    documentReconciler: (value) => value,
+    ...options,
+  });
+}
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
@@ -448,6 +462,82 @@ describe('versioned encrypted local cache', () => {
 });
 
 describe('CAS-aware vault synchronization', () => {
+  it('passes every original mutation member to reconciliation before entity winners are filtered', async () => {
+    const initialDocument = document([entity(ENTITY_A, 0, DEVICE_A, { state: 'initial' })]);
+    const initial = await encrypted(initialDocument, 1);
+    const remoteWinner = document([entity(ENTITY_A, 1, DEVICE_B, { state: 'remote-winner' })]);
+    const remoteV2 = await encrypted(
+      remoteWinner,
+      2,
+      DEVICE_B,
+      '018f0000-0000-7000-8000-0000000000b2',
+    );
+    const local = createLocalDataHome({
+      scope: 'complete-mutation-provenance',
+      storage: memoryLocalStorage(),
+    });
+    await seedLocal(local, initial, false);
+    const primary = memoryRemote(initial, 1, [remoteV2]);
+    const observed: VaultDocumentReconcileContext[] = [];
+    const engine = createVaultSyncEngine({
+      local,
+      primary,
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      now: () => '2026-07-25T10:02:00.000Z',
+      quarantine: createMemoryVaultQuarantineStore(),
+      documentReconciler(merged, context) {
+        observed.push(context);
+        expect(merged.entities.transaction).toEqual([
+          expect.objectContaining({ id: ENTITY_A, deletedAt: null }),
+          expect.objectContaining({ id: ENTITY_B, deletedAt: null }),
+        ]);
+        return { ...merged, entities: context.remote.entities };
+      },
+    });
+    await engine.start();
+
+    await expect(
+      engine.mutate(({ document: value }) => ({
+        ...value,
+        entities: {
+          ...value.entities,
+          transaction: [
+            {
+              ...value.entities.transaction![0]!,
+              rev: 1,
+              editedAt: '2026-07-25T10:01:00.000Z',
+              editedBy: DEVICE_A,
+              deletedAt: '2026-07-25T10:01:00.000Z',
+            },
+            entity(ENTITY_B, 1, DEVICE_A, { state: 'local-only' }),
+          ],
+        },
+      })),
+    ).resolves.toMatchObject({ status: 'synced' });
+
+    expect(observed[0]?.mutations).toHaveLength(1);
+    expect(observed[0]?.mutations[0]?.changes.map((change) => change.id)).toEqual([
+      ENTITY_A,
+      ENTITY_B,
+    ]);
+    expect(observed[0]?.mutations[0]?.changes).toEqual([
+      expect.objectContaining({
+        id: ENTITY_A,
+        before: expect.objectContaining({ deletedAt: null }),
+        after: expect.objectContaining({ deletedAt: '2026-07-25T10:01:00.000Z' }),
+      }),
+      expect.objectContaining({
+        id: ENTITY_B,
+        before: undefined,
+        after: expect.objectContaining({ deletedAt: null }),
+      }),
+    ]);
+    expect(engine.state.active?.document.entities).toEqual(remoteWinner.entities);
+    expect(engine.state.active?.document.mergeLog).toHaveLength(1);
+  });
+
   it('keeps readable remote data active but read-only when the local CAS version is unavailable', async () => {
     const remoteV2 = await encrypted(
       document([entity(ENTITY_B, 2, DEVICE_B)]),
