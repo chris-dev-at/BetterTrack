@@ -349,7 +349,7 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
           throw new ApiError(
             409,
             VAULT_ERROR_CODES.mediaStateConflict,
-            'The server medium must remain inactive and the retirement version current to purge.',
+            'The server medium must be empty and the retirement version current to purge.',
           );
         case 'retention_pending':
           throw new ApiError(

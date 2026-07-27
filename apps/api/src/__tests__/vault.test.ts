@@ -585,6 +585,44 @@ describe('durable paranoid server-media lifecycle', () => {
     expect(staged.status).toBe(200);
     const candidateId = staged.body.candidateId as string;
 
+    // A candidate is still server-held ciphertext. Even a valid proof after
+    // the recovery window must not report a completed purge while that blob is
+    // present; otherwise a successful response would leave server bytes behind.
+    await harness.db
+      .update(paranoidVaultRetirements)
+      .set({ retiredAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) })
+      .where(eq(paranoidVaultRetirements.userId, user.id));
+    const candidatePurgeChallenge = await agent
+      .post('/api/v1/vault/media/retired/purge/challenge')
+      .set(...XRW)
+      .send({ retiredVersion: 1 });
+    expect(candidatePurgeChallenge.status).toBe(200);
+    const candidatePurge = await agent
+      .post('/api/v1/vault/media/retired/purge')
+      .set(...XRW)
+      .send({
+        retiredVersion: 1,
+        observedVersion: 2,
+        challenge: candidatePurgeChallenge.body.challenge as string,
+        signature: purgeSignature(
+          privateKey,
+          1,
+          2,
+          candidatePurgeChallenge.body.challenge as string,
+        ),
+      });
+    expect(candidatePurge.status).toBe(409);
+    expect(candidatePurge.body.error.code).toBe('VAULT_MEDIA_STATE_CONFLICT');
+    expect((await agent.get('/api/v1/vault/history/1')).status).toBe(200);
+    const candidate = await agent
+      .get(`/api/v1/vault/media/server-candidate/${candidateId}`)
+      .responseType('blob');
+    expect(candidate.status).toBe(200);
+    expect((candidate.body as Buffer).equals(v1)).toBe(true);
+    const readback = candidate.headers[
+      VAULT_SERVER_CANDIDATE_READBACK_HEADER.toLowerCase()
+    ] as string;
+
     // A fabricated verification cannot activate staged bytes; the durable
     // selection remains Drive-only and there is still no active server blob.
     const failedPromotion = await patchMedia({
@@ -599,14 +637,13 @@ describe('durable paranoid server-media lifecycle', () => {
     expect(failedPromotion.status).toBe(412);
     expect((await agent.get('/api/v1/vault')).status).toBe(404);
 
-    const candidate = await agent
-      .get(`/api/v1/vault/media/server-candidate/${candidateId}`)
-      .responseType('blob');
-    expect(candidate.status).toBe(200);
-    expect((candidate.body as Buffer).equals(v1)).toBe(true);
-    const readback = candidate.headers[
-      VAULT_SERVER_CANDIDATE_READBACK_HEADER.toLowerCase()
-    ] as string;
+    // Restore the ordinary retention clock so the later assertion covers the
+    // pending-to-successful purge transition independently of the candidate
+    // conflict above.
+    await harness.db
+      .update(paranoidVaultRetirements)
+      .set({ retiredAt: new Date() })
+      .where(eq(paranoidVaultRetirements.userId, user.id));
     const promoted = await patchMedia({
       expected: driveOnly,
       nextMediaSet: both.mediaSet,

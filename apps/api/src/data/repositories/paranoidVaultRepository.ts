@@ -867,7 +867,11 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           retirement ?? null,
         );
         if (!retirement) return { status: 'not_found' } as const;
-        if (selection.mediaSet.includes('server') || active) {
+        // A staged candidate is still server-held ciphertext. Do not report a
+        // successful retirement purge unless this transaction leaves no server
+        // bytes behind; preserving the candidate lets its owner either promote
+        // it or let its normal expiry cleanup run first.
+        if (selection.mediaSet.includes('server') || active || candidate) {
           return { status: 'state_conflict', current } as const;
         }
         if (retirement.retiredVersion !== input.retiredVersion) {
