@@ -495,6 +495,10 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
         executedAt: new Date(firstExecutedAt + 501).toISOString(),
       }),
     ]);
+    const persistedSell = quantityEntities(document).find(
+      (transaction) => transaction.data.side === 'sell',
+    );
+    if (!persistedSell) throw new Error('expected batch-boundary sell');
     expect(writeIds).toEqual([...writeIds].sort());
 
     await replaceNormalRowsWithServerVault(harness, user.id);
@@ -507,7 +511,7 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
         }),
       ).rejects.toMatchObject({
         code: 'INVALID_CASH_LEDGER',
-        message: expect.stringContaining('requires more than 500 normal batch inputs'),
+        message: expect.stringContaining(quantityField(persistedSell)),
       });
       expect(mutationTransaction).not.toHaveBeenCalled();
       expect(await harness.db.select().from(transactions)).toEqual([]);
@@ -632,6 +636,80 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     expect(afterMovements.sort((left, right) => left.id.localeCompare(right.id))).toEqual(
       beforeMovements.sort((left, right) => left.id.localeCompare(right.id)),
     );
+  });
+
+  it('keeps a composed legacy sale reachable after 501 later same-asset buys', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = '018f0000-0200-7000-8000-000000000301';
+    const assetId = '018f0000-0200-7000-8000-000000000302';
+    const legacyBuyId = '018f0000-0200-7000-8000-000000000303';
+    await seedGlobalAsset(harness, assetId, 'COMPOSED-LATER-HISTORY');
+
+    const legacyDocument = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: legacyBuyId,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+    ]);
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      legacyDocument,
+      FIRST_REHYDRATION_ID,
+      'legacy prefix before later same-asset history',
+    );
+
+    const transactionRepo = createTransactionRepository(harness.db);
+    const [legacyBuy] = await transactionRepo.listForAsset(portfolioId, assetId);
+    if (!legacyBuy) throw new Error('expected legacy transaction readback');
+    expect(legacyBuy.quantity).toBe(90071992547.12346);
+
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId,
+        side: 'sell',
+        quantity: legacyBuy.quantity,
+        price: 11,
+        fee: 0,
+        executedAt: '2026-07-23T10:01:00.000Z',
+      },
+    ]);
+
+    const laterBuys = Array.from({ length: 501 }, (_, index) => ({
+      assetId,
+      side: 'buy' as const,
+      quantity: 1,
+      price: 10,
+      fee: 0,
+      executedAt: new Date(Date.parse('2026-07-23T10:02:00.000Z') + index).toISOString(),
+    }));
+    // These are two legal public requests. Their rows are persisted and read
+    // back before the next request; they are not part of the earlier sale's
+    // raw-input witness merely because they share its asset.
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, laterBuys.slice(0, 500));
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, laterBuys.slice(500));
+
+    const resultingDocument = await capturePortfolioDocument(harness, portfolioId);
+    expect(quantityEntities(resultingDocument)).toHaveLength(503);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      resultingDocument,
+      SECOND_REHYDRATION_ID,
+      'composed lifecycle followed by legal 500-plus-1 requests',
+    );
+    expect(
+      await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
+    ).toHaveLength(503);
   });
 
   it('keeps backdated legacy members in write history before a later normal sale', async () => {
@@ -801,6 +879,72 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
       SECOND_REHYDRATION_ID,
       'normal update of a pre-transition row',
     );
+  });
+
+  it('rejects multiple revised pre-cutoff rows that only pass as simultaneous raw inputs', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = '018f0000-0400-7000-8000-000000000501';
+    const assetId = '018f0000-0400-7000-8000-000000000502';
+    await seedGlobalAsset(harness, assetId, 'SEQUENTIAL-PATCH');
+
+    const writeIds = ['018f0000-0400-7000-8000-000000000503'];
+    writeIds.push(nextUuidV7WriteId(writeIds[0]!));
+    writeIds.push(nextUuidV7WriteId(writeIds[1]!));
+    const revisedBuy = transactionEntity({
+      id: writeIds[0]!,
+      portfolioId,
+      assetId,
+      side: 'buy',
+      quantity: '1.00000000',
+      executedAt: '2026-07-23T10:00:00.000Z',
+    });
+    const revisedSell = transactionEntity({
+      id: writeIds[1]!,
+      portfolioId,
+      assetId,
+      side: 'sell',
+      quantity: '1.00000001',
+      executedAt: '2026-07-23T10:01:00.000Z',
+    });
+    revisedBuy.rev = 1;
+    revisedSell.rev = 1;
+    const document = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      revisedBuy,
+      revisedSell,
+      // This later exact quantity has no public-number preimage, fixing the
+      // one document-level legacy cutoff after both revised rows.
+      transactionEntity({
+        id: writeIds[2]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:02:00.000Z',
+      }),
+    ]);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    try {
+      await expect(
+        createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
+          rehydrationId: FIRST_REHYDRATION_ID,
+          document,
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_CASH_LEDGER',
+        message: expect.stringContaining(quantityField(revisedSell)),
+      });
+      expect(mutationTransaction).not.toHaveBeenCalled();
+      expect(
+        await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+      ).toEqual([]);
+      expect(await harness.db.select().from(transactions)).toEqual([]);
+    } finally {
+      mutationTransaction.mockRestore();
+    }
   });
 
   it('rejects a high-magnitude apparent oversell with no normal-write preimage before restore writes', async () => {
