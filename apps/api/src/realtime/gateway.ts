@@ -80,6 +80,7 @@ export const portfolioRoom = (portfolioId: string): string => `portfolio:${portf
 
 /** Bounded fail-closed backstop when a lifecycle pub/sub signal is missed. */
 export const REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS = 30_000;
+export const REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS = 5_000;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
 
 /** Bearer-only user rooms prevent a narrow token entering the full user room. */
@@ -668,6 +669,21 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     );
   }
 
+  async function withPrincipalRevalidationDeadline<T>(operation: () => Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error('realtime principal revalidation timed out'));
+      }, REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([operation(), deadline]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /**
    * Re-resolve an already-connected principal without keeping its plaintext
    * bearer. Any resolver failure, account-status transition, revocation, expiry
@@ -678,16 +694,18 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     if (!previous || socket.disconnected) return;
     let next: RealtimePrincipal | null = null;
     try {
-      if (previous.kind === 'session') {
-        const resolved = await deps.resolveSession(previous.sessionId);
-        next = resolved ? sessionPrincipal(resolved) : null;
-      } else if (previous.kind === 'personal') {
-        const resolved = await deps.revalidatePersonal({
-          userId: previous.userId,
-          keyId: previous.keyId,
-        });
-        next = resolved ? bearerPrincipal(resolved) : null;
-      } else {
+      next = await withPrincipalRevalidationDeadline(async () => {
+        if (previous.kind === 'session') {
+          const resolved = await deps.resolveSession(previous.sessionId);
+          return resolved ? sessionPrincipal(resolved) : null;
+        }
+        if (previous.kind === 'personal') {
+          const resolved = await deps.revalidatePersonal({
+            userId: previous.userId,
+            keyId: previous.keyId,
+          });
+          return resolved ? bearerPrincipal(resolved) : null;
+        }
         const resolved = await deps.revalidateOAuth({
           userId: previous.userId,
           grantId: previous.grantId,
@@ -695,14 +713,20 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           expiresAt: previous.expiresAt,
           scopes: previous.scopes,
         });
-        next = resolved ? bearerPrincipal(resolved) : null;
-      }
+        return resolved ? bearerPrincipal(resolved) : null;
+      });
     } catch (err) {
       logger.warn(
         { err, userId: previous.userId, kind: previous.kind },
         'realtime principal revalidation failed',
       );
+      if (!socket.disconnected) socket.disconnect(true);
+      return;
     }
+    // A lifecycle invalidation or another fail-closed path may have disconnected
+    // the socket while its resolver was in flight. Never let late settlement
+    // mutate socket state or install a fresh expiry timer.
+    if (socket.disconnected) return;
     if (!next || !samePrincipalAuthorization(previous, next)) {
       socket.disconnect(true);
       return;
@@ -716,7 +740,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     principalRevalidationTimer = setInterval(() => {
       if (principalRevalidationRunning) return;
       principalRevalidationRunning = true;
-      void Promise.all(
+      void Promise.allSettled(
         [...server.sockets.sockets.values()].map((socket) => revalidateSocket(socket)),
       ).finally(() => {
         principalRevalidationRunning = false;

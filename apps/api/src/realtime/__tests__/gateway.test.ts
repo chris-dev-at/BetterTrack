@@ -25,6 +25,10 @@ import * as schema from '../../data/schema';
 import { generateTotpCode } from '../../services/auth/totp';
 import { hashToken } from '../../services/crypto/tokens';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
+import {
+  REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS,
+  REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS,
+} from '../gateway';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 
@@ -431,6 +435,9 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
     const loginState = await login(user.email, user.password);
     const portfolioId = await defaultPortfolioId(loginState.agent);
     const assetId = SOME_UUID;
+    const { accessToken: oauthChatToken } = await mintOAuthToken(loginState.agent, user.id, [
+      'chat:read',
+    ]);
 
     const notifications = await connectWith({
       auth: { token: await mintKey(user.id, ['notifications:read']) },
@@ -439,6 +446,7 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
       auth: { token: await mintKey(user.id, ['portfolio:read']) },
     });
     const chat = await connectWith({ auth: { token: await mintKey(user.id, ['chat:read']) } });
+    const oauthChat = await connectWith({ auth: { token: oauthChatToken } });
     const market = await connectWith({ auth: { token: await mintKey(user.id, ['market:read']) } });
 
     // Joining a room is itself a data-family authorization boundary.
@@ -454,6 +462,10 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
       ok: false,
       error: 'FORBIDDEN',
     });
+    await expect(joinRoom(oauthChat, 'asset', assetId)).resolves.toEqual({
+      ok: false,
+      error: 'FORBIDDEN',
+    });
     await expect(joinRoom(market, 'asset', assetId)).resolves.toEqual({ ok: true });
 
     await expect(joinRoom(notifications, 'portfolio', portfolioId)).resolves.toEqual({
@@ -461,6 +473,10 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
       error: 'FORBIDDEN',
     });
     await expect(joinRoom(chat, 'portfolio', portfolioId)).resolves.toEqual({
+      ok: false,
+      error: 'FORBIDDEN',
+    });
+    await expect(joinRoom(oauthChat, 'portfolio', portfolioId)).resolves.toEqual({
       ok: false,
       error: 'FORBIDDEN',
     });
@@ -477,6 +493,12 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
         id: SOME_UUID,
       }),
     ).resolves.toEqual({ ok: true });
+    await expect(
+      emitAck<RealtimeRoomAck>(oauthChat, REALTIME_CLIENT_EVENTS.presenceEnter, {
+        surface: 'chat',
+        id: SOME_UUID,
+      }),
+    ).resolves.toEqual({ ok: true });
     for (const socket of [notifications, portfolio, market]) {
       await expect(
         emitAck<RealtimeRoomAck>(socket, REALTIME_CLIENT_EVENTS.presenceEnter, {
@@ -488,7 +510,7 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
 
     // `live.watch` is rejected before asset resolution without market read; a
     // market token reaches resolution and gets the ordinary no-leak NOT_FOUND.
-    for (const socket of [notifications, portfolio, chat]) {
+    for (const socket of [notifications, portfolio, chat, oauthChat]) {
       await expect(
         emitAck<RealtimeLiveWatchAck>(socket, REALTIME_CLIENT_EVENTS.liveWatch, {
           assetId,
@@ -512,18 +534,22 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
       REALTIME_SERVER_EVENTS.portfolioChanged,
     );
     const chatMessage = waitForEvent<RealtimeChatMessage>(chat, REALTIME_SERVER_EVENTS.chatMessage);
+    const oauthChatMessage = waitForEvent<RealtimeChatMessage>(
+      oauthChat,
+      REALTIME_SERVER_EVENTS.chatMessage,
+    );
     const quote = waitForEvent<RealtimeQuoteUpdated>(market, REALTIME_SERVER_EVENTS.quoteUpdated);
     const deniedFamilies = Promise.all([
-      ...[portfolio, chat, market].map((socket) =>
+      ...[portfolio, chat, oauthChat, market].map((socket) =>
         expectSilence(socket, REALTIME_SERVER_EVENTS.notificationNew),
       ),
-      ...[notifications, chat, market].map((socket) =>
+      ...[notifications, chat, oauthChat, market].map((socket) =>
         expectSilence(socket, REALTIME_SERVER_EVENTS.portfolioChanged),
       ),
       ...[notifications, portfolio, market].map((socket) =>
         expectSilence(socket, REALTIME_SERVER_EVENTS.chatMessage),
       ),
-      ...[notifications, portfolio, chat].map((socket) =>
+      ...[notifications, portfolio, chat, oauthChat].map((socket) =>
         expectSilence(socket, REALTIME_SERVER_EVENTS.quoteUpdated),
       ),
     ]);
@@ -559,6 +585,7 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
     await expect(notification).resolves.toMatchObject({ notificationId: SOME_UUID });
     await expect(portfolioChanged).resolves.toMatchObject({ portfolioId });
     await expect(chatMessage).resolves.toMatchObject({ conversationId: SOME_UUID });
+    await expect(oauthChatMessage).resolves.toMatchObject({ conversationId: SOME_UUID });
     await expect(quote).resolves.toMatchObject({ assetId });
     await deniedFamilies;
   });
@@ -989,6 +1016,107 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     await createOAuthRepository(harness.db).revokeGrant(user.id, grantId);
 
     await expect(waitForDisconnect(socket, 4000)).resolves.toBeUndefined();
+  });
+
+  it('times out one stuck resolver without suppressing later revalidation sweeps', async () => {
+    let triggerSweep: (() => void) | null = null;
+    const nativeSetInterval = globalThis.setInterval;
+    const intervalSpy = vi
+      .spyOn(globalThis, 'setInterval')
+      .mockImplementation((callback, delay, ...args) => {
+        const timer = nativeSetInterval(callback, delay, ...args);
+        if (delay === REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS) {
+          triggerSweep = () => callback(...args);
+        }
+        return timer;
+      });
+    try {
+      await listenWithGateway();
+    } finally {
+      intervalSpy.mockRestore();
+    }
+    expect(triggerSweep).not.toBeNull();
+
+    const firstUser = await harness.seedUser({
+      email: 'stuck-revalidation@bt.test',
+      username: 'stuckrevalidation',
+    });
+    const secondUser = await harness.seedUser({
+      email: 'healthy-revalidation@bt.test',
+      username: 'healthyrevalidation',
+    });
+    const firstSocket = await connect((await login(firstUser.email, firstUser.password)).cookie);
+    const secondSocket = await connect((await login(secondUser.email, secondUser.password)).cookie);
+    const firstDisconnected = new Promise<void>((resolve) =>
+      firstSocket.once('disconnect', () => resolve()),
+    );
+    const secondDisconnected = new Promise<void>((resolve) =>
+      secondSocket.once('disconnect', () => resolve()),
+    );
+
+    const originalResolveSession = harness.ctx.auth.resolveSession.bind(harness.ctx.auth);
+    let resolverCalls = 0;
+    let settleHealthyResolver!: () => void;
+    const healthyResolverSettled = new Promise<void>((resolve) => {
+      settleHealthyResolver = resolve;
+    });
+    const resolverSpy = vi
+      .spyOn(harness.ctx.auth, 'resolveSession')
+      .mockImplementation(async (sessionId, userAgent) => {
+        resolverCalls += 1;
+        if (resolverCalls === 1) return await new Promise<never>(() => undefined);
+        if (resolverCalls === 2) {
+          try {
+            return await originalResolveSession(sessionId, userAgent);
+          } finally {
+            settleHealthyResolver();
+          }
+        }
+        return null;
+      });
+
+    const nativeSetTimeout = globalThis.setTimeout;
+    const deadlineTimers: {
+      fire: () => void;
+      timer: ReturnType<typeof setTimeout>;
+    }[] = [];
+    const timeoutSpy = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation((callback, delay, ...args) => {
+        const timer = nativeSetTimeout(callback, delay, ...args);
+        if (delay === REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS) {
+          deadlineTimers.push({ fire: () => callback(...args), timer });
+        }
+        return timer;
+      });
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+
+    try {
+      triggerSweep!();
+      await vi.waitFor(() => expect(deadlineTimers).toHaveLength(2));
+      deadlineTimers[0]!.fire();
+      await healthyResolverSettled;
+      await vi.waitFor(() => {
+        expect([firstSocket.connected, secondSocket.connected].filter(Boolean)).toHaveLength(1);
+      });
+      expect(resolverCalls).toBe(2);
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(deadlineTimers[0]!.timer);
+
+      // Both promises in the aggregate have settled now. A fresh pass must not
+      // be suppressed by the previous sweep's global running guard.
+      await Promise.resolve();
+      triggerSweep!();
+      await vi.waitFor(() => expect(resolverCalls).toBe(3));
+      await Promise.all([firstDisconnected, secondDisconnected]);
+      expect(deadlineTimers).toHaveLength(3);
+      for (const { timer } of deadlineTimers) {
+        expect(clearTimeoutSpy).toHaveBeenCalledWith(timer);
+      }
+    } finally {
+      resolverSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+      timeoutSpy.mockRestore();
+    }
   });
 });
 
