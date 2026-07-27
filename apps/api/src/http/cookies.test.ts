@@ -153,10 +153,12 @@ describe('cookie helpers', () => {
         fixture.set(set.response, appConfig, fixture.value);
         fixture.clear(cleared.response, appConfig);
 
+        expect(set.cookie, fixture.label).toHaveBeenCalledOnce();
         expect(set.cookie, fixture.label).toHaveBeenCalledWith(fixture.name, fixture.value, {
           ...securityOptions(appConfig),
           maxAge: fixture.maxAge,
         });
+        expect(cleared.clearCookie, fixture.label).toHaveBeenCalledOnce();
         expect(cleared.clearCookie, fixture.label).toHaveBeenCalledWith(
           fixture.name,
           securityOptions(appConfig),
