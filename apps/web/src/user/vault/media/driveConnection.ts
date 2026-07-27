@@ -58,7 +58,7 @@ export function createDriveConnectionController(
   };
 }
 
-// The PD8 unlock lifecycle installs an unlocked controller here and removes it
+// The provider-owned unlock lifecycle installs a controller here and removes it
 // on lock. Keeping this registry capability-free while locked prevents Settings
 // from manufacturing a second crypto/sync stack.
 let activeDriveConnection: DriveConnectionController | null = null;

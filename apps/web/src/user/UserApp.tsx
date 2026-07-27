@@ -269,9 +269,12 @@ function RealtimeRoot({ children }: { children: ReactNode }) {
 }
 
 function VaultRuntimeRoot({ children }: { children: ReactNode }) {
-  const { status } = useAuth();
+  const { status, user } = useAuth();
   return (
-    <VaultRuntimeProvider authenticated={status === 'authenticated'}>
+    <VaultRuntimeProvider
+      authenticated={status === 'authenticated'}
+      userId={status === 'authenticated' ? user?.id : null}
+    >
       {children}
     </VaultRuntimeProvider>
   );

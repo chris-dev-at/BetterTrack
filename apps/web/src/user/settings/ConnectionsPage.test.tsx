@@ -18,6 +18,10 @@ import type {
   DriveConnectionController,
   VaultMediaSwitchResult,
 } from '../vault/media';
+import { getDriveConnectionController, installDriveConnectionController } from '../vault/media';
+import { base64ToBytes } from '../vault/bytes';
+import { VaultRuntimeProvider } from '../vault/VaultRuntimeProvider';
+import fixture from '../vault/vectors.fixture.json';
 import { ConnectionsPage } from './ConnectionsPage';
 
 const GOOGLE_OFF = {
@@ -165,6 +169,74 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
 });
 
 describe('ConnectionsPage — paranoid Google Drive appdata', () => {
+  test('the rendered provider unlocks its exact core and continues the Drive gesture', async () => {
+    vi.mocked(getVaultMediaState)
+      .mockResolvedValueOnce({
+        mediaSet: ['server'],
+        driveAttestedVersion: null,
+        retiredServer: null,
+      })
+      .mockResolvedValue({
+        mediaSet: ['server', 'drive'],
+        driveAttestedVersion: 1,
+        retiredServer: null,
+      });
+    const controller: DriveConnectionController = {
+      authorization: 'consent-required',
+      connect: vi.fn(
+        async (): Promise<DriveConnectionActionResult> => ({
+          status: 'ok',
+          media: {
+            mediaSet: ['server', 'drive'],
+            driveAttestedVersion: 1,
+            retiredServer: null,
+          },
+          driveLeftover: false,
+        }),
+      ),
+      disconnect: vi.fn(),
+      resume: vi.fn(),
+    };
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0 } },
+    });
+    const rendered = render(
+      <MemoryRouter initialEntries={['/settings/connections']}>
+        <QueryClientProvider client={client}>
+          <VaultRuntimeProvider
+            authenticated
+            userId="018f0000-0000-7000-8000-0000000000dd"
+            dependencies={{
+              custody: {
+                read: async () => null,
+                persist: async () => undefined,
+                clear: async () => undefined,
+              },
+              readEnvelope: async () =>
+                base64ToBytes(fixture.initial.envelopeBase64, 'envelope-invalid'),
+              installUnlockedRuntime: () => installDriveConnectionController(controller),
+            }}
+          >
+            <ConnectionsPage driveConfigured />
+          </VaultRuntimeProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: 'Connect Drive' }));
+    await user.type(screen.getByLabelText('Vault passphrase'), fixture.passphrase);
+    await user.click(screen.getByRole('button', { name: 'Unlock and continue' }));
+
+    await waitFor(() => expect(controller.connect).toHaveBeenCalledTimes(1));
+    expect(
+      await screen.findByText('Google Drive is now a verified vault location.'),
+    ).toBeInTheDocument();
+
+    rendered.unmount();
+    expect(getDriveConnectionController()).toBeNull();
+  });
+
   test('connects through the verified media controller and refreshes durable status', async () => {
     vi.mocked(getVaultMediaState)
       .mockResolvedValueOnce({

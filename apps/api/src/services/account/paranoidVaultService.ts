@@ -446,9 +446,14 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
         proof.medium !== 'drive' ||
         proof.serverCandidateId !== undefined ||
         !proofIsFresh(proof, checkedAt) ||
-        proof.vaultVersion < retired.version ||
-        (proof.vaultVersion === retired.version &&
-          proof.envelopeSha256 !== envelopeSha256(retired.blob))
+        // A version newer than the retired head is not independently
+        // verifiable here: Drive credentials and bytes intentionally never
+        // cross the server boundary. Accept only the exact retained envelope
+        // whose version and digest the server can bind to this recovery set.
+        // Otherwise a caller could claim `retired + 1` with an arbitrary hash
+        // and bypass the sole byte-level proof.
+        proof.vaultVersion !== retired.version ||
+        proof.envelopeSha256 !== envelopeSha256(retired.blob)
       ) {
         return { status: 'proof_invalid' };
       }
@@ -473,7 +478,7 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
           return { status: 'mode_required' };
         case 'media_invalid':
           return { status: 'media_invalid' };
-        case 'proof_version_too_old':
+        case 'proof_version_mismatch':
         case 'unretired_history':
           return { status: 'proof_invalid' };
         case 'retention_not_met':

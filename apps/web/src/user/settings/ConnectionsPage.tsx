@@ -19,6 +19,7 @@ import {
   type DriveConnectionActionResult,
   type DriveConnectionController,
 } from '../vault/media';
+import { useOptionalVaultRuntime } from '../vault/VaultRuntimeProvider';
 import { Alert, Button, TextField, cx } from '../components/ui';
 
 const GOOGLE_KEY = ['auth', 'google', 'link-status'] as const;
@@ -232,9 +233,11 @@ function GoogleSection() {
 function DriveVaultSection({
   connection,
   configured,
+  unlock,
 }: {
   connection: DriveConnectionController | null;
   configured: boolean;
+  unlock: ((passphrase: string) => Promise<DriveConnectionController>) | null;
 }) {
   const t = useT();
   const queryClient = useQueryClient();
@@ -243,6 +246,8 @@ function DriveVaultSection({
     tone: 'error' | 'success' | 'info';
     key: string;
   } | null>(null);
+  const [unlockAction, setUnlockAction] = useState<'connect' | 'disconnect' | null>(null);
+  const [passphrase, setPassphrase] = useState('');
   const query = useQuery({
     queryKey: VAULT_MEDIA_KEY,
     queryFn: ({ signal }) => getVaultMediaState(signal),
@@ -296,8 +301,13 @@ function DriveVaultSection({
     await queryClient.invalidateQueries({ queryKey: VAULT_MEDIA_KEY });
   }
 
-  function unavailable(): boolean {
+  function unavailable(action: 'connect' | 'disconnect'): boolean {
     if (connection) return false;
+    if (configured && unlock) {
+      setMessage(null);
+      setUnlockAction(action);
+      return true;
+    }
     setMessage({
       tone: 'info',
       key: configured
@@ -307,18 +317,39 @@ function DriveVaultSection({
     return true;
   }
 
-  async function connect(): Promise<void> {
-    if (unavailable()) return;
-    setWorking(true);
-    setMessage(null);
-    try {
-      const result = await connection!.connect();
+  async function perform(
+    action: 'connect' | 'disconnect',
+    activeConnection: DriveConnectionController,
+  ): Promise<void> {
+    if (action === 'connect') {
+      const result = await activeConnection.connect();
       if (result.status === 'ok' || result.status === 'noop') {
         setMessage({ tone: 'success', key: 'settings.connections.drive.connectedNotice' });
         await refresh();
       } else {
         setMessage({ tone: 'error', key: 'settings.connections.drive.actionError' });
       }
+      return;
+    }
+
+    const result: DriveConnectionActionResult = await activeConnection.disconnect();
+    if (result.status === 'ok' || result.status === 'noop') {
+      setMessage({ tone: 'success', key: 'settings.connections.drive.disconnectedNotice' });
+      await refresh();
+    } else if (result.status === 'drive-leftover') {
+      setMessage({ tone: 'info', key: 'settings.connections.drive.leftover' });
+      await refresh();
+    } else {
+      setMessage({ tone: 'error', key: 'settings.connections.drive.actionError' });
+    }
+  }
+
+  async function run(action: 'connect' | 'disconnect'): Promise<void> {
+    if (unavailable(action)) return;
+    setWorking(true);
+    setMessage(null);
+    try {
+      await perform(action, connection!);
     } catch {
       setMessage({ tone: 'error', key: 'settings.connections.drive.actionError' });
     } finally {
@@ -326,21 +357,23 @@ function DriveVaultSection({
     }
   }
 
-  async function disconnect(): Promise<void> {
-    if (unavailable()) return;
+  async function unlockAndContinue(): Promise<void> {
+    if (!unlock || !unlockAction || passphrase.length === 0) return;
     setWorking(true);
     setMessage(null);
+    let activeConnection: DriveConnectionController;
     try {
-      const result: DriveConnectionActionResult = await connection!.disconnect();
-      if (result.status === 'ok' || result.status === 'noop') {
-        setMessage({ tone: 'success', key: 'settings.connections.drive.disconnectedNotice' });
-        await refresh();
-      } else if (result.status === 'drive-leftover') {
-        setMessage({ tone: 'info', key: 'settings.connections.drive.leftover' });
-        await refresh();
-      } else {
-        setMessage({ tone: 'error', key: 'settings.connections.drive.actionError' });
-      }
+      activeConnection = await unlock(passphrase);
+    } catch {
+      setMessage({ tone: 'error', key: 'settings.connections.drive.unlockError' });
+      setWorking(false);
+      return;
+    }
+    const action = unlockAction;
+    setPassphrase('');
+    setUnlockAction(null);
+    try {
+      await perform(action, activeConnection);
     } catch {
       setMessage({ tone: 'error', key: 'settings.connections.drive.actionError' });
     } finally {
@@ -360,19 +393,67 @@ function DriveVaultSection({
       </div>
       <p className="text-xs text-neutral-500">{t('settings.connections.drive.description')}</p>
       {message ? <Alert tone={message.tone}>{t(message.key)}</Alert> : null}
+      {unlockAction ? (
+        <form
+          className="flex max-w-sm flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void unlockAndContinue();
+          }}
+        >
+          <p className="text-xs text-neutral-400">{t('settings.connections.drive.unlockPrompt')}</p>
+          <TextField
+            id="drive-vault-passphrase"
+            type="password"
+            autoComplete="current-password"
+            label={t('settings.connections.drive.passphraseLabel')}
+            value={passphrase}
+            onChange={(event) => setPassphrase(event.target.value)}
+            disabled={working}
+            required
+            autoFocus
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button type="submit" disabled={working || passphrase.length === 0}>
+              {t('settings.connections.drive.unlockAndContinue')}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={working}
+              onClick={() => {
+                setUnlockAction(null);
+                setPassphrase('');
+              }}
+            >
+              {t('common.cancel')}
+            </Button>
+          </div>
+        </form>
+      ) : null}
       {selected && media.mediaSet.length === 1 ? (
         <Alert tone="info">{t('settings.connections.drive.lastMedium')}</Alert>
       ) : null}
       <div className="flex flex-wrap gap-2">
         {!selected || needsSignIn ? (
-          <Button type="button" variant="secondary" disabled={working} onClick={connect}>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={working}
+            onClick={() => void run('connect')}
+          >
             {t(
               selected ? 'settings.connections.drive.signIn' : 'settings.connections.drive.connect',
             )}
           </Button>
         ) : null}
         {selected && media.mediaSet.length > 1 ? (
-          <Button type="button" variant="ghost" disabled={working} onClick={disconnect}>
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={working}
+            onClick={() => void run('disconnect')}
+          >
             {t('settings.connections.drive.disconnect')}
           </Button>
         ) : null}
@@ -458,13 +539,22 @@ function ConnectorSlots() {
  * and the future connectors fold away below as compact designed placeholders.
  */
 export function ConnectionsPage({
-  driveConnection = getDriveConnectionController(),
+  driveConnection,
+  driveUnlock,
   driveConfigured = Boolean(import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID),
 }: {
   driveConnection?: DriveConnectionController | null;
+  driveUnlock?: ((passphrase: string) => Promise<DriveConnectionController>) | null;
   driveConfigured?: boolean;
 } = {}) {
   const t = useT();
+  const runtime = useOptionalVaultRuntime();
+  const resolvedDriveConnection =
+    driveConnection === undefined
+      ? (runtime?.connection ?? getDriveConnectionController())
+      : driveConnection;
+  const resolvedDriveUnlock =
+    driveUnlock === undefined ? (runtime?.unlockWithPassphrase ?? null) : driveUnlock;
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-1">
@@ -476,7 +566,11 @@ export function ConnectionsPage({
 
       <GoogleSection />
 
-      <DriveVaultSection connection={driveConnection} configured={driveConfigured} />
+      <DriveVaultSection
+        connection={resolvedDriveConnection}
+        configured={driveConfigured}
+        unlock={resolvedDriveUnlock}
+      />
 
       <ConnectorSlots />
     </div>

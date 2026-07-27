@@ -213,7 +213,7 @@ export type ParanoidVaultRetiredPurgeResult =
   | { status: 'not_found' }
   | { status: 'mode_required' }
   | { status: 'media_invalid'; mediaSet: VaultMediaSet }
-  | { status: 'proof_version_too_old'; latestVersion: number }
+  | { status: 'proof_version_mismatch'; latestVersion: number }
   | { status: 'retention_not_met'; eligibleAt: Date }
   | { status: 'unretired_history' };
 
@@ -657,8 +657,12 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
         }
 
         const latestVersion = rows[0]!.version;
-        if (input.proofVersion < latestVersion) {
-          return { status: 'proof_version_too_old', latestVersion } as const;
+        // The service authenticates the digest against this exact retained
+        // head. Keep the transactional deletion boundary equally strict so a
+        // future caller cannot turn an unknown higher version into purge
+        // authority without a server-verifiable envelope.
+        if (input.proofVersion !== latestVersion) {
+          return { status: 'proof_version_mismatch', latestVersion } as const;
         }
         const latestRetiredAt = rows.reduce(
           (latest, row) => (row.retiredAt! > latest ? row.retiredAt! : latest),

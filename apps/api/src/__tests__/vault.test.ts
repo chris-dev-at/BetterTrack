@@ -476,6 +476,16 @@ describe('vault blob store', () => {
     expect(badProof.body.error.code).toBe('VAULT_RETIRED_PURGE_PROOF_INVALID');
     expect((await agent.get('/api/v1/vault/history/2')).status).toBe(200);
 
+    const fabricatedHigherProof = await agent
+      .post('/api/v1/account/paranoid/media/server/purge')
+      .set(...XRW)
+      .send({
+        proof: mediaProof('drive', 3, envelope(3, new Uint8Array([9, 9, 9]))),
+      });
+    expect(fabricatedHigherProof.status).toBe(422);
+    expect(fabricatedHigherProof.body.error.code).toBe('VAULT_RETIRED_PURGE_PROOF_INVALID');
+    expect((await agent.get('/api/v1/vault/history/2')).status).toBe(200);
+
     const purged = await agent
       .post('/api/v1/account/paranoid/media/server/purge')
       .set(...XRW)

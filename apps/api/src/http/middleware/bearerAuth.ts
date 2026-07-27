@@ -176,6 +176,14 @@ function resolvePolicy(path: string): PathPolicy {
   // Account lifecycle (#362): self-service deletion is part of the
   // account-security surface — the mobile in-app flow calls it with a bearer
   // holding `account:security` (deletion is additionally re-auth-gated).
+  //
+  // Paranoid media orchestration is deliberately narrower: it coordinates a
+  // browser-held vault key and a browser-only Drive capability. A personal key
+  // or delegated OAuth token must never be able to stage/read ciphertext or
+  // change/purge media, even when it holds `account:security`.
+  if (path === '/account/paranoid/media' || path.startsWith('/account/paranoid/media/')) {
+    return { kind: 'session-only' };
+  }
   if (path === '/account' || path.startsWith('/account/')) {
     return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
   }

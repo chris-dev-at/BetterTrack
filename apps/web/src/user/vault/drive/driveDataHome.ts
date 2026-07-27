@@ -16,6 +16,7 @@ import type { DriveAccessTokenResult, GoogleDriveTokenClient } from './gisTokenC
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 const FILE_FIELDS = 'id,name,size,modifiedTime,headRevisionId,appProperties';
+const DUPLICATE_SCAN_LIMIT = '100';
 export const DRIVE_VAULT_FILE_NAME = 'bettertrack-vault.btenc';
 
 interface DriveFile {
@@ -37,7 +38,7 @@ interface ValidDriveFile {
 }
 
 type DriveFileResult =
-  | { status: 'ok'; file: ValidDriveFile }
+  | { status: 'ok'; file: ValidDriveFile; reconciledDuplicates?: boolean }
   | { status: 'absent' }
   | { status: 'corrupt'; result: DataHomeCorruptCandidate }
   | { status: 'failure'; failure: DataHomeTransportFailure };
@@ -208,7 +209,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       spaces: 'appDataFolder',
       q: `name = '${DRIVE_VAULT_FILE_NAME}' and trashed = false`,
       fields: `files(${FILE_FIELDS})`,
-      pageSize: '2',
+      pageSize: DUPLICATE_SCAN_LIMIT,
     });
     const listed = await driveFetch(`${DRIVE_API}/files?${params.toString()}`);
     if (listed.status === 'failure') return listed;
@@ -237,19 +238,52 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       Array.isArray((payload as { files?: unknown }).files)
         ? ((payload as { files: unknown[] }).files as unknown[])
         : null;
-    if (files === null || files.length > 1) {
+    if (files === null) {
       return {
         status: 'corrupt',
         result: corrupt(
           undefined,
           null,
           'malformed-metadata',
-          'Drive appdata contains invalid or duplicate vault metadata.',
+          'Drive appdata contains invalid vault metadata.',
         ),
       };
     }
     if (files.length === 0) return { status: 'absent' };
-    return validateFile(files[0]);
+    const validated: ValidDriveFile[] = [];
+    for (const file of files) {
+      const result = validateFile(file);
+      if (result.status !== 'ok') return result;
+      validated.push(result.file);
+    }
+    if (validated.length === 1) return { status: 'ok', file: validated[0]! };
+    return reconcileDuplicateFiles(validated);
+  }
+
+  /**
+   * Drive has no create-if-absent primitive, so two initial writers can both
+   * POST after observing an empty folder. Choose the same winner on every
+   * device and remove the other same-name rows. Each creator's encrypted local
+   * cache remains the merge input; the post-create path below returns a
+   * conflict whenever reconciliation happened so the normal sync engine reads
+   * the winner and merges rather than reporting a false successful create.
+   */
+  async function reconcileDuplicateFiles(files: ValidDriveFile[]): Promise<DriveFileResult> {
+    const ordered = [...files].sort(compareDriveFiles);
+    const winner = ordered[0]!;
+    for (const duplicate of ordered.slice(1)) {
+      const deleted = await driveFetch(`${DRIVE_API}/files/${encodeURIComponent(duplicate.id)}`, {
+        method: 'DELETE',
+      });
+      if (deleted.status === 'failure') return deleted;
+      if (deleted.response.status !== 404 && !deleted.response.ok) {
+        return {
+          status: 'failure',
+          failure: httpFailure(deleted.response, 'Drive duplicate-vault reconciliation failed.'),
+        };
+      }
+    }
+    return { status: 'ok', file: winner, reconciledDuplicates: true };
   }
 
   async function getFile(id: string): Promise<DriveFileResult> {
@@ -345,6 +379,26 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         'Drive acknowledged a different vault version.',
       );
     }
+    if (fileId === null) {
+      const confirmed = await findFile();
+      if (confirmed.status === 'failure') return transport(confirmed.failure);
+      if (confirmed.status === 'corrupt') return confirmed.result;
+      if (confirmed.status === 'absent') {
+        return transport({
+          code: 'api-failure',
+          message: 'Drive could not confirm the newly created vault file.',
+          indeterminate: true,
+        });
+      }
+      if (confirmed.reconciledDuplicates || confirmed.file.id !== validated.file.id) {
+        return {
+          status: 'conflict',
+          medium: 'drive',
+          currentVersion: confirmed.file.version,
+        };
+      }
+      return { status: 'ok', medium: 'drive', info: infoOf(confirmed.file) };
+    }
     return { status: 'ok', medium: 'drive', info: infoOf(validated.file) };
   }
 
@@ -410,6 +464,13 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     }
     return { status: 'ok', response };
   }
+}
+
+/** Highest version/newest Drive timestamp wins; id is the stable final tie-break. */
+function compareDriveFiles(left: ValidDriveFile, right: ValidDriveFile): number {
+  if (left.version !== right.version) return right.version - left.version;
+  const updated = (right.updatedAt ?? '').localeCompare(left.updatedAt ?? '');
+  return updated !== 0 ? updated : left.id.localeCompare(right.id);
 }
 
 function validateFile(value: unknown): DriveFileResult {

@@ -11,6 +11,10 @@ const envelope = base64ToBytes(
 );
 const decoded = decodeVaultEnvelope(envelope);
 const envelopeV2 = encodeVaultEnvelope({ ...decoded.header, vaultVersion: 2 }, decoded.ciphertext);
+const concurrentEnvelope = encodeVaultEnvelope(
+  { ...decoded.header, writeId: '018f0000-0000-7000-8000-0000000000bb' },
+  decoded.ciphertext,
+);
 
 function metadata(
   overrides: Partial<{
@@ -63,6 +67,77 @@ function blobText(blob: Blob): Promise<string> {
   });
 }
 
+class ConcurrentCreateDrive {
+  private readonly files = new Map<
+    string,
+    { metadata: ReturnType<typeof metadata>; envelope: Uint8Array }
+  >();
+  private initialLists: Array<(response: Response) => void> = [];
+  private uploads: Array<{
+    resolve: (response: Response) => void;
+    metadata: ReturnType<typeof metadata>;
+  }> = [];
+  private initialListCompleted = false;
+
+  get fileCount(): number {
+    return this.files.size;
+  }
+
+  fetchFor(writer: 'a' | 'b', writerEnvelope: Uint8Array): typeof globalThis.fetch {
+    return vi.fn((input, init) => this.handle(writer, writerEnvelope, String(input), init));
+  }
+
+  private async handle(
+    writer: 'a' | 'b',
+    writerEnvelope: Uint8Array,
+    url: string,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const method = init?.method ?? 'GET';
+    const isList = method === 'GET' && url.includes('/drive/v3/files?');
+    if (isList && !this.initialListCompleted) {
+      return new Promise((resolve) => {
+        this.initialLists.push(resolve);
+        if (this.initialLists.length === 2) {
+          this.initialListCompleted = true;
+          for (const release of this.initialLists.splice(0)) release(json({ files: [] }));
+        }
+      });
+    }
+
+    if (method === 'POST' && url.includes('/upload/drive/v3/files?')) {
+      const id = `drive-file-${writer}`;
+      const file = metadata({
+        id,
+        size: String(writerEnvelope.byteLength),
+        modifiedTime: '2026-07-27T10:00:00.000Z',
+        headRevisionId: `revision-${writer}`,
+      });
+      this.files.set(id, { metadata: file, envelope: writerEnvelope.slice() });
+      return new Promise((resolve) => {
+        this.uploads.push({ resolve, metadata: file });
+        if (this.uploads.length === 2) {
+          for (const upload of this.uploads.splice(0)) upload.resolve(json(upload.metadata));
+        }
+      });
+    }
+
+    if (isList) {
+      return json({ files: [...this.files.values()].map((file) => file.metadata) });
+    }
+
+    const id = decodeURIComponent(url.match(/\/drive\/v3\/files\/([^?]+)/)?.[1] ?? '');
+    if (method === 'DELETE') {
+      const deleted = this.files.delete(id);
+      return new Response(null, { status: deleted ? 204 : 404 });
+    }
+    const file = this.files.get(id);
+    if (!file) return new Response(null, { status: 404 });
+    if (url.includes('alt=media')) return new Response(file.envelope.slice(), { status: 200 });
+    return json(file.metadata);
+  }
+}
+
 describe('Drive appdata DataHome', () => {
   beforeEach(() => vi.restoreAllMocks());
 
@@ -92,7 +167,8 @@ describe('Drive appdata DataHome', () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(json({ files: [] }))
-      .mockResolvedValueOnce(json(metadata()));
+      .mockResolvedValueOnce(json(metadata()))
+      .mockResolvedValueOnce(json({ files: [metadata()] }));
     const home = createDriveDataHome({
       tokens: tokenSource(),
       fetch,
@@ -103,7 +179,7 @@ describe('Drive appdata DataHome', () => {
       status: 'ok',
       info: { version: 1 },
     });
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(fetch.mock.calls[1]![0]).toContain('uploadType=multipart');
     expect(fetch.mock.calls[1]![1]?.method).toBe('POST');
     const body = fetch.mock.calls[1]![1]?.body;
@@ -113,6 +189,35 @@ describe('Drive appdata DataHome', () => {
     expect(text).toContain('"vaultVersion":"1"');
     expect(text).toContain('"formatVersion":"1"');
     expect(text).not.toContain('revisions');
+  });
+
+  it('reconciles two concurrent creates to one deterministic file and returns merge conflicts', async () => {
+    const drive = new ConcurrentCreateDrive();
+    const homeA = createDriveDataHome({
+      tokens: tokenSource(),
+      fetch: drive.fetchFor('a', envelope),
+    });
+    const homeB = createDriveDataHome({
+      tokens: tokenSource(),
+      fetch: drive.fetchFor('b', concurrentEnvelope),
+    });
+
+    const [createdA, createdB] = await Promise.all([
+      homeA.write(envelope, { ifVersion: null }),
+      homeB.write(concurrentEnvelope, { ifVersion: null }),
+    ]);
+
+    expect(createdA).toEqual({ status: 'conflict', medium: 'drive', currentVersion: 1 });
+    expect(createdB).toEqual({ status: 'conflict', medium: 'drive', currentVersion: 1 });
+    expect(drive.fileCount).toBe(1);
+
+    const [readA, readB] = await Promise.all([homeA.read(), homeB.read()]);
+    expect(readA.status).toBe('ok');
+    expect(readB.status).toBe('ok');
+    if (readA.status === 'ok' && readB.status === 'ok') {
+      expect(readA.envelope).toEqual(readB.envelope);
+      expect(readA.info.version).toBe(1);
+    }
   });
 
   it('detects a revision move before update and returns a mergeable CAS conflict', async () => {

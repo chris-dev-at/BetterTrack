@@ -337,6 +337,39 @@ describe('#361 route × scope matrix', () => {
   });
 });
 
+describe('paranoid vault media stays cookie-session-only', () => {
+  it.each([
+    ['personal API key', async () => (await mintKey(['account:security'])).token],
+    ['delegated OAuth token', async () => (await mintOAuthToken(['account:security'])).token],
+  ])('rejects every media orchestration route for a %s', async (_name, issueToken) => {
+    const auth = bearer(await issueToken());
+    const requests = [
+      request(harness.app).get('/api/v1/account/paranoid/media').set(auth),
+      request(harness.app)
+        .patch('/api/v1/account/paranoid/media')
+        .set(auth)
+        .send({ expectedMediaSet: ['server'], mediaSet: ['server', 'drive'] }),
+      request(harness.app)
+        .put('/api/v1/account/paranoid/media/server-candidate')
+        .set(auth)
+        .set('Content-Type', 'application/octet-stream')
+        .send(Buffer.from('opaque')),
+      request(harness.app)
+        .get(`/api/v1/account/paranoid/media/server-candidate/${MISSING_ID}`)
+        .set(auth),
+      request(harness.app)
+        .delete(`/api/v1/account/paranoid/media/server-candidate/${MISSING_ID}`)
+        .set(auth),
+      request(harness.app).post('/api/v1/account/paranoid/media/server/purge').set(auth).send({}),
+    ];
+
+    for (const response of await Promise.all(requests)) {
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe('API_KEY_FORBIDDEN');
+    }
+  });
+});
+
 describe('#361 bearer PIN status + verify (reuses the web login PIN)', () => {
   it('reports pinSet and verifies the SAME web PIN, rejecting a wrong one', async () => {
     const { token, userId } = await mintKey(['account:security']);

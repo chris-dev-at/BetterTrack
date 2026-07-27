@@ -491,7 +491,15 @@ describe('paranoid vault media retirement', () => {
         now: new Date(retiredAt.getTime() + 8 * DAY_MS),
         minRetirementAgeMs: 7 * DAY_MS,
       }),
-    ).toEqual({ status: 'proof_version_too_old', latestVersion: 2 });
+    ).toEqual({ status: 'proof_version_mismatch', latestVersion: 2 });
+    expect(
+      await repo.purgeRetired({
+        userId,
+        proofVersion: 3,
+        now: new Date(retiredAt.getTime() + 8 * DAY_MS),
+        minRetirementAgeMs: 7 * DAY_MS,
+      }),
+    ).toEqual({ status: 'proof_version_mismatch', latestVersion: 2 });
     expect(
       await repo.purgeRetired({
         userId,
