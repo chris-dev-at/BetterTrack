@@ -30,7 +30,7 @@ import type { GoogleTokenVerifier } from '../services/auth/googleVerifier';
 import type { PasskeyWebAuthnEngine } from '../services/auth/passkeyService';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import type { WebhookTransport } from '../services/webhooks';
-import { createPasswordHasher } from '../services/password/passwordHasher';
+import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
 
 /**
  * In-process integration harness. Default mode: PGlite (WASM) + ioredis-mock —
@@ -180,6 +180,8 @@ export interface CreateTestAppOptions {
   env?: Partial<NodeJS.ProcessEnv>;
   /** Fake mail transport injected in place of a real SMTP connection. */
   emailTransport?: MailTransport | null;
+  /** Controlled password hasher for deterministic credential-transition races. */
+  passwordHasher?: PasswordHasher;
   /** Stubbed market-data service, in place of the live Yahoo/manual providers. */
   marketData?: MarketDataService;
   /** Backfill scheduler (e.g. a recording fake) to assert first-touch enqueues. */
@@ -275,7 +277,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     marketData: options.marketData,
     backfill: options.backfill,
     googleVerifier: options.googleVerifier,
-    passwordHasher: testPasswordHasher,
+    passwordHasher: options.passwordHasher ?? testPasswordHasher,
     passkeyEngine: options.passkeyEngine,
     liveModeOptions: options.liveModeOptions,
     notificationEnqueue: options.notificationEnqueue,

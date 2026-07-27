@@ -50,6 +50,12 @@ declare global {
         scopes: string[];
         kind: 'personal' | 'oauth';
         /**
+         * Exact durable account-security generation read while authenticating
+         * this bearer. Security mutations use it as their compare-and-swap
+         * fence; it is internal request state and never enters a response.
+         */
+        securityGeneration: number;
+        /**
          * Resolved per-key rate tier (§13.5 V5-P10) for a personal key — the
          * limiter reads (limit, windowSec) from here. Absent for OAuth grants and
          * for keys with no resolvable tier, which fall back to the config default.

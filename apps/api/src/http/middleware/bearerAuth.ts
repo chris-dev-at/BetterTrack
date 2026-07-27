@@ -42,6 +42,7 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
           id: keyPrincipal.keyId,
           scopes: keyPrincipal.scopes,
           kind: 'personal',
+          securityGeneration: keyPrincipal.user.securityGeneration,
           // Carry the resolved per-key tier onto the request so the rate-limit
           // middleware can read (limit, windowSec) from it — without this the
           // limiter falls back to the config default and tier assignment has no
@@ -54,7 +55,12 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
       const oauthPrincipal = await ctx.oauth.authenticateToken(token);
       if (oauthPrincipal?.user.status === 'active') {
         req.authUser = toAuthUser(oauthPrincipal.user);
-        req.apiKey = { id: oauthPrincipal.grantId, scopes: oauthPrincipal.scopes, kind: 'oauth' };
+        req.apiKey = {
+          id: oauthPrincipal.grantId,
+          scopes: oauthPrincipal.scopes,
+          kind: 'oauth',
+          securityGeneration: oauthPrincipal.user.securityGeneration,
+        };
         next();
         return;
       }

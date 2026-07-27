@@ -12,6 +12,8 @@ import { twoFactorRecoveryCodes, users } from '../schema';
  * half-off state.
  */
 export interface TwoFactorState {
+  /** Durable account-security generation observed with this factor state. */
+  securityGeneration: number;
   /** Encrypted TOTP secret envelope, or null when the TOTP method isn't enrolled. */
   secret: string | null;
   /** The authenticator-app (TOTP) method flag. */
@@ -44,6 +46,7 @@ export function createTwoFactorRepository(db: Database) {
     async getState(userId: string): Promise<TwoFactorState | undefined> {
       const [row] = await db
         .select({
+          securityGeneration: users.securityGeneration,
           secret: users.twoFactorSecret,
           enabled: users.twoFactorEnabled,
           confirmedAt: users.twoFactorConfirmedAt,

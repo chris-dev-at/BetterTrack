@@ -25,10 +25,19 @@ export interface SessionData {
   persistent?: boolean;
 }
 
-/** Generation proof carried from session resolution into a security mutation. */
-export interface SessionSecurityContext {
-  sessionId: string;
+/**
+ * Generation proof carried from authentication into an account-security
+ * mutation. Bearer callers deliberately have no `sessionId`; cookie callers
+ * use the narrower {@link SessionSecurityContext}.
+ */
+export interface SecurityMutationContext {
   securityGeneration: number;
+  sessionId?: string;
+}
+
+/** Generation proof for a security mutation authenticated by a cookie session. */
+export interface SessionSecurityContext extends SecurityMutationContext {
+  sessionId: string;
 }
 
 /** Back-compat default: a session with no marker is persistent (pre-V4-P2b). */

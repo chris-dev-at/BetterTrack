@@ -20,7 +20,7 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import { decryptSecret, encryptSecret } from '../crypto/secretBox';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
-import type { SessionSecurityContext, SessionService } from '../sessions/sessionService';
+import type { SecurityMutationContext, SessionService } from '../sessions/sessionService';
 import {
   buildOtpauthUri,
   generateRecoveryCodes,
@@ -68,7 +68,7 @@ export interface TwoFactorService {
   enrollTotp(
     userId: string,
     ip?: string | null,
-    session?: SessionSecurityContext,
+    security?: SecurityMutationContext,
   ): Promise<TwoFactorEnrollResponse>;
   /**
    * Cancel a pending (unconfirmed) TOTP enrollment (#401): wipe the provisional
@@ -80,7 +80,7 @@ export interface TwoFactorService {
   cancelTotpEnrollment(
     userId: string,
     ip?: string | null,
-    session?: SessionSecurityContext,
+    security?: SecurityMutationContext,
   ): Promise<void>;
   /**
    * Confirm TOTP enrollment (§6.1): a valid current code flips the TOTP method on.
@@ -92,7 +92,7 @@ export interface TwoFactorService {
     userId: string,
     code: string,
     ip?: string | null,
-    session?: SessionSecurityContext,
+    security?: SecurityMutationContext,
   ): Promise<TwoFactorMethodEnabledResponse>;
   /**
    * Turn the TOTP method off (§6.1): a valid factor (TOTP code or an unused
@@ -103,7 +103,7 @@ export interface TwoFactorService {
     userId: string,
     code: string,
     ip?: string | null,
-    session?: SessionSecurityContext,
+    security?: SecurityMutationContext,
   ): Promise<void>;
   /**
    * Begin email-method enrollment (#298): send a one-time code to the account
@@ -121,19 +121,23 @@ export interface TwoFactorService {
     userId: string,
     code: string,
     ip?: string | null,
-    session?: SessionSecurityContext,
+    security?: SecurityMutationContext,
   ): Promise<TwoFactorMethodEnabledResponse>;
   /**
    * Turn the email method off (#298). Authorized by the authenticated session
    * alone — the mailbox was already proven at enable time and there is no offline
    * factor to re-enter. Recovery codes are dropped only if no method remains.
    */
-  disableEmail(userId: string, ip?: string | null, session?: SessionSecurityContext): Promise<void>;
+  disableEmail(
+    userId: string,
+    ip?: string | null,
+    security?: SecurityMutationContext,
+  ): Promise<void>;
   /** Regenerate the recovery codes (§6.1): only while some method is on; old set voided. */
   regenerateRecoveryCodes(
     userId: string,
     ip?: string | null,
-    session?: SessionSecurityContext,
+    security?: SecurityMutationContext,
   ): Promise<TwoFactorRecoveryCodesResponse>;
   /** Whether the account has ANY 2FA method on — the login challenge gate (§6.1). */
   isEnabled(userId: string): Promise<boolean>;
@@ -182,14 +186,14 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
 
   async function rebindCurrentSession(
     userId: string,
-    session: SessionSecurityContext | undefined,
+    security: SecurityMutationContext | undefined,
     securityGeneration: number,
   ): Promise<void> {
     if (!sessions) {
-      if (session) throw unauthorized();
+      if (security?.sessionId) throw unauthorized();
       return;
     }
-    if (!session) {
+    if (!security?.sessionId) {
       try {
         await sessions.destroyAllForUser(userId);
       } catch {
@@ -198,14 +202,14 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       return;
     }
     const rebound = await sessions.rebindSecurityGeneration(
-      session.sessionId,
+      security.sessionId,
       userId,
-      session.securityGeneration,
+      security.securityGeneration,
       securityGeneration,
     );
     if (!rebound) throw unauthorized();
     try {
-      await sessions.revokeOthersForUser(userId, session.sessionId);
+      await sessions.revokeOthersForUser(userId, security.sessionId);
     } catch {
       // Siblings are stale by generation even when eager cleanup fails.
     }
@@ -249,7 +253,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       };
     },
 
-    async enrollTotp(userId, ip, session) {
+    async enrollTotp(userId, ip, security) {
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
       const state = await twoFactorRepo.getState(userId);
@@ -259,7 +263,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       const stored = await twoFactorRepo.setProvisionalSecret(
         userId,
         encryptSecret(secret, config.recordEncryption),
-        session?.securityGeneration,
+        security?.securityGeneration ?? user.securityGeneration,
       );
       if (!stored) throw unauthorized();
       await audit.record({
@@ -280,7 +284,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       };
     },
 
-    async cancelTotpEnrollment(userId, ip, session) {
+    async cancelTotpEnrollment(userId, ip, security) {
       const state = await twoFactorRepo.getState(userId);
       if (!state) throw unauthorized();
       // Armed TOTP is never cleared by this route — that path needs a valid
@@ -295,7 +299,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
 
       const cleared = await twoFactorRepo.clearProvisionalSecret(
         userId,
-        session?.securityGeneration,
+        security?.securityGeneration ?? state.securityGeneration,
       );
       if (!cleared) throw unauthorized();
       await audit.record({
@@ -307,7 +311,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       });
     },
 
-    async confirmTotp(userId, code, ip, session) {
+    async confirmTotp(userId, code, ip, security) {
       const state = await twoFactorRepo.getState(userId);
       if (!state) throw unauthorized();
       if (state.enabled) throw alreadyEnabled();
@@ -339,7 +343,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         userId,
         new Date(),
         recovery?.hashes ?? null,
-        session?.securityGeneration,
+        security?.securityGeneration ?? state.securityGeneration,
       );
       if (securityGeneration === null) throw unauthorized();
       const recoveryCodes = recovery?.codes ?? null;
@@ -350,11 +354,11 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      await rebindCurrentSession(userId, session, securityGeneration);
+      await rebindCurrentSession(userId, security, securityGeneration);
       return { recoveryCodes };
     },
 
-    async disableTotp(userId, code, ip, session) {
+    async disableTotp(userId, code, ip, security) {
       const state = await twoFactorRepo.getState(userId);
       if (!state?.enabled || !state.secret) throw notEnabled();
 
@@ -366,7 +370,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       const securityGeneration = await twoFactorRepo.disableTotp(
         userId,
         !state.emailEnabled,
-        session?.securityGeneration,
+        security?.securityGeneration ?? state.securityGeneration,
       );
       if (securityGeneration === null) throw unauthorized();
       await audit.record({
@@ -376,7 +380,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      await rebindCurrentSession(userId, session, securityGeneration);
+      await rebindCurrentSession(userId, security, securityGeneration);
     },
 
     async startEmailEnrollment(userId, ip) {
@@ -428,7 +432,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       });
     },
 
-    async confirmEmail(userId, code, ip, session) {
+    async confirmEmail(userId, code, ip, security) {
       const state = await twoFactorRepo.getState(userId);
       if (!state) throw unauthorized();
       if (state.emailEnabled) {
@@ -452,7 +456,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         userId,
         undefined,
         recovery?.hashes ?? null,
-        session?.securityGeneration,
+        security?.securityGeneration ?? state.securityGeneration,
       );
       if (securityGeneration === null) throw unauthorized();
       const recoveryCodes = recovery?.codes ?? null;
@@ -463,11 +467,11 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      await rebindCurrentSession(userId, session, securityGeneration);
+      await rebindCurrentSession(userId, security, securityGeneration);
       return { recoveryCodes };
     },
 
-    async disableEmail(userId, ip, session) {
+    async disableEmail(userId, ip, security) {
       const state = await twoFactorRepo.getState(userId);
       if (!state?.emailEnabled) {
         throw badRequest(
@@ -480,7 +484,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         userId,
         false,
         !state.enabled,
-        session?.securityGeneration,
+        security?.securityGeneration ?? state.securityGeneration,
       );
       if (securityGeneration === null) throw unauthorized();
       await redis.del(emailSetupKey(userId));
@@ -491,10 +495,10 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      await rebindCurrentSession(userId, session, securityGeneration);
+      await rebindCurrentSession(userId, security, securityGeneration);
     },
 
-    async regenerateRecoveryCodes(userId, ip, session) {
+    async regenerateRecoveryCodes(userId, ip, security) {
       const state = await twoFactorRepo.getState(userId);
       if (!state || !anyMethodOn(state)) throw notEnabled();
 
@@ -502,7 +506,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       const securityGeneration = await twoFactorRepo.regenerateRecoveryCodes(
         userId,
         recovery.hashes,
-        session?.securityGeneration,
+        security?.securityGeneration ?? state.securityGeneration,
       );
       if (securityGeneration === null) throw unauthorized();
       await audit.record({
@@ -512,7 +516,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      await rebindCurrentSession(userId, session, securityGeneration);
+      await rebindCurrentSession(userId, security, securityGeneration);
       return { recoveryCodes: recovery.codes };
     },
 

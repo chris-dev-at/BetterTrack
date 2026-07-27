@@ -49,6 +49,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { ApiError, badRequest, notFound, unauthorized } from '../../errors';
+import type { SecurityMutationContext } from '../../services/sessions/sessionService';
 import {
   clearGoogleOAuthStateCookie,
   clearGoogleRegisterTicketCookie,
@@ -68,13 +69,21 @@ import type { RateLimiters } from '../middleware/rateLimit';
 import { toMeResponse, toMeResponseFromRow } from '../serializers';
 import type { AppContext } from '../context';
 
-const sessionSecurityContextOf = (req: Request) =>
-  req.sessionId && req.sessionSecurityGeneration !== undefined
-    ? {
-        sessionId: req.sessionId,
-        securityGeneration: req.sessionSecurityGeneration,
-      }
-    : undefined;
+const securityMutationContextOf = (req: Request): SecurityMutationContext => {
+  if (req.sessionId && req.sessionSecurityGeneration !== undefined) {
+    return {
+      sessionId: req.sessionId,
+      securityGeneration: req.sessionSecurityGeneration,
+    };
+  }
+  if (req.apiKey) {
+    return { securityGeneration: req.apiKey.securityGeneration };
+  }
+  // All callers sit behind requireAuth/requireUser. Reaching this branch means
+  // authentication attached no generation proof, so a security write must fail
+  // closed instead of silently falling back to an unfenced user-id update.
+  throw unauthorized();
+};
 
 /** Auth endpoints (PROJECTPLAN.md §6.1, §8). Controllers stay thin. */
 export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Router {
@@ -228,7 +237,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       const { user, reissuedSession } = await ctx.auth.changePassword(
         req.authUser!.id,
         body,
-        sessionSecurityContextOf(req),
+        securityMutationContextOf(req),
         req.ip,
       );
       if (reissuedSession) {
@@ -363,7 +372,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // (email/enroll/confirm/disable), sharing recovery codes + status.
   router.post('/2fa/enroll', requireUser, async (req, res) => {
     res.json(
-      await ctx.twoFactor.enrollTotp(req.authUser!.id, req.ip, sessionSecurityContextOf(req)),
+      await ctx.twoFactor.enrollTotp(req.authUser!.id, req.ip, securityMutationContextOf(req)),
     );
   });
 
@@ -375,7 +384,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     await ctx.twoFactor.cancelTotpEnrollment(
       req.authUser!.id,
       req.ip,
-      sessionSecurityContextOf(req),
+      securityMutationContextOf(req),
     );
     res.json({ ok: true });
   });
@@ -391,7 +400,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
           req.authUser!.id,
           body.code,
           req.ip,
-          sessionSecurityContextOf(req),
+          securityMutationContextOf(req),
         ),
       );
     },
@@ -407,7 +416,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         req.authUser!.id,
         body.code,
         req.ip,
-        sessionSecurityContextOf(req),
+        securityMutationContextOf(req),
       );
       res.json({ ok: true });
     },
@@ -432,14 +441,14 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
           req.authUser!.id,
           body.code,
           req.ip,
-          sessionSecurityContextOf(req),
+          securityMutationContextOf(req),
         ),
       );
     },
   );
 
   router.post('/2fa/email/disable', requireUser, async (req, res) => {
-    await ctx.twoFactor.disableEmail(req.authUser!.id, req.ip, sessionSecurityContextOf(req));
+    await ctx.twoFactor.disableEmail(req.authUser!.id, req.ip, securityMutationContextOf(req));
     res.json({ ok: true });
   });
 
@@ -452,7 +461,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       await ctx.twoFactor.regenerateRecoveryCodes(
         req.authUser!.id,
         req.ip,
-        sessionSecurityContextOf(req),
+        securityMutationContextOf(req),
       ),
     );
   });

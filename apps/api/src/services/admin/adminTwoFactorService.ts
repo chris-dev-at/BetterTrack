@@ -285,7 +285,7 @@ export function createAdminTwoFactorService(
         adminId,
         setup.email,
         recovery?.hashes ?? null,
-        session?.securityGeneration,
+        session?.securityGeneration ?? state.securityGeneration,
       );
       if (securityGeneration === null) throw unauthorized();
       const recoveryCodes = recovery?.codes ?? null;
@@ -312,7 +312,7 @@ export function createAdminTwoFactorService(
         adminId,
         true,
         !state.enabled,
-        session?.securityGeneration,
+        session?.securityGeneration ?? state.securityGeneration,
       );
       if (securityGeneration === null) throw unauthorized();
       await redis.del(emailSetupKey(adminId));

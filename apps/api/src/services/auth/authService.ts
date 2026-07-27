@@ -36,7 +36,7 @@ import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import { describeUserAgent } from '../sessions/deviceLabel';
 import {
   isPersistent,
-  type SessionSecurityContext,
+  type SecurityMutationContext,
   type SessionService,
 } from '../sessions/sessionService';
 import {
@@ -201,7 +201,7 @@ export interface AuthService {
   changePassword(
     userId: string,
     input: ChangePasswordRequest,
-    session: SessionSecurityContext | undefined,
+    security: SecurityMutationContext,
     ip?: string | null,
   ): Promise<PasswordChangeResult>;
   validateInvite(token: string): Promise<{ valid: boolean; email: string | null }>;
@@ -858,10 +858,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       };
     },
 
-    async changePassword(userId, input, session, ip) {
+    async changePassword(userId, input, security, ip) {
       // The target is always the authenticated principal's own account. Cookie
-      // callers carry their exact session generation; bearer callers carry no
-      // cookie-session authority and are fenced against the freshly read row.
+      // callers carry their exact session generation; bearer callers carry the
+      // generation read while their token was authenticated.
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
 
@@ -884,7 +884,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         user.id,
         passwordHash,
         false,
-        session?.securityGeneration ?? user.securityGeneration,
+        security.securityGeneration,
       );
       if (securityGeneration === null) throw unauthorized();
 
@@ -893,9 +893,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // cookie session is re-established; a bearer must never mint a cookie.
       await destroyAllSessionsBestEffort(user.id);
       let reissuedSession: PasswordChangeResult['reissuedSession'] = null;
-      if (session) {
+      if (security.sessionId) {
         const sessionId = await sessions.create(user.id, securityGeneration);
-        await destroySessionBestEffort(session.sessionId);
+        await destroySessionBestEffort(security.sessionId);
         reissuedSession = {
           sessionId,
           // A password change re-establishes a normal persistent session (§6.1).
@@ -1052,7 +1052,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (!policy.ok) throw badRequest(policy.reason, 'WEAK_PASSWORD');
 
       const passwordHash = await passwordHasher.hash(newPassword);
-      const securityGeneration = await userRepo.updatePassword(user.id, passwordHash, false);
+      const securityGeneration = await userRepo.updatePassword(
+        user.id,
+        passwordHash,
+        false,
+        user.securityGeneration,
+      );
       if (securityGeneration === null) throw invalid();
 
       // Consume this token and revoke every other outstanding one for the user.
