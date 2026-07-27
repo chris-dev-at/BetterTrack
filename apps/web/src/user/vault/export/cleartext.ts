@@ -7,6 +7,7 @@ import {
 } from '@bettertrack/contracts';
 import { strToU8, zipSync } from 'fflate';
 
+import { localizedMessage } from '../../../i18n';
 import type { VaultSyncEngine } from '../sync';
 import { asMoneyFailure, moneyFailure, type VaultMoneyOutcome } from '../engine/errors';
 import {
@@ -33,40 +34,13 @@ const EXPORT_KINDS = {
 } as const satisfies Partial<Record<VaultEntityKind, string>>;
 
 const SKIPPED = [
-  [
-    'import_batches',
-    'Import staging bookkeeping; applied rows are exported in their final entities.',
-  ],
-  ['import_rows', 'Import staging bookkeeping; applied rows are exported in their final entities.'],
-  [
-    'portfolio_daily_snapshots',
-    'Derived valuation cache; rebuilt from source rows and market data.',
-  ],
-  ['portfolio_snapshot_state', 'Derived snapshot invalidation bookkeeping.'],
-  [
-    'standing_order_runs',
-    'Idempotency bookkeeping; materialized rows and definitions are exported.',
-  ],
-  ['expense_budget_fires', 'Derived alert-delivery bookkeeping.'],
+  ['import_batches', 'importBatches'],
+  ['import_rows', 'importRows'],
+  ['portfolio_daily_snapshots', 'portfolioSnapshots'],
+  ['portfolio_snapshot_state', 'snapshotState'],
+  ['standing_order_runs', 'standingOrderRuns'],
+  ['expense_budget_fires', 'expenseBudgetFires'],
 ] as const;
-
-const README: Record<TaxExportLocale, string> = {
-  en: `BetterTrack — client cleartext export
-
-This archive was built locally from your unlocked encrypted vault. It contains
-source entities as JSON plus spreadsheet-friendly transaction, cash-movement,
-and holdings CSV files. Vault keys, passphrases, recovery material, ciphertext,
-sync metadata, quarantined blobs, and derived caches are not included.
-`,
-  de: `BetterTrack — lokaler Klartext-Export
-
-Dieses Archiv wurde lokal aus deinem entsperrten verschlüsselten Tresor erstellt.
-Es enthält Quelldaten als JSON sowie CSV-Dateien für Transaktionen,
-Geldbewegungen und Bestände. Tresorschlüssel, Passphrasen,
-Wiederherstellungsdaten, Chiffretext, Sync-Metadaten, Quarantäne-Blobs und
-abgeleitete Caches sind nicht enthalten.
-`,
-};
 
 const FORBIDDEN_KEY =
   /^(?:vaultKeys?|vk|kek|passphrase|password|recovery(?:Key|Kit|Material|Codes?)?|wrappedKeys?|wrappedVk|ciphertext|envelope|vaultVersion|writeId|deviceId|editedBy|deletedAt|mergeLog|sync(?:Metadata|State|Candidate|Version)?|quarantine(?:d|Blob)?|secret)$/i;
@@ -111,6 +85,7 @@ export async function createClientCleartextExport(
     }
     const entities = collectEntities(snapshot.document);
     const csv = buildCsv(snapshot.document);
+    const locale = options.locale ?? 'en';
     const counts = Object.fromEntries(
       Object.entries(entities).map(([name, rows]) => [name, rows.length]),
     );
@@ -121,13 +96,14 @@ export async function createClientCleartextExport(
       generatedAt: generatedAt.toISOString(),
       entities: counts,
       csv: ['transactions', 'cash-movements', 'holdings'],
-      skippedTables: SKIPPED.map(([table, reason]) => ({ table, reason })).sort((left, right) =>
-        left.table.localeCompare(right.table),
-      ),
+      skippedTables: SKIPPED.map(([table, reasonKey]) => ({
+        table,
+        reason: localizedMessage(locale, `vaultExports.cleartext.skipped.${reasonKey}`),
+      })).sort((left, right) => left.table.localeCompare(right.table)),
     };
     const files: Record<string, Uint8Array> = {
       'manifest.json': strToU8(JSON.stringify(manifest, null, 2)),
-      'README.txt': strToU8(README[options.locale ?? 'en']),
+      'README.txt': strToU8(localizedMessage(locale, 'vaultExports.cleartext.readme')),
       'csv/transactions.csv': strToU8(csv.transactions),
       'csv/cash-movements.csv': strToU8(csv.cashMovements),
       'csv/holdings.csv': strToU8(csv.holdings),

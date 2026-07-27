@@ -3,6 +3,8 @@ export interface DerivedCacheKey {
   vaultVersion: number;
   assetPriceWatermark: string;
   range: string;
+  /** UTC valuation day; portfolio callers set it so live results cannot cross midnight. */
+  effectiveDay?: string;
 }
 
 /** In-memory only: decrypted derived rows are never persisted or sent remotely. */
@@ -27,5 +29,11 @@ export class VaultDerivedCache<T> {
 }
 
 function cacheKey(key: DerivedCacheKey): string {
-  return [key.portfolioId, key.vaultVersion, key.assetPriceWatermark, key.range].join('\u001f');
+  return [
+    key.portfolioId,
+    key.vaultVersion,
+    key.assetPriceWatermark,
+    key.range,
+    key.effectiveDay ?? '',
+  ].join('\u001f');
 }

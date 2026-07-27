@@ -4,6 +4,7 @@ import {
   type TaxYearReportResponse,
 } from '@bettertrack/contracts';
 
+import { localizedMessage } from '../../../i18n';
 import type { VaultSyncEngine } from '../sync';
 import { asMoneyFailure, type VaultMoneyOutcome } from '../engine/errors';
 import { assertVaultSnapshotCurrent, validatedVaultSnapshot } from '../engine/session';
@@ -18,118 +19,6 @@ interface CsvCopy {
   dividends: string[];
   disclaimer: [string, string];
 }
-
-/**
- * Kept byte-for-byte aligned with the server CSV labels. The client serializer
- * is deliberately independent production code because paranoid mode must never
- * fetch the server tax-report endpoint.
- */
-const COPY: Record<TaxExportLocale, CsvCopy> = {
-  en: {
-    section: 'Section',
-    summary: [
-      'Summary',
-      'Year',
-      'Realized P/L (EUR)',
-      'Dividends gross (EUR)',
-      'Tax withheld (EUR)',
-      'Tax refunded (EUR)',
-      'Net tax (EUR)',
-    ],
-    germany: [
-      'Germany (Abgeltungsteuer)',
-      'Allowance used (EUR)',
-      'Allowance remaining (EUR)',
-      'Share-loss pot in (EUR)',
-      'Share-loss pot out (EUR)',
-      'Other-loss pot in (EUR)',
-      'Other-loss pot out (EUR)',
-      'KapESt (EUR)',
-      'Soli (EUR)',
-    ],
-    positions: [
-      'Positions',
-      'Symbol',
-      'Name',
-      'Realized P/L (EUR)',
-      'Dividends gross (EUR)',
-      'Tax (EUR)',
-    ],
-    sells: [
-      'Sells',
-      'Symbol',
-      'Name',
-      'Date',
-      'Quantity',
-      'Proceeds (EUR)',
-      'Cost basis (EUR)',
-      'Realized P/L (EUR)',
-      'Tax mode',
-      'Tax (EUR)',
-    ],
-    dividends: ['Dividends', 'Symbol', 'Name', 'Date', 'Gross (EUR)', 'Tax mode', 'Tax (EUR)'],
-    disclaimer: [
-      'Disclaimer',
-      'Estimates for your personal overview only — not tax advice, no guarantee of correctness, not a filing document.',
-    ],
-  },
-  de: {
-    section: 'Abschnitt',
-    summary: [
-      'Zusammenfassung',
-      'Jahr',
-      'Realisierter G/V (EUR)',
-      'Dividenden brutto (EUR)',
-      'Einbehaltene Steuer (EUR)',
-      'Erstattete Steuer (EUR)',
-      'Netto-Steuer (EUR)',
-    ],
-    germany: [
-      'Deutschland (Abgeltungsteuer)',
-      'Genutzter Pauschbetrag (EUR)',
-      'Verbleibender Pauschbetrag (EUR)',
-      'Aktien-Verlusttopf ein (EUR)',
-      'Aktien-Verlusttopf aus (EUR)',
-      'Sonstiger Verlusttopf ein (EUR)',
-      'Sonstiger Verlusttopf aus (EUR)',
-      'KapESt (EUR)',
-      'Soli (EUR)',
-    ],
-    positions: [
-      'Positionen',
-      'Symbol',
-      'Name',
-      'Realisierter G/V (EUR)',
-      'Dividenden brutto (EUR)',
-      'Steuer (EUR)',
-    ],
-    sells: [
-      'Verkäufe',
-      'Symbol',
-      'Name',
-      'Datum',
-      'Anzahl',
-      'Erlös (EUR)',
-      'Einstand (EUR)',
-      'Realisierter G/V (EUR)',
-      'Steuermodus',
-      'Steuer (EUR)',
-    ],
-    dividends: [
-      'Dividenden',
-      'Symbol',
-      'Name',
-      'Datum',
-      'Brutto (EUR)',
-      'Steuermodus',
-      'Steuer (EUR)',
-    ],
-    disclaimer: [
-      'Haftungsausschluss',
-      'Schätzwerte nur für deine persönliche Übersicht — keine Steuerberatung, keine Gewähr für Richtigkeit, kein Dokument für die Steuererklärung.',
-    ],
-  },
-};
 
 export interface ClientTaxCsv {
   filename: string;
@@ -165,7 +54,7 @@ export function createClientTaxCsv(
 }
 
 function serializeTaxYearReportCsv(report: TaxYearReportResponse, locale: TaxExportLocale): string {
-  const copy = COPY[locale];
+  const copy = csvCopy(locale);
   const lines: string[] = [];
   const summary = report.summary;
 
@@ -275,4 +164,65 @@ function money(value: number): string {
 
 function quantity(value: number): string {
   return value.toFixed(8).replace(/\.?0+$/, '');
+}
+
+/**
+ * Registered labels stay byte-for-byte aligned with the server CSV serializer;
+ * only the data source differs for a paranoid client.
+ */
+function csvCopy(locale: TaxExportLocale): CsvCopy {
+  const message = (key: string) => localizedMessage(locale, `vaultExports.tax.${key}`);
+  return {
+    section: message('section'),
+    summary: [
+      message('summary'),
+      message('year'),
+      message('realizedEur'),
+      message('dividendsGrossEur'),
+      message('withheldEur'),
+      message('refundedEur'),
+      message('netEur'),
+    ],
+    germany: [
+      message('germany'),
+      message('allowanceUsedEur'),
+      message('allowanceRemainingEur'),
+      message('shareLossPotInEur'),
+      message('shareLossPotOutEur'),
+      message('otherLossPotInEur'),
+      message('otherLossPotOutEur'),
+      message('kapestEur'),
+      message('soliEur'),
+    ],
+    positions: [
+      message('positions'),
+      message('symbol'),
+      message('name'),
+      message('realizedEur'),
+      message('dividendsGrossEur'),
+      message('taxEur'),
+    ],
+    sells: [
+      message('sells'),
+      message('symbol'),
+      message('name'),
+      message('date'),
+      message('quantity'),
+      message('proceedsEur'),
+      message('costBasisEur'),
+      message('realizedEur'),
+      message('taxMode'),
+      message('taxEur'),
+    ],
+    dividends: [
+      message('dividends'),
+      message('symbol'),
+      message('name'),
+      message('date'),
+      message('grossEur'),
+      message('taxMode'),
+      message('taxEur'),
+    ],
+    disclaimer: [message('disclaimerLabel'), message('disclaimer')],
+  };
 }

@@ -13,6 +13,8 @@ import {
   VaultMoneyEngineError,
   type VaultMoneyOutcome,
 } from '../engine/errors';
+import { localManualAssetMarket } from '../engine/manualAsset';
+import { readPortfolioModel } from '../engine/model';
 import { liveEntities, validatedVaultSnapshot } from '../engine/session';
 import type { VaultSyncEngine } from '../sync';
 import { standingOrderOccurrenceId } from './occurrenceId';
@@ -94,18 +96,33 @@ export async function materializeDueStandingOrders(
           continue;
         }
         try {
-          const marketQuote = await market.quote(order.row.assetId, signal);
+          const model = readPortfolioModel(snapshot.document, order.row.portfolioId);
+          const asset = model.assets.get(order.row.assetId);
+          if (asset === undefined) {
+            result.deferred.push({ orderId: order.entity.id, dueDate, reason: 'invalid-order' });
+            continue;
+          }
+          if (asset.providerId === 'manual') {
+            const manual = localManualAssetMarket(snapshot.document, asset);
+            if (manual.quote === null) {
+              result.deferred.push({ orderId: order.entity.id, dueDate, reason: 'market-data' });
+              continue;
+            }
+            quote = { price: manual.quote.price, currency: asset.currency };
+          } else {
+            const marketQuote = await market.quote(order.row.assetId, signal);
+            quote = {
+              price: marketQuote.value.price,
+              currency: marketQuote.value.currency,
+            };
+          }
           if (
-            !Number.isFinite(marketQuote.value.price) ||
-            marketQuote.value.price <= 0 ||
-            marketQuote.value.currency !== order.row.currency
+            !Number.isFinite(quote.price) ||
+            quote.price <= 0 ||
+            quote.currency !== order.row.currency
           ) {
             throw moneyFailure('MARKET_DATA_INVALID', 'Standing-order quote is invalid.');
           }
-          quote = {
-            price: marketQuote.value.price,
-            currency: marketQuote.value.currency,
-          };
         } catch (cause) {
           if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
           if (cause instanceof VaultMoneyEngineError) throw cause;

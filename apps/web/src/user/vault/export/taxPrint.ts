@@ -4,61 +4,37 @@ import {
   type TaxYearReportResponse,
 } from '@bettertrack/contracts';
 
+import { localizedMessage } from '../../../i18n';
 import type { VaultSyncEngine } from '../sync';
 import { asMoneyFailure, type VaultMoneyOutcome } from '../engine/errors';
 import { assertVaultSnapshotCurrent, validatedVaultSnapshot } from '../engine/session';
 import type { ClientTaxReport } from '../engine/types';
 
-const PRINT_COPY = {
-  en: {
-    title: 'Tax report',
-    summary: 'Summary',
-    germany: 'Germany (Abgeltungsteuer)',
-    positions: 'Positions',
-    empty: 'No sells or dividends in this year.',
-    year: 'Year',
-    realized: 'Realized P/L',
-    dividends: 'Dividends gross',
-    withheld: 'Tax withheld',
-    refunded: 'Tax refunded',
-    net: 'Net tax',
-    tax: 'Tax',
-    date: 'Date',
-    quantity: 'Quantity',
-    proceeds: 'Proceeds',
-    costBasis: 'Cost basis',
-    gross: 'Gross',
-    allowance: 'Allowance used / remaining',
-    aktien: 'Share-loss pot in / out',
-    sonstige: 'Other-loss pot in / out',
-    disclaimer:
-      'Estimates for your personal overview only — not tax advice, no guarantee of correctness, not a filing document.',
-  },
-  de: {
-    title: 'Steuerbericht',
-    summary: 'Zusammenfassung',
-    germany: 'Deutschland (Abgeltungsteuer)',
-    positions: 'Positionen',
-    empty: 'Keine Verkäufe oder Dividenden in diesem Jahr.',
-    year: 'Jahr',
-    realized: 'Realisierter G/V',
-    dividends: 'Dividenden brutto',
-    withheld: 'Einbehaltene Steuer',
-    refunded: 'Erstattete Steuer',
-    net: 'Netto-Steuer',
-    tax: 'Steuer',
-    date: 'Datum',
-    quantity: 'Anzahl',
-    proceeds: 'Erlös',
-    costBasis: 'Einstand',
-    gross: 'Brutto',
-    allowance: 'Pauschbetrag genutzt / verbleibend',
-    aktien: 'Aktien-Verlusttopf ein / aus',
-    sonstige: 'Sonstiger Verlusttopf ein / aus',
-    disclaimer:
-      'Schätzwerte nur für deine persönliche Übersicht — keine Steuerberatung, keine Gewähr für Richtigkeit, kein Dokument für die Steuererklärung.',
-  },
-} as const;
+interface PrintCopy {
+  title: string;
+  summary: string;
+  germany: string;
+  positions: string;
+  empty: string;
+  year: string;
+  realized: string;
+  dividends: string;
+  withheld: string;
+  refunded: string;
+  net: string;
+  tax: string;
+  date: string;
+  quantity: string;
+  proceeds: string;
+  costBasis: string;
+  gross: string;
+  allowance: string;
+  shareLossPot: string;
+  otherLossPot: string;
+  kapest: string;
+  soli: string;
+  disclaimer: string;
+}
 
 export interface PrintableTaxReport {
   title: string;
@@ -84,9 +60,9 @@ export function createPrintableTaxReport(
     }
     taxYearReportResponseSchema.parse(tax.report);
     const report = tax.report;
-    const copy = PRINT_COPY[locale];
+    const copy = printCopy(locale);
     const title = `${copy.title} ${report.year}`;
-    const html = renderDocument(report, copy, title, portfolioName);
+    const html = renderDocument(report, copy, locale, title, portfolioName);
     assertVaultSnapshotCurrent(sync, snapshot);
     return {
       ok: true,
@@ -99,12 +75,12 @@ export function createPrintableTaxReport(
 
 function renderDocument(
   report: TaxYearReportResponse,
-  copy: (typeof PRINT_COPY)[TaxExportLocale],
+  copy: PrintCopy,
+  locale: TaxExportLocale,
   title: string,
   portfolioName?: string,
 ): string {
   const summary = report.summary;
-  const locale = localeOf(copy);
   const money = (value: number) => eur(value, locale);
   const summaryRows: Array<readonly [string, string]> = [
     [copy.year, String(summary.year)],
@@ -125,15 +101,15 @@ function renderDocument(
               `${money(summary.de.allowanceUsedEur)} / ${money(summary.de.allowanceRemainingEur)}`,
             ],
             [
-              copy.aktien,
+              copy.shareLossPot,
               `${money(summary.de.aktienPotInEur)} / ${money(summary.de.aktienPotOutEur)}`,
             ],
             [
-              copy.sonstige,
+              copy.otherLossPot,
               `${money(summary.de.sonstigePotInEur)} / ${money(summary.de.sonstigePotOutEur)}`,
             ],
-            ['KapESt', money(summary.de.kapestEur)],
-            ['Soli', money(summary.de.soliEur)],
+            [copy.kapest, money(summary.de.kapestEur)],
+            [copy.soli, money(summary.de.soliEur)],
           ]),
         );
   const positions =
@@ -251,6 +227,31 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function localeOf(copy: (typeof PRINT_COPY)[TaxExportLocale]): TaxExportLocale {
-  return copy === PRINT_COPY.de ? 'de' : 'en';
+function printCopy(locale: TaxExportLocale): PrintCopy {
+  const message = (key: string) => localizedMessage(locale, `vaultExports.tax.${key}`);
+  return {
+    title: message('title'),
+    summary: message('summary'),
+    germany: message('germany'),
+    positions: message('positions'),
+    empty: message('empty'),
+    year: message('year'),
+    realized: message('realized'),
+    dividends: message('dividendsGross'),
+    withheld: message('withheld'),
+    refunded: message('refunded'),
+    net: message('net'),
+    tax: message('tax'),
+    date: message('date'),
+    quantity: message('quantity'),
+    proceeds: message('proceeds'),
+    costBasis: message('costBasis'),
+    gross: message('gross'),
+    allowance: message('allowance'),
+    shareLossPot: message('shareLossPot'),
+    otherLossPot: message('otherLossPot'),
+    kapest: message('kapest'),
+    soli: message('soli'),
+    disclaimer: message('disclaimer'),
+  };
 }
