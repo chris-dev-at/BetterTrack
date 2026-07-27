@@ -273,9 +273,29 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     handling: 'internallyFiltered',
   },
   {
-    service: 'marketIntel',
-    methods: ['capabilities', 'dividends', 'earnings', 'news', 'splits', 'earningsCalendar'],
+    service: 'assets',
+    methods: ['*'],
+    handling: 'internallyFiltered',
+  },
+  {
+    service: 'search',
+    methods: ['search', 'searchWithFreshness', 'catalogFreshness'],
+    handling: 'internallyFiltered',
+  },
+  {
+    service: 'search',
+    methods: ['enrichmentSettled'],
     handling: 'kept',
+  },
+  {
+    service: 'marketIntel',
+    methods: ['capabilities', 'dividends', 'earnings', 'news', 'splits'],
+    handling: 'internallyFiltered',
+  },
+  {
+    service: 'marketIntel',
+    methods: ['earningsCalendar'],
+    handling: 'internallyFiltered',
   },
   {
     service: 'aiFeatures',

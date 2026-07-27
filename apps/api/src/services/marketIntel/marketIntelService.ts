@@ -16,6 +16,7 @@ import type { AssetRepository } from '../../data/repositories/assetRepository';
 import type { MarketIntelRepository } from '../../data/repositories/marketIntelRepository';
 import { notFound } from '../../errors';
 import type { MarketDataService } from '../../providers';
+import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 
 /**
  * The per-asset market-intelligence read API (PROJECTPLAN.md §13.5 V5-P5). A
@@ -61,6 +62,8 @@ export interface MarketIntelServiceDeps {
   intelRepo: Pick<MarketIntelRepository, 'listUserWatchAndHoldAssets'>;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ everything reports unconfigured. */
   enabled: boolean;
+  /** Mixed kept/holding-derived calendar filtering under the account transition lock. */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowed' | 'runAllowedWithOptional'>;
 }
 
 const NO_CAPABILITIES: MarketIntelCapabilities = {
@@ -84,17 +87,37 @@ const UNAVAILABLE_NEWS: NewsResponse = { available: false, headlines: [] };
 const UNAVAILABLE_SPLITS: SplitsResponse = { available: false, history: [], upcoming: [] };
 
 export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIntelService {
-  const { marketData, assetRepo, intelRepo, enabled } = deps;
+  const { marketData, assetRepo, intelRepo, enabled, paranoid } = deps;
 
   /**
    * Resolve the asset to a provider ref, enforcing §10: a global asset or the
    * caller's own custom asset, else a 404 indistinguishable from missing — so
    * nothing leaks about another user's assets, even with the gate off.
    */
-  async function resolveRef(userId: string, id: string): Promise<AssetRef> {
-    const row = await assetRepo.findByIdForUser(id, userId);
-    if (!row) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
-    return { providerId: row.providerId, providerRef: row.providerRef };
+  const assetNotFound = () => notFound('Asset not found.', 'ASSET_NOT_FOUND');
+
+  async function withResolvedRef<T>(
+    userId: string,
+    id: string,
+    read: (ref: AssetRef) => Promise<T>,
+  ): Promise<T> {
+    const candidate = await assetRepo.findByIdForUser(id, userId);
+    if (!candidate) throw assetNotFound();
+    const toRef = (row: NonNullable<typeof candidate>): AssetRef => ({
+      providerId: row.providerId,
+      providerRef: row.providerRef,
+    });
+    if (candidate.ownerId === null || !paranoid) return read(toRef(candidate));
+    try {
+      return await paranoid.runAllowed(candidate.ownerId, 'portfolioServer', async () => {
+        const current = await assetRepo.findByIdForUser(id, userId);
+        if (!current || current.ownerId !== candidate.ownerId) throw assetNotFound();
+        return read(toRef(current));
+      });
+    } catch (error) {
+      if (error instanceof ParanoidModeError) throw assetNotFound();
+      throw error;
+    }
   }
 
   /** Per-capability availability, forced to all-false when the gate is off. */
@@ -103,93 +126,118 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
     return marketData.intelCapabilities(ref);
   }
 
+  async function buildEarningsCalendar(
+    userId: string,
+    includeHoldings: boolean,
+  ): Promise<EarningsCalendarResponse> {
+    // Invisible when unconfigured: the gate off ⇒ no book scan, no entries.
+    if (!enabled) return { available: false, entries: [] };
+
+    const assets = (await intelRepo.listUserWatchAndHoldAssets(userId))
+      // Paranoid mode keeps the private watchlist surface, while a holding-only
+      // row is portfolio provenance and therefore absent.
+      .filter((asset) => includeHoldings || asset.watched)
+      // An asset that is both watched and held stays, but the held bit itself is
+      // holding-derived and must not cross the mixed kept surface.
+      .map((asset) => (includeHoldings ? asset : { ...asset, held: false }));
+    const entries: EarningsCalendarEntry[] = [];
+    for (const a of assets) {
+      const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
+      // Skip assets whose resolved provider can't serve earnings.
+      if (!marketData.intelCapabilities(ref).earnings) continue;
+      let next;
+      try {
+        const cached = await marketData.getEarningsEvents(ref);
+        next = cached.value.next;
+      } catch {
+        // A single bad upstream degrades that asset to no-entry — never a 5xx
+        // across the whole calendar (§13.5 V5-P5).
+        continue;
+      }
+      // Only dated upcoming reports make the panel; an undated/absent next drops.
+      if (!next || !next.date) continue;
+      entries.push({
+        assetId: a.assetId,
+        symbol: a.symbol,
+        name: a.name,
+        date: next.date,
+        epsEstimate: next.epsEstimate,
+        estimated: next.estimated,
+        held: a.held,
+        watched: a.watched,
+      });
+    }
+    // Ascending by date — the next report first (the panel reads chronologically).
+    entries.sort((x, y) => x.date.localeCompare(y.date));
+    return { available: true, entries };
+  }
+
   return {
     async capabilities(userId, id) {
-      const ref = await resolveRef(userId, id);
-      return { enabled, capabilities: capsFor(ref) };
+      return withResolvedRef(userId, id, async (ref) => ({
+        enabled,
+        capabilities: capsFor(ref),
+      }));
     },
 
     async dividends(userId, id) {
-      const ref = await resolveRef(userId, id);
-      if (!capsFor(ref).dividends) return UNAVAILABLE_DIVIDENDS;
-      try {
-        const cached = await marketData.getDividendEvents(ref);
-        return { available: true, ...cached.value };
-      } catch {
-        // A provider error/timeout (or an open breaker with nothing cached)
-        // degrades to unavailable — never a 5xx on an asset page (§13.5 V5-P5).
-        return UNAVAILABLE_DIVIDENDS;
-      }
+      return withResolvedRef(userId, id, async (ref) => {
+        if (!capsFor(ref).dividends) return UNAVAILABLE_DIVIDENDS;
+        try {
+          const cached = await marketData.getDividendEvents(ref);
+          return { available: true, ...cached.value };
+        } catch {
+          // A provider error/timeout (or an open breaker with nothing cached)
+          // degrades to unavailable — never a 5xx on an asset page (§13.5 V5-P5).
+          return UNAVAILABLE_DIVIDENDS;
+        }
+      });
     },
 
     async earnings(userId, id) {
-      const ref = await resolveRef(userId, id);
-      if (!capsFor(ref).earnings) return UNAVAILABLE_EARNINGS;
-      try {
-        const cached = await marketData.getEarningsEvents(ref);
-        return { available: true, ...cached.value };
-      } catch {
-        return UNAVAILABLE_EARNINGS;
-      }
+      return withResolvedRef(userId, id, async (ref) => {
+        if (!capsFor(ref).earnings) return UNAVAILABLE_EARNINGS;
+        try {
+          const cached = await marketData.getEarningsEvents(ref);
+          return { available: true, ...cached.value };
+        } catch {
+          return UNAVAILABLE_EARNINGS;
+        }
+      });
     },
 
     async news(userId, id) {
-      const ref = await resolveRef(userId, id);
-      if (!capsFor(ref).news) return UNAVAILABLE_NEWS;
-      try {
-        const cached = await marketData.getNewsHeadlines(ref);
-        return { available: true, headlines: cached.value };
-      } catch {
-        return UNAVAILABLE_NEWS;
-      }
+      return withResolvedRef(userId, id, async (ref) => {
+        if (!capsFor(ref).news) return UNAVAILABLE_NEWS;
+        try {
+          const cached = await marketData.getNewsHeadlines(ref);
+          return { available: true, headlines: cached.value };
+        } catch {
+          return UNAVAILABLE_NEWS;
+        }
+      });
     },
 
     async splits(userId, id) {
-      const ref = await resolveRef(userId, id);
-      if (!capsFor(ref).splits) return UNAVAILABLE_SPLITS;
-      try {
-        const cached = await marketData.getSplitEvents(ref);
-        return { available: true, ...cached.value };
-      } catch {
-        return UNAVAILABLE_SPLITS;
-      }
+      return withResolvedRef(userId, id, async (ref) => {
+        if (!capsFor(ref).splits) return UNAVAILABLE_SPLITS;
+        try {
+          const cached = await marketData.getSplitEvents(ref);
+          return { available: true, ...cached.value };
+        } catch {
+          return UNAVAILABLE_SPLITS;
+        }
+      });
     },
 
     async earningsCalendar(userId) {
-      // Invisible when unconfigured: the gate off ⇒ no book scan, no entries.
-      if (!enabled) return { available: false, entries: [] };
-
-      const assets = await intelRepo.listUserWatchAndHoldAssets(userId);
-      const entries: EarningsCalendarEntry[] = [];
-      for (const a of assets) {
-        const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
-        // Skip assets whose resolved provider can't serve earnings.
-        if (!marketData.intelCapabilities(ref).earnings) continue;
-        let next;
-        try {
-          const cached = await marketData.getEarningsEvents(ref);
-          next = cached.value.next;
-        } catch {
-          // A single bad upstream degrades that asset to no-entry — never a 5xx
-          // across the whole calendar (§13.5 V5-P5).
-          continue;
-        }
-        // Only dated upcoming reports make the panel; an undated/absent next drops.
-        if (!next || !next.date) continue;
-        entries.push({
-          assetId: a.assetId,
-          symbol: a.symbol,
-          name: a.name,
-          date: next.date,
-          epsEstimate: next.epsEstimate,
-          estimated: next.estimated,
-          held: a.held,
-          watched: a.watched,
-        });
-      }
-      // Ascending by date — the next report first (the panel reads chronologically).
-      entries.sort((x, y) => x.date.localeCompare(y.date));
-      return { available: true, entries };
+      if (!paranoid) return buildEarningsCalendar(userId, true);
+      // No required account: a paranoid caller keeps this route, but the optional
+      // set tells the callback whether holding-derived provenance is admissible.
+      // The lock remains held through provider reads and response construction.
+      return paranoid.runAllowedWithOptional([], [userId], 'portfolioServer', (normalUserIds) =>
+        buildEarningsCalendar(userId, normalUserIds.has(userId)),
+      );
     },
 
     async newsDigest(userId) {

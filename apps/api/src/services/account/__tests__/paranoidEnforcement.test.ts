@@ -15,10 +15,14 @@ import {
   friendships,
   mirrorChainInvites,
   mirrorChainMembers,
+  notifications,
   portfolios,
   shareAudiences,
+  transactions,
   userFollows,
   users,
+  watchlists,
+  workboardItems,
 } from '../../../data/schema';
 import type { DomainEvent } from '../../../events';
 import {
@@ -30,6 +34,11 @@ import {
 } from '../../../jobs';
 import { buildRouteTable } from '../../../scripts/checkOpenapiCoverage';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
+import {
+  cachedIntel,
+  createStubMarketData,
+  sampleEarningsEvents,
+} from '../../../testing/marketDataStubs';
 import {
   isParanoidKilledScope,
   isParanoidKilledWebhookEvent,
@@ -480,6 +489,40 @@ describe('paranoid kill registry', () => {
         .from(shareAudiences)
         .where(eq(shareAudiences.subjectId, conglomerate!.id)),
     ).toEqual([]);
+
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(normal.id);
+    await expect(
+      harness.ctx.portfolio.updatePortfolio(normal.id, portfolioId, {
+        visibility: 'friends',
+      } as never),
+    ).rejects.toMatchObject({ code: 'PORTFOLIO_VISIBILITY_GUARD_REQUIRED' });
+    await expect(
+      harness.ctx.portfolio.updatePortfolioWithVisibility(normal.id, portfolioId, {
+        visibility: 'friends',
+      }),
+    ).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+    const ownerAgent = await loginAgent(harness.app, normal.email, normal.password);
+    const routeUpdate = await ownerAgent
+      .patch(`/api/v1/portfolios/${portfolioId}`)
+      .set(...XRW)
+      .send({ visibility: 'friends' });
+    expect(routeUpdate.status).toBe(403);
+    expect(routeUpdate.body.error.code).toBe(PARANOID_MODE_ERROR_CODE);
+    expect(
+      (
+        await harness.db
+          .select({ visibility: portfolios.visibility })
+          .from(portfolios)
+          .where(eq(portfolios.id, portfolioId))
+      )[0]?.visibility,
+    ).toBe('private');
+    expect(
+      await harness.db
+        .select()
+        .from(shareAudiences)
+        .where(eq(shareAudiences.subjectId, portfolioId)),
+    ).toEqual([]);
+    expect(await harness.db.select().from(notifications)).toEqual([]);
   });
 
   it('rejects a stale invite after the chain owner enters paranoid mode without join writes', async () => {
@@ -585,6 +628,202 @@ describe('paranoid kill registry', () => {
     await expect(followersRead).resolves.toEqual({ followers: [] });
   });
 
+  it('serializes mixed asset/search/earnings reads and keeps only global or watched data', async () => {
+    harness = await createTestApp({
+      marketData: createStubMarketData({
+        search: () => [],
+        quote: () => ({
+          value: {
+            price: 100,
+            currency: 'EUR',
+            prevClose: 99,
+            dayChangePct: 1,
+            asOf: '2026-07-27T12:00:00.000Z',
+          },
+          stale: false,
+          asOf: Date.parse('2026-07-27T12:00:00.000Z'),
+        }),
+        earnings: () => cachedIntel(sampleEarningsEvents()),
+      }),
+    });
+    const user = await harness.seedUser({
+      email: 'mixed-reader-race@bettertrack.test',
+      username: 'mixed_reader_race',
+    });
+    const login = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    expect(login.status).toBe(200);
+    const cookies = login.get('Set-Cookie') ?? [];
+    const [globalAsset, heldOnlyAsset, watchedAsset, customAsset] = await harness.db
+      .insert(assets)
+      .values([
+        {
+          providerId: 'yahoo',
+          providerRef: 'RACE-GLOBAL',
+          type: 'stock',
+          symbol: 'GLOBAL',
+          name: 'Race Global',
+          currency: 'EUR',
+        },
+        {
+          providerId: 'yahoo',
+          providerRef: 'RACE-HELD',
+          type: 'stock',
+          symbol: 'HELD',
+          name: 'Race Held',
+          currency: 'EUR',
+        },
+        {
+          providerId: 'yahoo',
+          providerRef: 'RACE-WATCHED',
+          type: 'stock',
+          symbol: 'WATCH',
+          name: 'Race Watched',
+          currency: 'EUR',
+        },
+        {
+          providerId: 'manual',
+          providerRef: `race-house:${user.id}`,
+          ownerId: user.id,
+          type: 'custom',
+          symbol: 'HOUSE',
+          name: 'Race House',
+          currency: 'EUR',
+        },
+      ])
+      .returning();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    await harness.db.insert(transactions).values([
+      {
+        portfolioId,
+        assetId: heldOnlyAsset!.id,
+        side: 'buy',
+        quantity: '1',
+        price: '10',
+        executedAt: new Date('2026-01-01T00:00:00.000Z'),
+      },
+      {
+        portfolioId,
+        assetId: watchedAsset!.id,
+        side: 'buy',
+        quantity: '2',
+        price: '20',
+        executedAt: new Date('2026-01-02T00:00:00.000Z'),
+      },
+    ]);
+    const [watchlist] = await harness.db
+      .insert(watchlists)
+      .values({ userId: user.id, name: 'General', isDefault: true })
+      .returning();
+    await harness.db.insert(workboardItems).values({
+      userId: user.id,
+      watchlistId: watchlist!.id,
+      assetId: watchedAsset!.id,
+      sortOrder: 0,
+    });
+
+    let releaseModeChange!: () => void;
+    let modeChangeLocked!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseModeChange = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      modeChangeLocked = resolve;
+    });
+    const modeChange = withExclusiveParanoidTransitionTestLock(harness.db, user.id, async () => {
+      await setParanoid(user.id);
+      modeChangeLocked();
+      await release;
+    });
+    await locked;
+
+    // Global market data has no account owner and remains immediately usable
+    // even while this account's transition lock is held.
+    await expect(harness.ctx.assets.getDetail(user.id, globalAsset!.id)).resolves.toMatchObject({
+      asset: { symbol: 'GLOBAL', isCustom: false },
+    });
+
+    const directCustom = harness.ctx.assets.getDetail(user.id, customAsset!.id);
+    const routeCustom = request(harness.app)
+      .get(`/api/v1/assets/${customAsset!.id}`)
+      .set('Cookie', cookies)
+      .then((response) => response);
+    const directCustomIntel = harness.ctx.marketIntel.capabilities(user.id, customAsset!.id);
+    const routeCustomIntel = request(harness.app)
+      .get(`/api/v1/assets/${customAsset!.id}/intel`)
+      .set('Cookie', cookies)
+      .then((response) => response);
+    const directSearch = harness.ctx.search.search(user.id, 'race');
+    const routeSearch = request(harness.app)
+      .get('/api/v1/search?q=race')
+      .set('Cookie', cookies)
+      .then((response) => response);
+    const directCalendar = harness.ctx.marketIntel.earningsCalendar(user.id);
+    const routeCalendar = request(harness.app)
+      .get('/api/v1/assets/intel/earnings-calendar')
+      .set('Cookie', cookies)
+      .then((response) => response);
+    let settled = 0;
+    for (const promise of [
+      directCustom.catch(() => undefined),
+      routeCustom,
+      directCustomIntel.catch(() => undefined),
+      routeCustomIntel,
+      directSearch,
+      routeSearch,
+      directCalendar,
+      routeCalendar,
+    ]) {
+      void promise.finally(() => {
+        settled += 1;
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(0);
+
+    releaseModeChange();
+    await modeChange;
+    await expect(directCustom).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'ASSET_NOT_FOUND',
+    });
+    expect((await routeCustom).status).toBe(404);
+    await expect(directCustomIntel).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'ASSET_NOT_FOUND',
+    });
+    expect((await routeCustomIntel).status).toBe(404);
+    const assertSearch = (result: { results: Array<{ symbol: string; isCustom: boolean }> }) => {
+      expect(result.results.map((row) => row.symbol).sort()).toEqual(['GLOBAL', 'HELD', 'WATCH']);
+      expect(result.results.every((row) => row.isCustom === false)).toBe(true);
+    };
+    assertSearch(await directSearch);
+    const searchResponse = await routeSearch;
+    expect(searchResponse.status).toBe(200);
+    assertSearch(searchResponse.body);
+
+    const assertCalendar = (result: {
+      entries: Array<{ symbol: string; held: boolean; watched: boolean }>;
+    }) => {
+      expect(result.entries).toEqual([
+        expect.objectContaining({
+          symbol: 'WATCH',
+          held: false,
+          watched: true,
+        }),
+      ]);
+    };
+    assertCalendar(await directCalendar);
+    const calendarResponse = await routeCalendar;
+    expect(calendarResponse.status).toBe(200);
+    assertCalendar(calendarResponse.body);
+    expect((await harness.ctx.assets.getDetail(user.id, globalAsset!.id)).asset.symbol).toBe(
+      'GLOBAL',
+    );
+  });
+
   it('serializes owner-derived public, shared-sandbox, and followed-item reads', async () => {
     const owner = await harness.seedUser({
       email: 'owner-race@bettertrack.test',
@@ -623,6 +862,23 @@ describe('paranoid kill registry', () => {
     );
     const publicToken = publicAudience.link?.token;
     expect(publicToken).toBeTruthy();
+    const { idea } = await harness.ctx.ideas.create(owner.id, {
+      name: 'Shared race idea',
+      state: {
+        source: { kind: 'adhoc', positions: [] },
+        range: '3Y',
+        benchmark: { preset: '^GSPC' },
+        mode: 'cash',
+        rebalance: 'quarterly',
+      },
+    });
+    await harness.ctx.social.setAudience(owner.id, 'idea', idea.id, {
+      audience: 'all_friends',
+    });
+    const conversation = await harness.ctx.chat.openConversation(owner.id, viewer.id);
+    await harness.ctx.chat.sendMessage(owner.id, conversation.id, {
+      chip: { kind: 'idea', subjectId: idea.id },
+    });
 
     let releaseModeChange!: () => void;
     let modeChangeLocked!: () => void;
@@ -652,6 +908,8 @@ describe('paranoid kill registry', () => {
       range: '1Y',
     });
     const followedRead = harness.ctx.social.listItemFollows(viewer.id);
+    const cloneRead = harness.ctx.ideas.clone(viewer.id, idea.id);
+    const chatRead = harness.ctx.chat.getThread(viewer.id, conversation.id, {});
     let settled = 0;
     void profileRead.finally(() => {
       settled += 1;
@@ -672,6 +930,14 @@ describe('paranoid kill registry', () => {
     void followedRead.finally(() => {
       settled += 1;
     });
+    void cloneRead
+      .catch(() => undefined)
+      .finally(() => {
+        settled += 1;
+      });
+    void chatRead.finally(() => {
+      settled += 1;
+    });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(settled).toBe(0);
 
@@ -690,6 +956,21 @@ describe('paranoid kill registry', () => {
           name: null,
           owner: null,
         }),
+      ],
+    });
+    await expect(cloneRead).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+    await expect(harness.ctx.ideas.list(viewer.id)).resolves.toEqual({ ideas: [] });
+    await expect(chatRead).resolves.toMatchObject({
+      messages: [
+        {
+          chip: {
+            kind: 'idea',
+            subjectId: idea.id,
+            viewable: false,
+            title: null,
+            subtitle: null,
+          },
+        },
       ],
     });
   });

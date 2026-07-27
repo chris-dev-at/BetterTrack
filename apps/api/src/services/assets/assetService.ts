@@ -11,6 +11,7 @@ import type { AssetRepository } from '../../data/repositories/assetRepository';
 import type { AssetRow } from '../../data/schema';
 import { badGateway, notFound } from '../../errors';
 import { defaultIntervalForRange, type MarketDataService } from '../../providers';
+import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { CurrencyService } from '../currency/currencyService';
 
 /**
@@ -45,6 +46,8 @@ export interface AssetServiceDeps {
   assetRepo: AssetRepository;
   /** Single conversion keystone (§5.4) — all EUR conversion routes through here. */
   currencyService: CurrencyService;
+  /** Mixed global/custom reads serialize custom rows against privacy transitions. */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowed'>;
 }
 
 /** Epoch-ms (the cache's `asOf`) → ISO-8601 for the wire. */
@@ -63,113 +66,137 @@ const toSummary = (row: AssetRow): AssetSummary => ({
 });
 
 export function createAssetService(deps: AssetServiceDeps): AssetService {
-  const { marketData, assetRepo, currencyService } = deps;
+  const { marketData, assetRepo, currencyService, paranoid } = deps;
 
-  async function requireAsset(userId: string, id: string): Promise<AssetRow> {
-    const row = await assetRepo.findByIdForUser(id, userId);
+  const assetNotFound = () => notFound('Asset not found.', 'ASSET_NOT_FOUND');
+
+  async function withVisibleAsset<T>(
+    userId: string,
+    id: string,
+    read: (row: AssetRow) => Promise<T>,
+  ): Promise<T> {
+    const candidate = await assetRepo.findByIdForUser(id, userId);
     // A global asset or the caller's own custom asset, else 404 — another user's
     // custom asset is indistinguishable from missing, so nothing leaks (§10).
-    if (!row) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
-    return row;
+    if (!candidate) throw assetNotFound();
+    if (candidate.ownerId === null || !paranoid) return read(candidate);
+
+    try {
+      return await paranoid.runAllowed(candidate.ownerId, 'portfolioServer', async () => {
+        // Ownership/liveness is re-read after the lock is acquired. A transition
+        // that won first may already have purged the row; either outcome is the
+        // same indistinguishable custom-asset 404.
+        const current = await assetRepo.findByIdForUser(id, userId);
+        if (!current || current.ownerId !== candidate.ownerId) throw assetNotFound();
+        return read(current);
+      });
+    } catch (error) {
+      if (error instanceof ParanoidModeError) throw assetNotFound();
+      throw error;
+    }
   }
 
   return {
     async getDetail(userId, id, opts) {
-      const row = await requireAsset(userId, id);
-      const asset = toSummary(row);
-      const fx =
-        opts?.baseCurrency === undefined
-          ? currencyService
-          : currencyService.withBase(opts.baseCurrency);
-      try {
-        const cached = await marketData.getQuote({
-          providerId: row.providerId,
-          providerRef: row.providerRef,
-        });
+      return withVisibleAsset(userId, id, async (row) => {
+        const asset = toSummary(row);
+        const fx =
+          opts?.baseCurrency === undefined
+            ? currencyService
+            : currencyService.withBase(opts.baseCurrency);
+        try {
+          const cached = await marketData.getQuote({
+            providerId: row.providerId,
+            providerRef: row.providerRef,
+          });
 
-        // Base-currency conversion for foreign assets (§6.3, §5.4, V3-P10d —
-        // the caller's per-user base; the `eurPrice` field name predates it).
-        // All conversion routes through the currency keystone — no inline FX
-        // math here. Best-effort: null when the spot rate is unavailable,
-        // absent when the native currency already is the base.
-        let eurPriceEntry: { eurPrice: number | null } | undefined;
-        if (asset.currency !== fx.baseCurrency) {
-          try {
-            eurPriceEntry = {
-              eurPrice: await fx.toBase(cached.value.price, asset.currency),
-            };
-          } catch {
-            eurPriceEntry = { eurPrice: null };
+          // Base-currency conversion for foreign assets (§6.3, §5.4, V3-P10d —
+          // the caller's per-user base; the `eurPrice` field name predates it).
+          // All conversion routes through the currency keystone — no inline FX
+          // math here. Best-effort: null when the spot rate is unavailable,
+          // absent when the native currency already is the base.
+          let eurPriceEntry: { eurPrice: number | null } | undefined;
+          if (asset.currency !== fx.baseCurrency) {
+            try {
+              eurPriceEntry = {
+                eurPrice: await fx.toBase(cached.value.price, asset.currency),
+              };
+            } catch {
+              eurPriceEntry = { eurPrice: null };
+            }
           }
-        }
 
-        return {
-          asset,
-          quote: cached.value,
-          stale: cached.stale,
-          asOf: asOfIso(cached.asOf),
-          baseCurrency: fx.baseCurrency,
-          ...eurPriceEntry,
-        };
-      } catch {
-        // Meta always resolves from the stored row; the quote is best-effort, so
-        // a provider outage with no cached copy degrades to a null quote rather
-        // than failing the whole page (§6.3).
-        return { asset, quote: null, stale: true, asOf: null, baseCurrency: fx.baseCurrency };
-      }
+          return {
+            asset,
+            quote: cached.value,
+            stale: cached.stale,
+            asOf: asOfIso(cached.asOf),
+            baseCurrency: fx.baseCurrency,
+            ...eurPriceEntry,
+          };
+        } catch {
+          // Meta always resolves from the stored row; the quote is best-effort, so
+          // a provider outage with no cached copy degrades to a null quote rather
+          // than failing the whole page (§6.3).
+          return { asset, quote: null, stale: true, asOf: null, baseCurrency: fx.baseCurrency };
+        }
+      });
     },
 
     async getQuote(userId, id) {
-      const row = await requireAsset(userId, id);
-      try {
-        const cached = await marketData.getQuote({
-          providerId: row.providerId,
-          providerRef: row.providerRef,
-        });
-        return { quote: cached.value, stale: cached.stale, asOf: asOfIso(cached.asOf) };
-      } catch {
-        throw badGateway();
-      }
+      return withVisibleAsset(userId, id, async (row) => {
+        try {
+          const cached = await marketData.getQuote({
+            providerId: row.providerId,
+            providerRef: row.providerRef,
+          });
+          return { quote: cached.value, stale: cached.stale, asOf: asOfIso(cached.asOf) };
+        } catch {
+          throw badGateway();
+        }
+      });
     },
 
     async getHistory(userId, id, range) {
-      const row = await requireAsset(userId, id);
-      const interval = defaultIntervalForRange(range);
-      try {
-        const cached = await marketData.getHistory(
-          { providerId: row.providerId, providerRef: row.providerRef },
-          range,
-        );
-        return {
-          range,
-          interval,
-          points: cached.value,
-          stale: cached.stale,
-          asOf: asOfIso(cached.asOf),
-        };
-      } catch {
-        throw badGateway();
-      }
+      return withVisibleAsset(userId, id, async (row) => {
+        const interval = defaultIntervalForRange(range);
+        try {
+          const cached = await marketData.getHistory(
+            { providerId: row.providerId, providerRef: row.providerRef },
+            range,
+          );
+          return {
+            range,
+            interval,
+            points: cached.value,
+            stale: cached.stale,
+            asOf: asOfIso(cached.asOf),
+          };
+        } catch {
+          throw badGateway();
+        }
+      });
     },
 
     async getDailyCloses(userId, id) {
-      const row = await requireAsset(userId, id);
-      try {
-        // Force the daily interval over the full window (like the backtest
-        // loader §6.6) so the client always gets calendar-day granularity — the
-        // §5.3 range→interval table would otherwise return weekly/monthly candles
-        // for the multi-year windows this form needs.
-        const cached = await marketData.getHistory(
-          { providerId: row.providerId, providerRef: row.providerRef },
-          'MAX',
-          '1d',
-        );
-        return { points: cached.value, stale: cached.stale, asOf: asOfIso(cached.asOf) };
-      } catch {
-        // Best-effort: the transaction form degrades to fully-manual entry rather
-        // than erroring when no series is cached and the provider is down (#226).
-        return { points: [], stale: true, asOf: null };
-      }
+      return withVisibleAsset(userId, id, async (row) => {
+        try {
+          // Force the daily interval over the full window (like the backtest
+          // loader §6.6) so the client always gets calendar-day granularity — the
+          // §5.3 range→interval table would otherwise return weekly/monthly candles
+          // for the multi-year windows this form needs.
+          const cached = await marketData.getHistory(
+            { providerId: row.providerId, providerRef: row.providerRef },
+            'MAX',
+            '1d',
+          );
+          return { points: cached.value, stale: cached.stale, asOf: asOfIso(cached.asOf) };
+        } catch {
+          // Best-effort: the transaction form degrades to fully-manual entry rather
+          // than erroring when no series is cached and the provider is down (#226).
+          return { points: [], stale: true, asOf: null };
+        }
+      });
     },
   };
 }

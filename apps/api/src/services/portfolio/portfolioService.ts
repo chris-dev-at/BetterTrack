@@ -169,6 +169,8 @@ export interface PortfolioServiceDeps {
   now?: () => number;
 }
 
+type PortfolioMetadataPatch = Omit<UpdatePortfolioRequest, 'visibility'>;
+
 export interface PortfolioService {
   /**
    * The user's portfolios (§6.8/§7.2), auto-materialising the single default so
@@ -200,11 +202,17 @@ export interface PortfolioService {
    * unknown or another user's — and on a second call, so delete is idempotent-ish.
    */
   deletePortfolio(userId: string, portfolioId: string): Promise<void>;
-  /** Rename / change visibility of an owned portfolio; 404 otherwise (§8). */
+  /** Rename / edit private metadata of an owned portfolio; 404 otherwise (§8). */
   updatePortfolio(
     userId: string,
     portfolioId: string,
-    patch: UpdatePortfolioRequest,
+    patch: PortfolioMetadataPatch,
+  ): Promise<PortfolioSummary>;
+  /** Mixed metadata + legacy sharing mutation, guarded before any write/event. */
+  updatePortfolioWithVisibility(
+    userId: string,
+    portfolioId: string,
+    patch: UpdatePortfolioRequest & { visibility: 'private' | 'friends' },
   ): Promise<PortfolioSummary>;
   /** The default ("Main") portfolio id, materialised on first touch (§6.8). */
   getDefaultPortfolioId(userId: string): Promise<string>;
@@ -638,24 +646,24 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const actorUsername = (await friendshipRepo.getUsername(ownerId)) ?? '';
       const occurredAt = new Date(now()).toISOString();
       for (const viewerId of optedIn) {
-        const authorized = await audience
-          .authorizePortfolioRead(viewerId, portfolioId)
+        await audience
+          .withAuthorizedPortfolioRead(viewerId, portfolioId, async () => {
+            for (const trade of trades) {
+              await notify.emit({
+                type: 'friend.activity',
+                userId: viewerId,
+                actorId: ownerId,
+                actorUsername,
+                itemKind: 'portfolio',
+                itemId: portfolioId,
+                activity: trade.side,
+                assetSymbol: trade.symbol,
+                refId: trade.refId,
+                occurredAt,
+              });
+            }
+          })
           .catch(() => undefined);
-        if (!authorized) continue;
-        for (const trade of trades) {
-          await notify.emit({
-            type: 'friend.activity',
-            userId: viewerId,
-            actorId: ownerId,
-            actorUsername,
-            itemKind: 'portfolio',
-            itemId: portfolioId,
-            activity: trade.side,
-            assetSymbol: trade.symbol,
-            refId: trade.refId,
-            occurredAt,
-          });
-        }
       }
     } catch (err) {
       logger?.error({ err, portfolioId }, 'friend.activity emit failed');
@@ -674,6 +682,35 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     const portfolio = await portfolioRepo.findByIdForUser(userId, portfolioId);
     if (!portfolio) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
     return portfolio;
+  }
+
+  async function updatePortfolioRecord(
+    userId: string,
+    portfolioId: string,
+    patch: UpdatePortfolioRequest,
+  ): Promise<{ portfolio: PortfolioSummary; becameShared: boolean }> {
+    // Capture the prior visibility so `portfolio.shared` fires only on an actual
+    // transition to friends — not on a no-op re-save or a toggle-off.
+    const before = await portfolioRepo.findByIdForUser(userId, portfolioId);
+    if (!before) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+    // Reject a rename that collides with another of the user's portfolios up
+    // front (the unique index spans archived rows) with the same clean 409 the
+    // create path emits. Only check when the name actually changes.
+    if (patch.name !== undefined && patch.name !== before.name) {
+      if (await portfolioRepo.nameExists(userId, patch.name, portfolioId)) {
+        throw conflict('A portfolio with that name already exists.', 'PORTFOLIO_NAME_TAKEN');
+      }
+    }
+    const updated = await portfolioRepo.updatePortfolio(userId, portfolioId, {
+      name: patch.name,
+      visibility: patch.visibility,
+      defaultPayFromCash: patch.defaultPayFromCash,
+    });
+    if (!updated) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+    return {
+      portfolio: updated,
+      becameShared: patch.visibility === 'friends' && before.visibility !== 'friends',
+    };
   }
 
   // --- Cash ledger (§14, #220; cash sources V3-P3) ---------------------------
@@ -1202,31 +1239,30 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     },
 
     async updatePortfolio(userId, portfolioId, patch) {
-      // Capture the prior visibility so we only fire `portfolio.shared` on an
-      // actual transition *to* friends — not on a no-op re-save or a toggle-off.
-      const before = await portfolioRepo.findByIdForUser(userId, portfolioId);
-      if (!before) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
-      // Reject a rename that collides with another of the user's portfolios up
-      // front (the unique index spans archived rows) with the same clean 409 the
-      // create path emits — otherwise the `portfolios_user_name_unique` violation
-      // would surface as a raw 500 on a routine rename. Only check when the name
-      // actually changes; excluding this row lets a no-op re-save through.
-      if (patch.name !== undefined && patch.name !== before.name) {
-        if (await portfolioRepo.nameExists(userId, patch.name, portfolioId)) {
-          throw conflict('A portfolio with that name already exists.', 'PORTFOLIO_NAME_TAKEN');
-        }
+      // Private metadata stays usable through this entry point. A hand-crafted
+      // below-HTTP call must not smuggle the sharing-bearing legacy visibility
+      // field around the multi-principal guard.
+      if ('visibility' in patch) {
+        throw badRequest(
+          'Visibility changes require the guarded sharing mutation.',
+          'PORTFOLIO_VISIBILITY_GUARD_REQUIRED',
+        );
       }
-      const updated = await portfolioRepo.updatePortfolio(userId, portfolioId, {
-        name: patch.name,
-        visibility: patch.visibility,
-        defaultPayFromCash: patch.defaultPayFromCash,
-      });
-      if (!updated) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      return (await updatePortfolioRecord(userId, portfolioId, patch)).portfolio;
+    },
 
-      if (patch.visibility === 'friends' && before?.visibility !== 'friends') {
-        await emitPortfolioShared(userId, portfolioId);
-      }
-      return updated;
+    async updatePortfolioWithVisibility(userId, portfolioId, patch) {
+      // Discover and hold owner + every all-friends recipient before either
+      // persistence model changes. A recipient whose paranoid transition won
+      // rejects here, leaving portfolio visibility, audience, and events intact.
+      return audience.withVisibilityMutation(userId, patch.visibility, async () => {
+        const { portfolio, becameShared } = await updatePortfolioRecord(userId, portfolioId, patch);
+        await audience.applyVisibility(userId, 'portfolio', portfolioId, patch.visibility);
+        // Emit only after both writes succeeded, while all recipient locks remain
+        // held, so no bell can describe a share that the audience model lacks.
+        if (becameShared) await emitPortfolioShared(userId, portfolioId);
+        return portfolio;
+      });
     },
 
     getDefaultPortfolioId(userId) {

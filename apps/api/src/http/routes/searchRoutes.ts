@@ -29,8 +29,10 @@ export function createSearchRouter(ctx: AppContext, limiters: RateLimiters): Rou
     conditionalGet(),
     async (req, res) => {
       const { q } = req.valid?.query as SearchQuery;
-      const { results, enriching } = await ctx.search.search(req.authUser!.id, q);
-      const freshness = await ctx.search.catalogFreshness(req.authUser!.id);
+      const { results, enriching, freshness } = await ctx.search.searchWithFreshness(
+        req.authUser!.id,
+        q,
+      );
       if (freshness) res.locals[CONDITIONAL_LAST_MODIFIED] = freshness;
       res.json({ results, enriching });
     },

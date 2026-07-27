@@ -161,48 +161,71 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
     }
 
     if (shareKind === 'portfolio') {
-      const ref = await audience.authorizePortfolioRead(viewerId, subjectId).catch(() => undefined);
-      return ref
-        ? { kind, subjectId, viewable: true, title: ref.name, subtitle: ref.ownerUsername }
-        : notViewable;
+      return (
+        (await audience
+          .withAuthorizedPortfolioRead(viewerId, subjectId, async (ref) => ({
+            kind,
+            subjectId,
+            viewable: true as const,
+            title: ref.name,
+            subtitle: ref.ownerUsername,
+          }))
+          .catch(() => undefined)) ?? notViewable
+      );
     }
     if (shareKind === 'watchlist') {
-      const ref = await audience.authorizeWatchlistRead(viewerId, subjectId).catch(() => undefined);
-      return ref
-        ? { kind, subjectId, viewable: true, title: ref.name, subtitle: ref.ownerUsername }
-        : notViewable;
+      return (
+        (await audience
+          .withAuthorizedWatchlistRead(viewerId, subjectId, async (ref) => ({
+            kind,
+            subjectId,
+            viewable: true as const,
+            title: ref.name,
+            subtitle: ref.ownerUsername,
+          }))
+          .catch(() => undefined)) ?? notViewable
+      );
     }
     if (shareKind === 'idea') {
       // idea (V4-P9) — like a conglomerate, the authorization returns the owner
       // only; fetch the name ONLY after it passes, so a denied read discloses
-      // nothing (leak-free `viewable:false` otherwise).
-      const ref = await audience.authorizeIdeaRead(viewerId, subjectId).catch(() => undefined);
-      if (!ref) return notViewable;
-      const identity = await audience.subjectIdentity('idea', subjectId).catch(() => undefined);
-      return {
-        kind,
-        subjectId,
-        viewable: true,
-        title: identity?.name ?? null,
-        subtitle: ref.ownerUsername,
-      };
+      // nothing (leak-free `viewable:false` otherwise). The owner lock remains
+      // held through that identity read and final chip construction.
+      return (
+        (await audience
+          .withAuthorizedIdeaRead(viewerId, subjectId, async (ref) => {
+            const identity = await audience
+              .subjectIdentity('idea', subjectId)
+              .catch(() => undefined);
+            return {
+              kind,
+              subjectId,
+              viewable: true as const,
+              title: identity?.name ?? null,
+              subtitle: ref.ownerUsername,
+            };
+          })
+          .catch(() => undefined)) ?? notViewable
+      );
     }
     // conglomerate — the authorization returns the owner only; fetch the name
-    // ONLY after it passes, so a denied read discloses nothing.
-    const ref = await audience
-      .authorizeConglomerateRead(viewerId, subjectId)
-      .catch(() => undefined);
-    if (!ref) return notViewable;
-    const identity = await audience
-      .subjectIdentity('conglomerate', subjectId)
-      .catch(() => undefined);
-    return {
-      kind,
-      subjectId,
-      viewable: true,
-      title: identity?.name ?? null,
-      subtitle: ref.ownerUsername,
-    };
+    // ONLY after it passes, under the same held owner lock.
+    return (
+      (await audience
+        .withAuthorizedConglomerateRead(viewerId, subjectId, async (ref) => {
+          const identity = await audience
+            .subjectIdentity('conglomerate', subjectId)
+            .catch(() => undefined);
+          return {
+            kind,
+            subjectId,
+            viewable: true as const,
+            title: identity?.name ?? null,
+            subtitle: ref.ownerUsername,
+          };
+        })
+        .catch(() => undefined)) ?? notViewable
+    );
   }
 
   async function toMessage(viewerId: string, row: ChatMessageRow): Promise<ChatMessage> {

@@ -99,6 +99,7 @@ export function createAssetRepository(db: Database) {
       userId: string,
       query: string,
       limit: number,
+      options?: { includeCustomAssets?: boolean },
     ): Promise<CatalogSearchMatch[]> {
       const prefix = `${escapeLike(query)}%`;
       const substring = `%${escapeLike(query)}%`;
@@ -126,7 +127,9 @@ export function createAssetRepository(db: Database) {
         .from(assets)
         .where(
           and(
-            or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
+            options?.includeCustomAssets === false
+              ? isNull(assets.ownerId)
+              : or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
             or(
               sql`upper(${assets.symbol}) like upper(${prefix})`,
               ilike(assets.name, substring),
@@ -153,13 +156,20 @@ export function createAssetRepository(db: Database) {
      * instead of a 304) is always safe, and content edits (a rename that keeps
      * the id) are caught by the per-request body ETag, not this watermark.
      */
-    async catalogWatermark(userId: string): Promise<Date | null> {
+    async catalogWatermark(
+      userId: string,
+      options?: { includeCustomAssets?: boolean },
+    ): Promise<Date | null> {
       // Newest visible id (uuid order == time order) — an ORDER BY over the id
       // index, no aggregate on the uuid type (portable across engines).
       const rows = await db
         .select({ id: assets.id })
         .from(assets)
-        .where(or(isNull(assets.ownerId), eq(assets.ownerId, userId)))
+        .where(
+          options?.includeCustomAssets === false
+            ? isNull(assets.ownerId)
+            : or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
+        )
         .orderBy(desc(assets.id))
         .limit(1);
       const newest = rows[0]?.id ?? null;

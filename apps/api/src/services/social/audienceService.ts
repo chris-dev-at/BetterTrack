@@ -81,13 +81,37 @@ export interface AudienceServiceDeps {
 
 export interface AudienceService {
   authorizePortfolioRead(viewerId: string, portfolioId: string): Promise<NamedOwnerRef | undefined>;
+  /**
+   * Authorize and hold viewer + discovered owner privacy locks through the
+   * complete dependent read. `undefined` preserves the uniform not-found path.
+   */
+  withAuthorizedPortfolioRead<T>(
+    viewerId: string,
+    portfolioId: string,
+    read: (authorized: NamedOwnerRef) => Promise<T>,
+  ): Promise<T | undefined>;
   authorizeConglomerateRead(
     viewerId: string,
     conglomerateId: string,
   ): Promise<OwnerRef | undefined>;
+  withAuthorizedConglomerateRead<T>(
+    viewerId: string,
+    conglomerateId: string,
+    read: (authorized: OwnerRef) => Promise<T>,
+  ): Promise<T | undefined>;
   authorizeWatchlistRead(viewerId: string, watchlistId: string): Promise<NamedOwnerRef | undefined>;
+  withAuthorizedWatchlistRead<T>(
+    viewerId: string,
+    watchlistId: string,
+    read: (authorized: NamedOwnerRef) => Promise<T>,
+  ): Promise<T | undefined>;
   /** Authorize a viewer to read one friend-shared idea, or `undefined` (→ 404, V4-P9). */
   authorizeIdeaRead(viewerId: string, ideaId: string): Promise<OwnerRef | undefined>;
+  withAuthorizedIdeaRead<T>(
+    viewerId: string,
+    ideaId: string,
+    read: (authorized: OwnerRef) => Promise<T>,
+  ): Promise<T | undefined>;
   listFriendPortfolios(viewerId: string): Promise<FriendPortfolioRow[]>;
   listFriendConglomerates(viewerId: string): Promise<FriendConglomerateRow[]>;
   listFriendWatchlists(viewerId: string): Promise<FriendWatchlistRow[]>;
@@ -217,6 +241,37 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
   ): Promise<T> {
     if (!paranoid) return action();
     return paranoid.runAllowedMany([ownerId, ...recipientIds], 'sharing', action);
+  }
+
+  /**
+   * Owner-derived sharing reads need two phases: discover the account whose
+   * private bytes/identity would be returned, then acquire viewer + owner locks
+   * and re-run both ownership and audience authorization under those locks.
+   * The callback keeps the locks held through downstream reads or persistence
+   * (clone/chat are the important examples), rather than returning an
+   * authorization token that becomes stale immediately after this method exits.
+   */
+  async function withAuthorizedRead<TRef extends OwnerRef, T>(
+    viewerId: string,
+    authorize: () => Promise<TRef | undefined>,
+    read: (authorized: TRef) => Promise<T>,
+  ): Promise<T | undefined> {
+    const candidate = await authorize();
+    if (!paranoid) return candidate ? read(candidate) : undefined;
+    if (!candidate) {
+      // Preserve the caller-side sharing kill even for a missing subject while
+      // disclosing no owner/existence distinction.
+      return paranoid.runAllowedMany([viewerId], 'sharing', async () => undefined);
+    }
+    return paranoid.runAllowedMany(
+      [viewerId, candidate.ownerId],
+      'sharing',
+      async (): Promise<T | undefined> => {
+        const authorized = await authorize();
+        if (!authorized || authorized.ownerId !== candidate.ownerId) return undefined;
+        return read(authorized);
+      },
+    );
   }
 
   /**
@@ -400,20 +455,56 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
 
   return {
     async authorizePortfolioRead(viewerId, portfolioId) {
-      await paranoid?.assertAllowed(viewerId, 'sharing');
-      return repo.authorizePortfolioRead(viewerId, portfolioId);
+      return withAuthorizedRead(
+        viewerId,
+        () => repo.authorizePortfolioRead(viewerId, portfolioId),
+        async (authorized) => authorized,
+      );
+    },
+    async withAuthorizedPortfolioRead(viewerId, portfolioId, read) {
+      return withAuthorizedRead(
+        viewerId,
+        () => repo.authorizePortfolioRead(viewerId, portfolioId),
+        read,
+      );
     },
     async authorizeConglomerateRead(viewerId, conglomerateId) {
-      await paranoid?.assertAllowed(viewerId, 'sharing');
-      return repo.authorizeConglomerateRead(viewerId, conglomerateId);
+      return withAuthorizedRead(
+        viewerId,
+        () => repo.authorizeConglomerateRead(viewerId, conglomerateId),
+        async (authorized) => authorized,
+      );
+    },
+    async withAuthorizedConglomerateRead(viewerId, conglomerateId, read) {
+      return withAuthorizedRead(
+        viewerId,
+        () => repo.authorizeConglomerateRead(viewerId, conglomerateId),
+        read,
+      );
     },
     async authorizeWatchlistRead(viewerId, watchlistId) {
-      await paranoid?.assertAllowed(viewerId, 'sharing');
-      return repo.authorizeWatchlistRead(viewerId, watchlistId);
+      return withAuthorizedRead(
+        viewerId,
+        () => repo.authorizeWatchlistRead(viewerId, watchlistId),
+        async (authorized) => authorized,
+      );
+    },
+    async withAuthorizedWatchlistRead(viewerId, watchlistId, read) {
+      return withAuthorizedRead(
+        viewerId,
+        () => repo.authorizeWatchlistRead(viewerId, watchlistId),
+        read,
+      );
     },
     async authorizeIdeaRead(viewerId, ideaId) {
-      await paranoid?.assertAllowed(viewerId, 'sharing');
-      return repo.authorizeIdeaRead(viewerId, ideaId);
+      return withAuthorizedRead(
+        viewerId,
+        () => repo.authorizeIdeaRead(viewerId, ideaId),
+        async (authorized) => authorized,
+      );
+    },
+    async withAuthorizedIdeaRead(viewerId, ideaId, read) {
+      return withAuthorizedRead(viewerId, () => repo.authorizeIdeaRead(viewerId, ideaId), read);
     },
     async listFriendPortfolios(viewerId) {
       await paranoid?.assertAllowed(viewerId, 'sharing');

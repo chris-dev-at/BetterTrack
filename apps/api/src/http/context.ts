@@ -1103,6 +1103,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
     assetRepo,
     currencyService: currency,
+    paranoid: paranoidGuard,
   });
 
   // Per-asset market intelligence (§13.5 V5-P5): a thin read layer over the
@@ -1113,6 +1114,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     assetRepo,
     intelRepo: createMarketIntelRepository(db),
     enabled: config.marketIntel.enabled,
+    paranoid: paranoidGuard,
   });
 
   // Portfolio-level dividend intelligence (§13.5 V5-P5, arc a): calendar +
@@ -1146,7 +1148,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Local-first search (§6.2): answers from the Postgres catalog; a thin result
   // set triggers a background, coalesced provider search that enriches it.
   const enrichment = createCatalogEnrichment({ marketData, assetRepo, backfill, redis, logger });
-  const search = createSearchService({ assetRepo, enrichment });
+  const search = createSearchService({ assetRepo, enrichment, paranoid: paranoidGuard });
 
   // Portfolio + custom investments (§6.9). The custom-asset service records its
   // optional initial purchase through the portfolio service and shares its
@@ -1689,6 +1691,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       comments,
       social,
       mirror,
+      assets,
+      search,
       portfolio,
       customAssets,
       analytics,
@@ -1722,10 +1726,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     oauth,
     workboard: guarded.workboard,
     marketData,
-    assets,
+    assets: guarded.assets,
     marketIntel: guarded.marketIntel,
     portfolioMarketIntel: guarded.portfolioMarketIntel,
-    search,
+    search: guarded.search,
     portfolio: guarded.portfolio,
     snapshots: guarded.snapshots,
     tax: guarded.tax,

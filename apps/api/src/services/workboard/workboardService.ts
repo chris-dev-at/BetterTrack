@@ -79,22 +79,22 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
       const actorUsername = (await friendship.getUsername(ownerId)) ?? '';
       const occurredAt = new Date().toISOString();
       for (const viewerId of optedIn) {
-        const authorized = await audience
-          .authorizeWatchlistRead(viewerId, watchlistId)
+        await audience
+          .withAuthorizedWatchlistRead(viewerId, watchlistId, async () => {
+            await notify.emit({
+              type: 'friend.activity',
+              userId: viewerId,
+              actorId: ownerId,
+              actorUsername,
+              itemKind: 'watchlist',
+              itemId: watchlistId,
+              activity: 'watchlist_add',
+              assetSymbol: item.asset.symbol,
+              refId: `wl:${item.id}`,
+              occurredAt,
+            });
+          })
           .catch(() => undefined);
-        if (!authorized) continue;
-        await notify.emit({
-          type: 'friend.activity',
-          userId: viewerId,
-          actorId: ownerId,
-          actorUsername,
-          itemKind: 'watchlist',
-          itemId: watchlistId,
-          activity: 'watchlist_add',
-          assetSymbol: item.asset.symbol,
-          refId: `wl:${item.id}`,
-          occurredAt,
-        });
       }
     } catch (err) {
       logger?.error({ err, watchlistId }, 'friend.activity emit failed');
