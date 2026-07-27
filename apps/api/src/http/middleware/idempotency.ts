@@ -86,9 +86,28 @@ function replay(res: Response, record: IdempotencyRecord): void {
   }
 }
 
+/** Persist a claim transition without allowing a response lifecycle callback to throw. */
+async function persistSafely(
+  logger: Logger,
+  id: string,
+  persist: () => Promise<void>,
+): Promise<void> {
+  try {
+    await persist();
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : 'unknown', id },
+      'idempotency response persist failed',
+    );
+  }
+}
+
 /**
  * Wrap the winning request's response so the exact bytes + status it sends are
- * captured and, once the response finishes, memoized (2xx) or released (non-2xx).
+ * captured and memoized (2xx) or released (non-2xx) once the response settles.
+ * A prematurely closed connection is safe to settle only after the handler has
+ * generated its response: that keeps a delayed mutation's claim exclusive while
+ * still recovering a response that can no longer emit `finish`.
  * Express funnels `res.json` through `res.send`, so wrapping `res.send` captures
  * both the JSON handlers and the empty 204 `send()`.
  */
@@ -101,6 +120,25 @@ function captureAndPersist(
   const originalSend = res.send.bind(res);
   let captured = '';
   let sawSend = false;
+  let closed = false;
+  let settled = false;
+
+  const settle = (persist: () => Promise<void>): void => {
+    if (settled) return;
+    settled = true;
+    void persistSafely(logger, id, persist);
+  };
+  const settleResponse = (): void => {
+    const statusCode = res.statusCode;
+    const ct = res.getHeader('content-type');
+    const contentType = typeof ct === 'string' ? ct : null;
+    settle(() =>
+      isSuccess(statusCode)
+        ? repo.complete(id, { statusCode, responseBody: captured, contentType })
+        : repo.release(id),
+    );
+  };
+
   res.send = ((body?: unknown) => {
     if (!sawSend) {
       sawSend = true;
@@ -113,43 +151,22 @@ function captureAndPersist(
               ? body.toString('utf8')
               : JSON.stringify(body);
     }
-    return originalSend(body);
+    try {
+      return originalSend(body);
+    } finally {
+      // A handler that reaches `send` has completed its mutation. If the peer
+      // already disconnected, `finish` may never fire, but this response is safe
+      // to persist for an idempotent retry rather than releasing the live claim.
+      if (closed) settleResponse();
+    }
   }) as typeof res.send;
 
-  let settled = false;
-  let finished = false;
-  const settle = (persist: () => Promise<void>): void => {
-    if (settled) return;
-    settled = true;
-    try {
-      void persist().catch((err) =>
-        logger.warn(
-          { err: err instanceof Error ? err.message : 'unknown', id },
-          'idempotency response persist failed',
-        ),
-      );
-    } catch (err) {
-      logger.warn(
-        { err: err instanceof Error ? err.message : 'unknown', id },
-        'idempotency response persist failed',
-      );
-    }
-  };
-
-  res.once('finish', () => {
-    finished = true;
-    const statusCode = res.statusCode;
-    const ct = res.getHeader('content-type');
-    const contentType = typeof ct === 'string' ? ct : null;
-    settle(() =>
-      isSuccess(statusCode)
-        ? repo.complete(id, { statusCode, responseBody: captured, contentType })
-        : repo.release(id),
-    );
-  });
-
+  res.once('finish', settleResponse);
   res.once('close', () => {
-    if (!finished) settle(() => repo.release(id));
+    closed = true;
+    // The write may have happened just before close; its captured response is
+    // enough to settle safely even when the transport will never emit `finish`.
+    if (sawSend) settleResponse();
   });
 }
 
@@ -203,48 +220,70 @@ export function createIdempotency(
       requestHash: hashBody(req.body),
     };
 
+    // A request can disappear while its database claim is pending. We can release
+    // only in that window: once `next()` has handed off to an async route handler,
+    // `close` merely says the client stopped waiting, not that its mutation stopped.
+    // Keeping that claim until `finish` prevents a matching retry from executing
+    // concurrently with the original handler.
+    let responseClosed = res.destroyed;
+    const markResponseClosed = (): void => {
+      responseClosed = true;
+    };
+    res.once('close', markResponseClosed);
+
     void (async (): Promise<void> => {
-      const deadline = now() + waitMs;
-      // Claim; if a peer holds an in-flight row, wait for it to settle. The unique
-      // (user, key) index guarantees exactly one winner across concurrent racers.
-      for (;;) {
-        const cutoff = new Date(now() - retentionMs);
-        const outcome = await repo.claim(input, cutoff);
-        if (outcome.won) {
-          captureAndPersist(res, repo, logger, outcome.id);
-          next();
-          return;
+      try {
+        const deadline = now() + waitMs;
+        // Claim; if a peer holds an in-flight row, wait for it to settle. The unique
+        // (user, key) index guarantees exactly one winner across concurrent racers.
+        for (;;) {
+          if (responseClosed) return;
+
+          const cutoff = new Date(now() - retentionMs);
+          const outcome = await repo.claim(input, cutoff);
+          if (outcome.won) {
+            if (responseClosed) {
+              // No downstream handler was invoked, so no side effect can be in flight.
+              await persistSafely(logger, outcome.id, () => repo.release(outcome.id));
+              return;
+            }
+            captureAndPersist(res, repo, logger, outcome.id);
+            next();
+            return;
+          }
+          const { record } = outcome;
+          if (!record) continue; // vanished between conflict + read → re-claim
+          if (
+            record.method !== input.method ||
+            record.path !== input.path ||
+            record.requestHash !== input.requestHash
+          ) {
+            next(
+              conflict(
+                'This Idempotency-Key was already used for a different request.',
+                IDEMPOTENCY_ERROR_CODES.mismatch,
+              ),
+            );
+            return;
+          }
+          if (record.statusCode !== null) {
+            replay(res, record);
+            return;
+          }
+          // Peer still in flight: wait, then re-check (it may complete or release).
+          if (now() >= deadline) {
+            next(
+              conflict(
+                'A request with this Idempotency-Key is still being processed.',
+                IDEMPOTENCY_ERROR_CODES.inProgress,
+              ),
+            );
+            return;
+          }
+          await sleep(pollMs);
         }
-        const { record } = outcome;
-        if (!record) continue; // vanished between conflict + read → re-claim
-        if (
-          record.method !== input.method ||
-          record.path !== input.path ||
-          record.requestHash !== input.requestHash
-        ) {
-          next(
-            conflict(
-              'This Idempotency-Key was already used for a different request.',
-              IDEMPOTENCY_ERROR_CODES.mismatch,
-            ),
-          );
-          return;
-        }
-        if (record.statusCode !== null) {
-          replay(res, record);
-          return;
-        }
-        // Peer still in flight: wait, then re-check (it may complete or release).
-        if (now() >= deadline) {
-          next(
-            conflict(
-              'A request with this Idempotency-Key is still being processed.',
-              IDEMPOTENCY_ERROR_CODES.inProgress,
-            ),
-          );
-          return;
-        }
-        await sleep(pollMs);
+      } finally {
+        res.off('close', markResponseClosed);
       }
     })().catch(next);
   };
