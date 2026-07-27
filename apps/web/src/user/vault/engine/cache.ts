@@ -3,6 +3,7 @@ export interface DerivedCacheKey {
   vaultKeyId: string;
   portfolioId: string;
   vaultVersion: number;
+  writeId: string;
   assetPriceWatermark: string;
   range: string;
   /** UTC valuation day; portfolio callers set it so live results cannot cross midnight. */
@@ -36,6 +37,7 @@ function cacheKey(key: DerivedCacheKey): string {
     key.vaultKeyId,
     key.portfolioId,
     key.vaultVersion,
+    key.writeId,
     key.assetPriceWatermark,
     key.range,
     key.effectiveDay ?? '',

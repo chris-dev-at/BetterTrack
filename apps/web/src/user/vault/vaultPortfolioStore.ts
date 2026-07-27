@@ -428,6 +428,12 @@ function requireDocument(engine: VaultSyncEngine): VaultDocumentV1 {
       'Corrupt vault data cannot be exposed to portfolio features.',
     );
   }
+  if (state.status === 'conflict' || state.status === 'unresolved') {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      `Vault sync is ${state.status}; portfolio reads and writes are unavailable.`,
+    );
+  }
   if (state.active == null) {
     throw storeError('VAULT_DATA_UNAVAILABLE', 'No authenticated vault document is available.');
   }

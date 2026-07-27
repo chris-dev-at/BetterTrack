@@ -33,6 +33,7 @@ import {
 } from './clientMoney.testSupport';
 
 const NOW = Date.parse('2026-07-27T12:00:00.000Z');
+const REPLACEMENT_WRITE_ID = '018f0000-0000-7000-8000-000000000198';
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
@@ -50,7 +51,10 @@ describe('paranoid client money engine', () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     const expected = await expectedFixtureDerivation();
+    expect(outcome.value.ownerUserId).toBe(CLIENT_MONEY_IDS.user);
+    expect(outcome.value.vaultKeyId).toBe(fixture.header.keyId);
     expect(outcome.value.vaultVersion).toBe(11);
+    expect(outcome.value.writeId).toBe(fixture.header.writeId);
     expect(outcome.value.holdings).toEqual(expected.holdings);
     expect(outcome.value.cashSources).toEqual([
       { sourceId: CLIENT_MONEY_IDS.cashSource, name: 'Main', balanceEur: 1020 },
@@ -148,6 +152,7 @@ describe('paranoid client money engine', () => {
     const de = await deEngine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
     expect(de.ok).toBe(true);
     if (!de.ok) return;
+    expect(de.value.writeId).toBe(fixture.header.writeId);
     const expectedDe = settleDeYear({
       aktienPotInEur: 0,
       sonstigePotInEur: 0,
@@ -448,11 +453,17 @@ describe('paranoid client money engine', () => {
     if (!reFx.ok) return;
     expect(reFx.value).not.toBe(repriced.value);
 
-    sync.setDocument(structuredClone(fixture.document));
+    const divergent = structuredClone(fixture.document);
+    const deposit = divergent.entities.cashMovement?.[0];
+    if (deposit === undefined) throw new Error('Fixture cash movement is missing.');
+    deposit.data.amountEur = String(Number(deposit.data.amountEur) + 100);
+    sync.setDocument(divergent, false, REPLACEMENT_WRITE_ID);
     const mutated = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
     expect(mutated.ok).toBe(true);
     if (!mutated.ok) return;
     expect(mutated.value).not.toBe(reFx.value);
+    expect(mutated.value.writeId).toBe(REPLACEMENT_WRITE_ID);
+    expect(mutated.value.cashBalanceEur).toBe(reFx.value.cashBalanceEur + 100);
   });
 
   it('keeps the audited since-inception TWR vector for MAX and rebases only bounded ranges', async () => {
@@ -685,7 +696,7 @@ describe('paranoid client money engine', () => {
     const history = raceMarket.market.history;
     raceMarket.market.history = async (...args) => {
       const value = await history(...args);
-      raceSync.setDocument(structuredClone(fixture.document));
+      raceSync.setDocument(structuredClone(fixture.document), false, REPLACEMENT_WRITE_ID);
       return value;
     };
     const raced = await createVaultMoneyEngine(raceSync, raceMarket.market, {
@@ -710,6 +721,41 @@ describe('paranoid client money engine', () => {
       error: { code: 'VAULT_UNSUPPORTED_VERSION' },
     });
   });
+
+  it.each(['conflict', 'unresolved'] as const)(
+    'returns no authoritative portfolio or tax result while sync is %s',
+    async (status) => {
+      const fixture = await decryptClientMoneyFixture();
+      const sync = createMutableTestSync(fixture.document, fixture.header);
+      sync.setStatus(status);
+      const market = createClientMoneyMarket();
+      const engine = createVaultMoneyEngine(sync, market.market, { now: () => NOW });
+
+      await expect(engine.onAppOpen()).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: 'VAULT_DATA_UNAVAILABLE',
+          retryable: true,
+          details: { syncStatus: status },
+        },
+      });
+      await expect(
+        engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX'),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'VAULT_DATA_UNAVAILABLE', retryable: true },
+      });
+      await expect(engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026)).resolves.toMatchObject(
+        {
+          ok: false,
+          error: { code: 'VAULT_DATA_UNAVAILABLE', retryable: true },
+        },
+      );
+      expect(market.calls.quote).toEqual([]);
+      expect(market.calls.history).toEqual([]);
+      expect(market.calls.fx).toEqual([]);
+    },
+  );
 
   it('returns truthful empty derivations from a valid empty portfolio', async () => {
     const fixture = await decryptClientMoneyFixture();

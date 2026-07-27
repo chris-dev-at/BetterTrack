@@ -103,6 +103,7 @@ export function createPortfolioDerivationEngine(
           vaultKeyId: snapshot.vaultKeyId,
           portfolioId,
           vaultVersion: snapshot.vaultVersion,
+          writeId: snapshot.writeId,
           assetPriceWatermark: value.assetPriceWatermark,
           range,
           effectiveDay: today,
@@ -285,8 +286,11 @@ async function derive(
   for (const id of missingByDate.get(today) ?? []) currentMissing.add(id);
 
   return {
+    ownerUserId: snapshot.ownerUserId,
+    vaultKeyId: snapshot.vaultKeyId,
     portfolioId: model.portfolioId,
     vaultVersion: snapshot.vaultVersion,
+    writeId: snapshot.writeId,
     assetPriceWatermark,
     range,
     baseCurrency: 'EUR',
@@ -612,8 +616,11 @@ function marketOrMoneyFailure(cause: unknown) {
 export function withTaxEngine(
   portfolio: PortfolioDerivationEngine,
   deriveTaxReport: VaultMoneyEngine['deriveTaxReport'],
+  lifecycle: Pick<VaultMoneyEngine, 'onAppOpen' | 'afterUnlock'>,
 ): VaultMoneyEngine {
   return {
+    onAppOpen: lifecycle.onAppOpen,
+    afterUnlock: lifecycle.afterUnlock,
     derivePortfolio: portfolio.derivePortfolio,
     deriveTaxReport,
     clearCache: portfolio.clearCache,

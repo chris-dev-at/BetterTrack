@@ -100,6 +100,7 @@ export function createClientTaxEngine(
           vaultKeyId: snapshot.vaultKeyId,
           portfolioId,
           vaultVersion: snapshot.vaultVersion,
+          writeId: snapshot.writeId,
           assetPriceWatermark,
           range: `tax:${year}:${currentYear}`,
         };
@@ -117,6 +118,7 @@ export function createClientTaxEngine(
           report: report.report,
           computedTaxTargetEur: report.computedTaxTargetEur,
           vaultVersion: snapshot.vaultVersion,
+          writeId: snapshot.writeId,
           assetPriceWatermark,
           freshness: converted.stale ? 'stale' : 'fresh',
         };

@@ -10,7 +10,11 @@ import {
   decryptClientMoneyFixture,
 } from '../engine/clientMoney.testSupport';
 import { createVaultMoneyEngine } from '../engine';
-import { createVaultPortfolioStore, type VaultPortfolioStore } from '../vaultPortfolioStore';
+import {
+  createVaultPortfolioStore,
+  type VaultPortfolioStore,
+  VaultPortfolioStoreError,
+} from '../vaultPortfolioStore';
 import { createStandingOrderMaterializationLifecycle } from './lifecycle';
 import { materializeDueStandingOrders } from './materialize';
 import { standingOrderOccurrenceId } from './occurrenceId';
@@ -77,6 +81,7 @@ describe('paranoid standing-order materialization', () => {
       timezone: 'Europe/Vienna',
     });
 
+    expect(outcome.ok, outcome.ok ? undefined : JSON.stringify(outcome.error)).toBe(true);
     expect(outcome).toMatchObject({
       ok: true,
       value: {
@@ -494,6 +499,110 @@ describe('paranoid standing-order materialization', () => {
     await expect(locked.afterUnlock()).resolves.toEqual(success);
     expect(lockCalls).toBe(2);
   });
+
+  it('gates money results after an interrupted real store commit and recovers without duplication', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(DAILY_ADD_ID, {
+        kind: 'cash-add',
+        amount: '25',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const sync = createMutableTestSync(document, fixture.header);
+    const durableStore = createVaultPortfolioStore(sync);
+    let loseFirstCommitResponse = true;
+    const interruptedStore: VaultPortfolioStore = {
+      ...durableStore,
+      async materializeStandingOrderOccurrence(input, signal) {
+        const result = await durableStore.materializeStandingOrderOccurrence(input, signal);
+        if (loseFirstCommitResponse) {
+          loseFirstCommitResponse = false;
+          throw new VaultPortfolioStoreError(
+            'VAULT_DATA_UNAVAILABLE',
+            'The first durable commit response was interrupted.',
+          );
+        }
+        return result;
+      },
+    };
+    const market = createClientMoneyMarket();
+    const lifecycle = createStandingOrderMaterializationLifecycle(sync, market.market, {
+      store: interruptedStore,
+      retryCount: 0,
+      now: () => new Date(BOOKED_AT),
+      timezone: 'Europe/Vienna',
+    });
+    const engine = createVaultMoneyEngine(sync, market.market, {
+      now: () => new Date(BOOKED_AT).getTime(),
+      standingOrders: lifecycle,
+    });
+
+    await expect(engine.onAppOpen()).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'VAULT_DATA_UNAVAILABLE', retryable: true },
+    });
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'VAULT_DATA_UNAVAILABLE', retryable: true },
+    });
+    expect(market.calls.quote).toEqual([]);
+    expect(market.calls.history).toEqual([]);
+
+    await expect(engine.afterUnlock()).resolves.toMatchObject({ ok: true });
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: true,
+    });
+
+    const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
+    expect(
+      sync.state.active?.document.entities.cashMovement?.filter(
+        (entity) => entity.id === occurrenceId && entity.deletedAt === null,
+      ),
+    ).toHaveLength(1);
+    expect(
+      sync.state.active?.document.entities.standingOrderRun?.filter(
+        (entity) => entity.id === occurrenceId && entity.deletedAt === null,
+      ),
+    ).toHaveLength(1);
+    expect(sync.mutationCount).toBe(1);
+  });
+
+  it.each(['conflict', 'unresolved'] as const)(
+    'performs no standing-order write while sync is %s',
+    async (status) => {
+      const fixture = await decryptClientMoneyFixture();
+      const document = withOrders(fixture.document, [
+        standingOrder(DAILY_ADD_ID, {
+          kind: 'cash-add',
+          amount: '25',
+          cadence: 'daily',
+          anchorDay: null,
+          startDate: '2026-07-20',
+        }),
+      ]);
+      const sync = createMutableTestSync(document, fixture.header);
+      sync.setStatus(status);
+
+      await expect(
+        materializeDueStandingOrders(
+          sync,
+          createVaultPortfolioStore(sync),
+          createClientMoneyMarket().market,
+          {
+            now: () => new Date(BOOKED_AT),
+            timezone: 'Europe/Vienna',
+          },
+        ),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'VAULT_DATA_UNAVAILABLE', retryable: true },
+      });
+      expect(sync.mutationCount).toBe(0);
+    },
+  );
 
   it('keeps calendar math deterministic across month ends and timezone boundaries', () => {
     expect(

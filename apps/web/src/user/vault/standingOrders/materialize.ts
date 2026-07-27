@@ -15,7 +15,11 @@ import {
 } from '../engine/errors';
 import { localManualAssetMarket } from '../engine/manualAsset';
 import { readPortfolioModel } from '../engine/model';
-import { liveEntities, validatedVaultSnapshot } from '../engine/session';
+import {
+  assertVaultSnapshotCurrent,
+  liveEntities,
+  validatedVaultSnapshot,
+} from '../engine/session';
 import type { VaultSyncEngine } from '../sync';
 import { standingOrderOccurrenceId } from './occurrenceId';
 import { calendarDayInTimezone, dueStandingOrderOccurrence } from './schedule';
@@ -63,7 +67,7 @@ export async function materializeDueStandingOrders(
     const now = (options.now ?? (() => new Date()))();
     const timezone = options.timezone ?? 'Europe/Vienna';
     const today = calendarDayInTimezone(now, timezone);
-    const snapshot = validatedVaultSnapshot(sync);
+    let snapshot = validatedVaultSnapshot(sync);
     const orders = liveEntities(snapshot.document, 'standingOrder').map(parseOrder);
     const existingRuns = new Set(
       liveEntities(snapshot.document, 'standingOrderRun').map((entity) => {
@@ -141,6 +145,7 @@ export async function materializeDueStandingOrders(
 
       const occurrenceId = await standingOrderOccurrenceId(order.entity.id, dueDate);
       try {
+        assertVaultSnapshotCurrent(sync, snapshot);
         const committed = await store.materializeStandingOrderOccurrence(
           {
             occurrenceId,
@@ -160,6 +165,7 @@ export async function materializeDueStandingOrders(
           kind: order.row.kind,
           status: committed.status,
         });
+        snapshot = validatedVaultSnapshot(sync);
       } catch (cause) {
         if (
           cause instanceof InsufficientCashError ||
@@ -172,6 +178,7 @@ export async function materializeDueStandingOrders(
         throw cause;
       }
     }
+    assertVaultSnapshotCurrent(sync, snapshot);
     return { ok: true, value: result };
   } catch (cause) {
     return { ok: false, error: asMoneyFailure(cause) };

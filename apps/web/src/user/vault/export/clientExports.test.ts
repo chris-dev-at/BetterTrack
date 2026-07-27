@@ -18,6 +18,7 @@ const NOW = Date.parse('2026-07-27T12:00:00.000Z');
 const OTHER_PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000301';
 const OTHER_VAULT_KEY_ID = '018f0000-0000-7000-8000-000000000302';
 const OTHER_OWNER_ID = '018f0000-0000-7000-8000-000000000303';
+const OTHER_WRITE_ID = '018f0000-0000-7000-8000-000000000304';
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
@@ -34,6 +35,7 @@ describe('paranoid client exports', () => {
     }).deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
     expect(tax.ok).toBe(true);
     if (!tax.ok) return;
+    expect(tax.value.writeId).toBe(fixture.header.writeId);
 
     const csv = createClientTaxCsv(sync, CLIENT_MONEY_IDS.portfolio, tax.value, 'en');
     expect(csv.ok).toBe(true);
@@ -230,9 +232,48 @@ describe('paranoid client exports', () => {
       ok: false,
       error: { code: 'OPERATION_ABORTED' },
     });
+
+    sync.setDocument(document, false, OTHER_WRITE_ID);
+    expect(createClientTaxCsv(sync, CLIENT_MONEY_IDS.portfolio, selected.value)).toMatchObject({
+      ok: false,
+      error: { code: 'OPERATION_ABORTED' },
+    });
+    expect(
+      createPrintableTaxReport(sync, CLIENT_MONEY_IDS.portfolio, selected.value),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'OPERATION_ABORTED' },
+    });
   });
 
-  it('returns no file when a lock, version change, or abort races generation', async () => {
+  it.each(['conflict', 'unresolved'] as const)(
+    'hands off no cleartext or report bytes while sync is %s',
+    async (status) => {
+      const fixture = await decryptClientMoneyFixture();
+      const sync = createMutableTestSync(fixture.document, fixture.header);
+      const tax = await createVaultMoneyEngine(sync, createClientMoneyMarket().market, {
+        now: () => NOW,
+      }).deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+      expect(tax.ok).toBe(true);
+      if (!tax.ok) return;
+      sync.setStatus(status);
+
+      expect(createClientTaxCsv(sync, CLIENT_MONEY_IDS.portfolio, tax.value)).toMatchObject({
+        ok: false,
+        error: { code: 'VAULT_DATA_UNAVAILABLE', retryable: true },
+      });
+      expect(createPrintableTaxReport(sync, CLIENT_MONEY_IDS.portfolio, tax.value)).toMatchObject({
+        ok: false,
+        error: { code: 'VAULT_DATA_UNAVAILABLE', retryable: true },
+      });
+      await expect(createClientCleartextExport(sync)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'VAULT_DATA_UNAVAILABLE', retryable: true },
+      });
+    },
+  );
+
+  it('returns no file when a lock, candidate change, or abort races generation', async () => {
     const fixture = await decryptClientMoneyFixture();
     const versionSync = createMutableTestSync(fixture.document, fixture.header);
     const tax = await createVaultMoneyEngine(versionSync, createClientMoneyMarket().market, {
@@ -258,6 +299,17 @@ describe('paranoid client exports', () => {
     await expect(lockPromise).resolves.toMatchObject({
       ok: false,
       error: { code: 'VAULT_LOCKED' },
+    });
+
+    const replacementSync = createMutableTestSync(fixture.document, fixture.header);
+    const replacementPromise = createClientCleartextExport(replacementSync);
+    globalThis.setTimeout(
+      () => replacementSync.setDocument(structuredClone(fixture.document), false, OTHER_WRITE_ID),
+      0,
+    );
+    await expect(replacementPromise).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'OPERATION_ABORTED', retryable: true },
     });
 
     const abortSync = createMutableTestSync(fixture.document, fixture.header);

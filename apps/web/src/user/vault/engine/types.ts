@@ -2,6 +2,7 @@ import type { PortfolioHistoryRange, TaxYearReportResponse } from '@bettertrack/
 import type { Holding } from '@bettertrack/domain/holdings';
 import type { SeriesStats } from '@bettertrack/domain/seriesStats';
 
+import type { StandingOrderMaterializationResult } from '../standingOrders/materialize';
 import type { VaultMoneyOutcome } from './errors';
 
 export type ClientPortfolioRange = PortfolioHistoryRange;
@@ -31,8 +32,11 @@ export interface ClientSeriesPoint {
 }
 
 export interface ClientPortfolioDerivation {
+  ownerUserId: string;
+  vaultKeyId: string;
   portfolioId: string;
   vaultVersion: number;
+  writeId: string;
   assetPriceWatermark: string;
   range: ClientPortfolioRange;
   baseCurrency: 'EUR';
@@ -55,11 +59,16 @@ export interface ClientTaxReport {
   report: TaxYearReportResponse;
   computedTaxTargetEur: number;
   vaultVersion: number;
+  writeId: string;
   assetPriceWatermark: string;
   freshness: 'fresh' | 'stale';
 }
 
 export interface VaultMoneyEngine {
+  /** Required catch-up boundary for application bootstrap. Concurrent calls coalesce. */
+  onAppOpen(): Promise<VaultMoneyOutcome<StandingOrderMaterializationResult>>;
+  /** Required catch-up boundary after a fresh unlock. Its outcome gates later derivations. */
+  afterUnlock(): Promise<VaultMoneyOutcome<StandingOrderMaterializationResult>>;
   derivePortfolio(
     portfolioId: string,
     range: ClientPortfolioRange,

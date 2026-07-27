@@ -8,7 +8,7 @@ import {
   type VaultEntityKind,
 } from '@bettertrack/contracts';
 
-import type { VaultSyncEngine } from '../sync';
+import type { VaultSyncEngine, VaultSyncState } from '../sync';
 import { moneyFailure } from './errors';
 import type { ClientTaxReport } from './types';
 
@@ -16,21 +16,21 @@ export interface ValidatedVaultSnapshot {
   document: VaultDocumentV1;
   vaultVersion: number;
   vaultKeyId: string;
+  writeId: string;
   ownerUserId: string;
 }
 
 /** Obtain one authenticated, strict snapshot of the decrypted in-memory vault. */
 export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultSnapshot {
   const state = engine.state;
-  if (state.status === 'locked') {
-    throw moneyFailure('VAULT_LOCKED', 'The vault must be unlocked before money data is read.');
-  }
-  if (state.status === 'corrupt') {
-    throw moneyFailure('VAULT_CORRUPT', 'Corrupt vault data cannot enter the client money engine.');
-  }
+  assertAuthoritativeSyncState(state, 'before money data is read');
   const candidate = state.active;
   if (candidate === null) {
-    throw moneyFailure('VAULT_LOCKED', 'No authenticated decrypted vault document is active.');
+    throw moneyFailure(
+      'VAULT_DATA_UNAVAILABLE',
+      'No authenticated decrypted vault document is active.',
+      { retryable: true },
+    );
   }
   if (candidate.header.schemaVersion !== VAULT_DOCUMENT_VERSION) {
     throw moneyFailure(
@@ -62,6 +62,7 @@ export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultS
     document: parsed.data,
     vaultVersion: candidate.header.vaultVersion,
     vaultKeyId: candidate.header.keyId,
+    writeId: candidate.header.writeId,
     ownerUserId,
   };
 }
@@ -72,15 +73,18 @@ export function assertVaultSnapshotCurrent(
   snapshot: ValidatedVaultSnapshot,
 ): void {
   const state = engine.state;
-  if (state.status === 'locked' || state.active === null) {
-    throw moneyFailure('VAULT_LOCKED', 'The vault locked while the client operation was running.');
-  }
-  if (state.status === 'corrupt') {
-    throw moneyFailure('VAULT_CORRUPT', 'The vault became unreadable during the client operation.');
+  assertAuthoritativeSyncState(state, 'while the client operation was running');
+  if (state.active === null) {
+    throw moneyFailure(
+      'VAULT_DATA_UNAVAILABLE',
+      'The authenticated vault candidate disappeared during the client operation.',
+      { retryable: true },
+    );
   }
   if (
     state.active.header.vaultVersion !== snapshot.vaultVersion ||
-    state.active.header.keyId !== snapshot.vaultKeyId
+    state.active.header.keyId !== snapshot.vaultKeyId ||
+    state.active.header.writeId !== snapshot.writeId
   ) {
     throw moneyFailure(
       'OPERATION_ABORTED',
@@ -104,12 +108,29 @@ export function assertTaxReportScope(
     tax.ownerUserId !== snapshot.ownerUserId ||
     tax.vaultKeyId !== snapshot.vaultKeyId ||
     tax.portfolioId !== portfolioId ||
-    tax.vaultVersion !== snapshot.vaultVersion
+    tax.vaultVersion !== snapshot.vaultVersion ||
+    tax.writeId !== snapshot.writeId
   ) {
     throw moneyFailure(
       'OPERATION_ABORTED',
       'The tax report does not belong to the active vault and portfolio.',
       { retryable: true },
+    );
+  }
+}
+
+function assertAuthoritativeSyncState(state: VaultSyncState, phase: string): void {
+  if (state.status === 'locked') {
+    throw moneyFailure('VAULT_LOCKED', `The vault is locked ${phase}.`, { retryable: true });
+  }
+  if (state.status === 'corrupt') {
+    throw moneyFailure('VAULT_CORRUPT', `The vault is corrupt ${phase}.`);
+  }
+  if (state.status === 'conflict' || state.status === 'unresolved') {
+    throw moneyFailure(
+      'VAULT_DATA_UNAVAILABLE',
+      `The vault sync state is ${state.status} ${phase}; no authoritative money result is available.`,
+      { retryable: true, details: { syncStatus: state.status } },
     );
   }
 }

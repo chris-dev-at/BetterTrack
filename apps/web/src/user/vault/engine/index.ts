@@ -34,22 +34,34 @@ export function createVaultMoneyEngine(
     createStandingOrderMaterializationLifecycle(sync, market, {
       ...(now === undefined ? {} : { now: () => new Date(now()) }),
     });
-  const appOpenCatchUp = standingOrders.onAppOpen();
+  let requiredCatchUp: ReturnType<StandingOrderMaterializationLifecycle['onAppOpen']> | null = null;
 
-  async function catchUpStandingOrders(): Promise<void> {
-    const initial = await appOpenCatchUp;
-    if (!initial.ok && initial.error.code === 'VAULT_LOCKED') {
-      await standingOrders.afterUnlock();
-    }
+  function onAppOpen() {
+    requiredCatchUp ??= standingOrders.onAppOpen();
+    return requiredCatchUp;
+  }
+
+  function afterUnlock() {
+    requiredCatchUp = standingOrders.afterUnlock();
+    return requiredCatchUp;
+  }
+
+  async function catchUpFailure() {
+    const outcome = await onAppOpen();
+    return outcome.ok ? null : outcome.error;
   }
 
   return {
+    onAppOpen,
+    afterUnlock,
     async derivePortfolio(...args) {
-      await catchUpStandingOrders();
+      const error = await catchUpFailure();
+      if (error !== null) return { ok: false, error };
       return portfolio.derivePortfolio(...args);
     },
     async deriveTaxReport(...args) {
-      await catchUpStandingOrders();
+      const error = await catchUpFailure();
+      if (error !== null) return { ok: false, error };
       return tax.deriveTaxReport(...args);
     },
     clearCache() {

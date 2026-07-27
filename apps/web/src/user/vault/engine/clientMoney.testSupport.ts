@@ -35,7 +35,8 @@ export async function decryptClientMoneyFixture(): Promise<{
 
 export interface MutableTestSync extends VaultSyncEngine {
   readonly mutationCount: number;
-  setDocument(document: VaultDocumentV1, bumpVersion?: boolean): void;
+  setDocument(document: VaultDocumentV1, bumpVersion?: boolean, writeId?: string): void;
+  setStatus(status: 'synced' | 'conflict' | 'unresolved'): void;
   setLocked(): void;
 }
 
@@ -45,6 +46,8 @@ export function createMutableTestSync(
   envelope = new Uint8Array(),
 ): MutableTestSync {
   let version = header.vaultVersion;
+  let activeWriteId = header.writeId;
+  let candidateSequence = 0;
   let mutations = 0;
   let state = syncedState(document);
   let tail: Promise<void> = Promise.resolve();
@@ -55,7 +58,7 @@ export function createMutableTestSync(
       active: {
         home: MEMORY_HOME,
         envelope,
-        header: { ...header, vaultVersion: version },
+        header: { ...header, vaultVersion: version, writeId: activeWriteId },
         document: nextDocument,
       },
       pending: null,
@@ -91,20 +94,34 @@ export function createMutableTestSync(
         const next = mutator({ document: active.document, currentVersion: version });
         mutations += 1;
         version += 1;
+        candidateSequence += 1;
+        activeWriteId = testWriteId(candidateSequence);
         state = syncedState(next);
         return state;
       } finally {
         release();
       }
     },
-    setDocument(nextDocument, bumpVersion = true) {
-      if (bumpVersion) version += 1;
+    setDocument(nextDocument, bumpVersion = true, writeId) {
+      if (bumpVersion) {
+        version += 1;
+        candidateSequence += 1;
+        activeWriteId = testWriteId(candidateSequence);
+      }
+      if (writeId !== undefined) activeWriteId = writeId;
       state = syncedState(nextDocument);
+    },
+    setStatus(status) {
+      state = { ...state, status };
     },
     setLocked() {
       state = { status: 'locked', active: null, pending: null };
     },
   };
+}
+
+function testWriteId(sequence: number): string {
+  return `018f0000-0000-7000-8000-${(0x200 + sequence).toString(16).padStart(12, '0')}`;
 }
 
 export interface TestMarketControls {

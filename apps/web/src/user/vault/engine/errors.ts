@@ -1,8 +1,13 @@
+import { VaultCryptoError } from '../errors';
+import { VaultPortfolioStoreError } from '../vaultPortfolioStore';
+
 export const VAULT_MONEY_ERROR_CODES = [
   'VAULT_LOCKED',
   'VAULT_CORRUPT',
+  'VAULT_DATA_UNAVAILABLE',
   'VAULT_UNSUPPORTED_VERSION',
   'VAULT_UNSUPPORTED_ENTITY',
+  'VAULT_OPERATION_UNSUPPORTED',
   'VAULT_INVALID_OWNERSHIP',
   'PORTFOLIO_NOT_FOUND',
   'MARKET_DATA_MISSING',
@@ -59,6 +64,8 @@ export function moneyFailure(
 
 export function asMoneyFailure(cause: unknown): VaultMoneyFailure {
   if (cause instanceof VaultMoneyEngineError) return cause.failure;
+  if (cause instanceof VaultPortfolioStoreError) return storeFailure(cause);
+  if (cause instanceof VaultCryptoError) return cryptoFailure(cause);
   if (cause instanceof DOMException && cause.name === 'AbortError') {
     return {
       code: 'OPERATION_ABORTED',
@@ -71,4 +78,48 @@ export function asMoneyFailure(cause: unknown): VaultMoneyFailure {
     message: 'The decrypted vault could not be processed safely.',
     retryable: false,
   };
+}
+
+function storeFailure(cause: VaultPortfolioStoreError): VaultMoneyFailure {
+  switch (cause.code) {
+    case 'VAULT_LOCKED':
+      return typedFailure('VAULT_LOCKED', cause.message, true);
+    case 'VAULT_DATA_UNAVAILABLE':
+      return typedFailure('VAULT_DATA_UNAVAILABLE', cause.message, true);
+    case 'VAULT_OPERATION_UNAVAILABLE':
+    case 'VAULT_LAST_ACTIVE_PORTFOLIO':
+      return typedFailure('VAULT_OPERATION_UNSUPPORTED', cause.message, false);
+    case 'VAULT_CORRUPT':
+    case 'VAULT_DATA_INVALID':
+    case 'VAULT_ENTITY_NOT_FOUND':
+      return typedFailure('VAULT_CORRUPT', cause.message, false);
+  }
+}
+
+function cryptoFailure(cause: VaultCryptoError): VaultMoneyFailure {
+  switch (cause.code) {
+    case 'locked':
+      return typedFailure('VAULT_LOCKED', cause.message, true);
+    case 'custody-failed':
+    case 'kdf-failed':
+    case 'storage-failed':
+      return typedFailure('VAULT_DATA_UNAVAILABLE', cause.message, true);
+    case 'update-required':
+      return typedFailure('VAULT_UNSUPPORTED_VERSION', cause.message, false);
+    case 'unsupported-crypto':
+      return typedFailure('VAULT_OPERATION_UNSUPPORTED', cause.message, false);
+    case 'authentication-failed':
+    case 'document-invalid':
+    case 'envelope-invalid':
+    case 'recovery-kit-invalid':
+      return typedFailure('VAULT_CORRUPT', cause.message, false);
+  }
+}
+
+function typedFailure(
+  code: VaultMoneyErrorCode,
+  message: string,
+  retryable: boolean,
+): VaultMoneyFailure {
+  return { code, message, retryable };
 }
