@@ -4,6 +4,7 @@ import { getTableColumns } from 'drizzle-orm';
 import { assetIdentities } from '../../../data/schema';
 import {
   EXPORT_TABLE_CLASSIFICATION,
+  PARANOID_PURGE_TABLE_NAMES,
   PARANOID_TABLE_CLASSIFICATION,
   PARANOID_VAULT_TABLE_NAMES,
   schemaTableNames,
@@ -17,9 +18,10 @@ import {
  * Paranoid data-home completeness sweep vs the Drizzle schema (§13.5 V5-P13 arc
  * b, `docs/paranoid-design.md` §1). The parallel of the export completeness test:
  * every schema table MUST be classified exactly once as `vault` (client-only,
- * purged/probed/rehydrated) or `server` (kept) — so a future table breaks this
- * test until it is classified, and can never silently leak into the "zero
- * portfolio rows server-side" guarantee.
+ * purged/probed/rehydrated), `purge` (transient cleartext, purged/probed), or
+ * `server` (kept) — so a future table breaks this test until it is classified,
+ * and can never silently leak into the "zero portfolio rows server-side"
+ * guarantee.
  */
 describe('paranoid table classification completeness', () => {
   const tables = schemaTableNames();
@@ -35,9 +37,9 @@ describe('paranoid table classification completeness', () => {
     expect(stale, `classification names a non-existent table: ${stale.join(', ')}`).toEqual([]);
   });
 
-  it('only uses the two allowed axis values', () => {
+  it('only uses the three allowed axis values', () => {
     for (const [table, c] of Object.entries(PARANOID_TABLE_CLASSIFICATION)) {
-      expect(['vault', 'server'], `${table} has an invalid classification`).toContain(c);
+      expect(['vault', 'purge', 'server'], `${table} has an invalid classification`).toContain(c);
     }
   });
 
@@ -57,6 +59,12 @@ describe('paranoid table classification completeness', () => {
     ]) {
       expect(PARANOID_TABLE_CLASSIFICATION[table], `${table} should be vault`).toBe('vault');
     }
+  });
+
+  it('purges transient idempotency response bodies without vaulting them', () => {
+    expect(PARANOID_TABLE_CLASSIFICATION.idempotency_keys).toBe('purge');
+    expect(PARANOID_PURGE_TABLE_NAMES).toContain('idempotency_keys');
+    expect(PARANOID_VAULT_TABLE_NAMES).not.toContain('idempotency_keys');
   });
 
   it('keeps identity/auth, friends+chat, alerts and the vault rows server-side', () => {
@@ -95,8 +103,8 @@ describe('paranoid table classification completeness', () => {
     expect(PARANOID_VAULT_TABLE_NAMES.length).toBeLessThan(tables.length);
   });
 
-  it('has one executable purge handler for every vault-classified table', () => {
-    expect(PARANOID_PURGE_HANDLER_NAMES).toEqual([...PARANOID_VAULT_TABLE_NAMES]);
-    expect(PARANOID_PROBE_HANDLER_NAMES).toEqual([...PARANOID_VAULT_TABLE_NAMES]);
+  it('has one executable purge handler for every purge-enrolled table', () => {
+    expect(PARANOID_PURGE_HANDLER_NAMES).toEqual([...PARANOID_PURGE_TABLE_NAMES]);
+    expect(PARANOID_PROBE_HANDLER_NAMES).toEqual([...PARANOID_PURGE_TABLE_NAMES]);
   });
 });

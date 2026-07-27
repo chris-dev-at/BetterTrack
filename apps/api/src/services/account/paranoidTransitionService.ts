@@ -59,6 +59,16 @@ export interface ParanoidTransitionServiceDeps {
   afterEnableStage?: (stage: ParanoidEnableStage) => void | Promise<void>;
   /** Test seam for reversible pre-commit retirement of cleartext export ZIPs. */
   prepareExportFile?: (artifact: CleartextExportArtifact) => Promise<PreparedExportFileRetirement>;
+  /**
+   * Purge user-derived non-database state while the account's exclusive
+   * transition lock is still held. Cache/socket invalidation is safe to repeat
+   * and intentionally happens before commit: rollback may cost warm state, but a
+   * successful enable can never expose or recreate cleartext after the purge.
+   */
+  beforeEnableCommit?: (
+    userId: string,
+    plan: { customAssetIds: readonly string[] },
+  ) => void | Promise<void>;
 }
 
 export interface CleartextExportArtifact {
@@ -202,6 +212,16 @@ export function createParanoidTransitionService(
           preparedRetirements.push(await prepareExportFile(artifact));
         }
       };
+      const purgeDerivedState = async (customAssetIds: readonly string[]): Promise<void> => {
+        try {
+          await deps.beforeEnableCommit?.(userId, { customAssetIds });
+        } catch {
+          throw new ParanoidTransitionError(
+            'TRANSITION_CONFLICT',
+            'User-derived server state could not be retired safely.',
+          );
+        }
+      };
 
       let result: ParanoidEnableResponse;
       try {
@@ -236,6 +256,7 @@ export function createParanoidTransitionService(
                   'A retired account export still needs cleanup.',
                 );
               }
+              await purgeDerivedState(state.customAssetIds);
               return {
                 mode: 'paranoid' as const,
                 mediaSet: input.mediaSet,
@@ -302,6 +323,7 @@ export function createParanoidTransitionService(
             await stage('sharingRevoked');
             await transition.purgeVaultRows(userId);
             await stage('vaultPurged');
+            await purgeDerivedState(state.customAssetIds);
             await transition.completeEnable({
               userId,
               mediaSet: input.mediaSet,

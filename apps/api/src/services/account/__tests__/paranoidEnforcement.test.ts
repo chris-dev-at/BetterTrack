@@ -27,8 +27,9 @@ import { buildRouteTable } from '../../../scripts/checkOpenapiCoverage';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import {
   isParanoidKilledScope,
+  isParanoidKilledWebhookEvent,
   isParanoidOwnedSubjectBlocked,
-  isPortfolioContentWebhookEvent,
+  paranoidWebhookSubjectIds,
   ParanoidModeError,
   paranoidClassificationsForRoute,
   paranoidCapabilityForRoute,
@@ -36,6 +37,7 @@ import {
   PARANOID_KILL_REGISTRY,
   PARANOID_SERVICE_BINDINGS,
   PARANOID_SERVICE_EXEMPTIONS,
+  PARANOID_WEBHOOK_SUBJECT_POLICIES,
   registeredServiceMethods,
   serviceMethodNames,
 } from '../paranoidEnforcement';
@@ -149,7 +151,7 @@ describe('paranoid kill registry', () => {
                 : [user.username, 'portfolio', '018f0000-0000-7000-8000-000000000099']
             : binding.subject === 'userIdField'
               ? [{ userId: user.id }]
-              : binding.subject === 'portfolioEventUser'
+              : binding.subject === 'paranoidWebhookSubjects'
                 ? [{ type: 'portfolio.changed', userId: user.id }]
                 : binding.subject === 'portfolioIdFirst' || binding.subject === 'assetIdFirst'
                   ? ['018f0000-0000-7000-8000-000000000099']
@@ -194,24 +196,40 @@ describe('paranoid kill registry', () => {
     }
     expect(isParanoidKilledScope('market:read')).toBe(false);
 
-    const portfolioEvents = PARANOID_KILL_REGISTRY.find(
-      (entry) => entry.capability === 'portfolioWebhooks',
-    )!.webhookEventTypes;
-    for (const type of portfolioEvents.filter((value) => value !== 'friend.activity')) {
-      expect(isPortfolioContentWebhookEvent({ type } as DomainEvent), type).toBe(true);
+    const killedWebhookEvents = [
+      ...new Set(PARANOID_KILL_REGISTRY.flatMap((entry) => entry.webhookEventTypes)),
+    ];
+    expect(Object.keys(PARANOID_WEBHOOK_SUBJECT_POLICIES).sort()).toEqual(
+      [...killedWebhookEvents].sort(),
+    );
+    for (const type of killedWebhookEvents) {
+      expect(isParanoidKilledWebhookEvent({ type } as DomainEvent), type).toBe(true);
     }
     expect(
-      isPortfolioContentWebhookEvent({
+      isParanoidKilledWebhookEvent({
         type: 'friend.activity',
         itemKind: 'portfolio',
       } as DomainEvent),
     ).toBe(true);
     expect(
-      isPortfolioContentWebhookEvent({
+      isParanoidKilledWebhookEvent({
         type: 'friend.activity',
         itemKind: 'watchlist',
       } as DomainEvent),
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      paranoidWebhookSubjectIds({
+        type: 'watchlist.shared',
+        userId: 'recipient',
+        actorId: 'owner',
+      } as DomainEvent),
+    ).toEqual(['recipient', 'owner']);
+    expect(
+      paranoidWebhookSubjectIds({
+        type: 'dividend.event',
+        userId: 'owner',
+      } as DomainEvent),
+    ).toEqual(['owner']);
     expect(PARANOID_KILL_REGISTRY.flatMap((entry) => entry.jobs).sort()).toMatchInlineSnapshot(`
       [
         "marketIntel.dividendScan",
@@ -300,6 +318,92 @@ describe('paranoid kill registry', () => {
         jobContext,
       );
     expect(handlers.get('webhooks.deliver')).not.toHaveBeenCalled();
+  });
+
+  it('drops queued sharing webhooks when either recipient or item owner is paranoid', async () => {
+    const recipient = await harness.seedUser({
+      email: 'webhook-recipient@bettertrack.test',
+      username: 'webhook_recipient',
+    });
+    const owner = await harness.seedUser({
+      email: 'webhook-owner@bettertrack.test',
+      username: 'webhook_owner',
+    });
+    const handler = vi.fn(async () => {});
+    const definition = bindParanoidJob(
+      { name: 'webhooks.deliver', handler } as unknown as JobDefinition<'webhooks.deliver'>,
+      {
+        mode: 'event',
+        runIfAllowed: async (userIds, action) => {
+          try {
+            await harness.ctx.paranoidGuard.runAllowedMany(userIds, 'portfolioWebhooks', action);
+            return true;
+          } catch (error) {
+            if (error instanceof ParanoidModeError) return false;
+            throw error;
+          }
+        },
+      },
+    );
+    const jobContext = { logger: { info: vi.fn() } } as never;
+
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(users.id, owner.id));
+    await definition.handler(
+      {
+        data: {
+          event: {
+            type: 'portfolio.shared',
+            userId: recipient.id,
+            actorId: owner.id,
+            actorUsername: owner.username,
+            portfolioId: '018f0000-0000-7000-8000-000000000091',
+            occurredAt: '2026-07-27T00:00:00.000Z',
+          },
+        },
+      } as never,
+      jobContext,
+    );
+
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'normal',
+        paranoidMediaSet: null,
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(users.id, owner.id));
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(users.id, recipient.id));
+    await definition.handler(
+      {
+        data: {
+          event: {
+            type: 'watchlist.shared',
+            userId: recipient.id,
+            actorId: owner.id,
+            actorUsername: owner.username,
+            watchlistId: '018f0000-0000-7000-8000-000000000092',
+            occurredAt: '2026-07-27T00:00:00.000Z',
+          },
+        },
+      } as never,
+      jobContext,
+    );
+
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it('fails closed for a stale snapshot id after its paranoid portfolio was purged', async () => {

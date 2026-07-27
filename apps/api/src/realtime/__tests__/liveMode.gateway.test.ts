@@ -18,7 +18,9 @@ import {
 } from '@bettertrack/contracts';
 
 import { createAssetRepository } from '../../data/repositories/assetRepository';
-import { createTestApp, type TestHarness } from '../../testing/createTestApp';
+import { assets } from '../../data/schema';
+import { liveRingKey } from '../../services/liveMode';
+import { createTestApp, type SeededUser, type TestHarness } from '../../testing/createTestApp';
 import { createStubMarketData, type StubMarketData } from '../../testing/marketDataStubs';
 
 /**
@@ -88,6 +90,10 @@ async function seedAsset(): Promise<string> {
 
 async function connectUser(email: string, username: string): Promise<ClientSocket> {
   const user = await harness.seedUser({ email, username });
+  return connectSeededUser(user);
+}
+
+async function connectSeededUser(user: SeededUser): Promise<ClientSocket> {
   const agent = request.agent(harness.app);
   const res = await agent
     .post('/api/v1/auth/login')
@@ -398,5 +404,46 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     await unwatch(alice, assetId);
     await unwatch(alice, assetId); // repeat: must not steal bob's count
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
+  });
+
+  it('invalidates an existing custom-asset watch and its ring before paranoid enable commits', async () => {
+    const user = await harness.seedUser({
+      email: 'paranoid-live@bt.test',
+      username: 'paranoid_live',
+    });
+    const [customAsset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'manual',
+        providerRef: `custom:${user.id}:live`,
+        ownerId: user.id,
+        type: 'custom',
+        symbol: 'PRIVATE',
+        name: 'Private live asset',
+        currency: 'EUR',
+      })
+      .returning();
+    const socket = await connectSeededUser(user);
+    expect(await watch(socket, customAsset!.id, '10m')).toMatchObject({ ok: true });
+    await vi.waitFor(async () => {
+      expect(await harness.ctx.redis.llen(liveRingKey(customAsset!.id))).toBeGreaterThan(0);
+    });
+    expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(1);
+
+    await expect(
+      harness.ctx.paranoidTransitions.enable(user.id, {
+        mediaSet: ['drive'],
+        vaultVersion: 1,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
+      }),
+    ).resolves.toMatchObject({ mode: 'paranoid' });
+
+    expect(socket.connected).toBe(true);
+    expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(0);
+    expect(await harness.ctx.redis.lrange(liveRingKey(customAsset!.id), 0, -1)).toEqual([]);
+    expect(await watch(socket, customAsset!.id, '10m')).toEqual({
+      ok: false,
+      error: 'NOT_FOUND',
+    });
   });
 });

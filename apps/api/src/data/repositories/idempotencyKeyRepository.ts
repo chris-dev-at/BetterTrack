@@ -44,6 +44,15 @@ export interface IdempotencyResponse {
   contentType: string | null;
 }
 
+export interface CreateIdempotencyKeyRepositoryOptions {
+  /**
+   * Run response persistence only while the account is still normal, holding the
+   * same transition lock paranoid enable takes exclusively. Returning false
+   * means enable won the race and the replay row must remain absent.
+   */
+  runIfNormal?: (userId: string, action: () => Promise<void>) => Promise<boolean>;
+}
+
 /**
  * Outcome of a {@link IdempotencyKeyRepository.claim}:
  *  - `won: true` — we inserted the row and own execution (`id` to complete/release);
@@ -68,7 +77,17 @@ function toRecord(row: typeof idempotencyKeys.$inferSelect): IdempotencyRecord {
   };
 }
 
-export function createIdempotencyKeyRepository(db: Database) {
+export function createIdempotencyKeyRepository(
+  db: Database,
+  options: CreateIdempotencyKeyRepositoryOptions = {},
+) {
+  const runIfNormal =
+    options.runIfNormal ??
+    (async (_userId: string, action: () => Promise<void>) => {
+      await action();
+      return true;
+    });
+
   return {
     /**
      * Atomically claim `(userId, key)`. Purges this user's rows older than
@@ -116,16 +135,25 @@ export function createIdempotencyKeyRepository(db: Database) {
     },
 
     /** Memoize the first request's response on the claimed row, ready to replay. */
-    async complete(id: string, response: IdempotencyResponse): Promise<void> {
-      await db
-        .update(idempotencyKeys)
-        .set({
-          statusCode: response.statusCode,
-          responseBody: response.responseBody,
-          contentType: response.contentType,
-          completedAt: new Date(),
-        })
-        .where(eq(idempotencyKeys.id, id));
+    async complete(userId: string, id: string, response: IdempotencyResponse): Promise<void> {
+      const completed = await runIfNormal(userId, async () => {
+        await db
+          .update(idempotencyKeys)
+          .set({
+            statusCode: response.statusCode,
+            responseBody: response.responseBody,
+            contentType: response.contentType,
+            completedAt: new Date(),
+          })
+          .where(and(eq(idempotencyKeys.id, id), eq(idempotencyKeys.userId, userId)));
+      });
+      if (!completed) {
+        // The transition purge normally removed the in-flight claim already.
+        // Delete defensively in case it was inserted after the purge snapshot.
+        await db
+          .delete(idempotencyKeys)
+          .where(and(eq(idempotencyKeys.id, id), eq(idempotencyKeys.userId, userId)));
+      }
     },
 
     /**

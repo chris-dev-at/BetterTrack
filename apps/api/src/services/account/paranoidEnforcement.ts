@@ -28,7 +28,7 @@ export type ParanoidServiceSubject =
   | 'userIdField'
   | 'portfolioIdFirst'
   | 'assetIdFirst'
-  | 'portfolioEventUser'
+  | 'paranoidWebhookSubjects'
   /**
    * The method itself resolves a live audience/profile predicate and returns a
    * uniform 404 when the target is not currently public.
@@ -180,7 +180,7 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
   serviceBinding(
     'portfolioWebhooks',
     'webhookBridge',
-    'portfolioEventUser',
+    'paranoidWebhookSubjects',
     ['handleEvent'],
     'skip',
   ),
@@ -580,11 +580,33 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidRouteRule[] = [
 ] as const;
 
 const KILLED_SCOPES = new Set(PARANOID_KILL_REGISTRY.flatMap((entry) => entry.scopes));
-const PORTFOLIO_WEBHOOK_EVENTS = new Set(
-  PARANOID_KILL_REGISTRY.filter((entry) => entry.capability === 'portfolioWebhooks').flatMap(
-    (entry) => entry.webhookEventTypes,
-  ),
+const PARANOID_WEBHOOK_EVENTS = new Set(
+  PARANOID_KILL_REGISTRY.flatMap((entry) => entry.webhookEventTypes),
 );
+
+/**
+ * Event-specific account ownership for every killed webhook type. This stays
+ * separate from the registry union so its completeness test catches a new event
+ * that was kill-listed without deciding whether its actor also owns content.
+ */
+export const PARANOID_WEBHOOK_SUBJECT_POLICIES = {
+  'portfolio.shared': 'recipientAndActor',
+  'watchlist.shared': 'recipientAndActor',
+  'conglomerate.shared': 'recipientAndActor',
+  'friend.activity': 'recipientAndActor',
+  'follow.published': 'recipientAndActor',
+  'mirror.invite': 'recipient',
+  'mirror.member_joined': 'recipient',
+  'mirror.member_left': 'recipient',
+  'mirror.member_removed': 'recipient',
+  'mirror.removed': 'recipient',
+  'mirror.ownership_transferred': 'recipient',
+  'mirror.chain_dissolved': 'recipient',
+  'mirror.sync_stalled': 'recipient',
+  'portfolio.changed': 'recipient',
+  'dividend.event': 'recipient',
+  'budget.exceeded': 'recipient',
+} as const satisfies Partial<Record<DomainEvent['type'], 'recipient' | 'recipientAndActor'>>;
 
 function routeMatches(rule: ParanoidRouteRule, method: string, path: string): boolean {
   if (rule.method && rule.method !== method) return false;
@@ -627,10 +649,32 @@ export function isParanoidKilledScope(scope: string): boolean {
   return KILLED_SCOPES.has(scope);
 }
 
-export function isPortfolioContentWebhookEvent(event: DomainEvent): boolean {
-  if (!PORTFOLIO_WEBHOOK_EVENTS.has(event.type)) return false;
-  if (event.type === 'friend.activity') return event.itemKind === 'portfolio';
-  return true;
+export function isParanoidKilledWebhookEvent(event: DomainEvent): boolean {
+  return PARANOID_WEBHOOK_EVENTS.has(event.type);
+}
+
+/**
+ * Every account whose privacy mode can make a subscribable event unsafe.
+ * `userId` is the subscription owner/recipient. Sharing events additionally
+ * carry `actorId`, the shared item's owner; a stale queued event must be dropped
+ * if either side entered paranoid mode.
+ */
+export function paranoidWebhookSubjectIds(event: DomainEvent): string[] {
+  if (!isParanoidKilledWebhookEvent(event)) return [];
+  const policy =
+    PARANOID_WEBHOOK_SUBJECT_POLICIES[event.type as keyof typeof PARANOID_WEBHOOK_SUBJECT_POLICIES];
+  if (!policy) throw new Error(`missing paranoid webhook subject policy for ${event.type}`);
+  if (!('userId' in event) || typeof event.userId !== 'string') {
+    throw new Error(`missing paranoid webhook recipient for ${event.type}`);
+  }
+  const ids = [event.userId];
+  if (policy === 'recipientAndActor') {
+    if (!('actorId' in event) || typeof event.actorId !== 'string') {
+      throw new Error(`missing paranoid webhook owner for ${event.type}`);
+    }
+    ids.push(event.actorId);
+  }
+  return [...new Set(ids)];
 }
 
 export class ParanoidModeError extends ApiError {
@@ -786,20 +830,20 @@ async function invokeServiceSubject<T>(
 ): Promise<T | undefined> {
   if (binding.subject === 'intrinsic') return invoke();
 
-  if (binding.subject === 'portfolioEventUser') {
+  if (binding.subject === 'paranoidWebhookSubjects') {
     const event = args[0];
     if (
       !event ||
       typeof event !== 'object' ||
       !('type' in event) ||
-      !isPortfolioContentWebhookEvent(event as DomainEvent)
+      !isParanoidKilledWebhookEvent(event as DomainEvent)
     ) {
       return invoke();
     }
-    const userId = 'userId' in event && typeof event.userId === 'string' ? event.userId : undefined;
-    if (!userId) return invoke();
+    const subjectIds = paranoidWebhookSubjectIds(event as DomainEvent);
+    if (subjectIds.length === 0) return invoke();
     try {
-      return await guard.runAllowed(userId, binding.capability, invoke);
+      return await guard.runAllowedMany(subjectIds, binding.capability, invoke);
     } catch (error) {
       if (binding.action === 'skip' && error instanceof ParanoidModeError) return undefined;
       throw error;

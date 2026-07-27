@@ -6,7 +6,8 @@ import type { WebhookSubscriptionRepository } from '../../data/repositories/webh
 import type { DomainEvent } from '../../events';
 import type { Logger } from '../../logger';
 import {
-  isPortfolioContentWebhookEvent,
+  isParanoidKilledWebhookEvent,
+  paranoidWebhookSubjectIds,
   ParanoidModeError,
   type ParanoidModeGuard,
 } from '../account/paranoidEnforcement';
@@ -80,7 +81,7 @@ export interface WebhookBridgeDeps {
   /** Enqueue one delivery (durable BullMQ in prod; synchronous under test). */
   enqueue: (job: WebhookDeliveryJob) => Promise<void>;
   logger: Logger;
-  paranoid?: Pick<ParanoidModeGuard, 'runAllowed'>;
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany'>;
 }
 
 export interface WebhookBridge {
@@ -122,12 +123,16 @@ export function createWebhookBridge(deps: WebhookBridgeDeps): WebhookBridge {
         }
       };
 
-      if (!isPortfolioContentWebhookEvent(event) || !deps.paranoid) {
+      if (!isParanoidKilledWebhookEvent(event) || !deps.paranoid) {
         await enqueueDeliveries();
         return;
       }
       try {
-        await deps.paranoid.runAllowed(userId, 'portfolioWebhooks', enqueueDeliveries);
+        await deps.paranoid.runAllowedMany(
+          paranoidWebhookSubjectIds(event),
+          'portfolioWebhooks',
+          enqueueDeliveries,
+        );
       } catch (error) {
         if (error instanceof ParanoidModeError) return;
         throw error;

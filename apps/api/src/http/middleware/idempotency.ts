@@ -96,6 +96,7 @@ function captureAndPersist(
   res: Response,
   repo: IdempotencyKeyRepository,
   logger: Logger,
+  userId: string,
   id: string,
 ): void {
   const originalSend = res.send.bind(res);
@@ -121,7 +122,7 @@ function captureAndPersist(
     const ct = res.getHeader('content-type');
     const contentType = typeof ct === 'string' ? ct : null;
     const persist = isSuccess(statusCode)
-      ? repo.complete(id, { statusCode, responseBody: captured, contentType })
+      ? repo.complete(userId, id, { statusCode, responseBody: captured, contentType })
       : repo.release(id);
     void persist.catch((err) =>
       logger.warn(
@@ -188,9 +189,16 @@ export function createIdempotency(
       // (user, key) index guarantees exactly one winner across concurrent racers.
       for (;;) {
         const cutoff = new Date(now() - retentionMs);
-        const outcome = await repo.claim(input, cutoff);
+        // A completed replay is itself a portfolio-content read. Resolve the
+        // claim under the same account lock as paranoid enable, then take that
+        // lock again around the synchronous replay below. If enable slips
+        // between those steps the second guard observes paranoid and never sends
+        // the response bytes retained in memory.
+        const outcome = await ctx.paranoidGuard.runAllowed(userId, 'portfolioServer', () =>
+          repo.claim(input, cutoff),
+        );
         if (outcome.won) {
-          captureAndPersist(res, repo, logger, outcome.id);
+          captureAndPersist(res, repo, logger, userId, outcome.id);
           next();
           return;
         }
@@ -210,7 +218,9 @@ export function createIdempotency(
           return;
         }
         if (record.statusCode !== null) {
-          replay(res, record);
+          await ctx.paranoidGuard.runAllowed(userId, 'portfolioServer', async () => {
+            replay(res, record);
+          });
           return;
         }
         // Peer still in flight: wait, then re-check (it may complete or release).

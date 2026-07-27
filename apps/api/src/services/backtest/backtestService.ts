@@ -288,6 +288,26 @@ export function backtestComparisonCacheKey(
   return `backtest:compare:${userId}:${hash}`;
 }
 
+async function deleteRedisPattern(redis: Redis, pattern: string): Promise<void> {
+  let cursor = '0';
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+    cursor = nextCursor;
+    if (keys.length > 0) await redis.del(...keys);
+  } while (cursor !== '0');
+}
+
+/**
+ * Retire every user-namespaced backtest result before paranoid enable commits.
+ * Preview results may embed custom-asset prices and comparison cores can retain
+ * their resolved series for an hour, so both namespaces are security state, not
+ * ordinary performance-only caches.
+ */
+export async function purgeBacktestCaches(redis: Redis, userId: string): Promise<void> {
+  await deleteRedisPattern(redis, `backtest:preview:${userId}:*`);
+  await deleteRedisPattern(redis, `backtest:compare:${userId}:*`);
+}
+
 export function createBacktestService(deps: BacktestServiceDeps): BacktestService {
   const { assetRepo, conglomerateRepo, marketData, currencyService, redis } = deps;
   const now = deps.now ?? Date.now;

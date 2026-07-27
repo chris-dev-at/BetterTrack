@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { rename, rm } from 'node:fs/promises';
 
@@ -26,6 +27,7 @@ import {
   friendships,
   importBatches,
   importRows,
+  idempotencyKeys,
   itemComments,
   itemFollows,
   itemReactions,
@@ -51,6 +53,8 @@ import type { ParanoidRehydrationService } from '../services/account/paranoidReh
 import type { ParanoidKilledCapability } from '../services/account/paranoidEnforcement';
 import { createParanoidTransitionService } from '../services/account/paranoidTransitionService';
 import type { AuditService } from '../services/audit/auditService';
+import { backtestPreviewCacheKey } from '../services/backtest/backtestService';
+import { liveRingKey } from '../services/liveMode';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -701,6 +705,166 @@ describe('public paranoid transitions', () => {
       });
     expect(inconsistentRetry.status).toBe(409);
     expect(inconsistentRetry.body.error.code).toBe('PARANOID_TRANSITION_CONFLICT');
+  });
+
+  it('purges completed idempotency replay bodies before enabling paranoid mode', async () => {
+    const { user } = await seedNormalAccount();
+    await harness.db.insert(idempotencyKeys).values({
+      userId: user.id,
+      key: randomUUID(),
+      method: 'POST',
+      path: '/api/v1/portfolios/private/transactions',
+      requestHash: 'opaque-request-hash',
+      statusCode: 201,
+      responseBody: JSON.stringify({
+        transaction: { quantity: 12, price: 345.67 },
+        cashBalance: 4_321,
+      }),
+      contentType: 'application/json; charset=utf-8',
+      completedAt: new Date(),
+    });
+    expect(
+      await harness.db.select().from(idempotencyKeys).where(eq(idempotencyKeys.userId, user.id)),
+    ).toHaveLength(1);
+
+    await expect(
+      harness.ctx.paranoidTransitions.enable(user.id, {
+        mediaSet: ['drive'],
+        vaultVersion: 1,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
+      }),
+    ).resolves.toMatchObject({ mode: 'paranoid' });
+
+    expect(
+      await harness.db.select().from(idempotencyKeys).where(eq(idempotencyKeys.userId, user.id)),
+    ).toEqual([]);
+  });
+
+  it('does not persist a successful response whose finish callback loses to enable', async () => {
+    const { user, portfolio, agent } = await seedNormalAccount();
+    const [asset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'yahoo',
+        providerRef: 'RACE',
+        type: 'stock',
+        symbol: 'RACE',
+        name: 'Race fixture',
+        currency: 'EUR',
+      })
+      .returning();
+    const enteredComplete = deferred();
+    const releaseComplete = deferred();
+    const completeSettled = deferred();
+    const originalComplete = harness.ctx.idempotency.complete.bind(harness.ctx.idempotency);
+    let completionError: unknown;
+    harness.ctx.idempotency.complete = async (...args: Parameters<typeof originalComplete>) => {
+      enteredComplete.resolve();
+      await releaseComplete.promise;
+      try {
+        await originalComplete(...args);
+      } catch (error) {
+        completionError = error;
+        throw error;
+      } finally {
+        completeSettled.resolve();
+      }
+    };
+
+    const requestFinished = agent
+      .post(`/api/v1/portfolios/${portfolio.id}/transactions`)
+      .set(...XRW)
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        assetId: asset!.id,
+        side: 'buy',
+        quantity: 7,
+        price: 123.45,
+        executedAt: '2026-07-25T10:00:00.000Z',
+      })
+      .then((response) => response);
+    await enteredComplete.promise;
+
+    await expect(
+      harness.ctx.paranoidTransitions.enable(user.id, {
+        mediaSet: ['drive'],
+        vaultVersion: 1,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
+      }),
+    ).resolves.toMatchObject({ mode: 'paranoid' });
+    releaseComplete.resolve();
+
+    expect((await requestFinished).status).toBe(201);
+    await completeSettled.promise;
+    expect(completionError).toBeUndefined();
+    expect(
+      await harness.db.select().from(idempotencyKeys).where(eq(idempotencyKeys.userId, user.id)),
+    ).toEqual([]);
+  });
+
+  it('retires prewarmed custom-asset backtest and live-ring state before commit', async () => {
+    const { user } = await seedNormalAccount();
+    const [customAsset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'manual',
+        providerRef: `custom:${user.id}:cache`,
+        ownerId: user.id,
+        type: 'custom',
+        symbol: 'CACHE',
+        name: 'Cached private asset',
+        currency: 'EUR',
+      })
+      .returning();
+    await harness.db.insert(priceHistory).values([
+      { assetId: customAsset!.id, date: '2026-07-24', close: '100' },
+      { assetId: customAsset!.id, date: '2026-07-25', close: '125' },
+    ]);
+    const previewInput = {
+      positions: [{ assetId: customAsset!.id, weight: 100 }],
+      range: 'MAX' as const,
+    };
+    const previewKey = backtestPreviewCacheKey(user.id, previewInput, 'EUR');
+    const comparisonKey = `backtest:compare:${user.id}:prewarmed-private-series`;
+    const ringKey = liveRingKey(customAsset!.id);
+    await harness.ctx.redis.set(
+      previewKey,
+      JSON.stringify({ privateMarker: 125, series: [{ date: '2026-07-25', value: 125 }] }),
+    );
+    await harness.ctx.redis.set(comparisonKey, JSON.stringify({ privateMarker: 125 }));
+    await harness.ctx.redis.rpush(
+      ringKey,
+      JSON.stringify({
+        assetId: customAsset!.id,
+        price: 125,
+        currency: 'EUR',
+        dayChangePct: 25,
+        at: '2026-07-25T10:00:00.000Z',
+      }),
+    );
+    harness.ctx.liveMode.watch(customAsset!.id, {
+      providerId: customAsset!.providerId,
+      providerRef: customAsset!.providerRef,
+    });
+    expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(1);
+    expect(await harness.ctx.redis.get(previewKey)).not.toBeNull();
+    expect(await harness.ctx.redis.lrange(ringKey, 0, -1)).not.toEqual([]);
+
+    await expect(
+      harness.ctx.paranoidTransitions.enable(user.id, {
+        mediaSet: ['drive'],
+        vaultVersion: 1,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
+      }),
+    ).resolves.toMatchObject({ mode: 'paranoid' });
+
+    expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(0);
+    expect(await harness.ctx.redis.get(previewKey)).toBeNull();
+    expect(await harness.ctx.redis.get(comparisonKey)).toBeNull();
+    expect(await harness.ctx.redis.lrange(ringKey, 0, -1)).toEqual([]);
+    await expect(harness.ctx.backtest.runPreview(user.id, previewInput)).rejects.toMatchObject({
+      statusCode: 404,
+    });
   });
 
   it('rejects a server-vault write that was already waiting on a Drive-only enable', async () => {

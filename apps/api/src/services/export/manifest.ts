@@ -281,6 +281,9 @@ export function schemaTableNames(): string[] {
  *    rehydration all iterate this set (PD3). The `assets` table is shared with
  *    the global market catalog, so purge/probe scope to owner rows exactly like
  *    the export collector; deleting an owned asset cascades its value history.
+ *  - `purge` — transient cleartext derived from portfolio/money content. It is
+ *    hard-deleted and covered by the zero-cleartext probe, but is deliberately
+ *    excluded from the encrypted vault and disable-time rehydration.
  *  - `server` — kept unchanged (identity/auth, friends + chat, private
  *    watchlists/conglomerates/ideas, price alerts, notifications, and the vault
  *    ciphertext rows themselves).
@@ -288,11 +291,11 @@ export function schemaTableNames(): string[] {
  * The completeness test enforces the SAME "every table classified, CI fails
  * otherwise" contract as the export axis — so a future table cannot silently
  * leak: adding it to the schema forces the author to classify it, and
- * classifying it `vault` automatically enrolls it in purge + probe + rehydration.
- * That is the rule that keeps the "zero portfolio rows server-side" guarantee
- * durable as the schema grows.
+ * classifying it `vault` or `purge` automatically enrolls it in purge + probe;
+ * only `vault` tables participate in rehydration. That is the rule that keeps
+ * the "zero portfolio rows server-side" guarantee durable as the schema grows.
  */
-export type ParanoidClassification = 'vault' | 'server';
+export type ParanoidClassification = 'vault' | 'purge' | 'server';
 
 /**
  * The second compulsory policy for each `vault` table. `restore` means an entity
@@ -342,6 +345,11 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   expense_rules: 'vault',
   expense_budgets: 'vault',
   expense_budget_fires: 'vault',
+  // The idempotency middleware memoizes exact successful portfolio-mutation
+  // response bodies (transactions, cash amounts, custom-asset values) for replay.
+  // Those bytes are portfolio content even though the table is operational, so
+  // enabling paranoid mode discards the transient replay cache.
+  idempotency_keys: 'purge',
 
   // ── server: identity + auth (kept, unchanged) ──────────────────────────────
   users: 'server',
@@ -373,7 +381,6 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   usage_events: 'server',
   usage_daily: 'server',
   app_settings: 'server',
-  idempotency_keys: 'server',
   export_jobs: 'server',
   announcements: 'server',
   announcement_dismissals: 'server',
@@ -487,6 +494,14 @@ export const PARANOID_VAULT_TABLE_NAMES: readonly string[] = Object.entries(
   PARANOID_TABLE_CLASSIFICATION,
 )
   .filter(([, c]) => c === 'vault')
+  .map(([table]) => table)
+  .sort();
+
+/** Table names whose account-scoped cleartext must be purged and probed. */
+export const PARANOID_PURGE_TABLE_NAMES: readonly string[] = Object.entries(
+  PARANOID_TABLE_CLASSIFICATION,
+)
+  .filter(([, c]) => c === 'vault' || c === 'purge')
   .map(([table]) => table)
   .sort();
 

@@ -5,6 +5,7 @@ import { VAULT_FORMAT_VERSION, type VaultMediaSet } from '@bettertrack/contracts
 import type { Database } from '../db';
 import { withExclusiveParanoidTransitionTestLock } from './paranoidEnforcementRepository';
 import {
+  assetIdentities,
   assets,
   conglomerates,
   dividends,
@@ -16,6 +17,7 @@ import {
   exportJobs,
   friendGroupMembers,
   ideas,
+  idempotencyKeys,
   importBatches,
   importRows,
   itemComments,
@@ -45,7 +47,7 @@ import {
   userTaxSettings,
   watchlists,
 } from '../schema';
-import { PARANOID_VAULT_TABLE_NAMES } from '../../services/export/manifest';
+import { PARANOID_PURGE_TABLE_NAMES } from '../../services/export/manifest';
 
 export interface LockedParanoidTransitionState {
   privacyMode: 'normal' | 'paranoid';
@@ -61,6 +63,8 @@ export interface LockedParanoidTransitionState {
   activeMirrorchain: boolean;
   pendingImport: boolean;
   pendingExport: boolean;
+  /** Durable opaque ids retained after owned custom-asset content is detached. */
+  customAssetIds: string[];
   cleartextExports: Array<{ id: string; filePath: string }>;
 }
 
@@ -152,6 +156,8 @@ const PURGE_HANDLERS: Record<string, PurgeHandler> = {
   expense_rules: ({ userId, tx }) => tx.delete(expenseRules).where(eq(expenseRules.userId, userId)),
   expense_transactions: ({ userId, tx }) =>
     tx.delete(expenseTransactions).where(eq(expenseTransactions.userId, userId)),
+  idempotency_keys: ({ userId, tx }) =>
+    tx.delete(idempotencyKeys).where(eq(idempotencyKeys.userId, userId)),
   import_batches: ({ userId, tx }) =>
     tx.delete(importBatches).where(eq(importBatches.ownerId, userId)),
   import_rows: ({ importBatchIds, tx }) =>
@@ -216,6 +222,7 @@ const PARANOID_PURGE_ORDER = [
   'expense_rules',
   'expense_transactions',
   'expense_categories',
+  'idempotency_keys',
   'import_batches',
   'portfolios',
   'price_history',
@@ -262,6 +269,10 @@ const PROBE_HANDLERS: Record<string, ProbeHandler> = {
         .select({ value: count() })
         .from(expenseTransactions)
         .where(eq(expenseTransactions.userId, userId)),
+    ),
+  idempotency_keys: ({ userId, tx }) =>
+    probe(
+      tx.select({ value: count() }).from(idempotencyKeys).where(eq(idempotencyKeys.userId, userId)),
     ),
   import_batches: ({ userId, tx }) =>
     probe(
@@ -344,7 +355,7 @@ export const PARANOID_PURGE_HANDLER_NAMES = Object.keys(PURGE_HANDLERS).sort();
 export const PARANOID_PROBE_HANDLER_NAMES = Object.keys(PROBE_HANDLERS).sort();
 
 function assertPurgeCompleteness(): void {
-  const expected = [...PARANOID_VAULT_TABLE_NAMES];
+  const expected = [...PARANOID_PURGE_TABLE_NAMES];
   const handlerSets = [
     ['purge handlers', PARANOID_PURGE_HANDLER_NAMES],
     ['probe handlers', PARANOID_PROBE_HANDLER_NAMES],
@@ -358,7 +369,7 @@ function assertPurgeCompleteness(): void {
       continue;
     }
     throw new Error(
-      `paranoid purge/manifest drift: ${label} [${actual.join(', ')}] vs vault tables [${expected.join(', ')}]`,
+      `paranoid purge/manifest drift: ${label} [${actual.join(', ')}] vs purge tables [${expected.join(', ')}]`,
     );
   }
 }
@@ -422,45 +433,55 @@ export function createParanoidTransitionTransactionRepository(
         .for('update');
       if (!user) return null;
 
-      const [[vault], [historyCount], [membership], [pendingImport], accountExports] =
-        await Promise.all([
-          tx
-            .select({
-              version: paranoidVaults.version,
-              formatVersion: paranoidVaults.formatVersion,
-              sizeBytes: paranoidVaults.sizeBytes,
-              updatedAt: paranoidVaults.updatedAt,
-            })
-            .from(paranoidVaults)
-            .where(eq(paranoidVaults.userId, userId))
-            .limit(1),
-          tx
-            .select({ value: count() })
-            .from(paranoidVaultHistory)
-            .where(eq(paranoidVaultHistory.userId, userId)),
-          tx
-            .select({ id: mirrorChainMembers.id })
-            .from(mirrorChainMembers)
-            .where(
-              and(eq(mirrorChainMembers.userId, userId), eq(mirrorChainMembers.status, 'active')),
-            )
-            .limit(1),
-          tx
-            .select({ id: importBatches.id })
-            .from(importBatches)
-            .where(and(eq(importBatches.ownerId, userId), eq(importBatches.status, 'pending')))
-            .limit(1),
-          tx
-            .select({
-              id: exportJobs.id,
-              status: exportJobs.status,
-              filePath: exportJobs.filePath,
-              error: exportJobs.error,
-            })
-            .from(exportJobs)
-            .where(eq(exportJobs.userId, userId))
-            .for('update'),
-        ]);
+      const [
+        [vault],
+        [historyCount],
+        [membership],
+        [pendingImport],
+        ownedAssetIdentities,
+        accountExports,
+      ] = await Promise.all([
+        tx
+          .select({
+            version: paranoidVaults.version,
+            formatVersion: paranoidVaults.formatVersion,
+            sizeBytes: paranoidVaults.sizeBytes,
+            updatedAt: paranoidVaults.updatedAt,
+          })
+          .from(paranoidVaults)
+          .where(eq(paranoidVaults.userId, userId))
+          .limit(1),
+        tx
+          .select({ value: count() })
+          .from(paranoidVaultHistory)
+          .where(eq(paranoidVaultHistory.userId, userId)),
+        tx
+          .select({ id: mirrorChainMembers.id })
+          .from(mirrorChainMembers)
+          .where(
+            and(eq(mirrorChainMembers.userId, userId), eq(mirrorChainMembers.status, 'active')),
+          )
+          .limit(1),
+        tx
+          .select({ id: importBatches.id })
+          .from(importBatches)
+          .where(and(eq(importBatches.ownerId, userId), eq(importBatches.status, 'pending')))
+          .limit(1),
+        tx
+          .select({ id: assetIdentities.id })
+          .from(assetIdentities)
+          .where(eq(assetIdentities.ownerId, userId)),
+        tx
+          .select({
+            id: exportJobs.id,
+            status: exportJobs.status,
+            filePath: exportJobs.filePath,
+            error: exportJobs.error,
+          })
+          .from(exportJobs)
+          .where(eq(exportJobs.userId, userId))
+          .for('update'),
+      ]);
 
       return {
         privacyMode: user.privacyMode,
@@ -471,6 +492,7 @@ export function createParanoidTransitionTransactionRepository(
         activeMirrorchain: Boolean(membership),
         pendingImport: Boolean(pendingImport),
         pendingExport: accountExports.some((row) => row.status === 'pending'),
+        customAssetIds: ownedAssetIdentities.map((row) => row.id),
         cleartextExports: accountExports
           .filter(
             (row): row is typeof row & { filePath: string } =>
@@ -642,7 +664,7 @@ export function createParanoidTransitionTransactionRepository(
       for (const tableName of PARANOID_PURGE_ORDER) {
         await PURGE_HANDLERS[tableName]!(scope);
       }
-      for (const tableName of PARANOID_VAULT_TABLE_NAMES) {
+      for (const tableName of PARANOID_PURGE_TABLE_NAMES) {
         const remaining = await PROBE_HANDLERS[tableName]!(scope);
         if (remaining !== 0) {
           throw new Error(`paranoid zero-cleartext probe failed for ${tableName}`);

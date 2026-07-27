@@ -1,6 +1,7 @@
 import type { DomainEvent } from '../events';
 import {
-  isPortfolioContentWebhookEvent,
+  isParanoidKilledWebhookEvent,
+  paranoidWebhookSubjectIds,
   ParanoidModeError,
   paranoidJobPolicy,
   PARANOID_JOB_POLICIES,
@@ -24,7 +25,10 @@ export type ParanoidJobBinding =
     }
   | {
       readonly mode: 'event';
-      readonly runIfAllowed: (userId: string, action: () => Promise<void>) => Promise<boolean>;
+      readonly runIfAllowed: (
+        userIds: readonly string[],
+        action: () => Promise<void>,
+      ) => Promise<boolean>;
     }
   | {
       readonly mode: 'perUser';
@@ -53,10 +57,6 @@ export function createParanoidUserJobFilter(
   };
   Object.defineProperty(filter, PARANOID_USER_FILTER_JOB, { value: jobName });
   return filter;
-}
-
-function eventUserId(event: DomainEvent): string | null {
-  return 'userId' in event && typeof event.userId === 'string' ? event.userId : null;
 }
 
 /**
@@ -103,13 +103,13 @@ export function bindParanoidJob<N extends QueueName>(
       ...definition,
       async handler(job, ctx) {
         const event = (job.data as { event?: DomainEvent }).event;
-        if (event && isPortfolioContentWebhookEvent(event)) {
-          const userId = eventUserId(event);
-          if (userId) {
-            const ran = await binding.runIfAllowed(userId, () => handler(job, ctx));
+        if (event && isParanoidKilledWebhookEvent(event)) {
+          const userIds = paranoidWebhookSubjectIds(event);
+          if (userIds.length > 0) {
+            const ran = await binding.runIfAllowed(userIds, () => handler(job, ctx));
             if (!ran) {
               ctx.logger.info(
-                { userId, type: event.type },
+                { userIds, type: event.type },
                 `${definition.name} skipped by paranoid registry`,
               );
             }

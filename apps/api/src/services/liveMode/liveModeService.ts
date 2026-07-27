@@ -9,7 +9,7 @@ import type { Redis } from 'ioredis';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 
-import { createLiveRingBuffer, type LiveRingBuffer } from './ringBuffer';
+import { createLiveRingBuffer, liveRingKey, type LiveRingBuffer } from './ringBuffer';
 
 /**
  * Live Mode core (PROJECTPLAN.md §6.3, §5.3, V3-P7b; overhauled per #372): the
@@ -99,6 +99,12 @@ export interface LiveModeService {
   watcherCount(assetId: string): number;
   /** The asset's current poll interval, or null when no loop runs (introspection). */
   pollIntervalMs(assetId: string): number | null;
+  /**
+   * Stop every loop for the supplied owned custom assets, drain any in-flight
+   * append, then delete their Redis rings. Used by paranoid enable while its
+   * exclusive account transition lock prevents new authorized watches.
+   */
+  retireAssets(assetIds: readonly string[]): Promise<void>;
   /** Stop every loop and drop all subscribers (shutdown). */
   close(): void;
 }
@@ -150,6 +156,10 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
 
   const ring: LiveRingBuffer = createLiveRingBuffer(deps.redis, { capacity, retentionMs });
   const loops = new Map<string, AssetLoop>();
+  // Keep ticks independently of `loops`: the last watcher may leave while its
+  // provider call is still in flight, and sensitive retirement must still drain
+  // that orphan before deleting the ring.
+  const inFlightTicks = new Map<string, Set<Promise<void>>>();
   const handlers = new Set<(frame: RealtimeLiveFrame) => void>();
   let closed = false;
 
@@ -190,7 +200,23 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
     if (closed || loops.get(assetId) !== loop || loop.timer === null) return;
     clearTimeout(loop.timer);
     const delay = Math.max(0, loop.lastTickAt + loop.intervalMs - now());
-    loop.timer = setTimeout(() => void tick(assetId, loop), delay);
+    loop.timer = setTimeout(() => launchTick(assetId, loop), delay);
+  }
+
+  function launchTick(assetId: string, loop: AssetLoop): void {
+    const pending = tick(assetId, loop);
+    const active = inFlightTicks.get(assetId) ?? new Set<Promise<void>>();
+    active.add(pending);
+    inFlightTicks.set(assetId, active);
+    const settled = () => {
+      active.delete(pending);
+      if (active.size === 0 && inFlightTicks.get(assetId) === active) {
+        inFlightTicks.delete(assetId);
+      }
+    };
+    // Use both `then` branches instead of an ignored `finally` promise: even an
+    // unexpected tick rejection is observed and cannot become an unhandled one.
+    void pending.then(settled, settled);
   }
 
   async function tick(assetId: string, loop: AssetLoop): Promise<void> {
@@ -243,7 +269,7 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
       );
     } finally {
       if (!closed && loops.get(assetId) === loop && watcherTotal(loop) > 0) {
-        loop.timer = setTimeout(() => void tick(assetId, loop), loop.intervalMs);
+        loop.timer = setTimeout(() => launchTick(assetId, loop), loop.intervalMs);
       }
     }
   }
@@ -272,7 +298,7 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
       applyCadence(loop);
       loops.set(assetId, loop);
       // Immediate first tick: the first watcher sees a frame right away.
-      void tick(assetId, loop);
+      launchTick(assetId, loop);
     },
 
     unwatch(assetId, intervalMs = defaultIntervalMs) {
@@ -348,6 +374,21 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
 
     pollIntervalMs(assetId) {
       return loops.get(assetId)?.intervalMs ?? null;
+    },
+
+    async retireAssets(assetIds) {
+      const ids = [...new Set(assetIds)];
+      const inFlight: Promise<void>[] = [];
+      for (const assetId of ids) {
+        const loop = loops.get(assetId);
+        if (loop) {
+          if (loop.timer) clearTimeout(loop.timer);
+          loops.delete(assetId);
+        }
+        inFlight.push(...(inFlightTicks.get(assetId) ?? []));
+      }
+      await Promise.allSettled(inFlight);
+      if (ids.length > 0) await deps.redis.del(...ids.map(liveRingKey));
     },
 
     close() {

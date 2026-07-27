@@ -140,6 +140,43 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     await vi.waitFor(() => expect(stub.calls.poll).toBeGreaterThan(cold));
     expect(service.watcherCount(ASSET_ID)).toBe(1);
   });
+
+  it('drains an orphaned tick before retiring a sensitive ring', async () => {
+    let signalPollStarted!: () => void;
+    let releasePoll!: () => void;
+    const pollStarted = new Promise<void>((resolve) => {
+      signalPollStarted = resolve;
+    });
+    const pollReleased = new Promise<void>((resolve) => {
+      releasePoll = resolve;
+    });
+    const stub = createStubMarketData({
+      poll: async () => {
+        signalPollStarted();
+        await pollReleased;
+        return quoteResult(101);
+      },
+    });
+    const { service } = makeService(stub);
+    await redis.rpush(liveRingKey(ASSET_ID), JSON.stringify({ privateMarker: true }));
+
+    service.watch(ASSET_ID, REF);
+    await pollStarted;
+    // Socket invalidation may remove the final watcher before account cleanup
+    // asks the service to retire the asset.
+    service.unwatch(ASSET_ID);
+    const retirement = service.retireAssets([ASSET_ID]);
+    let retired = false;
+    void retirement.then(() => {
+      retired = true;
+    });
+    await Promise.resolve();
+    expect(retired).toBe(false);
+
+    releasePoll();
+    await retirement;
+    expect(await redis.lrange(liveRingKey(ASSET_ID), 0, -1)).toEqual([]);
+  });
 });
 
 describe('liveModeService — provider distress (§5.3 politeness)', () => {

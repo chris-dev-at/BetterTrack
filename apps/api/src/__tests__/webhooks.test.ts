@@ -21,7 +21,12 @@ import {
   createWebhookDeliveryRepository,
   createWebhookSubscriptionRepository,
 } from '../data/repositories/webhookRepository';
-import type { AlertTriggeredEvent, DividendEventNotice } from '../events';
+import type {
+  AlertTriggeredEvent,
+  DividendEventNotice,
+  PortfolioSharedEvent,
+  WatchlistSharedEvent,
+} from '../events';
 import { WEBHOOK_DELIVERY_RETENTION_DAYS, createWebhookDeliveryCleanupJob } from '../jobs';
 import type { AuditService } from '../services/audit/auditService';
 import { decryptSecret } from '../services/crypto/secretBox';
@@ -279,6 +284,69 @@ describe('signed delivery', () => {
     expect(recorder.requests).toHaveLength(0);
     const log = webhookDeliveryListResponseSchema.parse(await deliveriesFor(id));
     expect(log.deliveries).toHaveLength(0);
+  });
+
+  it('skips stale sharing events for a paranoid recipient or sharing owner', async () => {
+    const recipient = await createSubscription(['portfolio.shared', 'watchlist.shared']);
+    const owner = await harness.seedUser({
+      email: 'webhook-sharing-owner@bettertrack.test',
+      username: 'webhook_sharing_owner',
+    });
+    const enqueued: WebhookDeliveryJob[] = [];
+    const bridge = createWebhookBridge({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      enqueue: async (job) => {
+        enqueued.push(job);
+      },
+      logger: harness.ctx.logger,
+      paranoid: harness.ctx.paranoidGuard,
+    });
+
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(schema.users.id, owner.id));
+    const ownerEvent: PortfolioSharedEvent = {
+      type: 'portfolio.shared',
+      userId: recipient.userId,
+      actorId: owner.id,
+      actorUsername: owner.username,
+      portfolioId: '00000000-0000-7000-8000-000000000071',
+      occurredAt: '2026-07-27T00:00:00.000Z',
+    };
+    await bridge.handleEvent(ownerEvent);
+
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'normal',
+        paranoidMediaSet: null,
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(schema.users.id, owner.id));
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(schema.users.id, recipient.userId));
+    const recipientEvent: WatchlistSharedEvent = {
+      type: 'watchlist.shared',
+      userId: recipient.userId,
+      actorId: owner.id,
+      actorUsername: owner.username,
+      watchlistId: '00000000-0000-7000-8000-000000000072',
+      occurredAt: '2026-07-27T00:00:00.000Z',
+    };
+    await bridge.handleEvent(recipientEvent);
+
+    expect(enqueued).toEqual([]);
   });
 
   it('isolates a failed enqueue, exposes it for retry, and preserves replay delivery ids', async () => {

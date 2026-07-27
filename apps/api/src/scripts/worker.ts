@@ -526,9 +526,9 @@ const definitions = [
   // job options + auto-disable) and the daily delivery-log retention sweep.
   bindParanoidJob(createWebhookDeliverJob({ dispatcher: webhookDispatcher }), {
     mode: 'event',
-    runIfAllowed: async (userId, action) => {
+    runIfAllowed: async (userIds, action) => {
       try {
-        await paranoidGuard.runAllowed(userId, 'portfolioWebhooks', action);
+        await paranoidGuard.runAllowedMany(userIds, 'portfolioWebhooks', action);
         return true;
       } catch (error) {
         if (error instanceof ParanoidModeError) return false;

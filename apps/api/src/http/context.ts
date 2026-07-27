@@ -114,7 +114,11 @@ import {
   type MarketIntelService,
   type PortfolioMarketIntelService,
 } from '../services/marketIntel';
-import { createBacktestService, type BacktestService } from '../services/backtest/backtestService';
+import {
+  createBacktestService,
+  purgeBacktestCaches,
+  type BacktestService,
+} from '../services/backtest/backtestService';
 import {
   createAnalyticsService,
   type AnalyticsService,
@@ -628,6 +632,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     withLockedPrivacyModes: (userIds, run) =>
       withLockedPrivacyModes(deps.lockDb ?? db, userIds, run),
   });
+  const withAccountTransitionLock = <T>(userId: string, action: () => Promise<T>): Promise<T> =>
+    withLockedPrivacyModes(deps.lockDb ?? db, [userId], () => action());
   const paranoidSubjects = createParanoidEnforcementRepository(db);
   const inviteRepo = createInviteRepository(db);
   const registrationTokenRepo = createRegistrationTokenRepository(db);
@@ -1222,19 +1228,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     toCashEur: (amount, sourceCurrency, day) =>
       currency.convert(amount, sourceCurrency, 'EUR', { date: day }),
   });
-  const paranoidTransitions = createParanoidTransitionService({
-    db,
-    rehydration: paranoidRehydration,
-    audit,
-    runPostCommit: async (userId, plan) => {
-      if (!plan.invalidate.includes('portfolio')) return;
-      // The restore transaction has committed before this callback runs. Rebuild
-      // each restored source portfolio once; no public write service or
-      // notification producer is replayed.
-      const restored = await portfolioRepo.listForUser(userId, { includeArchived: true });
-      for (const portfolio of restored) await snapshots.recompute(portfolio.id);
-    },
-  });
   // Tax engine (V3-P4): built before the portfolio service, which folds its
   // per-sell tax plans into transaction writes.
   const taxRepo = createTaxRepository(db);
@@ -1335,7 +1328,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // keystones to feed the pure engine over inline draft positions. V4-P7:
   // resolves benchmark choices (preset / catalog asset / own conglomerate)
   // and runs them through a second pass of the same engine.
-  const backtestPreview = createBacktestService({
+  const backtestCore = createBacktestService({
     assetRepo,
     conglomerateRepo,
     marketData,
@@ -1349,6 +1342,18 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       return owner ? { ownerId: owner.ownerId } : undefined;
     },
   });
+  // Preview/comparison caches may contain an owned custom asset's raw values.
+  // Serialize the complete cache-read/compute/write path with paranoid enable;
+  // global hypothetical backtests remain available in paranoid mode because the
+  // lock itself does not reject either privacy mode.
+  const backtestPreview: BacktestService = {
+    runPreview: (userId, input, options) =>
+      withAccountTransitionLock(userId, () => backtestCore.runPreview(userId, input, options)),
+    runComparison: (userId, input, options) =>
+      withAccountTransitionLock(userId, () => backtestCore.runComparison(userId, input, options)),
+    runSharedSandboxPreview: (viewerId, input, options) =>
+      backtestCore.runSharedSandboxPreview(viewerId, input, options),
+  };
 
   // Analytics deep-dive (§13.3 V3-P9): assembles the configurable graph +
   // contribution table over the per-asset value pipeline, resolves compare
@@ -1641,7 +1646,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   // Idempotency-key store (§13.4 V4-P2a, #417): the durable claim/replay backing
   // store for the reusable idempotency middleware on the portfolio mutation routes.
-  const idempotency = createIdempotencyKeyRepository(db);
+  const idempotency = createIdempotencyKeyRepository(db, {
+    runIfNormal: (userId, action) =>
+      withLockedPrivacyModes(deps.lockDb ?? db, [userId], async (modes) => {
+        if (modes.get(userId) !== 'normal') return false;
+        await action();
+        return true;
+      }),
+  });
 
   // Realtime gateway (§4.5, V3-P7a): session auth reuses the auth service's
   // cookie→user resolution verbatim; `portfolio:{id}` room joins enforce
@@ -1694,9 +1706,32 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       const row = await assetRepo.findByIdForUser(assetId, userId);
       return row ? { providerId: row.providerId, providerRef: row.providerRef } : null;
     },
+    withAccountTransitionLock,
     // Active-view presence (#368): enter/leave/heartbeat land here; the
     // dispatcher (any process) reads the same keys through Redis.
     presence,
+  });
+
+  const paranoidTransitions = createParanoidTransitionService({
+    db,
+    rehydration: paranoidRehydration,
+    audit,
+    beforeEnableCommit: async (userId, plan) => {
+      // This callback runs while enable still owns the exclusive account lock.
+      // Normal backtests and live-watch reads therefore finish before cleanup;
+      // later operations re-resolve only after the mode flip commits.
+      await realtime.invalidateLiveMode(userId);
+      await liveMode.retireAssets(plan.customAssetIds);
+      await purgeBacktestCaches(redis, userId);
+    },
+    runPostCommit: async (userId, plan) => {
+      if (!plan.invalidate.includes('portfolio')) return;
+      // The restore transaction has committed before this callback runs. Rebuild
+      // each restored source portfolio once; no public write service or
+      // notification producer is replayed.
+      const restored = await portfolioRepo.listForUser(userId, { includeArchived: true });
+      for (const portfolio of restored) await snapshots.recompute(portfolio.id);
+    },
   });
 
   // Admin health snapshot (§13.4 V4-P5a): live DB/Redis/provider/queue/gateway
