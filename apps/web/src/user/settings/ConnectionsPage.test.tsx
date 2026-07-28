@@ -4,14 +4,18 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
+import type { ParanoidMediaStateResponse, ParanoidVaultMediaState } from '@bettertrack/contracts';
+
 vi.mock('../../lib/userApi', () => ({
   getGoogleLinkStatus: vi.fn(),
+  getParanoidMediaState: vi.fn(),
   unlinkGoogle: vi.fn(),
   googleStartUrl: vi.fn(() => 'http://api.test/api/v1/auth/google/start'),
 }));
 
 import { ApiError } from '../../lib/apiClient';
-import { getGoogleLinkStatus, unlinkGoogle } from '../../lib/userApi';
+import { getGoogleLinkStatus, getParanoidMediaState, unlinkGoogle } from '../../lib/userApi';
+import type { DriveConnectionController } from '../vault/media';
 import { ConnectionsPage } from './ConnectionsPage';
 
 const GOOGLE_OFF = {
@@ -30,12 +34,86 @@ const LINKED = {
   canUnlink: true,
 } as const;
 
-function renderPage(initialEntry = '/settings/connections') {
+const NORMAL_MEDIA: ParanoidMediaStateResponse = {
+  privacyMode: 'normal',
+  mediaState: null,
+};
+
+const SERVER_STATE: ParanoidVaultMediaState = {
+  mediaSet: ['server'],
+  driveAttestedVersion: null,
+  server: { disposition: 'active', candidate: null, retired: null },
+};
+
+const SERVER_MEDIA: ParanoidMediaStateResponse = {
+  privacyMode: 'paranoid',
+  mediaState: SERVER_STATE,
+};
+
+const BOTH_STATE: ParanoidVaultMediaState = {
+  mediaSet: ['server', 'drive'],
+  driveAttestedVersion: 4,
+  server: { disposition: 'active', candidate: null, retired: null },
+};
+
+const BOTH_MEDIA: ParanoidMediaStateResponse = {
+  privacyMode: 'paranoid',
+  mediaState: BOTH_STATE,
+};
+
+const DRIVE_ONLY_STATE: ParanoidVaultMediaState = {
+  mediaSet: ['drive'],
+  driveAttestedVersion: 4,
+  server: { disposition: 'retired', candidate: null, retired: null },
+};
+
+const DRIVE_ONLY_MEDIA: ParanoidMediaStateResponse = {
+  privacyMode: 'paranoid',
+  mediaState: DRIVE_ONLY_STATE,
+};
+
+function controller(
+  authorization: DriveConnectionController['authorization'] = 'connected',
+): DriveConnectionController {
+  return {
+    authorization,
+    connect: vi.fn(async () => ({
+      status: 'ok' as const,
+      media: BOTH_STATE,
+      driveLeftover: false as const,
+    })),
+    disconnect: vi.fn(async () => ({
+      status: 'ok' as const,
+      media: SERVER_STATE,
+      driveLeftover: false as const,
+    })),
+    useDriveOnly: vi.fn(async () => ({
+      status: 'ok' as const,
+      media: DRIVE_ONLY_STATE,
+      driveLeftover: false as const,
+    })),
+    addServerCopy: vi.fn(async () => ({
+      status: 'ok' as const,
+      media: BOTH_STATE,
+      driveLeftover: false as const,
+    })),
+    resume: vi.fn(async () => ({ status: 'ok' as const })),
+    purgeRetiredServer: vi.fn(async () => ({
+      status: 'ok' as const,
+      media: DRIVE_ONLY_STATE,
+    })),
+  };
+}
+
+function renderPage(
+  initialEntry = '/settings/connections',
+  props: React.ComponentProps<typeof ConnectionsPage> = {},
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={client}>
-        <ConnectionsPage />
+        <ConnectionsPage {...props} />
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -45,6 +123,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Google off by default so the section stays hidden unless a test opts in.
   vi.mocked(getGoogleLinkStatus).mockResolvedValue(GOOGLE_OFF);
+  vi.mocked(getParanoidMediaState).mockResolvedValue(NORMAL_MEDIA);
   vi.mocked(unlinkGoogle).mockResolvedValue(undefined);
 });
 
@@ -56,10 +135,9 @@ describe('ConnectionsPage — connector slots (V5-P0c)', () => {
     expect(await screen.findByRole('heading', { name: 'Connections' })).toBeInTheDocument();
 
     // Each designed slot is present with a "coming soon" chip and no dead button.
-    expect(screen.getByText('Google Drive backup')).toBeInTheDocument();
     expect(screen.getByText('Bank & broker cash sync')).toBeInTheDocument();
     expect(screen.getByText('Parqet')).toBeInTheDocument();
-    expect(screen.getAllByText('Coming soon').length).toBe(3);
+    expect(screen.getAllByText('Coming soon').length).toBe(2);
     // Both sync-semantics variants are surfaced.
     expect(screen.getAllByText(/Stays connected/).length).toBeGreaterThan(0);
     expect(screen.getByText(/One-time import/)).toBeInTheDocument();
@@ -73,7 +151,7 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
     renderPage();
     // The connectors still render; the Google section resolves to nothing once
     // the disabled status arrives (a transient skeleton clears on settle).
-    expect(await screen.findByText('Google Drive backup')).toBeInTheDocument();
+    expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('Google account')).not.toBeInTheDocument());
   });
 
@@ -150,5 +228,108 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
     expect(await screen.findByText(/doesn't match your account email/i)).toBeInTheDocument();
     // The connect affordance is still offered — nothing was linked.
     expect(screen.getByRole('link', { name: 'Connect Google' })).toBeInTheDocument();
+  });
+});
+
+describe('ConnectionsPage — paranoid Google Drive app data', () => {
+  test('connects a server-only vault through the verified media flow', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue(SERVER_MEDIA);
+    const drive = controller();
+    const user = userEvent.setup();
+    renderPage('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+
+    expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
+    expect(await screen.findByText('Disconnected')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Connect Drive' }));
+
+    await waitFor(() => expect(drive.connect).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('Google Drive app-data storage connected.')).toBeInTheDocument();
+  });
+
+  test('surfaces token expiry as an explicit Google sign-in action', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
+    const drive = controller('token-expired');
+    const user = userEvent.setup();
+    renderPage('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+
+    expect(await screen.findByText('Needs sign-in')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Sign in to Google to sync' }));
+    await waitFor(() => expect(drive.connect).toHaveBeenCalledTimes(1));
+  });
+
+  test('routes disconnect through the media controller and withholds last-medium removal', async () => {
+    const drive = controller();
+    const user = userEvent.setup();
+    vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
+    const rendered = renderPage('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Disconnect Drive' }));
+    await waitFor(() => expect(drive.disconnect).toHaveBeenCalledTimes(1));
+
+    rendered.unmount();
+    vi.mocked(getParanoidMediaState).mockResolvedValue(DRIVE_ONLY_MEDIA);
+    renderPage('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+    expect(await screen.findByText(/only vault medium/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Disconnect Drive' })).not.toBeInTheDocument();
+  });
+
+  test('exposes Drive-only and add-server transitions in a folded storage control', async () => {
+    const drive = controller();
+    const user = userEvent.setup();
+    vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
+    const rendered = renderPage('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+
+    await user.click(await screen.findByText('Vault storage copies'));
+    await user.click(screen.getByRole('button', { name: 'Use Drive only' }));
+    await waitFor(() => expect(drive.useDriveOnly).toHaveBeenCalledTimes(1));
+
+    rendered.unmount();
+    vi.mocked(getParanoidMediaState).mockResolvedValue(DRIVE_ONLY_MEDIA);
+    renderPage('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+    await user.click(await screen.findByText('Vault storage copies'));
+    await user.click(screen.getByRole('button', { name: 'Add server copy' }));
+    await waitFor(() => expect(drive.addServerCopy).toHaveBeenCalledTimes(1));
+  });
+
+  test('unlocks from the user gesture before starting a storage transition', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue(SERVER_MEDIA);
+    const drive = controller();
+    const unlock = vi.fn(async () => drive);
+    const user = userEvent.setup();
+    renderPage('/settings/connections', {
+      driveConnection: null,
+      driveUnlock: unlock,
+      driveConfigured: true,
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Connect Drive' }));
+    await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Unlock and continue' }));
+
+    await waitFor(() =>
+      expect(unlock).toHaveBeenCalledWith('correct horse', {
+        authorizeDrive: true,
+        driveOnly: false,
+      }),
+    );
+    expect(drive.connect).toHaveBeenCalledTimes(1);
   });
 });

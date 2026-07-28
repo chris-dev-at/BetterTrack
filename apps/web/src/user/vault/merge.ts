@@ -92,6 +92,7 @@ export function mergeVaultDocuments(input: MergeVaultDocumentsInput): MergedVaul
       schemaVersion: left.schemaVersion,
       entities,
       mergeLog: appendMergeRecord(left.mergeLog, right.mergeLog, record),
+      ...mergedClientSecurity(left, right),
     },
   };
 }
@@ -137,6 +138,16 @@ export function documentDominates(left: VaultDocumentV1, right: VaultDocumentV1)
 }
 
 function documentDominatesParsed(left: VaultDocumentV1, right: VaultDocumentV1): boolean {
+  const leftSecurity = left.clientSecurity;
+  const rightSecurity = right.clientSecurity;
+  if (rightSecurity != null && leftSecurity == null) return false;
+  if (
+    leftSecurity != null &&
+    rightSecurity != null &&
+    canonicalJson(leftSecurity) !== canonicalJson(rightSecurity)
+  ) {
+    throw documentInvalid('Vault retirement proof material diverged across replicas.');
+  }
   for (const [kind, entities] of Object.entries(right.entities) as [
     VaultEntityKind,
     VaultEntity[],
@@ -153,6 +164,19 @@ function documentDominatesParsed(left: VaultDocumentV1, right: VaultDocumentV1):
     }
   }
   return true;
+}
+
+function mergedClientSecurity(
+  left: VaultDocumentV1,
+  right: VaultDocumentV1,
+): Pick<VaultDocumentV1, 'clientSecurity'> | Record<string, never> {
+  if (left.clientSecurity == null && right.clientSecurity == null) return {};
+  if (left.clientSecurity == null) return { clientSecurity: right.clientSecurity };
+  if (right.clientSecurity == null) return { clientSecurity: left.clientSecurity };
+  if (canonicalJson(left.clientSecurity) !== canonicalJson(right.clientSecurity)) {
+    throw documentInvalid('Vault retirement proof material diverged across replicas.');
+  }
+  return { clientSecurity: left.clientSecurity };
 }
 
 function mergeEntityKind(left: VaultEntity[], right: VaultEntity[]): VaultEntity[] {

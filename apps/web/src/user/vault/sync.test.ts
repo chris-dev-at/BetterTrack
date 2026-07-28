@@ -11,6 +11,7 @@ import {
   VAULT_HISTORY_MEDIUM_HEADER,
   VAULT_HISTORY_PAGE_MAX,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
+  VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER,
   type VaultDocumentV1,
   type VaultEntity,
   type VaultEnvelopeHeader,
@@ -190,6 +191,7 @@ describe('vault DataHome boundaries', () => {
     const blob = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 3);
     const calls: RequestInit[] = [];
     const mismatch = createServerBlobDataHome({
+      retirementProofPublicKey: () => 'client-held-public-verifier',
       fetch: async (_url, init = {}) => {
         calls.push(init);
         return init.method === 'PUT'
@@ -209,6 +211,7 @@ describe('vault DataHome boundaries', () => {
     expect(calls[1]?.headers).toMatchObject({
       'If-Match': '"2"',
       'Content-Type': 'application/octet-stream',
+      [VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER]: 'client-held-public-verifier',
     });
   });
 

@@ -505,10 +505,52 @@
     },
     "connections": {
       "title": "Connections",
-      "subtitle": "Everything linking BetterTrack to the outside — your Google sign-in, and the connectors coming soon.",
+      "subtitle": "Everything linking BetterTrack to the outside — sign-in, encrypted storage, and compact connector controls.",
       "comingSoon": "Coming soon",
       "slotsTitle": "Connectors",
       "slotsSubtitle": "Sync your data with outside services. These are on the way — nothing to set up yet.",
+      "drive": {
+        "title": "Google Drive app data",
+        "description": "Keep your encrypted paranoid vault in your private Drive app-data folder. BetterTrack cannot access ordinary Drive files.",
+        "status": {
+          "connected": "Connected",
+          "needsSignIn": "Needs sign-in",
+          "disconnected": "Disconnected",
+          "working": "Working"
+        },
+        "connect": "Connect Drive",
+        "disconnect": "Disconnect Drive",
+        "signIn": "Sign in to Google to sync",
+        "unlockRequired": "Unlock your encrypted vault to change its storage.",
+        "unlockPrompt": "Enter your vault passphrase. Drive authorization and migration continue from this gesture.",
+        "passphraseLabel": "Vault passphrase",
+        "unlockAndContinue": "Unlock and continue",
+        "unlockError": "The vault could not be unlocked from an authenticated encrypted copy.",
+        "configMissing": "Google Drive app-data storage is not configured on this deployment.",
+        "lastMedium": "Drive is your only vault medium, so it cannot be disconnected.",
+        "connectedNotice": "Google Drive app-data storage connected.",
+        "disconnectedNotice": "Google Drive app-data storage disconnected.",
+        "leftover": "Drive was disconnected, but Google could not delete the leftover ciphertext. It remains only in your own app-data folder.",
+        "actionError": "The storage change was cancelled because a verified copy could not be completed.",
+        "loadError": "Drive storage status could not be loaded.",
+        "purgedNotice": "The retained server recovery copy was deleted.",
+        "purgeError": "The retained server copy was not deleted. The recovery window or read-back proof may not be ready.",
+        "storage": {
+          "title": "Vault storage copies",
+          "both": "Your encrypted vault is stored on the BetterTrack server and in Drive.",
+          "driveOnly": "Drive is the only active vault medium. BetterTrack holds no active portfolio ciphertext.",
+          "useDriveOnly": "Use Drive only",
+          "addServer": "Add server copy",
+          "driveOnlyNotice": "Drive-only storage activated. The server recovery copy remains retained until you explicitly delete it.",
+          "serverAddedNotice": "An authenticated server copy was added."
+        },
+        "retired": {
+          "title": "Retained server recovery copy",
+          "wait": "It remains recoverable until at least {{date}}.",
+          "ready": "The recovery window ended on {{date}}. A fresh authenticated Drive read is required before deletion.",
+          "purge": "Delete retained server copy"
+        }
+      },
       "sync": {
         "oneTime": "One-time import — runs once when you connect.",
         "stayConnected": "Stays connected — syncs automatically."
@@ -3330,6 +3372,17 @@
       "wrongPassword": "That password is incorrect.",
       "wrongCode": "That code is incorrect or has expired.",
       "tooMany": "Too many attempts. Please wait a moment and try again."
+    }
+  },
+  "vault": {
+    "sync": {
+      "synced": "Encrypted vault synced",
+      "syncing": "Encrypted changes are waiting to sync",
+      "offline": "Encrypted changes are saved locally while offline",
+      "needsAttention": "Vault sync needs attention",
+      "drive": {
+        "signIn": "Sign in to Google to sync"
+      }
     }
   },
   "announcements": {
