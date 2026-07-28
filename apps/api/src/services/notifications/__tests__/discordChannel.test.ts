@@ -102,6 +102,31 @@ describe('Discord channel (V4-P10)', () => {
     expect(calls[0]!.url).toBe(WEBHOOK_URL);
     const body = JSON.parse(String(calls[0]!.init!.body));
     expect(body.content).toBe('**Price alert: AAPL**\nAAPL is above 100.');
+    expect(body.allowed_mentions).toEqual({ parse: [] });
+  });
+
+  it.each([
+    ['everyone', '@everyone'],
+    ['here', '@here'],
+    ['user', '<@123456789012345678>'],
+    ['role', '<@&123456789012345678>'],
+  ])('keeps %s mention syntax inert in outbound payloads', async (_kind, text) => {
+    const repo = webhookRepo();
+    const { fn, calls } = fetchStub([{ status: 204 }]);
+    const channel = createDiscordChannel({
+      webhooks: repo,
+      encryptionKey: ENCRYPTION,
+      logger,
+      fetchFn: fn as unknown as typeof fetch,
+      minSpacingMs: 0,
+    });
+
+    expect(await channel.probe(WEBHOOK_URL, text)).toBe('ok');
+    const body = JSON.parse(String(calls[0]!.init!.body));
+    expect(body).toEqual({
+      content: text,
+      allowed_mentions: { parse: [] },
+    });
   });
 
   it('prunes the webhook when Discord answers 404 (webhook gone) or 401 (revoked)', async () => {
@@ -140,6 +165,10 @@ describe('Discord channel (V4-P10)', () => {
     // First-time 429 + Retry-After → sleep of ~500ms and one retry.
     expect(sleep).toHaveBeenCalledWith(500);
     expect(calls).toHaveLength(2);
+    expect(calls.map(({ init }) => JSON.parse(String(init!.body)).allowed_mentions)).toEqual([
+      { parse: [] },
+      { parse: [] },
+    ]);
   });
 
   it('probe returns “ok” without touching the repository', async () => {
