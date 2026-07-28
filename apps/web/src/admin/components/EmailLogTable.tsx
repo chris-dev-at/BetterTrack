@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import type { EmailLogEntry, EmailLogListResponse } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { formatDateTime } from '../../lib/format';
 import { Alert, Badge, Button, EmptyState, Spinner } from './ui';
@@ -26,6 +27,7 @@ export type EmailLogLoader = (
  * Email page and the per-user modal.
  */
 export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; emptyLabel?: string }) {
+  const t = useT();
   const [entries, setEntries] = useState<EmailLogEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -42,10 +44,10 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
       } catch (err) {
         if (signal?.aborted) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        setError(err instanceof ApiError ? err.message : 'Something went wrong.');
+        setError(err instanceof ApiError ? err.message : t('admin.emailLog.error'));
       }
     },
-    [load],
+    [load, t],
   );
 
   useEffect(() => {
@@ -66,9 +68,10 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
     setLoadingMore(false);
   }
 
-  if (loading) return <Spinner label="Loading email log…" />;
+  if (loading) return <Spinner label={t('admin.emailLog.loading')} />;
   if (error) return <Alert tone="error">{error}</Alert>;
-  if (entries.length === 0) return <EmptyState>{emptyLabel ?? 'No emails sent yet.'}</EmptyState>;
+  if (entries.length === 0)
+    return <EmptyState>{emptyLabel ?? t('admin.emailLog.empty')}</EmptyState>;
 
   return (
     <div className="flex flex-col gap-4">
@@ -76,11 +79,11 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
         <table className="w-full min-w-[44rem] text-left text-sm">
           <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
             <tr>
-              <th className="px-4 py-3 font-medium">When</th>
-              <th className="px-4 py-3 font-medium">Recipient</th>
-              <th className="px-4 py-3 font-medium">Template</th>
-              <th className="px-4 py-3 font-medium">Subject</th>
-              <th className="px-4 py-3 font-medium">Status</th>
+              <th className="px-4 py-3 font-medium">{t('admin.emailLog.headers.when')}</th>
+              <th className="px-4 py-3 font-medium">{t('admin.emailLog.headers.recipient')}</th>
+              <th className="px-4 py-3 font-medium">{t('admin.emailLog.headers.template')}</th>
+              <th className="px-4 py-3 font-medium">{t('admin.emailLog.headers.subject')}</th>
+              <th className="px-4 py-3 font-medium">{t('admin.emailLog.headers.status')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-800">
@@ -96,7 +99,7 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
                 </td>
                 <td className="px-4 py-3">
                   <Badge tone={STATUS_TONE[entry.status]}>
-                    {entry.status}
+                    {t(`admin.emailLog.status.${entry.status}`)}
                     {entry.errorCode ? ` · ${entry.errorCode}` : ''}
                   </Badge>
                 </td>
@@ -108,7 +111,7 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
       {cursor ? (
         <div className="flex justify-center">
           <Button variant="secondary" disabled={loadingMore} onClick={() => void loadMore()}>
-            {loadingMore ? 'Loading…' : 'Load more'}
+            {loadingMore ? t('admin.emailLog.loadingMore') : t('admin.emailLog.loadMore')}
           </Button>
         </div>
       ) : null}
