@@ -20,7 +20,14 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { paranoidVaultRetirements, paranoidVaultServerCandidates, users } from '../data/schema';
+import {
+  paranoidVaultHistory,
+  paranoidVaultRetired,
+  paranoidVaultRetirements,
+  paranoidVaultServerCandidates,
+  paranoidVaults,
+  users,
+} from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -815,6 +822,110 @@ describe('durable paranoid server-media lifecycle', () => {
       nextCursor: null,
     });
     expect((await agent.get('/api/v1/vault/history/1')).status).toBe(404);
+  });
+
+  it('purges a retired current vault and its bounded history after a signed retention proof', async () => {
+    const { user, agent } = await seedParanoidAgent('purge-history@bt.test', 'purgehistory');
+    const { privateKey, publicKey } = retirementProofKey();
+    const v1 = envelope(1, new Uint8Array([1, 2, 3]));
+    const v2 = envelope(2, new Uint8Array([4, 5, 6]));
+    const serverOnly = { mediaSet: ['server'], driveAttestedVersion: null };
+    const both = { mediaSet: ['server', 'drive'], driveAttestedVersion: 2 };
+    const driveOnly = { mediaSet: ['drive'], driveAttestedVersion: 2 };
+
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+      .send(v1)
+      .expect(204);
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(v2)
+      .expect(204);
+
+    await agent
+      .patch('/api/v1/vault/media')
+      .set(...XRW)
+      .send({
+        expected: serverOnly,
+        nextMediaSet: both.mediaSet,
+        verification: { kind: 'drive', version: 2 },
+      })
+      .expect(200);
+    await agent
+      .patch('/api/v1/vault/media')
+      .set(...XRW)
+      .send({
+        expected: both,
+        nextMediaSet: driveOnly.mediaSet,
+        verification: { kind: 'drive', version: 2 },
+      })
+      .expect(200);
+
+    // Retiring v2 moves both it and the bounded v1 history into the protected
+    // retired set, so a successful purge must dispose of every server copy.
+    const retiredHistory = await agent.get('/api/v1/vault/history');
+    expect(retiredHistory.body.items.map((item: { version: number }) => item.version)).toEqual([
+      2, 1,
+    ]);
+    expect((await agent.get('/api/v1/vault/history/1').responseType('blob')).status).toBe(200);
+    expect((await agent.get('/api/v1/vault/history/2').responseType('blob')).status).toBe(200);
+
+    await harness.db
+      .update(paranoidVaultRetirements)
+      .set({ retiredAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) })
+      .where(eq(paranoidVaultRetirements.userId, user.id));
+    const prepared = await agent
+      .post('/api/v1/vault/media/retired/purge/challenge')
+      .set(...XRW)
+      .send({ retiredVersion: 2 });
+    expect(prepared.status).toBe(200);
+    const challenge = prepared.body.challenge as string;
+    const purged = await agent
+      .post('/api/v1/vault/media/retired/purge')
+      .set(...XRW)
+      .send({
+        retiredVersion: 2,
+        observedVersion: 3,
+        challenge,
+        signature: purgeSignature(privateKey, 2, 3, challenge),
+      });
+    expect(purged.status).toBe(200);
+    expect(purged.body).toEqual({ purged: true });
+
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+    expect((await agent.get('/api/v1/vault/history/1')).status).toBe(404);
+    expect((await agent.get('/api/v1/vault/history/2')).status).toBe(404);
+    const media = await agent.get('/api/v1/vault/media');
+    expect(media.body.mediaState.server.disposition).toBe('empty');
+    expect(media.body.mediaState.server.candidate).toBeNull();
+    expect(media.body.mediaState.server.retired).toBeNull();
+
+    const serverCiphertextRows = await Promise.all([
+      harness.db
+        .select({ blob: paranoidVaults.blob })
+        .from(paranoidVaults)
+        .where(eq(paranoidVaults.userId, user.id)),
+      harness.db
+        .select({ blob: paranoidVaultHistory.blob })
+        .from(paranoidVaultHistory)
+        .where(eq(paranoidVaultHistory.userId, user.id)),
+      harness.db
+        .select({ blob: paranoidVaultRetired.blob })
+        .from(paranoidVaultRetired)
+        .where(eq(paranoidVaultRetired.userId, user.id)),
+      harness.db
+        .select({ blob: paranoidVaultServerCandidates.blob })
+        .from(paranoidVaultServerCandidates)
+        .where(eq(paranoidVaultServerCandidates.userId, user.id)),
+    ]);
+    expect(serverCiphertextRows).toEqual([[], [], [], []]);
   });
 
   it('removes an abandoned expired candidate while reporting media state', async () => {
