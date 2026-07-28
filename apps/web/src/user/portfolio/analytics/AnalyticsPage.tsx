@@ -18,7 +18,8 @@ import { getAnalyticsSeries, type AnalyticsSeriesParams } from '../../../lib/ana
 import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../../lib/portfolioApi';
 import { cx } from '../../../lib/cx';
 import { EM_DASH, formatDate, formatPercent, formatSignedPercent } from '../../../lib/format';
-import { EmptyState, Skeleton, StatCard } from '../../../ui';
+import { EmptyState, Skeleton } from '../../../ui';
+import { PageHead, Stat, StatStrip } from '../../../ui/origin';
 import { PriceChart } from '../../../ui/charts';
 import type { BenchmarkSeries, ChartPoint } from '../../../ui/charts';
 import { Alert } from '../../components/ui';
@@ -334,8 +335,8 @@ export function AnalyticsPage() {
         className="flex flex-col gap-3"
       >
         {data?.inflation ? (
-          <p className="flex items-center gap-2 text-xs text-amber-300">
-            <span className="rounded bg-amber-900/50 px-1.5 py-0.5 font-medium uppercase tracking-wide">
+          <p className="bt-meta flex items-center gap-2">
+            <span className="bt-badge bt-badge--gold" style={{ textTransform: 'uppercase', fontSize: 10.5, letterSpacing: '0.05em' }}>
               {t('portfolio.analytics.inflation.realTermsBadge')}
             </span>
             {t('portfolio.analytics.inflation.realTermsHint')}
@@ -355,7 +356,7 @@ export function AnalyticsPage() {
 
       {/* Side-by-side stats: primary + optional compare. */}
       {data ? (
-        <section className="grid gap-4 sm:grid-cols-2">
+        <section className="grid gap-5 sm:grid-cols-2">
           <StatsBlock
             t={t}
             caption={t('portfolio.analytics.stats.portfolioCaption')}
@@ -388,9 +389,7 @@ export function AnalyticsPage() {
 
       {/* Per-asset contribution table (visible set). */}
       <section className="flex flex-col gap-3">
-        <h2 className="text-lg font-semibold text-neutral-200">
-          {t('portfolio.analytics.contribution.sectionHeading')}
-        </h2>
+        <h2 className="bt-h2">{t('portfolio.analytics.contribution.sectionHeading')}</h2>
         <ContributionTable
           rows={data?.contributions ?? []}
           baseCurrency={data?.baseCurrency ?? 'EUR'}
@@ -408,20 +407,15 @@ export function AnalyticsPage() {
 
 function PageHeader({ t }: { t: TranslateFn }) {
   return (
-    <header className="flex flex-wrap items-start justify-between gap-3">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold text-neutral-100">
-          {t('portfolio.analytics.title')}
-        </h1>
-        <p className="max-w-2xl text-sm text-neutral-400">{t('portfolio.analytics.subtitle')}</p>
-      </div>
-      <Link
-        to="/portfolio"
-        className="rounded px-2 py-1 text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-      >
-        {t('portfolio.analytics.backToOverview')}
-      </Link>
-    </header>
+    <PageHead
+      actions={
+        <Link className="bt-link" style={{ fontSize: 13 }} to="/portfolio">
+          {t('portfolio.analytics.backToOverview')}
+        </Link>
+      }
+      sub={t('portfolio.analytics.subtitle')}
+      title={t('portfolio.analytics.title')}
+    />
   );
 }
 
@@ -435,11 +429,7 @@ function ModeToggle({
   onChange: (mode: AnalyticsMode) => void;
 }) {
   return (
-    <div
-      role="group"
-      aria-label={t('portfolio.analytics.displayModeAriaLabel')}
-      className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
-    >
+    <div aria-label={t('portfolio.analytics.displayModeAriaLabel')} className="bt-seg" role="group">
       <SegmentButton selected={mode === 'value'} onClick={() => onChange('value')}>
         {t('portfolio.analytics.valueMode')}
       </SegmentButton>
@@ -498,10 +488,8 @@ function InflationControl({
         aria-label={t('portfolio.analytics.inflation.label')}
         value={inflation}
         onChange={(e) => onInflationChange(e.target.value as 'none' | AnalyticsInflationMode)}
-        className={cx(
-          'rounded-md bg-neutral-900 px-2.5 py-1.5 text-sm text-neutral-100',
-          'ring-1 ring-inset ring-neutral-800 focus:outline-none focus:ring-2 focus:ring-sky-500',
-        )}
+        className="bt-select"
+        style={{ width: 'auto', minHeight: 30, padding: '3px 28px 3px 10px', fontSize: 12.5 }}
       >
         <option value="none">{labels.none}</option>
         {ANALYTICS_INFLATION_MODES.map((id) => (
@@ -519,12 +507,10 @@ function InflationControl({
             value={rate}
             onChange={(e) => onRateChange(e.target.value)}
             aria-label={t('portfolio.analytics.inflation.rateLabel')}
-            className={cx(
-              'w-20 rounded-md bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 tabular-nums',
-              'ring-1 ring-inset ring-neutral-800 focus:outline-none focus:ring-2 focus:ring-sky-500',
-            )}
+            className="bt-input bt-num w-20"
+            style={{ minHeight: 30, fontSize: 12.5 }}
           />
-          <span className="text-xs text-neutral-500">
+          <span className="bt-meta">
             {t('portfolio.analytics.inflation.rateSuffix')}
           </span>
         </span>
@@ -567,9 +553,9 @@ function RangeControl({
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <div
-          role="group"
           aria-label={t('portfolio.analytics.range.heading')}
-          className="inline-flex flex-wrap gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+          className="bt-seg flex-wrap"
+          role="group"
         >
           {RANGE_PRESETS.map((p) => (
             <SegmentButton key={p} selected={preset === p} onClick={() => onPreset(p)}>
@@ -581,7 +567,7 @@ function RangeControl({
           </SegmentButton>
         </div>
         {resolvedFrom && resolvedTo ? (
-          <span className="text-xs tabular-nums text-neutral-500">
+          <span className="bt-meta bt-num">
             {formatDate(resolvedFrom)} – {formatDate(resolvedTo)}
           </span>
         ) : null}
@@ -593,9 +579,10 @@ function RangeControl({
             value={customFrom}
             onChange={(e) => onCustomFrom(e.target.value)}
             aria-label={t('portfolio.analytics.range.fromLabel')}
-            className="rounded-md bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            className="bt-input"
+            style={{ width: 'auto', minHeight: 30, fontSize: 12.5 }}
           />
-          <span aria-hidden="true" className="text-neutral-600">
+          <span aria-hidden="true" className="bt-muted">
             –
           </span>
           <input
@@ -603,7 +590,8 @@ function RangeControl({
             value={customTo}
             onChange={(e) => onCustomTo(e.target.value)}
             aria-label={t('portfolio.analytics.range.toLabel')}
-            className="rounded-md bg-neutral-900 px-2 py-1.5 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            className="bt-input"
+            style={{ width: 'auto', minHeight: 30, fontSize: 12.5 }}
           />
         </div>
       ) : null}
@@ -629,45 +617,37 @@ function StatsBlock({
   };
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-lg bg-neutral-900/60 p-4">
+    <div className="flex flex-col gap-3">
       <div className="flex flex-col">
-        <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-          {caption}
-        </span>
-        <span className="truncate font-semibold text-neutral-100">{label}</span>
+        <span className="bt-label">{caption}</span>
+        <span className="bt-h3 truncate" style={{ marginTop: 2 }}>{label}</span>
       </div>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <StatCard
+      <StatStrip panel>
+        <Stat
           label={t('portfolio.analytics.stats.totalReturn')}
-          value={<span className="text-lg">{formatSignedPercent(stats.totalReturnPct)}</span>}
+          value={formatSignedPercent(stats.totalReturnPct)}
         />
-        <StatCard
-          label={t('portfolio.analytics.stats.cagr')}
-          value={<span className="text-lg">{formatSignedPercent(stats.cagrPct)}</span>}
-        />
-        <StatCard
+        <Stat label={t('portfolio.analytics.stats.cagr')} value={formatSignedPercent(stats.cagrPct)} />
+        <Stat
           label={t('portfolio.analytics.stats.maxDrawdown')}
-          value={<span className="text-lg">{formatPercent(stats.maxDrawdownPct)}</span>}
+          value={formatPercent(stats.maxDrawdownPct)}
         />
-        <StatCard
-          label={t('portfolio.analytics.stats.bestDay')}
-          value={<DayStat day={stats.bestDay} />}
-        />
-        <StatCard
+        <Stat label={t('portfolio.analytics.stats.bestDay')} value={<DayStat day={stats.bestDay} />} />
+        <Stat
           label={t('portfolio.analytics.stats.worstDay')}
           value={<DayStat day={stats.worstDay} />}
         />
-      </div>
+      </StatStrip>
     </div>
   );
 }
 
 function DayStat({ day }: { day: { date: string; returnPct: number } | null }) {
-  if (!day) return <span className="text-lg text-neutral-500">{EM_DASH}</span>;
+  if (!day) return <span className="bt-muted">{EM_DASH}</span>;
   return (
     <span className="flex flex-col">
-      <span className="text-lg">{formatSignedPercent(day.returnPct)}</span>
-      <span className="text-xs font-normal text-neutral-500">{formatDate(day.date)}</span>
+      <span>{formatSignedPercent(day.returnPct)}</span>
+      <span className="bt-meta" style={{ fontWeight: 400 }}>{formatDate(day.date)}</span>
     </span>
   );
 }
@@ -694,30 +674,22 @@ function VisibilityFilters({
   onToggleOverlay: () => void;
 }) {
   return (
-    <section className="flex flex-col gap-4 rounded-lg bg-neutral-900/40 p-4">
+    <section className="bt-panel bt-panel--pad bt-panel--soft flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
-          {t('portfolio.analytics.filters.heading')}
-        </h2>
+        <h2 className="bt-label">{t('portfolio.analytics.filters.heading')}</h2>
         <button
           type="button"
           aria-pressed={overlayAssets}
           onClick={onToggleOverlay}
           title={t('portfolio.analytics.filters.overlayHint')}
-          className={cx(
-            'rounded-md px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-colors',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-            overlayAssets
-              ? 'bg-sky-600 text-white ring-sky-600'
-              : 'bg-neutral-900 text-neutral-400 ring-neutral-800 hover:bg-neutral-800 hover:text-neutral-100',
-          )}
+          className={cx('bt-subtab', overlayAssets && 'is-active')}
         >
           {t('portfolio.analytics.filters.overlayToggle')}
         </button>
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <span className="text-xs font-medium text-neutral-500">
+        <span className="bt-meta" style={{ fontWeight: 550 }}>
           {t('portfolio.analytics.filters.assetsHeading')}
         </span>
         <div className="flex flex-wrap gap-1.5">
@@ -739,7 +711,7 @@ function VisibilityFilters({
 
       {presentGroups.length > 0 ? (
         <div className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-neutral-500">
+          <span className="bt-meta" style={{ fontWeight: 550 }}>
             {t('portfolio.analytics.filters.groupsHeading')}
           </span>
           <div className="flex flex-wrap gap-1.5">
@@ -781,13 +753,8 @@ function FilterChip({
       aria-pressed={active}
       aria-label={ariaLabel}
       onClick={onClick}
-      className={cx(
-        'rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition-colors',
-        'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-        active
-          ? 'bg-sky-600/20 text-sky-200 ring-sky-700'
-          : 'bg-neutral-900 text-neutral-500 line-through ring-neutral-800 hover:text-neutral-300',
-      )}
+      className={cx('bt-subtab', active ? 'is-active' : 'line-through')}
+      style={{ borderRadius: 999 }}
     >
       {children}
     </button>
@@ -808,13 +775,7 @@ function SegmentButton({
       type="button"
       aria-pressed={selected}
       onClick={onClick}
-      className={cx(
-        'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-        'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-        selected
-          ? 'bg-sky-600 text-white'
-          : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-      )}
+      className={cx(selected && 'is-active')}
     >
       {children}
     </button>

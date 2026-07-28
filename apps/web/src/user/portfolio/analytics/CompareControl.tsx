@@ -70,13 +70,13 @@ export function CompareControl({
   ];
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg bg-neutral-900/60 p-3">
+    <div className="bt-panel bt-panel--soft flex flex-col gap-3 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+        <span className="bt-label">
           {t('portfolio.analytics.compare.heading')}
         </span>
         {value ? (
-          <span className="text-xs text-neutral-400">
+          <span className="bt-meta">
             {t('portfolio.analytics.compare.current', { label: value.label })}
           </span>
         ) : null}
@@ -85,7 +85,7 @@ export function CompareControl({
       <div
         role="group"
         aria-label={t('portfolio.analytics.compare.heading')}
-        className="inline-flex flex-wrap gap-0.5 self-start rounded-md bg-neutral-950 p-0.5 ring-1 ring-inset ring-neutral-800"
+        className="bt-seg flex-wrap self-start"
       >
         {tabs.map((tab) => (
           <button
@@ -93,13 +93,7 @@ export function CompareControl({
             type="button"
             aria-pressed={kind === tab.kind}
             onClick={() => selectKind(tab.kind)}
-            className={cx(
-              'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              kind === tab.kind
-                ? 'bg-sky-600 text-white'
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-            )}
+            className={cx(kind === tab.kind && 'is-active')}
           >
             {tab.label}
           </button>
@@ -167,13 +161,13 @@ function PickerSelect({
   onPick: (id: string, name: string) => void;
 }) {
   if (loading) {
-    return <p className="text-xs text-neutral-500">{placeholder}</p>;
+    return <p className="bt-meta">{placeholder}</p>;
   }
   if (error) {
     return <p className="text-xs text-rose-400">{errorLabel}</p>;
   }
   if (options.length === 0) {
-    return <p className="text-xs text-neutral-500">{emptyLabel}</p>;
+    return <p className="bt-meta">{emptyLabel}</p>;
   }
   return (
     <select
@@ -183,10 +177,7 @@ function PickerSelect({
         const picked = options.find((o) => o.id === e.target.value);
         if (picked) onPick(picked.id, picked.name);
       }}
-      className={cx(
-        'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-        'ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500',
-      )}
+      className="bt-select w-full"
     >
       <option value="">{placeholder}</option>
       {options.map((o) => (
