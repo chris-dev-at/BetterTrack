@@ -74,6 +74,15 @@ type TestOnlyRejectPersistedTransactionQuantity = (input: {
   quantity: bigint;
 }) => boolean;
 
+type TestOnlyObserveQuantityReachabilityOrder = (input: {
+  /** Number of transaction rows routed through the fixed-width ordering proof. */
+  transactionRows: number;
+  /** Fixed canonical-UUID key passes used to establish document write order. */
+  writeOrderKeyPasses: number;
+  /** Fixed timestamp-plus-UUID key passes per chronological replay row. */
+  replayTimelineKeyPasses: number;
+}) => void;
+
 export interface ParanoidRehydrationServiceDeps {
   db: Database;
   now?: () => Date;
@@ -83,6 +92,8 @@ export interface ParanoidRehydrationServiceDeps {
   afterStage?: (stage: ParanoidRehydrationStage) => void | Promise<void>;
   /** Test-only quantity-rule override for differential conformance. */
   testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity;
+  /** Test-only trace proving the quantity-ordering pass count is fixed per row. */
+  testOnlyObserveQuantityReachabilityOrder?: TestOnlyObserveQuantityReachabilityOrder;
 }
 
 export type ParanoidRehydrationStage =
@@ -270,6 +281,21 @@ function normalRowsCanReplay(
 const NORMAL_WRITE_BATCH_MAX_TRANSACTIONS = 500;
 
 /**
+ * Canonical UUIDs and persisted JavaScript Date values have fixed shapes.
+ * Normal writes use UUIDv7, while strict-v1 validation still accepts the
+ * canonical UUID fixtures retained by older restore tests. Keeping those keys
+ * fixed-width lets the snapshot proof establish both orders with radix
+ * distribution passes, not a user-controlled comparator sort.
+ */
+const UUID_HEX_DIGIT_POSITIONS = [
+  0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30,
+  31, 32, 33, 34, 35,
+] as const;
+const EXECUTED_AT_DIGIT_POSITIONS = [
+  0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 22,
+] as const;
+
+/**
  * Snapshot-only normal-write reachability has an intentionally bounded proof.
  *
  * The strict-v1 payload does not retain CREATE batch identities or trustworthy
@@ -277,9 +303,13 @@ const NORMAL_WRITE_BATCH_MAX_TRANSACTIONS = 500;
  * makes one fixed legacy-cutoff choice, proves at most one pre-cutoff PATCH per
  * portfolio/asset, and proves every storage-rounding CREATE from the
  * zero-balance epoch that directly contains it. Each row is visited by a fixed
- * number of streaming passes; witness epochs may contain no more than the
- * public 500-row CREATE limit. A document outside that direct proof is rejected
- * before restore writes rather than guessed at or explored with a span search.
+ * number of streaming passes. Ordering is bounded to 81 fixed-width radix keys
+ * per row (32 document UUID keys; 32 UUID tie-breaker plus 17 canonical UTC
+ * timestamp keys for chronological replay), and witness epochs may contain no
+ * more than the public 500-row CREATE limit. The insolvent direct proof also
+ * fails closed unless every creation key is UUIDv7. A document outside that
+ * direct proof is rejected before restore writes rather than guessed at or
+ * explored with a span search.
  */
 interface NormalCreateWitness {
   /** Inclusive UUIDv7 write positions of one direct CREATE witness. */
@@ -296,6 +326,171 @@ function quantityReachabilityError(row: QuantityReplayRow, reason: string): Erro
       row.transaction.id +
       '].quantity=' +
       JSON.stringify(row.transaction.data.quantity),
+  );
+}
+
+function decimalDigitAt(value: string, position: number): number {
+  return value.charCodeAt(position) - 48;
+}
+
+function uuidHexDigitAt(value: string, position: number): number {
+  const code = value.charCodeAt(position);
+  return code <= 57 ? code - 48 : code - 87;
+}
+
+function isCanonicalUuid(value: string): boolean {
+  if (
+    value.length !== 36 ||
+    value.charCodeAt(8) !== 45 ||
+    value.charCodeAt(13) !== 45 ||
+    value.charCodeAt(18) !== 45 ||
+    value.charCodeAt(23) !== 45
+  ) {
+    return false;
+  }
+  const variant = value.charCodeAt(19);
+  if (variant < 56 || variant > 98 || (variant > 57 && variant < 97)) return false;
+  for (const position of UUID_HEX_DIGIT_POSITIONS) {
+    const code = value.charCodeAt(position);
+    if (!((code >= 48 && code <= 57) || (code >= 97 && code <= 102))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function hasUuidV7WriteOrder(value: string): boolean {
+  return value.charCodeAt(14) === 55;
+}
+
+function isCanonicalUtcMillisecondTimestamp(value: string): boolean {
+  if (
+    value.length !== 24 ||
+    value.charCodeAt(4) !== 45 ||
+    value.charCodeAt(7) !== 45 ||
+    value.charCodeAt(10) !== 84 ||
+    value.charCodeAt(13) !== 58 ||
+    value.charCodeAt(16) !== 58 ||
+    value.charCodeAt(19) !== 46 ||
+    value.charCodeAt(23) !== 90
+  ) {
+    return false;
+  }
+  for (const position of EXECUTED_AT_DIGIT_POSITIONS) {
+    const code = value.charCodeAt(position);
+    if (code < 48 || code > 57) return false;
+  }
+
+  const year =
+    decimalDigitAt(value, 0) * 1_000 +
+    decimalDigitAt(value, 1) * 100 +
+    decimalDigitAt(value, 2) * 10 +
+    decimalDigitAt(value, 3);
+  const month = decimalDigitAt(value, 5) * 10 + decimalDigitAt(value, 6);
+  const day = decimalDigitAt(value, 8) * 10 + decimalDigitAt(value, 9);
+  const hour = decimalDigitAt(value, 11) * 10 + decimalDigitAt(value, 12);
+  const minute = decimalDigitAt(value, 14) * 10 + decimalDigitAt(value, 15);
+  const second = decimalDigitAt(value, 17) * 10 + decimalDigitAt(value, 18);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+  return (
+    year >= 1 &&
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= (daysInMonth[month - 1] ?? 0) &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59
+  );
+}
+
+function assertBoundedQuantityOrderingFields(row: QuantityReplayRow): void {
+  if (!isCanonicalUuid(row.transaction.id)) {
+    throw quantityReachabilityError(
+      row,
+      'transaction quantity reachability requires a canonical UUID write key',
+    );
+  }
+  if (!isCanonicalUtcMillisecondTimestamp(row.transaction.data.executedAt)) {
+    throw quantityReachabilityError(
+      row,
+      'transaction quantity reachability requires a canonical UTC millisecond execution time',
+    );
+  }
+}
+
+/**
+ * Stable fixed-radix ordering. `positions` is compile-time constant, so this
+ * runs in O(rows) time: each key performs two full passes and never invokes a
+ * comparator whose work can grow with the supplied history.
+ */
+type FixedRadixPassObserver = () => void;
+
+function orderByFixedRadix<T>(
+  values: readonly T[],
+  positions: readonly number[],
+  digitAt: (value: T, position: number) => number,
+  onPass?: FixedRadixPassObserver,
+): T[] {
+  if (values.length < 2) return [...values];
+
+  let source = [...values];
+  let target: T[] = new Array(source.length);
+  const counts = new Uint32Array(16);
+
+  for (let positionIndex = positions.length - 1; positionIndex >= 0; positionIndex -= 1) {
+    onPass?.();
+    counts.fill(0);
+    const position = positions[positionIndex]!;
+    for (const value of source) counts[digitAt(value, position)]! += 1;
+
+    let next = 0;
+    for (let digit = 0; digit < counts.length; digit += 1) {
+      const count = counts[digit]!;
+      counts[digit] = next;
+      next += count;
+    }
+    for (const value of source) {
+      const digit = digitAt(value, position);
+      target[counts[digit]!] = value;
+      counts[digit]! += 1;
+    }
+    [source, target] = [target, source];
+  }
+  return source;
+}
+
+function orderByUuidWriteHistory(
+  rows: readonly QuantityReplayRow[],
+  onPass?: FixedRadixPassObserver,
+): QuantityReplayRow[] {
+  return orderByFixedRadix(
+    rows,
+    UUID_HEX_DIGIT_POSITIONS,
+    (row, position) => uuidHexDigitAt(row.transaction.id, position),
+    onPass,
+  );
+}
+
+function orderByReplayTimeline(
+  rows: readonly QuantityReplayRow[],
+  onPass?: FixedRadixPassObserver,
+): QuantityReplayRow[] {
+  // LSD stability makes the UUIDv7 pass the tie-breaker for the chronological
+  // timestamp pass, matching the repository's `(executed_at, id)` replay order.
+  const byId = orderByFixedRadix(
+    rows,
+    UUID_HEX_DIGIT_POSITIONS,
+    (row, position) => uuidHexDigitAt(row.transaction.id, position),
+    onPass,
+  );
+  return orderByFixedRadix(
+    byId,
+    EXECUTED_AT_DIGIT_POSITIONS,
+    (row, position) => decimalDigitAt(row.transaction.data.executedAt, position),
+    onPass,
   );
 }
 
@@ -564,8 +759,9 @@ function portfolioAssetKey(transaction: EntityOf<'transaction'>): string {
 function canBeNormalQuantityPatch(
   transaction: EntityOf<'transaction'>,
   normalInputQuantity: number | null,
+  writeOrder: number,
   cashLinkedTransactionIds: ReadonlySet<string>,
-  earliestEngineTaxedSellIds: ReadonlyMap<string, string>,
+  earliestEngineTaxedSellWriteOrders: ReadonlyMap<string, number>,
 ): boolean {
   if (transaction.rev === 0 || normalInputQuantity === null) return false;
   if (
@@ -575,8 +771,13 @@ function canBeNormalQuantityPatch(
   ) {
     return false;
   }
-  const earliestEngineTaxedSellId = earliestEngineTaxedSellIds.get(portfolioAssetKey(transaction));
-  return earliestEngineTaxedSellId === undefined || earliestEngineTaxedSellId >= transaction.id;
+  const earliestEngineTaxedSellWriteOrder = earliestEngineTaxedSellWriteOrders.get(
+    portfolioAssetKey(transaction),
+  );
+  return (
+    earliestEngineTaxedSellWriteOrder === undefined ||
+    earliestEngineTaxedSellWriteOrder >= writeOrder
+  );
 }
 
 /**
@@ -591,18 +792,9 @@ function storageRoundingSellIdsFor(
   transactions: readonly EntityOf<'transaction'>[],
   cashLinkedTransactionIds: ReadonlySet<string>,
   testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity,
+  testOnlyObserveQuantityReachabilityOrder?: TestOnlyObserveQuantityReachabilityOrder,
 ): ReadonlySet<string> {
-  const writeHistory = [...transactions].sort((a, b) => a.id.localeCompare(b.id));
-  const earliestEngineTaxedSellIds = new Map<string, string>();
-  for (const transaction of writeHistory) {
-    if (transaction.data.side !== 'sell' || !isEngineTaxedTransaction(transaction)) continue;
-    const key = portfolioAssetKey(transaction);
-    const current = earliestEngineTaxedSellIds.get(key);
-    if (current === undefined || transaction.id < current) {
-      earliestEngineTaxedSellIds.set(key, transaction.id);
-    }
-  }
-  const rows = writeHistory.map((transaction, writeOrder): QuantityReplayRow => {
+  const unorderedRows = transactions.map((transaction): QuantityReplayRow => {
     const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
     const normalInputQuantity = quantityNumberPreimage(
       quantity,
@@ -613,15 +805,42 @@ function storageRoundingSellIdsFor(
       quantity,
       readbackQuantity: Number(fixedScaleDecimal(quantity, 8)),
       normalInputQuantity,
-      writeOrder,
-      revisionCandidate: canBeNormalQuantityPatch(
-        transaction,
-        normalInputQuantity,
-        cashLinkedTransactionIds,
-        earliestEngineTaxedSellIds,
-      ),
+      writeOrder: -1,
+      revisionCandidate: false,
     };
   });
+  for (const row of unorderedRows) assertBoundedQuantityOrderingFields(row);
+
+  let writeOrderKeyPasses = 0;
+  const rows = orderByUuidWriteHistory(
+    unorderedRows,
+    testOnlyObserveQuantityReachabilityOrder
+      ? () => {
+          writeOrderKeyPasses += 1;
+        }
+      : undefined,
+  );
+  const earliestEngineTaxedSellWriteOrders = new Map<string, number>();
+  for (let writeOrder = 0; writeOrder < rows.length; writeOrder += 1) {
+    const row = rows[writeOrder]!;
+    row.writeOrder = writeOrder;
+    if (row.transaction.data.side !== 'sell' || !isEngineTaxedTransaction(row.transaction)) {
+      continue;
+    }
+    const key = portfolioAssetKey(row.transaction);
+    if (!earliestEngineTaxedSellWriteOrders.has(key)) {
+      earliestEngineTaxedSellWriteOrders.set(key, writeOrder);
+    }
+  }
+  for (const row of rows) {
+    row.revisionCandidate = canBeNormalQuantityPatch(
+      row.transaction,
+      row.normalInputQuantity,
+      row.writeOrder,
+      cashLinkedTransactionIds,
+      earliestEngineTaxedSellWriteOrders,
+    );
+  }
 
   for (const row of rows) {
     if (
@@ -646,16 +865,37 @@ function storageRoundingSellIdsFor(
     group.push(row);
     transactionsByPortfolioAsset.set(key, group);
   }
+  let replayTimelineKeyPasses = 0;
   const replayGroups = [...transactionsByPortfolioAsset.values()].map((group) =>
-    group.sort(
-      (a, b) =>
-        Date.parse(a.transaction.data.executedAt) - Date.parse(b.transaction.data.executedAt) ||
-        a.transaction.id.localeCompare(b.transaction.id),
+    orderByReplayTimeline(
+      group,
+      testOnlyObserveQuantityReachabilityOrder
+        ? () => {
+            replayTimelineKeyPasses += 1;
+          }
+        : undefined,
     ),
   );
+  testOnlyObserveQuantityReachabilityOrder?.({
+    transactionRows: rows.length,
+    writeOrderKeyPasses,
+    replayTimelineKeyPasses,
+  });
 
   const persistedInsolventGroups = replayGroups.filter((group) => !isPersistedSolvent(group));
   if (persistedInsolventGroups.length === 0) return new Set();
+
+  // Only a UUIDv7 key carries the creation-order provenance needed by the
+  // insolvent direct proof. Solvent legacy fixtures retain their canonical UUID
+  // compatibility above because this branch does not infer any write history.
+  for (const row of rows) {
+    if (!hasUuidV7WriteOrder(row.transaction.id)) {
+      throw quantityReachabilityError(
+        row,
+        'transaction quantity reachability requires a UUIDv7 write key for the direct proof',
+      );
+    }
+  }
 
   // A row without a public-number preimage can only live in the strict-v1
   // prefix. This direct proof deliberately does not search a later cutoff.
@@ -1148,6 +1388,7 @@ function validateGraph(
   userId: string,
   entities: readonly Entity[],
   testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity,
+  testOnlyObserveQuantityReachabilityOrder?: TestOnlyObserveQuantityReachabilityOrder,
 ): ValidatedGraph {
   validateUniqueRestoredIds(entities);
   validateOwnedRows(userId, entities);
@@ -1784,6 +2025,7 @@ function validateGraph(
         ),
       ),
       testOnlyRejectPersistedTransactionQuantity,
+      testOnlyObserveQuantityReachabilityOrder,
     )) {
       storageRoundingSellIds.add(sellId);
     }
@@ -1896,6 +2138,7 @@ export function createParanoidRehydrationService(
         userId,
         entities,
         deps.testOnlyRejectPersistedTransactionQuantity,
+        deps.testOnlyObserveQuantityReachabilityOrder,
       );
 
       return withParanoidRehydrationTransaction(deps.db, async (tx) => {

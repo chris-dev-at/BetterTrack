@@ -1425,7 +1425,7 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     ).toHaveLength(NORMAL_HISTORY_TRANSACTION_COUNT + 2);
   });
 
-  it('keeps a local rounding witness bounded with 2,047 later same-asset rows', async () => {
+  it('keeps a local rounding witness within the fixed linear ordering bound with 2,047 later same-asset rows', async () => {
     const arranged = await arrangeScaleEightRoundingBatch();
     const pairRows = quantityEntities(arranged.document);
     const latestPairId = [...pairRows].sort((left, right) => right.id.localeCompare(left.id))[0]
@@ -1454,13 +1454,30 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     const document = strictDocument([...arranged.document.entities, ...laterRows]);
     expect(quantityEntities(document)).toHaveLength(NORMAL_HISTORY_TRANSACTION_COUNT + 2);
 
-    await rehydrateReachableState(
-      arranged.harness,
-      arranged.userId,
+    const orderTraces: Array<{
+      transactionRows: number;
+      writeOrderKeyPasses: number;
+      replayTimelineKeyPasses: number;
+    }> = [];
+    await createParanoidRehydrationService({
+      db: arranged.harness.db,
+      testOnlyObserveQuantityReachabilityOrder(trace) {
+        orderTraces.push(trace);
+      },
+    }).rehydrate(arranged.userId, {
+      rehydrationId: FIRST_REHYDRATION_ID,
       document,
-      FIRST_REHYDRATION_ID,
-      'large same-asset history with a local rounding boundary',
-    );
+    });
+    // This assertion is deliberately structural rather than a timing threshold:
+    // the actual fixed-radix loops take the same 32 write-order keys and 49
+    // chronological replay keys, regardless of the 2,047-row same-asset tail.
+    expect(orderTraces).toEqual([
+      {
+        transactionRows: NORMAL_HISTORY_TRANSACTION_COUNT + 2,
+        writeOrderKeyPasses: 32,
+        replayTimelineKeyPasses: 49,
+      },
+    ]);
     expect(
       await arranged.harness.db
         .select()
