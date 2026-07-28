@@ -447,7 +447,12 @@ function exactLegacyPrefixFailures(
       }
       if (row.quantity > held && !row.transaction.data.allowUncovered) {
         failures.push({ group, row });
-        break;
+        // Continue from the same flat position that normal replay uses after
+        // an uncovered/invalid sell. A later exact deficit in this group must
+        // be proven independently; otherwise an earlier valid PATCH witness
+        // could hide an unrevised oversell through repository-number readback.
+        held = 0n;
+        continue;
       }
       held = row.quantity > held ? 0n : held - row.quantity;
     }
@@ -609,7 +614,11 @@ function collectNormalCreateWitnesses(
       readbackHeld -= quantity;
       if (Math.abs(readbackHeld) <= QTY_EPSILON) {
         readbackHeld = 0;
-        resetEpoch();
+        // Storage can flatten a pair whose public-number replay still carries
+        // a meaningful epsilon-valid residual. Keep that raw CREATE epoch
+        // alive until its own replay is flat so a following one-quantum stored
+        // sell can use the same bounded normal-write witness.
+        if (rawHeld === 0) resetEpoch();
       }
     }
   }

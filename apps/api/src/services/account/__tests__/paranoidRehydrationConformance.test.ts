@@ -422,6 +422,69 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     ]);
   });
 
+  it('rehydrates a normal rounding batch across a persisted-flat raw residual', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const assetId = '018f0000-0c00-7000-8000-000000000c02';
+    await seedGlobalAsset(harness, assetId, 'RAW-EPOCH-RESIDUAL');
+
+    // The first stored sell flattens numeric(20,8), but its normal public
+    // inputs retain about 9.8e-9 shares. The final sell is valid within the
+    // normal reducer epsilon and clamps that raw residual to zero, while
+    // storage records the one-quantum oversell that needs the same witness.
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId,
+        side: 'buy',
+        quantity: 1.0000000049,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:00:00.000Z',
+      },
+      {
+        assetId,
+        side: 'sell',
+        quantity: 0.9999999951,
+        price: 11,
+        fee: 0,
+        executedAt: '2026-07-23T10:01:00.000Z',
+      },
+      {
+        assetId,
+        side: 'sell',
+        quantity: 0.00000001,
+        price: 12,
+        fee: 0,
+        executedAt: '2026-07-23T10:02:00.000Z',
+      },
+    ]);
+
+    const document = await capturePortfolioDocument(harness, portfolioId);
+    expect(
+      quantityEntities(document)
+        .map((transaction) => ({
+          side: transaction.data.side,
+          quantity: transaction.data.quantity,
+          executedAt: transaction.data.executedAt,
+        }))
+        .sort((left, right) => left.executedAt.localeCompare(right.executedAt)),
+    ).toEqual([
+      { side: 'buy', quantity: '1.00000000', executedAt: '2026-07-23T10:00:00.000Z' },
+      { side: 'sell', quantity: '1.00000000', executedAt: '2026-07-23T10:01:00.000Z' },
+      { side: 'sell', quantity: '0.00000001', executedAt: '2026-07-23T10:02:00.000Z' },
+    ]);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      document,
+      FIRST_REHYDRATION_ID,
+      'normal rounding batch across a persisted-flat raw residual',
+    );
+  });
+
   it('rehydrates a normal rounding CREATE batch from a strict-prefix holding', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
@@ -1479,6 +1542,91 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
       ).rejects.toMatchObject({
         code: 'INVALID_CASH_LEDGER',
         message: expect.stringContaining(quantityField(revisedSell)),
+      });
+      expect(mutationTransaction).not.toHaveBeenCalled();
+      expect(
+        await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+      ).toEqual([]);
+      expect(await harness.db.select().from(transactions)).toEqual([]);
+    } finally {
+      mutationTransaction.mockRestore();
+    }
+  });
+
+  it('rejects a later unexplainable exact-prefix deficit in the same asset group before restore writes', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = '018f0000-0e00-7000-8000-000000000e01';
+    const assetId = '018f0000-0e00-7000-8000-000000000e02';
+    await seedGlobalAsset(harness, assetId, 'PREFIX-SAME-GROUP-DEFICITS');
+
+    const writeIds = ['018f0000-0e00-7000-8000-000000000e03'];
+    for (let index = 1; index < 5; index += 1) {
+      writeIds.push(nextUuidV7WriteId(writeIds[index - 1]!));
+    }
+    const patchSell = transactionEntity({
+      id: writeIds[1]!,
+      portfolioId,
+      assetId,
+      side: 'sell',
+      quantity: '999999999999.00000000',
+      executedAt: '2026-07-23T10:01:00.000Z',
+    });
+    // This first deficit has the one permitted inferred PATCH witness: its
+    // surrounding quantities both read back as 999999999999 in normal mode.
+    patchSell.rev = 1;
+    const invalidSell = transactionEntity({
+      id: writeIds[3]!,
+      portfolioId,
+      assetId,
+      side: 'sell',
+      quantity: '999999999999.00000000',
+      executedAt: '2026-07-23T10:03:00.000Z',
+    });
+    const document = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: writeIds[0]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '999999999998.99999999',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+      patchSell,
+      transactionEntity({
+        id: writeIds[2]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '999999999998.99995000',
+        executedAt: '2026-07-23T10:02:00.000Z',
+      }),
+      invalidSell,
+      // This no-preimage row fixes the one global strict-v1 cutoff after both
+      // deficits. The later unrevised sell must not be hidden by the first
+      // row's valid singleton PATCH witness.
+      transactionEntity({
+        id: writeIds[4]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:04:00.000Z',
+      }),
+    ]);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    try {
+      await expect(
+        createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
+          rehydrationId: FIRST_REHYDRATION_ID,
+          document,
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_CASH_LEDGER',
+        message: expect.stringContaining(quantityField(invalidSell)),
       });
       expect(mutationTransaction).not.toHaveBeenCalled();
       expect(
