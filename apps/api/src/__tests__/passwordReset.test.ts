@@ -2,7 +2,11 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { meResponseSchema, twoFactorEnrollResponseSchema } from '@bettertrack/contracts';
+import {
+  meResponseSchema,
+  twoFactorChallengeResponseSchema,
+  twoFactorEnrollResponseSchema,
+} from '@bettertrack/contracts';
 
 import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -108,8 +112,8 @@ describe('password reset — an admin account is recoverable (#248 item 6)', () 
     expect(stillGated.status).toBe(403);
     expect(stillGated.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
 
-    // Confirming the first factor rotates this bootstrap session into an assured
-    // one, so recovery completes without a redundant second login.
+    // Enrollment is another security transition and therefore logs this device
+    // out too. A final explicit password + TOTP login completes recovery.
     const { secret } = twoFactorEnrollResponseSchema.parse(
       (await recovered.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
     );
@@ -117,7 +121,23 @@ describe('password reset — an admin account is recoverable (#248 item 6)', () 
       .post('/api/v1/admin/security/2fa/totp/confirm')
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
-    expect((await recovered.get('/api/v1/admin/users')).status).toBe(200);
+    expect((await recovered.get('/api/v1/admin/users')).status).toBe(404);
+
+    const authenticated = request.agent(harness.app);
+    const challenge = twoFactorChallengeResponseSchema.parse(
+      (
+        await authenticated
+          .post('/api/v1/auth/login')
+          .set(...XRW)
+          .send({ identifier: target.email, password: 'ops-recovered-strong-9' })
+      ).body,
+    );
+    const verified = await authenticated
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) });
+    expect(verified.status).toBe(200);
+    expect((await authenticated.get('/api/v1/admin/users')).status).toBe(200);
   });
 });
 

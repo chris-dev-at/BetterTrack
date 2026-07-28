@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   adminStatsSchema,
   createUserResponseSchema,
+  twoFactorChallengeResponseSchema,
   twoFactorEnrollResponseSchema,
 } from '@bettertrack/contracts';
 
@@ -266,7 +267,27 @@ describe('administrator role-transition generation (#888)', () => {
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
     expect(confirmed.status).toBe(200);
-    expect((await bootstrap.get('/api/v1/admin/users')).status).toBe(200);
+
+    // Enrollment is itself a security transition: it logs the acting device out
+    // rather than handing it an assured replacement session. Administrator
+    // access returns only after an explicit fresh password + factor login.
+    expect((await bootstrap.get('/api/v1/admin/users')).status).toBe(404);
+
+    const assured = request.agent(harness.app);
+    const challenge = twoFactorChallengeResponseSchema.parse(
+      (
+        await assured
+          .post('/api/v1/auth/login')
+          .set(...XRW)
+          .send({ identifier: target.email, password: target.password })
+      ).body,
+    );
+    const verified = await assured
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) });
+    expect(verified.status).toBe(200);
+    expect((await assured.get('/api/v1/admin/users')).status).toBe(200);
   });
 
   it('fails closed when promotion commits after the session read but before the user read', async () => {
