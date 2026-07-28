@@ -367,6 +367,90 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     ]);
   });
 
+  it('rehydrates a normal rounding CREATE batch from a strict-prefix holding', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = '018f0000-0b00-7000-8000-000000000b01';
+    const assetId = '018f0000-0b00-7000-8000-000000000b02';
+    const cutoffAssetId = '018f0000-0b00-7000-8000-000000000b03';
+    await seedGlobalAsset(harness, assetId, 'PREFIX-SEEDED-ROUNDING');
+    await seedGlobalAsset(harness, cutoffAssetId, 'PREFIX-SEEDED-CUTOFF');
+
+    const writeIds = ['018f0000-0b00-7000-8000-000000000b04'];
+    writeIds.push(nextUuidV7WriteId(writeIds[0]!));
+    const legacyDocument = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: writeIds[0]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '1.00000000',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+      // This unrelated exact row has no public-number preimage, so the later
+      // normal batch must be proven after the document-wide strict prefix.
+      transactionEntity({
+        id: writeIds[1]!,
+        portfolioId,
+        assetId: cutoffAssetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:01:00.000Z',
+      }),
+    ]);
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      legacyDocument,
+      FIRST_REHYDRATION_ID,
+      'strict prefix before a normal rounding CREATE batch',
+    );
+
+    // The public reducer starts from the persisted holding of 1. The raw
+    // inputs differ by only five tenths of a nanoshare, so this is a legal
+    // normal request even though numeric(20,8) persists its sell one quantum
+    // above the two stored buys.
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId,
+        side: 'buy',
+        quantity: 1.0000000046,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:02:00.000Z',
+      },
+      {
+        assetId,
+        side: 'sell',
+        quantity: 2.0000000051,
+        price: 11,
+        fee: 0,
+        executedAt: '2026-07-23T10:03:00.000Z',
+      },
+    ]);
+
+    const resultingDocument = await capturePortfolioDocument(harness, portfolioId);
+    const normalRows = quantityEntities(resultingDocument).filter(
+      (transaction) => transaction.data.assetId === assetId && transaction.id !== writeIds[0],
+    );
+    expect(normalRows).toHaveLength(2);
+    expect(normalRows.every((transaction) => transaction.id > writeIds[1]!)).toBe(true);
+    expect(normalRows.find((transaction) => transaction.data.side === 'sell')?.data.quantity).toBe(
+      '2.00000001',
+    );
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      resultingDocument,
+      SECOND_REHYDRATION_ID,
+      'normal rounding CREATE batch seeded from a strict-prefix holding',
+    );
+  });
+
   it('rejects a multi-quantum normal batch before restore writes when repository replay cannot represent it', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
@@ -1277,6 +1361,94 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
       ).rejects.toMatchObject({
         code: 'INVALID_CASH_LEDGER',
         message: expect.stringContaining(quantityField(revisedSell)),
+      });
+      expect(mutationTransaction).not.toHaveBeenCalled();
+      expect(
+        await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+      ).toEqual([]);
+      expect(await harness.db.select().from(transactions)).toEqual([]);
+    } finally {
+      mutationTransaction.mockRestore();
+    }
+  });
+
+  it('rejects every unexplainable exact-prefix deficit before restore writes', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = '018f0000-0d00-7000-8000-000000000d01';
+    const patchAssetId = '018f0000-0d00-7000-8000-000000000d02';
+    const invalidAssetId = '018f0000-0d00-7000-8000-000000000d03';
+    const cutoffAssetId = '018f0000-0d00-7000-8000-000000000d04';
+    await seedGlobalAsset(harness, patchAssetId, 'PREFIX-PATCH-WITNESS');
+    await seedGlobalAsset(harness, invalidAssetId, 'PREFIX-INVALID-GROUP');
+    await seedGlobalAsset(harness, cutoffAssetId, 'PREFIX-INVALID-CUTOFF');
+
+    const writeIds = ['018f0000-0d00-7000-8000-000000000d05'];
+    for (let index = 1; index < 5; index += 1) {
+      writeIds.push(nextUuidV7WriteId(writeIds[index - 1]!));
+    }
+    const patchSell = transactionEntity({
+      id: writeIds[1]!,
+      portfolioId,
+      assetId: patchAssetId,
+      side: 'sell',
+      quantity: '999999999999.00000000',
+      executedAt: '2026-07-23T10:01:00.000Z',
+    });
+    // This first group has the one legal inferred PATCH witness: both rows
+    // read back as 999999999999 through the normal repository seam.
+    patchSell.rev = 1;
+    const invalidSell = transactionEntity({
+      id: writeIds[3]!,
+      portfolioId,
+      assetId: invalidAssetId,
+      side: 'sell',
+      quantity: '999999999999.00000000',
+      executedAt: '2026-07-23T10:01:00.000Z',
+    });
+    const document = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: writeIds[0]!,
+        portfolioId,
+        assetId: patchAssetId,
+        side: 'buy',
+        quantity: '999999999998.99999999',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+      patchSell,
+      transactionEntity({
+        id: writeIds[2]!,
+        portfolioId,
+        assetId: invalidAssetId,
+        side: 'buy',
+        quantity: '999999999998.99995000',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+      invalidSell,
+      // The later exact row fixes one document-wide strict prefix after both
+      // groups, so neither deficit can be treated as a new normal CREATE.
+      transactionEntity({
+        id: writeIds[4]!,
+        portfolioId,
+        assetId: cutoffAssetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:02:00.000Z',
+      }),
+    ]);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    try {
+      await expect(
+        createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
+          rehydrationId: FIRST_REHYDRATION_ID,
+          document,
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_CASH_LEDGER',
+        message: expect.stringContaining(quantityField(invalidSell)),
       });
       expect(mutationTransaction).not.toHaveBeenCalled();
       expect(

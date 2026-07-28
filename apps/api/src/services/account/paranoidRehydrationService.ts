@@ -302,15 +302,15 @@ const EXECUTED_AT_DIGIT_POSITIONS = [
  * PATCH provenance, so this validator never searches for either. Instead it
  * makes one fixed legacy-cutoff choice, replays that prefix exactly, proves
  * only its deficit-causing revised row as a singleton PATCH when necessary,
- * and proves every storage-rounding CREATE from the zero-balance epoch that
- * directly contains it. Each row is visited by a fixed number of streaming
- * passes. Ordering is bounded to 81 fixed-width radix keys per row (32 document
- * UUID keys; 32 UUID tie-breaker plus 17 canonical UTC timestamp keys for
- * chronological replay), and witness epochs may contain no more than the
- * public 500-row CREATE limit. The insolvent direct proof also fails closed
- * unless every creation key is UUIDv7. A document outside that direct proof is
- * rejected before restore writes rather than guessed at or explored with a
- * span search.
+ * and proves every storage-rounding CREATE from a bounded post-cutoff epoch
+ * seeded with its prior repository-readback holding. Each row is visited by a
+ * fixed number of streaming passes. Ordering is bounded to 81 fixed-width radix
+ * keys per row (32 document UUID keys; 32 UUID tie-breaker plus 17 canonical
+ * UTC timestamp keys for chronological replay), and witness epochs may contain
+ * no more than the public 500-row CREATE limit. The insolvent direct proof also
+ * fails closed unless every creation key is UUIDv7. A document outside that
+ * direct proof is rejected before restore writes rather than guessed at or
+ * explored with a span search.
  */
 interface NormalCreateWitness {
   /** Inclusive UUIDv7 write positions of one direct CREATE witness. */
@@ -500,10 +500,11 @@ interface ExactLegacyPrefixFailure {
   readonly row: QuantityReplayRow;
 }
 
-function exactLegacyPrefixFailure(
+function exactLegacyPrefixFailures(
   groups: readonly (readonly QuantityReplayRow[])[],
   legacyCutoff: number,
-): ExactLegacyPrefixFailure | null {
+): readonly ExactLegacyPrefixFailure[] {
+  const failures: ExactLegacyPrefixFailure[] = [];
   for (const group of groups) {
     let held = 0n;
     for (const row of group) {
@@ -513,12 +514,13 @@ function exactLegacyPrefixFailure(
         continue;
       }
       if (row.quantity > held && !row.transaction.data.allowUncovered) {
-        return { group, row };
+        failures.push({ group, row });
+        break;
       }
       held = row.quantity > held ? 0n : held - row.quantity;
     }
   }
-  return null;
+  return failures;
 }
 
 /**
@@ -565,11 +567,27 @@ function updateRawEpoch(
   return { held: Math.abs(nextHeld) <= QTY_EPSILON ? 0 : nextHeld, canReplay: true };
 }
 
+function updateReadbackEpoch(
+  row: QuantityReplayRow,
+  held: number,
+): { held: number; canReplay: boolean } {
+  const quantity = row.readbackQuantity;
+  if (row.transaction.data.side === 'buy') return { held: held + quantity, canReplay: true };
+  if (quantity > held + QTY_EPSILON) {
+    return { held: 0, canReplay: row.transaction.data.allowUncovered };
+  }
+  const nextHeld = held - quantity;
+  return { held: Math.abs(nextHeld) <= QTY_EPSILON ? 0 : nextHeld, canReplay: true };
+}
+
 /**
  * Stream each chronological asset group once. A one-quantum persisted sell can
- * be admitted only when the zero-balance epoch that contains it itself replays
- * from public inputs. That gives a direct bounded CREATE witness without
- * inspecting later same-asset history or searching alternative spans.
+ * be admitted only when its post-cutoff CREATE epoch replays from public inputs
+ * seeded by the strict prefix's repository-readback holding. Strict-prefix rows
+ * are never raw CREATE inputs, even when a deliberately backdated row places
+ * them inside the epoch's chronological timeline. That gives a direct bounded
+ * CREATE witness without inspecting later same-asset history or searching
+ * alternative spans.
  */
 function collectNormalCreateWitnesses(
   groups: readonly (readonly QuantityReplayRow[])[],
@@ -589,7 +607,7 @@ function collectNormalCreateWitnesses(
       if (epochStart !== -1) return;
       epochStart = row.writeOrder;
       epochEnd = row.writeOrder;
-      rawHeld = 0;
+      rawHeld = readbackHeld;
       rawEpochCanReplay = true;
     };
     const extendEpoch = (row: QuantityReplayRow): void => {
@@ -608,7 +626,17 @@ function collectNormalCreateWitnesses(
     };
 
     for (const row of group) {
-      extendEpoch(row);
+      if (row.writeOrder >= legacyCutoff) {
+        extendEpoch(row);
+      } else if (epochStart !== -1) {
+        // A strict-prefix row was already persisted when the normal CREATE
+        // request ran, so it participates only through repository readback.
+        // It can still be chronologically interleaved with backdated CREATE
+        // rows and must therefore update the mixed replay state.
+        const raw = updateReadbackEpoch(row, rawHeld);
+        rawHeld = raw.held;
+        rawEpochCanReplay &&= raw.canReplay;
+      }
       const quantity = row.readbackQuantity;
       if (row.transaction.data.side === 'buy') {
         readbackHeld += quantity;
@@ -627,7 +655,7 @@ function collectNormalCreateWitnesses(
             'transaction quantity cannot replay from repository readback',
           );
         }
-        if (!rawEpochCanReplay || epochStart < legacyCutoff) {
+        if (row.writeOrder < legacyCutoff || epochStart === -1 || !rawEpochCanReplay) {
           throw quantityReachabilityError(
             row,
             'transaction quantity reachability cannot establish a bounded normal CREATE witness',
@@ -658,7 +686,6 @@ function collectNormalCreateWitnesses(
 function validateNormalCreateWitnesses(
   witnesses: readonly NormalCreateWitness[],
   writeHistory: readonly QuantityReplayRow[],
-  legacyCutoff: number,
 ): void {
   const portfolioRunEnds = Array.from({ length: writeHistory.length }, () => 0);
   for (let start = 0; start < writeHistory.length; ) {
@@ -677,7 +704,6 @@ function validateNormalCreateWitnesses(
   const witnessesByStart = new Map<number, NormalCreateWitness[]>();
   for (const witness of witnesses) {
     if (
-      witness.start < legacyCutoff ||
       witness.end - witness.start + 1 > NORMAL_WRITE_BATCH_MAX_TRANSACTIONS ||
       portfolioRunEnds[witness.start]! < witness.end
     ) {
@@ -912,8 +938,7 @@ function storageRoundingSellIdsFor(
       row.normalInputQuantity === null ? Math.max(cutoff, row.writeOrder + 1) : cutoff,
     0,
   );
-  const legacyFailure = exactLegacyPrefixFailure(replayGroups, legacyCutoff);
-  if (legacyFailure) {
+  for (const legacyFailure of exactLegacyPrefixFailures(replayGroups, legacyCutoff)) {
     validatePrefixRevisionWitness(legacyFailure, legacyCutoff);
   }
 
@@ -923,7 +948,7 @@ function storageRoundingSellIdsFor(
     storageRoundingSellIds,
     legacyCutoff,
   );
-  validateNormalCreateWitnesses(createWitnesses, rows, legacyCutoff);
+  validateNormalCreateWitnesses(createWitnesses, rows);
   return storageRoundingSellIds;
 }
 
