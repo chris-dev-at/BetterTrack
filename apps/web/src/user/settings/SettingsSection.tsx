@@ -54,7 +54,7 @@ import {
 import { ComingSoon, EmptyState, Skeleton } from '../../ui';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
-import { SubNav, type SubNavItem } from '../components/SubNav';
+import { LocalNav, type LocalNavItem } from '../components/LocalNav';
 
 export { AccountSettingsPage } from './AccountSettingsPage';
 export { ApiAccessPage } from './ApiAccessPage';
@@ -70,23 +70,23 @@ export { SecuritySettingsPage } from './SecuritySettingsPage';
  */
 export function SettingsLayout() {
   const t = useT();
-  const settingsSubnav: readonly SubNavItem[] = [
+  const settingsSubnav: readonly LocalNavItem[] = [
     { to: '/settings/account', label: t('settings.account.title') },
     { to: '/settings/notifications', label: t('settings.notifications.title') },
     { to: '/settings/security', label: t('settings.security.title') },
     { to: '/settings/taxes', label: t('settings.newPortfolioDefaults.navLabel') },
-    { to: '/settings/imports', label: t('settings.section.importsExports'), comingSoon: true },
+    { to: '/settings/imports', label: t('settings.section.importsExports'), parked: true },
     { to: '/settings/connections', label: t('settings.section.connections') },
-    { to: '/settings/backups', label: t('settings.section.backups'), comingSoon: true },
+    { to: '/settings/backups', label: t('settings.section.backups'), parked: true },
     { to: '/settings/api', label: t('settings.api.title') },
   ];
 
   return (
-    <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+    <div className="flex flex-col gap-2">
+      <h1 className="bt-page-title" style={{ marginBottom: 12 }}>
         {t('settings.layout.title')}
       </h1>
-      <SubNav items={settingsSubnav} />
+      <LocalNav ariaLabel={t('nav.section')} items={settingsSubnav} />
       <Outlet />
     </div>
   );

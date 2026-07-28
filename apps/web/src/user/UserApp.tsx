@@ -255,6 +255,9 @@ function UserShell() {
             <Route path="api" element={<ApiAccessPage />} />
           </Route>
 
+          {/* The portfolio list/tree destination is the switcher for now. */}
+          <Route path="portfolios" element={<LegacyRedirect to="/portfolio" />} />
+
           {/* ── Legacy section redirects (search params preserved) ── */}
           <Route path="workboard" element={<LegacyRedirect to="/workbench" />} />
           <Route path="workboard/watchlist" element={<LegacyRedirect to="/assets/watchlists" />} />
