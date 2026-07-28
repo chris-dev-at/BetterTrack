@@ -1,3 +1,5 @@
+import { generateKeyPairSync } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -20,7 +22,12 @@ import {
   vaultHistoryListResponseSchema,
   vaultHistoryMetadataSchema,
   vaultHistoryVersionParamSchema,
+  paranoidMediaStateResponseSchema,
+  paranoidMediaTransitionRequestSchema,
+  paranoidVaultMediaStateSchema,
+  retiredServerPurgeRequestSchema,
   vaultMediaSetSchema,
+  vaultRetirementProofPublicKeySchema,
   vaultServerHeaderSchema,
   vaultVersionSchema,
 } from './vault';
@@ -70,6 +77,107 @@ describe('media set', () => {
     expect(vaultMediaSetSchema.safeParse([]).success).toBe(false);
     expect(vaultMediaSetSchema.safeParse(['icloud']).success).toBe(false);
     expect(vaultMediaSetSchema.safeParse(['server', 'server']).success).toBe(false);
+  });
+});
+
+describe('durable media transition contracts', () => {
+  const serverOnly = { mediaSet: ['server'], driveAttestedVersion: null } as const;
+  const both = { mediaSet: ['server', 'drive'], driveAttestedVersion: 4 } as const;
+
+  it('rejects no-op and multi-medium transitions while pinning the required read-back kind', () => {
+    expect(
+      paranoidMediaTransitionRequestSchema.safeParse({
+        expected: serverOnly,
+        nextMediaSet: ['server'],
+        verification: { kind: 'server', version: 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      paranoidMediaTransitionRequestSchema.safeParse({
+        expected: serverOnly,
+        nextMediaSet: ['drive'],
+        verification: { kind: 'drive', version: 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      paranoidMediaTransitionRequestSchema.safeParse({
+        expected: serverOnly,
+        nextMediaSet: ['server', 'drive'],
+        verification: { kind: 'server', version: 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      paranoidMediaTransitionRequestSchema.safeParse({
+        expected: both,
+        nextMediaSet: ['drive'],
+        verification: { kind: 'drive', version: 4 },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('exposes only physical server disposition metadata, never ciphertext', () => {
+    const state = {
+      mediaSet: ['drive'],
+      driveAttestedVersion: 4,
+      server: {
+        disposition: 'inactive-candidate',
+        candidate: {
+          candidateId: UUID_A,
+          version: 4,
+          formatVersion: 1,
+          sizeBytes: 42,
+          expiresAt: '2026-07-24T10:10:00.000Z',
+        },
+        retired: {
+          version: 3,
+          retiredAt: '2026-07-24T10:00:00.000Z',
+          purgeAfter: '2026-07-31T10:00:00.000Z',
+        },
+      },
+    };
+    expect(paranoidVaultMediaStateSchema.parse(state)).toEqual(state);
+    expect(
+      paranoidVaultMediaStateSchema.safeParse({
+        ...state,
+        server: { ...state.server, ciphertext: 'never exposed' },
+      }).success,
+    ).toBe(false);
+    expect(
+      paranoidMediaStateResponseSchema.safeParse({ privacyMode: 'normal', mediaState: state })
+        .success,
+    ).toBe(false);
+  });
+
+  it('keeps retired purge proof inputs strict and bounded', () => {
+    expect(
+      retiredServerPurgeRequestSchema.safeParse({
+        retiredVersion: 4,
+        observedVersion: 5,
+        challenge: 'x'.repeat(40),
+        signature: 'a'.repeat(86),
+      }).success,
+    ).toBe(true);
+    expect(
+      retiredServerPurgeRequestSchema.safeParse({
+        retiredVersion: 4,
+        observedVersion: 5,
+        challenge: 'x'.repeat(40),
+        signature: 'not base64url!',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts only canonical Ed25519 SPKI retirement verifiers', () => {
+    const ed25519 = generateKeyPairSync('ed25519')
+      .publicKey.export({ type: 'spki', format: 'der' })
+      .toString('base64url');
+    const x25519 = generateKeyPairSync('x25519')
+      .publicKey.export({ type: 'spki', format: 'der' })
+      .toString('base64url');
+
+    expect(vaultRetirementProofPublicKeySchema.safeParse(ed25519).success).toBe(true);
+    expect(vaultRetirementProofPublicKeySchema.safeParse(x25519).success).toBe(false);
+    expect(vaultRetirementProofPublicKeySchema.safeParse('a'.repeat(59)).success).toBe(false);
   });
 });
 

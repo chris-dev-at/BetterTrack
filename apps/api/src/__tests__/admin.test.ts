@@ -1,9 +1,11 @@
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { adminStatsSchema, createUserResponseSchema } from '@bettertrack/contracts';
 
+import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -146,6 +148,59 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
       .send({ identifier: 'doomed@test.dev', password: tempPassword });
     expect(relogin.status).toBe(403);
     expect(relogin.body.error.code).toBe('ACCOUNT_DISABLED');
+  });
+
+  it('fails closed when credential cleanup fails, then invalidates before re-enable', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const user = await harness.seedUser({
+      email: 'suspend-failure@test.dev',
+      username: 'suspend_failure',
+    });
+    const userAgent = await loginAgent(harness.app, user.email, user.password);
+    const createdKey = await userAgent
+      .post('/api/v1/settings/api-keys')
+      .set(...XRW)
+      .send({ name: 'suspend test key', scopes: ['portfolio:read'] });
+    expect(createdKey.status).toBe(201);
+    const token = createdKey.body.token as string;
+    const keyId = createdKey.body.key.id as string;
+
+    const revoke = vi
+      .spyOn(harness.ctx.apiKeys, 'revokeAllForUser')
+      .mockRejectedValueOnce(new Error('simulated revocation failure'));
+    const failed = await adminAgent
+      .patch(`/api/v1/admin/users/${user.id}`)
+      .set(...XRW)
+      .send({ status: 'disabled' });
+    expect(failed.status).toBe(500);
+
+    const [suspended] = await harness.db
+      .select()
+      .from(schema.users)
+      .where(eq(schema.users.id, user.id));
+    expect(suspended!.status).toBe('disabled');
+    expect(
+      (await request(harness.app).get('/api/v1/portfolios').set('Authorization', `Bearer ${token}`))
+        .status,
+    ).toBe(401);
+
+    revoke.mockRestore();
+    const enabled = await adminAgent
+      .patch(`/api/v1/admin/users/${user.id}`)
+      .set(...XRW)
+      .send({ status: 'active' });
+    expect(enabled.status).toBe(200);
+
+    const [revokedKey] = await harness.db
+      .select()
+      .from(schema.apiKeys)
+      .where(eq(schema.apiKeys.id, keyId));
+    expect(revokedKey!.revokedAt).not.toBeNull();
+    expect(
+      (await request(harness.app).get('/api/v1/portfolios').set('Authorization', `Bearer ${token}`))
+        .status,
+    ).toBe(401);
   });
 });
 

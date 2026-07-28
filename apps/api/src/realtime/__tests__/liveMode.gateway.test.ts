@@ -7,8 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   REALTIME_CLIENT_EVENTS,
+  REALTIME_MAX_CONCURRENT_WATCH_STARTS,
+  REALTIME_MAX_GLOBAL_LIVE_ASSETS,
+  REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
+  REALTIME_SOCKET_COMMAND_BURST,
   type CachedResult,
   type LiveRate,
   type PricePoint,
@@ -18,8 +22,10 @@ import {
 } from '@bettertrack/contracts';
 
 import { createAssetRepository } from '../../data/repositories/assetRepository';
+import { realtimeAdmissionKeys } from '../../services/security/realtimeAdmission';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import { createStubMarketData, type StubMarketData } from '../../testing/marketDataStubs';
+import { REALTIME_LIVE_FANOUT_CHANNEL } from '../gateway';
 
 /**
  * Live Mode end-to-end over the gateway (§6.3, V3-P7b): the §5.3 "N viewers =
@@ -34,6 +40,7 @@ let harness: TestHarness;
 let stub: StubMarketData;
 let server: HttpServer | null = null;
 let baseUrl = '';
+let commandClockMs: number | null = null;
 const openSockets: ClientSocket[] = [];
 
 const quoteResult = (price: number): CachedResult<Quote> => ({
@@ -43,18 +50,28 @@ const quoteResult = (price: number): CachedResult<Quote> => ({
 });
 
 let historyBars: PricePoint[] = [];
+let historyGate: Promise<void> | null = null;
+let historyError: Error | null = null;
 
 beforeEach(async () => {
   let price = 100;
   historyBars = [];
+  historyGate = null;
+  historyError = null;
+  commandClockMs = null;
   stub = createStubMarketData({
     quote: () => quoteResult(price),
     poll: () => quoteResult(price++),
-    history: () => ({ value: historyBars, stale: false, asOf: Date.now() }),
+    history: async () => {
+      if (historyGate) await historyGate;
+      if (historyError) throw historyError;
+      return { value: historyBars, stale: false, asOf: Date.now() };
+    },
   });
   harness = await createTestApp({
     marketData: stub,
     liveModeOptions: { intervalMs: POLL_MS, maxIntervalMs: POLL_MS * 4 },
+    realtimeCommandNow: () => commandClockMs ?? Date.now(),
   });
   server = harness.app.listen(0);
   await new Promise<void>((resolve) => server!.once('listening', resolve));
@@ -72,14 +89,15 @@ afterEach(async () => {
   }
 });
 
-async function seedAsset(): Promise<string> {
+async function seedAsset(suffix = ''): Promise<string> {
   const repo = createAssetRepository(harness.db);
+  const providerRef = suffix ? `BAYN${suffix}.DE` : 'BAYN.DE';
   const { row } = await repo.upsertGlobal({
     providerId: 'yahoo',
-    providerRef: 'BAYN.DE',
+    providerRef,
     type: 'stock',
-    symbol: 'BAYN.DE',
-    name: 'Bayer AG',
+    symbol: providerRef,
+    name: `Bayer AG ${suffix}`.trim(),
     exchange: 'XETRA',
     currency: 'EUR',
   });
@@ -88,6 +106,10 @@ async function seedAsset(): Promise<string> {
 
 async function connectUser(email: string, username: string): Promise<ClientSocket> {
   const user = await harness.seedUser({ email, username });
+  return connectSeededUser(user);
+}
+
+async function connectSeededUser(user: { email: string; password: string }): Promise<ClientSocket> {
   const agent = request.agent(harness.app);
   const res = await agent
     .post('/api/v1/auth/login')
@@ -169,6 +191,28 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     );
   });
 
+  it('fans a remote poll owner frame into this process local asset room', async () => {
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+    const frames = collectFrames(alice);
+    expect(await watch(alice, assetId, '10m')).toMatchObject({ ok: true });
+
+    const remoteFrame: RealtimeLiveFrame = {
+      assetId,
+      price: 999,
+      currency: 'EUR',
+      dayChangePct: 2,
+      marketState: 'open',
+      at: new Date().toISOString(),
+    };
+    await harness.ctx.redis.publish(
+      REALTIME_LIVE_FANOUT_CHANNEL,
+      JSON.stringify({ sourceId: 'remote-api-process', frame: remoteFrame }),
+    );
+
+    await vi.waitFor(() => expect(frames).toContainEqual(remoteFrame));
+  });
+
   it('a viewer joining mid-stream gets the requested window backfilled, then live frames', async () => {
     const assetId = await seedAsset();
     const alice = await connectUser('alice@bt.test', 'alice');
@@ -220,7 +264,10 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
 
     // Bob leaves by disconnecting (closed tab) — the gateway releases his watch.
     bob.disconnect();
-    await vi.waitFor(() => expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0));
+    await vi.waitFor(async () => {
+      expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
+      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalWatches)).toBe(0);
+    });
 
     await new Promise((resolve) => setTimeout(resolve, POLL_MS * 2)); // drain in-flight tick
     const frozen = stub.calls.poll;
@@ -272,25 +319,108 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     expect(stub.calls.poll).toBe(0); // nothing above ever reached the provider
   });
 
-  it('the shared loop runs at the finest ACTIVE rate — min of the viewers, never faster (#372)', async () => {
+  it('admits eight assets per socket, keeps repeats idempotent, and rejects the ninth', async () => {
+    const assetIds: string[] = [];
+    for (let index = 0; index <= REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET; index += 1) {
+      assetIds.push(await seedAsset(`-${index}`));
+    }
+    const alice = await connectUser('alice@bt.test', 'alice');
+    for (const assetId of assetIds.slice(0, REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET)) {
+      await expect(watch(alice, assetId, '1m')).resolves.toMatchObject({ ok: true });
+    }
+
+    // A repeat uses neither a socket seat nor a distinct global asset slot.
+    await expect(watch(alice, assetIds[0]!, '10m')).resolves.toMatchObject({ ok: true });
+    await expect(
+      watch(alice, assetIds[REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET]!, '1m'),
+    ).resolves.toEqual({ ok: false, error: 'SOCKET_WATCH_LIMIT' });
+  });
+
+  it('rolls back Redis and provider-loop capacity when live startup fails', async () => {
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+    harness.ctx.liveMode.close();
+
+    await expect(watch(alice, assetId, '10m')).resolves.toEqual({
+      ok: false,
+      error: 'LIVE_START_FAILED',
+    });
+    expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalWatches)).toBe(0);
+    expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
+  });
+
+  it('releases bounded start work when provider history fails', async () => {
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+    historyError = new Error('provider history failed');
+
+    // History stitching is best-effort, so the live stream remains usable.
+    await expect(watch(alice, assetId, '10m')).resolves.toMatchObject({ ok: true });
+    await vi.waitFor(async () => {
+      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.watchStarts)).toBe(0);
+    });
+
+    await unwatch(alice, assetId);
+    expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalWatches)).toBe(0);
+  });
+
+  it('rejects the 251st distinct global asset before provider or backfill work starts', async () => {
+    const assetId = await seedAsset();
+    const expiresAt = Date.now() + 60_000;
+    const seed = harness.ctx.redis.multi();
+    for (let index = 0; index < REALTIME_MAX_GLOBAL_LIVE_ASSETS; index += 1) {
+      seed.zadd(realtimeAdmissionKeys.globalWatches, expiresAt, `asset-${index}`);
+    }
+    await seed.exec();
+    const alice = await connectUser('alice@bt.test', 'alice');
+
+    await expect(watch(alice, assetId, '10m')).resolves.toEqual({
+      ok: false,
+      error: 'GLOBAL_LIVE_LIMIT',
+    });
+    expect(stub.calls.poll).toBe(0);
+    expect(stub.calls.history).toBe(0);
+    expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
+  });
+
+  it('rejects excess global watch-start work with a typed acknowledgement', async () => {
+    const assetId = await seedAsset();
+    const expiresAt = Date.now() + 60_000;
+    await harness.ctx.redis.zadd(
+      realtimeAdmissionKeys.watchStarts,
+      ...Array.from({ length: REALTIME_MAX_CONCURRENT_WATCH_STARTS }, (_, index) => [
+        expiresAt,
+        `busy-${index}`,
+      ]).flat(),
+    );
+    const alice = await connectUser('alice@bt.test', 'alice');
+
+    await expect(watch(alice, assetId, '10m')).resolves.toEqual({
+      ok: false,
+      error: 'LIVE_WORK_BUSY',
+    });
+    expect(stub.calls.poll).toBe(0);
+    expect(stub.calls.history).toBe(0);
+  });
+
+  it('clamps sub-5-second requests and shares the finest effective cadence (#881)', async () => {
     const assetId = await seedAsset();
     const alice = await connectUser('alice@bt.test', 'alice');
     const bob = await connectUser('bob@bt.test', 'bob');
 
-    // Alice at 2 s alone.
+    // Legacy 2 s remains wire-valid, but the provider loop receives 5 s.
     expect(await watch(alice, assetId, '10m', '2s')).toMatchObject({ ok: true });
-    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(2000);
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(5000);
 
-    // Bob at 1 s: ONE loop for both, at min(2 s, 1 s) = 1 s — never a divisor
-    // below what the fastest viewer asked for.
+    // Bob's legacy 1 s request shares that same effective 5 s loop.
     expect(await watch(bob, assetId, '10m', '1s')).toMatchObject({ ok: true });
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(2);
-    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(1000);
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(5000);
 
-    // The finest viewer leaves: the loop coarsens to the survivors' rate.
+    // Removing either viewer leaves the same provider-safe cadence.
     await unwatch(bob, assetId);
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
-    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(2000);
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(5000);
   });
 
   it('a re-watch with a new rate moves this socket to it without double-counting (#372)', async () => {
@@ -298,11 +428,11 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     const alice = await connectUser('alice@bt.test', 'alice');
 
     expect(await watch(alice, assetId, '10m', '1s')).toMatchObject({ ok: true });
-    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(1000);
-
-    expect(await watch(alice, assetId, '10m', '5s')).toMatchObject({ ok: true });
-    expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
     expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(5000);
+
+    expect(await watch(alice, assetId, '10m', '10s')).toMatchObject({ ok: true });
+    expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(10_000);
 
     // One unwatch fully releases the moved registration: loop goes cold.
     await unwatch(alice, assetId);
@@ -375,6 +505,26 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     expect(stub.calls.poll).toBe(frozen);
   });
 
+  it('rejects watch-start work beyond the bounded per-socket queue', async () => {
+    const assetIds = await Promise.all([seedAsset('-a'), seedAsset('-b'), seedAsset('-c')]);
+    const alice = await connectUser('alice@bt.test', 'alice');
+    let releaseHistory!: () => void;
+    historyGate = new Promise<void>((resolve) => {
+      releaseHistory = resolve;
+    });
+
+    const first = watch(alice, assetIds[0]!, '10m');
+    const second = watch(alice, assetIds[1]!, '10m');
+    const excess = watch(alice, assetIds[2]!, '10m');
+    await expect(excess).resolves.toEqual({ ok: false, error: 'LIVE_WORK_BUSY' });
+
+    releaseHistory();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ ok: true }),
+      expect.objectContaining({ ok: true }),
+    ]);
+  });
+
   it('an unwatch racing the first watch of an asset still releases it', async () => {
     const assetId = await seedAsset();
     const alice = await connectUser('alice@bt.test', 'alice');
@@ -385,6 +535,99 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     const [ack] = await Promise.all([watch(alice, assetId, '1m'), unwatch(alice, assetId)]);
     expect(ack.ok).toBe(true);
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
+  });
+
+  it('carries a locally rate-limited unwatch across a pending first watch', async () => {
+    commandClockMs = Date.now();
+    const [blockingAssetId, targetAssetId] = await Promise.all([
+      seedAsset('-local-blocker'),
+      seedAsset('-local-target'),
+    ]);
+    const alice = await connectUser('local-race@bt.test', 'localrace');
+    let releaseHistory!: () => void;
+    historyGate = new Promise<void>((resolve) => {
+      releaseHistory = resolve;
+    });
+
+    const blockingWatch = watch(alice, blockingAssetId, '10m');
+    await vi.waitFor(() => {
+      expect(harness.ctx.liveMode.watcherCount(blockingAssetId)).toBe(1);
+    });
+    const targetWatch = watch(alice, targetAssetId, '10m');
+
+    // Both watch frames consumed a token. Keep the first operation blocked so
+    // targetAssetId is pending but absent from the held map while this burst
+    // deterministically empties the frozen process-local bucket.
+    for (let index = 0; index < REALTIME_SOCKET_COMMAND_BURST - 2; index += 1) {
+      alice.emit(REALTIME_CLIENT_EVENTS.roomLeave, {
+        room: { kind: 'asset', id: blockingAssetId },
+      });
+    }
+    await expect(unwatch(alice, targetAssetId)).resolves.toEqual({
+      ok: false,
+      error: 'RATE_LIMITED',
+    });
+
+    releaseHistory();
+    await expect(Promise.all([blockingWatch, targetWatch])).resolves.toEqual([
+      expect.objectContaining({ ok: true }),
+      expect.objectContaining({ ok: true }),
+    ]);
+    await vi.waitFor(async () => {
+      expect(harness.ctx.liveMode.watcherCount(targetAssetId)).toBe(0);
+      expect(
+        await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalAssetWatches(targetAssetId)),
+      ).toBe(0);
+    });
+  });
+
+  it('carries a user-rate-limited unwatch across a pending first watch', async () => {
+    const [blockingAssetId, targetAssetId] = await Promise.all([
+      seedAsset('-user-blocker'),
+      seedAsset('-user-target'),
+    ]);
+    const user = await harness.seedUser({
+      email: 'user-race@bt.test',
+      username: 'userrace',
+    });
+    const alice = await connectSeededUser(user);
+    let releaseHistory!: () => void;
+    historyGate = new Promise<void>((resolve) => {
+      releaseHistory = resolve;
+    });
+
+    const blockingWatch = watch(alice, blockingAssetId, '10m');
+    await vi.waitFor(() => {
+      expect(harness.ctx.liveMode.watcherCount(blockingAssetId)).toBe(1);
+    });
+    const commandKey = realtimeAdmissionKeys.userCommand(user.id);
+    await harness.ctx.redis.hset(
+      commandKey,
+      'tokens',
+      '1',
+      'updatedAt',
+      String(Date.now() + 60_000),
+    );
+    const targetWatch = watch(alice, targetAssetId, '10m');
+    await vi.waitFor(async () => {
+      expect(Number(await harness.ctx.redis.hget(commandKey, 'tokens'))).toBe(0);
+    });
+    await expect(unwatch(alice, targetAssetId)).resolves.toEqual({
+      ok: false,
+      error: 'RATE_LIMITED',
+    });
+
+    releaseHistory();
+    await expect(Promise.all([blockingWatch, targetWatch])).resolves.toEqual([
+      expect.objectContaining({ ok: true }),
+      expect.objectContaining({ ok: true }),
+    ]);
+    await vi.waitFor(async () => {
+      expect(harness.ctx.liveMode.watcherCount(targetAssetId)).toBe(0);
+      expect(
+        await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalAssetWatches(targetAssetId)),
+      ).toBe(0);
+    });
   });
 
   it('unwatch is idempotent and only releases a held watch', async () => {
@@ -398,5 +641,57 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     await unwatch(alice, assetId);
     await unwatch(alice, assetId); // repeat: must not steal bob's count
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
+  });
+
+  it('releases a held watch even when the unwatch frame is rate-limited', async () => {
+    commandClockMs = Date.now();
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+    await expect(watch(alice, assetId, '10m')).resolves.toMatchObject({ ok: true });
+
+    // `live.watch` consumed one token. Fill the rest of the local burst and one
+    // extra in the same ordered socket stream so the following cleanup frame is
+    // rejected by admission but must still release its provider/Redis leases.
+    for (let index = 0; index < REALTIME_SOCKET_COMMAND_BURST; index += 1) {
+      alice.emit(REALTIME_CLIENT_EVENTS.roomLeave, {
+        room: { kind: 'asset', id: assetId },
+      });
+    }
+    await expect(unwatch(alice, assetId)).resolves.toEqual({
+      ok: false,
+      error: 'RATE_LIMITED',
+    });
+    await vi.waitFor(async () => {
+      expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
+      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalWatches)).toBe(0);
+    });
+  });
+
+  it('releases a held watch when the cross-process user command bucket is empty', async () => {
+    const assetId = await seedAsset();
+    const user = await harness.seedUser({
+      email: 'user-bucket@bt.test',
+      username: 'userbucket',
+    });
+    const alice = await connectSeededUser(user);
+    await expect(watch(alice, assetId, '10m')).resolves.toMatchObject({ ok: true });
+
+    // Pin the shared bucket at zero with a future watermark, so no elapsed-time
+    // refill can race the next frame. The socket-local bucket still has room.
+    await harness.ctx.redis.hset(
+      realtimeAdmissionKeys.userCommand(user.id),
+      'tokens',
+      '0',
+      'updatedAt',
+      String(Date.now() + 60_000),
+    );
+    await expect(unwatch(alice, assetId)).resolves.toEqual({
+      ok: false,
+      error: 'RATE_LIMITED',
+    });
+    await vi.waitFor(async () => {
+      expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
+      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.globalWatches)).toBe(0);
+    });
   });
 });

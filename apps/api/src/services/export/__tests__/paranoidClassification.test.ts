@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { getTableColumns } from 'drizzle-orm';
 
+import { assetIdentities } from '../../../data/schema';
 import {
+  EXPORT_TABLE_CLASSIFICATION,
   PARANOID_TABLE_CLASSIFICATION,
   PARANOID_VAULT_TABLE_NAMES,
   schemaTableNames,
@@ -55,6 +58,7 @@ describe('paranoid table classification completeness', () => {
   it('keeps identity/auth, friends+chat, alerts and the vault rows server-side', () => {
     for (const table of [
       'users',
+      'asset_identities',
       'passkeys',
       'two_factor_recovery_codes',
       'friendships',
@@ -68,6 +72,12 @@ describe('paranoid table classification completeness', () => {
     ]) {
       expect(PARANOID_TABLE_CLASSIFICATION[table], `${table} should be server`).toBe('server');
     }
+  });
+
+  it('keeps the opaque identity anchor and account claim server-side and content-free', () => {
+    expect(PARANOID_TABLE_CLASSIFICATION.asset_identities).toBe('server');
+    expect(EXPORT_TABLE_CLASSIFICATION.asset_identities).toMatchObject({ kind: 'skip' });
+    expect(Object.keys(getTableColumns(assetIdentities))).toEqual(['id', 'ownerId']);
   });
 
   it('derives the vault table-name list from the classification', () => {

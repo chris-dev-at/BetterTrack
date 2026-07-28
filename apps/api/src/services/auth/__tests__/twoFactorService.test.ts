@@ -1,6 +1,9 @@
+import { createHash } from 'node:crypto';
+
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { loadConfig } from '../../../config/env';
 import { createTwoFactorRepository } from '../../../data/repositories/twoFactorRepository';
 import { twoFactorRecoveryCodes, users } from '../../../data/schema';
 import type { MailTransport, OutgoingMail } from '../../email/transport';
@@ -9,6 +12,7 @@ import {
   type CreateTestAppOptions,
   type TestHarness,
 } from '../../../testing/createTestApp';
+import { encryptSecret } from '../../crypto/secretBox';
 import { hashToken } from '../../crypto/tokens';
 import { generateTotpCode, normalizeRecoveryCode } from '../totp';
 
@@ -87,6 +91,7 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     expect(row.secret).toBeTruthy();
     expect(row.secret).not.toBe(secret);
     expect(row.secret).not.toContain(secret);
+    expect(row.secret).toMatch(/^v2\.development-v1\./);
     expect(row.enabled).toBe(false);
 
     const status = await h.ctx.twoFactor.status(userId);
@@ -203,6 +208,71 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     await expect(h.ctx.twoFactor.enrollTotp(userId)).rejects.toMatchObject({
       code: 'TWO_FACTOR_ALREADY_ENABLED',
     });
+  });
+
+  it('verifies a legacy TOTP fixture after SESSION_SECRET rotates to new,old', async () => {
+    const secret = 'JBSWY3DPEHPK3PXP';
+    const oldCookieSecret = 'old-cookie-secret-value';
+    const legacyKey = createHash('sha256').update(`bt-2fa:${oldCookieSecret}`).digest();
+    const repo = createTwoFactorRepository(h.db);
+    await repo.setProvisionalSecret(userId, encryptSecret(secret, legacyKey));
+    await repo.enable(userId, new Date());
+
+    h.ctx.config.recordEncryption = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://test',
+      REDIS_URL: 'redis://test',
+      SESSION_SECRET: `new-cookie-secret-value,${oldCookieSecret}`,
+    }).recordEncryption;
+
+    expect(await h.ctx.twoFactor.verifyTotpCode(userId, generateTotpCode(secret))).toBe(true);
+  });
+
+  it('verifies a legacy TOTP fixture after SESSION_SECRET rotates to newer,new,old', async () => {
+    const secret = 'JBSWY3DPEHPK3PXP';
+    const historicalSessionSecret = 'new-cookie-secret-value,old-cookie-secret-value';
+    const legacyKey = createHash('sha256').update(`bt-2fa:${historicalSessionSecret}`).digest();
+    const repo = createTwoFactorRepository(h.db);
+    await repo.setProvisionalSecret(userId, encryptSecret(secret, legacyKey));
+    await repo.enable(userId, new Date());
+
+    h.ctx.config.recordEncryption = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://test',
+      REDIS_URL: 'redis://test',
+      SESSION_SECRET: `newest-cookie-secret-value,${historicalSessionSecret}`,
+    }).recordEncryption;
+
+    expect(await h.ctx.twoFactor.verifyTotpCode(userId, generateTotpCode(secret))).toBe(true);
+  });
+
+  it('reads the previous data key during rotation and writes only with the new active id', async () => {
+    const oldMaterial = 'old-record-encryption-material-at-least-32-characters';
+    await boot({
+      env: {
+        BT_DATA_ENCRYPTION_KEY_ID: 'old_2025',
+        BT_DATA_ENCRYPTION_KEY: oldMaterial,
+      },
+    });
+    const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
+    await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret));
+    expect((await readUserTwoFactor()).secret).toMatch(/^v2\.old_2025\./);
+
+    h.ctx.config.recordEncryption = loadConfig({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://test',
+      REDIS_URL: 'redis://test',
+      SESSION_SECRET: 'completely-independent-cookie-secret',
+      BT_DATA_ENCRYPTION_KEY_ID: 'new_2026',
+      BT_DATA_ENCRYPTION_KEY: 'new-record-encryption-material-at-least-32-characters',
+      BT_DATA_ENCRYPTION_DECRYPT_KEYS: `old_2025=${oldMaterial}`,
+    }).recordEncryption;
+
+    expect(await h.ctx.twoFactor.verifyTotpCode(userId, generateTotpCode(secret))).toBe(true);
+    await h.ctx.twoFactor.disableTotp(userId, generateTotpCode(secret));
+
+    await h.ctx.twoFactor.enrollTotp(userId);
+    expect((await readUserTwoFactor()).secret).toMatch(/^v2\.new_2026\./);
   });
 });
 

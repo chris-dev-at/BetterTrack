@@ -73,27 +73,34 @@ export function NewsDigestPage() {
         <p className="mt-1 text-sm text-neutral-400">{t('assets.news.subtitle')}</p>
       </div>
 
-      {isLoading ? (
-        <div className="flex flex-col gap-3">
-          <Skeleton height="h-28" />
-          <Skeleton height="h-28" />
-          <Skeleton height="h-28" />
-        </div>
-      ) : isError ? (
-        <Alert tone="error">{t('assets.news.loadError')}</Alert>
-      ) : groups.length === 0 ? (
-        <EmptyState
-          icon="📰"
-          title={t('assets.news.emptyTitle')}
-          description={t('assets.news.emptyDescription')}
-        />
-      ) : (
-        <div className="flex flex-col gap-3">
-          {groups.map((g) => (
-            <NewsGroupCard key={g.assetId} group={g} />
-          ))}
-        </div>
-      )}
+      <section aria-busy={isLoading} aria-label={t('assets.news.title')}>
+        {isLoading ? (
+          <>
+            <span aria-label={t('common.loading')} className="sr-only" role="status">
+              {t('common.loading')}
+            </span>
+            <div className="flex flex-col gap-3">
+              <Skeleton height="h-28" />
+              <Skeleton height="h-28" />
+              <Skeleton height="h-28" />
+            </div>
+          </>
+        ) : isError ? (
+          <Alert tone="error">{t('assets.news.loadError')}</Alert>
+        ) : groups.length === 0 ? (
+          <EmptyState
+            icon="📰"
+            title={t('assets.news.emptyTitle')}
+            description={t('assets.news.emptyDescription')}
+          />
+        ) : (
+          <div className="flex flex-col gap-3">
+            {groups.map((g) => (
+              <NewsGroupCard key={g.assetId} group={g} />
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

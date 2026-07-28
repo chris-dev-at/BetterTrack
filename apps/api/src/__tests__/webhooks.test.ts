@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
@@ -24,7 +26,7 @@ import {
 import type { AlertTriggeredEvent } from '../events';
 import { WEBHOOK_DELIVERY_RETENTION_DAYS, createWebhookDeliveryCleanupJob } from '../jobs';
 import type { AuditService } from '../services/audit/auditService';
-import { decryptSecret } from '../services/crypto/secretBox';
+import { decryptSecret, encryptSecret } from '../services/crypto/secretBox';
 import { DISPATCHABLE_EVENT_TYPES } from '../services/notifications/notificationDispatcher';
 import {
   createWebhookBridge,
@@ -201,6 +203,46 @@ describe('webhook subscription CRUD + one-time secret', () => {
 });
 
 describe('signed delivery', () => {
+  it('delivers with a pre-upgrade envelope derived from a multi-secret session config', async () => {
+    const sessionSecret = 'newer-cookie-secret-value,older-cookie-secret-value';
+    const h = await createTestApp({
+      env: { SESSION_SECRET: sessionSecret },
+      webhookTransport: recorder.transport,
+    });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const created = createWebhookSubscriptionResponseSchema.parse(
+      (
+        await agent
+          .post('/api/v1/settings/webhooks')
+          .set(...XRW)
+          .send({ url: 'https://receiver.test/pre-upgrade', eventTypes: ['alert.triggered'] })
+      ).body,
+    );
+
+    // Before #879, webhook envelopes used the hash of the complete raw
+    // SESSION_SECRET value, including every comma-separated cookie key.
+    const preUpgradeKey = createHash('sha256').update(`bt-2fa:${sessionSecret}`).digest();
+    await h.db
+      .update(schema.webhookSubscriptions)
+      .set({ secretEncrypted: encryptSecret(created.secret, preUpgradeKey) })
+      .where(eq(schema.webhookSubscriptions.id, created.subscription.id));
+
+    await h.ctx.webhookBridge.handleEvent(alertEvent(user.id));
+
+    expect(recorder.requests).toHaveLength(1);
+    const delivered = recorder.requests[0]!;
+    expect(delivered.url).toBe('https://receiver.test/pre-upgrade');
+    expect(
+      verifyWebhookSignature(
+        created.secret,
+        delivered.headers[WEBHOOK_TIMESTAMP_HEADER]!,
+        delivered.body,
+        delivered.headers[WEBHOOK_SIGNATURE_HEADER]!,
+      ),
+    ).toBe(true);
+  });
+
   it('delivers a valid-signature, timestamped payload a receiver can verify', async () => {
     const { userId, id, secret } = await createSubscription(['alert.triggered']);
 

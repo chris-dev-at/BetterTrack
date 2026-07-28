@@ -1,8 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { retryOnce, TimeoutError, withTimeout } from '../resilience';
 
 import { createDeferred } from './fakeProvider';
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('withTimeout', () => {
   it('resolves when the operation finishes within the budget', async () => {
@@ -18,6 +22,74 @@ describe('withTimeout', () => {
     await expect(withTimeout(() => Promise.reject(new Error('boom')), 1_000)).rejects.toThrowError(
       'boom',
     );
+  });
+
+  it('clears the pending timeout when the operation resolves early', async () => {
+    vi.useFakeTimers();
+    const deferred = createDeferred<string>();
+    const result = withTimeout(() => deferred.promise, 1_000);
+
+    expect(vi.getTimerCount()).toBe(1);
+    deferred.resolve('ok');
+
+    await expect(result).resolves.toBe('ok');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('clears the pending timeout when the operation rejects early', async () => {
+    vi.useFakeTimers();
+    const deferred = createDeferred<string>();
+    const result = withTimeout(() => deferred.promise, 1_000);
+
+    expect(vi.getTimerCount()).toBe(1);
+    deferred.reject(new Error('boom'));
+
+    await expect(result).rejects.toThrowError('boom');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('ignores a late resolution after the timeout wins', async () => {
+    vi.useFakeTimers();
+    const deferred = createDeferred<string>();
+    const result = withTimeout(() => deferred.promise, 10);
+    const outcome = result.then(
+      (value) => ({ status: 'resolved' as const, value }),
+      (error: unknown) => ({ status: 'rejected' as const, error }),
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(outcome).resolves.toMatchObject({
+      status: 'rejected',
+      error: expect.any(TimeoutError),
+    });
+
+    deferred.resolve('late');
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(outcome).resolves.toMatchObject({
+      status: 'rejected',
+      error: expect.any(TimeoutError),
+    });
+  });
+
+  it('consumes a late rejection after the timeout wins', async () => {
+    vi.useFakeTimers();
+    const deferred = createDeferred<string>();
+    const unhandledRejection = vi.fn();
+    const result = withTimeout(() => deferred.promise, 10).catch((error: unknown) => error);
+
+    process.on('unhandledRejection', unhandledRejection);
+    try {
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(result).resolves.toBeInstanceOf(TimeoutError);
+
+      deferred.reject(new Error('late failure'));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(unhandledRejection).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandledRejection);
+    }
   });
 });
 

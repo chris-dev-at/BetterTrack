@@ -1,6 +1,8 @@
+import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Database } from '../../db';
+import { paranoidVaultRetired, paranoidVaultRetirements, users } from '../../schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import {
   createParanoidVaultRepository,
@@ -261,5 +263,79 @@ describe('paranoid vault repository CAS', () => {
     });
     const history = await repo.listHistory(userId);
     expect(history.items.map((h) => h.version)).toEqual([2]);
+  });
+});
+
+describe('durable paranoid media transitions', () => {
+  it('rolls a conflicting server retirement back without losing active ciphertext', async () => {
+    const proofKey = 'test-retirement-proof-key';
+    const activeBytes = blob('active-v1');
+    await db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(users.id, userId));
+    await repo.compareAndSwap({
+      userId,
+      expectedVersion: null,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: activeBytes.length,
+      blob: activeBytes,
+      retirementProofPublicKey: proofKey,
+      retention: RETENTION,
+      now: T0,
+    });
+    const serverOnly = { mediaSet: ['server'] as Array<'server'>, driveAttestedVersion: null };
+    const both = {
+      mediaSet: ['server', 'drive'] as Array<'server' | 'drive'>,
+      driveAttestedVersion: 1,
+    };
+    expect(
+      await repo.transitionMedia({
+        userId,
+        expected: serverOnly,
+        nextMediaSet: both.mediaSet,
+        verification: { kind: 'drive', version: 1 },
+        candidateReadbackVerified: false,
+        now: T0,
+      }),
+    ).toMatchObject({ status: 'ok' });
+
+    // A same-version retired row with different opaque bytes is the exact
+    // uniqueness/conflict edge: the transaction must fail closed before it
+    // deletes the active row or changes the durable media state.
+    await db.insert(paranoidVaultRetirements).values({
+      userId,
+      retiredVersion: 1,
+      retirementProofPublicKey: proofKey,
+      retiredAt: T0,
+    });
+    await db.insert(paranoidVaultRetired).values({
+      userId,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 9,
+      blob: blob('different'),
+      createdAt: T0,
+      retiredAt: T0,
+    });
+
+    const failed = await repo.transitionMedia({
+      userId,
+      expected: both,
+      nextMediaSet: ['drive'],
+      verification: { kind: 'drive', version: 1 },
+      candidateReadbackVerified: false,
+      now: T0,
+    });
+    expect(failed).toMatchObject({ status: 'retirement_conflict' });
+    expect((await repo.getCurrent(userId))?.blob.equals(activeBytes)).toBe(true);
+    const [user] = await db.select().from(users).where(eq(users.id, userId));
+    expect(user?.paranoidMediaSet).toEqual(['server', 'drive']);
+    expect((await repo.getHistory(userId, 1))?.blob.equals(blob('different'))).toBe(true);
   });
 });

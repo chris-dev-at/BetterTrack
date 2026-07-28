@@ -75,6 +75,8 @@ export interface ParanoidRehydrationServiceDeps {
   toCashEur?: (amount: number, currency: string, day: string) => Promise<number>;
   /** Test-only stage hook proving each transaction-stage rolls back completely. */
   afterStage?: (stage: ParanoidRehydrationStage) => void | Promise<void>;
+  /** Test-only seam for proving the numeric(20,8) quantity-rounding boundary. */
+  testOnlyTransactionQuantityRoundingTolerance?: bigint;
 }
 
 export type ParanoidRehydrationStage =
@@ -113,6 +115,8 @@ interface ExactDecimal {
 
 const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
 const pow10 = (scale: number): bigint => 10n ** BigInt(scale);
+const TRANSACTION_QUANTITY_STORAGE_PRECISION = 20;
+const TRANSACTION_QUANTITY_STORAGE_SCALE = 8;
 /**
  * Normal batch validation runs against the unrounded client quantities with a
  * 1e-9 epsilon, then PostgreSQL rounds each row independently to scale 8. Two
@@ -151,6 +155,41 @@ function persistedNumeric(value: string, precision: number, scale: number, label
     );
   }
   return decimal.coefficient * pow10(scale - decimal.scale);
+}
+
+function absolute(value: bigint): bigint {
+  return value < 0n ? -value : value;
+}
+
+function roundToScale(value: ExactDecimal, scale: number): bigint {
+  if (value.scale <= scale) {
+    return value.coefficient * pow10(scale - value.scale);
+  }
+
+  const divisor = pow10(value.scale - scale);
+  const quotient = value.coefficient / divisor;
+  const remainder = value.coefficient % divisor;
+  // PostgreSQL numeric coercion rounds halfway cases away from zero.
+  if (absolute(remainder) * 2n < divisor) return quotient;
+  return quotient + (value.coefficient < 0n ? -1n : 1n);
+}
+
+/**
+ * Mirror PostgreSQL's `numeric(20,8)` coercion before the pre-write position
+ * replay. Paranoid-vault transactions can retain the user's raw decimal input;
+ * the restore repository will round it on insert, so comparing raw values here
+ * would validate a different position history than the one we persist.
+ */
+function quantizedTransactionQuantity(value: string): bigint {
+  const label = 'transaction quantity';
+  const quantized = roundToScale(exactDecimal(value, label), TRANSACTION_QUANTITY_STORAGE_SCALE);
+  if (absolute(quantized) >= pow10(TRANSACTION_QUANTITY_STORAGE_PRECISION)) {
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      `${label} exceeds its persisted precision`,
+    );
+  }
+  return quantized;
 }
 
 function requirePositive(value: bigint, label: string): void {
@@ -208,6 +247,48 @@ function rows<K extends Entity['kind']>(
 
 function liveEntities(document: ParanoidDisableRehydrationRequest['document']): readonly Entity[] {
   return document.entities.filter((entity) => entity.deletedAt === null);
+}
+
+function validateCustomAssetFacts(userId: string, entities: readonly Entity[]): void {
+  const seen = new Set<string>();
+  for (const asset of rows(entities, 'customAsset')) {
+    if (seen.has(asset.id)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'custom asset restore facts must be unique by id',
+      );
+    }
+    seen.add(asset.id);
+    if (
+      asset.data.ownerId !== userId ||
+      asset.data.providerId !== 'manual' ||
+      asset.data.providerRef !== asset.id
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'custom asset ownership or manual-provider identity is invalid',
+      );
+    }
+  }
+}
+
+function retainedCustomAssetRetireIds(
+  retainedIds: readonly string[],
+  entities: readonly Entity[],
+): readonly string[] {
+  const restoreFacts = new Map(rows(entities, 'customAsset').map((entity) => [entity.id, entity]));
+  const retireIds: string[] = [];
+  for (const retainedId of retainedIds) {
+    const fact = restoreFacts.get(retainedId);
+    if (!fact) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        `retained custom asset ${retainedId} requires a live row or tombstone`,
+      );
+    }
+    if (fact.deletedAt !== null) retireIds.push(retainedId);
+  }
+  return retireIds;
 }
 
 function ids<K extends Entity['kind']>(entities: readonly Entity[], kind: K): Set<string> {
@@ -280,18 +361,6 @@ function validateOwnedRows(userId: string, entities: readonly Entity[]): void {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
         'portfolio owner does not match the rehydrated account',
-      );
-    }
-  }
-  for (const asset of rows(entities, 'customAsset')) {
-    if (
-      asset.data.ownerId !== userId ||
-      asset.data.providerId !== 'manual' ||
-      asset.data.providerRef !== asset.id
-    ) {
-      throw new ParanoidRehydrationError(
-        'INVALID_REFERENCE',
-        'custom asset ownership or manual-provider identity is invalid',
       );
     }
   }
@@ -381,7 +450,7 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
   }
 
   for (const transaction of rows(entities, 'transaction')) {
-    const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+    const quantity = quantizedTransactionQuantity(transaction.data.quantity);
     const price = persistedNumeric(transaction.data.price, 20, 6, 'transaction price');
     const fee = persistedNumeric(transaction.data.fee, 20, 6, 'transaction fee');
     requirePositive(quantity, 'transaction quantity');
@@ -551,7 +620,11 @@ interface ValidatedGraph {
   storageRoundingSellIds: ReadonlySet<string>;
 }
 
-function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGraph {
+function validateGraph(
+  userId: string,
+  entities: readonly Entity[],
+  transactionQuantityRoundingTolerance: bigint,
+): ValidatedGraph {
   validateUniqueRestoredIds(entities);
   validateOwnedRows(userId, entities);
   validatePersistedDates(entities);
@@ -1193,23 +1266,25 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
       );
       let held = 0n;
       for (const transaction of orderedTransactions) {
-        const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+        const quantity = quantizedTransactionQuantity(transaction.data.quantity);
         if (transaction.data.side === 'buy') {
           held += quantity;
         } else {
           const shortfall = quantity - held;
           if (
             shortfall > 0n &&
-            shortfall <= PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
+            shortfall <= transactionQuantityRoundingTolerance &&
             !transaction.data.allowUncovered
           ) {
             storageRoundingSellIds.add(transaction.id);
           }
           if (
-            shortfall > PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
+            shortfall > transactionQuantityRoundingTolerance &&
             !transaction.data.allowUncovered
           ) {
-            throw new Error('transaction would oversell its position');
+            throw new Error(
+              `transaction quantity ${JSON.stringify(transaction.data.quantity)} would oversell its position`,
+            );
           }
           held = shortfall > 0n ? 0n : held - quantity;
         }
@@ -1294,6 +1369,11 @@ export function createParanoidRehydrationService(
   deps: ParanoidRehydrationServiceDeps,
 ): ParanoidRehydrationService {
   const now = deps.now ?? (() => new Date());
+  const transactionQuantityRoundingTolerance =
+    deps.testOnlyTransactionQuantityRoundingTolerance ?? PERSISTED_QUANTITY_ROUNDING_TOLERANCE;
+  if (transactionQuantityRoundingTolerance < 0n) {
+    throw new Error('transaction quantity rounding tolerance must not be negative');
+  }
   const toCashEur =
     deps.toCashEur ??
     (async (amount, currency) => {
@@ -1316,10 +1396,11 @@ export function createParanoidRehydrationService(
         throw new ParanoidRehydrationError('INVALID_REFERENCE', 'rehydration request is malformed');
       }
       const normalizedRequest = parsed.data;
+      validateCustomAssetFacts(userId, normalizedRequest.document.entities);
       // Tombstones exist for client-side merge convergence only. Construct and
       // validate the restore graph from live facts before any database mutation.
       const entities = liveEntities(normalizedRequest.document);
-      const validatedGraph = validateGraph(userId, entities);
+      const validatedGraph = validateGraph(userId, entities, transactionQuantityRoundingTolerance);
 
       return withParanoidRehydrationTransaction(deps.db, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);
@@ -1346,10 +1427,16 @@ export function createParanoidRehydrationService(
 
         const sourceRows = createParanoidRehydrationSourceRepository(tx);
         await ensureNoExistingRestorableRows(sourceRows, userId);
+        const retainedIdentityIds = await sourceRows.listRetainedCustomAssetIdentityIds(userId);
+        const retireIdentityIds = retainedCustomAssetRetireIds(
+          retainedIdentityIds,
+          normalizedRequest.document.entities,
+        );
         const referencedAssets = await resolveReferencedAssets(sourceRows, entities);
         validateStandingOrderCurrencies(entities, referencedAssets);
 
         await sourceRows.restoreCustomAssets(rows(entities, 'customAsset'));
+        await sourceRows.retireRetainedCustomAssetIdentities(userId, retireIdentityIds);
         await sourceRows.restoreCustomAssetValues(rows(entities, 'customAssetValue'));
         await stage('customAssets');
 

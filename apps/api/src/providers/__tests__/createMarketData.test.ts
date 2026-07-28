@@ -14,6 +14,8 @@ const DEPLOY_ENV: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgres://x',
   REDIS_URL: 'redis://x',
   SESSION_SECRET: 'a-sufficiently-long-secret-value',
+  BT_DATA_ENCRYPTION_KEY_ID: 'provider-test',
+  BT_DATA_ENCRYPTION_KEY: 'provider-test-record-encryption-key-at-least-32-characters',
 };
 
 describe('createMarketData registers both providers (§5.1)', () => {

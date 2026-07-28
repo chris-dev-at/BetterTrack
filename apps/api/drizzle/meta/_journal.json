@@ -498,6 +498,20 @@
       "when": 1784490240290,
       "tag": "0070_paranoid_rehydration_seam",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1785105246594,
+      "tag": "0071_asset_identities",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1785181282012,
+      "tag": "0072_paranoid_vault_media_retirement",
+      "breakpoints": true
     }
   ]
 }

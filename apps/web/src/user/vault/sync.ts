@@ -1,4 +1,9 @@
-import type { VaultDocumentV1, VaultEnvelopeHeader } from '@bettertrack/contracts';
+import type {
+  VaultDocumentV1,
+  VaultEntity,
+  VaultEntityKind,
+  VaultEnvelopeHeader,
+} from '@bettertrack/contracts';
 
 import { decryptVaultDocument, encryptVaultDocument, type VaultKeyMaterial } from './crypto';
 import type { DataHome, DataHomeReadResult, DataHomeWriteResult } from './dataHome';
@@ -20,6 +25,7 @@ export interface VaultSyncCandidate {
 export type VaultSyncStatus =
   | 'synced'
   | 'pending-offline'
+  | 'unresolved'
   | 'conflict'
   | 'corrupt'
   | 'locked'
@@ -42,12 +48,61 @@ export interface VaultSyncEngineOptions {
   writeId: () => string;
   now?: () => string;
   quarantine: VaultQuarantineStore;
+  /**
+   * Installed at engine construction so no divergent candidate can be
+   * encrypted or published before its domain invariants are reconciled.
+   */
+  documentReconciler: VaultDocumentReconciler;
+  /**
+   * Domain reconcilers that admit complete atomic operations must fail closed
+   * when a restarted engine can no longer recover their per-call boundaries.
+   */
+  requiresCompleteMutationProvenance: boolean;
 }
 
 export interface VaultMutationContext {
   document: VaultDocumentV1;
   currentVersion: number;
 }
+
+export interface VaultMutationEntityDelta {
+  kind: VaultEntityKind;
+  id: string;
+  before: VaultEntity | undefined;
+  after: VaultEntity | undefined;
+}
+
+/**
+ * The complete delta produced by one serialized `mutate` call. Keeping every
+ * member here, before the generic merge selects entity winners, lets a domain
+ * reconciler admit or reject the original operation as one unit.
+ */
+export interface VaultAtomicMutation {
+  sequence: number;
+  changes: VaultMutationEntityDelta[];
+}
+
+export interface VaultDocumentReconcileContext {
+  /** The locally pending/in-memory branch whose changes are being considered. */
+  local: VaultDocumentV1;
+  /** The already-observed durable branch that forms the reconciliation baseline. */
+  remote: VaultDocumentV1;
+  /** Complete local mutation deltas, ordered before entity-winner filtering. */
+  mutations: readonly VaultAtomicMutation[];
+  deviceId: string;
+  reconciledAt: string;
+}
+
+export interface VaultDocumentReconcileResult {
+  document: VaultDocumentV1;
+  /** Rebased groups that still separate every pending operation and compensation. */
+  mutations: readonly VaultAtomicMutation[];
+}
+
+export type VaultDocumentReconciler = (
+  document: VaultDocumentV1,
+  context: VaultDocumentReconcileContext,
+) => VaultDocumentReconcileResult;
 
 export interface VaultSyncEngine {
   readonly deviceId: string;
@@ -84,6 +139,10 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   let remoteObserved: RemoteObservation = { known: false, version: null };
   let operationTail = Promise.resolve();
   let rollbackPersistenceFailure: string | undefined;
+  let mutationSequence = 0;
+  let pendingMutations: VaultAtomicMutation[] = [];
+  let pendingMutationProvenanceAvailable = false;
+  const documentReconciler = options.documentReconciler;
 
   return {
     get deviceId() {
@@ -108,6 +167,8 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   };
 
   async function reconcile(): Promise<VaultSyncState> {
+    if (state.status === 'unresolved') return cloneState(state);
+
     for (let attempt = 0; attempt < MAX_CAS_RECONCILIATIONS; attempt += 1) {
       const result = await reconcileObservation();
       if (result !== RETRY_LOCAL_OBSERVATION) return result;
@@ -235,11 +296,18 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     if (state.status === 'corrupt') {
       throw new VaultCryptoError('locked', 'A readable unlocked vault is required for a mutation.');
     }
+    if (state.status === 'unresolved') {
+      throw new VaultCryptoError(
+        'storage-failed',
+        'The pending vault changes require explicit conflict resolution.',
+      );
+    }
 
     const document = mutator({
       document: active.document,
       currentVersion: active.header.vaultVersion,
     });
+    const mutation = captureMutation(active.document, document, mutationSequence);
     const nextVersion =
       Math.max(
         active.header.vaultVersion,
@@ -255,6 +323,14 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       );
     }
 
+    mutationSequence += 1;
+    // A new in-memory delta cannot restore the lost call boundaries of a
+    // persisted pending branch loaded after restart.
+    pendingMutationProvenanceAvailable =
+      pendingMutationProvenanceAvailable || state.pending == null;
+    if (mutation.changes.length > 0) {
+      pendingMutations = [...pendingMutations, mutation];
+    }
     state = { status: 'pending-offline', active: candidate, pending: candidate };
     return remoteObserved.known
       ? pushPending(candidate, remoteObserved.version)
@@ -294,11 +370,18 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       if (localCurrent != null && sameWrite(localCurrent, remote)) {
         state = { status: 'synced', active: remote, pending: null };
         if (!(await acknowledgeLocal(remote.header.vaultVersion))) return cloneState(state);
+        pendingMutations = [];
+        pendingMutationProvenanceAvailable = false;
         return cloneState(state);
       }
       return installRemoteOrPromote(remote, localCurrent, expectedLocalVersion);
     }
 
+    if (localPending != null && mustSurfaceUnresolvedProvenance(localPending, remote)) {
+      return surfaceUnresolvedProvenance(localPending);
+    }
+
+    const reconciledAt = now();
     const merged = mergeVaultDocuments({
       left: localReadable.document,
       leftVersion: localReadable.header.vaultVersion,
@@ -306,7 +389,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       rightVersion: remote.header.vaultVersion,
       forceDivergent: localPending != null,
       deviceId: options.deviceId,
-      mergedAt: now(),
+      mergedAt: reconciledAt,
     });
 
     const highestObserved = Math.max(expectedLocalVersion ?? 0, remote.header.vaultVersion);
@@ -337,12 +420,19 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     }
 
     const version = Math.max(merged.vaultVersion, highestObserved + 1);
-    const candidate = await encryptCandidate(
+    const reconciliation = reconcileMergedDocument(
       merged.document,
+      localReadable.document,
+      remote.document,
+      reconciledAt,
+    );
+    const candidate = await encryptCandidate(
+      reconciliation.document,
       version,
       newestHeader(localReadable, remote),
     );
     if (!(await commitLocal(candidate, expectedLocalVersion))) return cloneState(state);
+    pendingMutations = reconciliation.pendingMutations;
     state = { status: 'pending-offline', active: candidate, pending: candidate };
     return pushPending(candidate, remote.header.vaultVersion);
   }
@@ -356,6 +446,8 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
 
     if (localCurrent != null && sameWrite(localCurrent, remote)) {
       if (!(await acknowledgeLocal(remote.header.vaultVersion))) return cloneState(state);
+      pendingMutations = [];
+      pendingMutationProvenanceAvailable = false;
       state = { status: 'synced', active: remote, pending: null };
       return cloneState(state);
     }
@@ -367,12 +459,15 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         remote.header,
       );
       if (!(await commitLocal(promoted, expectedLocalVersion))) return cloneState(state);
+      pendingMutationProvenanceAvailable = true;
       state = { status: 'pending-offline', active: promoted, pending: promoted };
       return pushPending(promoted, remote.header.vaultVersion);
     }
 
     if (!(await commitLocal(remote, expectedLocalVersion))) return cloneState(state);
     if (!(await acknowledgeLocal(remote.header.vaultVersion))) return cloneState(state);
+    pendingMutations = [];
+    pendingMutationProvenanceAvailable = false;
     state = { status: 'synced', active: remote, pending: null };
     return cloneState(state);
   }
@@ -444,6 +539,8 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         case 'ok':
           remoteObserved = { known: true, version: pending.header.vaultVersion };
           if (!(await acknowledgeLocal(pending.header.vaultVersion))) return cloneState(state);
+          pendingMutations = [];
+          pendingMutationProvenanceAvailable = false;
           state = { status: 'synced', active: pending, pending: null };
           return cloneState(state);
         case 'transport-failure':
@@ -490,10 +587,16 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       }
       if (sameWrite(pending, remote)) {
         if (!(await acknowledgeLocal(pending.header.vaultVersion))) return cloneState(state);
+        pendingMutations = [];
+        pendingMutationProvenanceAvailable = false;
         state = { status: 'synced', active: remote, pending: null };
         return cloneState(state);
       }
+      if (mustSurfaceUnresolvedProvenance(pending, remote)) {
+        return surfaceUnresolvedProvenance(pending);
+      }
 
+      const reconciledAt = now();
       const merged = mergeVaultDocuments({
         left: pending.document,
         leftVersion: pending.header.vaultVersion,
@@ -501,14 +604,21 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         rightVersion: remote.header.vaultVersion,
         forceDivergent: true,
         deviceId: options.deviceId,
-        mergedAt: now(),
+        mergedAt: reconciledAt,
       });
-      const reconciled = await encryptCandidate(
+      const reconciliation = reconcileMergedDocument(
         merged.document,
+        pending.document,
+        remote.document,
+        reconciledAt,
+      );
+      const reconciled = await encryptCandidate(
+        reconciliation.document,
         merged.vaultVersion,
         newestHeader(pending, remote),
       );
       if (!(await commitLocal(reconciled, localHeadVersion))) return cloneState(state);
+      pendingMutations = reconciliation.pendingMutations;
       pending = reconciled;
       expectedRemote = remote.header.vaultVersion;
       state = { status: 'pending-offline', active: pending, pending };
@@ -603,6 +713,8 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
     localHeadVersion = observedVersion(freshResult);
     const freshCandidateResult = await readableCandidate(freshResult);
     const fresh = freshCandidateResult.candidate;
+    pendingMutations = [];
+    pendingMutationProvenanceAvailable = false;
     state = {
       status: 'conflict',
       active: fresh ?? state.active,
@@ -648,16 +760,19 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       return { candidate: persisted, activeContributed: false };
     }
 
+    const reconciledAt = now();
     const merged = mergeVaultDocuments({
       left: persisted.document,
       leftVersion: persisted.header.vaultVersion,
       right: active.document,
       rightVersion: active.header.vaultVersion,
       deviceId: options.deviceId,
-      mergedAt: now(),
+      mergedAt: reconciledAt,
     });
     if (!merged.divergent) {
       if (persisted.header.vaultVersion > active.header.vaultVersion) {
+        pendingMutations = [];
+        pendingMutationProvenanceAvailable = false;
         return { candidate: persisted, activeContributed: false };
       }
       if (active.header.vaultVersion > persisted.header.vaultVersion) {
@@ -666,14 +781,62 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       return { candidate: selectHighest(persisted, active), activeContributed: false };
     }
 
+    const reconciliation = reconcileMergedDocument(
+      merged.document,
+      active.document,
+      persisted.document,
+      reconciledAt,
+    );
+    pendingMutations = reconciliation.pendingMutations;
     return {
       candidate: await encryptCandidate(
-        merged.document,
+        reconciliation.document,
         merged.vaultVersion,
         newestHeader(persisted, active),
       ),
       activeContributed: true,
     };
+  }
+
+  function reconcileMergedDocument(
+    document: VaultDocumentV1,
+    local: VaultDocumentV1,
+    remote: VaultDocumentV1,
+    reconciledAt: string,
+  ): { document: VaultDocumentV1; pendingMutations: VaultAtomicMutation[] } {
+    const reconciliation = documentReconciler(document, {
+      local,
+      remote,
+      mutations: pendingMutations,
+      deviceId: options.deviceId,
+      reconciledAt,
+    });
+    return {
+      document: reconciliation.document,
+      pendingMutations: reconciliation.mutations.map(cloneMutation),
+    };
+  }
+
+  function mustSurfaceUnresolvedProvenance(
+    local: VaultSyncCandidate,
+    remote: VaultSyncCandidate,
+  ): boolean {
+    return (
+      options.requiresCompleteMutationProvenance &&
+      !pendingMutationProvenanceAvailable &&
+      !sameJsonValue(local.document.entities, remote.document.entities)
+    );
+  }
+
+  function surfaceUnresolvedProvenance(local: VaultSyncCandidate): VaultSyncState {
+    state = {
+      status: 'unresolved',
+      active: local,
+      pending: local,
+      lastFailure:
+        'Original atomic mutation provenance is unavailable; explicit conflict resolution is required.',
+    };
+    return cloneState(state);
   }
 
   async function readableCandidate(result: DataHomeReadResult): Promise<ReadableCandidateResult> {
@@ -790,6 +953,65 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       document,
     };
   }
+}
+
+function captureMutation(
+  before: VaultDocumentV1,
+  after: VaultDocumentV1,
+  sequence: number,
+): VaultAtomicMutation {
+  const changes: VaultMutationEntityDelta[] = [];
+  const kinds = new Set<VaultEntityKind>([
+    ...(Object.keys(before.entities) as VaultEntityKind[]),
+    ...(Object.keys(after.entities) as VaultEntityKind[]),
+  ]);
+
+  for (const kind of [...kinds].sort()) {
+    const beforeById = new Map((before.entities[kind] ?? []).map((entity) => [entity.id, entity]));
+    const afterById = new Map((after.entities[kind] ?? []).map((entity) => [entity.id, entity]));
+    const ids = new Set([...beforeById.keys(), ...afterById.keys()]);
+    for (const id of [...ids].sort()) {
+      const previous = beforeById.get(id);
+      const next = afterById.get(id);
+      if (sameJsonValue(previous, next)) continue;
+      changes.push({ kind, id, before: previous, after: next });
+    }
+  }
+
+  return { sequence, changes };
+}
+
+function cloneMutation(mutation: VaultAtomicMutation): VaultAtomicMutation {
+  return {
+    sequence: mutation.sequence,
+    changes: mutation.changes.map((change) => ({ ...change })),
+  };
+}
+
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameJsonValue(value, right[index]))
+    );
+  }
+  if (left == null || right == null || typeof left !== 'object' || typeof right !== 'object') {
+    return false;
+  }
+
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) => key === rightKeys[index] && sameJsonValue(leftRecord[key], rightRecord[key]),
+    )
+  );
 }
 
 function observedVersion(result: DataHomeReadResult): number | null | undefined {
