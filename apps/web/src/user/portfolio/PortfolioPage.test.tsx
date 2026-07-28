@@ -523,7 +523,8 @@ describe('PortfolioPage — overlay relocated to Analytics', () => {
     // The value curve loads without the per-asset overlay (§13.3: the overview
     // keeps only the simple curve; the overlay mode moved to Analytics).
     const link = await screen.findByRole('link', { name: /Analytics/ });
-    expect(link).toHaveAttribute('href', '/portfolio/analytics');
+    // The redesign renames the tab to Analysis (legacy /portfolio/analytics redirects).
+    expect(link).toHaveAttribute('href', '/portfolio/analysis');
     // No overlay toggle remains on the overview.
     expect(screen.queryByRole('button', { name: 'Overlay assets' })).not.toBeInTheDocument();
     // The overview only ever fetches the plain curve — never the per-asset
