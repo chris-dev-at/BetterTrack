@@ -12,20 +12,24 @@ export interface MarketStateBadgeProps {
   className?: string;
 }
 
-/** Per-state dot colour + text tone + i18n key. `open` reads a live pulse. */
+/**
+ * Per-state Origin badge tone + dot tone + i18n key. `open` reads a live pulse.
+ * A session that is neither open nor closed (pre/post) is an "attention" state,
+ * so it takes the gold accent rather than a second semantic colour.
+ */
 const STATE_STYLES: Record<
   MarketState,
-  { dot: string; text: string; key: string; pulse?: boolean }
+  { dot: string; badge: string; key: string; pulse?: boolean }
 > = {
   open: {
-    dot: 'bg-emerald-400',
-    text: 'text-emerald-300',
+    dot: 'bt-dot--pos',
+    badge: 'bt-badge--pos',
     key: 'common.marketState.open',
     pulse: true,
   },
-  closed: { dot: 'bg-neutral-500', text: 'text-neutral-400', key: 'common.marketState.closed' },
-  pre: { dot: 'bg-amber-400', text: 'text-amber-300', key: 'common.marketState.pre' },
-  post: { dot: 'bg-amber-400', text: 'text-amber-300', key: 'common.marketState.post' },
+  closed: { dot: '', badge: '', key: 'common.marketState.closed' },
+  pre: { dot: 'bt-dot--gold', badge: 'bt-badge--gold', key: 'common.marketState.pre' },
+  post: { dot: 'bt-dot--gold', badge: 'bt-badge--gold', key: 'common.marketState.post' },
 };
 
 /**
@@ -39,16 +43,11 @@ export function MarketStateBadge({ state, className }: MarketStateBadgeProps) {
   if (!state) return null;
   const style = STATE_STYLES[state];
   return (
-    <span
-      className={cx(
-        'inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.65rem] font-medium ring-1 ring-inset ring-neutral-700/60',
-        style.text,
-        className,
-      )}
-    >
+    <span className={cx('bt-badge', style.badge, className)}>
       <span
         aria-hidden="true"
-        className={cx('h-1.5 w-1.5 rounded-full', style.dot, style.pulse && 'animate-pulse')}
+        className={cx('bt-dot', style.dot, style.pulse && 'animate-pulse')}
+        style={{ width: 5, height: 5 }}
       />
       {t(style.key)}
     </span>

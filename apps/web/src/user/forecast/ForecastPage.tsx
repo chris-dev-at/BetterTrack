@@ -148,7 +148,7 @@ interface PrefillButtonProps {
 
 function PrefillButton({ label, disabled, onClick }: PrefillButtonProps) {
   return (
-    <Button variant="ghost" onClick={onClick} disabled={disabled} className="self-start px-2 py-1">
+    <Button variant="ghost" onClick={onClick} disabled={disabled} className="bt-btn--sm self-start">
       {label}
     </Button>
   );

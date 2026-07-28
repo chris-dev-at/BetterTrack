@@ -686,7 +686,7 @@ function DeletePortfolioDialog({
           <Button
             type="submit"
             variant="secondary"
-            className="text-red-300 ring-red-900 hover:bg-red-950"
+            className="bt-btn--danger"
             disabled={!confirmed || submitting}
           >
             {submitting ? t('portfolio.switcher.deleting') : t('portfolio.switcher.delete')}

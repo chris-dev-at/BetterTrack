@@ -6,13 +6,7 @@ import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { createCashSource, updateCashSource } from '../../lib/portfolioApi';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
-
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
+import { Alert, Button } from '../components/ui';
 
 export interface CashSourceDialogProps {
   portfolioId: string;
@@ -91,10 +85,8 @@ export function CashSourceDialog({ portfolioId, source, onClose, onSaved }: Cash
       widthClassName="max-w-md"
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.cashSources.dialog.nameLabel')}
-          </span>
+        <div className="bt-field">
+          <label>{t('portfolio.cashSources.dialog.nameLabel')}</label>
           <input
             type="text"
             value={name}
@@ -103,19 +95,17 @@ export function CashSourceDialog({ portfolioId, source, onClose, onSaved }: Cash
             onChange={(e) => setName(e.target.value)}
             aria-label={t('portfolio.cashSources.dialog.nameLabel')}
             placeholder={t('portfolio.cashSources.dialog.namePlaceholder')}
-            className={inputClass}
+            className="bt-input"
           />
-        </label>
+        </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.cashSources.dialog.typeLabel')}
-          </span>
+        <div className="bt-field">
+          <label>{t('portfolio.cashSources.dialog.typeLabel')}</label>
           <select
             value={type}
             onChange={(e) => setType(e.target.value as CashSourceType)}
             aria-label={t('portfolio.cashSources.dialog.typeLabel')}
-            className={inputClass}
+            className="bt-select"
           >
             {CASH_SOURCE_TYPES.map((option) => (
               <option key={option} value={option}>
@@ -123,7 +113,7 @@ export function CashSourceDialog({ portfolioId, source, onClose, onSaved }: Cash
               </option>
             ))}
           </select>
-        </label>
+        </div>
 
         {error ? <Alert tone="error">{error}</Alert> : null}
 

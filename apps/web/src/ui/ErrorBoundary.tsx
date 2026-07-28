@@ -62,15 +62,17 @@ function DefaultErrorFallback({
   return (
     <div
       role="alert"
-      className="flex flex-col items-center gap-4 rounded-lg border border-red-900 bg-red-950/40 px-6 py-8 text-center"
+      className="flex flex-col items-center gap-4 rounded-lg border px-6 py-8 text-center"
+      // Same negative-tone recipe the shared Alert uses: a 10%-alpha wash with a
+      // low-alpha border of the same hue, both derived from the semantic token.
+      style={{
+        background: 'var(--bt-neg-soft)',
+        borderColor: 'color-mix(in srgb, var(--bt-neg) 26%, transparent)',
+      }}
     >
-      <p className="text-sm font-medium text-red-300">{t('common.errorTitle')}</p>
-      {errorMessage ? <p className="text-xs text-neutral-500">{errorMessage}</p> : null}
-      <button
-        type="button"
-        onClick={onRetry}
-        className="rounded-md bg-neutral-800 px-3 py-1.5 text-sm text-neutral-100 hover:bg-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-      >
+      <p className="bt-neg text-sm font-medium">{t('common.errorTitle')}</p>
+      {errorMessage ? <p className="bt-muted text-xs">{errorMessage}</p> : null}
+      <button type="button" onClick={onRetry} className="bt-btn bt-btn--sm">
         {t('common.retry')}
       </button>
     </div>

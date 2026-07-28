@@ -32,14 +32,16 @@ function GoogleGlyph() {
  * the deployment has Google configured (the caller gates on `googleEnabled`). A
  * brand-new identity lands back on the connected register form, where any invite
  * token is entered — so nothing rides through `start`.
+ *
+ * Styled as a neutral Origin control carrying Google's full-colour "G" — the
+ * dark-surface variant of Google's sign-in button. A white slab would be the
+ * loudest thing on a graphite auth card, and the colour mark alone is what
+ * carries the brand.
  */
 export function GoogleButton() {
   const t = useT();
   return (
-    <a
-      href={googleStartUrl()}
-      className="inline-flex w-full items-center justify-center gap-2.5 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-semibold text-neutral-800 transition-colors hover:bg-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-    >
+    <a href={googleStartUrl()} className="bt-btn w-full">
       <GoogleGlyph />
       {t('auth.google.button')}
     </a>
