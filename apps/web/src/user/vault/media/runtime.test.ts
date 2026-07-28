@@ -317,6 +317,15 @@ class RuntimeDrive extends RuntimeRemote implements DriveDataHome {
     super('drive', envelope);
   }
 
+  async observeReplicas() {
+    return {
+      observations: [await this.read()],
+      async converge() {
+        throw new Error('The single-file test Drive cannot converge duplicates.');
+      },
+    };
+  }
+
   async delete(): Promise<DriveDeleteResult> {
     const deleted = this.envelope != null;
     this.envelope = null;
@@ -475,6 +484,14 @@ function driveHome(): DriveDataHome {
   return {
     ...dataHome('server'),
     medium: 'drive',
+    async observeReplicas() {
+      return {
+        observations: [await this.read()],
+        async converge() {
+          throw new Error('The single-file test Drive cannot converge duplicates.');
+        },
+      };
+    },
     delete: vi.fn(),
   };
 }

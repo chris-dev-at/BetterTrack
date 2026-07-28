@@ -531,6 +531,8 @@
         "connectedNotice": "Google Drive-App-Datenspeicher verbunden.",
         "disconnectedNotice": "Google Drive-App-Datenspeicher getrennt.",
         "leftover": "Drive wurde getrennt, aber Google konnte den verbliebenen Geheimtext nicht löschen. Er liegt nur noch in deinem eigenen App-Daten-Ordner.",
+        "leftoverSyncPending": "Drive wurde getrennt und die Speicherwahl gespeichert. Google konnte den verbliebenen Geheimtext jedoch nicht löschen und die Synchronisierung benötigt noch Aufmerksamkeit.",
+        "syncPending": "Die Speicherwahl wurde gespeichert, aber die Synchronisierung benötigt noch Aufmerksamkeit. BetterTrack versucht es erneut mit der verschlüsselten ausstehenden Kopie.",
         "actionError": "Die Speicheränderung wurde abgebrochen, weil keine verifizierte Kopie abgeschlossen werden konnte.",
         "loadError": "Der Drive-Speicherstatus konnte nicht geladen werden.",
         "purgedNotice": "Die aufbewahrte Server-Wiederherstellungskopie wurde gelöscht.",

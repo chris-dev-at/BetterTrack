@@ -1632,6 +1632,14 @@ describe('restore candidate seam', () => {
           },
         };
       },
+      async observeReplicas() {
+        return {
+          observations: [await this.read()],
+          async converge() {
+            throw new Error('The single-file test Drive cannot converge duplicates.');
+          },
+        };
+      },
       async info() {
         return {
           status: 'ok',

@@ -65,6 +65,14 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
           },
         };
       }),
+      async observeReplicas() {
+        return {
+          observations: [await this.read()],
+          async converge() {
+            throw new Error('The single-file test Drive cannot converge duplicates.');
+          },
+        };
+      },
       write: vi.fn(),
       info: vi.fn(),
       delete: vi.fn(),

@@ -531,6 +531,8 @@
         "connectedNotice": "Google Drive app-data storage connected.",
         "disconnectedNotice": "Google Drive app-data storage disconnected.",
         "leftover": "Drive was disconnected, but Google could not delete the leftover ciphertext. It remains only in your own app-data folder.",
+        "leftoverSyncPending": "Drive was disconnected and the storage choice was saved, but Google could not delete the leftover ciphertext and synchronization still needs attention.",
+        "syncPending": "The storage choice was saved, but synchronization still needs attention. BetterTrack will retry from the encrypted pending copy.",
         "actionError": "The storage change was cancelled because a verified copy could not be completed.",
         "loadError": "Drive storage status could not be loaded.",
         "purgedNotice": "The retained server recovery copy was deleted.",

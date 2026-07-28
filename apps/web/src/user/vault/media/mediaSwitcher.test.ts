@@ -93,6 +93,15 @@ class MemoryDriveHome extends MemoryHome implements DriveDataHome {
     super('drive', value);
   }
 
+  async observeReplicas() {
+    return {
+      observations: [await this.read()],
+      async converge() {
+        throw new Error('The single-file test Drive cannot converge duplicates.');
+      },
+    };
+  }
+
   async delete(): Promise<DriveDeleteResult> {
     this.deletes += 1;
     if (this.deleteFailure) {

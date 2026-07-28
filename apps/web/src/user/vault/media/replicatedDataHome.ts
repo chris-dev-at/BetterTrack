@@ -9,19 +9,21 @@ import type {
   DataHomeWriteResult,
 } from '../dataHome';
 import { inspectVaultEnvelope } from '../envelope';
-import type { DriveDataHome } from '../drive';
+import type { DriveDataHome, DriveReplicaCycle } from '../drive';
 import type { VaultSyncEngine, VaultSyncState } from '../sync';
 import type { VaultMediaApi } from './mediaSwitcher';
 
 interface ReplicaObservation {
   medium: VaultMedium;
   result: DataHomeReadResult;
+  synthetic?: 'drive-convergence';
 }
 
 interface ReconcileCycle {
   media: ParanoidVaultMediaState;
   observations: ReplicaObservation[];
   selectedIndex: number;
+  driveReplicaCycle: DriveReplicaCycle | null;
 }
 
 const MAX_MUTATION_PREPARATION_ATTEMPTS = 4;
@@ -163,6 +165,7 @@ export function createReplicatedVaultDataHome(
         cycle = {
           media: fallbackMedia(),
           selectedIndex: 0,
+          driveReplicaCycle: null,
           observations: [
             {
               medium: 'server',
@@ -173,16 +176,49 @@ export function createReplicatedVaultDataHome(
         return;
       }
 
-      const results = await Promise.all(
-        media.mediaSet.map(async (medium) => ({
-          medium,
-          result: await homes[medium].read(),
-        })),
+      const batches = await Promise.all(
+        media.mediaSet.map(async (medium) => {
+          if (medium === 'server') {
+            return {
+              medium,
+              driveReplicas: null,
+              result: await homes.server.read(),
+            };
+          }
+          const driveReplicas = await options.drive.observeReplicas();
+          return { medium, driveReplicas, result: null };
+        }),
       );
+      const observations: ReplicaObservation[] = [];
+      let driveReplicaCycle: DriveReplicaCycle | null = null;
+      for (const batch of batches) {
+        if (batch.driveReplicas == null) {
+          observations.push({ medium: batch.medium, result: batch.result! });
+          continue;
+        }
+        observations.push(
+          ...batch.driveReplicas.observations.map((result) => ({
+            medium: batch.medium,
+            result,
+          })),
+        );
+        if (batch.driveReplicas.observations.length > 1) {
+          driveReplicaCycle = batch.driveReplicas;
+          // The preceding candidates are read-only merge inputs. This final
+          // absent observation makes the PD5 engine publish its authenticated
+          // convergence exactly once through DriveReplicaCycle.converge().
+          observations.push({
+            medium: 'drive',
+            result: { status: 'absent', medium: 'drive' },
+            synthetic: 'drive-convergence',
+          });
+        }
+      }
       cycle = {
         media,
         selectedIndex: 0,
-        observations: results,
+        observations,
+        driveReplicaCycle,
       };
     },
 
@@ -239,6 +275,21 @@ export function createReplicatedVaultDataHome(
       // known to be unreachable/corrupt. The encrypted local candidate stays
       // pending until the next unlock or authorization gesture.
       for (const observation of frozen.observations) {
+        if (observation.synthetic === 'drive-convergence') continue;
+        if (observation.medium === 'drive' && frozen.driveReplicaCycle != null) {
+          // Corrupt duplicate bytes have already been quarantined by the PD5
+          // engine and can be replaced after another candidate authenticates.
+          // A transport failure leaves an unobserved branch, so convergence
+          // must remain non-destructive.
+          if (observation.result.status === 'transport-failure') {
+            return {
+              status: 'transport-failure',
+              medium: 'server',
+              failure: observation.result.failure,
+            };
+          }
+          continue;
+        }
         if (observation.result.status === 'transport-failure') {
           return {
             status: 'transport-failure',
@@ -255,18 +306,26 @@ export function createReplicatedVaultDataHome(
       }
 
       let wroteAny = false;
-      for (const observation of frozen.observations) {
-        const before = observation.result;
-        if (before.status === 'ok' && equalBytes(before.envelope, envelope)) continue;
+      for (const medium of frozen.media.mediaSet) {
+        const mediumObservations = frozen.observations.filter(
+          (observation) => observation.medium === medium && observation.synthetic == null,
+        );
+        const before = mediumObservations[0]!.result;
+        if (
+          !(medium === 'drive' && frozen.driveReplicaCycle != null) &&
+          before.status === 'ok' &&
+          equalBytes(before.envelope, envelope)
+        ) {
+          continue;
+        }
         const expected = before.status === 'ok' ? before.info.version : null;
-        const result = await homes[observation.medium].write(envelope, {
-          ifVersion: expected,
-        });
+        const result =
+          medium === 'drive' && frozen.driveReplicaCycle != null
+            ? await frozen.driveReplicaCycle.converge(envelope)
+            : await homes[medium].write(envelope, { ifVersion: expected });
         if (result.status === 'conflict') {
           cycle = null;
-          return replicationPending(
-            `The ${observation.medium} vault replica changed during replication.`,
-          );
+          return replicationPending(`The ${medium} vault replica changed during replication.`);
         }
         if (result.status === 'corrupt') {
           cycle = null;
@@ -330,11 +389,7 @@ export function createReplicaReconcileCoordinator(
   async function reconcileFreshCycle(): Promise<VaultSyncState> {
     await primary.beginReconcileCycle();
     let next = await engine.reconnect();
-    while (
-      next.status !== 'unresolved' &&
-      next.status !== 'locked' &&
-      primary.advanceReplicaObservation()
-    ) {
+    while (next.status !== 'unresolved' && primary.advanceReplicaObservation()) {
       next = await engine.reconnect();
     }
     return next;

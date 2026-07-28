@@ -7,7 +7,18 @@ import type {
 
 export type DriveConnectionActionResult =
   | { status: 'authorization-required'; authorization: DriveAuthorizationState }
-  | VaultMediaSwitchResult;
+  | (VaultMediaSwitchResult & {
+      /**
+       * The durable media transition committed, but the follow-up coordinator
+       * pass still needs attention. This must never be collapsed into a failed
+       * switch: callers need the committed media state (and any Drive leftover)
+       * so they can refresh and report the truth.
+       */
+      synchronization?: {
+        status: 'pending';
+        cause: unknown;
+      };
+    });
 
 export interface DriveConnectionController {
   readonly authorization: DriveAuthorizationState;
@@ -55,9 +66,23 @@ export function createDriveConnectionController(
     await options.ready?.();
     const result = await operation();
     if (result.status === 'ok' || result.status === 'noop') {
-      await options.resumeSync?.();
+      return resumeCommitted(result);
     }
     return result;
+  }
+
+  async function resumeCommitted(
+    result: Extract<VaultMediaSwitchResult, { status: 'ok' | 'noop' | 'drive-leftover' }>,
+  ): Promise<DriveConnectionActionResult> {
+    try {
+      await options.resumeSync?.();
+      return result;
+    } catch (cause) {
+      return {
+        ...result,
+        synchronization: { status: 'pending', cause },
+      };
+    }
   }
 
   return {
@@ -86,7 +111,7 @@ export function createDriveConnectionController(
         result.status === 'noop' ||
         result.status === 'drive-leftover'
       ) {
-        await options.resumeSync?.();
+        return resumeCommitted(result);
       }
       return result;
     },

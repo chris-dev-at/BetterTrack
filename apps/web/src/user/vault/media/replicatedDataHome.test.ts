@@ -27,7 +27,7 @@ import {
 import { createMemoryVaultQuarantineStore } from '../quarantine';
 import { createVaultSyncEngine } from '../sync';
 import fixture from '../vectors.fixture.json';
-import type { DriveDataHome, DriveDeleteResult } from '../drive';
+import type { DriveDataHome, DriveDeleteResult, DriveReplicaCycle } from '../drive';
 import {
   createReplicaReconcileCoordinator,
   createReplicatedVaultDataHome,
@@ -111,10 +111,52 @@ class MemoryDrive extends MemoryRemote implements DriveDataHome {
     super('drive', envelope);
   }
 
+  async observeReplicas(): Promise<DriveReplicaCycle> {
+    return {
+      observations: [await this.read()],
+      async converge() {
+        throw new Error('The single-file test Drive cannot converge duplicates.');
+      },
+    };
+  }
+
   async delete(): Promise<DriveDeleteResult> {
     const deleted = this.envelope != null;
     this.envelope = null;
     return { status: 'ok', deleted };
+  }
+}
+
+class DuplicateMemoryDrive extends MemoryDrive {
+  convergeCalls = 0;
+  private replicas: DataHomeReadResult[];
+
+  constructor(observations: DataHomeReadResult[], fallback: Uint8Array) {
+    super(fallback);
+    this.replicas = observations;
+  }
+
+  get replicaCount(): number {
+    return this.replicas.length;
+  }
+
+  override async observeReplicas(): Promise<DriveReplicaCycle> {
+    const observations = this.replicas.map(cloneObservation);
+    return {
+      observations,
+      converge: async (envelope) => {
+        this.convergeCalls += 1;
+        this.envelope = envelope.slice();
+        const result: DataHomeReadResult = {
+          status: 'ok',
+          medium: 'drive',
+          envelope: envelope.slice(),
+          info: info('drive', envelope),
+        };
+        this.replicas = [result];
+        return { status: 'ok', medium: 'drive', info: info('drive', envelope) };
+      },
+    };
   }
 }
 
@@ -303,6 +345,53 @@ describe('replicated DataHome through the PD5 coordinator', () => {
     expect(version(setup.server.envelope!)).toBe(4);
   });
 
+  it.each(['corrupt', 'authentication-failure'] as const)(
+    'authenticates every Drive duplicate before converging a %s metadata winner',
+    async (failure) => {
+      const valid = await encrypted(document('018f0000-0000-7000-8000-0000000000a1'), 1, 0xa1);
+      const badEnvelope = valid.slice();
+      const lastIndex = badEnvelope.length - 1;
+      badEnvelope[lastIndex] = (badEnvelope[lastIndex] ?? 0) ^ 0xff;
+      const invalid: DataHomeReadResult =
+        failure === 'corrupt'
+          ? {
+              status: 'corrupt',
+              medium: 'drive',
+              envelope: new Uint8Array([1, 2, 3]),
+              version: 2,
+              updatedAt: '2026-07-28T11:00:00.000Z',
+              reason: 'corrupt-bytes',
+              message: 'metadata winner is corrupt',
+            }
+          : {
+              status: 'ok',
+              medium: 'drive',
+              envelope: badEnvelope,
+              info: info('drive', badEnvelope),
+            };
+      const readable: DataHomeReadResult = {
+        status: 'ok',
+        medium: 'drive',
+        envelope: valid.slice(),
+        info: info('drive', valid),
+      };
+      const drive = new DuplicateMemoryDrive([invalid, readable], valid);
+      const setup = coordinator(valid, valid, ['drive'], drive);
+
+      const state = await setup.coordinator.reconnect();
+
+      expect(state).toMatchObject({
+        status: 'synced',
+        active: { document: { entities: { portfolio: [{ id: expect.any(String) }] } } },
+        pending: null,
+      });
+      expect(setup.coordinator.state).toEqual(state);
+      expect(drive.convergeCalls).toBe(1);
+      expect(drive.replicaCount).toBe(1);
+      expect(drive.envelope).toEqual(valid);
+    },
+  );
+
   it.each(['absent', 'transport-failure', 'corrupt'] as const)(
     'does not let a healthy final Drive observation mask a server-first %s',
     async (failure) => {
@@ -369,9 +458,10 @@ function coordinator(
   serverEnvelope: Uint8Array,
   driveEnvelope: Uint8Array,
   mediaSet: ['server'] | ['drive'] | ['server', 'drive'] = ['server', 'drive'],
+  driveOverride?: MemoryDrive,
 ) {
   const server = new MemoryRemote('server', serverEnvelope);
-  const drive = new MemoryDrive(driveEnvelope);
+  const drive = driveOverride ?? new MemoryDrive(driveEnvelope);
   const media: ParanoidMediaStateResponse = {
     privacyMode: 'paranoid',
     mediaState: {
@@ -478,6 +568,20 @@ function info(medium: VaultMedium, envelope: Uint8Array) {
     sizeBytes: envelope.byteLength,
     updatedAt: inspected.envelope.header.writtenAt,
   };
+}
+
+function cloneObservation(result: DataHomeReadResult): DataHomeReadResult {
+  if (result.status === 'ok') {
+    return {
+      ...result,
+      envelope: result.envelope.slice(),
+      info: { ...result.info },
+    };
+  }
+  if (result.status === 'corrupt') {
+    return { ...result, envelope: result.envelope?.slice() };
+  }
+  return result;
 }
 
 function writeIdSequence() {

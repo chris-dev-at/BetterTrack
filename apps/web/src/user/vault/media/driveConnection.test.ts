@@ -19,9 +19,11 @@ const media: ParanoidVaultMediaState = {
 function setup({
   authorized = false,
   leftover = false,
+  resumeFailure = null,
 }: {
   authorized?: boolean;
   leftover?: boolean;
+  resumeFailure?: Error | null;
 } = {}) {
   let state: GoogleDriveTokenClient['state'] = authorized ? 'connected' : 'token-expired';
   const clear = vi.fn(() => {
@@ -72,7 +74,9 @@ function setup({
     ),
   };
   const ready = vi.fn(async () => undefined);
-  const resumeSync = vi.fn(async () => undefined);
+  const resumeSync = vi.fn(async () => {
+    if (resumeFailure) throw resumeFailure;
+  });
   const controller = createDriveConnectionController({ tokens, switcher, ready, resumeSync });
   return { controller, tokens, switcher, ready, resumeSync, clear };
 }
@@ -118,5 +122,36 @@ describe('Drive connection controller', () => {
     expect(setupResult.switcher.remove).toHaveBeenCalledWith('server');
     expect(setupResult.switcher.add).toHaveBeenCalledWith('server');
     expect(setupResult.resumeSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves a committed switch when its follow-up synchronization fails', async () => {
+    const resumeFailure = new Error('reconnect failed');
+    const setupResult = setup({ authorized: true, resumeFailure });
+
+    await expect(setupResult.controller.useDriveOnly()).resolves.toMatchObject({
+      status: 'ok',
+      media,
+      driveLeftover: false,
+      synchronization: { status: 'pending', cause: resumeFailure },
+    });
+
+    expect(setupResult.switcher.remove).toHaveBeenCalledWith('server');
+    expect(setupResult.resumeSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not suppress a committed Drive-leftover result when resuming fails', async () => {
+    const setupResult = setup({
+      authorized: true,
+      leftover: true,
+      resumeFailure: new Error('reconnect failed'),
+    });
+
+    await expect(setupResult.controller.disconnect()).resolves.toMatchObject({
+      status: 'drive-leftover',
+      driveLeftover: true,
+      synchronization: { status: 'pending' },
+    });
+
+    expect(setupResult.clear).not.toHaveBeenCalled();
   });
 });

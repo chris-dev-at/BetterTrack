@@ -369,8 +369,17 @@ function DriveVaultSection({
             ? await activeConnection.useDriveOnly()
             : await activeConnection.addServerCopy();
     if (!actionFailed(result)) {
+      const synchronizationPending =
+        result.status !== 'authorization-required' && result.synchronization?.status === 'pending';
       if (result.status === 'drive-leftover') {
-        setMessage({ tone: 'info', key: 'settings.connections.drive.leftover' });
+        setMessage({
+          tone: 'info',
+          key: synchronizationPending
+            ? 'settings.connections.drive.leftoverSyncPending'
+            : 'settings.connections.drive.leftover',
+        });
+      } else if (synchronizationPending) {
+        setMessage({ tone: 'info', key: 'settings.connections.drive.syncPending' });
       } else {
         setMessage({
           tone: 'success',

@@ -158,6 +158,71 @@ class ConcurrentCreateDrive {
   }
 }
 
+class CorruptWinnerDrive {
+  readonly events: string[] = [];
+  private readonly files = new Map<
+    string,
+    { metadata: ReturnType<typeof metadata>; envelope: Uint8Array }
+  >([
+    [
+      'corrupt-winner',
+      {
+        metadata: metadata({
+          id: 'corrupt-winner',
+          size: '3',
+          modifiedTime: '2026-07-27T12:00:00.000Z',
+          headRevisionId: 'corrupt-revision',
+          appProperties: { vaultVersion: '2', formatVersion: '1' },
+        }),
+        envelope: new Uint8Array([1, 2, 3]),
+      },
+    ],
+    [
+      'valid-loser',
+      {
+        metadata: metadata({
+          id: 'valid-loser',
+          size: String(envelope.byteLength),
+          modifiedTime: '2026-07-27T11:00:00.000Z',
+          headRevisionId: 'valid-revision',
+        }),
+        envelope: envelope.slice(),
+      },
+    ],
+  ]);
+
+  get fileIds(): string[] {
+    return [...this.files.keys()].sort();
+  }
+
+  readonly fetch: typeof globalThis.fetch = vi.fn((input, init) =>
+    this.handle(String(input), init),
+  );
+
+  private async handle(url: string, init?: RequestInit): Promise<Response> {
+    const method = init?.method ?? 'GET';
+    if (method === 'GET' && url.includes('/drive/v3/files?')) {
+      this.events.push('list');
+      return json({ files: [...this.files.values()].map((file) => file.metadata) });
+    }
+
+    const id = decodeURIComponent(url.match(/\/drive\/v3\/files\/([^?]+)/)?.[1] ?? '');
+    if (method === 'DELETE') {
+      this.events.push(`delete:${id}`);
+      const deleted = this.files.delete(id);
+      return new Response(null, { status: deleted ? 204 : 404 });
+    }
+    const file = this.files.get(id);
+    if (!file) return new Response(null, { status: 404 });
+    if (url.includes('alt=media')) {
+      this.events.push(`download:${id}`);
+      return new Response(file.envelope.slice(), { status: 200 });
+    }
+    this.events.push(`metadata:${id}`);
+    return json(file.metadata);
+  }
+}
+
 class ConcurrentUpdateDrive {
   private current = {
     metadata: metadata(),
@@ -388,7 +453,7 @@ describe('Drive appdata DataHome', () => {
     if (readB.status === 'ok') expect(readB.envelope).toEqual(concurrentCreateEnvelope);
   });
 
-  it('reconciles two concurrent creates to one file and returns merge conflicts', async () => {
+  it('preserves concurrent creates until the coordinator publishes convergence', async () => {
     const drive = new ConcurrentCreateDrive();
     const homeA = createTestDriveDataHome({
       tokens: tokenSource(),
@@ -406,7 +471,41 @@ describe('Drive appdata DataHome', () => {
 
     expect(createdA).toEqual({ status: 'conflict', medium: 'drive', currentVersion: 1 });
     expect(createdB).toEqual({ status: 'conflict', medium: 'drive', currentVersion: 1 });
+    expect(drive.fileCount).toBe(2);
+
+    const replicas = await homeA.observeReplicas!();
+    expect(replicas.observations).toHaveLength(2);
+    await expect(replicas.converge(envelope)).resolves.toMatchObject({
+      status: 'ok',
+      info: { version: 1 },
+    });
     expect(drive.fileCount).toBe(1);
+  });
+
+  it('keeps a valid duplicate and its revisions until corrupt-winner convergence is proven', async () => {
+    const drive = new CorruptWinnerDrive();
+    const home = createTestDriveDataHome({
+      tokens: tokenSource(),
+      fetch: drive.fetch,
+    });
+
+    const replicas = await home.observeReplicas!();
+
+    expect(replicas.observations.map((candidate) => candidate.status)).toEqual(['corrupt', 'ok']);
+    expect(drive.fileIds).toEqual(['corrupt-winner', 'valid-loser']);
+    expect(drive.events).not.toContain('delete:valid-loser');
+    expect(drive.events).not.toContain('delete:corrupt-winner');
+
+    await expect(replicas.converge(envelope)).resolves.toMatchObject({
+      status: 'ok',
+      info: { version: 1 },
+    });
+
+    expect(drive.fileIds).toEqual(['valid-loser']);
+    expect(drive.events.indexOf('delete:corrupt-winner')).toBeGreaterThan(
+      drive.events.indexOf('download:valid-loser'),
+    );
+    expect(drive.events).not.toContain('delete:valid-loser');
   });
 
   it('post-verifies concurrent updates and never acknowledges the overwritten writer', async () => {

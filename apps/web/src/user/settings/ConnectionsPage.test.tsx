@@ -276,6 +276,39 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
     expect(await screen.findByText('Google Drive app-data storage connected.')).toBeInTheDocument();
   });
 
+  test('refreshes a committed storage choice when follow-up synchronization needs attention', async () => {
+    vi.mocked(getParanoidMediaState)
+      .mockResolvedValueOnce(SERVER_MEDIA)
+      .mockResolvedValue(BOTH_MEDIA);
+    const drive = controller();
+    vi.mocked(drive.connect).mockResolvedValue({
+      status: 'ok',
+      media: BOTH_STATE,
+      driveLeftover: false,
+      synchronization: { status: 'pending', cause: new Error('reconnect failed') },
+    });
+    const user = userEvent.setup();
+    renderPage('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Connect Drive' }));
+
+    expect(
+      await screen.findByText(
+        'The storage choice was saved, but synchronization still needs attention. BetterTrack will retry from the encrypted pending copy.',
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(getParanoidMediaState).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Connected')).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        'The storage change was cancelled because a verified copy could not be completed.',
+      ),
+    ).not.toBeInTheDocument();
+  });
+
   test('surfaces token expiry as an explicit Google sign-in action', async () => {
     vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
     const drive = controller('token-expired');
