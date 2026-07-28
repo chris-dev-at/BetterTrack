@@ -270,257 +270,248 @@ function normalRowsCanReplay(
 const NORMAL_WRITE_BATCH_MAX_TRANSACTIONS = 500;
 
 /**
- * A normal CREATE is a contiguous UUIDv7 write span for one portfolio. Every
- * relevant row before the span has already been persisted and is therefore
- * replayed at repository Number(numeric) precision; only rows in the current
- * request use their favorable public-number preimage.
+ * Snapshot-only normal-write reachability has an intentionally bounded proof.
+ *
+ * The strict-v1 payload does not retain CREATE batch identities or trustworthy
+ * PATCH provenance, so this validator never searches for either. Instead it
+ * makes one fixed legacy-cutoff choice, proves at most one pre-cutoff PATCH per
+ * portfolio/asset, and proves every storage-rounding CREATE from the
+ * zero-balance epoch that directly contains it. Each row is visited by a fixed
+ * number of streaming passes; witness epochs may contain no more than the
+ * public 500-row CREATE limit. A document outside that direct proof is rejected
+ * before restore writes rather than guessed at or explored with a span search.
  */
-function normalCreateOperationCanReplay(
-  groupsByTransactionId: ReadonlyMap<string, readonly QuantityReplayRow[]>,
-  writeHistory: readonly QuantityReplayRow[],
-  start: number,
-  end: number,
-): boolean {
-  const touchedGroups = new Set<readonly QuantityReplayRow[]>();
-  for (let writeOrder = start; writeOrder <= end; writeOrder += 1) {
-    const group = groupsByTransactionId.get(writeHistory[writeOrder]!.transaction.id);
-    if (group) touchedGroups.add(group);
-  }
-
-  for (const group of touchedGroups) {
-    // Later normal calls do not exist yet. A backdated row in this request is
-    // still sorted with the already-persisted rows by normalRowsCanReplay.
-    const visibleRows = group.filter((row) => row.writeOrder <= end);
-    if (
-      !normalRowsCanReplay(visibleRows, (row) => row.writeOrder >= start && row.writeOrder <= end)
-    ) {
-      return false;
-    }
-  }
-  return true;
+interface NormalCreateWitness {
+  /** Inclusive UUIDv7 write positions of one direct CREATE witness. */
+  readonly start: number;
+  readonly end: number;
+  /** The persisted scale-8 sell that needs this witness. */
+  readonly sell: QuantityReplayRow;
 }
 
-interface NormalCreatePartition {
-  /** A legal CREATE partition can reach this completed-write boundary. */
-  readonly reachableBoundaries: readonly boolean[];
-  /** This boundary can still finish through a legal CREATE partition. */
-  readonly reachesDocumentEnd: readonly boolean[];
+function quantityReachabilityError(row: QuantityReplayRow, reason: string): Error {
+  return new Error(
+    reason +
+      ' at transaction[' +
+      row.transaction.id +
+      '].quantity=' +
+      JSON.stringify(row.transaction.data.quantity),
+  );
 }
 
-/**
- * Validate one shared CREATE partition for every persisted-insolvent group,
- * instead of independently finding a favorable window per group. Unaffected
- * rows still consume a position in the 500-row span. The state after any
- * reachable boundary is deterministic: every earlier row has been written and
- * read back, so one reachable boundary is enough regardless of the path that
- * reached it. Each transition is capped by the public contract.
- */
-function normalCreatePartition(
-  replayGroups: readonly (readonly QuantityReplayRow[])[],
-  writeHistory: readonly QuantityReplayRow[],
+function exactLegacyPrefixFailure(
+  groups: readonly (readonly QuantityReplayRow[])[],
   legacyCutoff: number,
-): NormalCreatePartition | null {
-  const reachableBoundaries = Array.from({ length: writeHistory.length + 1 }, () => false);
-  const transitions = Array.from({ length: writeHistory.length + 1 }, () => [] as number[]);
-  reachableBoundaries[legacyCutoff] = true;
-
-  if (legacyCutoff >= writeHistory.length) {
-    return {
-      reachableBoundaries,
-      reachesDocumentEnd: [...reachableBoundaries],
-    };
-  }
-
-  const groupsByTransactionId = new Map<string, readonly QuantityReplayRow[]>();
-  for (const group of replayGroups) {
-    for (const row of group) groupsByTransactionId.set(row.transaction.id, group);
-  }
-
-  for (let start = legacyCutoff; start < writeHistory.length; start += 1) {
-    if (!reachableBoundaries[start]) continue;
-    const portfolioId = writeHistory[start]!.transaction.data.portfolioId;
-    const maximumEnd = Math.min(
-      writeHistory.length - 1,
-      start + NORMAL_WRITE_BATCH_MAX_TRANSACTIONS - 1,
-    );
-    for (let end = start; end <= maximumEnd; end += 1) {
-      // The normal CREATE endpoint is portfolio-scoped; a different portfolio
-      // is a mandatory operation boundary even if UUIDv7 timestamps interleave.
-      if (writeHistory[end]!.transaction.data.portfolioId !== portfolioId) break;
-      if (normalCreateOperationCanReplay(groupsByTransactionId, writeHistory, start, end)) {
-        transitions[start]!.push(end + 1);
-        reachableBoundaries[end + 1] = true;
-      }
-    }
-  }
-
-  const reachesDocumentEnd = Array.from({ length: writeHistory.length + 1 }, () => false);
-  reachesDocumentEnd[writeHistory.length] = true;
-  for (let start = writeHistory.length - 1; start >= legacyCutoff; start -= 1) {
-    reachesDocumentEnd[start] = transitions[start]!.some((end) => reachesDocumentEnd[end]);
-  }
-
-  return reachesDocumentEnd[legacyCutoff] ? { reachableBoundaries, reachesDocumentEnd } : null;
-}
-
-/**
- * A revised strict-v1 row can only contribute one normal-mode PATCH input.
- * Its update must be checked at an actual completed CREATE boundary: rows from
- * later CREATE calls did not exist when updateTransaction ran and cannot make
- * that PATCH appear insolvent.
- */
-function normalRevisionCanReplayAtBoundary(
-  rows: readonly QuantityReplayRow[],
-  revision: QuantityReplayRow,
-  boundary: number,
-): boolean {
-  const visibleRows = rows.filter((row) => row.writeOrder < boundary);
-  return normalRowsCanReplay(visibleRows, (row) => row.transaction.id === revision.transaction.id);
-}
-
-/**
- * Prove the normal portion as a globally compatible CREATE partition, then
- * prove every inferred pre-transition revision as its own persisted PATCH.
- * Revisions never share favorable inputs with each other or with a CREATE.
- */
-function normalOperationsCanReplay(
-  replayGroups: readonly (readonly QuantityReplayRow[])[],
-  writeHistory: readonly QuantityReplayRow[],
-  legacyCutoff: number,
-): boolean {
-  const createPartition = normalCreatePartition(replayGroups, writeHistory, legacyCutoff);
-  if (!createPartition) return false;
-  for (const group of replayGroups) {
+): QuantityReplayRow | null {
+  for (const group of groups) {
+    let held = 0n;
     for (const row of group) {
-      if (row.writeOrder >= legacyCutoff || !row.revisionCandidate) continue;
-      let patchCanReplay = false;
-      for (let boundary = legacyCutoff; boundary <= writeHistory.length; boundary += 1) {
-        if (
-          !createPartition.reachableBoundaries[boundary] ||
-          !createPartition.reachesDocumentEnd[boundary]
-        ) {
+      if (row.writeOrder >= legacyCutoff || row.revisionCandidate) continue;
+      if (row.transaction.data.side === 'buy') {
+        held += row.quantity;
+        continue;
+      }
+      if (row.quantity > held && !row.transaction.data.allowUncovered) return row;
+      held = row.quantity > held ? 0n : held - row.quantity;
+    }
+  }
+  return null;
+}
+
+/**
+ * A strict-v1 revision has no prior value, so a direct snapshot proof accepts
+ * at most one legal quantity PATCH for one portfolio/asset prefix. The final
+ * row is replayed as the PATCH input while every other pre-cutoff row is the
+ * repository-number state that such a PATCH would have read.
+ */
+function validatePrefixRevisionWitnesses(
+  groups: readonly (readonly QuantityReplayRow[])[],
+  legacyCutoff: number,
+): void {
+  for (const group of groups) {
+    const revisions = group.filter((row) => row.writeOrder < legacyCutoff && row.revisionCandidate);
+    if (revisions.length > 1) {
+      throw quantityReachabilityError(
+        revisions[1]!,
+        'transaction quantity reachability cannot establish multiple pre-transition PATCHes',
+      );
+    }
+    const [revision] = revisions;
+    if (!revision) continue;
+    const prefix = group.filter((row) => row.writeOrder < legacyCutoff);
+    if (!normalRowsCanReplay(prefix, (row) => row.transaction.id === revision.transaction.id)) {
+      throw quantityReachabilityError(
+        revision,
+        'transaction quantity cannot replay as a pre-transition normal PATCH',
+      );
+    }
+  }
+}
+
+function updateRawEpoch(
+  row: QuantityReplayRow,
+  held: number,
+): { held: number; canReplay: boolean } {
+  const quantity = row.normalInputQuantity;
+  if (quantity === null) return { held, canReplay: false };
+  if (row.transaction.data.side === 'buy') return { held: held + quantity, canReplay: true };
+  if (quantity > held + QTY_EPSILON) {
+    return { held: 0, canReplay: row.transaction.data.allowUncovered };
+  }
+  const nextHeld = held - quantity;
+  return { held: Math.abs(nextHeld) <= QTY_EPSILON ? 0 : nextHeld, canReplay: true };
+}
+
+/**
+ * Stream each chronological asset group once. A one-quantum persisted sell can
+ * be admitted only when the zero-balance epoch that contains it itself replays
+ * from public inputs. That gives a direct bounded CREATE witness without
+ * inspecting later same-asset history or searching alternative spans.
+ */
+function collectNormalCreateWitnesses(
+  groups: readonly (readonly QuantityReplayRow[])[],
+  storageRoundingSellIds: ReadonlySet<string>,
+  legacyCutoff: number,
+): readonly NormalCreateWitness[] {
+  const witnesses: NormalCreateWitness[] = [];
+
+  for (const group of groups) {
+    let readbackHeld = 0;
+    let rawHeld = 0;
+    let rawEpochCanReplay = true;
+    let epochStart = -1;
+    let epochEnd = -1;
+
+    const startEpoch = (row: QuantityReplayRow): void => {
+      if (epochStart !== -1) return;
+      epochStart = row.writeOrder;
+      epochEnd = row.writeOrder;
+      rawHeld = 0;
+      rawEpochCanReplay = true;
+    };
+    const extendEpoch = (row: QuantityReplayRow): void => {
+      startEpoch(row);
+      epochStart = Math.min(epochStart, row.writeOrder);
+      epochEnd = Math.max(epochEnd, row.writeOrder);
+      const raw = updateRawEpoch(row, rawHeld);
+      rawHeld = raw.held;
+      rawEpochCanReplay &&= raw.canReplay;
+    };
+    const resetEpoch = (): void => {
+      rawHeld = 0;
+      rawEpochCanReplay = true;
+      epochStart = -1;
+      epochEnd = -1;
+    };
+
+    for (const row of group) {
+      extendEpoch(row);
+      const quantity = row.readbackQuantity;
+      if (row.transaction.data.side === 'buy') {
+        readbackHeld += quantity;
+        continue;
+      }
+
+      if (quantity > readbackHeld + QTY_EPSILON) {
+        if (row.transaction.data.allowUncovered) {
+          readbackHeld = 0;
+          resetEpoch();
           continue;
         }
-        if (normalRevisionCanReplayAtBoundary(group, row, boundary)) {
-          patchCanReplay = true;
-          break;
+        if (!storageRoundingSellIds.has(row.transaction.id)) {
+          throw quantityReachabilityError(
+            row,
+            'transaction quantity cannot replay from repository readback',
+          );
         }
+        if (!rawEpochCanReplay || epochStart < legacyCutoff) {
+          throw quantityReachabilityError(
+            row,
+            'transaction quantity reachability cannot establish a bounded normal CREATE witness',
+          );
+        }
+        witnesses.push({ start: epochStart, end: epochEnd, sell: row });
+        readbackHeld = 0;
+        resetEpoch();
+        continue;
       }
-      if (!patchCanReplay) {
-        return false;
+
+      readbackHeld -= quantity;
+      if (Math.abs(readbackHeld) <= QTY_EPSILON) {
+        readbackHeld = 0;
+        resetEpoch();
       }
     }
   }
-  return true;
-}
 
-interface ExactLegacyReplaySummary {
-  /** Net quantity delta when the sequence can run from its required opening balance. */
-  delta: bigint;
-  /** A clamp introduced by an allowed uncovered sell; null means no clamp. */
-  floor: bigint | null;
-  /** Minimum opening balance that keeps every ordinary sell covered. */
-  required: bigint;
-}
-
-const EXACT_LEGACY_IDENTITY: ExactLegacyReplaySummary = {
-  delta: 0n,
-  floor: null,
-  required: 0n,
-};
-
-function maxBigint(left: bigint, right: bigint): bigint {
-  return left > right ? left : right;
+  return witnesses;
 }
 
 /**
- * Compose two chronological exact-quantity sequences. Each sequence maps an
- * opening holding `h` to `max(h + delta, floor)` while requiring `h >=
- * required`; that makes a point activation in a chronological group O(log n).
+ * Verify the direct witnesses globally. Overlapping witnesses must be one
+ * CREATE operation, so their union still has to fit the public 500-row,
+ * single-portfolio request. Disjoint witnesses can be independent calls.
  */
-function composeExactLegacyReplay(
-  left: ExactLegacyReplaySummary,
-  right: ExactLegacyReplaySummary,
-): ExactLegacyReplaySummary {
-  const requiredForRight =
-    left.floor !== null && left.floor >= right.required
-      ? 0n
-      : maxBigint(0n, right.required - left.delta);
-  const shiftedLeftFloor = left.floor === null ? null : left.floor + right.delta;
-  const floor =
-    shiftedLeftFloor === null
-      ? right.floor
-      : right.floor === null
-        ? shiftedLeftFloor
-        : maxBigint(shiftedLeftFloor, right.floor);
-  return {
-    delta: left.delta + right.delta,
-    floor,
-    required: maxBigint(left.required, requiredForRight),
-  };
-}
-
-function exactLegacyReplaySummary(row: QuantityReplayRow): ExactLegacyReplaySummary {
-  if (row.transaction.data.side === 'buy') {
-    return { delta: row.quantity, floor: null, required: 0n };
-  }
-  if (row.transaction.data.allowUncovered) {
-    return { delta: -row.quantity, floor: 0n, required: 0n };
-  }
-  return { delta: -row.quantity, floor: null, required: row.quantity };
-}
-
-/** Incremental exact-prefix solvency for one chronological portfolio/asset group. */
-class ExactLegacySolvencyTree {
-  private readonly leafCount: number;
-  private readonly nodes: ExactLegacyReplaySummary[];
-
-  constructor(rowCount: number) {
-    let leafCount = 1;
-    while (leafCount < rowCount) leafCount *= 2;
-    this.leafCount = leafCount;
-    this.nodes = Array.from({ length: leafCount * 2 }, () => EXACT_LEGACY_IDENTITY);
-  }
-
-  activate(index: number, row: QuantityReplayRow): void {
-    let node = this.leafCount + index;
-    this.nodes[node] = exactLegacyReplaySummary(row);
-    while (node > 1) {
-      node = Math.floor(node / 2);
-      this.nodes[node] = composeExactLegacyReplay(this.nodes[node * 2]!, this.nodes[node * 2 + 1]!);
-    }
-  }
-
-  isSolvent(): boolean {
-    return this.nodes[1]!.required === 0n;
-  }
-}
-
-function maximumNormalReplayCutoff(
-  groups: readonly (readonly QuantityReplayRow[])[],
+function validateNormalCreateWitnesses(
+  witnesses: readonly NormalCreateWitness[],
   writeHistory: readonly QuantityReplayRow[],
-  firstPossibleLegacyCutoff: number,
-  rowCount: number,
-): number | null {
-  if (!normalOperationsCanReplay(groups, writeHistory, firstPossibleLegacyCutoff)) {
-    return null;
+  legacyCutoff: number,
+): void {
+  const portfolioRunEnds = Array.from({ length: writeHistory.length }, () => 0);
+  for (let start = 0; start < writeHistory.length; ) {
+    const portfolioId = writeHistory[start]!.transaction.data.portfolioId;
+    let end = start + 1;
+    while (
+      end < writeHistory.length &&
+      writeHistory[end]!.transaction.data.portfolioId === portfolioId
+    ) {
+      end += 1;
+    }
+    for (let index = start; index < end; index += 1) portfolioRunEnds[index] = end - 1;
+    start = end;
   }
 
-  // Moving the cutoff later can only remove rows from the normal CREATE
-  // partition. A revised row that crosses it remains available as the
-  // strictly narrower singleton PATCH candidate, so legal-operation witness
-  // validity is a contiguous cutoff range and binary search remains sound.
-  let minimum = firstPossibleLegacyCutoff;
-  let maximum = rowCount;
-  while (minimum < maximum) {
-    const candidate = minimum + Math.ceil((maximum - minimum) / 2);
-    if (normalOperationsCanReplay(groups, writeHistory, candidate)) {
-      minimum = candidate;
-    } else {
-      maximum = candidate - 1;
+  const witnessesByStart = new Map<number, NormalCreateWitness[]>();
+  for (const witness of witnesses) {
+    if (
+      witness.start < legacyCutoff ||
+      witness.end - witness.start + 1 > NORMAL_WRITE_BATCH_MAX_TRANSACTIONS ||
+      portfolioRunEnds[witness.start]! < witness.end
+    ) {
+      throw quantityReachabilityError(
+        witness.sell,
+        'transaction quantity reachability cannot establish a bounded normal CREATE witness',
+      );
+    }
+    const atStart = witnessesByStart.get(witness.start) ?? [];
+    atStart.push(witness);
+    witnessesByStart.set(witness.start, atStart);
+  }
+
+  let activeStart = -1;
+  let activeEnd = -1;
+  let activeSell: QuantityReplayRow | null = null;
+  for (let start = 0; start < writeHistory.length; start += 1) {
+    if (start > activeEnd) {
+      activeStart = -1;
+      activeSell = null;
+    }
+    for (const witness of witnessesByStart.get(start) ?? []) {
+      if (activeStart === -1) {
+        activeStart = witness.start;
+        activeEnd = witness.end;
+        activeSell = witness.sell;
+        continue;
+      }
+      activeEnd = Math.max(activeEnd, witness.end);
+      if (activeEnd - activeStart + 1 > NORMAL_WRITE_BATCH_MAX_TRANSACTIONS) {
+        throw quantityReachabilityError(
+          activeSell ?? witness.sell,
+          'transaction quantity reachability cannot establish compatible normal CREATE witnesses',
+        );
+      }
     }
   }
-  return minimum;
 }
 
 /**
@@ -550,39 +541,12 @@ function oneQuantumStorageRoundingSellIds(
   return sellIds;
 }
 
-/**
- * Rehydration must not reach tax replay with a persisted quantity sequence
- * that the unchanged repository-number replay cannot reduce. The existing
- * one-quantum exception is the only tolerated storage mismatch; broader
- * normal-write candidates are rejected during preflight instead of after
- * restore rows have started writing.
- */
-function repositoryReadbackCanReplay(
-  rows: readonly QuantityReplayRow[],
-  storageRoundingSellIds: ReadonlySet<string>,
-): boolean {
-  let held = 0;
-  for (const row of rows) {
-    const quantity = row.readbackQuantity;
-    if (row.transaction.data.side === 'buy') {
-      held += quantity;
-      continue;
-    }
-    if (quantity > held + QTY_EPSILON) {
-      if (!row.transaction.data.allowUncovered && !storageRoundingSellIds.has(row.transaction.id)) {
-        return false;
-      }
-      held = 0;
-      continue;
-    }
-    held -= quantity;
-    if (Math.abs(held) <= QTY_EPSILON) held = 0;
-  }
-  return true;
-}
-
 function isEngineTaxedTransaction(transaction: EntityOf<'transaction'>): boolean {
   return transaction.data.taxMode === 'country_specific' || transaction.data.taxMode === 'custom';
+}
+
+function portfolioAssetKey(transaction: EntityOf<'transaction'>): string {
+  return `${transaction.data.portfolioId}\u0000${transaction.data.assetId}`;
 }
 
 /**
@@ -600,8 +564,8 @@ function isEngineTaxedTransaction(transaction: EntityOf<'transaction'>): boolean
 function canBeNormalQuantityPatch(
   transaction: EntityOf<'transaction'>,
   normalInputQuantity: number | null,
-  transactions: readonly EntityOf<'transaction'>[],
   cashLinkedTransactionIds: ReadonlySet<string>,
+  earliestEngineTaxedSellIds: ReadonlyMap<string, string>,
 ): boolean {
   if (transaction.rev === 0 || normalInputQuantity === null) return false;
   if (
@@ -611,25 +575,17 @@ function canBeNormalQuantityPatch(
   ) {
     return false;
   }
-  return !transactions.some(
-    (sibling) =>
-      sibling.id !== transaction.id &&
-      sibling.id < transaction.id &&
-      sibling.data.portfolioId === transaction.data.portfolioId &&
-      sibling.data.assetId === transaction.data.assetId &&
-      sibling.data.side === 'sell' &&
-      isEngineTaxedTransaction(sibling),
-  );
+  const earliestEngineTaxedSellId = earliestEngineTaxedSellIds.get(portfolioAssetKey(transaction));
+  return earliestEngineTaxedSellId === undefined || earliestEngineTaxedSellId >= transaction.id;
 }
 
 /**
  * A strict-v1 document may start with an exact persisted history that predates
  * public-number writes. Its membership follows one immutable UUIDv7 creation
  * cutoff for the whole document, not per asset and not `executedAt`: normal
- * writes may be deliberately backdated. Every normal CREATE after the cutoff
- * must fit one globally coherent 500-row operation partition, while a legal
- * pre-cutoff PATCH remains a singleton operation that is persisted before the
- * next one is considered.
+ * writes may be deliberately backdated. The cutoff is the first point after
+ * every row without a public-number preimage. We do not search later cutoffs:
+ * an ambiguous snapshot fails closed under the bounded proof above.
  */
 function storageRoundingSellIdsFor(
   transactions: readonly EntityOf<'transaction'>[],
@@ -637,6 +593,15 @@ function storageRoundingSellIdsFor(
   testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity,
 ): ReadonlySet<string> {
   const writeHistory = [...transactions].sort((a, b) => a.id.localeCompare(b.id));
+  const earliestEngineTaxedSellIds = new Map<string, string>();
+  for (const transaction of writeHistory) {
+    if (transaction.data.side !== 'sell' || !isEngineTaxedTransaction(transaction)) continue;
+    const key = portfolioAssetKey(transaction);
+    const current = earliestEngineTaxedSellIds.get(key);
+    if (current === undefined || transaction.id < current) {
+      earliestEngineTaxedSellIds.set(key, transaction.id);
+    }
+  }
   const rows = writeHistory.map((transaction, writeOrder): QuantityReplayRow => {
     const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
     const normalInputQuantity = quantityNumberPreimage(
@@ -652,8 +617,8 @@ function storageRoundingSellIdsFor(
       revisionCandidate: canBeNormalQuantityPatch(
         transaction,
         normalInputQuantity,
-        transactions,
         cashLinkedTransactionIds,
+        earliestEngineTaxedSellIds,
       ),
     };
   });
@@ -676,7 +641,7 @@ function storageRoundingSellIdsFor(
 
   const transactionsByPortfolioAsset = new Map<string, QuantityReplayRow[]>();
   for (const row of rows) {
-    const key = `${row.transaction.data.portfolioId}\u0000${row.transaction.data.assetId}`;
+    const key = portfolioAssetKey(row.transaction);
     const group = transactionsByPortfolioAsset.get(key) ?? [];
     group.push(row);
     transactionsByPortfolioAsset.set(key, group);
@@ -693,97 +658,29 @@ function storageRoundingSellIdsFor(
   if (persistedInsolventGroups.length === 0) return new Set();
 
   // A row without a public-number preimage can only live in the strict-v1
-  // prefix. Start at the first globally possible cutoff instead of trying
-  // prefixes known to be impossible.
-  const firstPossibleLegacyCutoff = rows.reduce(
+  // prefix. This direct proof deliberately does not search a later cutoff.
+  const legacyCutoff = rows.reduce(
     (cutoff, row) =>
       row.normalInputQuantity === null ? Math.max(cutoff, row.writeOrder + 1) : cutoff,
     0,
   );
+  const legacyFailure = exactLegacyPrefixFailure(replayGroups, legacyCutoff);
+  if (legacyFailure) {
+    throw quantityReachabilityError(
+      legacyFailure,
+      'transaction quantity cannot replay through the direct strict-v1 prefix',
+    );
+  }
+  validatePrefixRevisionWitnesses(replayGroups, legacyCutoff);
 
-  const maximumCutoff = maximumNormalReplayCutoff(
-    persistedInsolventGroups,
-    rows,
-    firstPossibleLegacyCutoff,
-    rows.length,
+  const storageRoundingSellIds = oneQuantumStorageRoundingSellIds(replayGroups);
+  const createWitnesses = collectNormalCreateWitnesses(
+    replayGroups,
+    storageRoundingSellIds,
+    legacyCutoff,
   );
-  if (maximumCutoff !== null) {
-    const trees = replayGroups.map((group) => new ExactLegacySolvencyTree(group.length));
-    const treeLocations = new Map<string, { tree: ExactLegacySolvencyTree; index: number }>();
-    for (let groupIndex = 0; groupIndex < replayGroups.length; groupIndex += 1) {
-      const group = replayGroups[groupIndex]!;
-      const tree = trees[groupIndex]!;
-      for (let index = 0; index < group.length; index += 1) {
-        treeLocations.set(group[index]!.transaction.id, { tree, index });
-      }
-    }
-
-    let insolventLegacyGroups = 0;
-    const activateLegacyRow = (row: QuantityReplayRow): void => {
-      // A bumped revision with a normal-number preimage can be the normal-mode
-      // PATCH of a pre-transition UUID. Its old exact quantity is intentionally
-      // not reconstructed from the final row, so only unchanged rows join the
-      // exact strict-v1 prefix.
-      if (row.revisionCandidate) return;
-      const location = treeLocations.get(row.transaction.id);
-      if (!location) throw new Error('missing transaction replay-tree location');
-      const wasSolvent = location.tree.isSolvent();
-      location.tree.activate(location.index, row);
-      const isSolvent = location.tree.isSolvent();
-      if (wasSolvent && !isSolvent) insolventLegacyGroups += 1;
-      if (!wasSolvent && isSolvent) insolventLegacyGroups -= 1;
-    };
-
-    for (let legacyCutoff = 1; legacyCutoff <= firstPossibleLegacyCutoff; legacyCutoff += 1) {
-      activateLegacyRow(rows[legacyCutoff - 1]!);
-    }
-    if (insolventLegacyGroups === 0) {
-      const storageRoundingSellIds = oneQuantumStorageRoundingSellIds(replayGroups);
-      if (
-        !replayGroups.every((group) => repositoryReadbackCanReplay(group, storageRoundingSellIds))
-      ) {
-        throw new Error('transaction quantity cannot replay from repository readback');
-      }
-      return storageRoundingSellIds;
-    }
-
-    for (
-      let legacyCutoff = firstPossibleLegacyCutoff + 1;
-      legacyCutoff <= maximumCutoff;
-      legacyCutoff += 1
-    ) {
-      activateLegacyRow(rows[legacyCutoff - 1]!);
-      if (insolventLegacyGroups === 0) {
-        const storageRoundingSellIds = oneQuantumStorageRoundingSellIds(replayGroups);
-        if (
-          !replayGroups.every((group) => repositoryReadbackCanReplay(group, storageRoundingSellIds))
-        ) {
-          throw new Error('transaction quantity cannot replay from repository readback');
-        }
-        return storageRoundingSellIds;
-      }
-    }
-  }
-
-  for (const group of replayGroups) {
-    let held = 0n;
-    for (const row of group) {
-      if (row.transaction.data.side === 'buy') {
-        held += row.quantity;
-        continue;
-      }
-      if (row.quantity > held && !row.transaction.data.allowUncovered) {
-        throw new Error(
-          'transaction would oversell its position at transaction[' +
-            row.transaction.id +
-            '].quantity=' +
-            JSON.stringify(row.transaction.data.quantity),
-        );
-      }
-      held = row.quantity > held ? 0n : held - row.quantity;
-    }
-  }
-  throw new Error('transaction quantity reachability could not be established');
+  validateNormalCreateWitnesses(createWitnesses, rows, legacyCutoff);
+  return storageRoundingSellIds;
 }
 
 function exactDecimal(value: string, label: string): ExactDecimal {

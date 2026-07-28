@@ -1425,6 +1425,50 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     ).toHaveLength(NORMAL_HISTORY_TRANSACTION_COUNT + 2);
   });
 
+  it('keeps a local rounding witness bounded with 2,047 later same-asset rows', async () => {
+    const arranged = await arrangeScaleEightRoundingBatch();
+    const pairRows = quantityEntities(arranged.document);
+    const latestPairId = [...pairRows].sort((left, right) => right.id.localeCompare(left.id))[0]
+      ?.id;
+    if (!latestPairId) throw new Error('expected the normal rounding pair');
+
+    // The persisted pair is produced through the public normal path above. A
+    // strict restore document can be arbitrarily long, so append a same-asset
+    // tail to exercise the bounded proof without letting it repeatedly revisit
+    // the pair's two-row CREATE witness.
+    const laterRows: StrictTransactionEntity[] = [];
+    let id = latestPairId;
+    for (let index = 0; index < NORMAL_HISTORY_TRANSACTION_COUNT; index += 1) {
+      id = nextUuidV7WriteId(id);
+      laterRows.push(
+        transactionEntity({
+          id,
+          portfolioId: arranged.portfolioId,
+          assetId: NORMAL_ASSET_ID,
+          side: 'buy',
+          quantity: '1.00000000',
+          executedAt: new Date(Date.parse('2026-07-23T10:02:00.000Z') + index).toISOString(),
+        }),
+      );
+    }
+    const document = strictDocument([...arranged.document.entities, ...laterRows]);
+    expect(quantityEntities(document)).toHaveLength(NORMAL_HISTORY_TRANSACTION_COUNT + 2);
+
+    await rehydrateReachableState(
+      arranged.harness,
+      arranged.userId,
+      document,
+      FIRST_REHYDRATION_ID,
+      'large same-asset history with a local rounding boundary',
+    );
+    expect(
+      await arranged.harness.db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.portfolioId, arranged.portfolioId)),
+    ).toHaveLength(NORMAL_HISTORY_TRANSACTION_COUNT + 2);
+  });
+
   it('negative control: a temporarily tightened quantity rule rejects in rehydration preflight with the persisted entity path and value', async () => {
     const arranged = await arrangeScaleEightRoundingBatch();
     const mutationTransaction = vi.spyOn(arranged.harness.db, 'transaction');
