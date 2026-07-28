@@ -16,7 +16,7 @@ import {
 } from '../engine/clientMoney.testSupport';
 import { createVaultMoneyEngine } from '../engine';
 import { encryptVaultDocument } from '../crypto';
-import type { DataHome } from '../dataHome';
+import type { DataHome, DataHomeWriteOptions, DataHomeWriteResult } from '../dataHome';
 import {
   createLocalDataHome,
   type LocalDataHomeStorage,
@@ -40,6 +40,7 @@ const PAUSED_ID = '018f0000-0000-7000-8000-000000000203';
 const NOT_DUE_ID = '018f0000-0000-7000-8000-000000000204';
 const DEDUCT_ID = '018f0000-0000-7000-8000-000000000205';
 const DEVICE_ID = CLIENT_MONEY_IDS.device;
+const SECOND_DEVICE_ID = '018f0000-0000-7000-8000-000000000206';
 const BOOKED_AT = '2026-07-26T22:30:00.000Z';
 
 beforeEach(() => {
@@ -175,7 +176,64 @@ describe('paranoid standing-order materialization', () => {
     expect(order(sync.state.active!.document, PAUSED_ID).data.lastPeriodKey).toBe('2026-07-27');
   });
 
-  it('converges concurrent devices on one deterministic occurrence and retry after a lost response', async () => {
+  it.each(['watermark without rows', 'run without ledger'] as const)(
+    'fails closed on an interrupted occurrence with a %s',
+    async (partialState) => {
+      const fixture = await decryptClientMoneyFixture();
+      const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
+      const document = withOrders(fixture.document, [
+        standingOrder(DAILY_ADD_ID, {
+          kind: 'cash-add',
+          amount: '25',
+          cadence: 'daily',
+          anchorDay: null,
+          startDate: '2026-07-20',
+          ...(partialState === 'watermark without rows'
+            ? { lastRunAt: BOOKED_AT, lastPeriodKey: '2026-07-27' }
+            : {}),
+        }),
+      ]);
+      if (partialState === 'run without ledger') {
+        document.entities.standingOrderRun = [
+          {
+            id: occurrenceId,
+            rev: 0,
+            editedAt: BOOKED_AT,
+            editedBy: DEVICE_ID,
+            deletedAt: null,
+            data: {
+              standingOrderId: DAILY_ADD_ID,
+              periodKey: '2026-07-27',
+              bookedAt: BOOKED_AT,
+            },
+          },
+        ];
+      }
+      const sync = createMutableTestSync(document, fixture.header);
+      const market = createClientMoneyMarket();
+      const engine = createVaultMoneyEngine(sync, market.market, {
+        now: () => new Date(BOOKED_AT).getTime(),
+      });
+
+      const catchUp = await engine.onAppOpen();
+      const portfolio = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+      const tax = await engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+
+      for (const outcome of [catchUp, portfolio, tax]) {
+        expect(outcome).toMatchObject({
+          ok: false,
+          error: { code: 'VAULT_CORRUPT', retryable: false },
+        });
+        expect(outcome).not.toHaveProperty('value');
+      }
+      expect(sync.mutationCount).toBe(0);
+      expect(market.calls.quote).toEqual([]);
+      expect(market.calls.history).toEqual([]);
+      expect(market.calls.fx).toEqual([]);
+    },
+  );
+
+  it('converges two devices after their deterministic occurrences contend on the shared primary', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = withOrders(fixture.document, [
       standingOrder(DAILY_ADD_ID, {
@@ -186,8 +244,58 @@ describe('paranoid standing-order materialization', () => {
         startDate: '2026-07-20',
       }),
     ]);
-    const sync = createMutableTestSync(document, fixture.header);
-    const store = createVaultPortfolioStore(sync);
+    const encrypted = await encryptVaultDocument({
+      document,
+      vaultKey: fixture.vaultKey,
+      header: {
+        keyId: fixture.header.keyId,
+        wrappedKeys: fixture.header.wrappedKeys,
+        vaultVersion: fixture.header.vaultVersion,
+        deviceId: fixture.header.deviceId,
+        writeId: fixture.header.writeId,
+        writtenAt: fixture.header.writtenAt,
+      },
+    });
+    const firstLocal = createLocalDataHome({
+      scope: 'standing-order-concurrent-first',
+      storage: createMemoryLocalStorage(),
+    });
+    const secondLocal = createLocalDataHome({
+      scope: 'standing-order-concurrent-second',
+      storage: createMemoryLocalStorage(),
+    });
+    await Promise.all([
+      firstLocal.write(encrypted.envelope, { ifVersion: null }),
+      secondLocal.write(encrypted.envelope, { ifVersion: null }),
+    ]);
+    const primary = createContendedMemoryPrimary(encrypted.envelope);
+    const firstSync = createVaultSyncEngine({
+      local: firstLocal,
+      primary: primary.home,
+      vaultKey: fixture.vaultKey,
+      deviceId: DEVICE_ID,
+      writeId: writeIdSequence(0x100),
+      now: () => BOOKED_AT,
+      quarantine: createMemoryVaultQuarantineStore(() => BOOKED_AT),
+      documentReconciler: reconcilePortfolioDocument,
+      requiresCompleteMutationProvenance: true,
+    });
+    const secondSync = createVaultSyncEngine({
+      local: secondLocal,
+      primary: primary.home,
+      vaultKey: fixture.vaultKey,
+      deviceId: SECOND_DEVICE_ID,
+      writeId: writeIdSequence(0x200),
+      now: () => BOOKED_AT,
+      quarantine: createMemoryVaultQuarantineStore(() => BOOKED_AT),
+      documentReconciler: reconcilePortfolioDocument,
+      requiresCompleteMutationProvenance: true,
+    });
+    await expect(Promise.all([firstSync.start(), secondSync.start()])).resolves.toEqual([
+      expect.objectContaining({ status: 'synced' }),
+      expect.objectContaining({ status: 'synced' }),
+    ]);
+
     const market = createClientMoneyMarket();
     const options = {
       now: () => new Date(BOOKED_AT),
@@ -195,23 +303,57 @@ describe('paranoid standing-order materialization', () => {
     };
 
     const [first, second] = await Promise.all([
-      materializeDueStandingOrders(sync, store, market.market, options),
-      materializeDueStandingOrders(sync, store, market.market, options),
+      materializeDueStandingOrders(
+        firstSync,
+        createVaultPortfolioStore(firstSync),
+        market.market,
+        options,
+      ),
+      materializeDueStandingOrders(
+        secondSync,
+        createVaultPortfolioStore(secondSync),
+        market.market,
+        options,
+      ),
     ]);
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
-    const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
-    expect(
-      sync.state.active!.document.entities.cashMovement?.filter(
-        (entity) => entity.id === occurrenceId,
-      ),
-    ).toHaveLength(1);
-    expect(
-      sync.state.active!.document.entities.standingOrderRun?.filter(
-        (entity) => entity.id === occurrenceId,
-      ),
-    ).toHaveLength(1);
+    expect(primary.conflictCount).toBe(1);
+    expect(primary.initialCandidateDeviceIds.sort()).toEqual([DEVICE_ID, SECOND_DEVICE_ID].sort());
 
+    await firstSync.reconnect();
+    await secondSync.reconnect();
+    await firstSync.reconnect();
+    const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
+    for (const sync of [firstSync, secondSync]) {
+      const active = sync.state.active!.document;
+      expect(
+        active.entities.cashMovement?.filter(
+          (entity) => entity.id === occurrenceId && entity.deletedAt === null,
+        ),
+      ).toHaveLength(1);
+      expect(live(active, 'cashMovement', occurrenceId)?.data.source).toBe('standing-order');
+      expect(
+        active.entities.standingOrderRun?.filter(
+          (entity) => entity.id === occurrenceId && entity.deletedAt === null,
+        ),
+      ).toHaveLength(1);
+      expect(live(active, 'standingOrderRun', occurrenceId)?.data).toMatchObject({
+        standingOrderId: DAILY_ADD_ID,
+        periodKey: '2026-07-27',
+      });
+      expect(order(active, DAILY_ADD_ID).data.lastPeriodKey).toBe('2026-07-27');
+    }
+    expect(firstSync.state.active?.document).toEqual(secondSync.state.active?.document);
+  });
+
+  it('does not duplicate a durable occurrence when its first response is lost', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const market = createClientMoneyMarket();
+    const options = {
+      now: () => new Date(BOOKED_AT),
+      timezone: 'Europe/Vienna',
+    };
     const retryDocument = withOrders(fixture.document, [
       standingOrder(DAILY_ADD_ID, {
         kind: 'cash-add',
@@ -252,6 +394,7 @@ describe('paranoid standing-order materialization', () => {
       ok: true,
       value: { booked: [], deferred: [] },
     });
+    const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
     expect(
       retrySync.state.active!.document.entities.cashMovement?.filter(
         (entity) => entity.id === occurrenceId,
@@ -514,7 +657,58 @@ describe('paranoid standing-order materialization', () => {
     expect(lockCalls).toBe(2);
   });
 
-  it('gates money results after a real local commit failure and recovers exactly once', async () => {
+  it('keeps a public locked catch-up dormant until the explicit unlock boundary', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const sync = createMutableTestSync(fixture.document, fixture.header);
+    const market = createClientMoneyMarket();
+    const locked = {
+      ok: false as const,
+      error: {
+        code: 'VAULT_LOCKED' as const,
+        message: 'locked',
+        retryable: true,
+      },
+    };
+    const success = {
+      ok: true as const,
+      value: { today: '2026-07-27', booked: [], deferred: [] },
+    };
+    let appOpenCalls = 0;
+    let unlockCalls = 0;
+    const engine = createVaultMoneyEngine(sync, market.market, {
+      now: () => new Date(BOOKED_AT).getTime(),
+      standingOrders: {
+        async onAppOpen() {
+          appOpenCalls += 1;
+          return appOpenCalls === 1 ? locked : success;
+        },
+        async afterUnlock() {
+          unlockCalls += 1;
+          return success;
+        },
+      },
+    });
+
+    await expect(engine.onAppOpen()).resolves.toEqual(locked);
+    await expect(engine.onAppOpen()).resolves.toEqual(locked);
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toEqual({
+      ok: false,
+      error: locked.error,
+    });
+    expect(appOpenCalls).toBe(1);
+    expect(unlockCalls).toBe(0);
+    expect(market.calls.quote).toEqual([]);
+    expect(market.calls.history).toEqual([]);
+
+    await expect(engine.afterUnlock()).resolves.toEqual(success);
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(appOpenCalls).toBe(1);
+    expect(unlockCalls).toBe(1);
+  });
+
+  it('re-arms a failed public catch-up and recovers exactly once without another unlock', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = withOrders(fixture.document, [
       standingOrder(DAILY_ADD_ID, {
@@ -579,14 +773,13 @@ describe('paranoid standing-order materialization', () => {
     expect(failingLocal.failureCount).toBe(1);
     expect(failingLocal.currentVersion).toBe(fixture.header.vaultVersion);
     expect(primary.writeCount).toBe(0);
-    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'VAULT_DATA_UNAVAILABLE', retryable: true },
-    });
     expect(market.calls.quote).toEqual([]);
     expect(market.calls.history).toEqual([]);
 
-    await expect(engine.afterUnlock()).resolves.toMatchObject({
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(engine.onAppOpen()).resolves.toMatchObject({
       ok: true,
       value: {
         booked: [
@@ -601,10 +794,6 @@ describe('paranoid standing-order materialization', () => {
     });
     await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
       ok: true,
-    });
-    await expect(engine.afterUnlock()).resolves.toMatchObject({
-      ok: true,
-      value: { booked: [], deferred: [] },
     });
 
     const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
@@ -898,6 +1087,28 @@ function manualValue(id: string, assetId: string, date: string, close: string): 
   };
 }
 
+function createMemoryLocalStorage(): LocalDataHomeStorage {
+  let record: LocalVaultRecord | null = null;
+  return {
+    async read() {
+      return cloneLocalRecord(record);
+    },
+    async compareAndSwap(_scope, ifVersion, build) {
+      const currentVersion = record?.version ?? null;
+      if (currentVersion !== ifVersion) {
+        return { status: 'conflict', currentVersion };
+      }
+      record = cloneLocalRecord(build(cloneLocalRecord(record)));
+      return { status: 'ok' };
+    },
+  };
+}
+
+function writeIdSequence(seed: number): () => string {
+  let sequence = seed;
+  return () => `018f0000-0000-7000-8000-${(sequence++).toString(16).padStart(12, '0')}`;
+}
+
 function createFailingCommitStorage(): {
   storage: LocalDataHomeStorage;
   failNextCommit(): void;
@@ -1073,6 +1284,110 @@ function createMemoryPrimary(initialEnvelope: Uint8Array): {
     },
     get version() {
       return header.vaultVersion;
+    },
+  };
+}
+
+function createContendedMemoryPrimary(initialEnvelope: Uint8Array): {
+  home: DataHome;
+  readonly conflictCount: number;
+  readonly initialCandidateDeviceIds: string[];
+} {
+  interface Contender {
+    next: Uint8Array;
+    resolve: (result: DataHomeWriteResult) => void;
+  }
+
+  let envelope = initialEnvelope.slice();
+  let header = decodeTestEnvelopeHeader(envelope);
+  const initialVersion = header.vaultVersion;
+  const contenders: Contender[] = [];
+  const initialCandidateDeviceIds: string[] = [];
+  let contentionOpen = true;
+  let conflicts = 0;
+
+  function successfulWrite(): DataHomeWriteResult {
+    return {
+      status: 'ok',
+      medium: 'server',
+      info: {
+        medium: 'server',
+        version: header.vaultVersion,
+        sizeBytes: envelope.byteLength,
+        updatedAt: header.writtenAt,
+      },
+    };
+  }
+
+  const home: DataHome = {
+    medium: 'server',
+    async read() {
+      return {
+        status: 'ok',
+        medium: 'server',
+        envelope: envelope.slice(),
+        info: {
+          medium: 'server',
+          version: header.vaultVersion,
+          sizeBytes: envelope.byteLength,
+          updatedAt: header.writtenAt,
+        },
+      };
+    },
+    async write(next: Uint8Array, options: DataHomeWriteOptions): Promise<DataHomeWriteResult> {
+      if (contentionOpen && options.ifVersion === initialVersion) {
+        initialCandidateDeviceIds.push(decodeTestEnvelopeHeader(next).deviceId);
+        return new Promise<DataHomeWriteResult>((resolve) => {
+          contenders.push({ next: next.slice(), resolve });
+          if (contenders.length !== 2) return;
+
+          contentionOpen = false;
+          const winner = contenders[0]!;
+          const loser = contenders[1]!;
+          envelope = winner.next;
+          header = decodeTestEnvelopeHeader(envelope);
+          winner.resolve(successfulWrite());
+          conflicts += 1;
+          loser.resolve({
+            status: 'conflict',
+            medium: 'server',
+            currentVersion: header.vaultVersion,
+          });
+        });
+      }
+      if (options.ifVersion !== header.vaultVersion) {
+        conflicts += 1;
+        return {
+          status: 'conflict',
+          medium: 'server',
+          currentVersion: header.vaultVersion,
+        };
+      }
+      envelope = next.slice();
+      header = decodeTestEnvelopeHeader(envelope);
+      return successfulWrite();
+    },
+    async info() {
+      return {
+        status: 'ok',
+        medium: 'server',
+        info: {
+          medium: 'server',
+          version: header.vaultVersion,
+          sizeBytes: envelope.byteLength,
+          updatedAt: header.writtenAt,
+        },
+      };
+    },
+  };
+
+  return {
+    home,
+    get conflictCount() {
+      return conflicts;
+    },
+    get initialCandidateDeviceIds() {
+      return [...initialCandidateDeviceIds];
     },
   };
 }

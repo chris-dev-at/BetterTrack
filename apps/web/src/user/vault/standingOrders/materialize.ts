@@ -6,7 +6,11 @@ import {
 import { InsufficientCashError } from '@bettertrack/domain/cashLedger';
 
 import { MarketDataSourceError, type MarketDataSource } from '../../../lib/marketDataSource';
-import { type VaultPortfolioStore, VaultPortfolioStoreError } from '../vaultPortfolioStore';
+import {
+  existingStandingOrderOccurrence,
+  type VaultPortfolioStore,
+  VaultPortfolioStoreError,
+} from '../vaultPortfolioStore';
 import {
   asMoneyFailure,
   moneyFailure,
@@ -69,12 +73,6 @@ export async function materializeDueStandingOrders(
     const today = calendarDayInTimezone(now, timezone);
     let snapshot = validatedVaultSnapshot(sync);
     const orders = liveEntities(snapshot.document, 'standingOrder').map(parseOrder);
-    const existingRuns = new Set(
-      liveEntities(snapshot.document, 'standingOrderRun').map((entity) => {
-        const row = VAULT_ENTITY_ROW_SCHEMAS.standingOrderRun.parse(entity.data);
-        return `${row.standingOrderId}\u0000${row.periodKey}`;
-      }),
-    );
     const result: StandingOrderMaterializationResult = {
       today,
       booked: [],
@@ -85,13 +83,18 @@ export async function materializeDueStandingOrders(
       signal?.throwIfAborted();
       if (order.row.status !== 'active') continue;
       const dueDate = dueStandingOrderOccurrence(order.row, today);
-      if (
-        dueDate === null ||
-        (order.row.lastPeriodKey !== null && order.row.lastPeriodKey >= dueDate) ||
-        existingRuns.has(`${order.entity.id}\u0000${dueDate}`)
-      ) {
-        continue;
-      }
+      if (dueDate === null) continue;
+
+      const occurrenceId = await standingOrderOccurrenceId(order.entity.id, dueDate);
+      const existing = existingStandingOrderOccurrence(snapshot.document, {
+        occurrenceId,
+        orderId: order.entity.id,
+        dueDate,
+        calendarDay: today,
+        timezone,
+        executedAt: now.toISOString(),
+      });
+      if (existing !== null) continue;
 
       let quote: { price: number; currency: string } | null = null;
       if (order.row.kind === 'buy-asset') {
@@ -143,7 +146,6 @@ export async function materializeDueStandingOrders(
         }
       }
 
-      const occurrenceId = await standingOrderOccurrenceId(order.entity.id, dueDate);
       try {
         assertVaultSnapshotCurrent(sync, snapshot);
         const committed = await store.materializeStandingOrderOccurrence(

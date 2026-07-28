@@ -245,6 +245,14 @@ function validateFrozenTaxShape(
   if (mode === 'none' && amountEur !== null && !isZeroDecimal(amountEur)) {
     invalidTaxFacts(kind, id, 'none-mode rows cannot carry a frozen tax amount');
   }
+  if (
+    mode === 'manual_per_trade' &&
+    amountEur !== null &&
+    amountEur.startsWith('-') &&
+    !isZeroDecimal(amountEur)
+  ) {
+    invalidTaxFacts(kind, id, 'manual tax amounts cannot be negative');
+  }
 }
 
 function isZeroDecimal(value: string): boolean {

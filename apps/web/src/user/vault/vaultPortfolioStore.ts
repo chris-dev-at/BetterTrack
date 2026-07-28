@@ -995,7 +995,7 @@ function standingOrderRowKind(order: VaultEntity): 'transaction' | 'cashMovement
   return stringField(order.data, 'kind') === 'buy-asset' ? 'transaction' : 'cashMovement';
 }
 
-function existingStandingOrderOccurrence(
+export function existingStandingOrderOccurrence(
   document: VaultDocumentV1,
   input: VaultStandingOrderOccurrenceInput,
 ): VaultStandingOrderOccurrenceResult | null {
@@ -1004,7 +1004,19 @@ function existingStandingOrderOccurrence(
   const transaction = findLiveEntity(document, 'transaction', input.occurrenceId);
   const cashMovement = findLiveEntity(document, 'cashMovement', input.occurrenceId);
   const ledgerRows = [transaction, cashMovement].filter((entity) => entity != null);
-  if (run == null && ledgerRows.length === 0) return null;
+  if (run == null && ledgerRows.length === 0) {
+    if (
+      order != null &&
+      nullableStringField(order.data, 'lastPeriodKey') != null &&
+      nullableStringField(order.data, 'lastPeriodKey')! >= input.dueDate
+    ) {
+      throw storeError(
+        'VAULT_DATA_INVALID',
+        'A standing order is marked booked without its deterministic occurrence rows.',
+      );
+    }
+    return null;
+  }
   if (order == null || run == null || ledgerRows.length !== 1) {
     throw storeError(
       'VAULT_DATA_INVALID',

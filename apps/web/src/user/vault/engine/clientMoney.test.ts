@@ -372,6 +372,28 @@ describe('paranoid client money engine', () => {
         dividend.data.taxParams = null;
       },
     },
+    {
+      state: 'a negative manual tax amount on a transaction',
+      mutate(document: Awaited<ReturnType<typeof decryptClientMoneyFixture>>['document']) {
+        const sell = document.entities.transaction?.find((entity) => entity.data.side === 'sell');
+        if (sell === undefined) throw new Error('Fixture sell is missing.');
+        sell.data.taxMode = 'manual_per_trade';
+        sell.data.taxCountry = null;
+        sell.data.taxAmountEur = '-1';
+        sell.data.taxParams = null;
+      },
+    },
+    {
+      state: 'a negative manual tax amount on a dividend',
+      mutate(document: Awaited<ReturnType<typeof decryptClientMoneyFixture>>['document']) {
+        const dividend = document.entities.dividend?.[0];
+        if (dividend === undefined) throw new Error('Fixture dividend is missing.');
+        dividend.data.taxMode = 'manual_per_trade';
+        dividend.data.taxCountry = null;
+        dividend.data.taxAmountEur = '-1';
+        dividend.data.taxParams = null;
+      },
+    },
   ])('rejects $state at the authenticated snapshot boundary', async ({ mutate }) => {
     const fixture = await decryptClientMoneyFixture();
     const document = structuredClone(fixture.document);
@@ -389,6 +411,25 @@ describe('paranoid client money engine', () => {
     expect(market.calls.quote).toEqual([]);
     expect(market.calls.history).toEqual([]);
     expect(market.calls.fx).toEqual([]);
+  });
+
+  it('preserves reachable negative automatic-tax refund deltas', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    const sell = document.entities.transaction?.find((entity) => entity.data.side === 'sell');
+    if (sell === undefined) throw new Error('Fixture sell is missing.');
+    sell.data.taxMode = 'country_specific';
+    sell.data.taxCountry = 'AT';
+    sell.data.taxAmountEur = '-1';
+    sell.data.taxParams = null;
+
+    await expect(
+      createVaultMoneyEngine(
+        createMutableTestSync(document, fixture.header),
+        createClientMoneyMarket().market,
+        { now: () => NOW },
+      ).deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026),
+    ).resolves.toMatchObject({ ok: true });
   });
 
   it.each(MALFORMED_TAX_SETTING_CASES)(

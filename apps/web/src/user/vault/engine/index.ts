@@ -35,15 +35,40 @@ export function createVaultMoneyEngine(
       ...(now === undefined ? {} : { now: () => new Date(now()) }),
     });
   let requiredCatchUp: ReturnType<StandingOrderMaterializationLifecycle['onAppOpen']> | null = null;
+  let unlockRequired = false;
 
   function onAppOpen() {
-    requiredCatchUp ??= standingOrders.onAppOpen();
+    if (requiredCatchUp === null) {
+      requiredCatchUp = trackCatchUp(standingOrders.onAppOpen());
+    }
     return requiredCatchUp;
   }
 
   function afterUnlock() {
-    requiredCatchUp = standingOrders.afterUnlock();
+    unlockRequired = false;
+    requiredCatchUp = trackCatchUp(standingOrders.afterUnlock());
     return requiredCatchUp;
+  }
+
+  function trackCatchUp(catchUp: ReturnType<StandingOrderMaterializationLifecycle['onAppOpen']>) {
+    void catchUp.then(
+      (outcome) => {
+        if (requiredCatchUp !== catchUp || outcome.ok) return;
+        if (outcome.error.code === 'VAULT_LOCKED') {
+          unlockRequired = true;
+          return;
+        }
+        if (outcome.error.retryable && !unlockRequired) {
+          requiredCatchUp = null;
+        }
+      },
+      () => {
+        if (requiredCatchUp === catchUp && !unlockRequired) {
+          requiredCatchUp = null;
+        }
+      },
+    );
+    return catchUp;
   }
 
   async function catchUpFailure() {
