@@ -3809,6 +3809,25 @@
         "imports": "Imports",
         "settings": "Settings"
       }
+    },
+    "emailLog": {
+      "loading": "Loading email log…",
+      "empty": "No emails sent yet.",
+      "emptyForUser": "No emails sent to {{email}} yet.",
+      "headers": {
+        "when": "When",
+        "recipient": "Recipient",
+        "template": "Template",
+        "subject": "Subject",
+        "status": "Status"
+      },
+      "status": {
+        "sent": "Sent",
+        "failed": "Failed",
+        "suppressed": "Suppressed"
+      },
+      "loadMore": "Load more",
+      "loadingMore": "Loading…"
     }
   }
 }

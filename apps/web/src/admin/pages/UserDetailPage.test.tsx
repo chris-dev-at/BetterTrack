@@ -7,6 +7,7 @@ import type { AdminUser, AuditLogEntry, EmailLogEntry, MeResponse } from '@bette
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
+import { I18nProvider } from '../../i18n';
 import { AuthProvider } from '../AuthContext';
 import { UserDetailPage } from './UserDetailPage';
 
@@ -59,16 +60,18 @@ const emailEntry: EmailLogEntry = {
   createdAt: '2026-03-04T00:00:00.000Z',
 };
 
-function renderPage() {
+function renderPage(locale = 'en') {
   return render(
-    <AuthProvider>
-      <MemoryRouter initialEntries={['/admin/users/user-1']}>
-        <Routes>
-          <Route path="/admin/users/:userId" element={<UserDetailPage />} />
-          <Route path="/admin/users" element={<div>Users list</div>} />
-        </Routes>
-      </MemoryRouter>
-    </AuthProvider>,
+    <I18nProvider initialLocale={locale}>
+      <AuthProvider>
+        <MemoryRouter initialEntries={['/admin/users/user-1']}>
+          <Routes>
+            <Route path="/admin/users/:userId" element={<UserDetailPage />} />
+            <Route path="/admin/users" element={<div>Users list</div>} />
+          </Routes>
+        </MemoryRouter>
+      </AuthProvider>
+    </I18nProvider>,
   );
 }
 
@@ -107,6 +110,16 @@ test('centralizes the profile, per-user audit log and per-user email log', async
   expect(screen.getByRole('button', { name: 'Reset password' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Send test email' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+});
+
+test('localizes the empty per-user email log label', async () => {
+  vi.mocked(api.listUserEmails).mockResolvedValue({ entries: [], nextCursor: null });
+
+  renderPage('de');
+
+  expect(
+    await screen.findByText('Noch keine E-Mails an jane@bettertrack.test gesendet.'),
+  ).toBeInTheDocument();
 });
 
 test('editing the username persists via updateUser', async () => {
