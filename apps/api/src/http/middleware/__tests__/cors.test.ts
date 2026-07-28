@@ -6,6 +6,8 @@ import {
   VAULT_HISTORY_CREATED_AT_HEADER,
   VAULT_HISTORY_MEDIUM_HEADER,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
+  VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER,
+  VAULT_SERVER_CANDIDATE_READBACK_HEADER,
 } from '@bettertrack/contracts';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -117,9 +119,17 @@ describe('CORS allowlist', () => {
       .send({ identifier: user.email, password: user.password });
     expect(login.status).toBe(200);
 
-    for (const conditionalHeader of ['If-None-Match', 'If-Match']) {
+    for (const conditionalHeader of [
+      'If-None-Match',
+      'If-Match',
+      VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER,
+    ]) {
       const preflight = await request(harness.app)
-        .options('/api/v1/vault')
+        .options(
+          conditionalHeader === VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER
+            ? '/api/v1/vault/media/server-candidate'
+            : '/api/v1/vault',
+        )
         .set('Origin', WEB)
         .set('Access-Control-Request-Method', 'PUT')
         .set(
@@ -160,6 +170,7 @@ describe('CORS allowlist', () => {
       VAULT_HISTORY_CREATED_AT_HEADER,
       VAULT_HISTORY_MEDIUM_HEADER,
       VAULT_HISTORY_SIZE_BYTES_HEADER,
+      VAULT_SERVER_CANDIDATE_READBACK_HEADER,
     ]) {
       expect(exposedHeaders).toContain(header);
     }
