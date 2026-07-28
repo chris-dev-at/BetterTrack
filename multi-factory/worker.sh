@@ -149,8 +149,11 @@ add_dep_to_issue(){ # $1=issue $2=dep-number
 }
 
 issue_json_read(){ # $1=issue number
-  gh api "repos/$REPO/issues/$1" \
-    --jq '{number,title,body,labels:[.labels[].name],created_at}' 2>/dev/null
+  # Single-parse rule (see mf_pr_comments_json): never re-parse gojq output —
+  # this JSON feeds mf_issue_json_valid, which parses it with C jq.
+  local raw
+  raw=$(gh api "repos/$REPO/issues/$1" 2>/dev/null) || return 1
+  jq -c '{number,title,body,labels:[.labels[].name],created_at}' <<<"$raw"
 }
 
 # A checker-created relocation is deliberately born without `autopilot`. Only

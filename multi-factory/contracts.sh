@@ -273,27 +273,34 @@ mf_latest_approval_for_head(){ # $1=comments JSON $2=head; sets MF_APPROVAL_*
 }
 
 mf_pr_comments_json(){ # $1=PR number
-  local out
-  out=$(gh api -H 'Cache-Control: no-cache' --paginate \
-    "repos/$REPO/issues/$1/comments?per_page=100" \
-    --jq '.[] | {id,body,created_at}' 2>/dev/null) || return 1
-  jq -cs '.' <<<"$out"
+  # ONE jq parse of GitHub's original JSON. Routing the payload through gh's
+  # embedded jq (gojq) re-serializes comment bodies, and gojq can emit raw
+  # control/invalid bytes that C jq then rejects — a DETERMINISTIC parse
+  # failure that jammed the merge queue for hours on PR #891 (2026-07-28).
+  # --paginate without --jq emits one JSON array per page; slurp+add flattens.
+  local raw
+  raw=$(gh api -H 'Cache-Control: no-cache' --paginate \
+    "repos/$REPO/issues/$1/comments?per_page=100" 2>/dev/null) || return 1
+  jq -cs 'add // [] | map({id,body,created_at})' <<<"$raw"
 }
 
 mf_pr_head(){ gh pr view "$1" --json headRefOid -q .headRefOid 2>/dev/null; }
 
 mf_recent_issues_json(){
-  gh api -H 'Cache-Control: no-cache' \
+  # Single-parse rule (see mf_pr_comments_json): never re-parse gojq output.
+  local raw
+  raw=$(gh api -H 'Cache-Control: no-cache' \
     "repos/$REPO/issues?state=all&sort=created&direction=desc&per_page=100" \
-    --jq '[.[] | select(.pull_request==null) | {number,title,body,labels:[.labels[].name],created_at}]' \
-    2>/dev/null
+    2>/dev/null) || return 1
+  jq -c '[.[] | select(.pull_request==null) | {number,title,body,labels:[.labels[].name],created_at}]' <<<"$raw"
 }
 
 mf_issue_json_by_number(){ # $1=issue number; direct reads avoid list eventual consistency
-  gh api -H 'Cache-Control: no-cache' "repos/$REPO/issues/$1" \
-    --jq 'select(.pull_request==null)
-      | {number,title,body,labels:[.labels[].name],created_at}' \
-    2>/dev/null
+  # Single-parse rule (see mf_pr_comments_json): never re-parse gojq output.
+  local raw
+  raw=$(gh api -H 'Cache-Control: no-cache' "repos/$REPO/issues/$1" 2>/dev/null) || return 1
+  jq -c 'select(.pull_request==null)
+      | {number,title,body,labels:[.labels[].name],created_at}' <<<"$raw"
 }
 
 mf_new_issue_numbers(){ # $1=before JSON $2=after JSON

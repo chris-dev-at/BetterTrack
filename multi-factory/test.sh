@@ -531,6 +531,80 @@ check "salvage: fires on dirty tree with no PR" "1" "${SALVAGED}"
 check "salvage: branch landed on origin" "task/503" "$(bare task/503)"
 check "salvage: event line logged" "1" "$(grep -c 'salvaged branch task/503' "$MF_EVENTLOG")"
 
+echo "— single-parse GitHub reads (gojq corrupt-byte class, PR #891 merger jam)"
+# gh --jq (gojq) re-serialization can emit raw control/invalid bytes that C jq
+# rejects; the fetchers now parse GitHub's ORIGINAL JSON exactly once. The gh
+# stub emits two concatenated pages (exactly what --paginate produces) with
+# escaped control characters in a body.
+gh(){ cat <<'PAGES'
+[{"id":1,"body":"clean","created_at":"c1"},{"id":2,"body":"ctl \u0007 \u0001 body","created_at":"c2"}]
+[{"id":3,"body":"page2","created_at":"c3"}]
+PAGES
+}
+CJ=$(mf_pr_comments_json 891) && ok "comments fetch exits 0" || bad "comments fetch failed"
+check "comments fetch flattens paginated arrays" "3" "$(jq 'length' <<<"$CJ")"
+check "comments fetch preserves ids in order" "1 2 3" "$(jq -r '[.[].id]|join(" ")' <<<"$CJ")"
+check "control-char body survives the round-trip" "1" "$(jq '[.[]|select(.id==2)]|length' <<<"$CJ")"
+gh(){ return 1; }
+mf_pr_comments_json 891 >/dev/null 2>&1 && bad "comments fetch must fail when gh fails" || ok "comments fetch fails closed on gh failure"
+gh(){ printf '{"number":9,"title":"t","body":"b","labels":[{"name":"diff:easy"}],"created_at":"c"}'; }
+check "issue-by-number single-parse projects labels" "diff:easy" "$(mf_issue_json_by_number 9 | jq -r '.labels[0]')"
+check "issue_json_read single-parse keeps shape" "9" "$(issue_json_read 9 | jq -r '.number')"
+gh(){ printf '[{"number":8,"title":"t","body":"b","labels":[],"created_at":"c","pull_request":{"url":"x"}},{"number":7,"title":"t","body":"b","labels":[],"created_at":"c"}]'; }
+check "recent-issues single-parse filters PRs" "7" "$(mf_recent_issues_json | jq -r '.[0].number')"
+
+echo "— merger: bounded approval-read failures park the queue head (#891 jam)"
+MF_DRY_RUN=0
+QDIR=$MFSTATE/merge-queue
+HUMAN_LOG=$T/human.log; : >"$HUMAN_LOG"
+mark_human(){ printf '%s|%s\n' "$1" "$2" >>"$HUMAN_LOG"; }
+mstatus(){ :; }
+notify(){ :; }
+jq -nc '{pr:77,issue:707,touches:["x/**"],approved_head:"aaaa1111",approval_kind:"reviewer",approval_comment_id:"5"}' >"$QDIR/1000-pr77.json"
+gh(){ case "$*" in *"--json state"*) echo OPEN;; *) return 1;; esac; }
+mf_pr_head(){ return 1; }          # deterministic approval-read failure
+MF_APPROVAL_READ_MAX=2
+merger_step
+[ -f "$QDIR/1000-pr77.json" ] && ok "first read failure retains the queue head" || bad "queue head dropped on first read failure"
+check "read-failure counter recorded" "1" "$(cat "$QDIR/.apprfail-pr77" 2>/dev/null)"
+merger_step
+[ -f "$QDIR/1000-pr77.json" ] && bad "queue head must park after the failure cap" || ok "queue head parked after the failure cap"
+check "parked head escalated to a human" "1" "$(grep -c '^707|' "$HUMAN_LOG")"
+[ -f "$QDIR/.apprfail-pr77" ] && bad "failure counter must be cleared" || ok "failure counter cleared"
+
+echo "— merger: DIRTY queue head gets one conflict-fix, then review or human"
+: >"$HUMAN_LOG"
+CONFLICT_CALLS=$T/conflict-calls; : >"$CONFLICT_CALLS"
+jq -nc '{pr:88,issue:808,touches:["y/**"],approved_head:"bbbb2222",approval_kind:"reviewer",approval_comment_id:"6"}' >"$QDIR/1001-pr88.json"
+queue_approval_check(){ QUEUE_APPROVAL_STATE=valid; }
+issue_difficulty(){ echo hard; }
+mf_cc(){ printf '%s %s\n' "$1" "$2" >>"$CONFLICT_CALLS"; }
+gh(){ case "$*" in
+  *"--json state"*) echo OPEN;;
+  *"--json statusCheckRollup"*) echo '[{"conclusion":"SUCCESS","status":"COMPLETED","state":"SUCCESS"}]';;
+  *"--json mergeStateStatus"*) echo DIRTY;;
+  *) : ;;
+esac; }
+mf_pr_head(){ echo bbbb2222; }     # conflict-fix pushes nothing
+merger_step
+check "conflict-fix invoked once through the ci-fix role" "1" "$(grep -c '^ci-fix hard$' "$CONFLICT_CALLS")"
+[ -f "$QDIR/1001-pr88.json" ] && bad "no-push conflict-fix must clear the queue head" || ok "no-push conflict-fix cleared the queue head"
+check "no-push conflict-fix escalated to a human" "1" "$(grep -c '^808|' "$HUMAN_LOG")"
+[ -f "$QDIR/.conflictfix-pr88" ] && bad "conflict marker must be cleared" || ok "conflict marker cleared"
+# pushed-head variant: the resolved merge goes to a fresh review, not a human
+: >"$HUMAN_LOG"; : >"$CONFLICT_CALLS"
+REQUEUED=$T/requeued.log; : >"$REQUEUED"
+requeue_for_review(){ printf '%s|%s|%s\n' "$1" "$2" "$3" >>"$REQUEUED"; rm -f "$1"; }
+jq -nc '{pr:99,issue:909,touches:["z/**"],approved_head:"cccc3333",approval_kind:"reviewer",approval_comment_id:"7"}' >"$QDIR/1002-pr99.json"
+mf_pr_head(){ if [ -f "$T/pushed99" ]; then echo dddd4444; else echo cccc3333; fi; }
+mf_cc(){ printf '%s %s\n' "$1" "$2" >>"$CONFLICT_CALLS"; : >"$T/pushed99"; }
+merger_step
+check "pushed conflict-fix goes to a fresh review, not a human" "1" "$(grep -c '|909|' "$REQUEUED")"
+check "pushed conflict-fix never escalates" "0" "$(grep -c '^909|' "$HUMAN_LOG")"
+[ -f "$QDIR/1002-pr99.json" ] && bad "requeued head must leave the queue" || ok "requeued head left the queue"
+[ -f "$QDIR/.conflictfix-pr99" ] && bad "pushed-variant marker must be cleared" || ok "pushed-variant marker cleared"
+MF_DRY_RUN=1
+
 echo
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
