@@ -196,7 +196,7 @@ runnable_issues(){
 enqueue_merge(){ # $1=pr $2=issue $3=claims $4=head $5=kind $6=comment id
   local pr=$1 issue=$2 claims=$3 approved_head=$4 approval_kind=$5 approval_comment_id=$6
   local existing touches payload
-  existing=$(find "$QUEUE" -maxdepth 1 -type f -name "*-pr$pr.json" -print -quit 2>/dev/null)
+  existing=$(find "$QUEUE" -maxdepth 1 -type f -name "[0-9]*-pr$pr.json" -print -quit 2>/dev/null)
   if [ -n "$existing" ]; then
     jq -e --arg h "$approved_head" --arg k "$approval_kind" --arg id "$approval_comment_id" \
       '.approved_head==$h and .approval_kind==$k and (.approval_comment_id|tostring)==$id' \
