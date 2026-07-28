@@ -1,9 +1,11 @@
+import { fileURLToPath } from 'node:url';
+
+import ts from 'typescript';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { createApp } from '../../../app';
 import { ALL_QUEUE_NAMES } from '../../../jobs';
 import { buildRouteTable } from '../../../scripts/checkOpenapiCoverage';
-import { createTestApp } from '../../../testing/createTestApp';
 import {
   isParanoidSurfaceClassified,
   PARANOID_ACCOUNT_CONTEXT_SOURCE,
@@ -17,6 +19,8 @@ import {
 } from '../paranoidEnforcement';
 
 const API_PREFIX = '/api/v1';
+const API_TSCONFIG_PATH = fileURLToPath(new URL('../../../../tsconfig.json', import.meta.url));
+const APP_CONTEXT_PATH = fileURLToPath(new URL('../../../http/context.ts', import.meta.url));
 
 function surfaceName(surface: ParanoidSurface): string {
   const source = `${surface.source.file}#${surface.source.symbol}`;
@@ -46,19 +50,76 @@ function mountedRouteSurfaces(
 }
 
 /**
- * Every callable object exposed by the real account context is an account
- * service entry point for this sweep. This intentionally includes operational
- * helpers (Redis, logging, health, etc.): their explicit exemptions prevent a
- * future context addition from becoming an invisible default-open surface.
+ * Every callable member exposed by the production AppContext contract is an
+ * account service entry point for this sweep. This intentionally includes
+ * operational helpers (Redis, logging, health, etc.): their explicit
+ * exemptions prevent a future context addition from becoming an invisible
+ * default-open surface.
+ *
+ * The type checker is deliberate. `createTestApp()` has `queues: null`, and
+ * runtime own-key inspection misses class/prototype methods, either of which
+ * would let a production entry point escape the completeness gate.
  */
-function accountContextServiceSurfaces(context: object): ParanoidServiceSurface[] {
+function accountContextServiceSurfaces(): ParanoidServiceSurface[] {
+  const parsedConfig = ts.getParsedCommandLineOfConfigFile(
+    API_TSCONFIG_PATH,
+    {},
+    {
+      ...ts.sys,
+      onUnRecoverableConfigFileDiagnostic(diagnostic) {
+        throw new Error(
+          `Unable to read the API TypeScript config for paranoid surface discovery: ${ts.flattenDiagnosticMessageText(
+            diagnostic.messageText,
+            '\n',
+          )}`,
+        );
+      },
+    },
+  );
+  if (!parsedConfig) {
+    throw new Error('Unable to read the API TypeScript config for paranoid surface discovery.');
+  }
+
+  const program = ts.createProgram({
+    rootNames: [APP_CONTEXT_PATH],
+    options: parsedConfig.options,
+  });
+  const checker = program.getTypeChecker();
+  const contextSource = program.getSourceFile(APP_CONTEXT_PATH);
+  if (!contextSource) {
+    throw new Error('Unable to load AppContext for paranoid surface discovery.');
+  }
+
+  const moduleSymbol = checker.getSymbolAtLocation(contextSource);
+  const contextSymbol = moduleSymbol
+    ? checker.getExportsOfModule(moduleSymbol).find((symbol) => symbol.getName() === 'AppContext')
+    : undefined;
+  if (!contextSymbol) {
+    throw new Error('Unable to resolve AppContext for paranoid surface discovery.');
+  }
+
+  const contextType = checker.getDeclaredTypeOfSymbol(contextSymbol);
   const surfaces: ParanoidServiceSurface[] = [];
-  for (const [service, value] of Object.entries(context)) {
-    if (!value || typeof value !== 'object') continue;
-    const methods = Object.keys(value as Record<string, unknown>).filter(
-      (method) => typeof (value as Record<string, unknown>)[method] === 'function',
+  for (const serviceSymbol of checker.getPropertiesOfType(contextType)) {
+    const service = serviceSymbol.getName();
+    const serviceDeclaration = serviceSymbol.valueDeclaration ?? contextSource;
+    const serviceType = checker.getNonNullableType(
+      checker.getTypeOfSymbolAtLocation(serviceSymbol, serviceDeclaration),
     );
-    for (const method of methods) {
+    if ((serviceType.flags & ts.TypeFlags.Any) !== 0) {
+      throw new Error(
+        `AppContext.${service} is typed as any; paranoid surface discovery must use a callable production type.`,
+      );
+    }
+
+    for (const methodSymbol of checker.getPropertiesOfType(serviceType)) {
+      const methodDeclaration = methodSymbol.valueDeclaration ?? contextSource;
+      const methodType = checker.getNonNullableType(
+        checker.getTypeOfSymbolAtLocation(methodSymbol, methodDeclaration),
+      );
+      if (methodType.getCallSignatures().length === 0) continue;
+
+      const method = methodSymbol.getName();
       surfaces.push({
         kind: 'service',
         source: {
@@ -70,7 +131,10 @@ function accountContextServiceSurfaces(context: object): ParanoidServiceSurface[
       });
     }
   }
-  return surfaces;
+  return surfaces.sort(
+    (left, right) =>
+      left.service.localeCompare(right.service) || left.method.localeCompare(right.method),
+  );
 }
 
 function registeredJobSurfaces(): ParanoidSurface[] {
@@ -105,9 +169,8 @@ function classificationProblems(surfaces: readonly ParanoidSurface[]): string[] 
 describe('paranoid enforcement completeness', () => {
   let contextSurfaces: ParanoidServiceSurface[] = [];
 
-  beforeAll(async () => {
-    const harness = await createTestApp();
-    contextSurfaces = accountContextServiceSurfaces(harness.ctx);
+  beforeAll(() => {
+    contextSurfaces = accountContextServiceSurfaces();
   });
 
   it('classifies every mounted route, account-context service entry point, and registered job', () => {
@@ -116,6 +179,19 @@ describe('paranoid enforcement completeness', () => {
     expect(surfaces.length).toBeGreaterThan(0);
     expect(classificationProblems(surfaces)).toEqual([]);
     expect(surfaces.every(isParanoidSurfaceClassified)).toBe(true);
+  });
+
+  it('discovers nullable and prototype-declared context methods from the production contract', () => {
+    // QueueRegistry is intentionally null in createTestApp(), while Redis
+    // methods are class-declared. Both must remain candidates in this gate.
+    expect(contextSurfaces).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ service: 'queues', method: 'get' }),
+        expect.objectContaining({ service: 'queues', method: 'enqueue' }),
+        expect.objectContaining({ service: 'queues', method: 'close' }),
+        expect.objectContaining({ service: 'redis', method: 'connect' }),
+      ]),
+    );
   });
 
   it('names a newly mounted direct application route when no classification exists', () => {

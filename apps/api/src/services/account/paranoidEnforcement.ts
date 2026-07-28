@@ -679,6 +679,12 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'Idempotency bookkeeping is transient request infrastructure.',
   ),
   serviceExemption(
+    'queues',
+    ['*'],
+    'kept',
+    'The BullMQ queue registry is producer infrastructure; each queued portfolio operation has its own policy.',
+  ),
+  serviceExemption(
     'observability',
     ['*'],
     'kept',
