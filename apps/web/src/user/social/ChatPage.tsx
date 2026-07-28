@@ -330,7 +330,7 @@ function ConversationRow({
   const displayName = convo.user?.username ?? t('social.chat.deletedUser');
   return (
     // The selected row borrows the navigation rail's own selected language —
-    // strong surface plus an inset gold edge — so "where am I" reads the same
+    // strong surface only (owner feedback: no edge markings on selection) —
     // everywhere in the suite.
     <button
       type="button"
@@ -339,7 +339,6 @@ function ConversationRow({
       style={{
         background: active ? 'var(--bt-surface-strong)' : 'none',
         border: 0,
-        boxShadow: active ? 'inset 2px 0 0 var(--bt-gold)' : undefined,
         color: 'inherit',
         cursor: 'pointer',
         font: 'inherit',
