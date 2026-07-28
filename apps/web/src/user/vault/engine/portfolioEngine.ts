@@ -25,6 +25,7 @@ import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
 import {
   MarketDataSourceError,
   type MarketDataSource,
+  type MarketDataValue,
   type MarketFxValue,
 } from '../../../lib/marketDataSource';
 import type { VaultSyncEngine } from '../sync';
@@ -173,6 +174,13 @@ async function derive(
   )
     ? null
     : holdings.reduce((total, holding) => total + (holding.marketValueEur ?? 0), 0);
+  if (holdingsValueEur === null) {
+    throw moneyFailure(
+      'MARKET_DATA_MISSING',
+      'A current price or FX rate is missing for an active holding.',
+      { retryable: true },
+    );
+  }
   const totalValueEur =
     holdingsValueEur === null ? null : floorCents(holdingsValueEur + cashBalanceEur);
   const allocation =
@@ -250,6 +258,16 @@ async function derive(
     today,
   );
   const hasAnyMissing = [...missingByDate.values()].some((ids) => ids.length > 0);
+  if (hasAnyMissing) {
+    const missingAssetIds = [
+      ...new Set([...missingByDate.values()].flatMap((assetIds) => assetIds)),
+    ].sort();
+    throw moneyFailure(
+      'MARKET_DATA_MISSING',
+      'A required historical close is missing for the portfolio series.',
+      { retryable: true, details: { assetIds: missingAssetIds } },
+    );
+  }
   const fxInputs = fx.values();
   const fxStale = [...fxInputs.values()].some((result) => result.stale);
   const stale = fxStale || loaded.some((entry) => entry.historyStale || entry.quoteStale);
@@ -325,6 +343,13 @@ async function loadMarketInputs(
       const local = storedPrices(document, assetId);
       if (asset.providerId === 'manual') {
         const manual = localManualAssetMarket(document, asset);
+        if (manual.prices.length === 0 || manual.quote === null) {
+          throw moneyFailure(
+            'MARKET_DATA_MISSING',
+            `A local valuation is unavailable for manual asset ${assetId}.`,
+            { retryable: true, details: { assetId } },
+          );
+        }
         return {
           asset,
           prices: manual.prices,
@@ -338,77 +363,65 @@ async function loadMarketInputs(
       }
 
       const [historyResult, quoteResult] = await Promise.all([
-        market.history(assetId, 'MAX', signal).catch((cause: unknown) => {
-          rethrowAbort(cause);
-          rethrowInvalidMarketData(cause);
-          return null;
-        }),
-        market.quote(assetId, signal).catch((cause: unknown) => {
-          rethrowAbort(cause);
-          rethrowInvalidMarketData(cause);
-          return null;
-        }),
+        requiredMarketResult(`daily history for asset ${assetId}`, () =>
+          market.history(assetId, 'MAX', signal),
+        ),
+        requiredMarketResult(`quote for asset ${assetId}`, () => market.quote(assetId, signal)),
       ]);
-      if (historyResult !== null) {
-        assertMarketWatermark(historyResult.watermark, assetId);
-        for (const point of historyResult.value) {
-          if (
-            !Number.isFinite(Date.parse(point.time)) ||
-            !Number.isFinite(point.close) ||
-            point.close <= 0
-          ) {
-            throw moneyFailure('MARKET_DATA_INVALID', `Daily close for ${assetId} is invalid.`);
-          }
-        }
+      assertFreshMarketResult(historyResult, `daily history for asset ${assetId}`);
+      assertFreshMarketResult(quoteResult, `quote for asset ${assetId}`);
+      if (historyResult.value.length === 0) {
+        throw moneyFailure('MARKET_DATA_MISSING', `Daily history for asset ${assetId} is empty.`, {
+          retryable: true,
+          details: { assetId },
+        });
       }
-      if (quoteResult !== null) {
-        assertMarketWatermark(quoteResult.watermark, assetId);
+      assertMarketWatermark(historyResult.watermark, assetId);
+      for (const point of historyResult.value) {
         if (
-          !Number.isFinite(quoteResult.value.price) ||
-          quoteResult.value.price <= 0 ||
-          (quoteResult.value.prevClose != null &&
-            (!Number.isFinite(quoteResult.value.prevClose) || quoteResult.value.prevClose <= 0))
+          !Number.isFinite(Date.parse(point.time)) ||
+          !Number.isFinite(point.close) ||
+          point.close <= 0
         ) {
-          throw moneyFailure('MARKET_DATA_INVALID', `Quote for ${assetId} is invalid.`);
+          throw moneyFailure('MARKET_DATA_INVALID', `Daily close for ${assetId} is invalid.`);
         }
       }
+      assertMarketWatermark(quoteResult.watermark, assetId);
       if (
-        quoteResult !== null &&
-        quoteResult.value.currency.toUpperCase() !== asset.currency.toUpperCase()
+        !Number.isFinite(quoteResult.value.price) ||
+        quoteResult.value.price <= 0 ||
+        (quoteResult.value.prevClose != null &&
+          (!Number.isFinite(quoteResult.value.prevClose) || quoteResult.value.prevClose <= 0))
       ) {
+        throw moneyFailure('MARKET_DATA_INVALID', `Quote for ${assetId} is invalid.`);
+      }
+      if (quoteResult.value.currency.toUpperCase() !== asset.currency.toUpperCase()) {
         throw moneyFailure(
           'MARKET_DATA_INVALID',
           `Quote currency for ${assetId} does not match its vault asset currency.`,
         );
       }
       const byDate = new Map(local.map((point) => [point.date, point.close]));
-      for (const point of historyResult?.value ?? []) {
+      for (const point of historyResult.value) {
         const day = point.time.slice(0, 10);
         if (day < today) byDate.set(day, point.close);
       }
-      if (quoteResult !== null) byDate.set(today, quoteResult.value.price);
+      byDate.set(today, quoteResult.value.price);
       const prices = [...byDate]
         .map(([date, close]) => ({ date, close }))
         .sort((left, right) => left.date.localeCompare(right.date));
       return {
         asset,
         prices,
-        quote:
-          quoteResult === null
-            ? null
-            : {
-                price: quoteResult.value.price,
-                prevClose: quoteResult.value.prevClose ?? null,
-              },
-        historyStale: historyResult?.stale ?? local.length > 0,
-        quoteStale: quoteResult?.stale ?? false,
-        historyMissing: historyResult === null && local.length === 0,
-        quoteMissing: quoteResult === null,
-        watermark: [
-          historyResult?.watermark ??
-            `local:${local.map((point) => `${point.date}:${point.close}`).join(',')}`,
-          quoteResult?.watermark ?? 'quote-missing',
-        ].join(':'),
+        quote: {
+          price: quoteResult.value.price,
+          prevClose: quoteResult.value.prevClose ?? null,
+        },
+        historyStale: false,
+        quoteStale: false,
+        historyMissing: false,
+        quoteMissing: false,
+        watermark: [historyResult.watermark, quoteResult.watermark].join(':'),
       };
     }),
   );
@@ -438,6 +451,7 @@ function createFxInputLoader(market: MarketDataSource, signal?: AbortSignal): Fx
               `The ${currency}->EUR market-data response is invalid.`,
             );
           }
+          assertFreshMarketResult(result, `${currency}->EUR FX for ${date ?? 'spot'}`);
           resolved.set(key, result);
           return result;
         } catch (cause) {
@@ -596,20 +610,39 @@ function rethrowAbort(cause: unknown): void {
   if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
 }
 
-function rethrowInvalidMarketData(cause: unknown): void {
-  if (!(cause instanceof MarketDataSourceError)) return;
-  if (cause.code === 'MARKET_DATA_INVALID') {
-    throw moneyFailure('MARKET_DATA_INVALID', cause.message, { cause });
-  }
-  if (cause.code === 'MARKET_DATA_UNSUPPORTED') {
-    throw moneyFailure('MARKET_DATA_UNSUPPORTED', cause.message, { cause });
-  }
-}
-
 function assertMarketWatermark(watermark: string, label: string): void {
   if (typeof watermark !== 'string' || watermark.length === 0) {
     throw moneyFailure('MARKET_DATA_INVALID', `Market-data watermark for ${label} is missing.`);
   }
+}
+
+async function requiredMarketResult<T>(
+  label: string,
+  load: () => Promise<MarketDataValue<T>>,
+): Promise<MarketDataValue<T>> {
+  try {
+    return await load();
+  } catch (cause) {
+    rethrowAbort(cause);
+    if (cause instanceof MarketDataSourceError || cause instanceof VaultMoneyEngineError) {
+      throw cause;
+    }
+    throw moneyFailure('MARKET_DATA_UNAVAILABLE', `Fresh ${label} is unavailable.`, {
+      retryable: true,
+      cause,
+    });
+  }
+}
+
+function assertFreshMarketResult(
+  result: Pick<MarketDataValue<unknown>, 'stale' | 'asOf'>,
+  label: string,
+): void {
+  if (!result.stale) return;
+  throw moneyFailure('MARKET_DATA_UNAVAILABLE', `Fresh ${label} is unavailable.`, {
+    retryable: true,
+    details: { stale: true, asOf: result.asOf },
+  });
 }
 
 function marketOrMoneyFailure(cause: unknown) {

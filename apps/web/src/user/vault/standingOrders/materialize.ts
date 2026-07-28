@@ -118,6 +118,26 @@ export async function materializeDueStandingOrders(
             quote = { price: manual.quote.price, currency: asset.currency };
           } else {
             const marketQuote = await market.quote(order.row.assetId, signal);
+            if (marketQuote.stale) {
+              throw moneyFailure(
+                'MARKET_DATA_UNAVAILABLE',
+                `Fresh standing-order quote is unavailable for asset ${order.row.assetId}.`,
+                {
+                  retryable: true,
+                  details: {
+                    assetId: order.row.assetId,
+                    stale: true,
+                    asOf: marketQuote.asOf,
+                  },
+                },
+              );
+            }
+            if (typeof marketQuote.watermark !== 'string' || marketQuote.watermark.length === 0) {
+              throw moneyFailure(
+                'MARKET_DATA_INVALID',
+                `Standing-order quote metadata is invalid for asset ${order.row.assetId}.`,
+              );
+            }
             quote = {
               price: marketQuote.value.price,
               currency: marketQuote.value.currency,

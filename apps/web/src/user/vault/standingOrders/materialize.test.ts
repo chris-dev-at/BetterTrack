@@ -41,6 +41,8 @@ const NOT_DUE_ID = '018f0000-0000-7000-8000-000000000204';
 const DEDUCT_ID = '018f0000-0000-7000-8000-000000000205';
 const DEVICE_ID = CLIENT_MONEY_IDS.device;
 const SECOND_DEVICE_ID = '018f0000-0000-7000-8000-000000000206';
+const LEGACY_RUN_ID = '018f0000-0000-7000-8000-0000000002a1';
+const LEGACY_LEDGER_ID = '018f0000-0000-7000-8000-0000000002a2';
 const BOOKED_AT = '2026-07-26T22:30:00.000Z';
 
 beforeEach(() => {
@@ -230,6 +232,92 @@ describe('paranoid standing-order materialization', () => {
       expect(market.calls.quote).toEqual([]);
       expect(market.calls.history).toEqual([]);
       expect(market.calls.fx).toEqual([]);
+    },
+  );
+
+  it.each(['booked with random ledger id', 'claim-only tombstone'] as const)(
+    'preserves a legacy server occurrence that is %s',
+    async (legacyState) => {
+      const fixture = await decryptClientMoneyFixture();
+      const booked = legacyState === 'booked with random ledger id';
+      const document = withOrders(fixture.document, [
+        standingOrder(DAILY_ADD_ID, {
+          kind: 'cash-add',
+          amount: '25',
+          cadence: 'daily',
+          anchorDay: null,
+          startDate: '2026-07-20',
+          ...(booked ? { lastRunAt: BOOKED_AT, lastPeriodKey: '2026-07-27' } : {}),
+        }),
+      ]);
+      document.entities.standingOrderRun = [
+        {
+          id: LEGACY_RUN_ID,
+          rev: 0,
+          editedAt: BOOKED_AT,
+          editedBy: DEVICE_ID,
+          deletedAt: null,
+          data: {
+            standingOrderId: DAILY_ADD_ID,
+            periodKey: '2026-07-27',
+            bookedAt: BOOKED_AT,
+          },
+        },
+      ];
+      if (booked) {
+        document.entities.cashMovement = [
+          ...(document.entities.cashMovement ?? []),
+          {
+            id: LEGACY_LEDGER_ID,
+            rev: 0,
+            editedAt: BOOKED_AT,
+            editedBy: DEVICE_ID,
+            deletedAt: null,
+            data: {
+              portfolioId: CLIENT_MONEY_IDS.portfolio,
+              sourceId: CLIENT_MONEY_IDS.cashSource,
+              kind: 'deposit',
+              amountEur: '25',
+              transactionId: null,
+              transferId: null,
+              counterpartSourceId: null,
+              dividendId: null,
+              taxYear: null,
+              executedAt: BOOKED_AT,
+              note: null,
+              source: 'standing-order',
+              createdAt: BOOKED_AT,
+            },
+          },
+        ];
+      }
+      const sync = createMutableTestSync(document, fixture.header);
+      const market = createClientMoneyMarket();
+
+      const outcome = await materializeDueStandingOrders(
+        sync,
+        createVaultPortfolioStore(sync),
+        market.market,
+        {
+          now: () => new Date(BOOKED_AT),
+          timezone: 'Europe/Vienna',
+        },
+      );
+
+      expect(outcome).toMatchObject({ ok: true, value: { booked: [], deferred: [] } });
+      const deterministicId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
+      expect(live(sync.state.active!.document, 'standingOrderRun', LEGACY_RUN_ID)).toBeDefined();
+      expect(
+        live(sync.state.active!.document, 'standingOrderRun', deterministicId),
+      ).toBeUndefined();
+      expect(live(sync.state.active!.document, 'cashMovement', deterministicId)).toBeUndefined();
+      if (booked) {
+        expect(live(sync.state.active!.document, 'cashMovement', LEGACY_LEDGER_ID)).toBeDefined();
+      } else {
+        expect(live(sync.state.active!.document, 'cashMovement', LEGACY_LEDGER_ID)).toBeUndefined();
+      }
+      expect(sync.mutationCount).toBe(0);
+      expect(market.calls.quote).toEqual([]);
     },
   );
 
@@ -518,6 +606,75 @@ describe('paranoid standing-order materialization', () => {
       ok: false,
       error: { code: 'OPERATION_ABORTED' },
     });
+  });
+
+  it('blocks a stale quote and books exactly once after fresh-data recovery', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(MONTHLY_BUY_ID, {
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.eurAsset,
+        amount: '1',
+        currency: 'EUR',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const sync = createMutableTestSync(document, fixture.header);
+    const market = createClientMoneyMarket();
+    market.setStale(true);
+    const lifecycle = createStandingOrderMaterializationLifecycle(sync, market.market, {
+      retryCount: 0,
+      now: () => new Date(BOOKED_AT),
+      timezone: 'Europe/Vienna',
+    });
+    const engine = createVaultMoneyEngine(sync, market.market, {
+      now: () => new Date(BOOKED_AT).getTime(),
+      standingOrders: lifecycle,
+    });
+    const occurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-27');
+
+    await expect(engine.onAppOpen()).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'MARKET_DATA_UNAVAILABLE', retryable: true },
+    });
+    expect(live(sync.state.active!.document, 'transaction', occurrenceId)).toBeUndefined();
+    expect(live(sync.state.active!.document, 'standingOrderRun', occurrenceId)).toBeUndefined();
+    expect(sync.mutationCount).toBe(0);
+
+    market.setStale(false);
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(engine.onAppOpen()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        booked: [
+          {
+            occurrenceId,
+            orderId: MONTHLY_BUY_ID,
+            dueDate: '2026-07-27',
+            status: 'created',
+          },
+        ],
+      },
+    });
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: true,
+    });
+
+    expect(
+      sync.state.active?.document.entities.transaction?.filter(
+        (entity) => entity.id === occurrenceId && entity.deletedAt === null,
+      ),
+    ).toHaveLength(1);
+    expect(
+      sync.state.active?.document.entities.standingOrderRun?.filter(
+        (entity) => entity.id === occurrenceId && entity.deletedAt === null,
+      ),
+    ).toHaveLength(1);
+    expect(sync.mutationCount).toBe(1);
   });
 
   it('prices a vault-only manual asset locally instead of deferring to the server', async () => {

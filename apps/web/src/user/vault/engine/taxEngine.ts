@@ -207,6 +207,16 @@ async function taxableTransactions(
         `Tax FX metadata is invalid for ${asset.currency} on ${date}.`,
       );
     }
+    if (fx.stale) {
+      throw moneyFailure(
+        'MARKET_DATA_UNAVAILABLE',
+        `Fresh tax FX data is unavailable for ${asset.currency} on ${date}.`,
+        {
+          retryable: true,
+          details: { currency: asset.currency, date, stale: true, asOf: fx.asOf },
+        },
+      );
+    }
     stale ||= fx.stale;
     watermarks.add(`${asset.currency}:${date}:${fx.watermark}`);
     rows.push({

@@ -1000,10 +1000,58 @@ export function existingStandingOrderOccurrence(
   input: VaultStandingOrderOccurrenceInput,
 ): VaultStandingOrderOccurrenceResult | null {
   const order = findLiveEntity(document, 'standingOrder', input.orderId);
-  const run = findLiveEntity(document, 'standingOrderRun', input.occurrenceId);
+  const runById = findLiveEntity(document, 'standingOrderRun', input.occurrenceId);
+  const semanticRuns = liveEntities(document, 'standingOrderRun').filter(
+    (candidate) =>
+      stringField(candidate.data, 'standingOrderId') === input.orderId &&
+      stringField(candidate.data, 'periodKey') === input.dueDate,
+  );
+  if (semanticRuns.length > 1) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing-order period has more than one durable claim.',
+    );
+  }
+  const semanticRun = semanticRuns[0];
+  if (runById != null && semanticRun !== runById) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing-order occurrence id conflicts with another period claim.',
+    );
+  }
+  const run = runById ?? semanticRun;
   const transaction = findLiveEntity(document, 'transaction', input.occurrenceId);
   const cashMovement = findLiveEntity(document, 'cashMovement', input.occurrenceId);
   const ledgerRows = [transaction, cashMovement].filter((entity) => entity != null);
+
+  /*
+   * Cleartext server execution predates deterministic client ids. Its
+   * `(standingOrderId, periodKey)` run row is the at-most-once claim, while the
+   * booked ledger row has a separate random id. A claim can intentionally have
+   * no ledger row when server booking failed after the claim. Preserve either
+   * legacy shape as an existing occurrence; only deterministic client claims
+   * promise the atomic run + ledger + watermark aggregate validated below.
+   */
+  if (run != null && run.id !== input.occurrenceId) {
+    if (order == null || ledgerRows.length !== 0) {
+      throw storeError(
+        'VAULT_DATA_INVALID',
+        'A legacy standing-order claim conflicts with deterministic occurrence rows.',
+      );
+    }
+    parseVaultData(
+      () => VAULT_ENTITY_ROW_SCHEMAS.standingOrderRun.parse(run.data),
+      'A standing-order run does not match the strict restore contract.',
+    );
+    return {
+      occurrenceId: input.occurrenceId,
+      orderId: input.orderId,
+      dueDate: input.dueDate,
+      rowKind: standingOrderRowKind(order),
+      status: 'existing',
+    };
+  }
+
   if (run == null && ledgerRows.length === 0) {
     if (
       order != null &&

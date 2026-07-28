@@ -413,6 +413,42 @@ describe('paranoid client money engine', () => {
     expect(market.calls.fx).toEqual([]);
   });
 
+  it.each(['transaction', 'dividend'] as const)(
+    'rejects a current-year frozen FI %s before any authoritative output or market read',
+    async (kind) => {
+      const fixture = await decryptClientMoneyFixture();
+      const document = structuredClone(fixture.document);
+      const entity =
+        kind === 'transaction'
+          ? document.entities.transaction?.find((candidate) => candidate.data.side === 'sell')
+          : document.entities.dividend?.[0];
+      if (entity === undefined) throw new Error(`Fixture ${kind} is missing.`);
+      entity.data.taxMode = 'country_specific';
+      entity.data.taxCountry = 'FI';
+      entity.data.taxParams = null;
+      const market = createClientMoneyMarket();
+      const engine = createVaultMoneyEngine(
+        createMutableTestSync(document, fixture.header),
+        market.market,
+        { now: () => NOW },
+      );
+
+      const portfolio = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+      const tax = await engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+
+      for (const outcome of [portfolio, tax]) {
+        expect(outcome).toMatchObject({
+          ok: false,
+          error: { code: 'TAX_MODE_UNSUPPORTED', retryable: false },
+        });
+        expect(outcome).not.toHaveProperty('value');
+      }
+      expect(market.calls.quote).toEqual([]);
+      expect(market.calls.history).toEqual([]);
+      expect(market.calls.fx).toEqual([]);
+    },
+  );
+
   it('preserves reachable negative automatic-tax refund deltas', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = structuredClone(fixture.document);
@@ -505,47 +541,59 @@ describe('paranoid client money engine', () => {
     });
   });
 
-  it('marks missing and stale market inputs explicitly instead of using a silent fallback', async () => {
+  it('fails closed on missing or stale prices and FX, then recovers with fresh inputs', async () => {
     const fixture = await decryptClientMoneyFixture();
     const sync = createMutableTestSync(fixture.document, fixture.header);
     const market = createClientMoneyMarket();
     market.setMissingQuote(CLIENT_MONEY_IDS.usdAsset, true);
     const engine = createVaultMoneyEngine(sync, market.market, { now: () => NOW });
 
-    const missing = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
-    expect(missing).toMatchObject({
-      ok: true,
-      value: {
-        holdingsValueEur: null,
-        totalValueEur: null,
-        allocation: null,
-        missingAssetIds: [CLIENT_MONEY_IDS.usdAsset],
-      },
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'MARKET_DATA_UNAVAILABLE', retryable: true },
     });
-    if (missing.ok) {
-      expect(missing.value.series.at(-1)).toMatchObject({
-        valueEur: null,
-        costBasisEur: null,
-        pnlEur: null,
-        twrPct: null,
-        missingAssetIds: [CLIENT_MONEY_IDS.usdAsset],
-      });
-    }
 
     market.setMissingQuote(CLIENT_MONEY_IDS.usdAsset, false);
+    const freshHistory = market.market.history;
+    market.market.history = async () => {
+      throw new Error('missing history');
+    };
+    engine.clearCache();
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'MARKET_DATA_UNAVAILABLE', retryable: true },
+    });
+
+    market.market.history = freshHistory;
+    const freshFx = market.market.fx;
+    market.market.fx = async (...args) => ({ ...(await freshFx(...args)), stale: true });
+    engine.clearCache();
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'MARKET_DATA_UNAVAILABLE', retryable: true },
+    });
+
+    market.market.fx = freshFx;
     market.setStale(true);
     engine.clearCache();
-    const stale = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
-    expect(stale).toMatchObject({
-      ok: true,
-      value: { freshness: 'stale' },
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'MARKET_DATA_UNAVAILABLE', retryable: true },
     });
-    if (stale.ok) {
-      expect(stale.value.series.every((point) => point.freshness === 'stale')).toBe(true);
-    }
+    await expect(engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'MARKET_DATA_UNAVAILABLE', retryable: true },
+    });
+
+    market.setStale(false);
+    engine.clearCache();
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: true,
+      value: { freshness: 'fresh', missingAssetIds: [] },
+    });
     await expect(engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026)).resolves.toMatchObject({
       ok: true,
-      value: { freshness: 'stale' },
+      value: { freshness: 'fresh' },
     });
   });
 

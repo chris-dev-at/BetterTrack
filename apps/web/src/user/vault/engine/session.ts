@@ -242,6 +242,9 @@ function validateFrozenTaxShape(
   if (!shapeIsValid) {
     invalidTaxFacts(kind, id, 'frozen tax mode, country, and parameters are inconsistent');
   }
+  if (mode === 'country_specific' && !isClientSupportedTaxCountry(country)) {
+    unsupportedTaxCountry(kind, id, country);
+  }
   if (mode === 'none' && amountEur !== null && !isZeroDecimal(amountEur)) {
     invalidTaxFacts(kind, id, 'none-mode rows cannot carry a frozen tax amount');
   }
@@ -261,6 +264,21 @@ function isZeroDecimal(value: string): boolean {
 
 function invalidTaxFacts(kind: 'transaction' | 'dividend', id: string, reason: string): never {
   throw moneyFailure('VAULT_CORRUPT', `Vault ${kind} ${id} is unreachable: ${reason}.`);
+}
+
+function unsupportedTaxCountry(
+  kind: 'transaction' | 'dividend' | 'taxSetting' | 'portfolioSetting',
+  id: string,
+  country: unknown,
+): never {
+  throw moneyFailure(
+    'TAX_MODE_UNSUPPORTED',
+    `Vault ${kind} ${id} uses tax country ${String(country)}, which the paranoid client engine does not support.`,
+  );
+}
+
+function isClientSupportedTaxCountry(country: unknown): country is 'AT' | 'DE' {
+  return country === 'AT' || country === 'DE';
 }
 
 function validatePersistedTaxSettings(document: VaultDocumentV1): void {
@@ -311,12 +329,24 @@ function validatePersistedTaxSettings(document: VaultDocumentV1): void {
         'mode, country, custom parameters, and manual defaults are inconsistent',
       );
     }
+    if (row.mode === 'country_specific' && !isClientSupportedTaxCountry(row.country)) {
+      unsupportedTaxCountry('taxSetting', entity.id, row.country);
+    }
   }
 
   for (const entity of liveEntities(document, 'portfolioSetting')) {
     const row = VAULT_ENTITY_ROW_SCHEMAS.portfolioSetting.parse(entity.data);
-    if (row.key === 'tax' && !validPortfolioTaxOverride(row.value)) {
-      invalidTaxSetting('portfolioSetting', entity.id, 'the stored tax override is malformed');
+    if (row.key === 'tax') {
+      const stored = taxSettingsResponseSchema.safeParse(row.value);
+      if (!stored.success || !validPortfolioTaxOverride(row.value)) {
+        invalidTaxSetting('portfolioSetting', entity.id, 'the stored tax override is malformed');
+      }
+      if (
+        stored.data.mode === 'country_specific' &&
+        !isClientSupportedTaxCountry(stored.data.country)
+      ) {
+        unsupportedTaxCountry('portfolioSetting', entity.id, stored.data.country);
+      }
     }
   }
 }
