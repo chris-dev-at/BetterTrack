@@ -345,6 +345,17 @@ function DriveVaultSection({
     );
   }
 
+  function failureKey(result: DriveConnectionActionResult): string {
+    if (result.status === 'last-medium') return 'settings.connections.drive.lastMedium';
+    if (result.status === 'failed') {
+      if (result.stage === 'preflight-sync') return 'settings.connections.drive.syncRequired';
+      if (result.stage === 'authenticate-drive') {
+        return 'settings.connections.drive.unreadableLeftover';
+      }
+    }
+    return 'settings.connections.drive.actionError';
+  }
+
   async function perform(
     action: DriveCardAction,
     activeConnection: DriveConnectionController,
@@ -395,7 +406,7 @@ function DriveVaultSection({
       }
       await refresh();
     } else {
-      setMessage({ tone: 'error', key: 'settings.connections.drive.actionError' });
+      setMessage({ tone: 'error', key: failureKey(result) });
     }
   }
 

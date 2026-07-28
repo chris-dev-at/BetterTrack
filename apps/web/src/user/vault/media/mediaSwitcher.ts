@@ -41,8 +41,12 @@ export interface VaultMediaSwitcherOptions {
 }
 
 export type VaultMediaSwitchFailureStage =
+  /** Emitted by the connection controller before any medium is touched. */
+  | 'preflight-sync'
   | 'read-source'
   | 'authenticate-source'
+  /** A Drive object exists but does not authenticate under the current key. */
+  | 'authenticate-drive'
   | 'write-target'
   | 'read-back'
   | 'verify-round-trip'
@@ -82,7 +86,13 @@ export type VaultRetiredPurgeResult =
   | {
       status: 'failed';
       media: ParanoidVaultMediaState | null;
-      stage: 'read-source' | 'authenticate-source' | 'purge-retired';
+      stage:
+        | 'read-source'
+        | 'authenticate-source'
+        | 'authenticate-drive'
+        | 'verify-round-trip'
+        | 'purge-retired';
+      message?: string;
       cause?: unknown;
     };
 
@@ -106,7 +116,7 @@ type AuthenticatedSourceResult =
     }
   | {
       status: 'failed';
-      stage: 'read-source' | 'authenticate-source' | 'verify-round-trip';
+      stage: 'read-source' | 'authenticate-source' | 'authenticate-drive' | 'verify-round-trip';
       message: string;
       cause?: unknown;
     };
@@ -115,7 +125,7 @@ type PreparedDriveCleanupResult =
   | { status: 'ok'; proof: DriveCleanupProof }
   | {
       status: 'failed';
-      stage: 'read-source' | 'authenticate-source' | 'verify-round-trip';
+      stage: 'read-source' | 'authenticate-drive' | 'verify-round-trip';
       message: string;
       cause?: unknown;
     };
@@ -255,16 +265,23 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
         };
       }
 
-      const read = await options.drive.read();
-      if (read.status !== 'ok') {
-        return { status: 'failed', media, stage: 'read-source', cause: read };
+      // Purging is the only irreversible step in this arc, so its read-back
+      // proof must clear the same gate as every other Drive read: one complete
+      // observation set that has converged to a single authenticated,
+      // byte-verified object. A generic `drive.read()` would return only the
+      // first successful observation and mask an unconverged duplicate set —
+      // exactly the state the retained server copy exists to recover from.
+      const source = await readAuthenticatedSource('drive');
+      if (source.status === 'failed') {
+        return {
+          status: 'failed',
+          media,
+          stage: source.stage,
+          message: source.message,
+          cause: source.cause,
+        };
       }
-      let copy: AuthenticatedVaultCopy;
-      try {
-        copy = await options.authenticate(read.envelope);
-      } catch (cause) {
-        return { status: 'failed', media, stage: 'authenticate-source', cause };
-      }
+      const copy: AuthenticatedVaultCopy = source.copy;
       if (copy.vaultVersion < retired.version) {
         return {
           status: 'failed',
@@ -302,7 +319,12 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
   ): Promise<VaultMediaSwitchResult> {
     const targetBefore = await prepareDriveCleanup();
     if (targetBefore.status === 'failed') {
-      return failure(media, 'write-target', targetBefore.message, targetBefore.cause);
+      return failure(
+        media,
+        targetBefore.stage === 'authenticate-drive' ? 'authenticate-drive' : 'write-target',
+        targetBefore.message,
+        targetBefore.cause,
+      );
     }
     let targetMatches = false;
     if (targetBefore.proof.copy != null) {
@@ -538,7 +560,12 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
         };
       }
       const authenticated = await authenticate(observation);
-      if (authenticated.status === 'failed') return authenticated;
+      if (authenticated.status === 'failed') {
+        // A Drive object that no longer authenticates is a dead end the user
+        // has to clear in Google's own "manage app data": BetterTrack must not
+        // delete bytes it cannot verify, and it must say so honestly.
+        return { ...authenticated, stage: 'authenticate-drive' };
+      }
       copies.push(authenticated.copy);
     }
     const copy = copies[0]!;

@@ -89,6 +89,12 @@ class MemoryDriveHome extends MemoryHome implements DriveDataHome {
   deleteFailure = false;
   deletes = 0;
   beforeDelete: (() => void) | null = null;
+  /**
+   * Extra same-name appdata objects, as two devices concurrently creating the
+   * file produce. `read()` keeps masking them the way the real adapter does;
+   * only `observeReplicas()` reveals the unconverged set.
+   */
+  duplicates: Uint8Array[] = [];
   private revision = 1;
 
   constructor(value: Uint8Array | null) {
@@ -96,7 +102,10 @@ class MemoryDriveHome extends MemoryHome implements DriveDataHome {
   }
 
   async observeReplicas(): Promise<DriveReplicaCycle> {
-    const observations = [await this.read()];
+    const observations = [
+      await this.read(),
+      ...this.duplicates.map((value) => duplicateObservation(value)),
+    ];
     const frozenValue = this.value?.slice() ?? null;
     const frozenRevision = this.revision;
     return {
@@ -134,6 +143,20 @@ class MemoryDriveHome extends MemoryHome implements DriveDataHome {
     this.value = value.slice();
     this.revision += 1;
   }
+}
+
+function duplicateObservation(value: Uint8Array): DataHomeReadResult {
+  return {
+    status: 'ok',
+    medium: 'drive',
+    envelope: value.slice(),
+    info: {
+      medium: 'drive',
+      version: value[0]!,
+      sizeBytes: value.byteLength,
+      updatedAt: '2026-07-27T09:59:00.000Z',
+    },
+  };
 }
 
 function optionalBytesEqual(left: Uint8Array | null, right: Uint8Array | null): boolean {
@@ -484,5 +507,52 @@ describe('verified vault media switch matrix', () => {
       observedVersion: 3,
       signature: 's'.repeat(86),
     });
+  });
+
+  it('refuses to destroy the retired server copy while Drive holds an unconverged set', async () => {
+    const flow = setup(['drive'], null, bytes(3, 3));
+    flow.api.media.server = {
+      disposition: 'retired',
+      candidate: null,
+      retired: {
+        version: 2,
+        retiredAt: '2026-07-27T10:00:00.000Z',
+        purgeAfter: '2026-08-03T10:00:00.000Z',
+      },
+    };
+
+    // Two devices created the appdata object concurrently. `read()` masks the
+    // second branch, so only the complete observation set can gate the purge.
+    flow.drive.duplicates = [bytes(3, 3)];
+    await expect(flow.switcher.purgeRetiredServer()).resolves.toMatchObject({
+      status: 'failed',
+      stage: 'verify-round-trip',
+    });
+
+    // A divergent duplicate is refused on the same gate.
+    flow.drive.duplicates = [bytes(4, 4)];
+    await expect(flow.switcher.purgeRetiredServer()).resolves.toMatchObject({
+      status: 'failed',
+      stage: 'verify-round-trip',
+    });
+
+    // An unauthenticatable branch never signs an observed version either.
+    flow.drive.duplicates = [bytes(3, 255)];
+    await expect(flow.switcher.purgeRetiredServer()).resolves.toMatchObject({
+      status: 'failed',
+      stage: 'authenticate-drive',
+    });
+
+    expect(flow.retirementProof.sign).not.toHaveBeenCalled();
+    expect(flow.api.purgeRequests).toHaveLength(0);
+    expect(flow.api.media.server.disposition).toBe('retired');
+
+    // Once Drive has converged to one authenticated object, the purge proceeds.
+    flow.drive.duplicates = [];
+    await expect(flow.switcher.purgeRetiredServer()).resolves.toMatchObject({
+      status: 'ok',
+      media: { server: { disposition: 'empty' } },
+    });
+    expect(flow.api.purgeRequests).toHaveLength(1);
   });
 });

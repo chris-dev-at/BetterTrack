@@ -534,6 +534,8 @@
         "leftoverSyncPending": "Drive was disconnected and the storage choice was saved, but Google could not delete the leftover ciphertext and synchronization still needs attention.",
         "syncPending": "The storage choice was saved, but synchronization still needs attention. BetterTrack will retry from the encrypted pending copy.",
         "actionError": "The storage change was cancelled because a verified copy could not be completed.",
+        "syncRequired": "Your latest encrypted changes are not on every selected medium yet, so the storage choice was left unchanged. Try again once synchronization has finished.",
+        "unreadableLeftover": "A Google Drive copy of your vault could not be decrypted with this vault key. BetterTrack never deletes ciphertext it cannot verify — remove the BetterTrack app data in your Google account, then try again.",
         "loadError": "Drive storage status could not be loaded.",
         "purgedNotice": "The retained server recovery copy was deleted.",
         "purgeError": "The retained server copy was not deleted. The recovery window or read-back proof may not be ready.",

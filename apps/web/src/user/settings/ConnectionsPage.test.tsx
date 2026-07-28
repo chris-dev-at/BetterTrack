@@ -104,7 +104,10 @@ function controller(
       media: BOTH_STATE,
       driveLeftover: false as const,
     })),
-    resume: vi.fn(async () => ({ status: 'ok' as const })),
+    resume: vi.fn(async () => ({
+      status: 'ok' as const,
+      state: { status: 'synced' as const, active: null, pending: null },
+    })),
     purgeRetiredServer: vi.fn(async () => ({
       status: 'ok' as const,
       media: DRIVE_ONLY_STATE,
@@ -307,6 +310,45 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
         'The storage change was cancelled because a verified copy could not be completed.',
       ),
     ).not.toBeInTheDocument();
+  });
+
+  test('explains a blocked preflight and an unreadable Drive leftover in their own words', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue(SERVER_MEDIA);
+    const drive = controller();
+    vi.mocked(drive.connect).mockResolvedValueOnce({
+      status: 'failed',
+      media: null,
+      driveLeftover: false,
+      stage: 'preflight-sync',
+      message: 'not reconciled',
+      synchronization: { status: 'pending' },
+    });
+    const user = userEvent.setup();
+    renderPage('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Connect Drive' }));
+    expect(
+      await screen.findByText(
+        'Your latest encrypted changes are not on every selected medium yet, so the storage choice was left unchanged. Try again once synchronization has finished.',
+      ),
+    ).toBeInTheDocument();
+
+    vi.mocked(drive.connect).mockResolvedValueOnce({
+      status: 'failed',
+      media: null,
+      driveLeftover: false,
+      stage: 'authenticate-drive',
+      message: 'leftover does not authenticate',
+    });
+    await user.click(screen.getByRole('button', { name: 'Connect Drive' }));
+    expect(
+      await screen.findByText(
+        'A Google Drive copy of your vault could not be decrypted with this vault key. BetterTrack never deletes ciphertext it cannot verify — remove the BetterTrack app data in your Google account, then try again.',
+      ),
+    ).toBeInTheDocument();
   });
 
   test('surfaces token expiry as an explicit Google sign-in action', async () => {

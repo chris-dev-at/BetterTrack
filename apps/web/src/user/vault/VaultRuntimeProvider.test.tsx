@@ -318,7 +318,10 @@ function connection(): DriveConnectionController {
       status: 'authorization-required' as const,
       authorization: 'gesture-required' as const,
     })),
-    resume: vi.fn(async () => ({ status: 'ok' as const })),
+    resume: vi.fn(async () => ({
+      status: 'ok' as const,
+      state: { status: 'synced' as const, active: null, pending: null },
+    })),
     purgeRetiredServer: vi.fn(async () => ({
       status: 'authorization-required' as const,
       authorization: 'gesture-required' as const,

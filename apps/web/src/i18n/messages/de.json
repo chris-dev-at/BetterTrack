@@ -534,6 +534,8 @@
         "leftoverSyncPending": "Drive wurde getrennt und die Speicherwahl gespeichert. Google konnte den verbliebenen Geheimtext jedoch nicht löschen und die Synchronisierung benötigt noch Aufmerksamkeit.",
         "syncPending": "Die Speicherwahl wurde gespeichert, aber die Synchronisierung benötigt noch Aufmerksamkeit. BetterTrack versucht es erneut mit der verschlüsselten ausstehenden Kopie.",
         "actionError": "Die Speicheränderung wurde abgebrochen, weil keine verifizierte Kopie abgeschlossen werden konnte.",
+        "syncRequired": "Deine neuesten verschlüsselten Änderungen liegen noch nicht auf jedem ausgewählten Medium, daher wurde die Speicherwahl nicht geändert. Versuche es erneut, sobald die Synchronisierung abgeschlossen ist.",
+        "unreadableLeftover": "Eine Google-Drive-Kopie deines Tresors konnte mit diesem Tresorschlüssel nicht entschlüsselt werden. BetterTrack löscht niemals Geheimtext, den es nicht verifizieren kann — entferne die BetterTrack-App-Daten in deinem Google-Konto und versuche es dann erneut.",
         "loadError": "Der Drive-Speicherstatus konnte nicht geladen werden.",
         "purgedNotice": "Die aufbewahrte Server-Wiederherstellungskopie wurde gelöscht.",
         "purgeError": "Die aufbewahrte Serverkopie wurde nicht gelöscht. Das Wiederherstellungsfenster oder der Read-back-Nachweis ist möglicherweise noch nicht bereit.",

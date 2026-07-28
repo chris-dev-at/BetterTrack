@@ -22,11 +22,17 @@ function setup({
   leftover = false,
   resumeFailure = null,
   resumeStatus = 'synced',
+  preflightFailure = null,
+  preflightStatus = 'synced',
 }: {
   authorized?: boolean;
   leftover?: boolean;
+  /** Applies to the post-commit coordinator pass. */
   resumeFailure?: Error | null;
   resumeStatus?: VaultSyncState['status'];
+  /** Applies to the preflight pass — and to the single pass `resume()` runs. */
+  preflightFailure?: Error | null;
+  preflightStatus?: VaultSyncState['status'];
 } = {}) {
   let state: GoogleDriveTokenClient['state'] = authorized ? 'connected' : 'token-expired';
   const clear = vi.fn(() => {
@@ -78,14 +84,23 @@ function setup({
   };
   const ready = vi.fn(async () => undefined);
   const active = {} as VaultSyncCandidate;
-  const resumeState: VaultSyncState = {
-    status: resumeStatus,
+  const syncState = (status: VaultSyncState['status']): VaultSyncState => ({
+    status,
     active,
-    pending: resumeStatus === 'synced' ? null : active,
-  };
+    pending: status === 'synced' ? null : active,
+  });
+  // Each action runs a preflight pass and — only if that pass clears — a
+  // post-commit pass, so the coordinator mock tracks which one it is serving.
+  let awaitingCommitPass = false;
   const resumeSync = vi.fn(async () => {
+    if (!awaitingCommitPass) {
+      if (preflightFailure) throw preflightFailure;
+      awaitingCommitPass = preflightStatus === 'synced';
+      return syncState(preflightStatus);
+    }
+    awaitingCommitPass = false;
     if (resumeFailure) throw resumeFailure;
-    return resumeState;
+    return syncState(resumeStatus);
   });
   const controller = createDriveConnectionController({ tokens, switcher, ready, resumeSync });
   return { controller, tokens, switcher, ready, resumeSync, clear };
@@ -100,7 +115,8 @@ describe('Drive connection controller', () => {
     expect(setupResult.tokens.authorize).toHaveBeenCalledTimes(1);
     expect(setupResult.ready).toHaveBeenCalledTimes(1);
     expect(setupResult.switcher.add).toHaveBeenCalledWith('drive');
-    expect(setupResult.resumeSync).toHaveBeenCalledTimes(1);
+    // One preflight pass before the switch, one after it commits.
+    expect(setupResult.resumeSync).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the token, reports a leftover, and resumes on the durable server-only set', async () => {
@@ -111,7 +127,7 @@ describe('Drive connection controller', () => {
     });
 
     expect(setupResult.clear).not.toHaveBeenCalled();
-    expect(setupResult.resumeSync).toHaveBeenCalledTimes(1);
+    expect(setupResult.resumeSync).toHaveBeenCalledTimes(2);
   });
 
   it('drops the browser-only token after a verified Drive removal', async () => {
@@ -120,7 +136,7 @@ describe('Drive connection controller', () => {
     await expect(setupResult.controller.disconnect()).resolves.toMatchObject({ status: 'ok' });
 
     expect(setupResult.clear).toHaveBeenCalledTimes(1);
-    expect(setupResult.resumeSync).toHaveBeenCalledTimes(1);
+    expect(setupResult.resumeSync).toHaveBeenCalledTimes(2);
   });
 
   it('routes both Drive-only and server-restoration choices through the media switcher', async () => {
@@ -131,7 +147,50 @@ describe('Drive connection controller', () => {
 
     expect(setupResult.switcher.remove).toHaveBeenCalledWith('server');
     expect(setupResult.switcher.add).toHaveBeenCalledWith('server');
-    expect(setupResult.resumeSync).toHaveBeenCalledTimes(2);
+    expect(setupResult.resumeSync).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(['pending-offline', 'conflict'] as const)(
+    'leaves the durable media set untouched while the local candidate is %s',
+    async (preflightStatus) => {
+      const setupResult = setup({ authorized: true, preflightStatus });
+
+      await expect(setupResult.controller.useDriveOnly()).resolves.toMatchObject({
+        status: 'failed',
+        stage: 'preflight-sync',
+        media: null,
+        driveLeftover: false,
+        synchronization: { status: 'pending', state: { status: preflightStatus } },
+      });
+
+      // `ready()` is memoized, so this pass is the only thing standing between a
+      // pending offline mutation and a retired medium.
+      expect(setupResult.switcher.remove).not.toHaveBeenCalled();
+      expect(setupResult.resumeSync).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('refuses connect, disconnect, and add-server when the preflight pass fails', async () => {
+    const preflightFailure = new Error('replica unreachable');
+    const setupResult = setup({ authorized: true, preflightFailure });
+
+    for (const action of [
+      setupResult.controller.connect,
+      setupResult.controller.disconnect,
+      setupResult.controller.addServerCopy,
+    ]) {
+      await expect(action()).resolves.toMatchObject({
+        status: 'failed',
+        stage: 'preflight-sync',
+        media: null,
+        cause: preflightFailure,
+        synchronization: { status: 'pending', cause: preflightFailure },
+      });
+    }
+
+    expect(setupResult.switcher.add).not.toHaveBeenCalled();
+    expect(setupResult.switcher.remove).not.toHaveBeenCalled();
+    expect(setupResult.clear).not.toHaveBeenCalled();
   });
 
   it('preserves a committed switch when its follow-up synchronization fails', async () => {
@@ -146,7 +205,7 @@ describe('Drive connection controller', () => {
     });
 
     expect(setupResult.switcher.remove).toHaveBeenCalledWith('server');
-    expect(setupResult.resumeSync).toHaveBeenCalledTimes(1);
+    expect(setupResult.resumeSync).toHaveBeenCalledTimes(2);
   });
 
   it.each(['pending-offline', 'conflict'] as const)(
@@ -164,7 +223,7 @@ describe('Drive connection controller', () => {
         },
       });
 
-      expect(setupResult.resumeSync).toHaveBeenCalledTimes(1);
+      expect(setupResult.resumeSync).toHaveBeenCalledTimes(2);
     },
   );
 
@@ -182,5 +241,25 @@ describe('Drive connection controller', () => {
     });
 
     expect(setupResult.clear).not.toHaveBeenCalled();
+  });
+
+  it('reports the coordinator verdict from resume() instead of an unconditional ok', async () => {
+    const synced = setup({ authorized: true });
+    await expect(synced.controller.resume()).resolves.toMatchObject({
+      status: 'ok',
+      state: { status: 'synced' },
+    });
+
+    const unresolved = setup({ authorized: true, preflightStatus: 'conflict' });
+    await expect(unresolved.controller.resume()).resolves.toMatchObject({
+      status: 'pending',
+      state: { status: 'conflict' },
+    });
+
+    const failing = setup({ authorized: true, preflightFailure: new Error('offline') });
+    await expect(failing.controller.resume()).resolves.toMatchObject({
+      status: 'pending',
+      cause: { message: 'offline' },
+    });
   });
 });

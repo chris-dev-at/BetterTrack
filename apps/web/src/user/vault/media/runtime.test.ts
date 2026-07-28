@@ -192,7 +192,9 @@ describe('unlocked Drive runtime', () => {
           return current;
         },
         reconnect: vi.fn(async () => {
-          current = reconnects++ === 0 ? synced : unresolved;
+          // Pass 0 is `ready()`, pass 1 is the action preflight; only the
+          // post-commit pass resolves unsynchronized here.
+          current = reconnects++ < 2 ? synced : unresolved;
           return current;
         }),
         mutate: vi.fn(),
@@ -227,6 +229,46 @@ describe('unlocked Drive runtime', () => {
       runtime.dispose();
     },
   );
+
+  it('never changes the media set while a later action finds an unsynchronized replica', async () => {
+    // `ready()` is memoized per unlocked runtime, so a second storage action
+    // would otherwise skip reconciliation entirely and migrate/retire around a
+    // pending offline mutation.
+    const synced = syncState('synced', securedDocument);
+    const unresolved = syncState('pending-offline', securedDocument);
+    let current = synced;
+    let reconnects = 0;
+    const sync: VaultDriveSyncCoordinator = {
+      get state() {
+        return current;
+      },
+      reconnect: vi.fn(async () => {
+        current = reconnects++ === 0 ? synced : unresolved;
+        return current;
+      }),
+      mutate: vi.fn(),
+    };
+    const api = { ...unusedApi(), getState: vi.fn() };
+    const runtime = createUnlockedVaultDriveRuntime(
+      new Uint8Array(32).fill(1),
+      fixture.initial.header.keyId,
+      { ...dependencies(sync, proofManager()), api },
+    );
+
+    await expect(runtime.ready).resolves.toBeUndefined();
+
+    await expect(runtime.controller.useDriveOnly()).resolves.toMatchObject({
+      status: 'failed',
+      stage: 'preflight-sync',
+      media: null,
+      synchronization: { status: 'pending', state: { status: 'pending-offline' } },
+    });
+
+    // The switcher was never reached, so no durable media state was even read.
+    expect(api.getState).not.toHaveBeenCalled();
+    expect(sync.reconnect).toHaveBeenCalledTimes(2);
+    runtime.dispose();
+  });
 
   it('stops proof enrollment when the runtime is disposed during reconciliation', async () => {
     const reconnect = deferred<VaultSyncState>();
