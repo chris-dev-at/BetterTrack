@@ -55,6 +55,7 @@ const personal = (id: string, limit: number, windowSec = 60): Request['apiKey'] 
   id,
   kind: 'personal',
   scopes: ['portfolio:read'],
+  securityGeneration: 0,
   rateLimit: { limit, windowSec },
 });
 
@@ -110,7 +111,12 @@ describe('per-key rate tier enforcement (§13.5 V5-P10, issue 2/2)', () => {
   it('falls back to the config base schedule when a key has no resolved tier', async () => {
     const { apiKey } = createRateLimiters(ctx());
     // No `rateLimit` on the principal (e.g. an OAuth grant): base limit is 120.
-    const untiered: Request['apiKey'] = { id: 'grant-x', kind: 'oauth', scopes: [] };
+    const untiered: Request['apiKey'] = {
+      id: 'grant-x',
+      kind: 'oauth',
+      scopes: [],
+      securityGeneration: 0,
+    };
     for (let i = 0; i < 120; i += 1) {
       expect((await runOnce(apiKey, untiered)).err).toBeUndefined();
     }

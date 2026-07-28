@@ -6,6 +6,12 @@ import { sha256Base64Url } from '../crypto/tokens';
 
 export interface SessionData {
   userId: string;
+  /**
+   * Exact durable account-security generation at issue (#888). Deliberately
+   * required for newly minted records; legacy/malformed records are rejected by
+   * auth resolution rather than normalized to the current database value.
+   */
+  securityGeneration: number;
   createdAt: number;
   /** Last time the window was reset — on login (create) or PIN verify (renew). */
   renewedAt: number;
@@ -18,6 +24,25 @@ export interface SessionData {
    */
   persistent?: boolean;
 }
+
+/** Generation proof carried by a bearer-authenticated security mutation. */
+export interface BearerSecurityMutationContext {
+  securityGeneration: number;
+  sessionId?: undefined;
+  persistent?: undefined;
+}
+
+/**
+ * Generation proof for a security mutation authenticated by a cookie session.
+ * The raw session id identifies the explicitly authenticated cookie so mutation
+ * responses can clear it after invalidating every session.
+ */
+export interface SessionSecurityContext {
+  securityGeneration: number;
+  sessionId: string;
+}
+
+export type SecurityMutationContext = BearerSecurityMutationContext | SessionSecurityContext;
 
 /** Back-compat default: a session with no marker is persistent (pre-V4-P2b). */
 export const isPersistent = (data: Pick<SessionData, 'persistent'>): boolean =>
@@ -63,7 +88,7 @@ export interface SessionService {
    * persistent session gets the fixed 30-day window; an ephemeral one gets a
    * sliding idle window hard-capped from now (V4-P2b, §399 §A).
    */
-  create(userId: string, persistent?: boolean): Promise<string>;
+  create(userId: string, securityGeneration: number, persistent?: boolean): Promise<string>;
   get(sessionId: string): Promise<SessionData | null>;
   /** Reset the session's window (login / PIN verify), honouring its persistence. False if already gone. */
   renew(sessionId: string): Promise<boolean>;
@@ -181,10 +206,19 @@ export function createSessionService(
         ? data.renewedAt + ttlSeconds * 1000
         : data.createdAt + ephemeralCapMs;
     },
-    async create(userId, persistent = true) {
+    async create(userId, securityGeneration, persistent = true) {
+      if (!Number.isSafeInteger(securityGeneration) || securityGeneration < 0) {
+        throw new Error('A valid account security generation is required to create a session.');
+      }
       const sessionId = randomBytes(32).toString('base64url');
       const now = clock();
-      const data: SessionData = { userId, createdAt: now, renewedAt: now, persistent };
+      const data: SessionData = {
+        userId,
+        securityGeneration,
+        createdAt: now,
+        renewedAt: now,
+        persistent,
+      };
       await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', ttlSecondsFor(data, now));
       await redis.sadd(userIndexKey(userId), sessionId);
       await touchIndex(userId);

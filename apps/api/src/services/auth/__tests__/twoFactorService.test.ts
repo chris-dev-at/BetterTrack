@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../../config/env';
 import { createTwoFactorRepository } from '../../../data/repositories/twoFactorRepository';
@@ -12,6 +12,7 @@ import {
   type CreateTestAppOptions,
   type TestHarness,
 } from '../../../testing/createTestApp';
+import { createSessionService } from '../../sessions/sessionService';
 import { encryptSecret } from '../../crypto/secretBox';
 import { hashToken } from '../../crypto/tokens';
 import { generateTotpCode, normalizeRecoveryCode } from '../totp';
@@ -59,6 +60,7 @@ async function readUserTwoFactor() {
       enabled: users.twoFactorEnabled,
       confirmedAt: users.twoFactorConfirmedAt,
       emailEnabled: users.twoFactorEmailEnabled,
+      securityGeneration: users.securityGeneration,
     })
     .from(users)
     .where(eq(users.id, userId));
@@ -79,6 +81,14 @@ function emailedCode(transport: { sent: OutgoingMail[] }): string {
   const match = mail.text.match(/\b(\d{6})\b/);
   expect(match).not.toBeNull();
   return match![1]!;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)', () => {
@@ -111,7 +121,8 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     });
     expect((await readUserTwoFactor()).enabled).toBe(false);
 
-    const { recoveryCodes } = await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret));
+    const { recoveryCodes } = (await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret)))
+      .response;
     expect(recoveryCodes).not.toBeNull();
     expect(recoveryCodes!.length).toBeGreaterThanOrEqual(8);
 
@@ -125,9 +136,66 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     expect(status.recoveryCodesRemaining).toBe(recoveryCodes!.length);
   });
 
+  it('cannot enable a replacement provisional secret after verifying the previous one', async () => {
+    const first = await h.ctx.twoFactor.enrollTotp(userId);
+    const firstEncryptedSecret = (await readUserTwoFactor()).secret;
+    const transactionEntered = deferred();
+    const releaseTransaction = deferred();
+    const transaction = h.db.transaction.bind(h.db);
+    const transactionSpy = vi
+      .spyOn(h.db, 'transaction')
+      .mockImplementationOnce(async (callback, config) => {
+        transactionEntered.resolve();
+        await releaseTransaction.promise;
+        return transaction(callback, config);
+      });
+
+    const confirmation = h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(first.secret));
+    await transactionEntered.promise;
+
+    const replacement = await h.ctx.twoFactor.enrollTotp(userId);
+    const replacementEncryptedSecret = (await readUserTwoFactor()).secret;
+    expect(replacementEncryptedSecret).not.toBe(firstEncryptedSecret);
+
+    releaseTransaction.resolve();
+    await expect(confirmation).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    transactionSpy.mockRestore();
+
+    expect(await readUserTwoFactor()).toMatchObject({
+      secret: replacementEncryptedSecret,
+      enabled: false,
+      confirmedAt: null,
+      securityGeneration: 0,
+    });
+    expect(await recoveryCodeCount()).toBe(0);
+    await expect(
+      h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(replacement.secret)),
+    ).resolves.toMatchObject({
+      response: { recoveryCodes: expect.any(Array) },
+    });
+  });
+
+  it('invalidates the acting session and every sibling without minting a replacement', async () => {
+    const sessions = createSessionService(h.ctx.redis, 3600);
+    const current = await sessions.create(userId, 0, false);
+    const sibling = await sessions.create(userId, 0, true);
+    const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
+
+    const result = await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret), null, {
+      sessionId: current,
+      securityGeneration: 0,
+    });
+
+    expect(result.response.recoveryCodes).not.toBeNull();
+    expect(await sessions.get(current)).toBeNull();
+    expect(await sessions.get(sibling)).toBeNull();
+    expect(await sessions.listForUser(userId, null)).toEqual([]);
+  });
+
   it('stores recovery codes only as hashes, never plaintext', async () => {
     const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
-    const { recoveryCodes } = await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret));
+    const { recoveryCodes } = (await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret)))
+      .response;
 
     const rows = await h.db
       .select({ codeHash: twoFactorRecoveryCodes.codeHash })
@@ -143,7 +211,8 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
 
   it('consumes a recovery code exactly once', async () => {
     const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
-    const { recoveryCodes } = await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret));
+    const { recoveryCodes } = (await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret)))
+      .response;
     const repo = createTwoFactorRepository(h.db);
     const hash = hashToken(normalizeRecoveryCode(recoveryCodes![0]!));
 
@@ -155,7 +224,8 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
 
   it('disables only with a valid factor, wiping the secret AND (last-method) all recovery codes', async () => {
     const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
-    const { recoveryCodes } = await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret));
+    const { recoveryCodes } = (await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret)))
+      .response;
 
     await expect(h.ctx.twoFactor.disableTotp(userId, '000000')).rejects.toMatchObject({
       code: 'TWO_FACTOR_INVALID_CODE',
@@ -175,9 +245,9 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
 
   it('regenerates recovery codes, voiding the previous set', async () => {
     const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
-    const first = (await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret)))
+    const first = (await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret))).response
       .recoveryCodes!;
-    const second = (await h.ctx.twoFactor.regenerateRecoveryCodes(userId)).recoveryCodes;
+    const second = (await h.ctx.twoFactor.regenerateRecoveryCodes(userId)).response.recoveryCodes;
 
     expect(second).not.toEqual(first);
 
@@ -215,8 +285,9 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     const oldCookieSecret = 'old-cookie-secret-value';
     const legacyKey = createHash('sha256').update(`bt-2fa:${oldCookieSecret}`).digest();
     const repo = createTwoFactorRepository(h.db);
-    await repo.setProvisionalSecret(userId, encryptSecret(secret, legacyKey));
-    await repo.enable(userId, new Date());
+    const encryptedSecret = encryptSecret(secret, legacyKey);
+    await repo.setProvisionalSecret(userId, encryptedSecret);
+    await repo.confirmTotp(userId, encryptedSecret, new Date(), null);
 
     h.ctx.config.recordEncryption = loadConfig({
       NODE_ENV: 'test',
@@ -233,8 +304,9 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     const historicalSessionSecret = 'new-cookie-secret-value,old-cookie-secret-value';
     const legacyKey = createHash('sha256').update(`bt-2fa:${historicalSessionSecret}`).digest();
     const repo = createTwoFactorRepository(h.db);
-    await repo.setProvisionalSecret(userId, encryptSecret(secret, legacyKey));
-    await repo.enable(userId, new Date());
+    const encryptedSecret = encryptSecret(secret, legacyKey);
+    await repo.setProvisionalSecret(userId, encryptedSecret);
+    await repo.confirmTotp(userId, encryptedSecret, new Date(), null);
 
     h.ctx.config.recordEncryption = loadConfig({
       NODE_ENV: 'test',
@@ -299,7 +371,7 @@ describe('twoFactorService — email-code method (§6.1, #298)', () => {
     });
     expect((await readUserTwoFactor()).emailEnabled).toBe(false);
 
-    const { recoveryCodes } = await h.ctx.twoFactor.confirmEmail(userId, code);
+    const { recoveryCodes } = (await h.ctx.twoFactor.confirmEmail(userId, code)).response;
     expect(recoveryCodes).not.toBeNull();
     expect(recoveryCodes!.length).toBeGreaterThanOrEqual(8);
 
@@ -312,19 +384,46 @@ describe('twoFactorService — email-code method (§6.1, #298)', () => {
     expect(await h.ctx.twoFactor.isEnabled(userId)).toBe(true);
   });
 
+  it('rejects and deletes an email setup code issued at an older security generation', async () => {
+    const transport = recordingTransport();
+    await boot({ env: SMTP_ENV, emailTransport: transport });
+
+    await h.ctx.twoFactor.startEmailEnrollment(userId, null, { securityGeneration: 0 });
+    const staleCode = emailedCode(transport);
+    expect(JSON.parse((await h.ctx.redis.get(`2fa_email_setup:${userId}`))!)).toMatchObject({
+      securityGeneration: 0,
+    });
+
+    // Enabling another factor advances the durable generation. A fresh caller at
+    // G1 must not be able to reuse mailbox proof issued before that transition.
+    const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
+    await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret));
+    await expect(
+      h.ctx.twoFactor.confirmEmail(userId, staleCode, null, { securityGeneration: 1 }),
+    ).rejects.toMatchObject({ code: 'TWO_FACTOR_INVALID_CODE' });
+
+    expect(await h.ctx.redis.get(`2fa_email_setup:${userId}`)).toBeNull();
+    expect(await readUserTwoFactor()).toMatchObject({
+      emailEnabled: false,
+      securityGeneration: 1,
+    });
+  });
+
   it('shares one recovery-code set across both methods and drops it only with the last', async () => {
     const transport = recordingTransport();
     await boot({ env: SMTP_ENV, emailTransport: transport });
 
     // Enable email first — first method ⇒ recovery codes issued.
     await h.ctx.twoFactor.startEmailEnrollment(userId);
-    const emailEnable = await h.ctx.twoFactor.confirmEmail(userId, emailedCode(transport));
+    const emailEnable = (await h.ctx.twoFactor.confirmEmail(userId, emailedCode(transport)))
+      .response;
     expect(emailEnable.recoveryCodes).not.toBeNull();
     const codeCount = await recoveryCodeCount();
 
     // Enable TOTP second — NOT the first method ⇒ no new recovery codes.
     const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
-    const totpEnable = await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret));
+    const totpEnable = (await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret)))
+      .response;
     expect(totpEnable.recoveryCodes).toBeNull();
     expect(await recoveryCodeCount()).toBe(codeCount);
 
@@ -368,7 +467,8 @@ describe('twoFactorService — email-code method (§6.1, #298)', () => {
     await boot({ env: SMTP_ENV, emailTransport: transport });
 
     await h.ctx.twoFactor.startEmailEnrollment(userId);
-    const { recoveryCodes } = await h.ctx.twoFactor.confirmEmail(userId, emailedCode(transport));
+    const { recoveryCodes } = (await h.ctx.twoFactor.confirmEmail(userId, emailedCode(transport)))
+      .response;
 
     // No TOTP secret exists, yet recovery codes remain a valid factor.
     expect(await h.ctx.twoFactor.consumeRecoveryCode(userId, recoveryCodes![0]!)).toBe(true);

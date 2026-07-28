@@ -22,15 +22,19 @@ import { createPushSubscriptionRepository } from '../data/repositories/pushSubsc
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
 import {
+  assembleRegisteredJobDefinitions,
   createBackfillScheduler,
   createDeadLetter,
   createExportBuildJob,
   createExportCleanupJob,
-  createJobDefinitions,
   createJobWorkers,
+  createAlertsEvaluateJob,
+  createFxRefreshSpotJob,
   createMirrorReplicateJob,
   createMirrorInviteCleanupJob,
   createMirrorConsistencySweepJob,
+  createPricesBackfillJob,
+  createPricesRefreshDailyJob,
   createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
   createApiKeyRequestLogCleanupJob,
@@ -46,6 +50,7 @@ import {
   createDividendEventsScanJob,
   createStandingOrdersJob,
   dividendNotifyGate,
+  heartbeatJob,
   jobConnectionFactory,
   registerSchedules,
   type JobContext,
@@ -403,29 +408,38 @@ const webhookBridge = createWebhookBridge({
   logger,
 });
 
-const definitions = [
-  ...createJobDefinitions({
-    db,
-    marketData,
-    notify,
-    // Custom assets (the `manual` provider) are durable in our own DB; the price
-    // jobs must not fetch them (see MarketDataJobDeps.isLocalProvider).
-    isLocalProvider: (providerId) =>
-      providerRegistry.has(providerId) && providerRegistry.get(providerId).local === true,
+const coreJobDeps = {
+  db,
+  marketData,
+  notify,
+  // Custom assets (the `manual` provider) are durable in our own DB; the price
+  // jobs must not fetch them (see MarketDataJobDeps.isLocalProvider).
+  isLocalProvider: (providerId: string) =>
+    providerRegistry.has(providerId) && providerRegistry.get(providerId).local === true,
+};
+
+const definitions = assembleRegisteredJobDefinitions({
+  heartbeatJob,
+  createPricesRefreshDailyJob: createPricesRefreshDailyJob(coreJobDeps),
+  createPricesBackfillJob: createPricesBackfillJob(coreJobDeps),
+  createFxRefreshSpotJob: createFxRefreshSpotJob(coreJobDeps),
+  createAlertsEvaluateJob: createAlertsEvaluateJob(coreJobDeps),
+  createNotificationsDispatchJob: createNotificationsDispatchJob({
+    dispatcher,
+    webhooks: webhookBridge,
   }),
-  createNotificationsDispatchJob({ dispatcher, webhooks: webhookBridge }),
-  createDigestDailyJob({ digest: digestService }),
-  createDigestWeeklyJob({ digest: digestService }),
-  createDeferredDeliveryJob({ digest: digestService }),
-  createExportBuildJob({ exportService: dataExportService }),
-  createExportCleanupJob({ exportService: dataExportService }),
-  createSnapshotsRecomputeJob({ snapshots }),
-  createSnapshotsBackfillJob({ snapshots }),
-  createUsageRollupJob({ usageAnalytics }),
+  createDigestDailyJob: createDigestDailyJob({ digest: digestService }),
+  createDigestWeeklyJob: createDigestWeeklyJob({ digest: digestService }),
+  createDeferredDeliveryJob: createDeferredDeliveryJob({ digest: digestService }),
+  createExportBuildJob: createExportBuildJob({ exportService: dataExportService }),
+  createExportCleanupJob: createExportCleanupJob({ exportService: dataExportService }),
+  createSnapshotsRecomputeJob: createSnapshotsRecomputeJob({ snapshots }),
+  createSnapshotsBackfillJob: createSnapshotsBackfillJob({ snapshots }),
+  createUsageRollupJob: createUsageRollupJob({ usageAnalytics }),
   // V5-P5 market intelligence (#582): the daily opt-in earnings-reminder scan
   // over every user's held + watched assets. Gated by MARKET_INTEL_ENABLED — a
   // no-op scan when the arc is unconfigured. Idempotency store = ctx.redis.
-  createEarningsReminderJob({
+  createEarningsReminderJob: createEarningsReminderJob({
     intelRepo: createMarketIntelRepository(db),
     marketData,
     notify,
@@ -433,7 +447,7 @@ const definitions = [
   }),
   // V5-P5 dividend-event scan (#581): fires opt-in ex-date reminders for held
   // assets. Gated by MARKET_INTEL_ENABLED; per-user opt-in read from the matrix.
-  createDividendEventsScanJob({
+  createDividendEventsScanJob: createDividendEventsScanJob({
     repo: createMarketIntelRepository(db),
     marketData,
     notify,
@@ -442,25 +456,32 @@ const definitions = [
   }),
   // V5-P6b standing orders (#593): the daily scan that books each active order's
   // newest due occurrence exactly once.
-  createStandingOrdersJob({ standingOrders }),
+  createStandingOrdersJob: createStandingOrdersJob({ standingOrders }),
   // V5-P7 MIRRORCHAIN (#644): per-chain replication — strictly ordered,
   // idempotent, watermark-resumed; permanent failure dead-letters → Problems.
-  createMirrorReplicateJob({ mirror, enqueue: enqueueMirrorReplicate }),
+  createMirrorReplicateJob: createMirrorReplicateJob({
+    mirror,
+    enqueue: enqueueMirrorReplicate,
+  }),
   // V5-P7 MIRRORCHAIN (#680): the daily sweep that retires pending invites past
   // the 30-day token-hygiene horizon (frees the pending-unique slot).
-  createMirrorInviteCleanupJob({ repo: mirrorchainRepo }),
+  createMirrorInviteCleanupJob: createMirrorInviteCleanupJob({ repo: mirrorchainRepo }),
   // V5-P7 MIRRORCHAIN (#684): the daily defense-in-depth repair sweep — re-applies
   // §7 succession to any ownerless chain and surfaces the two crash residuals
   // (design §2 (a)/(b)) onto the admin Problems page.
-  createMirrorConsistencySweepJob({ mirror, problems }),
+  createMirrorConsistencySweepJob: createMirrorConsistencySweepJob({ mirror, problems }),
   // V5-P10 outbound webhooks (#648): the signed delivery job (retry/backoff via
   // job options + auto-disable) and the daily delivery-log retention sweep.
-  createWebhookDeliverJob({ dispatcher: webhookDispatcher }),
-  createWebhookDeliveryCleanupJob({ deliveries: webhookDeliveryRepo }),
+  createWebhookDeliverJob: createWebhookDeliverJob({ dispatcher: webhookDispatcher }),
+  createWebhookDeliveryCleanupJob: createWebhookDeliveryCleanupJob({
+    deliveries: webhookDeliveryRepo,
+  }),
   // V5-P10 API-key governance (issue 2/2): the daily retention sweep over the
   // bounded per-key request-log audit trail.
-  createApiKeyRequestLogCleanupJob({ requestLog: createApiKeyRequestLogRepository(db) }),
-];
+  createApiKeyRequestLogCleanupJob: createApiKeyRequestLogCleanupJob({
+    requestLog: createApiKeyRequestLogRepository(db),
+  }),
+});
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };
 

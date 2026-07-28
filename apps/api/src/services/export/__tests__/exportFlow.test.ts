@@ -146,11 +146,12 @@ describe('account data export', () => {
     const user = await harness.seedUser();
     const collected = await collectUserExport(harness.db, user.id);
     expect(Object.keys(collected.entities).sort()).toEqual([...EXPORTED_ENTITY_NAMES]);
-    // The account entity always carries the user's own (sanitized) row, with no
-    // password hash leaked.
+    // The account entity always carries the user's own sanitized row, with no
+    // credentials or server-internal security state leaked.
     const account = collected.entities.account as Record<string, unknown>[];
     expect(account.length).toBe(1);
     expect(account[0]).not.toHaveProperty('passwordHash');
+    expect(account[0]).not.toHaveProperty('securityGeneration');
   });
 
   it('rejects a wrong re-auth without creating a job', async () => {

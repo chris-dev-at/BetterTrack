@@ -67,6 +67,25 @@ beforeEach(() => {
 });
 
 describe('NewsDigestPage (§13.5 V5-P5, arc c)', () => {
+  test('announces loading while the digest is pending and clears it when it settles', async () => {
+    let resolveDigest: (value: NewsDigestResponse) => void;
+    const pendingDigest = new Promise<NewsDigestResponse>((resolve) => {
+      resolveDigest = resolve;
+    });
+    vi.mocked(getNewsDigest).mockReturnValue(pendingDigest);
+    renderPage();
+
+    const digest = screen.getByRole('region', { name: 'News' });
+    expect(digest).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('status', { name: 'Loading…' })).toBeInTheDocument();
+
+    resolveDigest!(AVAILABLE);
+
+    expect(await screen.findByText('Apple ships a thing')).toBeInTheDocument();
+    expect(digest).toHaveAttribute('aria-busy', 'false');
+    expect(screen.queryByRole('status', { name: 'Loading…' })).not.toBeInTheDocument();
+  });
+
   test('aggregates holdings + watchlist news, grouped per asset, newest-first', async () => {
     vi.mocked(getNewsDigest).mockResolvedValue(AVAILABLE);
     renderPage();
@@ -94,6 +113,8 @@ describe('NewsDigestPage (§13.5 V5-P5, arc c)', () => {
     expect(
       await screen.findByText('Could not load the news digest. Please try again.'),
     ).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'News' })).toHaveAttribute('aria-busy', 'false');
+    expect(screen.queryByRole('status', { name: 'Loading…' })).not.toBeInTheDocument();
   });
 
   test('renders no news UI when the capability is unconfigured (regression)', async () => {

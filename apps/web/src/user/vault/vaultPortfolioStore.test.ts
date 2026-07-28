@@ -163,6 +163,27 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     });
   });
 
+  it('floors summed cash response balances to cents without changing stored movements', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    await store.depositCash(PORTFOLIO_ID, { amountEur: 0.1, sourceId: CASH_SOURCE_ID });
+    const response = await store.depositCash(PORTFOLIO_ID, {
+      amountEur: 0.2,
+      sourceId: CASH_SOURCE_ID,
+    });
+
+    expect(response.sourceBalanceEur).toBe(0.3);
+    expect(response.balanceEur).toBe(0.3);
+    expect(engine.state.active?.document.entities.cashMovement).toMatchObject([
+      { data: { amountEur: '0.1' } },
+      { data: { amountEur: '0.2' } },
+    ]);
+  });
+
   it('tombstones a deleted portfolio and all of its portfolio-scoped children', async () => {
     const secondaryId = GENERATED_IDS[0];
     const transactionId = GENERATED_IDS[1];

@@ -1,4 +1,4 @@
-import { count, eq, gte, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, count, eq, gte, ilike, inArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { users, type UserRow } from '../schema';
@@ -87,13 +87,28 @@ export function createUserRepository(db: Database) {
       id: string,
       passwordHash: string,
       mustChangePassword: boolean,
-    ): Promise<void> {
-      await db
+      expectedSecurityGeneration?: number,
+    ): Promise<number | null> {
+      const [updated] = await db
         .update(users)
         // Setting any password makes it usable (§13.4 V4-P4b): a Google-only
         // account that later completes a password reset can then unlink Google.
-        .set({ passwordHash, mustChangePassword, hasUsablePassword: true, updatedAt: new Date() })
-        .where(eq(users.id, id));
+        // The generation increment is in this SAME statement/commit (#888);
+        // callers cannot replace a credential and forget to fence old sessions.
+        .set({
+          passwordHash,
+          mustChangePassword,
+          hasUsablePassword: true,
+          securityGeneration: sql`${users.securityGeneration} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          expectedSecurityGeneration === undefined
+            ? eq(users.id, id)
+            : and(eq(users.id, id), eq(users.securityGeneration, expectedSecurityGeneration)),
+        )
+        .returning({ securityGeneration: users.securityGeneration });
+      return updated?.securityGeneration ?? null;
     },
 
     async setStatus(id: string, status: 'active' | 'disabled'): Promise<void> {
@@ -146,8 +161,19 @@ export function createUserRepository(db: Database) {
         .where(eq(users.id, id));
     },
 
-    async setRole(id: string, role: 'user' | 'admin'): Promise<void> {
-      await db.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, id));
+    async setRole(id: string, role: 'user' | 'admin'): Promise<number | null> {
+      const [updated] = await db
+        .update(users)
+        // Role and generation are one row update, hence one PostgreSQL commit:
+        // no observer can see the new authority with the old generation.
+        .set({
+          role,
+          securityGeneration: sql`${users.securityGeneration} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, id))
+        .returning({ securityGeneration: users.securityGeneration });
+      return updated?.securityGeneration ?? null;
     },
 
     /**

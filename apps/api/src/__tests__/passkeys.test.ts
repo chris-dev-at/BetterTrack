@@ -4,7 +4,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { eq } from 'drizzle-orm';
 
-import { twoFactorEnrollResponseSchema } from '@bettertrack/contracts';
+import {
+  twoFactorChallengeResponseSchema,
+  twoFactorEnrollResponseSchema,
+} from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
 import type { PasskeyWebAuthnEngine } from '../services/auth/passkeyService';
@@ -125,6 +128,29 @@ async function loginAgent(app: Application, identifier: string, password: string
     .set(...XRW)
     .send({ identifier, password });
   expect(res.status).toBe(200);
+  return agent;
+}
+
+async function loginWithTotp(
+  app: Application,
+  identifier: string,
+  password: string,
+  secret: string,
+): Promise<Agent> {
+  const agent = request.agent(app);
+  const challenge = twoFactorChallengeResponseSchema.parse(
+    (
+      await agent
+        .post('/api/v1/auth/login')
+        .set(...XRW)
+        .send({ identifier, password })
+    ).body,
+  );
+  await agent
+    .post('/api/v1/auth/2fa/verify')
+    .set(...XRW)
+    .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) })
+    .expect(200);
   return agent;
 }
 
@@ -300,23 +326,24 @@ describe('passkeys — re-auth gating on add + delete', () => {
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
     expect(confirm.status).toBe(200);
+    const factorAgent = await loginWithTotp(harness.app, user.email, user.password, secret);
 
     // A wrong code is rejected and deletes nothing.
-    const bad = await agent
+    const bad = await factorAgent
       .delete(`/api/v1/auth/passkeys/${created.body.id}`)
       .set(...XRW)
       .send({ code: '000000' });
     expect(bad.status).toBe(401);
     expect(bad.body.error.code).toBe('TWO_FACTOR_INVALID_CODE');
-    expect((await agent.get('/api/v1/auth/passkeys')).body.passkeys).toHaveLength(1);
+    expect((await factorAgent.get('/api/v1/auth/passkeys')).body.passkeys).toHaveLength(1);
 
     // A fresh TOTP code satisfies the same re-auth gate and deletes the passkey.
-    const ok = await agent
+    const ok = await factorAgent
       .delete(`/api/v1/auth/passkeys/${created.body.id}`)
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
     expect(ok.status).toBe(200);
-    expect((await agent.get('/api/v1/auth/passkeys')).body.passkeys).toHaveLength(0);
+    expect((await factorAgent.get('/api/v1/auth/passkeys')).body.passkeys).toHaveLength(0);
   });
 
   it("a passkey is owner-scoped: user B cannot rename or delete user A's passkey", async () => {

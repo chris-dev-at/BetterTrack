@@ -26,7 +26,10 @@ describe('checkOpenapiCoverage', () => {
 
   it('reports a mounted route with no matching operation in the spec', () => {
     const doc = getOpenApiDocument();
-    const routes = [...buildRouteTable(), { method: 'GET', path: '/totally/not/documented' }];
+    const routes = [
+      ...buildRouteTable(),
+      { kind: 'route' as const, method: 'GET', path: '/totally/not/documented' },
+    ];
 
     const missing = findUndocumentedRoutes(routes, doc as never);
 

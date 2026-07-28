@@ -388,26 +388,43 @@ describe('login 2FA email-code method (§6.1, §6.10, §13.2 V2-P5, #298)', () =
     harness = await createTestApp({ env: SMTP_ENV, emailTransport: transport });
     const user = await harness.seedUser();
 
-    // Enroll TOTP, then add the email method on the same authenticated agent.
-    const agent = request.agent(harness.app);
-    await agent
+    // Enroll TOTP. Confirmation logs out the enrollment session, so adding the
+    // second method starts from a fresh password + TOTP login.
+    const enrollmentAgent = request.agent(harness.app);
+    await enrollmentAgent
       .post('/api/v1/auth/login')
       .set(...XRW)
       .send({ identifier: user.email, password: user.password });
     const { secret } = twoFactorEnrollResponseSchema.parse(
-      (await agent.post('/api/v1/auth/2fa/enroll').set(...XRW)).body,
+      (await enrollmentAgent.post('/api/v1/auth/2fa/enroll').set(...XRW)).body,
     );
-    await agent
+    await enrollmentAgent
       .post('/api/v1/auth/2fa/confirm')
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
+    const agent = request.agent(harness.app);
+    const factorChallenge = twoFactorChallengeResponseSchema.parse(
+      (
+        await agent
+          .post('/api/v1/auth/login')
+          .set(...XRW)
+          .send({ identifier: user.email, password: user.password })
+      ).body,
+    );
+    await agent
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({
+        pendingToken: factorChallenge.pendingToken,
+        code: generateTotpCode(secret),
+      })
+      .expect(200);
     const emailEnroll = await agent.post('/api/v1/auth/2fa/email/enroll').set(...XRW);
     expect(emailEnroll.status).toBe(200);
     await agent
       .post('/api/v1/auth/2fa/email/confirm')
       .set(...XRW)
       .send({ code: lastEmailedCode(transport) });
-    await agent.post('/api/v1/auth/logout').set(...XRW);
     transport.sent.length = 0;
 
     const challenge = twoFactorChallengeResponseSchema.parse(
