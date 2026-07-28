@@ -36,6 +36,7 @@ CONTROL=$MFSTATE/control; LOGS=$MFSTATE/logs; CIFIX=$MFSTATE/ci-fix
 : "${MF_COMPOSER_DISCOVERY_SLEEP:=2}" # seconds between post-create snapshots
 : "${MF_CIFIX_PROTOCOL_BACKOFF:=300}" # delay before the one no-head protocol retry
 : "${MF_APPROVAL_READ_MAX:=40}"   # consecutive approval-read failures before the queue head parks to a human
+: "${MF_MERGE_FAIL_MAX:=40}"      # same-head merge refusals (BLOCKED/DRAFT/protection) before parking to a human
 : "${MF_DRY_RUN:=0}"
 if [ -z "${MF_MASTER_SESSION:-}" ]; then
   MF_MASTER_NONCE=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
@@ -122,9 +123,8 @@ inflight_issues(){
 # ---- GitHub reads (REST only — the search index lags ~30s+, BRIEF §5.1) ----------
 TICK_ISSUES=${TICK_ISSUES:-/tmp/mf-tick-issues.json}
 fetch_issues(){ # open autopilot issues, PRs filtered out; [] on any failure
-  # Single jq parse of GitHub's original JSON — gh --jq (gojq) re-serialization
-  # can emit raw control/invalid bytes that would break every later jq read of
-  # the tick file (same failure class as mf_pr_comments_json, PR #891).
+  # Single jq parse of GitHub's original JSON — one parser, one contract for
+  # every later jq read of the tick file (see mf_pr_comments_json).
   gh api "repos/$REPO/issues?labels=autopilot&state=open&per_page=100" 2>/dev/null \
     | jq -c '[.[]|select(.pull_request==null)|{number,title,body,labels:[.labels[].name]}]' \
     >"$TICK_ISSUES.tmp" 2>/dev/null && mv -f "$TICK_ISSUES.tmp" "$TICK_ISSUES" \
@@ -1299,7 +1299,18 @@ ci_fix_red_step(){ # $1=queue file $2=issue $3=pr $4=approved head
 # across master restarts; a crash inside the window costs at most a premature
 # human escalation, never a loop.
 conflict_fix_step(){ # $1=queue file $2=issue $3=pr $4=approved head
-  local f=$1 n=$2 pr=$3 approved_head=$4 marker=$QUEUE/.conflictfix-pr$3 current fixed_head
+  local f=$1 n=$2 pr=$3 approved_head=$4 current fixed_head stale
+  # The marker is scoped to the exact approved head: a marker orphaned by a
+  # transient post-attempt head-read failure (queue entry then requeued by the
+  # head check) must never consume the attempt budget of a LATER,
+  # freshly-approved head — independent-review find, 2026-07-28. Stale sibling
+  # markers for other heads of the same PR are swept here; their heads can no
+  # longer merge, so their budget is moot.
+  local marker=$QUEUE/.conflictfix-pr$3-$4
+  for stale in "$QUEUE"/.conflictfix-pr$3-*; do
+    [ -e "$stale" ] || continue
+    [ "$stale" = "$marker" ] || rm -f "$stale"
+  done
   if [ -f "$marker" ]; then
     current=$(mf_pr_head "$pr") || { log "merger: cannot reconcile conflict-fix for PR #$pr — retrying next tick"; return 0; }
     if [ -n "$current" ] && [ "$current" != "$approved_head" ]; then
@@ -1425,10 +1436,12 @@ merger_step(){
 
   # A DIRTY (conflicting) head can never merge and typically has NO fresh CI
   # rollup — GitHub cannot build its merge commit — so it must short-circuit
-  # BEFORE the CI gate or it wedges the queue head as forever-"pending"
-  # (observed live on PRs #891/#890/#873 after the 2026-07-28 jam). The read
-  # is reused for the BEHIND decision after the CI gate; a stale value there
-  # only costs one failed merge attempt, which retries with fresh state.
+  # BEFORE the CI gate or it wedges the queue head as forever-"pending". This
+  # exact wedge WAS the 2026-07-28 queue jam: PR #891 sat DIRTY with an empty
+  # rollup at the FIFO head from 05:38 UTC, starving every PR behind it
+  # (#890/#873 shared the state). The read is reused for the BEHIND decision
+  # after the CI gate; a stale value there only costs one failed merge
+  # attempt, which retries with fresh state.
   local merge_state
   merge_state=$(gh pr view "$pr" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null) || {
     log "merger: merge-state read failed for PR #$pr — retrying next tick"
@@ -1483,10 +1496,28 @@ merger_step(){
       requeue_for_review "$f" "$n" "head changed during merge attempt"
       return 0
     fi
-    log "merger: merge command failed without a head change — retaining queue record"
+    # Same-head refusals (BLOCKED by protection, DRAFT, an admin rule) are the
+    # last unbounded head-of-line trap — bound them like approval reads. The
+    # counter is head-scoped so a fresh approval starts a fresh budget.
+    local mergefail=$QUEUE/.mergefail-pr$pr-$approved_head mfails stale
+    for stale in "$QUEUE"/.mergefail-pr$pr-*; do
+      [ -e "$stale" ] || continue
+      [ "$stale" = "$mergefail" ] || rm -f "$stale"
+    done
+    mfails=$(cat "$mergefail" 2>/dev/null || echo 0)
+    case "$mfails" in ''|*[!0-9]*) mfails=0;; esac
+    mfails=$((mfails + 1))
+    if [ "$mfails" -ge "$MF_MERGE_FAIL_MAX" ]; then
+      log "merger: merge refused $mfails times without a head change on PR #$pr — parking with a human"
+      mark_human "$n" "PR #$pr cannot merge (state $merge_state) after $mfails same-head attempts — likely branch protection, draft status, or an admin rule"
+      rm -f "$f" "$mergefail"
+      return 0
+    fi
+    atomic_write "$mergefail" "$mfails"
+    log "merger: merge command failed without a head change — retaining queue record ($mfails/$MF_MERGE_FAIL_MAX)"
     return 0
   fi
-  rm -f "$f" "$ci_state"
+  rm -f "$f" "$ci_state" "$QUEUE"/.mergefail-pr"$pr"-* 2>/dev/null
 }
 
 finalize_issue(){ # $1=pr $2=issue
