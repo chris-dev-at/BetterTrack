@@ -34,9 +34,11 @@ if [ "${MF_SOURCE_ONLY:-0}" != 1 ]; then
   . /work/mf/mflib.sh
 fi
 
-# owner 2026-07-22 (b): Fable meter critical — EVERY stage of diff:max issues runs at hard (Opus),
-# writer included; only the composer (master, rare ≤2-issues runs) still spends Fable.
-post_write_diff(){ local d="$1"; [ "$d" = max ] && d=hard; echo "$d"; }
+# The 2026-07-22 "Fable meter critical" post_write_diff demotion (every diff:max
+# stage forced to hard) is GONE — superseded by the owner's 2026-07-28 per-slot
+# routing directive: diff:max now resolves to the max row as configured. To
+# re-cap Fable, edit the max row's writer/completion slots in models.json; never
+# reinstate a blanket demotion here, it silently bypasses the configured table.
 
 atomic_write(){ local tmp; tmp=$(mktemp "$(dirname "$1")/.tmp.XXXXXX") || return 1
   printf '%s\n' "$2" >"$tmp" && mv -f "$tmp" "$1"; }
@@ -239,7 +241,7 @@ review_comment_discover(){ # $1=before comments JSON $2=PR $3=expected head
 }
 
 run_reviewer(){ # $1=issue $2=pr $3=difficulty
-  local n=$1 pr=$2 difficulty=$3 attempt before="" head="" transport prompt
+  local n=$1 pr=$2 difficulty=$3 attempt before="" head="" transport prompt slot
   for attempt in $(seq 1 "$MF_PROTOCOL_ATTEMPTS"); do
     pr_snapshot "$pr" || { log "review protocol: pre-read failed"; continue; }
     if [ -z "$head" ] || [ "$PR_SNAPSHOT_HEAD" != "$head" ]; then
@@ -258,7 +260,13 @@ run_reviewer(){ # $1=issue $2=pr $3=difficulty
     prompt=$(sed \
       -e "s/{{PR}}/$pr/g" -e "s/{{N}}/$n/g" -e "s/{{HEAD}}/$head/g" \
       "$MF_PROMPTS/reviewer.md")
-    if mf_cc reviewer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
+    # First-review-vs-later is derived from evidence that already exists on the
+    # PR: a prior canonical FACTORY-VERDICT comment (any head) means a review
+    # already happened, so this run is completion-model work. No durable state
+    # file — a resume after a restart re-reads the same comments and lands on
+    # the same answer.
+    if mf_has_canonical_review "$before"; then slot=completion; else slot=reviewer1; fi
+    if CC_SLOT=$slot mf_cc reviewer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
     if review_comment_discover "$before" "$pr" "$head"; then
       LAST_REVIEW_VERDICT=$MF_COMMENT_MARKER
       LAST_REVIEW_BODY=$MF_COMMENT_BODY
@@ -285,7 +293,9 @@ run_fixer(){ # $1=issue $2=pr $3=difficulty $4=optional diagnosis prefix
     prompt="${prefix}${prefix:+
 
 }$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")"
-    if mf_cc fixer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
+    # Fixers only ever run after a rejecting review, so they are always
+    # completion-slot work by construction.
+    if CC_SLOT=completion mf_cc fixer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
     after=$(mf_pr_head "$pr") || { log "fixer protocol: post-head read failed"; continue; }
     if [ -n "$after" ] && [ "$after" != "$before" ]; then
       LAST_FIXER_HEAD=$after
@@ -301,7 +311,7 @@ run_fixer(){ # $1=issue $2=pr $3=difficulty $4=optional diagnosis prefix
 # the second fixer is never allowed to fall through to triage unreviewed.
 review_fix_cycle(){ # $1=issue $2=pr
   local n=$1 pr=$2 review_diff round
-  review_diff=$(post_write_diff "$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")")
+  review_diff=$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")
   REVIEW_CYCLE_RESULT=protocol
   run_reviewer "$n" "$pr" "$review_diff" || return 1
   if [ "$LAST_REVIEW_VERDICT" = "FACTORY-VERDICT: APPROVE" ]; then
@@ -311,7 +321,7 @@ review_fix_cycle(){ # $1=issue $2=pr
   for round in 1 2; do
     log "fix round $round/2: changes requested"
     wstatus fixing "$n" "$pr"
-    run_fixer "$n" "$pr" "$(post_write_diff "$CYCLE_DIFF")" || return 1
+    run_fixer "$n" "$pr" "$CYCLE_DIFF" || return 1
     wstatus reviewing "$n" "$pr"
     run_reviewer "$n" "$pr" "$review_diff" || return 1
     if [ "$LAST_REVIEW_VERDICT" = "FACTORY-VERDICT: APPROVE" ]; then
@@ -369,7 +379,7 @@ Choose Case 1 (RETRY_ESCALATED) with a precise diagnosis, or Case 3
     prompt="$prompt
 
 $(checker_materials "$n" "$pr")"
-    if mf_cc checker "$(role_diff checker)" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
+    if CC_SLOT=completion mf_cc checker "$(role_diff checker)" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
     pr_snapshot "$pr" || { log "checker protocol: post-PR read failed; suppressing model retry"; return 1; }
     after_comments=$PR_SNAPSHOT_COMMENTS
     after_parent=$(mf_pr_comments_json "$n") \
@@ -515,7 +525,7 @@ run_escalated_fixer_once(){ # $1=issue $2=pr $3=difficulty $4=known base head $5
   prompt="${prefix}${prefix:+
 
 }$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")"
-  if mf_cc fixer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
+  if CC_SLOT=completion mf_cc fixer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
   after=$(mf_pr_head "$pr") || {
     log "escalated fixer: post-head read failed (transport=$transport)"
     return 1
@@ -596,7 +606,7 @@ triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked
         triage_state_save "$sf" "$n" "$pr" "$TRIAGE_STAGE" || return 2
         log "triage: one escalated fixer at diff:$esc (was diff:$CYCLE_DIFF)"
         wstatus fixing "$n" "$pr"
-        if run_escalated_fixer_once "$n" "$pr" "$(post_write_diff "$esc")" \
+        if run_escalated_fixer_once "$n" "$pr" "$esc" \
           "$TRIAGE_FIXER_BASE_HEAD" \
           "TRIAGE DIAGNOSIS BRIEF (address this root cause):
 $LAST_CHECKER_BODY"; then
@@ -631,7 +641,7 @@ $LAST_CHECKER_BODY"; then
       escalated-review-pending)
         wstatus reviewing "$n" "$pr"
         run_reviewer "$n" "$pr" \
-          "$(post_write_diff "$(diff_at_least "$TRIAGE_ESC_DIFF" "$(review_floor)")")" \
+          "$(diff_at_least "$TRIAGE_ESC_DIFF" "$(review_floor)")" \
           || return 2
         if [ "$LAST_REVIEW_VERDICT" = "FACTORY-VERDICT: APPROVE" ]; then
           enqueue_merge "$pr" "$n" "$LAST_REVIEW_HEAD" reviewer "$LAST_REVIEW_COMMENT_ID" \
@@ -842,7 +852,7 @@ run_cycle(){ # $1=issue $2=relocated
       local writer_transport=1 w_try
       for w_try in $(seq 1 "${WRITER_RETRIES:-2}"); do
         hb_ensure
-        if mf_cc writer "$(post_write_diff "$CYCLE_DIFF")" \
+        if CC_SLOT=writer mf_cc writer "$CYCLE_DIFF" \
           "$(with_pack "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")")"; then
           writer_transport=0
           break
