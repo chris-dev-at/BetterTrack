@@ -35,6 +35,9 @@ export interface ParanoidRouteSurface {
   readonly path: string;
 }
 
+/** Synthetic method identity for an explicit-path opaque `app.use` leaf mount. */
+export const PARANOID_OPAQUE_MOUNT_METHOD = '<opaque-mount>';
+
 export interface ParanoidServiceSurface {
   readonly kind: 'service';
   readonly source: ParanoidSurfaceSource;
@@ -1029,6 +1032,10 @@ const keptRoutes = (
  * families so a newly mounted endpoint cannot fall through to an implicit allow.
  */
 export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
+  ...keptRoutes(
+    'The API-root opaque mounts are cross-cutting authentication, audit, rate-limit, and request-policy middleware; concrete operations are classified separately.',
+    [{ method: PARANOID_OPAQUE_MOUNT_METHOD, exact: '/' }],
+  ),
   ...keptRoutes('Public self-documenting API documentation contains no account data.', [
     { method: 'GET', exact: '/docs' },
     { method: 'GET', exact: '/openapi.json' },

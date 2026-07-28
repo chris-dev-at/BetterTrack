@@ -22,9 +22,24 @@ import { createLogger } from '../logger';
  */
 
 export interface MountedRoute {
+  readonly kind: 'route';
   method: string;
   path: string;
 }
+
+/**
+ * An explicit-path `app.use` mount whose terminal handler is not an inspectable
+ * Express router. It may consume any method or descendant path, so it cannot be
+ * represented as a finite OpenAPI operation. The paranoid completeness sweep
+ * still consumes this identity; OpenAPI comparison deliberately does not.
+ */
+export interface OpaqueMountedSurface {
+  readonly kind: 'opaque-mount';
+  readonly path: string;
+  readonly handler: string;
+}
+
+export type MountedSurface = MountedRoute | OpaqueMountedSurface;
 
 interface PathItemLike {
   [method: string]: unknown;
@@ -167,7 +182,7 @@ function collectRouterRoutes(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   stack: any[],
   base: string,
-  out: MountedRoute[],
+  out: MountedSurface[],
 ): void {
   for (const layer of stack) {
     if (layer.route) {
@@ -180,7 +195,11 @@ function collectRouterRoutes(
       // instead of `/workboard`).
       const suffix = layer.route.path === '/' ? '' : layer.route.path;
       for (const method of methods) {
-        out.push({ method: method.toUpperCase(), path: toOpenApiPath(base + suffix) });
+        out.push({
+          kind: 'route',
+          method: method.toUpperCase(),
+          path: toOpenApiPath(base + suffix),
+        });
       }
     } else if (layer.handle?.stack) {
       // None of app.ts's routers mount a further sub-router today — every
@@ -201,7 +220,7 @@ function collectRouterRoutes(
  * They are uncommon today, but omitting them here would create an invisible
  * path whenever one is added to `createApp`.
  */
-function collectDirectApplicationRoutes(app: Application, out: MountedRoute[]): void {
+function collectDirectApplicationRoutes(app: Application, out: MountedSurface[]): void {
   // Express does not expose the application's stack in its public TypeScript
   // surface. It is nonetheless the same router stack that powers dispatch;
   // fail closed if that implementation detail changes instead of silently
@@ -230,9 +249,9 @@ function collectDirectApplicationRoutes(app: Application, out: MountedRoute[]): 
  */
 export function buildRouteTable(
   appFactory: (ctx: AppContext) => Application = createApp,
-): MountedRoute[] {
+): MountedSurface[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mounts: { prefix: string; handler: any }[] = [];
+  const mounts: { prefix: string; handler: any; usesExplicitPath: boolean }[] = [];
   const originalUse = express.application.use;
   let app: Application | undefined;
 
@@ -244,6 +263,7 @@ export function buildRouteTable(
       mounts.push({
         prefix: usesExplicitPath ? first : '',
         handler: usesExplicitPath ? rest[rest.length - 1] : first,
+        usesExplicitPath,
       });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (originalUse as any).apply(this, args);
@@ -257,23 +277,31 @@ export function buildRouteTable(
     throw new Error('checkOpenapiCoverage: application factory did not return an Express app.');
   }
 
-  const routes: MountedRoute[] = [];
-  for (const { prefix, handler } of mounts) {
+  const surfaces: MountedSurface[] = [];
+  for (const { prefix, handler, usesExplicitPath } of mounts) {
     if (handler?.stack && Array.isArray(handler.stack)) {
-      collectRouterRoutes(handler.stack, prefix, routes);
+      collectRouterRoutes(handler.stack, prefix, surfaces);
+    } else if (usesExplicitPath) {
+      surfaces.push({
+        kind: 'opaque-mount',
+        path: toOpenApiPath(prefix),
+        handler:
+          typeof handler === 'function' && handler.name.length > 0 ? handler.name : '<anonymous>',
+      });
     }
   }
-  collectDirectApplicationRoutes(app, routes);
-  return routes;
+  collectDirectApplicationRoutes(app, surfaces);
+  return surfaces;
 }
 
 /** Mounted routes with no matching operation in the OpenAPI document, as `"METHOD /path"`. */
 export function findUndocumentedRoutes(
-  routes: readonly MountedRoute[],
+  surfaces: readonly MountedSurface[],
   doc: OpenApiDocumentLike,
 ): string[] {
   const missing: string[] = [];
-  for (const route of routes) {
+  for (const route of surfaces) {
+    if (route.kind !== 'route') continue;
     const key = `${route.method} ${route.path}`;
     if (SELF_DOCUMENTING.has(key)) continue;
 
@@ -293,10 +321,14 @@ export function findUndocumentedRoutes(
  * a phantom endpoint that would render on `/docs` but 404 for real callers.
  */
 export function findPhantomRoutes(
-  routes: readonly MountedRoute[],
+  surfaces: readonly MountedSurface[],
   doc: OpenApiDocumentLike,
 ): string[] {
-  const mounted = new Set(routes.map((route) => `${route.method} ${route.path}`));
+  const mounted = new Set(
+    surfaces
+      .filter((surface): surface is MountedRoute => surface.kind === 'route')
+      .map((route) => `${route.method} ${route.path}`),
+  );
   const phantom: string[] = [];
 
   for (const [path, pathItem] of Object.entries(doc.paths)) {
@@ -323,7 +355,7 @@ export function checkCoverage(): CoverageResult {
     ok: missing.length === 0 && phantom.length === 0,
     missing,
     phantom,
-    mountedCount: mounted.length,
+    mountedCount: mounted.filter((surface) => surface.kind === 'route').length,
     documentedCount: Object.keys(doc.paths).length,
   };
 }

@@ -5,12 +5,13 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { createApp } from '../../../app';
 import { JOB_REGISTRATION_DESCRIPTORS, type JobRegistrationDescriptor } from '../../../jobs';
-import { buildRouteTable } from '../../../scripts/checkOpenapiCoverage';
+import { buildRouteTable, type MountedSurface } from '../../../scripts/checkOpenapiCoverage';
 import {
   isParanoidSurfaceClassified,
   PARANOID_ACCOUNT_CONTEXT_SOURCE,
   PARANOID_DIRECT_SERVICE_CALL,
   PARANOID_KNOWN_GAPS,
+  PARANOID_OPAQUE_MOUNT_METHOD,
   PARANOID_ROUTE_TABLE_SOURCE,
   paranoidSurfaceClassifications,
   type ParanoidJobSurface,
@@ -53,17 +54,31 @@ function surfaceName(surface: ParanoidSurface): string {
  * filter.
  */
 function mountedRouteSurfaces(
-  routes: readonly { method: string; path: string }[] = buildRouteTable(),
+  routes: readonly MountedSurface[] = buildRouteTable(),
   source = PARANOID_ROUTE_TABLE_SOURCE,
 ): ParanoidRouteSurface[] {
-  return routes.map((route) => ({
-    kind: 'route' as const,
-    source,
-    method: route.method,
-    path: route.path.startsWith(API_PREFIX)
+  return routes.map((route) => {
+    const path = route.path.startsWith(API_PREFIX)
       ? route.path.slice(API_PREFIX.length) || '/'
-      : route.path,
-  }));
+      : route.path;
+    if (route.kind === 'route') {
+      return {
+        kind: 'route' as const,
+        source,
+        method: route.method,
+        path,
+      };
+    }
+    return {
+      kind: 'route' as const,
+      source: {
+        ...source,
+        symbol: `${source.symbol}.${route.handler}`,
+      },
+      method: PARANOID_OPAQUE_MOUNT_METHOD,
+      path,
+    };
+  });
 }
 
 /**
@@ -289,6 +304,50 @@ describe('paranoid enforcement completeness', () => {
     expect(classificationProblems([throwawayRoute!])).toEqual([
       `${COMPLETENESS_TEST_SOURCE}#throwawayParanoidRouteFixture (GET /paranoid-enforcement-fixture) is unclassified`,
     ]);
+  });
+
+  it('names a newly mounted opaque leaf handler when no classification exists', () => {
+    const fixturePath = '/paranoid-enforcement-fixture';
+    const throwawayRoute = mountedRouteSurfaces(
+      buildRouteTable((ctx) => {
+        const app = createApp(ctx);
+        app.use(
+          fixturePath,
+          (_request, _response, next) => next(),
+          function leafRequestHandler(_request, response) {
+            response.sendStatus(204);
+          },
+        );
+        return app;
+      }),
+      {
+        file: COMPLETENESS_TEST_SOURCE,
+        symbol: 'throwawayParanoidLeafMountFixture',
+      },
+    ).find((route) => route.method === PARANOID_OPAQUE_MOUNT_METHOD && route.path === fixturePath);
+
+    expect(throwawayRoute).toBeDefined();
+    expect(classificationProblems([throwawayRoute!])).toEqual([
+      `${COMPLETENESS_TEST_SOURCE}#throwawayParanoidLeafMountFixture.leafRequestHandler (${PARANOID_OPAQUE_MOUNT_METHOD} /paranoid-enforcement-fixture) is unclassified`,
+    ]);
+  });
+
+  it('discovers the opaque Grafana proxy mount through the admin exemption', () => {
+    const grafanaMount = mountedRouteSurfaces().find(
+      (route) =>
+        route.method === PARANOID_OPAQUE_MOUNT_METHOD &&
+        route.path === '/admin/monitoring/grafana' &&
+        route.source.symbol === 'createApp.grafanaProxy',
+    );
+
+    expect(grafanaMount).toBeDefined();
+    expect(paranoidSurfaceClassifications(grafanaMount!)).toEqual([
+      {
+        disposition: 'exempt',
+        reason: 'Administrator routes are independently authorized operational surfaces.',
+      },
+    ]);
+    expect(classificationProblems([grafanaMount!])).toEqual([]);
   });
 
   it('keeps a replacement job unclassified even when its queue name is already registered', () => {
