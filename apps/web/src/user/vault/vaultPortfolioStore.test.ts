@@ -30,13 +30,14 @@ import { InsufficientCashError } from '@bettertrack/domain/cashLedger';
 
 import * as portfolioApi from '../../lib/portfolioApi';
 
-import { encryptVaultDocument } from './crypto';
+import { decryptVaultDocument, encryptVaultDocument } from './crypto';
 import type {
   DataHome,
   DataHomeReadResult,
   DataHomeWriteOptions,
   DataHomeWriteResult,
 } from './dataHome';
+import { VaultCryptoError } from './errors';
 import {
   createLocalDataHome,
   type LocalDataHome,
@@ -515,6 +516,87 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
   });
 
   describe('transaction tax fence', () => {
+    it('rejects a future effective tax mode after an encrypted round trip before CAS', async () => {
+      const newerClientDocument = initialDocument();
+      newerClientDocument.entities.transaction = [
+        transactionEntity(GENERATED_IDS[0], {
+          side: 'buy',
+          quantity: 2,
+          executedAt: '2026-07-25T08:00:00.000Z',
+        }),
+      ];
+      newerClientDocument.entities.portfolioSetting = [
+        vaultEntity(GENERATED_IDS[6], {
+          portfolioId: PORTFOLIO_ID,
+          key: 'tax',
+          value: { mode: 'future_automatic' },
+          updatedAt: AT,
+        }),
+      ];
+      const { document } = await decryptVaultDocument(await encrypted(newerClientDocument, 1), KEY);
+      expect(document.entities.portfolioSetting?.[0]?.data.value).toEqual({
+        mode: 'future_automatic',
+      });
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, {
+        now: () => AT,
+        newId: () => GENERATED_IDS[7],
+      });
+
+      const error = await captureError(() =>
+        store.createTransactions(PORTFOLIO_ID, [
+          {
+            assetId: ASSET_ID,
+            side: 'sell',
+            quantity: 1,
+            price: 12,
+            fee: 0,
+            executedAt: AT,
+          },
+        ]),
+      );
+
+      expect(error).toBeInstanceOf(VaultCryptoError);
+      expect(error).toMatchObject({
+        code: 'update-required',
+        message: 'This vault was written by a newer app version.',
+      });
+      expect(engine.mutate).not.toHaveBeenCalled();
+      expect(engine.state.active?.header.vaultVersion).toBe(1);
+      expect(engine.state.active?.document.entities.transaction).toHaveLength(1);
+      expectPortfolioApiUnused();
+    });
+
+    it('rejects updates and deletes of a sell frozen with a future tax mode before CAS', async () => {
+      const frozenSellId = GENERATED_IDS[1];
+      const document = initialDocument();
+      document.entities.transaction = [
+        transactionEntity(GENERATED_IDS[0], {
+          side: 'buy',
+          quantity: 2,
+          executedAt: '2026-07-25T08:00:00.000Z',
+        }),
+        transactionEntity(frozenSellId, {
+          side: 'sell',
+          executedAt: '2026-07-25T09:00:00.000Z',
+          taxMode: 'future_automatic',
+        }),
+      ];
+      const engine = createMutableEngine(document);
+      const store = createVaultPortfolioStore(engine, { now: () => AT });
+
+      await expect(
+        store.updateTransaction(PORTFOLIO_ID, frozenSellId, { note: 'Explanation only' }),
+      ).rejects.toMatchObject({ code: 'update-required' });
+      await expect(store.deleteTransaction(PORTFOLIO_ID, frozenSellId)).rejects.toMatchObject({
+        code: 'update-required',
+      });
+
+      expect(engine.mutate).not.toHaveBeenCalled();
+      expect(engine.state.active?.header.vaultVersion).toBe(1);
+      expectPortfolioApiUnused();
+    });
+
     it('keeps an untaxed manual-per-trade sell on the vault path', async () => {
       const document = initialDocument();
       document.entities.taxSetting = [
