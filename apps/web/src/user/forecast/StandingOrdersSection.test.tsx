@@ -124,12 +124,12 @@ describe('StandingOrdersSection', () => {
     renderSection();
 
     await screen.findByText('VWCE.DE');
-    await user.click(screen.getByRole('button', { name: 'Pause' }));
+    await user.click(screen.getByRole('button', { name: 'VWCE.DE Pause' }));
 
     await waitFor(() => expect(standingOrdersApi.pauseStandingOrder).toHaveBeenCalledWith('so1'));
     // After the mutation success the shared query key refetches and the row now
     // exposes Resume + a Paused badge.
-    expect(await screen.findByRole('button', { name: 'Resume' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'VWCE.DE Resume' })).toBeInTheDocument();
     expect(screen.getByText('Paused')).toBeInTheDocument();
   });
 
@@ -144,11 +144,11 @@ describe('StandingOrdersSection', () => {
     const user = userEvent.setup();
     renderSection();
 
-    await screen.findByRole('button', { name: 'Resume' });
-    await user.click(screen.getByRole('button', { name: 'Resume' }));
+    await screen.findByRole('button', { name: 'VWCE.DE Resume' });
+    await user.click(screen.getByRole('button', { name: 'VWCE.DE Resume' }));
 
     await waitFor(() => expect(standingOrdersApi.resumeStandingOrder).toHaveBeenCalledWith('so1'));
-    expect(await screen.findByRole('button', { name: 'Pause' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'VWCE.DE Pause' })).toBeInTheDocument();
   });
 
   test('confirms before deleting and then round-trips', async () => {
@@ -161,13 +161,13 @@ describe('StandingOrdersSection', () => {
     renderSection();
 
     await screen.findByText('VWCE.DE');
-    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(screen.getByRole('button', { name: 'VWCE.DE Delete' }));
 
     // A confirm prompt appears before any API call is made.
     expect(standingOrdersApi.deleteStandingOrder).not.toHaveBeenCalled();
     expect(screen.getByText('Delete?')).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Yes' }));
+    await user.click(screen.getByRole('button', { name: 'VWCE.DE Yes' }));
 
     await waitFor(() => expect(standingOrdersApi.deleteStandingOrder).toHaveBeenCalledWith('so1'));
     // After refetch the list is empty again.
@@ -201,7 +201,7 @@ describe('StandingOrdersSection', () => {
     renderSection();
 
     await screen.findByText('VWCE.DE');
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    await user.click(screen.getByRole('button', { name: 'VWCE.DE Edit' }));
 
     const dialog = await screen.findByRole('dialog', { name: 'Edit standing order' });
     // Kind is locked in edit mode — every non-current tab is disabled.
@@ -210,5 +210,42 @@ describe('StandingOrdersSection', () => {
       'aria-pressed',
       'true',
     );
+  });
+
+  test('gives each row distinct primary and delete-confirmation action names', async () => {
+    vi.mocked(standingOrdersApi.listStandingOrders).mockResolvedValue({
+      orders: [
+        makeOrder({ id: 'so-buy', assetSymbol: 'VWCE.DE' }),
+        makeOrder({
+          id: 'so-cash',
+          kind: 'cash-add',
+          assetId: null,
+          assetSymbol: null,
+          assetName: null,
+          label: 'salary',
+          status: 'paused',
+          nextRunDate: null,
+        }),
+      ],
+    });
+    const user = userEvent.setup();
+    renderSection();
+
+    await screen.findByText('VWCE.DE');
+    expect(screen.getByRole('button', { name: 'VWCE.DE Pause' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'salary Resume' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'VWCE.DE Edit' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'salary Edit' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'VWCE.DE Delete' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'salary Delete' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'VWCE.DE Delete' }));
+    expect(screen.getByRole('button', { name: 'VWCE.DE Yes' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'VWCE.DE No' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'VWCE.DE No' }));
+
+    await user.click(screen.getByRole('button', { name: 'salary Delete' }));
+    expect(screen.getByRole('button', { name: 'salary Yes' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'salary No' })).toBeInTheDocument();
   });
 });
