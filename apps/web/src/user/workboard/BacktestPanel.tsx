@@ -152,7 +152,7 @@ function RangeSelector({
     <div
       role="group"
       aria-label={t('workboard.backtest.rangeAriaLabel')}
-      className="inline-flex rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+      className="bt-seg"
     >
       {BACKTEST_PREVIEW_RANGES.map((token) => {
         const selected = token === active;
@@ -164,10 +164,8 @@ function RangeSelector({
             onClick={() => onSelect(token)}
             className={cx(
               'rounded px-2 py-1 text-xs font-medium transition-colors',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              selected
-                ? 'bg-sky-600 text-white'
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+              '',
+              (selected) && 'is-active',
             )}
           >
             {labels[token]}
@@ -191,7 +189,7 @@ function ModeSelector({
     <div
       role="group"
       aria-label={t('workboard.backtest.modeAriaLabel')}
-      className="inline-flex flex-wrap rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+      className="bt-seg flex-wrap"
     >
       {BACKTEST_MODES.map((token) => {
         const selected = token === active;
@@ -203,10 +201,8 @@ function ModeSelector({
             onClick={() => onSelect(token)}
             className={cx(
               'rounded px-2 py-1 text-xs font-medium transition-colors',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              selected
-                ? 'bg-sky-600 text-white'
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+              '',
+              (selected) && 'is-active',
             )}
           >
             {labels[token]}
@@ -231,7 +227,7 @@ function RebalanceSelector({
     <div
       role="group"
       aria-label={t('workboard.backtest.rebalanceAriaLabel')}
-      className="inline-flex flex-wrap rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+      className="bt-seg flex-wrap"
     >
       {REBALANCE_FREQUENCIES.map((token) => {
         const selected = token === active;
@@ -243,10 +239,8 @@ function RebalanceSelector({
             onClick={() => onSelect(token)}
             className={cx(
               'rounded px-2 py-1 text-xs font-medium transition-colors',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              selected
-                ? 'bg-sky-600 text-white'
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+              '',
+              (selected) && 'is-active',
             )}
           >
             {labels[token]}
@@ -289,10 +283,10 @@ function BenchmarkPicker({
   const pillClass = (selected: boolean) =>
     cx(
       'rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-colors',
-      'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+      '',
       selected
         ? 'bg-violet-600/20 text-violet-200 ring-violet-600'
-        : 'text-neutral-400 ring-neutral-700 hover:bg-neutral-800 hover:text-neutral-100',
+        : '',
     );
 
   return (
@@ -342,7 +336,7 @@ function BenchmarkPicker({
               type="button"
               aria-label={t('workboard.backtest.benchmark.clear')}
               onClick={() => onChange(null)}
-              className="rounded-full leading-none text-violet-300 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              className="rounded-full leading-none text-violet-300 hover:text-white"
             >
               ×
             </button>
@@ -362,11 +356,11 @@ function BenchmarkPicker({
 
       {source === 'conglomerate' ? (
         conglomeratesQuery.isLoading ? (
-          <p className="text-xs text-neutral-500">{t('workboard.backtest.benchmark.loading')}</p>
+          <p className="text-xs bt-muted">{t('workboard.backtest.benchmark.loading')}</p>
         ) : conglomeratesQuery.isError ? (
-          <p className="text-xs text-rose-400">{t('common.genericError')}</p>
+          <p className="text-xs bt-neg">{t('common.genericError')}</p>
         ) : conglomerates.length === 0 ? (
-          <p className="text-xs text-neutral-500">
+          <p className="text-xs bt-muted">
             {t('workboard.backtest.benchmark.noConglomerates')}
           </p>
         ) : (
@@ -381,8 +375,8 @@ function BenchmarkPicker({
               }
             }}
             className={cx(
-              'w-full max-w-xs rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-              'ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500',
+              'bt-input w-full max-w-xs',
+              ' ',
             )}
           >
             <option value="">
@@ -481,13 +475,13 @@ function StatsTable({
   const t = useT();
   const rows = statRows(t, stats, benchmark.stats);
   return (
-    <div className="overflow-x-auto rounded-lg bg-neutral-900/60 ring-1 ring-inset ring-neutral-800">
+    <div className="overflow-x-auto rounded-lg">
       <table
         aria-label={t('workboard.backtest.statsTable.ariaLabel')}
         className="w-full min-w-96 text-sm"
       >
         <thead>
-          <tr className="border-b border-neutral-800 text-xs uppercase tracking-wide text-neutral-500">
+          <tr className="bt-b-rule text-xs uppercase tracking-wide bt-muted">
             <th scope="col" className="px-3 py-2 text-left font-medium">
               {t('workboard.backtest.statsTable.metric')}
             </th>
@@ -509,24 +503,24 @@ function StatsTable({
             const fmt = row.signed ? formatSignedPercent : formatPercent;
             const delta = row.basket !== null && row.bench !== null ? row.basket - row.bench : null;
             return (
-              <tr key={row.key} className="border-b border-neutral-800/60 last:border-b-0">
-                <th scope="row" className="px-3 py-2 text-left font-medium text-neutral-400">
+              <tr key={row.key} className="bt-b-rule/60 last:border-b-0">
+                <th scope="row" className="px-3 py-2 text-left font-medium bt-muted">
                   {row.label}
                 </th>
-                <td className="px-3 py-2 text-right text-neutral-100">
+                <td className="px-3 py-2 text-right">
                   {fmt(row.basket)}
                   {row.basketSub ? (
-                    <span className="block text-xs text-neutral-500">{row.basketSub}</span>
+                    <span className="block text-xs bt-muted">{row.basketSub}</span>
                   ) : null}
                 </td>
-                <td className="px-3 py-2 text-right text-neutral-100">
+                <td className="px-3 py-2 text-right">
                   {fmt(row.bench)}
                   {row.benchSub ? (
-                    <span className="block text-xs text-neutral-500">{row.benchSub}</span>
+                    <span className="block text-xs bt-muted">{row.benchSub}</span>
                   ) : null}
                 </td>
                 {showDelta ? (
-                  <td className="px-3 py-2 text-right text-neutral-300">
+                  <td className="px-3 py-2 text-right bt-soft">
                     {formatSignedPercent(delta)}
                   </td>
                 ) : null}
@@ -631,23 +625,23 @@ export function BacktestPanel({ positions, className, source, initialParams }: B
           {data.rebalanceEvents.length > 0 || data.benchmark ? (
             <div className="flex flex-wrap items-center gap-4">
               {data.rebalanceEvents.length > 0 ? (
-                <label className="inline-flex items-center gap-1.5 text-xs text-neutral-400">
+                <label className="inline-flex items-center gap-1.5 text-xs bt-muted">
                   <input
                     type="checkbox"
                     checked={showRebalanceMarkers}
                     onChange={(e) => setShowRebalanceMarkers(e.target.checked)}
-                    className="size-3.5 accent-sky-600"
+                    className="size-3.5" style={{ accentColor: 'var(--bt-gold)' }}
                   />
                   {t('workboard.backtest.showRebalanceMarkers')}
                 </label>
               ) : null}
               {data.benchmark ? (
-                <label className="inline-flex items-center gap-1.5 text-xs text-neutral-400">
+                <label className="inline-flex items-center gap-1.5 text-xs bt-muted">
                   <input
                     type="checkbox"
                     checked={showDelta}
                     onChange={(e) => setShowDelta(e.target.checked)}
-                    className="size-3.5 accent-sky-600"
+                    className="size-3.5" style={{ accentColor: 'var(--bt-gold)' }}
                   />
                   {t('workboard.backtest.statsTable.showDelta')}
                 </label>

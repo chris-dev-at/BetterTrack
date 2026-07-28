@@ -1561,6 +1561,15 @@
   }
 }
 
+/* One-pixel rule helpers for row/section boundaries in restyled markup. */
+.bt-b-rule {
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-t-rule {
+  border-top: 1px solid var(--bt-border);
+}
+
 /* Visibility helpers. Origin.css loads after Tailwind, so Tailwind's display
    utilities (`hidden`, `sm:flex`, …) lose the cascade against bt-* component
    display rules — bt-* markup uses these hide-only helpers instead. */

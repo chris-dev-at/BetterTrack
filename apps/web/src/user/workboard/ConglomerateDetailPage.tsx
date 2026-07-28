@@ -31,10 +31,10 @@ import { NestedBadge, StatusBadge } from './ConglomeratesListPage';
 function PositionsFrame({ children }: { children: React.ReactNode }) {
   const t = useT();
   return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-800">
+    <div className="overflow-x-auto bt-panel">
       <table className="w-full text-left">
         <thead>
-          <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
+          <tr className="bt-b-rule bt-label">
             <th scope="col" className="px-3 py-2">
               {t('workboard.detail.assetHeader')}
             </th>
@@ -66,27 +66,27 @@ function PositionsTable({ positions }: { positions: ConglomerateConstituent[] })
       {positions.map((p) => (
         <tr
           key={p.kind === 'asset' ? p.assetId : p.childId}
-          className="border-b border-neutral-800 last:border-b-0"
+          className="bt-b-rule last:border-b-0"
         >
           <td className="px-3 py-3">
             {p.kind === 'asset' ? (
               <>
-                <span className="font-mono text-sm font-medium text-neutral-100">
+                <span className="font-mono text-sm font-medium">
                   {p.asset.symbol}
                 </span>
-                <p className="max-w-[16rem] truncate text-xs text-neutral-500" title={p.asset.name}>
+                <p className="max-w-[16rem] truncate text-xs bt-muted" title={p.asset.name}>
                   {p.asset.name}
                 </p>
               </>
             ) : (
               <>
                 <span className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium text-neutral-100">
+                  <span className="truncate text-sm font-medium">
                     {p.child.name}
                   </span>
                   <NestedBadge />
                 </span>
-                <p className="text-xs text-neutral-500">
+                <p className="text-xs bt-muted">
                   {p.child.positionCount === 1
                     ? t('workboard.conglomerates.positionCountOne', {
                         count: p.child.positionCount,
@@ -98,7 +98,7 @@ function PositionsTable({ positions }: { positions: ConglomerateConstituent[] })
               </>
             )}
           </td>
-          <td className="px-3 py-3 text-right text-sm tabular-nums text-neutral-300">
+          <td className="px-3 py-3 text-right text-sm tabular-nums bt-soft">
             {formatWeight(p.weightPct)}
           </td>
         </tr>
@@ -112,14 +112,14 @@ function ResolvedPositionsTable({ positions }: { positions: ResolvedConglomerate
   return (
     <PositionsFrame>
       {positions.map((p) => (
-        <tr key={p.assetId} className="border-b border-neutral-800 last:border-b-0">
+        <tr key={p.assetId} className="bt-b-rule last:border-b-0">
           <td className="px-3 py-3">
-            <span className="font-mono text-sm font-medium text-neutral-100">{p.asset.symbol}</span>
-            <p className="max-w-[16rem] truncate text-xs text-neutral-500" title={p.asset.name}>
+            <span className="font-mono text-sm font-medium">{p.asset.symbol}</span>
+            <p className="max-w-[16rem] truncate text-xs bt-muted" title={p.asset.name}>
               {p.asset.name}
             </p>
           </td>
-          <td className="px-3 py-3 text-right text-sm tabular-nums text-neutral-300">
+          <td className="px-3 py-3 text-right text-sm tabular-nums bt-soft">
             {formatWeight(p.weightPct)}
           </td>
         </tr>
@@ -147,7 +147,7 @@ function DeleteConfirmDialog({
   return (
     <Dialog title={t('workboard.detail.deleteDialogTitle')} onClose={onClose}>
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-neutral-400">
+        <p className="text-sm bt-muted">
           {t('workboard.detail.deleteDialogBody', { name })}
         </p>
         {error ? <Alert tone="error">{error}</Alert> : null}
@@ -155,14 +155,14 @@ function DeleteConfirmDialog({
           <Button variant="secondary" onClick={onClose} disabled={pending}>
             {t('common.cancel')}
           </Button>
-          <Button
-            variant="primary"
-            onClick={onConfirm}
+          <button
+            className="bt-btn bt-btn--danger"
             disabled={pending}
-            className="bg-red-700 hover:bg-red-600 disabled:bg-red-900"
+            onClick={onConfirm}
+            type="button"
           >
             {pending ? t('workboard.detail.deleting') : t('common.delete')}
-          </Button>
+          </button>
         </div>
       </div>
     </Dialog>
@@ -251,7 +251,7 @@ export function ConglomerateDetailPage() {
   if (isError || !data) {
     return (
       <div className="flex flex-col gap-4">
-        <Link to="/workboard/conglomerates" className="text-sm text-sky-400 hover:underline">
+        <Link to="/workboard/conglomerates" className="text-sm bt-link">
           {t('workboard.detail.backToConglomeratesError')}
         </Link>
         <Alert tone="error">{t('workboard.detail.loadError')}</Alert>
@@ -288,7 +288,7 @@ export function ConglomerateDetailPage() {
     <div className="flex flex-col gap-8">
       <Link
         to="/workboard/conglomerates"
-        className="text-sm text-neutral-500 hover:text-neutral-300"
+        className="text-sm bt-muted hover:bt-soft"
       >
         {t('workboard.detail.backLink')}
       </Link>
@@ -297,7 +297,7 @@ export function ConglomerateDetailPage() {
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">{data.name}</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">{data.name}</h1>
             <StatusBadge status={data.status} />
           </div>
           <div className="flex gap-2">
@@ -321,8 +321,8 @@ export function ConglomerateDetailPage() {
             </Button>
           </div>
         </div>
-        <p className="text-sm text-neutral-400">{positionCountText}</p>
-        {data.description ? <p className="text-sm text-neutral-500">{data.description}</p> : null}
+        <p className="text-sm bt-muted">{positionCountText}</p>
+        {data.description ? <p className="text-sm bt-muted">{data.description}</p> : null}
         {shareError ? <Alert tone="error">{t('workboard.detail.shareError')}</Alert> : null}
       </div>
 
@@ -330,14 +330,14 @@ export function ConglomerateDetailPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <section aria-labelledby="positions-heading" className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 id="positions-heading" className="text-base font-semibold text-neutral-200">
+            <h2 id="positions-heading" className="text-base font-semibold bt-soft">
               {t('workboard.detail.positionsHeading')}
             </h2>
             {resolved?.nested ? (
               <div
                 role="group"
                 aria-label={t('workboard.detail.viewToggleAriaLabel')}
-                className="inline-flex rounded-md ring-1 ring-inset ring-neutral-700"
+                className="inline-flex rounded-md"
               >
                 {(['stored', 'resolved'] as const).map((v) => (
                   <button
@@ -346,10 +346,10 @@ export function ConglomerateDetailPage() {
                     onClick={() => setView(v)}
                     aria-pressed={view === v}
                     className={cx(
-                      'px-2.5 py-1 text-xs font-medium first:rounded-l-md last:rounded-r-md focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+                      'px-2.5 py-1 text-xs font-medium first:rounded-l-md last:rounded-r-md ',
                       view === v
-                        ? 'bg-neutral-700 text-neutral-100'
-                        : 'text-neutral-400 hover:text-neutral-200',
+                        ? 'is-active'
+                        : 'bt-muted hover:bt-soft',
                     )}
                   >
                     {v === 'stored'
@@ -365,7 +365,7 @@ export function ConglomerateDetailPage() {
           ) : null}
           {showResolved && resolved ? (
             <>
-              <p className="text-xs text-neutral-500">{t('workboard.detail.resolvedHint')}</p>
+              <p className="text-xs bt-muted">{t('workboard.detail.resolvedHint')}</p>
               <ResolvedPositionsTable positions={resolved.positions} />
             </>
           ) : (
@@ -373,10 +373,10 @@ export function ConglomerateDetailPage() {
           )}
         </section>
         <section aria-labelledby="allocation-heading" className="flex flex-col gap-3">
-          <h2 id="allocation-heading" className="text-base font-semibold text-neutral-200">
+          <h2 id="allocation-heading" className="text-base font-semibold bt-soft">
             {t('workboard.detail.allocationHeading')}
           </h2>
-          <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+          <div className="bt-panel bt-panel--pad">
             <AllocationDonut data={donutData} title={t('workboard.detail.allocationChartTitle')} />
           </div>
         </section>
@@ -384,7 +384,7 @@ export function ConglomerateDetailPage() {
 
       {/* Backtest panel (#137) */}
       <section aria-labelledby="backtest-heading" className="flex flex-col gap-3">
-        <h2 id="backtest-heading" className="text-base font-semibold text-neutral-200">
+        <h2 id="backtest-heading" className="text-base font-semibold bt-soft">
           {t('workboard.detail.backtestHeading')}
         </h2>
         <BacktestPanel
@@ -395,7 +395,7 @@ export function ConglomerateDetailPage() {
 
       {/* Invest Calculator (§6.7, #138) */}
       <section aria-labelledby="calculator-heading" className="flex flex-col gap-3">
-        <h2 id="calculator-heading" className="text-base font-semibold text-neutral-200">
+        <h2 id="calculator-heading" className="text-base font-semibold bt-soft">
           {t('workboard.detail.calculatorHeading')}
         </h2>
         <BudgetCalculator conglomerateId={id} />

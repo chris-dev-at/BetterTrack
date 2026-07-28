@@ -85,14 +85,14 @@ function WatchlistRow({
       }}
       onDragEnd={onDragEnd}
       className={cx(
-        'border-b border-neutral-800 last:border-b-0 transition-colors',
+        'bt-b-rule last:border-b-0 transition-colors',
         isDragging && 'opacity-40',
-        isDragOver && 'bg-sky-950/40',
+        isDragOver && '',
       )}
     >
       {/* Drag handle */}
       <td
-        className="w-5 cursor-grab select-none pl-2 pr-0 text-center text-neutral-600"
+        className="w-5 cursor-grab select-none pl-2 pr-0 text-center bt-muted"
         aria-hidden="true"
       >
         ⠿
@@ -117,17 +117,17 @@ function WatchlistRow({
         <div className="flex items-center gap-2">
           <Link
             to={`/assets/${item.assetId}`}
-            className="font-mono text-sm font-medium text-neutral-100 transition-colors hover:text-sky-400"
+            className="font-mono text-sm font-medium transition-colors"
           >
             {item.asset.symbol}
           </Link>
           {/* Exchange session badge (§13.5 V5-P1) — only where the quote resolved. */}
           <MarketStateBadge state={quote?.marketState} />
         </div>
-        <p className="max-w-[12rem] truncate text-xs text-neutral-500" title={item.asset.name}>
+        <p className="max-w-[12rem] truncate text-xs bt-muted" title={item.asset.name}>
           {item.asset.name}
         </p>
-        {item.note ? <p className="mt-0.5 text-xs italic text-neutral-600">{item.note}</p> : null}
+        {item.note ? <p className="mt-0.5 text-xs italic bt-muted">{item.note}</p> : null}
       </td>
 
       {/* Price */}
@@ -137,7 +137,7 @@ function WatchlistRow({
         ) : quote ? (
           <MoneyText amount={quote.price} currency={quote.currency} unitPrice />
         ) : (
-          <span className="text-neutral-600">—</span>
+          <span className="bt-muted">—</span>
         )}
       </td>
 
@@ -148,20 +148,20 @@ function WatchlistRow({
         ) : dayPct != null ? (
           <span
             className={
-              dayPct > 0 ? 'text-emerald-400' : dayPct < 0 ? 'text-red-400' : 'text-neutral-400'
+              dayPct > 0 ? 'bt-pos' : dayPct < 0 ? 'bt-neg' : 'bt-muted'
             }
           >
             {formatSignedPercent(dayPct)}
           </span>
         ) : (
-          <span className="text-neutral-600">—</span>
+          <span className="bt-muted">—</span>
         )}
       </td>
 
       {/* Alert count badge — alerts API arrives in P5 */}
       <td className="px-3 py-3 text-center">
         <span
-          className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-neutral-800 px-1.5 text-xs text-neutral-500 ring-1 ring-neutral-700"
+          className="bt-badge inline-flex h-5 min-w-[1.25rem] items-center justify-center px-1.5 text-xs"
           title={t('workboard.overview.watchlist.alertsComingSoonTitle')}
         >
           —
@@ -177,7 +177,7 @@ function WatchlistRow({
           aria-label={t('workboard.overview.watchlist.removeAriaLabel', {
             symbol: item.asset.symbol,
           })}
-          className="rounded p-1 text-xs text-neutral-600 transition-colors hover:bg-neutral-800 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          className="rounded p-1 text-xs bt-muted transition-colors hover:bt-neg disabled:cursor-not-allowed disabled:opacity-40"
         >
           ✕
         </button>
@@ -312,7 +312,7 @@ function WatchlistZone() {
   if (isLoading) {
     return (
       <section aria-labelledby="watchlist-heading" className="flex flex-col gap-4">
-        <h2 id="watchlist-heading" className="text-lg font-semibold text-neutral-200">
+        <h2 id="watchlist-heading" className="text-lg font-semibold bt-soft">
           {t('workboard.overview.watchlist.heading')}
         </h2>
         <div className="flex flex-col gap-2">
@@ -327,7 +327,7 @@ function WatchlistZone() {
   if (isError) {
     return (
       <section aria-labelledby="watchlist-heading" className="flex flex-col gap-4">
-        <h2 id="watchlist-heading" className="text-lg font-semibold text-neutral-200">
+        <h2 id="watchlist-heading" className="text-lg font-semibold bt-soft">
           {t('workboard.overview.watchlist.heading')}
         </h2>
         <Alert tone="error">{t('workboard.overview.watchlist.loadError')}</Alert>
@@ -338,7 +338,7 @@ function WatchlistZone() {
   return (
     <section aria-labelledby="watchlist-heading" className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 id="watchlist-heading" className="text-lg font-semibold text-neutral-200">
+        <h2 id="watchlist-heading" className="text-lg font-semibold bt-soft">
           {t('workboard.overview.watchlist.heading')}
         </h2>
         <WatchlistSharingToggle />
@@ -355,17 +355,17 @@ function WatchlistZone() {
           cta={
             <Link
               to="/assets/search"
-              className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              className="rounded text-sm bt-link"
             >
               {t('workboard.overview.watchlist.emptySearchLink')}
             </Link>
           }
         />
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-neutral-800">
+        <div className="overflow-x-auto bt-panel">
           <table className="w-full text-left">
             <thead>
-              <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
+              <tr className="bt-b-rule bt-label">
                 <th scope="col" className="w-5 pl-2" aria-hidden="true" />
                 <th scope="col" className="px-2 py-2">
                   {t('workboard.overview.watchlist.trendHeader')}
@@ -440,26 +440,26 @@ function UpcomingEarningsZone() {
 
   return (
     <section aria-labelledby="earnings-heading" className="flex flex-col gap-4">
-      <h2 id="earnings-heading" className="text-lg font-semibold text-neutral-200">
+      <h2 id="earnings-heading" className="text-lg font-semibold bt-soft">
         {t('workboard.overview.earnings.heading')}
       </h2>
-      <div className="overflow-hidden rounded-lg border border-neutral-800">
-        <ul className="divide-y divide-neutral-800">
+      <div className="overflow-hidden bt-panel">
+        <ul className="bt-band">
           {rows.map((e) => (
             <li key={`${e.assetId}-${e.date}`} className="flex items-center gap-3 px-4 py-2.5">
               <div className="flex min-w-0 flex-1 flex-col">
                 <Link
                   to={`/assets/${e.assetId}`}
-                  className="font-mono text-sm font-medium text-neutral-100 transition-colors hover:text-sky-400"
+                  className="font-mono text-sm font-medium transition-colors"
                 >
                   {e.symbol}
                 </Link>
-                <span className="max-w-[14rem] truncate text-xs text-neutral-500" title={e.name}>
+                <span className="max-w-[14rem] truncate text-xs bt-muted" title={e.name}>
                   {e.name}
                 </span>
               </div>
               <span
-                className="inline-flex items-center rounded-full bg-neutral-800 px-2 py-0.5 text-[0.65rem] uppercase tracking-wide text-neutral-400 ring-1 ring-neutral-700"
+                className="bt-badge inline-flex items-center px-2 py-0.5 text-[0.65rem] uppercase tracking-wide"
                 title={
                   e.held
                     ? t('workboard.overview.earnings.heldTitle')
@@ -474,15 +474,15 @@ function UpcomingEarningsZone() {
                 className={cx(
                   'inline-flex items-center rounded-full px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide ring-1',
                   e.estimated
-                    ? 'bg-amber-950/40 text-amber-300 ring-amber-800/60'
-                    : 'bg-emerald-950/40 text-emerald-300 ring-emerald-800/60',
+                    ? 'bt-badge bt-badge--gold'
+                    : 'bt-badge bt-badge--pos',
                 )}
               >
                 {e.estimated
                   ? t('workboard.overview.earnings.estimated')
                   : t('workboard.overview.earnings.confirmed')}
               </span>
-              <span className="w-24 shrink-0 text-right text-sm tabular-nums text-neutral-300">
+              <span className="w-24 shrink-0 text-right text-sm tabular-nums bt-soft">
                 {formatDate(e.date)}
               </span>
             </li>
@@ -492,7 +492,7 @@ function UpcomingEarningsZone() {
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="w-full border-t border-neutral-800 bg-neutral-900/60 py-2 text-xs font-medium text-sky-400 transition-colors hover:bg-neutral-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            className="w-full bt-t-rule py-2 text-xs font-medium bt-link transition-colors"
           >
             {expanded
               ? t('workboard.overview.earnings.showLess')
@@ -510,10 +510,10 @@ function AlertsZone() {
   const t = useT();
   return (
     <section aria-labelledby="alerts-heading" className="flex flex-col gap-4">
-      <h2 id="alerts-heading" className="text-lg font-semibold text-neutral-200">
+      <h2 id="alerts-heading" className="text-lg font-semibold bt-soft">
         {t('workboard.overview.alerts.heading')}
       </h2>
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-6">
+      <div className="bt-panel p-6">
         <EmptyState
           icon="🔔"
           title={t('workboard.overview.alerts.emptyTitle')}
@@ -530,10 +530,10 @@ function ConglomeratesZone() {
   const t = useT();
   return (
     <section aria-labelledby="conglomerates-heading" className="flex flex-col gap-4">
-      <h2 id="conglomerates-heading" className="text-lg font-semibold text-neutral-200">
+      <h2 id="conglomerates-heading" className="text-lg font-semibold bt-soft">
         {t('workboard.overview.conglomerates.heading')}
       </h2>
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-6">
+      <div className="bt-panel p-6">
         <EmptyState
           icon="📊"
           title={t('workboard.overview.conglomerates.emptyTitle')}
@@ -552,10 +552,10 @@ export function WorkboardPage() {
   return (
     <div className="flex flex-col gap-10">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+        <h1 className="text-2xl font-semibold tracking-tight">
           {t('workboard.overview.title')}
         </h1>
-        <p className="mt-1 text-sm text-neutral-400">{t('workboard.overview.subtitle')}</p>
+        <p className="mt-1 text-sm bt-muted">{t('workboard.overview.subtitle')}</p>
       </div>
       <WatchlistZone />
       <UpcomingEarningsZone />

@@ -109,7 +109,7 @@ function CalculatorCard({ id, title, summary, children }: CalculatorCardProps) {
   const [open, setOpen] = useState(false);
   const regionId = `${id}-region`;
   return (
-    <section className="rounded-lg border border-neutral-800 bg-neutral-900/40">
+    <section className="bt-panel">
       <button
         type="button"
         aria-expanded={open}
@@ -117,20 +117,20 @@ function CalculatorCard({ id, title, summary, children }: CalculatorCardProps) {
         onClick={() => setOpen((prev) => !prev)}
         className={cx(
           'flex w-full items-center justify-between gap-3 rounded-lg px-4 py-3 text-left',
-          'transition-colors hover:bg-neutral-800/60',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+          'transition-colors ',
+          '',
         )}
       >
         <span className="flex flex-col">
-          <span className="text-sm font-semibold text-neutral-100">{title}</span>
-          <span className="text-xs text-neutral-500">{summary}</span>
+          <span className="text-sm font-semibold">{title}</span>
+          <span className="text-xs bt-muted">{summary}</span>
         </span>
-        <span aria-hidden="true" className="text-neutral-500">
+        <span aria-hidden="true" className="bt-muted">
           {open ? '−' : '+'}
         </span>
       </button>
       {open ? (
-        <div id={regionId} className="border-t border-neutral-800 px-4 py-4">
+        <div id={regionId} className="bt-t-rule px-4 py-4">
           {children}
         </div>
       ) : null}
@@ -494,16 +494,16 @@ export function ForecastPage() {
   return (
     <div className="flex flex-col gap-8">
       <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold text-neutral-100">{t('forecast.title')}</h1>
-        <p className="text-sm text-neutral-500">{t('forecast.subtitle')}</p>
+        <h1 className="text-2xl font-semibold">{t('forecast.title')}</h1>
+        <p className="text-sm bt-muted">{t('forecast.subtitle')}</p>
       </header>
 
       <section
         aria-labelledby="forecast-projection-heading"
-        className="rounded-lg border border-neutral-800 bg-neutral-900/30"
+        className="bt-panel bt-panel--soft"
       >
-        <div className="border-b border-neutral-800 px-4 py-3">
-          <h2 id="forecast-projection-heading" className="text-sm font-semibold text-neutral-200">
+        <div className="bt-b-rule px-4 py-3">
+          <h2 id="forecast-projection-heading" className="text-sm font-semibold bt-soft">
             {t('forecast.projection.title')}
           </h2>
         </div>
@@ -514,10 +514,10 @@ export function ForecastPage() {
 
       <section aria-labelledby="forecast-calculators-heading" className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
-          <h2 id="forecast-calculators-heading" className="text-sm font-semibold text-neutral-200">
+          <h2 id="forecast-calculators-heading" className="text-sm font-semibold bt-soft">
             {t('forecast.calculators.title')}
           </h2>
-          <p className="text-xs text-neutral-500">{t('forecast.calculators.description')}</p>
+          <p className="text-xs bt-muted">{t('forecast.calculators.description')}</p>
         </div>
         {prefill.portfolioValueEur === null && prefill.averageReturnPctPerYear === null ? (
           <Alert tone="info">{t('forecast.calculators.prefillUnavailable')}</Alert>

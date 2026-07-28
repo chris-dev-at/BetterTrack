@@ -12,13 +12,16 @@ export interface StatCardProps {
   className?: string;
 }
 
-/** Single-stat display card (PROJECTPLAN.md §7.3 StatCard). */
+/**
+ * Single-stat display card (PROJECTPLAN.md §7.3 StatCard), on the Origin
+ * surface tokens: a flat panel with the shared label/value/delta hierarchy.
+ */
 export function StatCard({ label, value, subValue, className }: StatCardProps) {
   return (
-    <div className={cx('rounded-lg bg-neutral-900 p-4', className)}>
-      <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">{label}</p>
-      <p className="mt-1 text-2xl font-semibold tabular-nums text-neutral-100">{value}</p>
-      {subValue != null ? <p className="mt-0.5 text-sm text-neutral-400">{subValue}</p> : null}
+    <div className={cx('bt-panel p-4', className)}>
+      <p className="bt-stat__label">{label}</p>
+      <p className="bt-num" style={{ fontSize: 20, fontWeight: 630, marginTop: 2 }}>{value}</p>
+      {subValue != null ? <p className="bt-meta" style={{ marginTop: 2 }}>{subValue}</p> : null}
     </div>
   );
 }

@@ -207,10 +207,10 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
 
   return (
     <div className="flex flex-col gap-5 px-4 py-4">
-      <p className="text-sm text-neutral-400">{t('forecast.projection.description')}</p>
+      <p className="text-sm bt-muted">{t('forecast.projection.description')}</p>
 
       {/* ── Factor controls ─────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+      <div className="flex flex-col gap-4 bt-panel bt-panel--pad">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <TextField
             type="number"
@@ -225,7 +225,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
         </div>
 
         <fieldset className="flex flex-col gap-3">
-          <legend className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+          <legend className="text-xs font-semibold uppercase tracking-wide bt-muted">
             {t('forecast.projection.factorsLegend')}
           </legend>
 
@@ -237,13 +237,13 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
           {returnEnabled ? (
             <div className="ml-6 flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
               <div className="flex flex-col gap-1.5">
-                <span className="text-xs text-neutral-500">
+                <span className="text-xs bt-muted">
                   {t('forecast.projection.returnWindowLabel')}
                 </span>
                 <div
                   role="group"
                   aria-label={t('forecast.projection.returnWindowLabel')}
-                  className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+                  className="bt-seg"
                 >
                   {RETURN_WINDOWS.map((token) => {
                     const selected = token === returnWindow;
@@ -254,11 +254,8 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                         aria-pressed={selected}
                         onClick={() => setReturnWindow(token)}
                         className={cx(
-                          'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                          'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-                          selected
-                            ? 'bg-sky-600 text-white'
-                            : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+                          '',
+                          (selected) && 'is-active',
                         )}
                       >
                         {t(`forecast.projection.window.${token}`)}
@@ -280,7 +277,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setReturnPct(e.target.value)}
               />
               {returnPctIsClamped ? (
-                <p role="alert" className="text-xs text-amber-300">
+                <p role="alert" className="text-xs bt-gold">
                   {t('forecast.projection.returnPctClamped')}
                 </p>
               ) : null}
@@ -361,15 +358,15 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
             <li
               key={series.id}
               data-testid={`projection-series-${series.id}`}
-              className="flex items-center gap-1.5 text-xs text-neutral-400"
+              className="flex items-center gap-1.5 text-xs bt-muted"
             >
               <span
                 aria-hidden="true"
                 className="inline-block h-0.5 w-4"
                 style={{ backgroundColor: series.color }}
               />
-              <span className="text-neutral-300">{series.label}</span>
-              <span className="tabular-nums text-neutral-500">{formatMoney(series.value)}</span>
+              <span className="bt-soft">{series.label}</span>
+              <span className="tabular-nums bt-muted">{formatMoney(series.value)}</span>
             </li>
           ))}
         </ul>
@@ -391,10 +388,10 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex flex-col">
-            <h3 className="text-sm font-semibold text-neutral-200">
+            <h3 className="text-sm font-semibold bt-soft">
               {t('forecast.projection.whatIf.title')}
             </h3>
-            <p className="text-xs text-neutral-500">
+            <p className="text-xs bt-muted">
               {t('forecast.projection.whatIf.description')}
             </p>
           </div>
@@ -404,13 +401,13 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
         </div>
 
         {plans.length === 0 ? (
-          <p className="text-xs text-neutral-500">{t('forecast.projection.whatIf.empty')}</p>
+          <p className="text-xs bt-muted">{t('forecast.projection.whatIf.empty')}</p>
         ) : (
           <ul className="flex flex-col gap-3">
             {plans.map((plan, index) => (
               <li
                 key={plan.id}
-                className="grid grid-cols-1 gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-3 sm:grid-cols-[1fr_auto_auto_auto] sm:items-end"
+                className="grid grid-cols-1 gap-3 bt-panel p-3 sm:grid-cols-[1fr_auto_auto_auto] sm:items-end"
               >
                 <TextField
                   label={t('forecast.projection.whatIf.labelLabel')}
@@ -444,7 +441,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                 <Button
                   variant="ghost"
                   onClick={() => removePlan(plan.id)}
-                  className="justify-self-start px-2 py-1 text-neutral-400 sm:justify-self-auto"
+                  className="justify-self-start px-2 py-1 bt-muted sm:justify-self-auto"
                   aria-label={t('forecast.projection.whatIf.remove')}
                 >
                   {t('forecast.projection.whatIf.remove')}
@@ -471,12 +468,12 @@ function FactorToggle({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm text-neutral-200">
+    <label className="flex items-center gap-2 text-sm bt-soft">
       <input
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded border-neutral-600 bg-neutral-950 text-sky-500 focus:ring-sky-500"
+        className="h-4 w-4 rounded" style={{ accentColor: 'var(--bt-gold)' }}
       />
       <span>{label}</span>
     </label>

@@ -17,8 +17,8 @@ function statusLabels(t: TranslateFn): Record<ConglomerateStatus, string> {
 }
 
 const STATUS_CLASS: Record<ConglomerateStatus, string> = {
-  draft: 'bg-neutral-800 text-neutral-400 ring-neutral-700',
-  active: 'bg-emerald-950/60 text-emerald-400 ring-emerald-800',
+  draft: 'bt-badge',
+  active: 'bt-badge bt-badge--pos',
 };
 
 /**
@@ -70,15 +70,15 @@ function ConglomerateCard({ conglomerate }: { conglomerate: ConglomerateSummary 
   return (
     <Link
       to={`/workboard/conglomerates/${conglomerate.id}`}
-      className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4 transition-colors hover:border-neutral-700 hover:bg-neutral-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      className="flex flex-col gap-3 bt-panel bt-panel--pad transition-colors"
     >
       <div className="flex items-start justify-between gap-2">
-        <h3 className="min-w-0 truncate text-base font-semibold text-neutral-100">
+        <h3 className="min-w-0 truncate text-base font-semibold">
           {conglomerate.name}
         </h3>
         <StatusBadge status={conglomerate.status} />
       </div>
-      <p className="text-sm text-neutral-500">
+      <p className="text-sm bt-muted">
         {positionCountLabel(t, conglomerate.positionCount)}
       </p>
     </Link>
@@ -90,7 +90,7 @@ function NewConglomerateCard() {
   return (
     <Link
       to="/workboard/conglomerates/new"
-      className="flex min-h-[104px] flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-neutral-700 p-4 text-center text-sm text-neutral-400 transition-colors hover:border-sky-500 hover:text-sky-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      className="flex min-h-[104px] flex-col items-center justify-center gap-1 rounded-lg p-4 text-center text-sm bt-muted transition-colors" style={{ border: '1px dashed var(--bt-border-strong)' }}
     >
       <span className="text-xl" aria-hidden="true">
         +
@@ -116,10 +116,10 @@ export function ConglomeratesListPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+        <h1 className="text-2xl font-semibold tracking-tight">
           {t('workboard.conglomerates.title')}
         </h1>
-        <p className="mt-1 text-sm text-neutral-400">{t('workboard.conglomerates.subtitle')}</p>
+        <p className="mt-1 text-sm bt-muted">{t('workboard.conglomerates.subtitle')}</p>
       </div>
 
       {isLoading ? (
@@ -138,7 +138,7 @@ export function ConglomeratesListPage() {
           cta={
             <Link
               to="/workboard/conglomerates/new"
-              className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              className="rounded text-sm bt-link"
             >
               {t('workboard.conglomerates.emptyCta')}
             </Link>

@@ -48,11 +48,11 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
         <div>
           <h2
             id="forecast-standing-orders-heading"
-            className="text-sm font-semibold text-neutral-200"
+            className="text-sm font-semibold bt-soft"
           >
             {t('forecast.standingOrders.title')}
           </h2>
-          <p className="text-xs text-neutral-500">{t('forecast.standingOrders.subtitle')}</p>
+          <p className="text-xs bt-muted">{t('forecast.standingOrders.subtitle')}</p>
         </div>
         <Button onClick={() => setCreating(true)} disabled={disableCreate}>
           {t('forecast.standingOrders.newOrder')}
@@ -76,7 +76,7 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
               <button
                 type="button"
                 onClick={() => setCreating(true)}
-                className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                className="rounded text-sm bt-link"
               >
                 {t('forecast.standingOrders.emptyCta')}
               </button>
@@ -142,16 +142,16 @@ function StandingOrderRow({
   const paused = order.status === 'paused';
 
   return (
-    <li className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 p-3">
+    <li className="flex flex-col gap-2 bt-panel p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex flex-col gap-0.5">
           <span className="flex flex-wrap items-center gap-2">
-            <span id={titleId} className="text-sm font-semibold text-neutral-100">
+            <span id={titleId} className="text-sm font-semibold">
               {orderTitle(t, order)}
             </span>
             <StatusBadge paused={paused} />
           </span>
-          <span className="text-xs text-neutral-400">
+          <span className="text-xs bt-muted">
             {describeAmount(t, order)} · {describeCadence(t, order)}
             {order.endDate ? (
               <>
@@ -160,7 +160,7 @@ function StandingOrderRow({
               </>
             ) : null}
           </span>
-          <span className="text-xs text-neutral-500">
+          <span className="text-xs bt-muted">
             {order.nextRunDate
               ? t('forecast.standingOrders.list.nextRun', {
                   date: formatDate(order.nextRunDate),
@@ -178,7 +178,7 @@ function StandingOrderRow({
             onClick={() => resumeMutation.mutate()}
             disabled={busy}
             aria-labelledby={`${titleId} ${pauseResumeActionId}`}
-            className="font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+            className="font-medium bt-link disabled:cursor-not-allowed disabled:bt-muted"
           >
             {resumeMutation.isPending
               ? t('forecast.standingOrders.list.resuming')
@@ -191,7 +191,7 @@ function StandingOrderRow({
             onClick={() => pauseMutation.mutate()}
             disabled={busy}
             aria-labelledby={`${titleId} ${pauseResumeActionId}`}
-            className="font-medium text-amber-400 hover:text-amber-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+            className="font-medium bt-gold hover:bt-gold disabled:cursor-not-allowed disabled:bt-muted"
           >
             {pauseMutation.isPending
               ? t('forecast.standingOrders.list.pausing')
@@ -204,13 +204,13 @@ function StandingOrderRow({
           onClick={() => onEdit(order)}
           disabled={busy}
           aria-labelledby={`${titleId} ${editActionId}`}
-          className="font-medium text-neutral-300 hover:text-neutral-100 disabled:cursor-not-allowed disabled:text-neutral-600"
+          className="font-medium bt-soft hover: disabled:cursor-not-allowed disabled:bt-muted"
         >
           {t('common.edit')}
         </button>
         {confirmingDelete ? (
           <span className="inline-flex items-center gap-2 text-xs">
-            <span className="text-neutral-400">
+            <span className="bt-muted">
               {t('forecast.standingOrders.list.deleteConfirm')}
             </span>
             <button
@@ -219,7 +219,7 @@ function StandingOrderRow({
               onClick={() => deleteMutation.mutate()}
               disabled={busy}
               aria-labelledby={`${titleId} ${deleteConfirmYesActionId}`}
-              className="font-medium text-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+              className="font-medium bt-neg hover:bt-neg disabled:cursor-not-allowed disabled:bt-muted"
             >
               {deleteMutation.isPending ? t('common.saving') : t('common.yes')}
             </button>
@@ -229,7 +229,7 @@ function StandingOrderRow({
               onClick={() => setConfirmingDelete(false)}
               disabled={busy}
               aria-labelledby={`${titleId} ${deleteConfirmNoActionId}`}
-              className="font-medium text-neutral-400 hover:text-neutral-200 disabled:cursor-not-allowed disabled:text-neutral-600"
+              className="font-medium bt-muted hover:bt-soft disabled:cursor-not-allowed disabled:bt-muted"
             >
               {t('common.no')}
             </button>
@@ -241,7 +241,7 @@ function StandingOrderRow({
             onClick={() => setConfirmingDelete(true)}
             disabled={busy}
             aria-labelledby={`${titleId} ${deleteActionId}`}
-            className="font-medium text-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+            className="font-medium bt-neg hover:bt-neg disabled:cursor-not-allowed disabled:bt-muted"
           >
             {t('common.delete')}
           </button>
@@ -262,8 +262,8 @@ function StatusBadge({ paused }: { paused: boolean }) {
       className={cx(
         'inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset',
         paused
-          ? 'bg-neutral-800/60 text-neutral-400 ring-neutral-700'
-          : 'bg-emerald-900/40 text-emerald-300 ring-emerald-800/60',
+          ? 'bt-badge'
+          : 'bt-badge bt-badge--pos',
       )}
     >
       {paused
