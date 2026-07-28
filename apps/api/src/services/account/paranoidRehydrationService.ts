@@ -583,10 +583,13 @@ function updateReadbackEpoch(
 /**
  * Stream each chronological asset group once. A one-quantum persisted sell can
  * be admitted only when its post-cutoff CREATE epoch replays from public inputs
- * seeded by the strict prefix's repository-readback holding. Strict-prefix rows
- * are never raw CREATE inputs, even when a deliberately backdated row places
- * them inside the epoch's chronological timeline. That gives a direct bounded
- * CREATE witness without inspecting later same-asset history or searching
+ * seeded by the prior repository-readback holding. Strict-prefix rows are never
+ * raw CREATE inputs, even when a deliberately backdated row places them inside
+ * the epoch's chronological timeline. A later normal buy starts a new local
+ * epoch: the buy's upper public preimage together with the sell's lower
+ * preimage accounts for the one stored quantum, while earlier normal history
+ * remains repository readback. That gives a direct bounded CREATE witness
+ * without treating an arbitrary non-flat history as one request or searching
  * alternative spans.
  */
 function collectNormalCreateWitnesses(
@@ -603,15 +606,19 @@ function collectNormalCreateWitnesses(
     let epochStart = -1;
     let epochEnd = -1;
 
-    const startEpoch = (row: QuantityReplayRow): void => {
-      if (epochStart !== -1) return;
+    const startEpoch = (row: QuantityReplayRow, restart = false): void => {
+      if (epochStart !== -1 && !restart) return;
       epochStart = row.writeOrder;
       epochEnd = row.writeOrder;
       rawHeld = readbackHeld;
       rawEpochCanReplay = true;
     };
     const extendEpoch = (row: QuantityReplayRow): void => {
-      startEpoch(row);
+      // A one-quantum persisted oversell needs a later raw buy as well as the
+      // raw sell. Restart at each post-cutoff buy so the local candidate is
+      // seeded from every preceding normal request's repository readback,
+      // rather than forcing all non-flat post-cutoff history into this batch.
+      startEpoch(row, row.transaction.data.side === 'buy');
       epochStart = Math.min(epochStart, row.writeOrder);
       epochEnd = Math.max(epochEnd, row.writeOrder);
       const raw = updateRawEpoch(row, rawHeld);

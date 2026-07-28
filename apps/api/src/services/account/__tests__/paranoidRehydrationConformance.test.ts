@@ -451,6 +451,69 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     );
   });
 
+  it('rehydrates a later rounding CREATE batch from prior normal repository readback', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const assetId = '018f0000-0b10-7000-8000-000000000b02';
+    await seedGlobalAsset(harness, assetId, 'LATER-READBACK-ROUNDING');
+
+    // These are two ordinary legal requests. Their 501 persisted buys establish
+    // the holding that the final CREATE call reads back; they are not members of
+    // that final two-row request merely because the position never goes flat.
+    const earlierBuys = Array.from({ length: 501 }, (_, index) => ({
+      assetId,
+      side: 'buy' as const,
+      quantity: 1,
+      price: 10,
+      fee: 0,
+      executedAt: new Date(Date.parse('2026-07-23T10:00:00.000Z') + index).toISOString(),
+    }));
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, earlierBuys.slice(0, 500));
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, earlierBuys.slice(500));
+
+    // The final request begins from the repository-readback holding of 501. Its
+    // raw quantities are epsilon-valid, while numeric(20,8) stores the sell a
+    // quantum above the resulting 502 stored buys.
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId,
+        side: 'buy',
+        quantity: 1.0000000046,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:00:01.000Z',
+      },
+      {
+        assetId,
+        side: 'sell',
+        quantity: 502.0000000051,
+        price: 11,
+        fee: 0,
+        executedAt: '2026-07-23T10:00:02.000Z',
+      },
+    ]);
+
+    const document = await capturePortfolioDocument(harness, portfolioId);
+    expect(quantityEntities(document)).toHaveLength(503);
+    expect(
+      quantityEntities(document).find((transaction) => transaction.data.side === 'sell')?.data
+        .quantity,
+    ).toBe('502.00000001');
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      document,
+      FIRST_REHYDRATION_ID,
+      'later rounding CREATE batch seeded from prior normal repository readback',
+    );
+    expect(
+      await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
+    ).toHaveLength(503);
+  });
+
   it('rejects a multi-quantum normal batch before restore writes when repository replay cannot represent it', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
