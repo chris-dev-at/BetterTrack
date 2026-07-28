@@ -3,12 +3,13 @@ import {
   customTaxParamsSchema,
   taxSettingsResponseSchema,
   updateTaxSettingsRequestSchema,
+  VAULT_DOCUMENT_V1_VERSION,
   VAULT_DOCUMENT_VERSION,
   VAULT_ENTITY_KINDS,
   VAULT_ENTITY_ROW_SCHEMAS,
   VAULT_ENTITY_SCHEMAS,
-  vaultDocumentV1Schema,
-  type VaultDocumentV1,
+  vaultDocumentSchema,
+  type VaultDocument,
   type VaultEntity,
   type VaultEntityKind,
 } from '@bettertrack/contracts';
@@ -19,7 +20,7 @@ import { moneyFailure } from './errors';
 import type { ClientTaxReport } from './types';
 
 export interface ValidatedVaultSnapshot {
-  document: VaultDocumentV1;
+  document: VaultDocument;
   vaultVersion: number;
   vaultKeyId: string;
   writeId: string;
@@ -38,7 +39,10 @@ export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultS
       { retryable: true },
     );
   }
-  if (candidate.header.schemaVersion !== VAULT_DOCUMENT_VERSION) {
+  if (
+    candidate.header.schemaVersion !== VAULT_DOCUMENT_V1_VERSION &&
+    candidate.header.schemaVersion !== VAULT_DOCUMENT_VERSION
+  ) {
     throw moneyFailure(
       'VAULT_UNSUPPORTED_VERSION',
       `Vault envelope schema version ${candidate.header.schemaVersion} is not supported.`,
@@ -49,6 +53,7 @@ export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultS
     typeof raw === 'object' &&
     raw !== null &&
     'schemaVersion' in raw &&
+    (raw as { schemaVersion: unknown }).schemaVersion !== VAULT_DOCUMENT_V1_VERSION &&
     (raw as { schemaVersion: unknown }).schemaVersion !== VAULT_DOCUMENT_VERSION
   ) {
     throw moneyFailure(
@@ -56,11 +61,17 @@ export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultS
       `Vault document version ${String((raw as { schemaVersion: unknown }).schemaVersion)} is not supported.`,
     );
   }
-  const parsed = vaultDocumentV1Schema.safeParse(raw);
+  const parsed = vaultDocumentSchema.safeParse(raw);
   if (!parsed.success) {
     throw moneyFailure('VAULT_CORRUPT', 'The decrypted vault document is malformed.', {
       details: { issues: parsed.error.issues.map((issue) => issue.path.join('.')) },
     });
+  }
+  if (parsed.data.schemaVersion !== candidate.header.schemaVersion) {
+    throw moneyFailure(
+      'VAULT_UNSUPPORTED_VERSION',
+      'The vault document does not match its authenticated envelope schema version.',
+    );
   }
   validateStrictEntities(parsed.data);
   validatePersistedTaxFacts(parsed.data);
@@ -144,14 +155,14 @@ function assertAuthoritativeSyncState(state: VaultSyncState, phase: string): voi
 }
 
 export function liveEntities(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   kind: VaultEntityKind,
 ): readonly VaultEntity[] {
   return (document.entities[kind] ?? []).filter((entity) => entity.deletedAt === null);
 }
 
 export function requireLiveEntity(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   kind: VaultEntityKind,
   id: string,
 ): VaultEntity {
@@ -165,7 +176,7 @@ export function requireLiveEntity(
   return entity;
 }
 
-function validateStrictEntities(document: VaultDocumentV1): void {
+function validateStrictEntities(document: VaultDocument): void {
   const knownKinds = new Set<string>(VAULT_ENTITY_KINDS);
   for (const kind of Object.keys(document.entities)) {
     if (!knownKinds.has(kind)) {
@@ -190,7 +201,7 @@ function validateStrictEntities(document: VaultDocumentV1): void {
   }
 }
 
-function validatePersistedTaxFacts(document: VaultDocumentV1): void {
+function validatePersistedTaxFacts(document: VaultDocument): void {
   for (const entity of document.entities.transaction ?? []) {
     const row = VAULT_ENTITY_ROW_SCHEMAS.transaction.parse(entity.data);
     if (
@@ -283,7 +294,7 @@ function isClientSupportedTaxCountry(country: unknown): country is 'AT' | 'DE' {
   return country === 'AT' || country === 'DE';
 }
 
-function validatePersistedTaxSettings(document: VaultDocumentV1): void {
+function validatePersistedTaxSettings(document: VaultDocument): void {
   for (const entity of liveEntities(document, 'taxSetting')) {
     const row = VAULT_ENTITY_ROW_SCHEMAS.taxSetting.parse(entity.data);
     const amount =
@@ -400,7 +411,7 @@ function invalidTaxSetting(
   throw moneyFailure('VAULT_CORRUPT', `Vault ${kind} ${id} is unreachable: ${reason}.`);
 }
 
-function validateRelationships(document: VaultDocumentV1): string {
+function validateRelationships(document: VaultDocument): string {
   const portfolios = liveEntities(document, 'portfolio');
   const owners = new Set(portfolios.map((portfolio) => field(portfolio, 'userId')));
   if (owners.size !== 1) {
@@ -603,7 +614,7 @@ function validateRelationships(document: VaultDocumentV1): string {
 }
 
 function validatePersistedStandingOrder(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   entity: VaultEntity,
   assetCurrency: ReadonlyMap<string, string>,
 ): void {

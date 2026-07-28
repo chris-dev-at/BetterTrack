@@ -1,4 +1,4 @@
-import type { Server as HttpServer } from 'node:http';
+import { createServer, type Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import { eq } from 'drizzle-orm';
@@ -8,8 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   REALTIME_CLIENT_EVENTS,
+  REALTIME_MAX_CONNECTIONS_PER_BEARER,
+  REALTIME_MAX_CONNECTIONS_PER_USER,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
+  REALTIME_SOCKET_COMMAND_BURST,
   twoFactorEnrollResponseSchema,
   type ApiKeyScope,
   type RealtimeChatMessage,
@@ -24,8 +27,15 @@ import { createOAuthRepository } from '../../data/repositories/oauthRepository';
 import * as schema from '../../data/schema';
 import { generateTotpCode } from '../../services/auth/totp';
 import { hashToken } from '../../services/crypto/tokens';
+import type { LiveModeService } from '../../services/liveMode';
+import {
+  createRealtimeAdmission,
+  realtimeAdmissionKeys,
+  type RealtimeAdmission,
+} from '../../services/security/realtimeAdmission';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import {
+  createRealtimeGateway,
   REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS,
   REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS,
 } from '../gateway';
@@ -35,10 +45,14 @@ const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 let harness: TestHarness;
 let server: HttpServer | null = null;
 let baseUrl = '';
+let commandClockMs: number | null = null;
 const openSockets: ClientSocket[] = [];
 
 beforeEach(async () => {
-  harness = await createTestApp();
+  commandClockMs = null;
+  harness = await createTestApp({
+    realtimeCommandNow: () => commandClockMs ?? Date.now(),
+  });
 });
 
 afterEach(async () => {
@@ -309,6 +323,84 @@ async function mintFirstPartyOAuthToken(
 }
 
 const SOME_UUID = '018f6f00-0000-7000-8000-000000000001';
+const CONTROLLED_USER_ID = '018f6f00-0000-7000-8000-000000000099';
+
+function controlledAdmission(overrides: Partial<RealtimeAdmission> = {}): RealtimeAdmission {
+  return {
+    acquireConnection: vi.fn(async () => ({ ok: true as const })),
+    renewConnection: vi.fn(async () => true),
+    releaseConnection: vi.fn(async () => undefined),
+    consumeUserCommand: vi.fn(async () => true),
+    acquireWatch: vi.fn(async () => ({ ok: true as const, sharedGlobalAsset: false })),
+    renewWatch: vi.fn(async () => true),
+    releaseWatch: vi.fn(async () => undefined),
+    acquireWatchStart: vi.fn(async () => true),
+    renewWatchStart: vi.fn(async () => true),
+    releaseWatchStart: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
+async function listenControlledGateway(options: {
+  admission: RealtimeAdmission;
+  leaseTtlMs: number;
+  liveMode?: LiveModeService | null;
+  commandNow?: () => number;
+}): Promise<{
+  gateway: ReturnType<typeof createRealtimeGateway>;
+  server: HttpServer;
+  url: string;
+}> {
+  const personal = {
+    kind: 'personal' as const,
+    user: {
+      id: CONTROLLED_USER_ID,
+      role: 'user' as const,
+      status: 'active',
+      mustChangePassword: false,
+    },
+    keyId: 'key-controlled-lease',
+    scopes: ['market:read'] as ApiKeyScope[],
+  };
+  const gateway = createRealtimeGateway({
+    config: harness.ctx.config,
+    bus: harness.ctx.events,
+    logger: harness.ctx.logger,
+    redis: harness.ctx.redis,
+    realtimeAdmission: options.admission,
+    realtimeAdmissionOptions: { leaseTtlMs: options.leaseTtlMs },
+    realtimeCommandNow: options.commandNow,
+    resolveSession: async () => null,
+    resolveBearer: async () => personal,
+    revalidatePersonal: async () => personal,
+    revalidateOAuth: async () => null,
+    canViewPortfolio: async () => false,
+    liveMode: options.liveMode ?? null,
+    resolveWatchableAsset: async () => ({ providerId: 'yahoo', providerRef: 'BAYN.DE' }),
+    presence: harness.ctx.presence,
+  });
+  const controlledServer = createServer();
+  controlledServer.listen(0);
+  await new Promise<void>((resolve) => controlledServer.once('listening', resolve));
+  await gateway.attach(controlledServer);
+  return {
+    gateway,
+    server: controlledServer,
+    url: `http://127.0.0.1:${(controlledServer.address() as AddressInfo).port}`,
+  };
+}
+
+async function closeControlledGateway(
+  gateway: ReturnType<typeof createRealtimeGateway>,
+  controlledServer: HttpServer,
+  sockets: ClientSocket[],
+): Promise<void> {
+  for (const socket of sockets) socket.disconnect();
+  await gateway.close();
+  if (controlledServer.listening) {
+    await new Promise<void>((resolve) => controlledServer.close(() => resolve()));
+  }
+}
 
 describe('realtime gateway — handshake auth (§4.5)', () => {
   it('rejects an unauthenticated handshake (no cookie)', async () => {
@@ -346,6 +438,395 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
     const { cookie } = await login(user.email, user.password);
     const socket = await connect(cookie);
     expect(socket.connected).toBe(true);
+  });
+
+  it('releases admission when Engine.IO closes while namespace middleware is in flight', async () => {
+    let signalAcquireStarted!: () => void;
+    const acquireStarted = new Promise<void>((resolve) => {
+      signalAcquireStarted = resolve;
+    });
+    let finishAcquire!: () => void;
+    const acquireGate = new Promise<void>((resolve) => {
+      finishAcquire = resolve;
+    });
+    const releaseConnection = vi.fn(async () => undefined);
+    const admission: RealtimeAdmission = {
+      acquireConnection: vi.fn(async () => {
+        signalAcquireStarted();
+        await acquireGate;
+        return { ok: true as const };
+      }),
+      renewConnection: vi.fn(async () => true),
+      releaseConnection,
+      consumeUserCommand: vi.fn(async () => true),
+      acquireWatch: vi.fn(async () => ({ ok: true as const, sharedGlobalAsset: false })),
+      renewWatch: vi.fn(async () => true),
+      releaseWatch: vi.fn(async () => undefined),
+      acquireWatchStart: vi.fn(async () => true),
+      renewWatchStart: vi.fn(async () => true),
+      releaseWatchStart: vi.fn(async () => undefined),
+    };
+    const userId = '018f6f00-0000-7000-8000-000000000099';
+    const personal = {
+      kind: 'personal' as const,
+      user: {
+        id: userId,
+        role: 'user' as const,
+        status: 'active',
+        mustChangePassword: false,
+      },
+      keyId: 'key-controlled-abort',
+      scopes: ['chat:read'] as ApiKeyScope[],
+    };
+    const controlledGateway = createRealtimeGateway({
+      config: harness.ctx.config,
+      bus: harness.ctx.events,
+      logger: harness.ctx.logger,
+      redis: harness.ctx.redis,
+      realtimeAdmission: admission,
+      resolveSession: async () => null,
+      resolveBearer: async () => personal,
+      revalidatePersonal: async () => personal,
+      revalidateOAuth: async () => null,
+      canViewPortfolio: async () => false,
+      liveMode: null,
+      resolveWatchableAsset: async () => null,
+      presence: harness.ctx.presence,
+    });
+    const controlledServer = createServer();
+    const clientSockets: ClientSocket[] = [];
+    try {
+      controlledServer.listen(0);
+      await new Promise<void>((resolve) => controlledServer.once('listening', resolve));
+      await controlledGateway.attach(controlledServer);
+      const url = `http://127.0.0.1:${(controlledServer.address() as AddressInfo).port}`;
+      const client = ioClient(url, {
+        path: REALTIME_PATH,
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: 'controlled-token' },
+      });
+      clientSockets.push(client);
+      client.on('connect_error', () => undefined);
+
+      await acquireStarted;
+      client.io.engine?.close();
+      finishAcquire();
+
+      await vi.waitFor(() => expect(releaseConnection).toHaveBeenCalledTimes(1));
+      expect(controlledGateway.connectionCount()).toBe(0);
+    } finally {
+      finishAcquire();
+      for (const socket of clientSockets) socket.disconnect();
+      await controlledGateway.close();
+      if (controlledServer.listening) {
+        await new Promise<void>((resolve) => controlledServer.close(() => resolve()));
+      }
+    }
+  });
+
+  it('fails closed before a never-settling connection renewal can outlive its lease', async () => {
+    const leaseTtlMs = 90;
+    const renewConnection = vi.fn(() => new Promise<boolean>(() => undefined));
+    const releaseConnection = vi.fn(async () => undefined);
+    const admission = controlledAdmission({ renewConnection, releaseConnection });
+    const controlled = await listenControlledGateway({ admission, leaseTtlMs });
+    const clientSockets: ClientSocket[] = [];
+    try {
+      const client = ioClient(controlled.url, {
+        path: REALTIME_PATH,
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: 'controlled-token' },
+      });
+      clientSockets.push(client);
+      await new Promise<void>((resolve, reject) => {
+        client.once('connect', () => resolve());
+        client.once('connect_error', reject);
+      });
+
+      await waitForDisconnect(client, 1_000);
+      expect(renewConnection).toHaveBeenCalledTimes(1);
+      expect(releaseConnection).toHaveBeenCalledTimes(1);
+      await new Promise((resolve) => setTimeout(resolve, leaseTtlMs));
+      expect(renewConnection).toHaveBeenCalledTimes(1);
+    } finally {
+      await closeControlledGateway(controlled.gateway, controlled.server, clientSockets);
+    }
+  });
+
+  it('keeps a never-settling watch-start renewal single-flight and stops its live work', async () => {
+    const leaseTtlMs = 120;
+    const renewWatchStart = vi.fn(() => new Promise<boolean>(() => undefined));
+    const releaseWatchStart = vi.fn(async () => undefined);
+    const releaseWatch = vi.fn(async () => undefined);
+    const admission = controlledAdmission({
+      renewWatchStart,
+      releaseWatchStart,
+      releaseWatch,
+    });
+    const unwatch = vi.fn();
+    const liveMode: LiveModeService = {
+      watch: vi.fn(() => true),
+      unwatch,
+      backfill: vi.fn(() => new Promise<never>(() => undefined)),
+      onFrame: vi.fn(() => () => undefined),
+      watcherCount: vi.fn(() => 0),
+      pollIntervalMs: vi.fn(() => null),
+      reconcile: vi.fn(),
+      close: vi.fn(),
+    };
+    const controlled = await listenControlledGateway({
+      admission,
+      leaseTtlMs,
+      liveMode,
+    });
+    const clientSockets: ClientSocket[] = [];
+    try {
+      const client = ioClient(controlled.url, {
+        path: REALTIME_PATH,
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: 'controlled-token' },
+      });
+      clientSockets.push(client);
+      await new Promise<void>((resolve, reject) => {
+        client.once('connect', () => resolve());
+        client.once('connect_error', reject);
+      });
+      client.emit(REALTIME_CLIENT_EVENTS.liveWatch, {
+        assetId: SOME_UUID,
+        window: '10m',
+      });
+
+      await vi.waitFor(() => expect(renewWatchStart).toHaveBeenCalledTimes(1));
+      await waitForDisconnect(client, 1_000);
+      await vi.waitFor(() => {
+        expect(unwatch).toHaveBeenCalledTimes(1);
+        expect(releaseWatch).toHaveBeenCalledTimes(1);
+        expect(releaseWatchStart).toHaveBeenCalledTimes(1);
+      });
+      await new Promise((resolve) => setTimeout(resolve, leaseTtlMs));
+      expect(renewWatchStart).toHaveBeenCalledTimes(1);
+    } finally {
+      await closeControlledGateway(controlled.gateway, controlled.server, clientSockets);
+    }
+  });
+
+  it('retains renewing watch-start capacity until disconnected backfill work settles', async () => {
+    const leaseTtlMs = 180;
+    const admission = createRealtimeAdmission(harness.ctx.redis, {
+      leaseTtlMs,
+      limits: { concurrentWatchStarts: 1 },
+    });
+    const renewWatchStart = vi.spyOn(admission, 'renewWatchStart');
+    const releaseWatchStart = vi.spyOn(admission, 'releaseWatchStart');
+    let finishBackfill!: () => void;
+    const backfillGate = new Promise<void>((resolve) => {
+      finishBackfill = resolve;
+    });
+    let activeBackfills = 0;
+    let maxActiveBackfills = 0;
+    const backfill = vi.fn(async () => {
+      activeBackfills += 1;
+      maxActiveBackfills = Math.max(maxActiveBackfills, activeBackfills);
+      try {
+        await backfillGate;
+        return [];
+      } finally {
+        activeBackfills -= 1;
+      }
+    });
+    const liveMode: LiveModeService = {
+      watch: vi.fn(() => true),
+      unwatch: vi.fn(),
+      backfill,
+      onFrame: vi.fn(() => () => undefined),
+      watcherCount: vi.fn(() => 0),
+      pollIntervalMs: vi.fn(() => null),
+      reconcile: vi.fn(),
+      close: vi.fn(),
+    };
+    const controlled = await listenControlledGateway({
+      admission,
+      leaseTtlMs,
+      liveMode,
+    });
+    const clientSockets: ClientSocket[] = [];
+    try {
+      const client = ioClient(controlled.url, {
+        path: REALTIME_PATH,
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: 'controlled-token' },
+      });
+      clientSockets.push(client);
+      await new Promise<void>((resolve, reject) => {
+        client.once('connect', () => resolve());
+        client.once('connect_error', reject);
+      });
+      client.emit(REALTIME_CLIENT_EVENTS.liveWatch, {
+        assetId: SOME_UUID,
+        window: '10m',
+      });
+
+      await vi.waitFor(() => expect(backfill).toHaveBeenCalledTimes(1));
+      await vi.waitFor(async () => {
+        expect(renewWatchStart).toHaveBeenCalled();
+        expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.watchStarts)).toBe(1);
+      });
+
+      client.disconnect();
+
+      const renewalsAtDisconnect = renewWatchStart.mock.calls.length;
+      await new Promise((resolve) => setTimeout(resolve, leaseTtlMs + 60));
+      expect(renewWatchStart.mock.calls.length).toBeGreaterThan(renewalsAtDisconnect);
+      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.watchStarts)).toBe(1);
+      expect(releaseWatchStart).not.toHaveBeenCalled();
+
+      const replacement = ioClient(controlled.url, {
+        path: REALTIME_PATH,
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: 'controlled-token' },
+      });
+      clientSockets.push(replacement);
+      await new Promise<void>((resolve, reject) => {
+        replacement.once('connect', () => resolve());
+        replacement.once('connect_error', reject);
+      });
+      await expect(
+        emitAck<RealtimeLiveWatchAck>(replacement, REALTIME_CLIENT_EVENTS.liveWatch, {
+          assetId: SOME_UUID,
+          window: '10m',
+        }),
+      ).resolves.toEqual({ ok: false, error: 'LIVE_WORK_BUSY' });
+      expect(activeBackfills).toBe(1);
+      expect(maxActiveBackfills).toBe(1);
+
+      finishBackfill();
+      await vi.waitFor(async () => {
+        expect(activeBackfills).toBe(0);
+        expect(releaseWatchStart).toHaveBeenCalledTimes(1);
+        expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.watchStarts)).toBe(0);
+      });
+    } finally {
+      finishBackfill();
+      await closeControlledGateway(controlled.gateway, controlled.server, clientSockets);
+    }
+  });
+
+  it('keeps admitted unwatch cleanup out of a stalled watch queue', async () => {
+    const leaseTtlMs = 300;
+    const releaseWatch = vi.fn(async () => undefined);
+    const admission = controlledAdmission({ releaseWatch });
+    let commandClockMs = 0;
+    let finishBackfill!: () => void;
+    const backfillGate = new Promise<void>((resolve) => {
+      finishBackfill = resolve;
+    });
+    const unwatch = vi.fn();
+    const liveMode: LiveModeService = {
+      watch: vi.fn(() => true),
+      unwatch,
+      backfill: vi.fn(async () => {
+        await backfillGate;
+        return [];
+      }),
+      onFrame: vi.fn(() => () => undefined),
+      watcherCount: vi.fn(() => 0),
+      pollIntervalMs: vi.fn(() => null),
+      reconcile: vi.fn(),
+      close: vi.fn(),
+    };
+    const controlled = await listenControlledGateway({
+      admission,
+      leaseTtlMs,
+      liveMode,
+      // Advance one refill quantum on every bucket-clock read. This models a
+      // sustained 20/s stream without wall-clock timing in the burst assertion.
+      commandNow: () => {
+        commandClockMs += 50;
+        return commandClockMs;
+      },
+    });
+    const clientSockets: ClientSocket[] = [];
+    try {
+      const client = ioClient(controlled.url, {
+        path: REALTIME_PATH,
+        transports: ['websocket'],
+        reconnection: false,
+        auth: { token: 'controlled-token' },
+      });
+      clientSockets.push(client);
+      await new Promise<void>((resolve, reject) => {
+        client.once('connect', () => resolve());
+        client.once('connect_error', reject);
+      });
+      const watchAck = emitAck<RealtimeLiveWatchAck>(client, REALTIME_CLIENT_EVENTS.liveWatch, {
+        assetId: SOME_UUID,
+        window: '10m',
+      });
+      await vi.waitFor(() => expect(liveMode.backfill).toHaveBeenCalledTimes(1));
+
+      await expect(
+        emitAck<RealtimeRoomAck>(client, REALTIME_CLIENT_EVENTS.liveUnwatch, {
+          assetId: SOME_UUID,
+        }),
+      ).resolves.toEqual({ ok: true });
+      const arbitraryAssetId = '018f6f00-0000-7000-8000-000000000777';
+      for (let index = 0; index < 200; index += 1) {
+        client.emit(REALTIME_CLIENT_EVENTS.liveUnwatch, { assetId: arbitraryAssetId });
+      }
+      await expect(
+        emitAck<RealtimeRoomAck>(client, REALTIME_CLIENT_EVENTS.liveUnwatch, {
+          assetId: arbitraryAssetId,
+        }),
+      ).resolves.toEqual({ ok: true });
+      expect(unwatch).toHaveBeenCalledTimes(1);
+      expect(releaseWatch).toHaveBeenCalledTimes(1);
+
+      finishBackfill();
+      await expect(watchAck).resolves.toMatchObject({ ok: true });
+    } finally {
+      finishBackfill();
+      await closeControlledGateway(controlled.gateway, controlled.server, clientSockets);
+    }
+  });
+
+  it('admits exactly five concurrent sockets per user and releases on disconnect', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const { cookie } = await login(user.email, user.password);
+    const sockets: ClientSocket[] = [];
+    for (let index = 0; index < REALTIME_MAX_CONNECTIONS_PER_USER; index += 1) {
+      sockets.push(await connect(cookie));
+    }
+
+    await expect(connect(cookie)).rejects.toThrow('USER_CONNECTION_LIMIT');
+    sockets[0]!.disconnect();
+    await vi.waitFor(async () => {
+      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.connectionUser(user.id))).toBe(
+        REALTIME_MAX_CONNECTIONS_PER_USER - 1,
+      );
+    });
+    await expect(connect(cookie)).resolves.toMatchObject({ connected: true });
+  });
+
+  it('admits exactly three sockets per bearer credential independent of other keys', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const token = await mintKey(user.id);
+    for (let index = 0; index < REALTIME_MAX_CONNECTIONS_PER_BEARER; index += 1) {
+      await expect(connectWith({ auth: { token } })).resolves.toMatchObject({ connected: true });
+    }
+    await expect(connectWith({ auth: { token } })).rejects.toThrow('BEARER_CONNECTION_LIMIT');
+
+    // A distinct credential for the same account still has its own bearer
+    // budget (and remains under the five-socket user budget).
+    await expect(connectWith({ auth: { token: await mintKey(user.id) } })).resolves.toMatchObject({
+      connected: true,
+    });
   });
 });
 
@@ -648,6 +1129,49 @@ describe('realtime gateway — scoped bearer matrix (#880)', () => {
   });
 });
 
+describe('realtime gateway — client command budgets (#881)', () => {
+  it('allows the socket burst and returns RATE_LIMITED for burst + 1', async () => {
+    commandClockMs = Date.now();
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const { cookie } = await login(user.email, user.password);
+    const socket = await connect(cookie);
+    const decisions = await Promise.all(
+      Array.from({ length: REALTIME_SOCKET_COMMAND_BURST + 1 }, () =>
+        emitRoom(socket, REALTIME_CLIENT_EVENTS.roomLeave, {
+          room: { kind: 'asset', id: SOME_UUID },
+        }),
+      ),
+    );
+
+    expect(decisions.filter((decision) => decision.ok)).toHaveLength(REALTIME_SOCKET_COMMAND_BURST);
+    expect(decisions.filter((decision) => !decision.ok)).toEqual([
+      { ok: false, error: 'RATE_LIMITED' },
+    ]);
+  });
+
+  it('does not charge server-to-client frames to either command bucket', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const { cookie } = await login(user.email, user.password);
+    const socket = await connect(cookie);
+    for (let index = 0; index <= REALTIME_SOCKET_COMMAND_BURST; index += 1) {
+      await harness.ctx.events.publish({
+        type: 'notification.created',
+        userId: user.id,
+        notificationId: SOME_UUID,
+        occurredAt: new Date().toISOString(),
+      });
+    }
+
+    await expect(
+      emitRoom(socket, REALTIME_CLIENT_EVENTS.roomLeave, {
+        room: { kind: 'asset', id: SOME_UUID },
+      }),
+    ).resolves.toEqual({ ok: true });
+  });
+});
+
 describe('realtime gateway — rooms (§4.5)', () => {
   it("a client is only in its OWN user room: 'user' is not a joinable kind and pushes stay per-recipient", async () => {
     await listenWithGateway();
@@ -808,6 +1332,7 @@ describe('realtime gateway — after-connect credential lifecycle (#880)', () =>
     await disconnected;
     await vi.waitFor(async () => {
       await expect(harness.ctx.presence.isPresent(user.id, 'chat', SOME_UUID)).resolves.toBe(false);
+      expect(await harness.ctx.redis.zcard(realtimeAdmissionKeys.connectionUser(user.id))).toBe(0);
     });
   });
 

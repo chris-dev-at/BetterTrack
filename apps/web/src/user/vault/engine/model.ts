@@ -3,7 +3,7 @@ import {
   type PortfolioAsset,
   type TaxCountry,
   type TaxMode,
-  type VaultDocumentV1,
+  type VaultDocument,
   type VaultEntity,
 } from '@bettertrack/contracts';
 import type { SourcedCashMovement } from '@bettertrack/domain/cashLedger';
@@ -72,7 +72,7 @@ export interface ClientPortfolioModel {
 }
 
 export function readPortfolioModel(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   portfolioId: string,
 ): ClientPortfolioModel {
   const portfolio = requireLiveEntity(document, 'portfolio', portfolioId);
@@ -157,7 +157,7 @@ export function readPortfolioModel(
 }
 
 export function storedPrices(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   assetId: string,
 ): Array<{ date: string; close: number }> {
   return liveEntities(document, 'customAssetValue')

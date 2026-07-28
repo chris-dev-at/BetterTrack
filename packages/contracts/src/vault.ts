@@ -50,8 +50,10 @@ export const VAULT_MAGIC = 'BTVAULT1';
 export const VAULT_HEADER_LENGTH_PREFIX_BYTES = 4;
 /** Envelope layout version (`formatVersion` in the header). */
 export const VAULT_FORMAT_VERSION = 1;
-/** Payload document version (`schemaVersion` in the header + document). */
-export const VAULT_DOCUMENT_VERSION = 1;
+/** First payload document version, retained for legacy encrypted vaults. */
+export const VAULT_DOCUMENT_V1_VERSION = 1;
+/** Latest payload document version (`schemaVersion` in the header + document). */
+export const VAULT_DOCUMENT_VERSION = 2;
 /** Content cipher — WebCrypto AES-256-GCM (native on every target platform). */
 export const VAULT_CONTENT_CIPHER = 'A256GCM';
 /** KEK derivation — Argon2id (the server's own argon2id cost family). */
@@ -63,6 +65,19 @@ export const VAULT_HISTORY_PAGE_DEFAULT = 10;
 export const VAULT_HISTORY_PAGE_MAX = 10;
 /** PostgreSQL `integer` ceiling shared by live and retained vault versions. */
 export const VAULT_VERSION_MAX = 2_147_483_647;
+/** Browser-visible lifetime of one inactive server-medium staging candidate. */
+export const VAULT_SERVER_CANDIDATE_TTL_MS = 10 * 60 * 1000;
+/**
+ * A retired server copy remains recoverable for at least this long before an
+ * explicit client proof may purge it. This delay deliberately cannot be
+ * shortened by a PATCH assertion.
+ */
+export const VAULT_RETIRED_SERVER_MIN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+/** A server-issued purge challenge is intentionally short lived. */
+export const VAULT_RETIRED_PURGE_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+
+/** The monotonic CAS token (`vaultVersion`). The first stored blob is 1. */
+export const vaultVersionSchema = z.number().int().min(1).max(VAULT_VERSION_MAX);
 
 // ── Privacy mode + media set ─────────────────────────────────────────────────
 
@@ -97,28 +112,352 @@ export const vaultMediaSetSchema = z
   });
 export type VaultMediaSet = z.infer<typeof vaultMediaSetSchema>;
 
-/** Durable, portfolio-free media metadata held by the account transition seam. */
-export const vaultMediaStateSchema = z
+/**
+ * The durable selection part of a media state. Transition callers submit this
+ * small, ciphertext-free shape as their optimistic `expected` value; the server
+ * adds the physical server disposition only in a response.
+ */
+const vaultMediaSelectionObjectSchema = z
   .object({
     mediaSet: vaultMediaSetSchema,
-    driveAttestedVersion: z.number().int().positive().nullable(),
+    driveAttestedVersion: vaultVersionSchema.nullable(),
+  })
+  .strict();
+
+function refineMediaSelection(
+  value: { mediaSet: VaultMediaSet; driveAttestedVersion: number | null },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.driveAttestedVersion !== null && !value.mediaSet.includes('drive')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['driveAttestedVersion'],
+      message: 'a Drive attestation requires the Drive medium',
+    });
+  }
+}
+
+export const vaultMediaSelectionSchema =
+  vaultMediaSelectionObjectSchema.superRefine(refineMediaSelection);
+export type VaultMediaSelection = z.infer<typeof vaultMediaSelectionSchema>;
+
+/**
+ * Backward-compatible public media-state shape. Physical server disposition is
+ * exposed by {@link paranoidVaultMediaStateSchema} only on the owner-scoped
+ * media endpoint.
+ */
+export const vaultMediaStateSchema = vaultMediaSelectionSchema;
+export type VaultMediaState = z.infer<typeof vaultMediaStateSchema>;
+
+/** Canonical DER prefix of an Ed25519 SubjectPublicKeyInfo value. */
+const ED25519_SPKI_DER_PREFIX = new Uint8Array([
+  0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+]);
+const ED25519_SPKI_DER_BYTES = 44;
+const ED25519_SPKI_BASE64URL_CHARS = 59;
+const ED25519_PKCS8_DER_PREFIX = new Uint8Array([
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+]);
+const ED25519_PKCS8_DER_BYTES = 48;
+const ED25519_PKCS8_BASE64URL_CHARS = 64;
+
+/**
+ * Decode unpadded base64url without relying on Node's Buffer so this contract
+ * remains isomorphic. The caller performs its own character-set validation.
+ */
+function decodeBase64url(value: string): Uint8Array | null {
+  const bytes = new Uint8Array(Math.floor((value.length * 6) / 8));
+  let byteIndex = 0;
+  let bufferedBits = 0;
+  let buffer = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const charCode = value.charCodeAt(index);
+    const digit =
+      charCode >= 65 && charCode <= 90
+        ? charCode - 65
+        : charCode >= 97 && charCode <= 122
+          ? charCode - 97 + 26
+          : charCode >= 48 && charCode <= 57
+            ? charCode - 48 + 52
+            : charCode === 45
+              ? 62
+              : charCode === 95
+                ? 63
+                : -1;
+    if (digit < 0) return null;
+
+    buffer = (buffer << 6) | digit;
+    bufferedBits += 6;
+    if (bufferedBits >= 8) {
+      bufferedBits -= 8;
+      bytes[byteIndex] = (buffer >> bufferedBits) & 0xff;
+      byteIndex += 1;
+      buffer &= (1 << bufferedBits) - 1;
+    }
+  }
+
+  // Base64url's unused trailing bits must be zero, otherwise multiple strings
+  // could represent the same DER value.
+  if (buffer !== 0 || byteIndex !== bytes.length) return null;
+  return bytes;
+}
+
+function isEd25519SpkiBase64url(value: string): boolean {
+  if (value.length !== ED25519_SPKI_BASE64URL_CHARS) return false;
+  const der = decodeBase64url(value);
+  if (!der || der.length !== ED25519_SPKI_DER_BYTES) return false;
+  return ED25519_SPKI_DER_PREFIX.every((byte, index) => der[index] === byte);
+}
+
+function isEd25519Pkcs8Base64url(value: string): boolean {
+  if (value.length !== ED25519_PKCS8_BASE64URL_CHARS) return false;
+  const der = decodeBase64url(value);
+  if (!der || der.length !== ED25519_PKCS8_DER_BYTES) return false;
+  return ED25519_PKCS8_DER_PREFIX.every((byte, index) => der[index] === byte);
+}
+
+/**
+ * Public verifier for an Ed25519 key whose private half remains only inside the
+ * client-decrypted vault. It is canonical DER SPKI encoded as base64url; it is
+ * not a Drive credential, vault key, token, file id, or portfolio datum.
+ */
+export const vaultRetirementProofPublicKeySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]+$/, 'must be base64url')
+  .length(ED25519_SPKI_BASE64URL_CHARS, 'must encode a 44-byte DER SPKI key')
+  .refine(isEd25519SpkiBase64url, 'must be a DER SPKI encoded Ed25519 public key');
+export type VaultRetirementProofPublicKey = z.infer<typeof vaultRetirementProofPublicKeySchema>;
+
+/**
+ * The matching Ed25519 private key, encoded as canonical PKCS#8 and held only
+ * inside the encrypted client document. It is never part of a server DTO.
+ */
+export const vaultRetirementProofPrivateKeySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]+$/, 'must be base64url')
+  .length(ED25519_PKCS8_BASE64URL_CHARS, 'must encode a 48-byte DER PKCS#8 key')
+  .refine(isEd25519Pkcs8Base64url, 'must be a DER PKCS#8 encoded Ed25519 private key');
+export type VaultRetirementProofPrivateKey = z.infer<typeof vaultRetirementProofPrivateKeySchema>;
+
+/**
+ * Client-only security material encrypted with the rest of the vault. The
+ * server may receive the public verifier header, but never this object or its
+ * private key.
+ */
+export const vaultClientSecuritySchema = z
+  .object({
+    retirementProof: z
+      .object({
+        publicKey: vaultRetirementProofPublicKeySchema,
+        privateKey: vaultRetirementProofPrivateKeySchema,
+      })
+      .strict(),
+  })
+  .strict();
+export type VaultClientSecurity = z.infer<typeof vaultClientSecuritySchema>;
+
+/** Portfolio-free receipt for an inactive server candidate. */
+export const paranoidServerCandidateMetadataSchema = z
+  .object({
+    candidateId: z.string().uuid(),
+    version: vaultVersionSchema,
+    formatVersion: z.number().int().positive(),
+    sizeBytes: z.number().int().positive(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type ParanoidServerCandidateMetadata = z.infer<typeof paranoidServerCandidateMetadataSchema>;
+
+/** Route parameter for one owner-scoped inactive candidate. */
+export const paranoidServerCandidateParamSchema = z
+  .object({ candidateId: z.string().uuid() })
+  .strict();
+export type ParanoidServerCandidateParam = z.infer<typeof paranoidServerCandidateParamSchema>;
+
+/** Safe summary of the recoverable server-retirement set. */
+export const retiredServerMetadataSchema = z
+  .object({
+    version: vaultVersionSchema,
+    retiredAt: z.string().datetime(),
+    purgeAfter: z.string().datetime(),
+  })
+  .strict();
+export type RetiredServerMetadata = z.infer<typeof retiredServerMetadataSchema>;
+
+/**
+ * The current physical server disposition. It intentionally contains no raw
+ * ciphertext: active bytes use `/vault`, inactive candidate bytes use their
+ * scoped read-back route, and retired bytes use the bounded history route.
+ */
+export const vaultServerDispositionSchema = z.enum([
+  'active',
+  'inactive-candidate',
+  'retired',
+  'empty',
+]);
+export type VaultServerDisposition = z.infer<typeof vaultServerDispositionSchema>;
+
+export const vaultServerStorageStateSchema = z
+  .object({
+    disposition: vaultServerDispositionSchema,
+    candidate: paranoidServerCandidateMetadataSchema.nullable(),
+    retired: retiredServerMetadataSchema.nullable(),
+  })
+  .strict();
+export type VaultServerStorageState = z.infer<typeof vaultServerStorageStateSchema>;
+
+/** Durable, portfolio-free media metadata plus the server-byte disposition. */
+export const paranoidVaultMediaStateSchema = vaultMediaSelectionObjectSchema
+  .extend({ server: vaultServerStorageStateSchema })
+  .strict()
+  .superRefine(refineMediaSelection);
+export type ParanoidVaultMediaState = z.infer<typeof paranoidVaultMediaStateSchema>;
+
+/** Owner-scoped media-state response. Normal accounts intentionally have none. */
+export const paranoidMediaStateResponseSchema = z
+  .object({
+    privacyMode: privacyModeSchema,
+    mediaState: paranoidVaultMediaStateSchema.nullable(),
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.driveAttestedVersion !== null && !value.mediaSet.includes('drive')) {
+    if ((value.privacyMode === 'normal') !== (value.mediaState === null)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['driveAttestedVersion'],
-        message: 'a Drive attestation requires the Drive medium',
+        path: ['mediaState'],
+        message: 'only a paranoid account may have vault media state',
       });
     }
   });
-export type VaultMediaState = z.infer<typeof vaultMediaStateSchema>;
+export type ParanoidMediaStateResponse = z.infer<typeof paranoidMediaStateResponseSchema>;
+
+/** Server-verifiable read-back receipt emitted only when an inactive candidate is read. */
+export const vaultCandidateReadbackSchema = z.string().min(32).max(2048);
+
+/** Client assertion for a freshly read/decrypted Drive copy; no Drive capability crosses this API. */
+export const vaultDriveReadbackSchema = z
+  .object({ kind: z.literal('drive'), version: vaultVersionSchema })
+  .strict();
+/** Server-current read-back used when only Drive is removed. */
+export const vaultServerReadbackSchema = z
+  .object({ kind: z.literal('server'), version: vaultVersionSchema })
+  .strict();
+/** Candidate promotion is bound to the exact candidate and its read-back receipt. */
+export const vaultServerCandidateReadbackSchema = z
+  .object({
+    kind: z.literal('server-candidate'),
+    candidateId: z.string().uuid(),
+    readback: vaultCandidateReadbackSchema,
+  })
+  .strict();
+export const vaultMediaTransitionVerificationSchema = z.discriminatedUnion('kind', [
+  vaultDriveReadbackSchema,
+  vaultServerReadbackSchema,
+  vaultServerCandidateReadbackSchema,
+]);
+export type VaultMediaTransitionVerification = z.infer<
+  typeof vaultMediaTransitionVerificationSchema
+>;
+
+/**
+ * One and only one media edge per request. Drive assertions can never delete
+ * ciphertext: removal of `server` moves it into the retired set; purge is a
+ * separately challenge-and-signature-gated operation below.
+ */
+export const paranoidMediaTransitionRequestSchema = z
+  .object({
+    expected: vaultMediaSelectionSchema,
+    nextMediaSet: vaultMediaSetSchema,
+    verification: vaultMediaTransitionVerificationSchema,
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const added = value.nextMediaSet.filter((medium) => !value.expected.mediaSet.includes(medium));
+    const removed = value.expected.mediaSet.filter(
+      (medium) => !value.nextMediaSet.includes(medium),
+    );
+    if (added.length + removed.length !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['nextMediaSet'],
+        message: 'a media transition must add or remove exactly one medium',
+      });
+      return;
+    }
+    const requiredKind =
+      added[0] === 'server' ? 'server-candidate' : removed[0] === 'drive' ? 'server' : 'drive';
+    if (value.verification.kind !== requiredKind) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['verification', 'kind'],
+        message: `this media transition requires a ${requiredKind} read-back`,
+      });
+    }
+  });
+export type ParanoidMediaTransitionRequest = z.infer<typeof paranoidMediaTransitionRequestSchema>;
+
+export const paranoidMediaTransitionResponseSchema = paranoidVaultMediaStateSchema;
+export type ParanoidMediaTransitionResponse = z.infer<typeof paranoidMediaTransitionResponseSchema>;
+
+/** Request one short-lived, server-issued challenge for an explicit retirement set. */
+export const retiredServerPurgeChallengeRequestSchema = z
+  .object({ retiredVersion: vaultVersionSchema })
+  .strict();
+export type RetiredServerPurgeChallengeRequest = z.infer<
+  typeof retiredServerPurgeChallengeRequestSchema
+>;
+
+export const retiredServerPurgeChallengeResponseSchema = z
+  .object({
+    retiredVersion: vaultVersionSchema,
+    challenge: z.string().min(32).max(2048),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type RetiredServerPurgeChallengeResponse = z.infer<
+  typeof retiredServerPurgeChallengeResponseSchema
+>;
+
+/**
+ * A proof transcript is signed with the private Ed25519 key held in the
+ * decrypted vault. `observedVersion` is the freshly read/decrypted external
+ * vault version and must be at least the retired server version.
+ */
+export const retiredServerPurgeRequestSchema = z
+  .object({
+    retiredVersion: vaultVersionSchema,
+    observedVersion: vaultVersionSchema,
+    challenge: z.string().min(32).max(2048),
+    signature: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]+$/, 'must be base64url')
+      .min(80)
+      .max(256),
+  })
+  .strict();
+export type RetiredServerPurgeRequest = z.infer<typeof retiredServerPurgeRequestSchema>;
+
+export const retiredServerPurgeResponseSchema = z.object({ purged: z.literal(true) }).strict();
+export type RetiredServerPurgeResponse = z.infer<typeof retiredServerPurgeResponseSchema>;
+
+/** Domain-separated canonical bytes signed for a retired-server purge. */
+export function serializeRetiredServerPurgeTranscript(input: {
+  retiredVersion: number;
+  observedVersion: number;
+  challenge: string;
+}): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify([
+      'bettertrack.paranoid-retired-server-purge.v1',
+      input.retiredVersion,
+      input.observedVersion,
+      input.challenge,
+    ]),
+  );
+}
 
 // ── Version + envelope header ────────────────────────────────────────────────
-
-/** The monotonic CAS token (`vaultVersion`). The first stored blob is 1. */
-export const vaultVersionSchema = z.number().int().min(1).max(VAULT_VERSION_MAX);
 
 /**
  * Public metadata for one retained server-history blob. This is deliberately
@@ -686,7 +1025,7 @@ export type VaultMergeRecord = z.infer<typeof vaultMergeRecordSchema>;
 /** Strict v1 restore payload; newer versions are rejected without coercion. */
 export const vaultStrictDocumentV1Schema = z
   .object({
-    schemaVersion: z.literal(VAULT_DOCUMENT_VERSION),
+    schemaVersion: z.literal(VAULT_DOCUMENT_V1_VERSION),
     entities: z.array(vaultStrictEntitySchema),
     mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
   })
@@ -694,17 +1033,42 @@ export const vaultStrictDocumentV1Schema = z
 export type VaultStrictDocumentV1 = z.infer<typeof vaultStrictDocumentV1Schema>;
 
 /**
- * The decrypted vault document, version 1 (`§2`). A per-kind map of sync-tracked
- * entities plus a bounded merge log. Clients migrate older documents forward
- * with pure `v(n)→v(n+1)` functions and write back at the current version; a
- * client meeting a newer version than it knows goes read-only, never destructive.
+ * The original decrypted vault document (`§2`). A per-kind map of sync-tracked
+ * entities plus a bounded merge log. It remains readable so a client can
+ * provision the v2 retirement proof during its unlocked initialization.
  */
 export const vaultDocumentV1Schema = z.object({
-  schemaVersion: z.literal(VAULT_DOCUMENT_VERSION),
+  schemaVersion: z.literal(VAULT_DOCUMENT_V1_VERSION),
   entities: z.record(vaultEntityKindSchema, z.array(vaultEntitySchema)),
   mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
 });
 export type VaultDocumentV1 = z.infer<typeof vaultDocumentV1Schema>;
+
+/**
+ * Version 2 binds the client-held retirement private key to a payload/header
+ * version that v1 clients reject before parsing. `clientSecurity` is required:
+ * a v2 writer can never silently downgrade a verifier-backed vault to a
+ * headerless/keyless document.
+ */
+export const vaultDocumentV2Schema = z.object({
+  schemaVersion: z.literal(VAULT_DOCUMENT_VERSION),
+  entities: z.record(vaultEntityKindSchema, z.array(vaultEntitySchema)),
+  mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
+  /**
+   * Browser-only proof material. The unlocked client provisions it before
+   * activating or retiring server media. It is deliberately absent from the
+   * rehydration DTO above.
+   */
+  clientSecurity: vaultClientSecuritySchema,
+});
+export type VaultDocumentV2 = z.infer<typeof vaultDocumentV2Schema>;
+
+/** Every payload version this client can read without destructive coercion. */
+export const vaultDocumentSchema = z.discriminatedUnion('schemaVersion', [
+  vaultDocumentV1Schema,
+  vaultDocumentV2Schema,
+]);
+export type VaultDocument = z.infer<typeof vaultDocumentSchema>;
 
 // ── Internal disable / rehydration DTOs ──────────────────────────────────────
 
@@ -780,6 +1144,13 @@ export type VaultMetadata = z.infer<typeof vaultMetadataSchema>;
 export const VAULT_ERROR_CODES = {
   notFound: 'VAULT_NOT_FOUND',
   modeRequired: 'VAULT_PARANOID_MODE_REQUIRED',
+  mediaStateConflict: 'VAULT_MEDIA_STATE_CONFLICT',
+  mediaVerificationFailed: 'VAULT_MEDIA_VERIFICATION_FAILED',
+  serverMediumInactive: 'VAULT_SERVER_MEDIUM_INACTIVE',
+  retirementConflict: 'VAULT_RETIRED_SERVER_CONFLICT',
+  retirementProofRequired: 'VAULT_RETIRED_SERVER_PROOF_REQUIRED',
+  retirementProofInvalid: 'VAULT_RETIRED_SERVER_PROOF_INVALID',
+  retirementRetention: 'VAULT_RETIRED_SERVER_RETENTION',
   preconditionRequired: 'VAULT_PRECONDITION_REQUIRED',
   preconditionFailed: 'VAULT_PRECONDITION_FAILED',
   tooLarge: 'VAULT_TOO_LARGE',
@@ -793,6 +1164,14 @@ export const VAULT_CONTENT_TYPE = 'application/octet-stream';
 export const VAULT_HISTORY_CREATED_AT_HEADER = 'X-BetterTrack-Vault-Created-At';
 export const VAULT_HISTORY_MEDIUM_HEADER = 'X-BetterTrack-Vault-Medium';
 export const VAULT_HISTORY_SIZE_BYTES_HEADER = 'X-BetterTrack-Vault-Size-Bytes';
+/** Client-held retirement-proof public key supplied only when first storing server bytes. */
+export const VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER =
+  'X-BetterTrack-Vault-Retirement-Proof-Public-Key';
+/** Safe metadata accompanying an inactive candidate raw read. */
+export const VAULT_SERVER_CANDIDATE_ID_HEADER = 'X-BetterTrack-Vault-Candidate-Id';
+export const VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER = 'X-BetterTrack-Vault-Candidate-Expires-At';
+/** Opaque HMAC receipt proving this browser session read the exact candidate. */
+export const VAULT_SERVER_CANDIDATE_READBACK_HEADER = 'X-BetterTrack-Vault-Candidate-Readback';
 
 /** Format a strong ETag over a vault version (`ETag: "<version>"`). */
 export function vaultEtag(version: number): string {

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   paranoidDisableRehydrationRequestSchema,
   paranoidDisableRehydrationResultSchema,
-  VAULT_DOCUMENT_VERSION,
+  VAULT_DOCUMENT_V1_VERSION,
   VAULT_ENTITY_KINDS,
   type VaultStrictEntity,
   vaultMediaStateSchema,
@@ -348,7 +348,7 @@ describe('strict vault document v1', () => {
   for (const fixture of fixtures) {
     it(`round-trips every persisted ${fixture.kind} field byte-for-byte`, () => {
       const payload = JSON.stringify({
-        schemaVersion: VAULT_DOCUMENT_VERSION,
+        schemaVersion: VAULT_DOCUMENT_V1_VERSION,
         entities: [fixture],
         mergeLog: [],
       });
@@ -360,7 +360,7 @@ describe('strict vault document v1', () => {
   it('fails closed for a forward document version', () => {
     expect(
       vaultStrictDocumentV1Schema.safeParse({
-        schemaVersion: VAULT_DOCUMENT_VERSION + 1,
+        schemaVersion: VAULT_DOCUMENT_V1_VERSION + 1,
         entities: fixtures,
         mergeLog: [],
       }).success,
@@ -401,7 +401,7 @@ describe('strict vault document v1', () => {
     const request = {
       rehydrationId: uuid(98),
       document: {
-        schemaVersion: VAULT_DOCUMENT_VERSION,
+        schemaVersion: VAULT_DOCUMENT_V1_VERSION,
         entities: fixtures,
         mergeLog: [],
       },
@@ -411,7 +411,7 @@ describe('strict vault document v1', () => {
       paranoidDisableRehydrationRequestSchema.safeParse({
         ...request,
         document: {
-          schemaVersion: VAULT_DOCUMENT_VERSION,
+          schemaVersion: VAULT_DOCUMENT_V1_VERSION,
           entities: { portfolio: [] },
           mergeLog: [],
         },

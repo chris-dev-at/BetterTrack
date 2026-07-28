@@ -36,6 +36,13 @@ export {
 } from './scheduler';
 export { createJobWorkers, type RunningWorkers, type CreateJobWorkersDeps } from './worker';
 export {
+  assembleRegisteredJobDefinitions,
+  JOB_REGISTRATION_DESCRIPTORS,
+  type JobRegistrationDescriptor,
+  type JobRegistrationSource,
+  type RegisteredJobDefinitions,
+} from './definitions/registration';
+export {
   createJobDefinitions,
   heartbeatJob,
   HEARTBEAT_SCHEDULER_ID,

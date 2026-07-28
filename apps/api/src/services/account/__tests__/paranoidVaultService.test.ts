@@ -1,9 +1,17 @@
-import { encodeVaultEnvelope, VAULT_CONTENT_CIPHER } from '@bettertrack/contracts';
+import { generateKeyPairSync, sign } from 'node:crypto';
+
+import {
+  encodeVaultEnvelope,
+  serializeRetiredServerPurgeTranscript,
+  VAULT_CONTENT_CIPHER,
+  VAULT_RETIRED_PURGE_CHALLENGE_TTL_MS,
+} from '@bettertrack/contracts';
 import { describe, expect, it } from 'vitest';
 
 import type {
   ParanoidVaultCasInput,
   ParanoidVaultCasResult,
+  ParanoidRetirementState,
   ParanoidVaultRepository,
 } from '../../../data/repositories/paranoidVaultRepository';
 import type { ParanoidVaultRow } from '../../../data/schema';
@@ -38,13 +46,18 @@ function envelope(vaultVersion: number, ciphertext: Uint8Array): Buffer {
 interface FakeRepoOptions {
   current?: ParanoidVaultRow | null;
   casResult?: ParanoidVaultCasResult;
+  retirement?: ParanoidRetirementState | null;
 }
 
 function fakeRepo(options: FakeRepoOptions = {}) {
   const calls: ParanoidVaultCasInput[] = [];
+  const purges: unknown[] = [];
   const repo: ParanoidVaultRepository = {
     async getCurrent() {
       return options.current ?? null;
+    },
+    async getMediaState() {
+      return null;
     },
     async listHistory() {
       return { items: [], nextCursor: null };
@@ -62,8 +75,24 @@ function fakeRepo(options: FakeRepoOptions = {}) {
         }
       );
     },
+    async stageServerCandidate() {
+      return { status: 'not_found' } as const;
+    },
+    async getServerCandidate() {
+      return null;
+    },
+    async transitionMedia() {
+      return { status: 'not_found' } as const;
+    },
+    async getRetirementState() {
+      return options.retirement ?? null;
+    },
+    async purgeRetired(input) {
+      purges.push(input);
+      return { status: 'ok' } as const;
+    },
   };
-  return { repo, calls };
+  return { repo, calls, purges };
 }
 
 const retention = { maxVersions: 10, maxAgeMs: 30 * 24 * 60 * 60 * 1000 };
@@ -148,6 +177,7 @@ describe('paranoid vault service', () => {
       formatVersion: 1,
       sizeBytes: 42,
       blob: Buffer.from('opaque'),
+      retirementProofPublicKey: null,
       createdAt: new Date('2026-07-24T09:00:00.000Z'),
       updatedAt: new Date('2026-07-24T10:00:00.000Z'),
     };
@@ -167,5 +197,68 @@ describe('paranoid vault service', () => {
       retention,
     });
     expect(await emptyService.getMetadata(UUID_A)).toBeNull();
+  });
+
+  it('requires a fresh, client-held-key purge transcript and accepts an advanced version', async () => {
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const proofKey = publicKey.export({ type: 'spki', format: 'der' }).toString('base64url');
+    let clock = new Date('2026-07-24T10:00:00.000Z');
+    const { repo, purges } = fakeRepo({
+      retirement: {
+        retiredVersion: 2,
+        retirementProofPublicKey: proofKey,
+        retiredAt: new Date('2026-07-17T10:00:00.000Z'),
+      },
+    });
+    const service = createParanoidVaultService({
+      vaults: repo,
+      maxBytes: 1_000_000,
+      retention,
+      proofSecret: 'proof-secret-for-test-only',
+      now: () => clock,
+    });
+
+    const prepared = await service.prepareRetiredPurge(UUID_A, { retiredVersion: 2 });
+    expect(prepared.status).toBe('ok');
+    if (prepared.status !== 'ok') throw new Error('expected a challenge');
+    const valid = {
+      retiredVersion: 2,
+      observedVersion: 3,
+      challenge: prepared.challenge.challenge,
+      signature: sign(
+        null,
+        Buffer.from(
+          serializeRetiredServerPurgeTranscript({
+            retiredVersion: 2,
+            observedVersion: 3,
+            challenge: prepared.challenge.challenge,
+          }),
+        ),
+        privateKey,
+      ).toString('base64url'),
+    };
+    expect(await service.purgeRetired(UUID_A, valid)).toEqual({ status: 'ok' });
+    expect(purges).toHaveLength(1);
+
+    const lower = {
+      ...valid,
+      observedVersion: 1,
+      signature: sign(
+        null,
+        Buffer.from(
+          serializeRetiredServerPurgeTranscript({
+            retiredVersion: 2,
+            observedVersion: 1,
+            challenge: prepared.challenge.challenge,
+          }),
+        ),
+        privateKey,
+      ).toString('base64url'),
+    };
+    expect(await service.purgeRetired(UUID_A, lower)).toEqual({ status: 'proof_invalid' });
+
+    clock = new Date(clock.getTime() + VAULT_RETIRED_PURGE_CHALLENGE_TTL_MS + 1);
+    expect(await service.purgeRetired(UUID_A, valid)).toEqual({ status: 'proof_invalid' });
+    expect(purges).toHaveLength(1);
   });
 });

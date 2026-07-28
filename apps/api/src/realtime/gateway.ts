@@ -1,15 +1,21 @@
+import { randomUUID } from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 
 import cookieParser from 'cookie-parser';
 import type { RequestHandler } from 'express';
+import type { Redis } from 'ioredis';
 import { Server as SocketIOServer, type Socket } from 'socket.io';
 
 import {
+  LIVE_MIN_POLL_INTERVAL_MS,
   LIVE_RATE_MS,
   REALTIME_BEARER_SCOPE_REQUIREMENTS,
   REALTIME_CLIENT_EVENTS,
+  REALTIME_MAX_PENDING_WATCH_STARTS_PER_SOCKET,
+  REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
+  realtimeLiveFrameSchema,
   realtimeLiveUnwatchRequestSchema,
   realtimeLiveWatchRequestSchema,
   realtimePresenceRequestSchema,
@@ -19,8 +25,10 @@ import {
   type ApiKeyScope,
   type FeatureFlagKey,
   type PresenceSurface,
+  type RealtimeAckError,
   type RealtimeBearerCapability,
   type RealtimeChatMessage,
+  type RealtimeConnectionError,
   type RealtimeLiveWatchAck,
   type RealtimeNotificationNew,
   type RealtimePortfolioChanged,
@@ -33,8 +41,17 @@ import type { AppConfig } from '../config/env';
 import type { EventBus, RealtimePrincipalInvalidatedEvent, Unsubscribe } from '../events';
 import type { Logger } from '../logger';
 import { sha256Base64Url } from '../services/crypto/tokens';
-import type { LiveModeService } from '../services/liveMode';
+import { LIVE_LOOP_COORDINATION_CHANNEL, type LiveModeService } from '../services/liveMode';
 import type { PresenceStore } from '../services/notifications/presence';
+import {
+  createRealtimeAdmission,
+  createRealtimeTokenBucket,
+  REALTIME_ADMISSION_LEASE_TTL_MS,
+  REALTIME_ADMISSION_RENEW_INTERVAL_MS,
+  type RealtimeAdmission,
+  type RealtimeAdmissionOptions,
+  type RealtimeTokenBucket,
+} from '../services/security/realtimeAdmission';
 
 /**
  * Realtime gateway (PROJECTPLAN.md §4.5, V3-P7a): a Socket.IO server at
@@ -82,6 +99,8 @@ export const portfolioRoom = (portfolioId: string): string => `portfolio:${portf
 export const REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS = 30_000;
 export const REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS = 5_000;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
+/** Cross-process live frames; each gateway emits remote frames into its local rooms. */
+export const REALTIME_LIVE_FANOUT_CHANNEL = 'bt:live:frames';
 
 /** Bearer-only user rooms prevent a narrow token entering the full user room. */
 const scopedUserRoom = (userId: string, capability: RealtimeBearerCapability): string =>
@@ -173,6 +192,14 @@ export interface RealtimeGatewayDeps {
   config: AppConfig;
   bus: EventBus;
   logger: Logger;
+  /** Shared Redis backing atomic cross-process connection/watch admission. */
+  redis: Redis;
+  /** Test seam for small thresholds and a controlled lease clock. */
+  realtimeAdmissionOptions?: RealtimeAdmissionOptions;
+  /** Optional fully-built admission primitive for focused gateway tests. */
+  realtimeAdmission?: RealtimeAdmission;
+  /** Test seam for deterministic process-local command-bucket boundaries. */
+  realtimeCommandNow?: () => number;
   /**
    * Session-cookie → user resolution — the SAME path the HTTP session
    * middleware uses ({@link import('../services/auth/authService').AuthService}),
@@ -255,10 +282,28 @@ export interface RealtimeGateway {
 
 export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGateway {
   const { config, bus, logger } = deps;
+  const admission =
+    deps.realtimeAdmission ?? createRealtimeAdmission(deps.redis, deps.realtimeAdmissionOptions);
+  const admissionLeaseTtlMs =
+    deps.realtimeAdmissionOptions?.leaseTtlMs ?? REALTIME_ADMISSION_LEASE_TTL_MS;
+  const admissionNow = deps.realtimeAdmissionOptions?.now ?? Date.now;
+  const admissionRenewIntervalMs = Math.min(
+    REALTIME_ADMISSION_RENEW_INTERVAL_MS,
+    Math.max(1, Math.floor(admissionLeaseTtlMs / 3)),
+  );
+  // Disconnect before Redis may consider the lease expired. This leaves enough
+  // room for disconnect cleanup to queue its token-scoped release behind a
+  // delayed renewal without ever trusting that renewal's late settlement.
+  const admissionDeadlineSlackMs = Math.min(
+    1_000,
+    Math.max(1, Math.floor(admissionLeaseTtlMs / 10)),
+  );
   let io: SocketIOServer | null = null;
   let principalRevalidationTimer: ReturnType<typeof setInterval> | null = null;
   let principalRevalidationRunning = false;
   const unsubscribers: Unsubscribe[] = [];
+  const socketCleanupTasks = new Set<Promise<void>>();
+  const gatewayInstanceId = randomUUID();
 
   // The exact cookie-parser the Express app mounts: same signing secrets, same
   // rotation behavior. Run over the raw handshake request so `signedCookies`
@@ -372,6 +417,141 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     return (await resolveCookiePrincipal(socket)) ?? (await resolveBearerPrincipal(socket));
   }
 
+  type ConnectionLease = {
+    leaseId: string;
+    userId: string;
+    bearerCredentialId: string | null;
+    expiresAtMs: number;
+    released: boolean;
+  };
+
+  type PreConnectCloseFence = {
+    closed: boolean;
+    admitted: boolean;
+    onClose: () => void;
+  };
+
+  const bearerAdmissionCredential = (principal: RealtimePrincipal): string | null => {
+    if (principal.kind === 'personal') return principal.keyId;
+    if (principal.kind === 'oauth') return principal.accessTokenId;
+    return null;
+  };
+
+  const connectionLeaseOf = (socket: Socket): ConnectionLease | null =>
+    (socket.data.connectionLease as ConnectionLease | undefined) ?? null;
+
+  const preConnectCloseFenceOf = (socket: Socket): PreConnectCloseFence | null =>
+    (socket.data.preConnectCloseFence as PreConnectCloseFence | undefined) ?? null;
+
+  class AdmissionLeaseDeadlineError extends Error {
+    constructor() {
+      super('realtime admission lease renewal missed its local deadline');
+      this.name = 'AdmissionLeaseDeadlineError';
+    }
+  }
+
+  /**
+   * A Redis command may remain pending indefinitely when ioredis is reconnecting.
+   * Settle at most once before the locally-known lease cutoff; late fulfilment is
+   * ignored, while the caller's token-scoped release fences any delayed Redis
+   * execution from reviving work after disconnect.
+   */
+  async function renewBeforeDeadline<T>(
+    expiresAtMs: number,
+    renew: () => Promise<T>,
+  ): Promise<{ value: T; expiresAtMs: number }> {
+    const startedAt = admissionNow();
+    const waitMs = expiresAtMs - admissionDeadlineSlackMs - startedAt;
+    if (waitMs <= 0) throw new AdmissionLeaseDeadlineError();
+
+    const operation = renew();
+    const value = await new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new AdmissionLeaseDeadlineError());
+      }, waitMs);
+      timer.unref?.();
+      void operation.then(
+        (result) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(result);
+        },
+        (err: unknown) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
+    return { value, expiresAtMs: startedAt + admissionLeaseTtlMs };
+  }
+
+  function disarmPreConnectCloseFence(socket: Socket): void {
+    const fence = preConnectCloseFenceOf(socket);
+    if (!fence) return;
+    socket.conn.off('close', fence.onClose);
+    delete socket.data.preConnectCloseFence;
+  }
+
+  const respondError = (ack: unknown, error: RealtimeAckError): void => {
+    if (typeof ack === 'function') {
+      (ack as (result: { ok: false; error: RealtimeAckError }) => void)({ ok: false, error });
+    }
+  };
+
+  const handshakeError = (code: RealtimeConnectionError): Error => {
+    const error = new Error(code) as Error & { data: { code: RealtimeConnectionError } };
+    error.data = { code };
+    return error;
+  };
+
+  const socketCommandBucketOf = (socket: Socket): RealtimeTokenBucket =>
+    (socket.data.commandBucket as RealtimeTokenBucket | undefined) ??
+    (socket.data.commandBucket = createRealtimeTokenBucket(
+      undefined,
+      undefined,
+      deps.realtimeCommandNow,
+    ));
+
+  function admitSocketCommand(socket: Socket, ack: unknown): boolean {
+    if (!socketCommandBucketOf(socket).consume()) {
+      respondError(ack, 'RATE_LIMITED');
+      return false;
+    }
+    return true;
+  }
+
+  async function admitUserCommand(principal: RealtimePrincipal, ack: unknown): Promise<boolean> {
+    try {
+      if (!(await admission.consumeUserCommand(principal.userId))) {
+        respondError(ack, 'RATE_LIMITED');
+        return false;
+      }
+      return true;
+    } catch (err) {
+      logger.warn({ err, userId: principal.userId }, 'realtime command admission failed');
+      respondError(ack, 'UNAVAILABLE');
+      return false;
+    }
+  }
+
+  /**
+   * Count client commands only. Server fan-out never passes this path, while
+   * malformed/denied client frames still consume capacity like any other work.
+   */
+  async function admitClientCommand(
+    socket: Socket,
+    principal: RealtimePrincipal,
+    ack: unknown,
+  ): Promise<boolean> {
+    return admitSocketCommand(socket, ack) && admitUserCommand(principal, ack);
+  }
+
   /** Session principals have the whole first-party surface; bearer scopes gate every family. */
   function hasCapability(
     principal: RealtimePrincipal,
@@ -440,10 +620,215 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    * it without re-resolving) and the rate registered with the shared loop —
    * an unwatch must release exactly the rate it registered (#372).
    */
-  type LiveWatchEntry = { ref: AssetRef; rateMs: number | undefined };
+  type LiveWatchEntry = {
+    ref: AssetRef;
+    rateMs: number | undefined;
+    leaseId: string;
+    userId: string;
+    expiresAtMs: number;
+  };
+  type WatchStartWorkLease = {
+    disconnect(): Promise<void>;
+    release(): Promise<void>;
+  };
+  const gatewayWatchStartWorkLeases = new Set<WatchStartWorkLease>();
   const liveAssetsOf = (socket: Socket): Map<string, LiveWatchEntry> =>
     (socket.data.liveAssets as Map<string, LiveWatchEntry> | undefined) ??
     (socket.data.liveAssets = new Map<string, LiveWatchEntry>());
+
+  const watchStartWorkLeasesOf = (socket: Socket): Set<WatchStartWorkLease> =>
+    (socket.data.watchStartWorkLeases as Set<WatchStartWorkLease> | undefined) ??
+    (socket.data.watchStartWorkLeases = new Set<WatchStartWorkLease>());
+
+  const pendingLiveWatchAssetsOf = (socket: Socket): Map<string, number> =>
+    (socket.data.pendingLiveWatchAssets as Map<string, number> | undefined) ??
+    (socket.data.pendingLiveWatchAssets = new Map<string, number>());
+
+  const liveWatchGenerationsOf = (socket: Socket): Map<string, number> =>
+    (socket.data.liveWatchGenerations as Map<string, number> | undefined) ??
+    (socket.data.liveWatchGenerations = new Map<string, number>());
+
+  const liveCleanupWatermarksOf = (socket: Socket): Map<string, number> =>
+    (socket.data.liveCleanupWatermarks as Map<string, number> | undefined) ??
+    (socket.data.liveCleanupWatermarks = new Map<string, number>());
+
+  const queuedLiveCleanupsOf = (socket: Socket): Set<string> =>
+    (socket.data.queuedLiveCleanups as Set<string> | undefined) ??
+    (socket.data.queuedLiveCleanups = new Set<string>());
+
+  function beginPendingLiveWatch(socket: Socket, assetId: string): number {
+    const pending = pendingLiveWatchAssetsOf(socket);
+    pending.set(assetId, (pending.get(assetId) ?? 0) + 1);
+    const generations = liveWatchGenerationsOf(socket);
+    const generation = (generations.get(assetId) ?? 0) + 1;
+    generations.set(assetId, generation);
+    return generation;
+  }
+
+  function pruneLiveIntent(socket: Socket, assetId: string): void {
+    if (
+      liveAssetsOf(socket).has(assetId) ||
+      (pendingLiveWatchAssetsOf(socket).get(assetId) ?? 0) > 0 ||
+      queuedLiveCleanupsOf(socket).has(assetId)
+    ) {
+      return;
+    }
+    liveCleanupWatermarksOf(socket).delete(assetId);
+    liveWatchGenerationsOf(socket).delete(assetId);
+  }
+
+  function finishPendingLiveWatch(socket: Socket, assetId: string): void {
+    const pending = pendingLiveWatchAssetsOf(socket);
+    const count = pending.get(assetId) ?? 0;
+    if (count > 1) pending.set(assetId, count - 1);
+    else pending.delete(assetId);
+    pruneLiveIntent(socket, assetId);
+  }
+
+  function markLiveCleanupIntent(socket: Socket, assetId: string): boolean {
+    const held = liveAssetsOf(socket).has(assetId);
+    const pending = (pendingLiveWatchAssetsOf(socket).get(assetId) ?? 0) > 0;
+    if (!held && !pending) return false;
+    const generations = liveWatchGenerationsOf(socket);
+    const generation = generations.get(assetId) ?? 0;
+    const watermarks = liveCleanupWatermarksOf(socket);
+    watermarks.set(assetId, Math.max(watermarks.get(assetId) ?? 0, generation));
+    return true;
+  }
+
+  async function releaseConnectionLease(socket: Socket): Promise<void> {
+    const lease = connectionLeaseOf(socket);
+    if (!lease || lease.released) return;
+    // Fence before I/O: disconnect, close, and startup-failure paths may meet.
+    lease.released = true;
+    try {
+      await admission.releaseConnection(lease);
+    } catch (err) {
+      // The lease TTL is the crash/transient-error backstop.
+      logger.warn({ err, userId: lease.userId }, 'realtime connection lease release failed');
+    }
+  }
+
+  async function releaseLiveWatch(
+    socket: Socket,
+    assetId: string,
+    entry: LiveWatchEntry,
+    leaveRoom: boolean,
+  ): Promise<void> {
+    const watched = liveAssetsOf(socket);
+    if (watched.get(assetId) !== entry) return;
+    // Delete first so a concurrent heartbeat cannot resurrect an intentional
+    // release, and duplicate cleanup paths become exact no-ops.
+    watched.delete(assetId);
+    try {
+      deps.liveMode?.unwatch(assetId, entry.rateMs);
+    } finally {
+      try {
+        await admission.releaseWatch({
+          leaseId: entry.leaseId,
+          userId: entry.userId,
+          assetId,
+        });
+      } catch (err) {
+        logger.warn({ err, assetId }, 'realtime watch lease release failed');
+      }
+    }
+    if (leaveRoom && !socket.disconnected) {
+      await socket.leave(assetRoom(assetId));
+    }
+  }
+
+  async function releaseCanceledLiveWatch(
+    socket: Socket,
+    assetId: string,
+    watchGeneration: number,
+  ): Promise<void> {
+    const watermarks = liveCleanupWatermarksOf(socket);
+    const cleanupThrough = watermarks.get(assetId);
+    if (cleanupThrough === undefined) return;
+    if (cleanupThrough < watchGeneration) {
+      // A later watch supersedes every older cleanup intent.
+      watermarks.delete(assetId);
+      return;
+    }
+    const entry = liveAssetsOf(socket).get(assetId);
+    if (entry) await releaseLiveWatch(socket, assetId, entry, true);
+  }
+
+  function stopAdmissionHeartbeat(socket: Socket): void {
+    const timer = socket.data.admissionHeartbeatTimer as ReturnType<typeof setInterval> | undefined;
+    if (timer) clearInterval(timer);
+    delete socket.data.admissionHeartbeatTimer;
+    socket.data.admissionHeartbeatRunning = false;
+  }
+
+  function startAdmissionHeartbeat(socket: Socket): void {
+    if (socket.data.admissionHeartbeatTimer) return;
+    const timer = setInterval(() => {
+      if (socket.disconnected || socket.data.admissionHeartbeatRunning) return;
+      const lease = connectionLeaseOf(socket);
+      if (!lease || lease.released) return;
+      socket.data.admissionHeartbeatRunning = true;
+      void (async () => {
+        const connectionRenewal = await renewBeforeDeadline(lease.expiresAtMs, () =>
+          admission.renewConnection(lease),
+        );
+        if (connectionLeaseOf(socket) !== lease || lease.released) return false;
+        if (!connectionRenewal.value) return false;
+        lease.expiresAtMs = connectionRenewal.expiresAtMs;
+        for (const [assetId, entry] of [...liveAssetsOf(socket)]) {
+          const watchRenewal = await renewBeforeDeadline(entry.expiresAtMs, () =>
+            admission.renewWatch({
+              leaseId: entry.leaseId,
+              userId: lease.userId,
+              assetId,
+            }),
+          );
+          // An intentional unwatch may have completed while Redis renewed.
+          if (liveAssetsOf(socket).get(assetId) !== entry) continue;
+          if (!watchRenewal.value) return false;
+          entry.expiresAtMs = watchRenewal.expiresAtMs;
+        }
+        return true;
+      })()
+        .then((alive) => {
+          if (!alive && !socket.disconnected) socket.disconnect(true);
+        })
+        .catch((err) => {
+          logger.warn({ err, userId: lease.userId }, 'realtime lease renewal failed');
+          if (!socket.disconnected) socket.disconnect(true);
+        })
+        .finally(() => {
+          socket.data.admissionHeartbeatRunning = false;
+        });
+    }, admissionRenewIntervalMs);
+    timer.unref?.();
+    socket.data.admissionHeartbeatTimer = timer;
+  }
+
+  function trackSocketCleanup(task: Promise<void>): void {
+    socketCleanupTasks.add(task);
+    void task.finally(() => socketCleanupTasks.delete(task));
+  }
+
+  function disconnectWatchStartWorkLeases(socket: Socket): Promise<void> {
+    // Acquisitions which have not entered provider work can be fenced and
+    // released immediately. Work already in progress retains and renews its
+    // exact semaphore seat until it settles: releasing that seat on disconnect
+    // would let reconnect cycling grow actual history work beyond the global
+    // bound. `disconnect()` makes this decision synchronously before any Redis
+    // await, and the handler's finally remains the idempotent terminal release.
+    const disconnects = [...watchStartWorkLeasesOf(socket)].map((lease) => lease.disconnect());
+    return Promise.all(disconnects).then(() => undefined);
+  }
+
+  function releaseAllWatchStartWorkLeases(): Promise<void> {
+    // Gateway close is process shutdown, not an ordinary client disconnect:
+    // stop every renewal and relinquish its distributed seat even when provider
+    // teardown is stuck, so this stopped process cannot leave capacity pinned.
+    const releases = [...gatewayWatchStartWorkLeases].map((lease) => lease.release());
+    return Promise.all(releases).then(() => undefined);
+  }
 
   /**
    * Serialize a socket's live-mode ops. `live.watch` awaits an asset resolve
@@ -452,15 +837,184 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    * un-serialized handlers can interleave at that await: two watches would both
    * register with the shared loop while the set holds ONE entry, leaking an
    * upstream poll loop no unwatch/disconnect can ever release (§5.3), and an
-   * unwatch overtaking an in-flight watch would no-op. Running watch, unwatch
-   * and disconnect-cleanup one-at-a-time per socket (errors don't stall the
-   * chain) makes each op see settled state.
+   * unwatch overtaking an in-flight watch would no-op. Running watch and
+   * unwatch one-at-a-time per socket (errors don't stall the chain) makes each
+   * op see settled state; disconnect cleanup uses the map identity fence above
+   * plus the post-resolution `socket.disconnected` check.
    */
   function enqueueLiveOp(socket: Socket, op: () => Promise<void>): Promise<void> {
     const prev = (socket.data.liveOpQueue as Promise<void> | undefined) ?? Promise.resolve();
     const next = prev.then(op);
     socket.data.liveOpQueue = next.catch(() => undefined);
     return next;
+  }
+
+  /**
+   * Cleanup never joins the serialized watch-start queue: one stalled backfill
+   * must not let admitted unwatch frames grow an unbounded promise chain. A
+   * held entry is identity-fenced and safe to release immediately; a pending
+   * first watch is canceled by its generation watermark when it settles.
+   * Coalescing per eligible asset bounds this side path by held + pending
+   * watches even when either command bucket rejects the frame.
+   */
+  function scheduleLiveCleanup(socket: Socket, assetId: string): void {
+    const queued = queuedLiveCleanupsOf(socket);
+    if (queued.has(assetId)) return;
+    queued.add(assetId);
+    void (async () => {
+      try {
+        const entry = liveAssetsOf(socket).get(assetId);
+        if (entry) await releaseLiveWatch(socket, assetId, entry, true);
+      } finally {
+        queued.delete(assetId);
+        pruneLiveIntent(socket, assetId);
+      }
+    })().catch((err) => {
+      logger.warn({ err, assetId }, 'live unwatch cleanup failed');
+    });
+  }
+
+  /**
+   * Hold finite cross-process start/backfill capacity while the ordered socket
+   * operation resolves, starts, and stitches history. The event listener caps
+   * this socket's pending starts before enqueueing; this global semaphore caps
+   * simultaneous provider-facing work across processes.
+   */
+  async function handleBoundedLiveWatch(
+    socket: Socket,
+    principal: RealtimePrincipal,
+    payload: unknown,
+    ack: unknown,
+  ): Promise<void> {
+    const leaseId = randomUUID();
+    const socketWorkLeases = watchStartWorkLeasesOf(socket);
+    let acquireState: 'not-started' | 'pending' | 'acquired' | 'rejected' = 'not-started';
+    let renewTimer: ReturnType<typeof setInterval> | null = null;
+    let renewRunning = false;
+    let released = false;
+    let socketClosed = false;
+    let workRunning = false;
+    let releasePromise: Promise<void> | null = null;
+    let expiresAtMs = 0;
+    const releaseSemaphore = (): Promise<void> => {
+      if (acquireState === 'not-started' || acquireState === 'rejected') {
+        return Promise.resolve();
+      }
+      // Pending Redis acquire/renew commands were issued first on the same
+      // client. Queueing one token-scoped release now fences their late
+      // execution without requiring their promises to settle.
+      releasePromise ??= admission.releaseWatchStart(leaseId);
+      return releasePromise;
+    };
+    const workLease: WatchStartWorkLease = {
+      async disconnect(): Promise<void> {
+        socketClosed = true;
+        // Once provider-facing work has begun, its semaphore seat is the
+        // enforceable accounting. Keep it renewed until the handler settles;
+        // before that boundary, token-scoped release safely fences acquisition.
+        if (workRunning) return;
+        await workLease.release();
+      },
+      async release(): Promise<void> {
+        if (!released) {
+          released = true;
+          if (renewTimer) clearInterval(renewTimer);
+          renewTimer = null;
+          socketWorkLeases.delete(workLease);
+          gatewayWatchStartWorkLeases.delete(workLease);
+        }
+        await releaseSemaphore();
+      },
+    };
+    // Disconnect owns in-flight provider work from this point onward. The set
+    // is bounded by REALTIME_MAX_PENDING_WATCH_STARTS_PER_SOCKET (and live ops
+    // are serialized), so hostile clients cannot grow socket-owned cleanup.
+    socketWorkLeases.add(workLease);
+    gatewayWatchStartWorkLeases.add(workLease);
+    try {
+      if (socketClosed || socket.disconnected) {
+        respondError(ack, 'GONE');
+        return;
+      }
+      const acquireStartedAt = admissionNow();
+      expiresAtMs = acquireStartedAt + admissionLeaseTtlMs;
+      acquireState = 'pending';
+      const acquired = await admission.acquireWatchStart(leaseId);
+      acquireState = acquired ? 'acquired' : 'rejected';
+      if (released) {
+        await releaseSemaphore();
+        respondError(ack, 'GONE');
+        return;
+      }
+      if (!acquired) {
+        respondError(ack, 'LIVE_WORK_BUSY');
+        return;
+      }
+      if (admissionNow() >= expiresAtMs - admissionDeadlineSlackMs) {
+        await workLease.release();
+        respondError(ack, 'UNAVAILABLE');
+        return;
+      }
+      if (socketClosed || socket.disconnected) {
+        respondError(ack, 'GONE');
+        return;
+      }
+      renewTimer = setInterval(() => {
+        if (released || renewRunning) return;
+        if ((socketClosed || socket.disconnected) && !workRunning) {
+          void workLease.release().catch((err) => {
+            logger.warn({ err, userId: principal.userId }, 'live work lease release failed');
+          });
+          return;
+        }
+        renewRunning = true;
+        void renewBeforeDeadline(expiresAtMs, () => admission.renewWatchStart(leaseId))
+          .then((renewal) => {
+            if (released) return;
+            if ((socketClosed || socket.disconnected) && !workRunning) {
+              void workLease.release().catch((err) => {
+                logger.warn({ err, userId: principal.userId }, 'live work lease release failed');
+              });
+              return;
+            }
+            if (!renewal.value) {
+              void workLease.release().catch((err) => {
+                logger.warn(
+                  { err, userId: principal.userId },
+                  'live work lease expiry release failed',
+                );
+              });
+              if (!socket.disconnected) socket.disconnect(true);
+              return;
+            }
+            expiresAtMs = renewal.expiresAtMs;
+          })
+          .catch((err) => {
+            logger.warn({ err, userId: principal.userId }, 'live work lease renewal failed');
+            void workLease.release().catch((releaseErr) => {
+              logger.warn(
+                { err: releaseErr, userId: principal.userId },
+                'live work lease expiry release failed',
+              );
+            });
+            if (!socket.disconnected) socket.disconnect(true);
+          })
+          .finally(() => {
+            renewRunning = false;
+          });
+      }, admissionRenewIntervalMs);
+      renewTimer.unref?.();
+      workRunning = true;
+      await handleLiveWatch(socket, principal, payload, ack);
+    } catch (err) {
+      logger.warn({ err, userId: principal.userId }, 'live watch work admission failed');
+      respondError(ack, 'UNAVAILABLE');
+    } finally {
+      workRunning = false;
+      await workLease.release().catch((err) => {
+        logger.warn({ err, userId: principal.userId }, 'live work lease release failed');
+      });
+    }
   }
 
   /**
@@ -502,35 +1056,113 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       return;
     }
     const { assetId, window } = parsed.data;
-    // No requested rate ⇒ undefined, so the live-mode service's configured
-    // default applies (contract {@link DEFAULT_LIVE_RATE} in production).
-    const rateMs = parsed.data.rate === undefined ? undefined : LIVE_RATE_MS[parsed.data.rate];
+    // Wire-compatible 1 s / 2 s values are clamped to the documented 5 s
+    // provider floor. Omitted rates still use the service's configured default
+    // (10 s in production; deliberately tiny in integration tests).
+    const rateMs =
+      parsed.data.rate === undefined
+        ? undefined
+        : Math.max(LIVE_RATE_MS[parsed.data.rate], LIVE_MIN_POLL_INTERVAL_MS);
     const watched = liveAssetsOf(socket);
     let entry = watched.get(assetId);
+    let startedHere = false;
     if (!entry) {
+      if (watched.size >= REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET) {
+        respond({ ok: false, error: 'SOCKET_WATCH_LIMIT' });
+        return;
+      }
       const ref = await deps.resolveWatchableAsset(principal.userId, assetId).catch(() => null);
       if (!ref) {
         // Missing and someone-else's-custom look identical (§10). Fails closed.
         respond({ ok: false, error: 'NOT_FOUND' });
         return;
       }
+      const leaseId = randomUUID();
+      const leaseExpiresAtMs = admissionNow() + admissionLeaseTtlMs;
+      let admitted;
+      try {
+        admitted = await admission.acquireWatch({
+          leaseId,
+          userId: principal.userId,
+          assetId,
+        });
+      } catch (err) {
+        logger.warn({ err, userId: principal.userId, assetId }, 'live watch admission failed');
+        respond({ ok: false, error: 'UNAVAILABLE' });
+        return;
+      }
+      if (!admitted.ok) {
+        respond({ ok: false, error: admitted.error });
+        return;
+      }
+      if (admissionNow() >= leaseExpiresAtMs - admissionDeadlineSlackMs) {
+        await admission
+          .releaseWatch({ leaseId, userId: principal.userId, assetId })
+          .catch(() => undefined);
+        respond({ ok: false, error: 'UNAVAILABLE' });
+        return;
+      }
       if (socket.disconnected) {
-        // The socket vanished during the resolve: registering now would leave a
-        // watch the disconnect cleanup (already queued behind this op) has to
-        // undo, and the room join would outlive the adapter's own cleanup.
+        await admission
+          .releaseWatch({ leaseId, userId: principal.userId, assetId })
+          .catch(() => undefined);
         respond({ ok: false, error: 'GONE' });
         return;
       }
-      liveMode.watch(assetId, ref, rateMs);
-      entry = { ref, rateMs };
+      try {
+        if (!liveMode.watch(assetId, ref, rateMs, admitted.sharedGlobalAsset)) {
+          await admission
+            .releaseWatch({ leaseId, userId: principal.userId, assetId })
+            .catch(() => undefined);
+          respond({ ok: false, error: 'LIVE_START_FAILED' });
+          return;
+        }
+      } catch (err) {
+        await admission
+          .releaseWatch({ leaseId, userId: principal.userId, assetId })
+          .catch(() => undefined);
+        logger.warn({ err, userId: principal.userId, assetId }, 'live loop start failed');
+        respond({ ok: false, error: 'LIVE_START_FAILED' });
+        return;
+      }
+      entry = {
+        ref,
+        rateMs,
+        leaseId,
+        userId: principal.userId,
+        expiresAtMs: leaseExpiresAtMs,
+      };
       watched.set(assetId, entry);
-      await socket.join(assetRoom(assetId));
+      startedHere = true;
+      try {
+        await socket.join(assetRoom(assetId));
+      } catch (err) {
+        await releaseLiveWatch(socket, assetId, entry, false);
+        logger.warn({ err, userId: principal.userId, assetId }, 'live room join failed');
+        respond({ ok: false, error: 'LIVE_START_FAILED' });
+        return;
+      }
     } else if (entry.rateMs !== rateMs) {
-      liveMode.watch(assetId, entry.ref, rateMs);
+      if (!liveMode.watch(assetId, entry.ref, rateMs)) {
+        respond({ ok: false, error: 'LIVE_START_FAILED' });
+        return;
+      }
       liveMode.unwatch(assetId, entry.rateMs);
       entry.rateMs = rateMs;
     }
-    const frames = await liveMode.backfill(assetId, entry.ref, window);
+    let frames: Awaited<ReturnType<LiveModeService['backfill']>>;
+    try {
+      frames = await liveMode.backfill(assetId, entry.ref, window);
+    } catch (err) {
+      // A first watch is transactional through backfill: it cannot leave a
+      // provider loop or Redis capacity behind when startup fails.
+      if (startedHere && watched.get(assetId) === entry) {
+        await releaseLiveWatch(socket, assetId, entry, true);
+      }
+      logger.warn({ err, userId: principal.userId, assetId }, 'live backfill failed');
+      respond({ ok: false, error: 'LIVE_START_FAILED' });
+      return;
+    }
     // The oldest frame is the earliest instant the backfill honestly covers
     // (§13.5 V5-P1 §5): when the seed reaches the window start it is ~now−window,
     // when history is genuinely short (new listing, market just opened) it is
@@ -590,7 +1222,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     held.clear();
   }
 
-  async function handleLiveUnwatch(socket: Socket, payload: unknown, ack: unknown): Promise<void> {
+  function acknowledgeLiveUnwatch(payload: unknown, ack: unknown): void {
     const respond = (result: RealtimeRoomAck): void => {
       if (typeof ack === 'function') (ack as (result: RealtimeRoomAck) => void)(result);
     };
@@ -598,14 +1230,6 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     if (!parsed.success) {
       respond({ ok: false, error: 'BAD_REQUEST' });
       return;
-    }
-    const { assetId } = parsed.data;
-    // Idempotent: only a held watch releases its registration (and room seat).
-    const entry = liveAssetsOf(socket).get(assetId);
-    if (entry) {
-      liveAssetsOf(socket).delete(assetId);
-      deps.liveMode?.unwatch(assetId, entry.rateMs);
-      await socket.leave(assetRoom(assetId));
     }
     respond({ ok: true });
   }
@@ -858,6 +1482,53 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     );
   }
 
+  /**
+   * Provider polling has one Redis-elected owner, but Socket.IO rooms remain
+   * process-local. Relay the owner's frames to every gateway and use the same
+   * dedicated subscriber to wake followers after a graceful owner release.
+   */
+  async function subscribeLiveChannels(server: SocketIOServer): Promise<void> {
+    if (!deps.liveMode) return;
+    const subscriber = deps.redis.duplicate();
+    const onMessage = (channel: string, raw: string): void => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        logger.warn({ channel }, 'realtime live channel dropped malformed JSON');
+        return;
+      }
+      if (channel === REALTIME_LIVE_FANOUT_CHANNEL) {
+        if (typeof parsed !== 'object' || parsed === null) return;
+        const envelope = parsed as { sourceId?: unknown; frame?: unknown };
+        if (envelope.sourceId === gatewayInstanceId) return;
+        const frame = realtimeLiveFrameSchema.safeParse(envelope.frame);
+        if (!frame.success) return;
+        server.to(assetRoom(frame.data.assetId)).emit(REALTIME_SERVER_EVENTS.liveFrame, frame.data);
+        return;
+      }
+      if (channel === LIVE_LOOP_COORDINATION_CHANNEL) {
+        const message = realtimeLiveUnwatchRequestSchema.safeParse(parsed);
+        if (message.success) deps.liveMode?.reconcile(message.data.assetId);
+      }
+    };
+    subscriber.on('message', onMessage);
+    try {
+      await subscriber.subscribe(REALTIME_LIVE_FANOUT_CHANNEL, LIVE_LOOP_COORDINATION_CHANNEL);
+    } catch (err) {
+      subscriber.off('message', onMessage);
+      await subscriber.quit().catch(() => undefined);
+      throw err;
+    }
+    unsubscribers.push(async () => {
+      subscriber.off('message', onMessage);
+      await subscriber
+        .unsubscribe(REALTIME_LIVE_FANOUT_CHANNEL, LIVE_LOOP_COORDINATION_CHANNEL)
+        .catch(() => undefined);
+      await subscriber.quit().catch(() => undefined);
+    });
+  }
+
   return {
     async attach(server: HttpServer): Promise<void> {
       if (!config.realtime.enabled || io) return;
@@ -874,40 +1545,113 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         // /ws): same credentialed allowlist as the API (§4.6, §10).
         cors: { origin: config.corsOrigins, credentials: true },
       });
+      await subscribeLiveChannels(io);
 
       io.use((socket, next) => {
-        // Runtime kill-switch (§13.5 V5-P2 arc (c)): with `realtime` flipped OFF
-        // the gateway refuses new sockets on the very next handshake — no
-        // redeploy. The SPA also stops dialing once it reads the advertised flag;
-        // this is the server-side backstop for a stale client or a direct dial.
-        featureEnabled('realtime')
-          .then((on) => {
-            if (!on) {
-              next(new Error('UNAVAILABLE'));
-              return undefined;
-            }
-            return authenticate(socket).then((principal) => {
-              if (!principal) {
-                next(new Error('UNAUTHORIZED'));
-                return;
-              }
-              socket.data.principal = principal;
-              next();
-            });
-          })
-          .catch((err) => {
-            logger.warn({ err }, 'realtime handshake auth failed');
-            next(new Error('UNAUTHORIZED'));
+        const fence: PreConnectCloseFence = {
+          closed: socket.conn.readyState === 'closed',
+          admitted: false,
+          onClose: () => undefined,
+        };
+        fence.onClose = () => {
+          fence.closed = true;
+          // If close wins while acquireConnection is in flight, the continuation
+          // below releases after that atomic operation settles. After admission,
+          // this path owns cleanup until the namespace disconnect listener is
+          // installed by the connection handler.
+          if (fence.admitted) trackSocketCleanup(releaseConnectionLease(socket));
+        };
+        socket.data.preConnectCloseFence = fence;
+        socket.conn.once('close', fence.onClose);
+        void (async () => {
+          // Runtime kill-switch (§13.5 V5-P2 arc (c)): with `realtime` flipped
+          // OFF the gateway refuses the very next handshake.
+          if (!(await featureEnabled('realtime'))) {
+            disarmPreConnectCloseFence(socket);
+            next(handshakeError('UNAVAILABLE'));
+            return;
+          }
+          const principal = await authenticate(socket);
+          if (!principal) {
+            disarmPreConnectCloseFence(socket);
+            next(handshakeError('UNAUTHORIZED'));
+            return;
+          }
+          const lease: ConnectionLease = {
+            leaseId: randomUUID(),
+            userId: principal.userId,
+            bearerCredentialId: bearerAdmissionCredential(principal),
+            expiresAtMs: admissionNow() + admissionLeaseTtlMs,
+            released: false,
+          };
+          // Publish the lease to the close fence before the Redis await. The
+          // fence only releases after `admitted` flips, so close-before-settle
+          // cannot race a premature ZREM against a later successful ZADD.
+          socket.data.connectionLease = lease;
+          const decision = await admission.acquireConnection(lease);
+          if (!decision.ok) {
+            lease.released = true;
+            disarmPreConnectCloseFence(socket);
+            next(handshakeError(decision.error));
+            return;
+          }
+          if (admissionNow() >= lease.expiresAtMs - admissionDeadlineSlackMs) {
+            await releaseConnectionLease(socket);
+            disarmPreConnectCloseFence(socket);
+            next(handshakeError('UNAVAILABLE'));
+            return;
+          }
+          fence.admitted = true;
+          socket.data.principal = principal;
+          if (fence.closed || socket.conn.readyState === 'closed') {
+            await releaseConnectionLease(socket);
+            disarmPreConnectCloseFence(socket);
+            next(handshakeError('UNAVAILABLE'));
+            return;
+          }
+          next();
+        })().catch((err) => {
+          logger.warn({ err }, 'realtime handshake auth/admission failed');
+          void releaseConnectionLease(socket).finally(() => {
+            disarmPreConnectCloseFence(socket);
+            next(handshakeError('UNAVAILABLE'));
           });
+        });
       });
 
       io.on('connection', (socket) => {
         const principal = principalOf(socket);
         if (!principal) {
+          trackSocketCleanup(releaseConnectionLease(socket));
           socket.disconnect(true);
           return;
         }
         const { userId } = principal;
+        // Install namespace cleanup before disarming the Engine.IO close fence:
+        // every instant after admission is therefore owned by one release path.
+        socket.once('disconnect', () => {
+          clearPrincipalExpiry(socket);
+          stopAdmissionHeartbeat(socket);
+          const cleanup = Promise.allSettled([
+            clearPresence(socket, userId),
+            releaseConnectionLease(socket),
+            disconnectWatchStartWorkLeases(socket),
+            (async () => {
+              for (const [assetId, entry] of [...liveAssetsOf(socket)]) {
+                await releaseLiveWatch(socket, assetId, entry, false);
+              }
+            })(),
+          ]).then((results) => {
+            for (const result of results) {
+              if (result.status === 'rejected') {
+                logger.warn({ err: result.reason, userId }, 'realtime disconnect cleanup failed');
+              }
+            }
+          });
+          trackSocketCleanup(cleanup);
+        });
+        disarmPreConnectCloseFence(socket);
+        startAdmissionHeartbeat(socket);
         void joinPrincipalRooms(socket, principal).catch((err) => {
           logger.warn({ err, userId, kind: principal.kind }, 'realtime principal room join failed');
           socket.disconnect(true);
@@ -915,52 +1659,106 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         schedulePrincipalExpiry(socket, principal);
 
         socket.on(REALTIME_CLIENT_EVENTS.roomJoin, (payload: unknown, ack: unknown) => {
-          void handleRoomJoin(socket, principal, payload, ack).catch((err) => {
+          void (async () => {
+            if (!(await admitClientCommand(socket, principal, ack))) return;
+            await handleRoomJoin(socket, principal, payload, ack);
+          })().catch((err) => {
             logger.warn({ err, userId }, 'realtime room join failed');
+            respondError(ack, 'UNAVAILABLE');
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.roomLeave, (payload: unknown, ack: unknown) => {
-          void handleRoomLeave(socket, payload, ack).catch((err) => {
+          void (async () => {
+            if (!(await admitClientCommand(socket, principal, ack))) return;
+            await handleRoomLeave(socket, payload, ack);
+          })().catch((err) => {
             logger.warn({ err, userId }, 'realtime room leave failed');
+            respondError(ack, 'UNAVAILABLE');
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.liveWatch, (payload: unknown, ack: unknown) => {
-          void enqueueLiveOp(socket, () => handleLiveWatch(socket, principal, payload, ack)).catch(
-            (err) => {
-              logger.warn({ err, userId }, 'live watch failed');
-            },
-          );
+          if (!admitSocketCommand(socket, ack)) return;
+          const pending = (socket.data.pendingWatchStarts as number | undefined) ?? 0;
+          if (pending >= REALTIME_MAX_PENDING_WATCH_STARTS_PER_SOCKET) {
+            respondError(ack, 'LIVE_WORK_BUSY');
+            return;
+          }
+          socket.data.pendingWatchStarts = pending + 1;
+          const parsedWatch = realtimeLiveWatchRequestSchema.safeParse(payload);
+          const pendingWatch = parsedWatch.success
+            ? {
+                assetId: parsedWatch.data.assetId,
+                generation: beginPendingLiveWatch(socket, parsedWatch.data.assetId),
+              }
+            : null;
+          const userAdmission = admitUserCommand(principal, ack);
+          void enqueueLiveOp(socket, async () => {
+            try {
+              if (!(await userAdmission)) return;
+              await handleBoundedLiveWatch(socket, principal, payload, ack);
+            } finally {
+              try {
+                if (pendingWatch) {
+                  await releaseCanceledLiveWatch(
+                    socket,
+                    pendingWatch.assetId,
+                    pendingWatch.generation,
+                  );
+                }
+              } finally {
+                if (pendingWatch) finishPendingLiveWatch(socket, pendingWatch.assetId);
+                socket.data.pendingWatchStarts = Math.max(
+                  0,
+                  ((socket.data.pendingWatchStarts as number | undefined) ?? 1) - 1,
+                );
+              }
+            }
+          }).catch((err) => {
+            logger.warn({ err, userId }, 'live watch failed');
+            respondError(ack, 'UNAVAILABLE');
+          });
         });
         socket.on(REALTIME_CLIENT_EVENTS.liveUnwatch, (payload: unknown, ack: unknown) => {
-          void enqueueLiveOp(socket, () => handleLiveUnwatch(socket, payload, ack)).catch((err) => {
+          const parsed = realtimeLiveUnwatchRequestSchema.safeParse(payload);
+          const cleanupIntent =
+            parsed.success && markLiveCleanupIntent(socket, parsed.data.assetId);
+          const socketAdmitted = admitSocketCommand(socket, ack);
+          // A cleanup frame is charged and may still report RATE_LIMITED, but
+          // admission never controls release. Every eligible cleanup takes the
+          // same bounded per-asset path outside the serialized watch queue.
+          if (cleanupIntent && parsed.success) {
+            scheduleLiveCleanup(socket, parsed.data.assetId);
+          }
+          if (!socketAdmitted) {
+            return;
+          }
+          void (async () => {
+            if (!(await admitUserCommand(principal, ack))) return;
+            // Cleanup was fixed to event-time state above. A delayed Redis
+            // bucket decision must never release a newer watch that arrived
+            // after this unwatch frame.
+            acknowledgeLiveUnwatch(payload, ack);
+          })().catch((err) => {
             logger.warn({ err, userId }, 'live unwatch failed');
+            respondError(ack, 'UNAVAILABLE');
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.presenceEnter, (payload: unknown, ack: unknown) => {
-          void handlePresence(socket, principal, payload, ack, 'enter').catch((err) => {
+          void (async () => {
+            if (!(await admitClientCommand(socket, principal, ack))) return;
+            await handlePresence(socket, principal, payload, ack, 'enter');
+          })().catch((err) => {
             logger.warn({ err, userId }, 'presence enter failed');
+            respondError(ack, 'UNAVAILABLE');
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.presenceLeave, (payload: unknown, ack: unknown) => {
-          void handlePresence(socket, principal, payload, ack, 'leave').catch((err) => {
+          void (async () => {
+            if (!(await admitClientCommand(socket, principal, ack))) return;
+            await handlePresence(socket, principal, payload, ack, 'leave');
+          })().catch((err) => {
             logger.warn({ err, userId }, 'presence leave failed');
-          });
-        });
-        // A vanished socket must release its live watches, or a closed tab
-        // would keep an upstream loop hot forever (§6.3 auto-stop). Queued so
-        // it runs AFTER any in-flight watch registers what it must release.
-        // Presence claims clear too — a closed tab must never keep suppressing
-        // notifications for the rest of the TTL (#368).
-        socket.on('disconnect', () => {
-          clearPrincipalExpiry(socket);
-          void clearPresence(socket, userId).catch((err) => {
-            logger.warn({ err, userId }, 'presence cleanup failed');
-          });
-          void enqueueLiveOp(socket, async () => {
-            for (const [assetId, entry] of liveAssetsOf(socket)) {
-              deps.liveMode?.unwatch(assetId, entry.rateMs);
-            }
-            liveAssetsOf(socket).clear();
+            respondError(ack, 'UNAVAILABLE');
           });
         });
       });
@@ -973,6 +1771,17 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         const server = io;
         const offFrames = deps.liveMode.onFrame((frame) => {
           server.to(assetRoom(frame.assetId)).emit(REALTIME_SERVER_EVENTS.liveFrame, frame);
+          void deps.redis
+            .publish(
+              REALTIME_LIVE_FANOUT_CHANNEL,
+              JSON.stringify({ sourceId: gatewayInstanceId, frame }),
+            )
+            .catch((err) => {
+              logger.warn(
+                { err, assetId: frame.assetId },
+                'live frame cross-process fan-out failed',
+              );
+            });
         });
         unsubscribers.push(async () => offFrames());
       }
@@ -997,6 +1806,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       // Force-disconnect live websockets first — they are not "idle" HTTP
       // connections, so a plain server.close() would wait on them forever.
       server.disconnectSockets(true);
+      await Promise.allSettled([releaseAllWatchStartWorkLeases(), ...socketCleanupTasks]);
       await new Promise<void>((resolve) => {
         // Also closes the underlying HTTP server; the bootstrap's own
         // server.close() tolerates an already-closed server.

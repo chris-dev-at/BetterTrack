@@ -1,4 +1,4 @@
-import type { HistoryRange, VaultDocumentV1 } from '@bettertrack/contracts';
+import type { HistoryRange, VaultDocument } from '@bettertrack/contracts';
 import {
   cashBalancesBySource,
   externalCashFlowsForTwr,
@@ -331,7 +331,7 @@ async function derive(
 }
 
 async function loadMarketInputs(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   model: ClientPortfolioModel,
   today: string,
   market: MarketDataSource,

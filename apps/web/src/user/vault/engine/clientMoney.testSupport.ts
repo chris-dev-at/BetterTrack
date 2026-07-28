@@ -2,6 +2,7 @@ import type {
   CustomTaxParams,
   TaxCountry,
   TaxMode,
+  VaultDocument,
   VaultDocumentV1,
   VaultEnvelopeHeader,
 } from '@bettertrack/contracts';
@@ -166,19 +167,22 @@ export async function decryptClientMoneyFixture(): Promise<{
 }> {
   const envelope = Uint8Array.from(Buffer.from(fixture.envelopeBase64, 'base64'));
   const vaultKey = Uint8Array.from(Buffer.from(fixture.vaultKeyBase64, 'base64'));
-  const decrypted = await decryptVaultDocument(envelope, vaultKey);
-  return { ...decrypted, envelope, vaultKey };
+  const { document, header } = await decryptVaultDocument(envelope, vaultKey);
+  if (document.schemaVersion !== 1) {
+    throw new Error('The client-money fixture must decrypt to a v1 vault document.');
+  }
+  return { document, header, envelope, vaultKey };
 }
 
 export interface MutableTestSync extends VaultSyncEngine {
   readonly mutationCount: number;
-  setDocument(document: VaultDocumentV1, bumpVersion?: boolean, writeId?: string): void;
+  setDocument(document: VaultDocument, bumpVersion?: boolean, writeId?: string): void;
   setStatus(status: 'synced' | 'conflict' | 'unresolved'): void;
   setLocked(): void;
 }
 
 export function createMutableTestSync(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   header: VaultEnvelopeHeader,
   envelope = new Uint8Array(),
 ): MutableTestSync {
@@ -189,7 +193,7 @@ export function createMutableTestSync(
   let state = syncedState(document);
   let tail: Promise<void> = Promise.resolve();
 
-  function syncedState(nextDocument: VaultDocumentV1): VaultSyncState {
+  function syncedState(nextDocument: VaultDocument): VaultSyncState {
     return {
       status: 'synced',
       active: {

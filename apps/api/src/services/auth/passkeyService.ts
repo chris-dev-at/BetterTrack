@@ -477,7 +477,7 @@ export function createPasskeyService(deps: PasskeyServiceDeps): PasskeyService {
       // is strong auth on its own, so no 2FA challenge is raised (§16). Mints the
       // session, stamps last-login, and audits LoginSuccess with `meta.via`.
       const persistent = body.staySignedIn ?? true;
-      const sessionId = await sessions.create(user.id, persistent);
+      const sessionId = await sessions.create(user.id, user.securityGeneration, persistent);
       await userRepo.setLastLogin(user.id, now);
       await audit.record({
         actorId: user.id,

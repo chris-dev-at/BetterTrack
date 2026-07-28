@@ -1,7 +1,7 @@
 import {
   VAULT_ENTITY_ROW_SCHEMAS,
   type TaxExportLocale,
-  type VaultDocumentV1,
+  type VaultDocument,
   type VaultEntity,
   type VaultEntityKind,
 } from '@bettertrack/contracts';
@@ -182,7 +182,7 @@ function zipArchive(files: Record<string, Uint8Array>, signal?: AbortSignal): Pr
   });
 }
 
-function collectEntities(document: VaultDocumentV1): Record<string, unknown[]> {
+function collectEntities(document: VaultDocument): Record<string, unknown[]> {
   const result: Record<string, unknown[]> = {};
   for (const [kind, name] of Object.entries(EXPORT_KINDS) as Array<
     [keyof typeof EXPORT_KINDS, string]
@@ -201,7 +201,7 @@ function exportRow(kind: keyof typeof EXPORT_KINDS, entity: VaultEntity): Record
   return { id: entity.id, ...parsed };
 }
 
-function buildCsv(document: VaultDocumentV1): {
+function buildCsv(document: VaultDocument): {
   transactions: string;
   cashMovements: string;
   holdings: string;

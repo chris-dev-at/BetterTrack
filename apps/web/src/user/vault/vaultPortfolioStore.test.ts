@@ -22,7 +22,7 @@ import {
   vaultStrictDocumentV1Schema,
   type PortfolioAsset,
   type PortfolioSummary,
-  type VaultDocumentV1,
+  type VaultDocument,
   type VaultEntity,
   type VaultEnvelopeHeader,
 } from '@bettertrack/contracts';
@@ -161,6 +161,27 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       sourceBalanceEur: 65,
       balanceEur: 65,
     });
+  });
+
+  it('floors summed cash response balances to cents without changing stored movements', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    await store.depositCash(PORTFOLIO_ID, { amountEur: 0.1, sourceId: CASH_SOURCE_ID });
+    const response = await store.depositCash(PORTFOLIO_ID, {
+      amountEur: 0.2,
+      sourceId: CASH_SOURCE_ID,
+    });
+
+    expect(response.sourceBalanceEur).toBe(0.3);
+    expect(response.balanceEur).toBe(0.3);
+    expect(engine.state.active?.document.entities.cashMovement).toMatchObject([
+      { data: { amountEur: '0.1' } },
+      { data: { amountEur: '0.2' } },
+    ]);
   });
 
   it('tombstones a deleted portfolio and all of its portfolio-scoped children', async () => {
@@ -499,7 +520,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     it.each([
       [
         'an inherited manual amount default',
-        (document: VaultDocumentV1) => {
+        (document: VaultDocument) => {
           document.entities.taxSetting = [
             vaultEntity(GENERATED_IDS[6], {
               userId: USER_ID,
@@ -515,7 +536,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       ],
       [
         'a portfolio manual rate default',
-        (document: VaultDocumentV1) => {
+        (document: VaultDocument) => {
           document.entities.portfolioSetting = [
             vaultEntity(GENERATED_IDS[6], {
               portfolioId: PORTFOLIO_ID,
@@ -1206,6 +1227,122 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     );
   });
 
+  it('preserves an unobserved cash edit that races a rejected deletion compensation', async () => {
+    const transactionId = GENERATED_IDS[0];
+    const depositId = GENERATED_IDS[1];
+    const buyMovementId = GENERATED_IDS[2];
+    const document = initialDocument();
+    document.entities.transaction = [
+      transactionEntity(transactionId, {
+        side: 'buy',
+        quantity: 1,
+        price: 10,
+        executedAt: '2026-07-25T09:00:00.000Z',
+      }),
+    ];
+    document.entities.cashMovement = [
+      vaultEntity(depositId, {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'deposit',
+        amountEur: '20',
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-25T08:00:00.000Z',
+        note: null,
+        source: 'manual',
+        createdAt: '2026-07-25T08:00:00.000Z',
+      }),
+      vaultEntity(buyMovementId, {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'buy',
+        amountEur: '-10',
+        transactionId,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-25T09:00:00.000Z',
+        note: null,
+        source: 'manual',
+        createdAt: '2026-07-25T09:00:00.000Z',
+      }),
+    ];
+    const { first, second, remote } = await createConcurrentSyncEngines(
+      document,
+      'portfolio-store-compensation-cas-race',
+    );
+    const editingStore = createVaultPortfolioStore(first, { now: () => COMPETING_AT });
+    const deletingStore = createVaultPortfolioStore(second, { now: () => AT });
+
+    await expect(
+      editingStore.updateTransaction(PORTFOLIO_ID, transactionId, {
+        note: 'Durable transaction edit',
+      }),
+    ).resolves.toMatchObject({ note: 'Durable transaction edit' });
+
+    let subjectWriteAttempts = 0;
+    let interleaved = false;
+    remote.setBeforeWrite(async (envelope) => {
+      const header = vaultEnvelopeHeaderSchema.parse(decodeVaultEnvelope(envelope).header);
+      if (header.deviceId !== REMOTE_DEVICE_ID) return;
+      subjectWriteAttempts += 1;
+      if (subjectWriteAttempts !== 2) return;
+
+      remote.setBeforeWrite(null);
+      interleaved = true;
+      await expect(
+        first.mutate(({ document: current }) => ({
+          ...current,
+          entities: {
+            ...current.entities,
+            cashMovement: (current.entities.cashMovement ?? []).map((entity) =>
+              entity.id === buyMovementId
+                ? {
+                    ...entity,
+                    rev: entity.rev + 1,
+                    editedAt: COMPETING_AT,
+                    editedBy: first.deviceId,
+                    data: { ...entity.data, note: 'Concurrent cash edit' },
+                  }
+                : entity,
+            ),
+          },
+        })),
+      ).resolves.toMatchObject({ status: 'synced' });
+    });
+
+    await expect(
+      deletingStore.deleteTransaction(PORTFOLIO_ID, transactionId),
+    ).rejects.toMatchObject({
+      code: 'VAULT_DATA_UNAVAILABLE',
+    });
+
+    expect(interleaved).toBe(true);
+    expect(subjectWriteAttempts).toBe(2);
+    expect(
+      second.state.active?.document.entities.cashMovement?.find(
+        (movement) => movement.id === buyMovementId,
+      ),
+    ).toMatchObject({
+      deletedAt: null,
+      rev: 2,
+      data: expect.objectContaining({ note: 'Concurrent cash edit' }),
+    });
+
+    await first.reconnect();
+    expect(first.state.active?.document.entities.transaction).toEqual(
+      second.state.active?.document.entities.transaction,
+    );
+    expect(first.state.active?.document.entities.cashMovement).toEqual(
+      second.state.active?.document.entities.cashMovement,
+    );
+  });
+
   it('keeps independent mutation groups separate through a second CAS conflict', async () => {
     const transactionId = GENERATED_IDS[0];
     const secondaryId = GENERATED_IDS[1];
@@ -1588,7 +1725,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       side: 'buy',
       executedAt: 'not-an-instant',
     });
-    const local: VaultDocumentV1 = {
+    const local: VaultDocument = {
       ...remote,
       entities: {
         ...remote.entities,
@@ -1847,7 +1984,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
   });
 });
 
-function initialDocument(): VaultDocumentV1 {
+function initialDocument(): VaultDocument {
   return {
     schemaVersion: 1,
     entities: {
@@ -1890,7 +2027,7 @@ function initialDocument(): VaultDocumentV1 {
   };
 }
 
-function strictDocumentFrom(document: VaultDocumentV1) {
+function strictDocumentFrom(document: VaultDocument) {
   return vaultStrictDocumentV1Schema.parse({
     schemaVersion: document.schemaVersion,
     entities: Object.entries(document.entities).flatMap(([kind, entities]) =>
@@ -1902,8 +2039,8 @@ function strictDocumentFrom(document: VaultDocumentV1) {
 
 function documentFromStrictDocument(
   strict: ReturnType<typeof vaultStrictDocumentV1Schema.parse>,
-): VaultDocumentV1 {
-  const entities: VaultDocumentV1['entities'] = {};
+): VaultDocument {
+  const entities: VaultDocument['entities'] = {};
   for (const strictEntity of strict.entities) {
     const { kind, ...entity } = strictEntity;
     entities[kind] = [...(entities[kind] ?? []), entity];
@@ -1956,7 +2093,7 @@ function fixtureDecimal(value: unknown): unknown {
 }
 
 function configureEffectiveEngineTaxMode(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   mode: 'country_specific' | 'custom',
 ): void {
   if (mode === 'country_specific') {
@@ -1994,7 +2131,7 @@ function configureEffectiveEngineTaxMode(
   ];
 }
 
-function createMutableEngine(document: VaultDocumentV1, commit = true): VaultSyncEngine {
+function createMutableEngine(document: VaultDocument, commit = true): VaultSyncEngine {
   const home = inertHome();
   let version = 1;
   let state: VaultSyncState = {
@@ -2086,7 +2223,7 @@ function fullHeader(version: number): VaultEnvelopeHeader {
   };
 }
 
-async function encrypted(document: VaultDocumentV1, version: number): Promise<Uint8Array> {
+async function encrypted(document: VaultDocument, version: number): Promise<Uint8Array> {
   return (
     await encryptVaultDocument({
       document,
@@ -2198,7 +2335,7 @@ function memoryRemote(initial: Uint8Array, initialVersion: number): MemoryRemote
 }
 
 async function createConcurrentSyncEngines(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   scope: string,
 ): Promise<{
   first: VaultSyncEngine;

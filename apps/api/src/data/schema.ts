@@ -75,6 +75,11 @@ export const users = pgTable(
     hasUsablePassword: boolean('has_usable_password').notNull().default(true),
     role: userRoleEnum('role').notNull().default('user'),
     status: userStatusEnum('status').notNull().default('active'),
+    // Server-internal optimistic fence for authority-changing account state
+    // (#888). Every cookie session is bound to the exact generation at issue;
+    // role/password/factor transitions increment it atomically with their
+    // durable mutation, so Redis cleanup is only eager housekeeping.
+    securityGeneration: integer('security_generation').notNull().default(0),
     mustChangePassword: boolean('must_change_password').notNull().default(false),
     // Optional PIN gate (§6.1, §5.5): when enabled the user re-enters this
     // argon2id-hashed code to resume a session, which renews its 30-day window.
@@ -3216,6 +3221,12 @@ export const paranoidVaults = pgTable('paranoid_vaults', {
   sizeBytes: integer('size_bytes').notNull(),
   // The opaque envelope bytes. Never interpreted server-side.
   blob: bytea('blob').notNull(),
+  /**
+   * Immutable Ed25519 public verifier for the client-held retirement proof
+   * key. The private half remains inside the encrypted vault; NULL keeps
+   * legacy blobs recoverable but deliberately non-purgeable.
+   */
+  retirementProofPublicKey: text('retirement_proof_public_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -3247,6 +3258,72 @@ export const paranoidVaultHistory = pgTable(
   ],
 );
 
+/**
+ * An inactive, expiring Drive-source candidate. It is intentionally separate
+ * from `paranoid_vaults`: staging bytes never activates the server medium. A
+ * browser must read back and authenticate this exact row before the transition
+ * transaction promotes it.
+ */
+export const paranoidVaultServerCandidates = pgTable(
+  'paranoid_vault_server_candidates',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    formatVersion: integer('format_version').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    blob: bytea('blob').notNull(),
+    retirementProofPublicKey: text('retirement_proof_public_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('paranoid_vault_server_candidates_user_unique').on(t.userId),
+    index('paranoid_vault_server_candidates_expires_idx').on(t.expiresAt),
+  ],
+);
+
+/**
+ * One durable retirement set per account. Its version, public verifier and
+ * retirement timestamp bind the separate purge gate; no ciphertext lives here.
+ */
+export const paranoidVaultRetirements = pgTable('paranoid_vault_retirements', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  retiredVersion: integer('retired_version').notNull(),
+  retirementProofPublicKey: text('retirement_proof_public_key').notNull(),
+  retiredAt: timestamp('retired_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Recoverable server ciphertext after a Drive-only transition. It is separate
+ * from active history so an identical version can later be active again without
+ * weakening the retirement retention/purge boundary.
+ */
+export const paranoidVaultRetired = pgTable(
+  'paranoid_vault_retired',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    formatVersion: integer('format_version').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    blob: bytea('blob').notNull(),
+    /** Original active/history timestamp; safe history metadata only. */
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    retiredAt: timestamp('retired_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('paranoid_vault_retired_user_version_unique').on(t.userId, t.version),
+    index('paranoid_vault_retired_user_version_idx').on(t.userId, t.version),
+  ],
+);
+
 export type ParanoidVaultRow = typeof paranoidVaults.$inferSelect;
 export type NewParanoidVaultRow = typeof paranoidVaults.$inferInsert;
 /**
@@ -3268,6 +3345,12 @@ export const paranoidRehydrationReceipts = pgTable(
 
 export type ParanoidVaultHistoryRow = typeof paranoidVaultHistory.$inferSelect;
 export type NewParanoidVaultHistoryRow = typeof paranoidVaultHistory.$inferInsert;
+export type ParanoidVaultServerCandidateRow = typeof paranoidVaultServerCandidates.$inferSelect;
+export type NewParanoidVaultServerCandidateRow = typeof paranoidVaultServerCandidates.$inferInsert;
+export type ParanoidVaultRetirementRow = typeof paranoidVaultRetirements.$inferSelect;
+export type NewParanoidVaultRetirementRow = typeof paranoidVaultRetirements.$inferInsert;
+export type ParanoidVaultRetiredRow = typeof paranoidVaultRetired.$inferSelect;
+export type NewParanoidVaultRetiredRow = typeof paranoidVaultRetired.$inferInsert;
 export type ParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferSelect;
 export type NewParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferInsert;
 
@@ -3352,6 +3435,9 @@ export const schema = {
   webhookDeliveries,
   paranoidVaults,
   paranoidVaultHistory,
+  paranoidVaultServerCandidates,
+  paranoidVaultRetirements,
+  paranoidVaultRetired,
   paranoidRehydrationReceipts,
   userRoleEnum,
   userStatusEnum,

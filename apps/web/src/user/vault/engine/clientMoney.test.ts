@@ -995,7 +995,7 @@ describe('paranoid client money engine', () => {
 
     const futureDocument = {
       ...structuredClone(fixture.document),
-      schemaVersion: 2,
+      schemaVersion: 3,
     } as unknown as typeof fixture.document;
     const unsupported = await createVaultMoneyEngine(
       createMutableTestSync(futureDocument, fixture.header),

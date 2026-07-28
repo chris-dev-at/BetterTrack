@@ -7,7 +7,7 @@ import {
   type TaxMode,
   type TaxYearPosition,
   type TaxYearReportResponse,
-  type VaultDocumentV1,
+  type VaultDocument,
 } from '@bettertrack/contracts';
 import { floorCents, projectCashLedgerBySource } from '@bettertrack/domain/cashLedger';
 import { resolvePortfolioSetting } from '@bettertrack/domain/settingsScope';
@@ -653,7 +653,7 @@ function strategyForReportRow(
 }
 
 function effectiveTaxSettings(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   model: ClientPortfolioModel,
 ): EffectiveTaxSettings {
   const overrideEntity = liveEntities(document, 'portfolioSetting').find((entity) => {

@@ -1,5 +1,5 @@
 import type {
-  VaultDocumentV1,
+  VaultDocument,
   VaultEntity,
   VaultEntityKind,
   VaultEnvelopeHeader,
@@ -19,7 +19,7 @@ export interface VaultSyncCandidate {
   home: DataHome;
   envelope: Uint8Array;
   header: VaultEnvelopeHeader;
-  document: VaultDocumentV1;
+  document: VaultDocument;
 }
 
 export type VaultSyncStatus =
@@ -61,7 +61,7 @@ export interface VaultSyncEngineOptions {
 }
 
 export interface VaultMutationContext {
-  document: VaultDocumentV1;
+  document: VaultDocument;
   currentVersion: number;
 }
 
@@ -80,13 +80,15 @@ export interface VaultMutationEntityDelta {
 export interface VaultAtomicMutation {
   sequence: number;
   changes: VaultMutationEntityDelta[];
+  /** A rejected mutation already rewritten as a durable-baseline compensation. */
+  compensation?: boolean;
 }
 
 export interface VaultDocumentReconcileContext {
   /** The locally pending/in-memory branch whose changes are being considered. */
-  local: VaultDocumentV1;
+  local: VaultDocument;
   /** The already-observed durable branch that forms the reconciliation baseline. */
-  remote: VaultDocumentV1;
+  remote: VaultDocument;
   /** Complete local mutation deltas, ordered before entity-winner filtering. */
   mutations: readonly VaultAtomicMutation[];
   deviceId: string;
@@ -94,13 +96,13 @@ export interface VaultDocumentReconcileContext {
 }
 
 export interface VaultDocumentReconcileResult {
-  document: VaultDocumentV1;
+  document: VaultDocument;
   /** Rebased groups that still separate every pending operation and compensation. */
   mutations: readonly VaultAtomicMutation[];
 }
 
 export type VaultDocumentReconciler = (
-  document: VaultDocumentV1,
+  document: VaultDocument,
   context: VaultDocumentReconcileContext,
 ) => VaultDocumentReconcileResult;
 
@@ -109,7 +111,7 @@ export interface VaultSyncEngine {
   readonly state: VaultSyncState;
   start(): Promise<VaultSyncState>;
   reconnect(): Promise<VaultSyncState>;
-  mutate(mutator: (context: VaultMutationContext) => VaultDocumentV1): Promise<VaultSyncState>;
+  mutate(mutator: (context: VaultMutationContext) => VaultDocument): Promise<VaultSyncState>;
 }
 
 interface RemoteObservation {
@@ -125,6 +127,19 @@ interface CandidateValidationFailure {
 interface ReadableCandidateResult {
   candidate: VaultSyncCandidate | null;
   validationFailure?: CandidateValidationFailure;
+}
+
+interface ReconciledDocument {
+  document: VaultDocument;
+  pendingMutations: VaultAtomicMutation[];
+}
+
+type ReconcileMergedDocumentResult = ReconciledDocument | { failure: string };
+
+interface RetainedActiveCandidate {
+  candidate: VaultSyncCandidate | null;
+  activeContributed: boolean;
+  reconciliationFailure?: string;
 }
 
 /**
@@ -200,6 +215,14 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         : { candidate: null };
     const persistedLocalReadable = localCurrent ?? lastKnownGoodResult.candidate;
     const retained = await retainActiveCandidate(persistedLocalReadable, state.active);
+    if (retained.reconciliationFailure != null) {
+      const active = state.active ?? retained.candidate;
+      return surfaceReconciliationConflict(
+        active,
+        state.pending ?? active,
+        retained.reconciliationFailure,
+      );
+    }
     const localReadable = retained.candidate;
     const remoteCandidateResult = await readableCandidate(remoteResult);
     const remoteReadable = remoteCandidateResult.candidate;
@@ -281,7 +304,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   }
 
   async function mutate(
-    mutator: (context: VaultMutationContext) => VaultDocumentV1,
+    mutator: (context: VaultMutationContext) => VaultDocument,
   ): Promise<VaultSyncState> {
     const active = state.active;
     if (active == null || state.status === 'locked') {
@@ -433,6 +456,9 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       remote.document,
       reconciledAt,
     );
+    if ('failure' in reconciliation) {
+      return surfaceReconciliationConflict(localReadable, localPending, reconciliation.failure);
+    }
     const candidate = await encryptCandidate(
       reconciliation.document,
       version,
@@ -619,6 +645,9 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
         remote.document,
         reconciledAt,
       );
+      if ('failure' in reconciliation) {
+        return surfaceReconciliationConflict(pending, pending, reconciliation.failure);
+      }
       const reconciled = await encryptCandidate(
         reconciliation.document,
         merged.vaultVersion,
@@ -760,7 +789,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   async function retainActiveCandidate(
     persisted: VaultSyncCandidate | null,
     active: VaultSyncCandidate | null,
-  ): Promise<{ candidate: VaultSyncCandidate | null; activeContributed: boolean }> {
+  ): Promise<RetainedActiveCandidate> {
     if (active == null) return { candidate: persisted, activeContributed: false };
     if (persisted == null) return { candidate: active, activeContributed: true };
     if (sameWrite(persisted, active)) {
@@ -794,6 +823,13 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
       persisted.document,
       reconciledAt,
     );
+    if ('failure' in reconciliation) {
+      return {
+        candidate: active,
+        activeContributed: true,
+        reconciliationFailure: reconciliation.failure,
+      };
+    }
     pendingMutations = reconciliation.pendingMutations;
     return {
       candidate: await encryptCandidate(
@@ -806,22 +842,42 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   }
 
   function reconcileMergedDocument(
-    document: VaultDocumentV1,
-    local: VaultDocumentV1,
-    remote: VaultDocumentV1,
+    document: VaultDocument,
+    local: VaultDocument,
+    remote: VaultDocument,
     reconciledAt: string,
-  ): { document: VaultDocumentV1; pendingMutations: VaultAtomicMutation[] } {
-    const reconciliation = documentReconciler(document, {
-      local,
-      remote,
-      mutations: pendingMutations,
-      deviceId: options.deviceId,
-      reconciledAt,
-    });
-    return {
-      document: reconciliation.document,
-      pendingMutations: reconciliation.mutations.map(cloneMutation),
+  ): ReconcileMergedDocumentResult {
+    try {
+      const reconciliation = documentReconciler(document, {
+        local,
+        remote,
+        mutations: pendingMutations,
+        deviceId: options.deviceId,
+        reconciledAt,
+      });
+      return {
+        document: reconciliation.document,
+        pendingMutations: reconciliation.mutations.map(cloneMutation),
+      };
+    } catch (cause) {
+      const detail =
+        cause instanceof Error ? cause.message : 'The document reconciler failed unexpectedly.';
+      return { failure: `Vault document reconciliation failed: ${detail}` };
+    }
+  }
+
+  function surfaceReconciliationConflict(
+    active: VaultSyncCandidate | null,
+    pending: VaultSyncCandidate | null,
+    lastFailure: string,
+  ): VaultSyncState {
+    state = {
+      status: 'conflict',
+      active,
+      pending,
+      lastFailure,
     };
+    return cloneState(state);
   }
 
   function mustSurfaceUnresolvedProvenance(
@@ -937,7 +993,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   }
 
   async function encryptCandidate(
-    document: VaultDocumentV1,
+    document: VaultDocument,
     vaultVersion: number,
     baseHeader: VaultEnvelopeHeader,
   ): Promise<VaultSyncCandidate> {
@@ -963,8 +1019,8 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
 }
 
 function captureMutation(
-  before: VaultDocumentV1,
-  after: VaultDocumentV1,
+  before: VaultDocument,
+  after: VaultDocument,
   sequence: number,
 ): VaultAtomicMutation {
   const changes: VaultMutationEntityDelta[] = [];
@@ -992,6 +1048,7 @@ function cloneMutation(mutation: VaultAtomicMutation): VaultAtomicMutation {
   return {
     sequence: mutation.sequence,
     changes: mutation.changes.map((change) => ({ ...change })),
+    compensation: mutation.compensation,
   };
 }
 

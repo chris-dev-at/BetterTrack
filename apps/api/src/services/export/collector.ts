@@ -66,6 +66,7 @@ export interface CollectedExport {
  */
 const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   'passwordHash',
+  'securityGeneration',
   'twoFactorSecret',
   'pinHash',
   'tokenHash',

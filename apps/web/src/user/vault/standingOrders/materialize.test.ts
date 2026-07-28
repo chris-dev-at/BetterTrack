@@ -3,7 +3,7 @@ import { webcrypto } from 'node:crypto';
 import {
   decodeVaultEnvelope,
   vaultEnvelopeHeaderSchema,
-  type VaultDocumentV1,
+  type VaultDocument,
   type VaultEntity,
 } from '@bettertrack/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -1431,7 +1431,7 @@ describe('paranoid standing-order materialization', () => {
   });
 });
 
-function withOrders(document: VaultDocumentV1, orders: VaultEntity[]): VaultDocumentV1 {
+function withOrders(document: VaultDocument, orders: VaultEntity[]): VaultDocument {
   const next = structuredClone(document);
   next.entities.standingOrder = orders;
   return next;
@@ -1479,14 +1479,14 @@ function candidateIdentity(header: { vaultVersion: number; keyId: string; writeI
 }
 
 function live(
-  document: VaultDocumentV1,
-  kind: keyof VaultDocumentV1['entities'],
+  document: VaultDocument,
+  kind: keyof VaultDocument['entities'],
   id: string,
 ): VaultEntity | undefined {
   return document.entities[kind]?.find((entity) => entity.id === id && entity.deletedAt === null);
 }
 
-function order(document: VaultDocumentV1, id: string): VaultEntity {
+function order(document: VaultDocument, id: string): VaultEntity {
   const entity = live(document, 'standingOrder', id);
   if (entity === undefined) throw new Error(`Missing standing order ${id}`);
   return entity;

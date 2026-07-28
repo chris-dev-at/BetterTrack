@@ -1,4 +1,4 @@
-import type { VaultDocumentV1 } from '@bettertrack/contracts';
+import type { VaultDocument } from '@bettertrack/contracts';
 import type { HoldingAssetInput, PricePoint } from '@bettertrack/domain/holdings';
 
 import { storedPrices, type ClientAssetRecord } from './model';
@@ -17,7 +17,7 @@ const MS_PER_DAY = 86_400_000;
  * mark is the quote and intentionally has no fabricated previous close.
  */
 export function localManualAssetMarket(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   asset: ClientAssetRecord,
 ): LocalManualAssetMarket {
   const stored = storedPrices(document, asset.id);
