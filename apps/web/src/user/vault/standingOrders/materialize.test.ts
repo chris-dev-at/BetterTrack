@@ -8,6 +8,7 @@ import {
 } from '@bettertrack/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import type { MarketDataSource } from '../../../lib/marketDataSource';
 import {
   CLIENT_MONEY_IDS,
   createClientMoneyMarket,
@@ -45,6 +46,8 @@ const LEGACY_RUN_ID = '018f0000-0000-7000-8000-0000000002a1';
 const LEGACY_LEDGER_ID = '018f0000-0000-7000-8000-0000000002a2';
 const REPLACEMENT_WRITE_ID = '018f0000-0000-7000-8000-0000000002a3';
 const BOOKED_AT = '2026-07-26T22:30:00.000Z';
+const PRIOR_BOOKED_AT = '2026-07-26T05:00:00.000Z';
+const PRIOR_BUY_EXECUTED_AT = '2026-07-20T06:00:00.000Z';
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
@@ -1429,6 +1432,318 @@ describe('paranoid standing-order materialization', () => {
     ).rejects.toMatchObject({ code: 'VAULT_DATA_INVALID' });
     expect(sync.mutationCount).toBe(0);
   });
+
+  it('skips catch-up and keeps derivations when endDate shrank below booked periods', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const dailyOccurrence = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-26');
+    const monthlyOccurrence = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-15');
+    const document = withOrders(fixture.document, [
+      standingOrder(DAILY_ADD_ID, {
+        kind: 'cash-add',
+        amount: '25',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-01',
+        endDate: '2026-07-20',
+        lastRunAt: PRIOR_BOOKED_AT,
+        lastPeriodKey: '2026-07-26',
+      }),
+      standingOrder(MONTHLY_BUY_ID, {
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.eurAsset,
+        amount: '1',
+        currency: 'EUR',
+        cadence: 'monthly',
+        anchorDay: 15,
+        startDate: '2026-05-01',
+        endDate: '2026-07-01',
+        lastRunAt: PRIOR_BOOKED_AT,
+        lastPeriodKey: '2026-07-15',
+      }),
+    ]);
+    document.entities.standingOrderRun = [
+      bookedRun(dailyOccurrence, DAILY_ADD_ID, '2026-07-26', PRIOR_BOOKED_AT),
+      bookedRun(monthlyOccurrence, MONTHLY_BUY_ID, '2026-07-15', PRIOR_BOOKED_AT),
+    ];
+    document.entities.cashMovement = [
+      ...(document.entities.cashMovement ?? []),
+      bookedDeposit(dailyOccurrence, '25', PRIOR_BOOKED_AT),
+    ];
+    document.entities.transaction = [
+      ...(document.entities.transaction ?? []),
+      bookedBuy(monthlyOccurrence, CLIENT_MONEY_IDS.eurAsset, '1', '120', PRIOR_BUY_EXECUTED_AT),
+    ];
+    const sync = createMutableTestSync(document, fixture.header);
+    const market = createClientMoneyMarket();
+
+    const outcome = await materializeDueStandingOrders(
+      sync,
+      createVaultPortfolioStore(sync),
+      market.market,
+      { now: () => new Date(BOOKED_AT), timezone: 'Europe/Vienna' },
+    );
+
+    expect(outcome, outcome.ok ? undefined : JSON.stringify(outcome.error)).toMatchObject({
+      ok: true,
+      value: { booked: [], deferred: [] },
+    });
+    expect(sync.mutationCount).toBe(0);
+    expect(market.calls.quote).toEqual([]);
+    expect(market.calls.history).toEqual([]);
+    expect(market.calls.fx).toEqual([]);
+
+    const engine = createVaultMoneyEngine(sync, market.market, {
+      now: () => new Date(BOOKED_AT).getTime(),
+    });
+    await expect(engine.onAppOpen()).resolves.toMatchObject({ ok: true });
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026)).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(sync.mutationCount).toBe(0);
+  });
+
+  it('keeps live runs of a tombstoned standing order valid and derivable', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-26');
+    const tombstoned = standingOrder(DAILY_ADD_ID, {
+      kind: 'cash-add',
+      amount: '25',
+      cadence: 'daily',
+      anchorDay: null,
+      startDate: '2026-07-01',
+      lastRunAt: PRIOR_BOOKED_AT,
+      lastPeriodKey: '2026-07-26',
+    });
+    tombstoned.rev = 1;
+    tombstoned.deletedAt = BOOKED_AT;
+    const document = withOrders(fixture.document, [tombstoned]);
+    document.entities.standingOrderRun = [
+      bookedRun(occurrenceId, DAILY_ADD_ID, '2026-07-26', PRIOR_BOOKED_AT),
+    ];
+    document.entities.cashMovement = [
+      ...(document.entities.cashMovement ?? []),
+      bookedDeposit(occurrenceId, '25', PRIOR_BOOKED_AT),
+    ];
+    const sync = createMutableTestSync(document, fixture.header);
+    const market = createClientMoneyMarket();
+    const engine = createVaultMoneyEngine(sync, market.market, {
+      now: () => new Date(BOOKED_AT).getTime(),
+    });
+
+    await expect(engine.onAppOpen()).resolves.toMatchObject({ ok: true });
+    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026)).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(sync.mutationCount).toBe(0);
+  });
+
+  it('still fails closed when a run watermark is off its cadence lattice', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(MONTHLY_BUY_ID, {
+        kind: 'cash-add',
+        amount: '25',
+        cadence: 'monthly',
+        anchorDay: 15,
+        startDate: '2026-05-01',
+        lastRunAt: PRIOR_BOOKED_AT,
+        lastPeriodKey: '2026-07-14',
+      }),
+    ]);
+    document.entities.standingOrderRun = [
+      bookedRun(LEGACY_RUN_ID, MONTHLY_BUY_ID, '2026-07-14', PRIOR_BOOKED_AT),
+    ];
+    const sync = createMutableTestSync(document, fixture.header);
+    const market = createClientMoneyMarket();
+    const engine = createVaultMoneyEngine(sync, market.market, {
+      now: () => new Date(BOOKED_AT).getTime(),
+    });
+
+    const catchUp = await engine.onAppOpen();
+    const portfolio = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+    const tax = await engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+
+    for (const outcome of [catchUp, portfolio, tax]) {
+      expect(outcome).toMatchObject({
+        ok: false,
+        error: { code: 'VAULT_CORRUPT', retryable: false },
+      });
+    }
+    expect(sync.mutationCount).toBe(0);
+    expect(market.calls.quote).toEqual([]);
+    expect(market.calls.history).toEqual([]);
+    expect(market.calls.fx).toEqual([]);
+  });
+
+  it('fails closed in the store when a past-due watermark has no durable claim', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(DAILY_ADD_ID, {
+        kind: 'cash-add',
+        amount: '25',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-01',
+        endDate: '2026-07-20',
+        lastRunAt: PRIOR_BOOKED_AT,
+        lastPeriodKey: '2026-07-26',
+      }),
+    ]);
+    const sync = createMutableTestSync(document, fixture.header);
+    const store = createVaultPortfolioStore(sync);
+    const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-20');
+
+    await expect(
+      store.materializeStandingOrderOccurrence({
+        occurrenceId,
+        orderId: DAILY_ADD_ID,
+        dueDate: '2026-07-20',
+        calendarDay: '2026-07-27',
+        timezone: 'Europe/Vienna',
+        executedAt: BOOKED_AT,
+        expectedCandidate: candidateIdentity(fixture.header),
+      }),
+    ).rejects.toMatchObject({ code: 'VAULT_DATA_INVALID' });
+    expect(sync.mutationCount).toBe(0);
+
+    // With the later period's durable claim present the same call is the
+    // server's "already satisfied" skip, never a write.
+    const claimed = structuredClone(document);
+    claimed.entities.standingOrderRun = [
+      bookedRun(
+        await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-26'),
+        DAILY_ADD_ID,
+        '2026-07-26',
+        PRIOR_BOOKED_AT,
+      ),
+    ];
+    claimed.entities.cashMovement = [
+      ...(claimed.entities.cashMovement ?? []),
+      bookedDeposit(
+        await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-26'),
+        '25',
+        PRIOR_BOOKED_AT,
+      ),
+    ];
+    const claimedSync = createMutableTestSync(claimed, fixture.header);
+    await expect(
+      createVaultPortfolioStore(claimedSync).materializeStandingOrderOccurrence({
+        occurrenceId,
+        orderId: DAILY_ADD_ID,
+        dueDate: '2026-07-20',
+        calendarDay: '2026-07-27',
+        timezone: 'Europe/Vienna',
+        executedAt: BOOKED_AT,
+        expectedCandidate: candidateIdentity(fixture.header),
+      }),
+    ).resolves.toMatchObject({ status: 'existing', dueDate: '2026-07-20' });
+    expect(claimedSync.mutationCount).toBe(0);
+  });
+
+  it('quantizes standing-order buy prices to the server numeric(20,6) scale', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(MONTHLY_BUY_ID, {
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.eurAsset,
+        amount: '2',
+        currency: 'EUR',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const sync = createMutableTestSync(document, fixture.header);
+    const base = createClientMoneyMarket();
+    // A float32 quote artifact the server's numeric(20,6) can never store.
+    const rawQuotePrice = Number('175.33999633789062');
+    const market: MarketDataSource = {
+      ...base.market,
+      async quote(assetId, signal) {
+        const result = await base.market.quote(assetId, signal);
+        return { ...result, value: { ...result.value, price: rawQuotePrice } };
+      },
+    };
+
+    const outcome = await materializeDueStandingOrders(
+      sync,
+      createVaultPortfolioStore(sync),
+      market,
+      { now: () => new Date(BOOKED_AT), timezone: 'Europe/Vienna' },
+    );
+
+    expect(outcome, outcome.ok ? undefined : JSON.stringify(outcome.error)).toMatchObject({
+      ok: true,
+      value: { booked: [{ orderId: MONTHLY_BUY_ID, dueDate: '2026-07-27' }], deferred: [] },
+    });
+    const occurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-27');
+    expect(live(sync.state.active!.document, 'transaction', occurrenceId)?.data).toMatchObject({
+      quantity: '2',
+      price: '175.339996',
+    });
+  });
+
+  it('provisions the Main cash source on first cash touch like the server', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(DAILY_ADD_ID, {
+        kind: 'cash-add',
+        amount: '25',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    document.entities.cashSource = [];
+    document.entities.cashMovement = [];
+    document.entities.dividend = [];
+    const sync = createMutableTestSync(document, fixture.header);
+    const market = createClientMoneyMarket();
+
+    const outcome = await materializeDueStandingOrders(
+      sync,
+      createVaultPortfolioStore(sync),
+      market.market,
+      { now: () => new Date(BOOKED_AT), timezone: 'Europe/Vienna' },
+    );
+
+    expect(outcome, outcome.ok ? undefined : JSON.stringify(outcome.error)).toMatchObject({
+      ok: true,
+      value: {
+        booked: [{ orderId: DAILY_ADD_ID, dueDate: '2026-07-27', status: 'created' }],
+        deferred: [],
+      },
+    });
+    const active = sync.state.active!.document;
+    const sources = (active.entities.cashSource ?? []).filter(
+      (entity) => entity.deletedAt === null,
+    );
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.data).toMatchObject({
+      portfolioId: CLIENT_MONEY_IDS.portfolio,
+      name: 'Main',
+      type: 'cash',
+      isMain: true,
+      archivedAt: null,
+    });
+    const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
+    expect(live(active, 'cashMovement', occurrenceId)?.data).toMatchObject({
+      kind: 'deposit',
+      amountEur: '25',
+      sourceId: sources[0]!.id,
+    });
+    await expect(
+      createVaultMoneyEngine(sync, market.market, {
+        now: () => new Date(BOOKED_AT).getTime(),
+      }).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX'),
+    ).resolves.toMatchObject({ ok: true });
+  });
 });
 
 function withOrders(document: VaultDocument, orders: VaultEntity[]): VaultDocument {
@@ -1462,6 +1777,80 @@ function standingOrder(id: string, overrides: Partial<Record<string, unknown>>):
       createdAt: '2026-05-01T08:00:00.000Z',
       updatedAt: '2026-05-01T08:00:00.000Z',
       ...overrides,
+    },
+  };
+}
+
+function bookedRun(
+  id: string,
+  standingOrderId: string,
+  periodKey: string,
+  bookedAt: string,
+): VaultEntity {
+  return {
+    id,
+    rev: 0,
+    editedAt: bookedAt,
+    editedBy: DEVICE_ID,
+    deletedAt: null,
+    data: { standingOrderId, periodKey, bookedAt },
+  };
+}
+
+function bookedDeposit(id: string, amountEur: string, executedAt: string): VaultEntity {
+  return {
+    id,
+    rev: 0,
+    editedAt: executedAt,
+    editedBy: DEVICE_ID,
+    deletedAt: null,
+    data: {
+      portfolioId: CLIENT_MONEY_IDS.portfolio,
+      sourceId: CLIENT_MONEY_IDS.cashSource,
+      kind: 'deposit',
+      amountEur,
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId: null,
+      taxYear: null,
+      executedAt,
+      note: null,
+      source: 'standing-order',
+      createdAt: executedAt,
+    },
+  };
+}
+
+function bookedBuy(
+  id: string,
+  assetId: string,
+  quantity: string,
+  price: string,
+  executedAt: string,
+): VaultEntity {
+  return {
+    id,
+    rev: 0,
+    editedAt: executedAt,
+    editedBy: DEVICE_ID,
+    deletedAt: null,
+    data: {
+      portfolioId: CLIENT_MONEY_IDS.portfolio,
+      assetId,
+      side: 'buy',
+      quantity,
+      price,
+      fee: '0',
+      executedAt,
+      note: null,
+      taxMode: null,
+      taxCountry: null,
+      taxAmountEur: null,
+      taxParams: null,
+      allowUncovered: false,
+      uncoveredEntryPrice: null,
+      source: 'standing-order',
     },
   };
 }

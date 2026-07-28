@@ -15,7 +15,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type { VaultSyncEngine, VaultSyncState } from '../sync';
-import { dueStandingOrderOccurrence } from '../standingOrders/schedule';
+import { dueStandingOrderOccurrence, isStandingOrderScheduleDay } from '../standingOrders/schedule';
 import { moneyFailure } from './errors';
 import type { ClientTaxReport } from './types';
 
@@ -454,9 +454,6 @@ function validateRelationships(document: VaultDocument): string {
       field(dividend, 'portfolioId'),
     ]),
   );
-  const orderPortfolio = new Map(
-    liveEntities(document, 'standingOrder').map((order) => [order.id, field(order, 'portfolioId')]),
-  );
 
   for (const kind of [
     'transaction',
@@ -535,10 +532,19 @@ function validateRelationships(document: VaultDocument): string {
     }
     validatePersistedStandingOrder(document, order, assetCurrency);
   }
+  /*
+   * Runs are historical claims. Their order may legally be tombstoned while
+   * the runs stay live (a portfolio-delete cascade racing a booking on another
+   * device), so the reference resolves against live AND tombstoned orders.
+   */
+  const anyOrderById = new Map(
+    (document.entities.standingOrder ?? []).map((order) => [order.id, order] as const),
+  );
   const runKeys = new Set<string>();
   for (const run of liveEntities(document, 'standingOrderRun')) {
     const standingOrderId = field(run, 'standingOrderId');
-    if (!orderPortfolio.has(standingOrderId)) {
+    const order = anyOrderById.get(standingOrderId);
+    if (order === undefined) {
       invalidReference('standingOrderRun', run.id, 'standingOrderId');
     }
     const periodKey = field(run, 'periodKey');
@@ -547,10 +553,7 @@ function validateRelationships(document: VaultDocument): string {
       throw moneyFailure('VAULT_CORRUPT', `Vault contains duplicate standing-order run ${key}.`);
     }
     runKeys.add(key);
-    const order = liveEntities(document, 'standingOrder').find(
-      (candidate) => candidate.id === standingOrderId,
-    );
-    if (order !== undefined && !isStandingOrderOccurrence(order, periodKey)) {
+    if (!isPersistedStandingOrderOccurrence(order, periodKey)) {
       invalidStandingOrder(
         order.id,
         `run ${run.id} does not belong to a reachable schedule occurrence`,
@@ -657,7 +660,7 @@ function validatePersistedStandingOrder(
     invalidStandingOrder(entity.id, 'the run watermark is incomplete');
   }
   if (row.lastPeriodKey !== null) {
-    if (!isStandingOrderOccurrence(entity, row.lastPeriodKey)) {
+    if (!isPersistedStandingOrderOccurrence(entity, row.lastPeriodKey)) {
       invalidStandingOrder(entity.id, 'the run watermark is outside its schedule');
     }
     const matchingRun = liveEntities(document, 'standingOrderRun').some((run) => {
@@ -670,10 +673,17 @@ function validatePersistedStandingOrder(
   }
 }
 
-function isStandingOrderOccurrence(entity: VaultEntity, periodKey: string): boolean {
+/**
+ * Historical run/watermark period keys validate against the cadence, anchor,
+ * and start-date lattice only: the server allows shrinking `endDate` below an
+ * already-booked period, so persisted history past the current endDate is a
+ * reachable state, not corruption. New bookings stay strictly endDate-clamped
+ * in the portfolio store's due assertion.
+ */
+function isPersistedStandingOrderOccurrence(entity: VaultEntity, periodKey: string): boolean {
   const row = VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse(entity.data);
   try {
-    return dueStandingOrderOccurrence(row, periodKey) === periodKey;
+    return isStandingOrderScheduleDay(row, periodKey);
   } catch {
     return false;
   }

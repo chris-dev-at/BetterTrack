@@ -54,6 +54,9 @@ import type {
   VaultSyncState,
 } from './sync';
 
+/** The server stores transaction prices as numeric(20,6) (schema.ts). */
+const TRANSACTION_PRICE_SCALE = 6;
+
 export const VAULT_PORTFOLIO_STORE_ERROR_CODES = [
   'VAULT_LOCKED',
   'VAULT_CORRUPT',
@@ -658,8 +661,15 @@ async function createCashMovement(
 
   const mutationState = await context.engine.mutate(({ document }) => {
     requirePortfolio(document, portfolioId);
-    const sourceId = resolveCashSourceId(document, portfolioId, parsedBody.sourceId);
     const timestamp = context.now();
+    const resolved = ensureCashSource(
+      context,
+      document,
+      portfolioId,
+      parsedBody.sourceId,
+      timestamp,
+    );
+    const sourceId = resolved.sourceId;
     const id = safeNewId(context);
     const entity = entityRecord(
       id,
@@ -682,12 +692,12 @@ async function createCashMovement(
       }),
     );
     projectCashLedgerBySource([
-      ...domainCashMovements(document, portfolioId),
+      ...domainCashMovements(resolved.document, portfolioId),
       domainCashMovement(entity),
     ]);
     createdId = id;
     expected = entity;
-    return appendEntities(document, 'cashMovement', [entity]);
+    return appendEntities(resolved.document, 'cashMovement', [entity]);
   });
 
   if (createdId == null || expected == null) {
@@ -784,7 +794,7 @@ async function materializeStandingOrderOccurrence(
               assetId,
               side: 'buy',
               quantity: stringField(order.data, 'amount'),
-              price: decimalStringFromNumber(price),
+              price: decimalStringAtScale(price, TRANSACTION_PRICE_SCALE),
               fee: '0',
               executedAt: timestamp,
               note: nullableStringField(order.data, 'label'),
@@ -805,7 +815,8 @@ async function materializeStandingOrderOccurrence(
       ]);
     } else {
       const portfolioId = stringField(order.data, 'portfolioId');
-      const sourceId = resolveCashSourceId(document, portfolioId, undefined);
+      const resolved = ensureCashSource(context, document, portfolioId, undefined, timestamp);
+      const sourceId = resolved.sourceId;
       const magnitude = floorCents(numberField(order.data, 'amount'));
       const kind = stringField(order.data, 'kind');
       ledgerEntity = entityRecord(
@@ -828,7 +839,7 @@ async function materializeStandingOrderOccurrence(
           createdAt: timestamp,
         }),
       );
-      nextDocument = appendEntities(document, 'cashMovement', [ledgerEntity]);
+      nextDocument = appendEntities(resolved.document, 'cashMovement', [ledgerEntity]);
       projectCashLedgerBySource(domainCashMovements(nextDocument, portfolioId));
     }
 
@@ -1089,15 +1100,33 @@ export function existingStandingOrderOccurrence(
   }
 
   if (run == null && ledgerRows.length === 0) {
-    if (
-      order != null &&
-      nullableStringField(order.data, 'lastPeriodKey') != null &&
-      nullableStringField(order.data, 'lastPeriodKey')! >= input.dueDate
-    ) {
-      throw storeError(
-        'VAULT_DATA_INVALID',
-        'A standing order is marked booked without its deterministic occurrence rows.',
+    const lastPeriodKey = order == null ? null : nullableStringField(order.data, 'lastPeriodKey');
+    if (order != null && lastPeriodKey != null && lastPeriodKey >= input.dueDate) {
+      /*
+       * Server semantics: a watermark at or past the due period means "already
+       * satisfied — skip" (processDueOrders). A LATER watermark backed by its
+       * own durable claim is a legal state (e.g. endDate shrunk below an
+       * already-booked period) and must skip, never fail. Only a watermark
+       * whose claimed period has no durable run row is corrupt.
+       */
+      const durableClaim = liveEntities(document, 'standingOrderRun').some(
+        (candidate) =>
+          stringField(candidate.data, 'standingOrderId') === input.orderId &&
+          stringField(candidate.data, 'periodKey') === lastPeriodKey,
       );
+      if (!durableClaim) {
+        throw storeError(
+          'VAULT_DATA_INVALID',
+          'A standing order is marked booked without its deterministic occurrence rows.',
+        );
+      }
+      return {
+        occurrenceId: input.occurrenceId,
+        orderId: input.orderId,
+        dueDate: input.dueDate,
+        rowKind: standingOrderRowKind(order),
+        status: 'existing',
+      };
     }
     return null;
   }
@@ -1681,6 +1710,57 @@ function isAggregateConflict(cause: unknown): boolean {
   );
 }
 
+/** The server's cashSourceRepository.MAIN_CASH_SOURCE_NAME. */
+const MAIN_CASH_SOURCE_NAME = 'Main';
+
+/**
+ * Resolve the target cash source like the server: an explicit id must exist
+ * and be active, while the implicit Main source is provisioned on first touch
+ * (cashSourceRepository.getOrCreateMain) — a vault captured before any cash
+ * activity must book cash work, not fail it. Call inside a serialized
+ * mutation; the returned document carries the provisioned source when one was
+ * created.
+ */
+function ensureCashSource(
+  context: StoreContext,
+  document: VaultDocument,
+  portfolioId: string,
+  requestedSourceId: string | undefined,
+  timestamp: string,
+): { document: VaultDocument; sourceId: string } {
+  if (requestedSourceId != null) {
+    return { document, sourceId: resolveCashSourceId(document, portfolioId, requestedSourceId) };
+  }
+  const existing = liveEntities(document, 'cashSource')
+    .filter(
+      (entity) =>
+        stringField(entity.data, 'portfolioId') === portfolioId &&
+        nullableStringField(entity.data, 'archivedAt') === null &&
+        booleanField(entity.data, 'isMain', false),
+    )
+    .sort((left, right) => left.id.localeCompare(right.id))[0];
+  if (existing != null) return { document, sourceId: existing.id };
+  requirePortfolio(document, portfolioId);
+  const entity = entityRecord(
+    safeNewId(context),
+    context.engine.deviceId,
+    timestamp,
+    parseVaultData(
+      () =>
+        VAULT_ENTITY_ROW_SCHEMAS.cashSource.parse({
+          portfolioId,
+          name: MAIN_CASH_SOURCE_NAME,
+          type: 'cash',
+          isMain: true,
+          archivedAt: null,
+          createdAt: timestamp,
+        }),
+      'A provisioned Main cash source does not match the strict restore contract.',
+    ),
+  );
+  return { document: appendEntities(document, 'cashSource', [entity]), sourceId: entity.id };
+}
+
 function resolveCashSourceId(
   document: VaultDocument,
   portfolioId: string,
@@ -1922,6 +2002,28 @@ function transactionPatchForStorage(patch: TransactionDataPatch): Record<string,
     ...(patch.price === undefined ? {} : { price: decimalStringFromNumber(patch.price) }),
     ...(patch.fee === undefined ? {} : { fee: decimalStringFromNumber(patch.fee) }),
   };
+}
+
+/**
+ * Quantize to the server column's numeric scale with PostgreSQL's
+ * round-half-away-from-zero, then trim trailing fraction zeros. Quote-derived
+ * float prices carry binary noise (175.33999633789062) the server's
+ * numeric(20,6) can never store; persisting them raw breaks #894 parity.
+ */
+function decimalStringAtScale(value: number, scale: number): string {
+  const source = decimalStringFromNumber(value);
+  const negative = source.startsWith('-');
+  const unsigned = negative ? source.slice(1) : source;
+  const [whole = '0', fraction = ''] = unsigned.split('.');
+  if (fraction.length <= scale) return source;
+  const kept = fraction.slice(0, scale);
+  let digits = BigInt(`${whole}${kept}`);
+  if (fraction.charCodeAt(scale) >= 0x35) digits += 1n;
+  const padded = digits.toString().padStart(scale + 1, '0');
+  const integer = padded.slice(0, padded.length - scale);
+  const rounded = padded.slice(padded.length - scale).replace(/0+$/, '');
+  const magnitude = rounded.length === 0 ? integer : `${integer}.${rounded}`;
+  return negative && !/^0(?:\.0*)?$/.test(magnitude) ? `-${magnitude}` : magnitude;
 }
 
 /** Expand JavaScript's exponential notation into the strict decimal grammar. */

@@ -54,6 +54,12 @@ interface LoadedAssetMarket {
   asset: ClientAssetRecord;
   prices: DomainPricePoint[];
   quote: HoldingAssetInput['quote'];
+  /*
+   * The stale/missing flags are false on every loaded result by contract:
+   * loadMarketInputs fails closed (typed retryable failure) on any stale or
+   * missing input instead of serving a partial series. They exist so a future
+   * partial-staleness mode can flow through the series builder unchanged.
+   */
   historyStale: boolean;
   quoteStale: boolean;
   historyMissing: boolean;
@@ -103,6 +109,13 @@ export function createPortfolioDerivationEngine(
         const loaded = await loadMarketInputs(snapshot.document, model, today, market, signal);
         signal?.throwIfAborted();
         const fx = createFxInputLoader(market, signal);
+        /*
+         * The cache key needs the derived market watermark (FX dates are only
+         * known after derivation), so this cache cannot skip the derive work;
+         * it stabilizes RESULT IDENTITY for equal inputs so consumers can use
+         * reference equality. Restructure for compute reuse when #728 wires
+         * production consumers.
+         */
         const value = await derive(snapshot, model, loaded, fx, range, today);
         const key = {
           ownerUserId: snapshot.ownerUserId,

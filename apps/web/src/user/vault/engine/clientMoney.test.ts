@@ -25,6 +25,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createVaultMoneyEngine } from './index';
 import { portfolioRangeStartIso } from './portfolioEngine';
+import serverTwrParity from './serverTwrParity.fixture.json';
 import {
   CLIENT_MONEY_IDS,
   MALFORMED_TAX_SETTING_CASES,
@@ -760,10 +761,17 @@ describe('paranoid client money engine', () => {
     expect(bounded.ok).toBe(true);
     if (!maximum.ok || !bounded.ok) return;
 
-    const auditedServerVector = [
-      -0.497512437810943, 4.47761194029852, 9.452736318407972, 14.427860696517424,
-      19.402985074626876, 24.37810945273633, 27.36318407960201, 29.35323383084578,
-    ];
+    /*
+     * Server-generated golden vector: apps/api/src/__tests__/
+     * vaultClientTwrParity.test.ts replays these exact inputs through the real
+     * server pipeline and pins the fixture's twrPct to its output.
+     */
+    expect(serverTwrParity.sinceInceptionMax).toMatchObject({
+      closes: [100, 105, 110, 115, 120, 125, 128],
+      quoteToday: 130,
+      buy: { quantity: 10, price: 100, fee: 5, dayOffset: -7 },
+    });
+    const auditedServerVector = serverTwrParity.sinceInceptionMax.twrPct;
     expect(maximum.value.series).toHaveLength(auditedServerVector.length);
     maximum.value.series.forEach((point, index) => {
       expect(point.twrPct).toBeCloseTo(auditedServerVector[index]!, 12);
@@ -808,10 +816,18 @@ describe('paranoid client money engine', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const auditedServerVector = [
-      0, -0.16638935108153063, 1.4975041597337757, 3.161397670549082, 5.623483533808016,
-      8.08556939706695, 10.547655260325882, 12.024906778281231, 13.009741123584796,
-    ];
+    /*
+     * Server-generated golden vector (see vaultClientTwrParity.test.ts): the
+     * deposit, the buy, and the later-day linked `buy` movement below mirror
+     * the fixture inputs the server replays.
+     */
+    expect(serverTwrParity.splitDateCashBuy).toMatchObject({
+      depositEur: 2000,
+      depositDayOffset: -8,
+      buy: { quantity: 10, price: 100, fee: 5, dayOffset: -7 },
+      linkedBuyMovement: { amountEur: -1005, dayOffset: -5 },
+    });
+    const auditedServerVector = serverTwrParity.splitDateCashBuy.twrPct;
     expect(result.value.series.map((point) => point.date)).toEqual([
       '2026-07-19',
       '2026-07-20',

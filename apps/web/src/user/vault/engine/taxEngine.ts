@@ -143,7 +143,7 @@ async function taxableTransactions(
 ): Promise<{ rows: TaxableTransaction[]; watermarks: string[]; stale: boolean }> {
   const fxMemo = new Map<string, Promise<Awaited<ReturnType<MarketDataSource['fx']>>>>();
   const watermarks = new Set<string>();
-  let stale = false;
+  const stale = false;
   const neededAssetIds = new Set(
     model.transactions
       .filter((transaction) => transaction.side === 'sell')
@@ -217,7 +217,8 @@ async function taxableTransactions(
         },
       );
     }
-    stale ||= fx.stale;
+    // `stale` stays false by contract: the throw above fails closed on any
+    // stale FX input. The field exists for a future partial-staleness mode.
     watermarks.add(`${asset.currency}:${date}:${fx.watermark}`);
     rows.push({
       id: transaction.id,

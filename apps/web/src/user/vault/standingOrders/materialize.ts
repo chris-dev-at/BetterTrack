@@ -6,11 +6,7 @@ import {
 import { InsufficientCashError } from '@bettertrack/domain/cashLedger';
 
 import { MarketDataSourceError, type MarketDataSource } from '../../../lib/marketDataSource';
-import {
-  existingStandingOrderOccurrence,
-  type VaultPortfolioStore,
-  VaultPortfolioStoreError,
-} from '../vaultPortfolioStore';
+import { existingStandingOrderOccurrence, type VaultPortfolioStore } from '../vaultPortfolioStore';
 import {
   asMoneyFailure,
   moneyFailure,
@@ -221,11 +217,7 @@ export async function materializeDueStandingOrders(
         });
         snapshot = validatedVaultSnapshot(sync);
       } catch (cause) {
-        if (
-          cause instanceof InsufficientCashError ||
-          (cause instanceof VaultPortfolioStoreError &&
-            cause.message.toLowerCase().includes('insufficient'))
-        ) {
+        if (isInsufficientCashFailure(cause)) {
           result.deferred.push({ orderId: order.entity.id, dueDate, reason: 'insufficient-cash' });
           continue;
         }
@@ -237,6 +229,18 @@ export async function materializeDueStandingOrders(
   } catch (cause) {
     return { ok: false, error: asMoneyFailure(cause) };
   }
+}
+
+/**
+ * The business deferral is typed, never message-sniffed: the domain throws
+ * InsufficientCashError directly, and a store wrapper keeps it on the `cause`
+ * chain.
+ */
+function isInsufficientCashFailure(cause: unknown): boolean {
+  for (let current: unknown = cause; current instanceof Error; current = current.cause) {
+    if (current instanceof InsufficientCashError) return true;
+  }
+  return false;
 }
 
 function parseOrder(entity: VaultEntity): {

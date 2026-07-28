@@ -161,7 +161,8 @@ function zipArchive(files: Record<string, Uint8Array>, signal?: AbortSignal): Pr
     try {
       terminate = zip(files, (error, data) => {
         if (settled) {
-          data.fill(0);
+          // fflate delivers data = null when error !== null.
+          data?.fill(0);
           return;
         }
         settled = true;

@@ -69,6 +69,17 @@ export function dueStandingOrderOccurrence(
   return occurrence >= schedule.startDate ? occurrence : null;
 }
 
+/**
+ * Membership of `day` in the order's cadence/anchor/startDate lattice,
+ * ignoring the CURRENT endDate. The server lets `endDate` shrink after
+ * periods were legally booked (update() only enforces `endDate >= startDate`),
+ * so endDate governs future dueness — never the validity of already-persisted
+ * runs and watermarks. Use {@link dueStandingOrderOccurrence} for new bookings.
+ */
+export function isStandingOrderScheduleDay(schedule: StandingOrderSchedule, day: string): boolean {
+  return dueStandingOrderOccurrence({ ...schedule, endDate: null }, day) === day;
+}
+
 function assertSchedule(schedule: StandingOrderSchedule, today: string): void {
   for (const [label, day] of [
     ['today', today],
