@@ -7,7 +7,8 @@ import { getResolvedConglomerate } from '../../lib/conglomerateApi';
 import { getIdea } from '../../lib/ideasApi';
 import { useT } from '../../i18n';
 import { Skeleton } from '../../ui';
-import { Alert, Button } from '../components/ui';
+import { Button } from '../../ui/origin';
+import { Alert } from '../components/ui';
 import { BacktestPanel, type BacktestParams } from './BacktestPanel';
 
 /**
@@ -43,7 +44,7 @@ export function IdeaWorkboardPage() {
   });
 
   const backLink = (
-    <Link to="/workboard/ideas" className="text-sm text-neutral-500 hover:text-neutral-300">
+    <Link className="bt-link" style={{ fontSize: 13 }} to="/workboard/ideas">
       {t('workboard.ideas.open.backLink')}
     </Link>
   );
@@ -65,9 +66,7 @@ export function IdeaWorkboardPage() {
         {backLink}
         <Alert tone="error">{t('workboard.ideas.open.loadError')}</Alert>
         <div>
-          <Button variant="secondary" onClick={() => void ideaQuery.refetch()}>
-            {t('common.retry')}
-          </Button>
+          <Button onClick={() => void ideaQuery.refetch()}>{t('common.retry')}</Button>
         </div>
       </div>
     );
@@ -95,19 +94,21 @@ export function IdeaWorkboardPage() {
       {backLink}
 
       <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">{idea.name}</h1>
+        <h1 className="bt-page-title">{idea.name}</h1>
         {idea.thesis ? (
-          <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+          <div className="bt-panel bt-panel--pad">
+            <h2 className="bt-label" style={{ marginBottom: 4 }}>
               {t('workboard.ideas.open.thesisHeading')}
             </h2>
-            <p className="whitespace-pre-wrap text-sm text-neutral-300">{idea.thesis}</p>
+            <p className="bt-soft" style={{ whiteSpace: 'pre-wrap' }}>
+              {idea.thesis}
+            </p>
           </div>
         ) : null}
       </div>
 
       <section aria-labelledby="idea-backtest-heading" className="flex flex-col gap-3">
-        <h2 id="idea-backtest-heading" className="text-base font-semibold text-neutral-200">
+        <h2 className="bt-h2" id="idea-backtest-heading">
           {t('workboard.ideas.open.backtestHeading')}
         </h2>
         {source.kind === 'conglomerate' && conglomerateQuery.isLoading ? (

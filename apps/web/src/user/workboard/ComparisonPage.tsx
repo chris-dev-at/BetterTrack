@@ -20,6 +20,7 @@ import { formatDate, formatPercent, formatSignedPercent } from '../../lib/format
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
+import { PageHead } from '../../ui/origin';
 import { overlayColor, PriceChart, type ChartPoint } from '../../ui/charts';
 import { Alert } from '../components/ui';
 
@@ -61,26 +62,16 @@ function RangeSelector({
   const t = useT();
   const labels = rangeLabels(t);
   return (
-    <div
-      role="group"
-      aria-label={t('workboard.backtest.rangeAriaLabel')}
-      className="inline-flex rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
-    >
+    <div aria-label={t('workboard.backtest.rangeAriaLabel')} className="bt-seg" role="group">
       {BACKTEST_PREVIEW_RANGES.map((token) => {
         const selected = token === active;
         return (
           <button
-            key={token}
-            type="button"
             aria-pressed={selected}
+            className={cx(selected && 'is-active')}
+            key={token}
             onClick={() => onSelect(token)}
-            className={cx(
-              'rounded px-2 py-1 text-xs font-medium transition-colors',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              selected
-                ? 'bg-sky-600 text-white'
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-            )}
+            type="button"
           >
             {labels[token]}
           </button>
@@ -104,16 +95,14 @@ function ConglomeratePicker({
   const atCap = selected.length >= COMPARISON_MAX_SERIES;
   return (
     <fieldset className="flex flex-col gap-1.5">
-      <legend className="mb-1 text-sm font-medium text-neutral-300">
-        {t('workboard.comparison.selectHeading')}
-      </legend>
-      <p className="mb-1 text-xs text-neutral-500">
+      <legend className="bt-h3 mb-1">{t('workboard.comparison.selectHeading')}</legend>
+      <p className="bt-meta mb-1">
         {t('workboard.comparison.selectHint', {
           min: COMPARISON_MIN_SERIES,
           max: COMPARISON_MAX_SERIES,
         })}
       </p>
-      <ul className="flex flex-col gap-1">
+      <ul className="bt-panel bt-band">
         {conglomerates.map((c) => {
           const isSelected = selected.includes(c.id);
           const noPositions = c.positionCount === 0;
@@ -122,32 +111,29 @@ function ConglomeratePicker({
             <li key={c.id}>
               <label
                 className={cx(
-                  'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm ring-1 ring-inset',
-                  isSelected
-                    ? 'bg-sky-950/40 text-neutral-100 ring-sky-800'
-                    : 'text-neutral-300 ring-neutral-800',
-                  disabled
-                    ? 'cursor-not-allowed opacity-50'
-                    : 'cursor-pointer hover:bg-neutral-900',
+                  'bt-band__row flex items-center gap-2.5',
+                  disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
                 )}
+                style={isSelected ? { background: 'var(--bt-surface-soft)' } : undefined}
               >
                 <input
-                  type="checkbox"
                   checked={isSelected}
+                  className="size-4"
                   disabled={disabled}
                   onChange={() => onToggle(c.id)}
-                  className="size-4 accent-sky-600"
+                  style={{ accentColor: 'var(--bt-gold)' }}
+                  type="checkbox"
                 />
-                <span className="flex-1 truncate">{c.name}</span>
+                <span className="bt-row-title flex-1 truncate">{c.name}</span>
                 {noPositions ? (
-                  <span className="text-xs text-neutral-500">
-                    {t('workboard.comparison.emptyPositions')}
-                  </span>
+                  <span className="bt-meta">{t('workboard.comparison.emptyPositions')}</span>
                 ) : (
-                  <span className="text-xs text-neutral-500">
+                  <span className="bt-meta">
                     {c.positionCount === 1
                       ? t('workboard.conglomerates.positionCountOne', { count: c.positionCount })
-                      : t('workboard.conglomerates.positionCountOther', { count: c.positionCount })}
+                      : t('workboard.conglomerates.positionCountOther', {
+                          count: c.positionCount,
+                        })}
                   </span>
                 )}
               </label>
@@ -155,7 +141,7 @@ function ConglomeratePicker({
           );
         })}
       </ul>
-      <p className="mt-1 text-xs text-neutral-500" aria-live="polite">
+      <p aria-live="polite" className="bt-meta mt-1">
         {t('workboard.comparison.selectionCount', {
           count: selected.length,
           max: COMPARISON_MAX_SERIES,
@@ -170,19 +156,12 @@ function ChartLegend({ series }: { series: ComparisonSeries[] }) {
   const t = useT();
   return (
     <ul
-      className="flex flex-wrap gap-x-4 gap-y-1"
       aria-label={t('workboard.comparison.legendAriaLabel')}
+      className="bt-meta flex flex-wrap gap-x-4 gap-y-1"
     >
       {series.map((s, i) => (
-        <li
-          key={s.conglomerateId}
-          className="inline-flex items-center gap-1.5 text-xs text-neutral-300"
-        >
-          <span
-            aria-hidden="true"
-            className="inline-block size-2.5 rounded-full"
-            style={{ backgroundColor: seriesColor(i) }}
-          />
+        <li className="inline-flex items-center gap-1.5" key={s.conglomerateId}>
+          <span aria-hidden="true" className="bt-dot" style={{ background: seriesColor(i) }} />
           <span className="truncate">{s.name}</span>
         </li>
       ))}
@@ -243,40 +222,41 @@ function ComparisonGrid({
 }) {
   const t = useT();
   return (
-    <div className="overflow-x-auto rounded-lg bg-neutral-900/60 ring-1 ring-inset ring-neutral-800">
+    <div className="bt-table-wrap bt-table-wrap--panel">
       <table
         aria-label={t('workboard.comparison.grid.ariaLabel')}
-        className="w-full min-w-[36rem] text-sm"
+        className="bt-table"
+        style={{ minWidth: '36rem' }}
       >
         <thead>
-          <tr className="border-b border-neutral-800 text-xs uppercase tracking-wide text-neutral-500">
-            <th scope="col" className="px-3 py-2 text-left font-medium">
-              {t('workboard.comparison.grid.metric')}
-            </th>
+          <tr>
+            <th scope="col">{t('workboard.comparison.grid.metric')}</th>
             {series.map((s, i) => {
               const isBaseline = s.conglomerateId === baselineId;
               return (
                 <th
+                  className="is-num"
                   key={s.conglomerateId}
                   scope="col"
-                  className={cx('px-3 py-2 text-right font-medium', isBaseline && 'bg-sky-950/40')}
+                  style={isBaseline ? { background: 'var(--bt-blue-soft)' } : undefined}
                 >
                   <span className="inline-flex items-center justify-end gap-1.5">
                     <span
                       aria-hidden="true"
-                      className="inline-block size-2 rounded-full"
-                      style={{ backgroundColor: seriesColor(i) }}
+                      className="bt-dot"
+                      style={{ background: seriesColor(i) }}
                     />
-                    <span className="normal-case text-neutral-200">{s.name}</span>
+                    <span className="bt-soft">{s.name}</span>
                   </span>
-                  <label className="mt-1 flex items-center justify-end gap-1 text-[0.65rem] font-normal normal-case text-neutral-400">
+                  <label className="bt-meta mt-1 flex items-center justify-end gap-1">
                     <input
-                      type="radio"
-                      name="comparison-baseline"
-                      checked={isBaseline}
-                      onChange={() => onPickBaseline(s.conglomerateId)}
                       aria-label={t('workboard.comparison.setBaseline', { name: s.name })}
-                      className="size-3 accent-sky-600"
+                      checked={isBaseline}
+                      className="size-3"
+                      name="comparison-baseline"
+                      onChange={() => onPickBaseline(s.conglomerateId)}
+                      style={{ accentColor: 'var(--bt-gold)' }}
+                      type="radio"
                     />
                     {t('workboard.comparison.baselineLabel')}
                   </label>
@@ -289,28 +269,22 @@ function ComparisonGrid({
           {METRIC_ROWS.map((row) => {
             const fmt = row.signed ? formatSignedPercent : formatPercent;
             return (
-              <tr key={row.key} className="border-b border-neutral-800/60 last:border-b-0">
-                <th scope="row" className="px-3 py-2 text-left font-medium text-neutral-400">
-                  {t(row.labelKey)}
-                </th>
+              <tr key={row.key}>
+                <th scope="row">{t(row.labelKey)}</th>
                 {series.map((s) => {
                   const isBaseline = s.conglomerateId === baselineId;
                   const { value, sub } = metricValue(s, row.key);
                   const delta = s.deltas[row.key];
                   return (
                     <td
+                      className="is-num"
                       key={s.conglomerateId}
-                      className={cx(
-                        'px-3 py-2 text-right text-neutral-100',
-                        isBaseline && 'bg-sky-950/40',
-                      )}
+                      style={isBaseline ? { background: 'var(--bt-blue-soft)' } : undefined}
                     >
                       {fmt(value)}
-                      {sub ? <span className="block text-xs text-neutral-500">{sub}</span> : null}
+                      {sub ? <span className="bt-meta block">{sub}</span> : null}
                       {!isBaseline ? (
-                        <span className="block text-xs text-neutral-400">
-                          {formatSignedPercent(delta)}
-                        </span>
+                        <span className="bt-meta block">{formatSignedPercent(delta)}</span>
                       ) : null}
                     </td>
                   );
@@ -375,12 +349,7 @@ export function ComparisonPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold text-neutral-100">
-          {t('workboard.comparison.title')}
-        </h1>
-        <p className="text-sm text-neutral-400">{t('workboard.comparison.description')}</p>
-      </header>
+      <PageHead sub={t('workboard.comparison.description')} title={t('workboard.comparison.title')} />
 
       {listQuery.isLoading ? (
         <Skeleton height="h-40" />

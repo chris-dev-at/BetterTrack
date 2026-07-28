@@ -13,9 +13,10 @@ import {
 import { ApiError } from '../../lib/apiClient';
 import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
+import { Badge, Button, Field, Input, PageHead } from '../../ui/origin';
 import { AudiencePicker } from '../components/AudiencePicker';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, TextField } from '../components/ui';
+import { Alert } from '../components/ui';
 
 /**
  * Named watchlists (PROJECTPLAN.md §13.3 V3-P5): create / rename / delete lists,
@@ -72,10 +73,7 @@ export function WatchlistsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">{t('watchlists.title')}</h2>
-        <p className="text-sm text-neutral-500">{t('watchlists.subtitle')}</p>
-      </div>
+      <PageHead sub={t('watchlists.subtitle')} title={t('watchlists.title')} />
 
       <form
         className="flex items-end gap-2"
@@ -85,18 +83,18 @@ export function WatchlistsPage() {
           if (trimmed) create.mutate(trimmed);
         }}
       >
-        <div className="flex-1">
-          <TextField
-            label={t('watchlists.create')}
-            placeholder={t('watchlists.namePlaceholder')}
-            value={name}
+        <Field className="flex-1" htmlFor="watchlist-name" label={t('watchlists.create')}>
+          <Input
+            id="watchlist-name"
             onChange={(e) => {
               setName(e.target.value);
               setNameError(null);
             }}
+            placeholder={t('watchlists.namePlaceholder')}
+            value={name}
           />
-        </div>
-        <Button type="submit" disabled={create.isPending || name.trim().length === 0}>
+        </Field>
+        <Button disabled={create.isPending || name.trim().length === 0} type="submit" variant="primary">
           {t('watchlists.create')}
         </Button>
       </form>
@@ -105,36 +103,33 @@ export function WatchlistsPage() {
       {data.watchlists.length === 0 ? (
         <EmptyState title={t('watchlists.empty')} description={t('watchlists.subtitle')} />
       ) : (
-        <ul className="divide-y divide-neutral-800">
+        <ul className="bt-panel bt-band">
           {data.watchlists.map((w) => (
-            <li key={w.id} className="flex items-center justify-between gap-3 py-3">
+            <li className="bt-band__row flex items-center justify-between gap-3" key={w.id}>
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-neutral-100">{w.name}</span>
-                {w.isDefault ? (
-                  <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-xs text-neutral-400">
-                    {t('watchlists.defaultBadge')}
-                  </span>
-                ) : null}
-                <span className="text-xs text-neutral-500">
+                <span className="bt-row-title">{w.name}</span>
+                {w.isDefault ? <Badge>{t('watchlists.defaultBadge')}</Badge> : null}
+                <span className="bt-meta">
                   {w.itemCount === 1
                     ? t('watchlists.itemsOne')
                     : t('watchlists.itemsOther', { count: w.itemCount })}
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <Button variant="secondary" onClick={() => setSharing(w)}>
+                <Button onClick={() => setSharing(w)} size="sm">
                   {t('sharing.shareButton')}
                 </Button>
                 {!w.isDefault ? (
                   <>
-                    <Button variant="secondary" onClick={() => setRenaming(w)}>
+                    <Button onClick={() => setRenaming(w)} size="sm">
                       {t('watchlists.rename')}
                     </Button>
                     <Button
-                      variant="secondary"
                       onClick={() => {
                         if (window.confirm(t('watchlists.deleteConfirm'))) remove.mutate(w.id);
                       }}
+                      size="sm"
+                      variant="danger"
                     >
                       {t('watchlists.delete')}
                     </Button>
@@ -202,20 +197,20 @@ function RenameDialog({
           if (trimmed) rename.mutate(trimmed);
         }}
       >
-        <TextField
-          label={t('watchlists.namePlaceholder')}
-          value={name}
-          onChange={(e) => {
-            setName(e.target.value);
-            setError(null);
-          }}
-        />
+        <Field htmlFor="watchlist-rename" label={t('watchlists.namePlaceholder')}>
+          <Input
+            id="watchlist-rename"
+            onChange={(e) => {
+              setName(e.target.value);
+              setError(null);
+            }}
+            value={name}
+          />
+        </Field>
         {error ? <Alert tone="error">{error}</Alert> : null}
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
-            {t('sharing.cancel')}
-          </Button>
-          <Button type="submit" disabled={rename.isPending || name.trim().length === 0}>
+          <Button onClick={onClose}>{t('sharing.cancel')}</Button>
+          <Button disabled={rename.isPending || name.trim().length === 0} type="submit" variant="primary">
             {t('sharing.save')}
           </Button>
         </div>

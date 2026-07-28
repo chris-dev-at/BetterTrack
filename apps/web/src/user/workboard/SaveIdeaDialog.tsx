@@ -6,8 +6,9 @@ import { IDEA_NAME_MAX, IDEA_THESIS_MAX, type IdeaWorkboardState } from '@better
 
 import { createIdea } from '../../lib/ideasApi';
 import { useT } from '../../i18n';
+import { Button, Field, Input, Textarea } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, TextField } from '../components/ui';
+import { Alert } from '../components/ui';
 
 /**
  * "Save as idea" dialog (PROJECTPLAN.md §13.4 V4-P9): persists a named Workboard
@@ -53,14 +54,14 @@ export function SaveIdeaDialog({
     return (
       <Dialog title={t('workboard.ideas.save.title')} onClose={onClose}>
         <div className="flex flex-col gap-4">
-          <Alert tone="success">
-            {t('workboard.ideas.save.successBody', { name: saved.name })}
-          </Alert>
+          <Alert tone="success">{t('workboard.ideas.save.successBody', { name: saved.name })}</Alert>
           <div className="flex justify-end gap-2">
             <Link to="/workboard/ideas">
-              <Button variant="secondary">{t('workboard.ideas.save.viewIdeas')}</Button>
+              <Button>{t('workboard.ideas.save.viewIdeas')}</Button>
             </Link>
-            <Button onClick={onClose}>{t('common.close')}</Button>
+            <Button onClick={onClose} variant="primary">
+              {t('common.close')}
+            </Button>
           </div>
         </div>
       </Dialog>
@@ -69,40 +70,38 @@ export function SaveIdeaDialog({
 
   return (
     <Dialog title={t('workboard.ideas.save.title')} onClose={onClose}>
-      <form onSubmit={submit} className="flex flex-col gap-4">
-        <TextField
-          label={t('workboard.ideas.save.nameLabel')}
-          name="idea-name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={t('workboard.ideas.save.namePlaceholder')}
-          maxLength={IDEA_NAME_MAX}
-          autoComplete="off"
-          autoFocus
-        />
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('workboard.ideas.save.thesisLabel')}
-          </span>
-          <textarea
+      <form className="flex flex-col gap-4" onSubmit={submit}>
+        <Field htmlFor="idea-name" label={t('workboard.ideas.save.nameLabel')}>
+          <Input
+            autoComplete="off"
+            autoFocus
+            id="idea-name"
+            maxLength={IDEA_NAME_MAX}
+            name="idea-name"
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t('workboard.ideas.save.namePlaceholder')}
+            value={name}
+          />
+        </Field>
+        <Field htmlFor="idea-thesis" label={t('workboard.ideas.save.thesisLabel')}>
+          <Textarea
+            id="idea-thesis"
+            maxLength={IDEA_THESIS_MAX}
             name="idea-thesis"
-            value={thesis}
             onChange={(e) => setThesis(e.target.value)}
             placeholder={t('workboard.ideas.save.thesisPlaceholder')}
-            maxLength={IDEA_THESIS_MAX}
             rows={4}
-            className="resize-none rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+            style={{ resize: 'none' }}
+            value={thesis}
           />
-        </label>
+        </Field>
         {mutation.isError ? <Alert tone="error">{t('workboard.ideas.save.error')}</Alert> : null}
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose} disabled={mutation.isPending}>
+          <Button disabled={mutation.isPending} onClick={onClose} type="button">
             {t('common.cancel')}
           </Button>
-          <Button type="submit" disabled={!name.trim() || mutation.isPending}>
-            {mutation.isPending
-              ? t('workboard.ideas.save.saving')
-              : t('workboard.ideas.save.submit')}
+          <Button disabled={!name.trim() || mutation.isPending} type="submit" variant="primary">
+            {mutation.isPending ? t('workboard.ideas.save.saving') : t('workboard.ideas.save.submit')}
           </Button>
         </div>
       </form>

@@ -8,10 +8,11 @@ import { ALERTS_QUERY_KEY, createAlert, updateAlert } from '../../lib/alertsApi'
 import { ApiError } from '../../lib/apiClient';
 import { formatUnitPrice } from '../../lib/format';
 import { truncateMoneyForInput } from '../../lib/moneyInput';
+import { Button, Field, Input, Select } from '../../ui/origin';
 import { AssetSearchBox } from './AssetSearchBox';
 import { Dialog } from './Dialog';
 import { ALERT_KIND_META, ALERT_KIND_ORDER } from './alertMeta';
-import { Alert as AlertBanner, Button, cx } from './ui';
+import { Alert as AlertBanner } from './ui';
 
 /** Minimal asset identity the dialog needs to create/label an alert. */
 export interface AlertDialogAsset {
@@ -139,6 +140,21 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
         ? t('workboard.alerts.dialog.saveError')
         : null);
 
+  // Reference-price hint under the threshold field, only for the `*_from_ref`
+  // kinds: the STORED reference once measured (edit), the live quote about to
+  // be captured (create with a quote), or a no-quote fallback.
+  const refHint = !kindMeta.ref
+    ? undefined
+    : editing && existing?.refPrice != null
+      ? t('workboard.alerts.dialog.refMeasured', {
+          price: formatUnitPrice(existing.refPrice, currency),
+        })
+      : referencePrice != null
+        ? t('workboard.alerts.dialog.refWillCapture', {
+            price: formatUnitPrice(referencePrice, currency),
+          })
+        : t('workboard.alerts.dialog.refWillCaptureNoPrice');
+
   return (
     <Dialog
       title={
@@ -154,26 +170,24 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
       <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
         {/* Asset — a picker when creating from the Workboard, locked otherwise. */}
         {selectedAsset ? (
-          <div className="flex items-center justify-between gap-3 rounded-md bg-neutral-950 px-3 py-2 ring-1 ring-inset ring-neutral-700">
-            <span className="min-w-0">
-              <span className="font-mono text-sm text-neutral-200">{selectedAsset.symbol}</span>
-              <span className="ml-2 truncate text-sm text-neutral-500">{selectedAsset.name}</span>
+          <div className="bt-input flex items-center justify-between gap-3" style={{ height: 'auto' }}>
+            <span className="min-w-0 truncate">
+              <span className="bt-row-title">{selectedAsset.symbol}</span>{' '}
+              <span className="bt-muted">{selectedAsset.name}</span>
             </span>
             {!editing && !asset ? (
               <button
-                type="button"
+                className="bt-link shrink-0"
                 onClick={() => setSelectedAsset(null)}
-                className="shrink-0 text-xs font-medium text-sky-400 hover:text-sky-300"
+                style={{ fontSize: 12 }}
+                type="button"
               >
                 {t('workboard.alerts.dialog.changeAsset')}
               </button>
             ) : null}
           </div>
         ) : (
-          <div className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">
-              {t('workboard.alerts.dialog.assetLabel')}
-            </span>
+          <Field label={t('workboard.alerts.dialog.assetLabel')}>
             <AssetSearchBox
               placeholder={t('workboard.alerts.dialog.assetPlaceholder')}
               onSelect={(item) =>
@@ -185,25 +199,17 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
                 })
               }
             />
-          </div>
+          </Field>
         )}
 
         {/* Kind — a grouped selector when creating; locked in edit mode. */}
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="alert-kind" className="text-sm font-medium text-neutral-300">
-            {t('workboard.alerts.dialog.whenLabel')}
-          </label>
+        <Field htmlFor="alert-kind" label={t('workboard.alerts.dialog.whenLabel')}>
           {editing ? (
-            <p className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-300 ring-1 ring-inset ring-neutral-700">
+            <p className="bt-input" style={{ display: 'flex', alignItems: 'center' }}>
               {t(kindMeta.labelKey)}
             </p>
           ) : (
-            <select
-              id="alert-kind"
-              value={kind}
-              onChange={(e) => selectKind(e.target.value as AlertKind)}
-              className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
-            >
+            <Select id="alert-kind" onChange={(e) => selectKind(e.target.value as AlertKind)} value={kind}>
               {groups.map((g) => (
                 <optgroup key={g.groupKey} label={t(g.groupKey)}>
                   {g.kinds.map((k) => (
@@ -213,59 +219,48 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
                   ))}
                 </optgroup>
               ))}
-            </select>
+            </Select>
           )}
-        </div>
+        </Field>
 
         {/* Threshold — price or percent per the kind. */}
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="alert-threshold" className="text-sm font-medium text-neutral-300">
-            {kindMeta.unit === 'price'
+        <Field
+          hint={refHint}
+          htmlFor="alert-threshold"
+          label={
+            kindMeta.unit === 'price'
               ? t('workboard.alerts.dialog.thresholdPrice', { currency })
-              : t('workboard.alerts.dialog.thresholdPercent')}
-          </label>
+              : t('workboard.alerts.dialog.thresholdPercent')
+          }
+        >
           <div className="flex items-center gap-2">
-            <input
+            <Input
+              className="bt-num"
               id="alert-threshold"
-              type="number"
               inputMode="decimal"
               min="0"
-              step="any"
-              value={threshold}
               onChange={(e) => setThreshold(e.target.value)}
-              className="w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
               placeholder={kindMeta.unit === 'price' ? '0.00' : '5'}
+              step="any"
+              type="number"
+              value={threshold}
             />
-            <span className="text-sm text-neutral-500">
-              {kindMeta.unit === 'price' ? currency : '%'}
-            </span>
+            <span className="bt-meta">{kindMeta.unit === 'price' ? currency : '%'}</span>
           </div>
-          {kindMeta.ref ? (
-            <p className="text-xs text-neutral-500">
-              {editing && existing?.refPrice != null
-                ? t('workboard.alerts.dialog.refMeasured', {
-                    price: formatUnitPrice(existing.refPrice, currency),
-                  })
-                : referencePrice != null
-                  ? t('workboard.alerts.dialog.refWillCapture', {
-                      price: formatUnitPrice(referencePrice, currency),
-                    })
-                  : t('workboard.alerts.dialog.refWillCaptureNoPrice')}
-            </p>
-          ) : null}
-        </div>
+        </Field>
 
         {/* Repeat vs one-shot. */}
         <label className="flex items-start gap-2.5">
           <input
-            type="checkbox"
             checked={repeat}
+            className="mt-0.5 h-4 w-4"
             onChange={(e) => setRepeat(e.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded border-neutral-600 bg-neutral-950 text-sky-500 focus:ring-sky-500"
+            style={{ accentColor: 'var(--bt-gold)' }}
+            type="checkbox"
           />
-          <span className="text-sm text-neutral-300">
+          <span className="bt-soft">
             {t('workboard.alerts.dialog.repeatLabel')}
-            <span className="block text-xs text-neutral-500">
+            <span className="bt-meta block">
               {repeat
                 ? t('workboard.alerts.dialog.repeatOnHint')
                 : t('workboard.alerts.dialog.repeatOffHint')}
@@ -275,11 +270,11 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
 
         {errorMessage ? <AlertBanner tone="error">{errorMessage}</AlertBanner> : null}
 
-        <div className={cx('flex justify-end gap-2')}>
-          <Button variant="secondary" onClick={onClose} disabled={mutation.isPending}>
+        <div className="flex justify-end gap-2">
+          <Button disabled={mutation.isPending} onClick={onClose}>
             {t('common.cancel')}
           </Button>
-          <Button type="submit" disabled={mutation.isPending}>
+          <Button disabled={mutation.isPending} type="submit" variant="primary">
             {mutation.isPending
               ? t('common.saving')
               : editing
