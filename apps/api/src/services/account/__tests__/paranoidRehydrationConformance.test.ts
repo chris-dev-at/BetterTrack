@@ -1638,6 +1638,97 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     }
   });
 
+  it('validates many singleton exact-prefix PATCH witnesses in a fixed streaming pass', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = '018f0000-0f00-7000-8000-000000000f01';
+    const assetId = '018f0000-0f00-7000-8000-000000000f02';
+    const cutoffAssetId = '018f0000-0f00-7000-8000-000000000f03';
+    const pairCount = 64;
+    await seedGlobalAsset(harness, assetId, 'PREFIX-STREAMING-PATCH');
+    await seedGlobalAsset(harness, cutoffAssetId, 'PREFIX-STREAMING-CUTOFF');
+
+    const writeIds = ['018f0000-0f00-7000-8000-000000000f04'];
+    for (let index = 1; index < pairCount * 2 + 1; index += 1) {
+      writeIds.push(nextUuidV7WriteId(writeIds[index - 1]!));
+    }
+    const entities: StrictEntity[] = [portfolioEntity(user.id, portfolioId)];
+    for (let index = 0; index < pairCount; index += 1) {
+      const buyAt = new Date(Date.parse('2026-07-23T10:00:00.000Z') + index * 2_000).toISOString();
+      const sellAt = new Date(Date.parse(buyAt) + 1_000).toISOString();
+      entities.push(
+        transactionEntity({
+          id: writeIds[index * 2]!,
+          portfolioId,
+          assetId,
+          side: 'buy',
+          quantity: '999999999998.99999999',
+          executedAt: buyAt,
+        }),
+      );
+      const revisedSell = transactionEntity({
+        id: writeIds[index * 2 + 1]!,
+        portfolioId,
+        assetId,
+        side: 'sell',
+        quantity: '999999999999.00000000',
+        executedAt: sellAt,
+      });
+      // Each persisted pair has a one-quantum exact deficit, but both values
+      // read back as the same public number. It is therefore independently
+      // reachable as one normal PATCH, never as a cooperative raw batch.
+      revisedSell.rev = 1;
+      entities.push(revisedSell);
+    }
+    entities.push(
+      // This later no-preimage row fixes the document-wide strict prefix after
+      // every pair, so every revised sell must receive its own PATCH witness.
+      transactionEntity({
+        id: writeIds[pairCount * 2]!,
+        portfolioId,
+        assetId: cutoffAssetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:03:00.000Z',
+      }),
+    );
+    const document = strictDocument(entities);
+    expect(quantityEntities(document)).toHaveLength(pairCount * 2 + 1);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const orderTraces: Array<{
+      transactionRows: number;
+      writeOrderKeyPasses: number;
+      replayTimelineKeyPasses: number;
+      prefixRevisionRows: number;
+      prefixRevisionWitnesses: number;
+    }> = [];
+    await createParanoidRehydrationService({
+      db: harness.db,
+      testOnlyObserveQuantityReachabilityOrder(trace) {
+        orderTraces.push(trace);
+      },
+    }).rehydrate(user.id, {
+      rehydrationId: FIRST_REHYDRATION_ID,
+      document,
+    });
+
+    // This is structural rather than timing-based: every prefix row gets one
+    // forward witness visit even though all 64 revised sells need validation.
+    expect(orderTraces).toEqual([
+      {
+        transactionRows: pairCount * 2 + 1,
+        writeOrderKeyPasses: 32,
+        replayTimelineKeyPasses: 49,
+        prefixRevisionRows: pairCount * 2 + 1,
+        prefixRevisionWitnesses: pairCount,
+      },
+    ]);
+    expect(
+      await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
+    ).toHaveLength(pairCount * 2 + 1);
+  });
+
   it('rejects every unexplainable exact-prefix deficit before restore writes', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
@@ -2044,6 +2135,8 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
       transactionRows: number;
       writeOrderKeyPasses: number;
       replayTimelineKeyPasses: number;
+      prefixRevisionRows: number;
+      prefixRevisionWitnesses: number;
     }> = [];
     await createParanoidRehydrationService({
       db: arranged.harness.db,
@@ -2062,6 +2155,8 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
         transactionRows: NORMAL_HISTORY_TRANSACTION_COUNT + 2,
         writeOrderKeyPasses: 32,
         replayTimelineKeyPasses: 49,
+        prefixRevisionRows: 0,
+        prefixRevisionWitnesses: 0,
       },
     ]);
     expect(

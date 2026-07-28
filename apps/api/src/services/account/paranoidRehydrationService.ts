@@ -81,6 +81,10 @@ type TestOnlyObserveQuantityReachabilityOrder = (input: {
   writeOrderKeyPasses: number;
   /** Fixed normalized-timestamp-plus-UUID passes per chronological replay row. */
   replayTimelineKeyPasses: number;
+  /** Prefix rows visited once while validating singleton normal PATCH witnesses. */
+  prefixRevisionRows: number;
+  /** Exact-prefix deficits checked as singleton normal PATCH witnesses. */
+  prefixRevisionWitnesses: number;
 }) => void;
 
 export interface ParanoidRehydrationServiceDeps {
@@ -252,34 +256,65 @@ function isPersistedSolvent(rows: readonly QuantityReplayRow[]): boolean {
   return true;
 }
 
-type RawInputSelector = (row: QuantityReplayRow) => boolean;
+interface NormalReplayStep {
+  readonly held: number;
+  readonly canReplay: boolean;
+}
+
+/** Quantity-only equivalent of one `reducePosition` transition. */
+function replayNormalQuantity(
+  row: QuantityReplayRow,
+  quantity: number | null,
+  held: number,
+): NormalReplayStep {
+  if (quantity === null) return { held, canReplay: false };
+  if (row.transaction.data.side === 'buy') return { held: held + quantity, canReplay: true };
+  if (quantity > held + QTY_EPSILON) {
+    return row.transaction.data.allowUncovered
+      ? { held: 0, canReplay: true }
+      : { held, canReplay: false };
+  }
+  const nextHeld = held - quantity;
+  return {
+    held: Math.abs(nextHeld) <= QTY_EPSILON ? 0 : nextHeld,
+    canReplay: true,
+  };
+}
+
+const MAX_POSITIVE_FINITE_FLOAT_BITS = 0x7fefffffffffffffn;
+
+function positiveFloatFromBits(bits: bigint): number {
+  FLOAT64_VIEW.setBigUint64(0, bits);
+  return FLOAT64_VIEW.getFloat64(0);
+}
 
 /**
- * Quantity-only equivalent of reducePosition's oversell branch. Only the rows
- * selected for one candidate normal operation use raw public-number preimages;
- * every other row is a repository-number readback.
+ * The fixed readback suffix is monotonic in its entering holding: more shares
+ * can never make an ordinary sell fail. Find its smallest representable input
+ * with a fixed-width Float64 search, rather than replaying the whole suffix
+ * once for every possible singleton PATCH witness.
  */
-function normalRowsCanReplay(
-  rows: readonly QuantityReplayRow[],
-  usesRawInput: RawInputSelector,
-): boolean {
-  let held = 0;
-  for (const row of rows) {
-    const quantity = usesRawInput(row) ? row.normalInputQuantity : row.readbackQuantity;
-    if (quantity === null) return false;
-    if (row.transaction.data.side === 'buy') {
-      held += quantity;
-      continue;
+function minimumNormalHoldingForSuffixRow(
+  row: QuantityReplayRow,
+  requiredAfter: number,
+): number | null {
+  const canReachRequiredAfter = (held: number): boolean => {
+    const replayed = replayNormalQuantity(row, row.readbackQuantity, held);
+    return replayed.canReplay && replayed.held >= requiredAfter;
+  };
+  if (!canReachRequiredAfter(Number.MAX_VALUE)) return null;
+
+  let lower = 0n;
+  let upper = MAX_POSITIVE_FINITE_FLOAT_BITS;
+  while (lower < upper) {
+    const middle = (lower + upper) >> 1n;
+    if (canReachRequiredAfter(positiveFloatFromBits(middle))) {
+      upper = middle;
+    } else {
+      lower = middle + 1n;
     }
-    if (quantity > held + QTY_EPSILON) {
-      if (!row.transaction.data.allowUncovered) return false;
-      held = 0;
-      continue;
-    }
-    held -= quantity;
-    if (Math.abs(held) <= QTY_EPSILON) held = 0;
   }
-  return true;
+  return positiveFloatFromBits(lower);
 }
 
 const NORMAL_WRITE_BATCH_MAX_TRANSACTIONS = 500;
@@ -427,94 +462,110 @@ function orderByReplayTimeline(
   );
 }
 
-interface ExactLegacyPrefixFailure {
-  readonly group: readonly QuantityReplayRow[];
-  readonly row: QuantityReplayRow;
-}
-
-function exactLegacyPrefixFailures(
-  groups: readonly (readonly QuantityReplayRow[])[],
-  legacyCutoff: number,
-): readonly ExactLegacyPrefixFailure[] {
-  const failures: ExactLegacyPrefixFailure[] = [];
-  for (const group of groups) {
-    let held = 0n;
-    for (const row of group) {
-      if (row.writeOrder >= legacyCutoff) continue;
-      if (row.transaction.data.side === 'buy') {
-        held += row.quantity;
-        continue;
-      }
-      if (row.quantity > held && !row.transaction.data.allowUncovered) {
-        failures.push({ group, row });
-        // Continue from the same flat position that normal replay uses after
-        // an uncovered/invalid sell. A later exact deficit in this group must
-        // be proven independently; otherwise an earlier valid PATCH witness
-        // could hide an unrevised oversell through repository-number readback.
-        held = 0n;
-        continue;
-      }
-      held = row.quantity > held ? 0n : held - row.quantity;
-    }
-  }
-  return failures;
+interface PrefixRevisionWitnessStats {
+  readonly rows: number;
+  readonly witnesses: number;
 }
 
 /**
  * Revision metadata alone is not quantity-PATCH provenance. The fixed legacy
  * prefix is therefore replayed exactly first; a solvent prefix needs no PATCH
- * witness regardless of how many rows were edited. If the exact prefix has a
- * deficit, only its deficit-causing revised sell can be identified without
- * searching candidates or PATCH orders. Replay that row alone as the PATCH
- * input while every other pre-cutoff row uses the repository-number state that
- * updateTransaction would have read. Shapes requiring cooperating raw revised
- * rows fail closed.
+ * witness regardless of how many rows were edited. For every exact deficit,
+ * only its revised sell can be a singleton normal PATCH input while every
+ * other prefix row remains a repository-number readback.
+ *
+ * The reverse pass summarizes each readback suffix as its least required
+ * entering holding. The forward pass can then test every singleton candidate
+ * against that suffix in O(1), so N deficits do not trigger N full-prefix
+ * replays. Shapes requiring cooperating raw revised rows still fail closed.
  */
-function validatePrefixRevisionWitness(
-  failure: ExactLegacyPrefixFailure,
+function validatePrefixRevisionWitnesses(
+  groups: readonly (readonly QuantityReplayRow[])[],
   legacyCutoff: number,
-): void {
-  const revision = failure.row;
-  if (!revision.revisionCandidate) {
-    throw quantityReachabilityError(
-      revision,
-      'transaction quantity cannot replay through the direct strict-v1 prefix',
-    );
+): PrefixRevisionWitnessStats {
+  let rows = 0;
+  let witnesses = 0;
+
+  for (const group of groups) {
+    // `requiredFrom[index]` is the smallest repository-readback holding that
+    // can replay the remaining strict-prefix rows at and after `index`. Rows
+    // created after the prefix are deliberately transparent to this proof.
+    const requiredFrom: Array<number | null> = new Array(group.length + 1).fill(0);
+    let required: number | null = 0;
+    for (let index = group.length - 1; index >= 0; index -= 1) {
+      const row = group[index]!;
+      if (row.writeOrder < legacyCutoff && required !== null) {
+        required = minimumNormalHoldingForSuffixRow(row, required);
+      }
+      requiredFrom[index] = required;
+    }
+
+    let exactHeld = 0n;
+    let readbackHeld = 0;
+    let readbackPrefixCanReplay = true;
+    for (let index = 0; index < group.length; index += 1) {
+      const row = group[index]!;
+      if (row.writeOrder >= legacyCutoff) continue;
+      rows += 1;
+
+      if (row.transaction.data.side === 'buy') {
+        exactHeld += row.quantity;
+      } else {
+        const shortfall = row.quantity - exactHeld;
+        if (shortfall > 0n && !row.transaction.data.allowUncovered) {
+          witnesses += 1;
+          if (!row.revisionCandidate) {
+            throw quantityReachabilityError(
+              row,
+              'transaction quantity cannot replay through the direct strict-v1 prefix',
+            );
+          }
+          const replayedPatch = replayNormalQuantity(row, row.normalInputQuantity, readbackHeld);
+          const requiredAfter = requiredFrom[index + 1]!;
+          if (
+            !readbackPrefixCanReplay ||
+            !replayedPatch.canReplay ||
+            requiredAfter === null ||
+            replayedPatch.held < requiredAfter
+          ) {
+            throw quantityReachabilityError(
+              row,
+              'transaction quantity cannot replay as a pre-transition normal PATCH',
+            );
+          }
+        }
+        exactHeld = shortfall > 0n ? 0n : exactHeld - row.quantity;
+      }
+
+      // A later candidate always sees previous rows through repository
+      // readback. Once that readback history is invalid, it cannot be repaired
+      // by a singleton PATCH at a later row.
+      if (readbackPrefixCanReplay) {
+        const replayedReadback = replayNormalQuantity(row, row.readbackQuantity, readbackHeld);
+        if (replayedReadback.canReplay) {
+          readbackHeld = replayedReadback.held;
+        } else {
+          readbackPrefixCanReplay = false;
+        }
+      }
+    }
   }
-  const prefix = failure.group.filter((row) => row.writeOrder < legacyCutoff);
-  if (!normalRowsCanReplay(prefix, (row) => row.transaction.id === revision.transaction.id)) {
-    throw quantityReachabilityError(
-      revision,
-      'transaction quantity cannot replay as a pre-transition normal PATCH',
-    );
-  }
+
+  return { rows, witnesses };
 }
 
 function updateRawEpoch(
   row: QuantityReplayRow,
   held: number,
 ): { held: number; canReplay: boolean } {
-  const quantity = row.normalInputQuantity;
-  if (quantity === null) return { held, canReplay: false };
-  if (row.transaction.data.side === 'buy') return { held: held + quantity, canReplay: true };
-  if (quantity > held + QTY_EPSILON) {
-    return { held: 0, canReplay: row.transaction.data.allowUncovered };
-  }
-  const nextHeld = held - quantity;
-  return { held: Math.abs(nextHeld) <= QTY_EPSILON ? 0 : nextHeld, canReplay: true };
+  return replayNormalQuantity(row, row.normalInputQuantity, held);
 }
 
 function updateReadbackEpoch(
   row: QuantityReplayRow,
   held: number,
 ): { held: number; canReplay: boolean } {
-  const quantity = row.readbackQuantity;
-  if (row.transaction.data.side === 'buy') return { held: held + quantity, canReplay: true };
-  if (quantity > held + QTY_EPSILON) {
-    return { held: 0, canReplay: row.transaction.data.allowUncovered };
-  }
-  const nextHeld = held - quantity;
-  return { held: Math.abs(nextHeld) <= QTY_EPSILON ? 0 : nextHeld, canReplay: true };
+  return replayNormalQuantity(row, row.readbackQuantity, held);
 }
 
 /**
@@ -859,14 +910,17 @@ function storageRoundingSellIdsFor(
         : undefined,
     ),
   );
-  testOnlyObserveQuantityReachabilityOrder?.({
-    transactionRows: rows.length,
-    writeOrderKeyPasses,
-    replayTimelineKeyPasses,
-  });
-
   const persistedInsolventGroups = replayGroups.filter((group) => !isPersistedSolvent(group));
-  if (persistedInsolventGroups.length === 0) return new Set();
+  if (persistedInsolventGroups.length === 0) {
+    testOnlyObserveQuantityReachabilityOrder?.({
+      transactionRows: rows.length,
+      writeOrderKeyPasses,
+      replayTimelineKeyPasses,
+      prefixRevisionRows: 0,
+      prefixRevisionWitnesses: 0,
+    });
+    return new Set();
+  }
 
   // Only a UUIDv7 key carries the creation-order provenance needed by the
   // insolvent direct proof. Solvent strict-v1 rows return above without that
@@ -887,9 +941,10 @@ function storageRoundingSellIdsFor(
       row.normalInputQuantity === null ? Math.max(cutoff, row.writeOrder + 1) : cutoff,
     0,
   );
-  for (const legacyFailure of exactLegacyPrefixFailures(replayGroups, legacyCutoff)) {
-    validatePrefixRevisionWitness(legacyFailure, legacyCutoff);
-  }
+  // A post-cutoff normal row may be deliberately backdated between legacy
+  // rows, so its full persisted group can look solvent while the exact prefix
+  // still needs a singleton PATCH witness. Keep this document-wide.
+  const prefixRevisionWitnessStats = validatePrefixRevisionWitnesses(replayGroups, legacyCutoff);
 
   const storageRoundingSellIds = oneQuantumStorageRoundingSellIds(replayGroups);
   const createWitnesses = collectNormalCreateWitnesses(
@@ -898,6 +953,13 @@ function storageRoundingSellIdsFor(
     legacyCutoff,
   );
   validateNormalCreateWitnesses(createWitnesses, rows);
+  testOnlyObserveQuantityReachabilityOrder?.({
+    transactionRows: rows.length,
+    writeOrderKeyPasses,
+    replayTimelineKeyPasses,
+    prefixRevisionRows: prefixRevisionWitnessStats.rows,
+    prefixRevisionWitnesses: prefixRevisionWitnessStats.witnesses,
+  });
   return storageRoundingSellIds;
 }
 
