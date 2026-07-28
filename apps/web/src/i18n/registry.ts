@@ -57,6 +57,22 @@ export const SUPPORTED_LOCALES: LocaleDefinition[] = Object.values(LOCALES);
 /** EN messages — the fallback every other locale falls through to. */
 export const EN_MESSAGES = LOCALES.en.messages;
 
+/** Resolve one registered message for non-React consumers such as generated files. */
+export function localizedMessage(locale: string, key: string): string {
+  const resolved = resolveLocaleCode(locale);
+  const path = key.split('.');
+  return lookupMessage(LOCALES[resolved].messages, path) ?? lookupMessage(EN_MESSAGES, path) ?? key;
+}
+
+function lookupMessage(tree: MessageNode, path: readonly string[]): string | undefined {
+  let node: string | MessageNode | undefined = tree;
+  for (const segment of path) {
+    if (typeof node !== 'object' || node === null) return undefined;
+    node = node[segment];
+  }
+  return typeof node === 'string' ? node : undefined;
+}
+
 /**
  * Resolve any stored code (`de`, `de-AT`, an unknown code, or nothing) to a
  * renderable {@link LocaleCode}, falling back to EN — so a new/unknown locale
