@@ -14,6 +14,8 @@ const STATUS_TONE: Record<EmailLogEntry['status'], StatusTone> = {
   suppressed: 'neutral',
 };
 
+type EmailLogError = { kind: 'api'; message: string } | { kind: 'generic' };
+
 /** Load one page of the log; used for both the global and per-user views. */
 export type EmailLogLoader = (
   params: { cursor?: string },
@@ -32,7 +34,7 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<EmailLogError | null>(null);
 
   const fetchPage = useCallback(
     async (after: string | null, signal?: AbortSignal) => {
@@ -44,10 +46,12 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
       } catch (err) {
         if (signal?.aborted) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        setError(err instanceof ApiError ? err.message : t('admin.emailLog.error'));
+        setError(
+          err instanceof ApiError ? { kind: 'api', message: err.message } : { kind: 'generic' },
+        );
       }
     },
-    [load, t],
+    [load],
   );
 
   useEffect(() => {
@@ -69,7 +73,10 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
   }
 
   if (loading) return <Spinner label={t('admin.emailLog.loading')} />;
-  if (error) return <Alert tone="error">{error}</Alert>;
+  if (error)
+    return (
+      <Alert tone="error">{error.kind === 'api' ? error.message : t('common.errorTitle')}</Alert>
+    );
   if (entries.length === 0)
     return <EmptyState>{emptyLabel ?? t('admin.emailLog.empty')}</EmptyState>;
 

@@ -31,70 +31,18 @@ export interface LocaleDefinition {
   messages: MessageNode;
 }
 
-const ADMIN_EMAIL_LOG_MESSAGES = {
-  en: {
-    loading: 'Loading email log…',
-    error: 'Something went wrong.',
-    empty: 'No emails sent yet.',
-    headers: {
-      when: 'When',
-      recipient: 'Recipient',
-      template: 'Template',
-      subject: 'Subject',
-      status: 'Status',
-    },
-    status: {
-      sent: 'Sent',
-      failed: 'Failed',
-      suppressed: 'Suppressed',
-    },
-    loadMore: 'Load more',
-    loadingMore: 'Loading…',
-  },
-  de: {
-    loading: 'E-Mail-Protokoll wird geladen…',
-    error: 'Etwas ist schiefgelaufen.',
-    empty: 'Noch keine E-Mails gesendet.',
-    headers: {
-      when: 'Zeitpunkt',
-      recipient: 'Empfänger',
-      template: 'Vorlage',
-      subject: 'Betreff',
-      status: 'Status',
-    },
-    status: {
-      sent: 'Gesendet',
-      failed: 'Fehlgeschlagen',
-      suppressed: 'Unterdrückt',
-    },
-    loadMore: 'Mehr laden',
-    loadingMore: 'Wird geladen…',
-  },
-} satisfies Record<'en' | 'de', MessageNode>;
-
-function withAdminEmailLog(messages: MessageNode, emailLog: MessageNode): MessageNode {
-  const admin = messages.admin;
-  return {
-    ...messages,
-    admin: {
-      ...(typeof admin === 'object' && admin !== null ? admin : {}),
-      emailLog,
-    },
-  };
-}
-
 export const LOCALES = {
   en: {
     code: 'en',
     label: 'English',
     intlLocale: 'en-GB',
-    messages: withAdminEmailLog(en as unknown as MessageNode, ADMIN_EMAIL_LOG_MESSAGES.en),
+    messages: en as unknown as MessageNode,
   },
   de: {
     code: 'de',
     label: 'Deutsch',
     intlLocale: 'de-AT',
-    messages: withAdminEmailLog(de as unknown as MessageNode, ADMIN_EMAIL_LOG_MESSAGES.de),
+    messages: de as unknown as MessageNode,
   },
 } satisfies Record<string, LocaleDefinition>;
 

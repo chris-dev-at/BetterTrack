@@ -5,7 +5,7 @@ import { expect, test, vi } from 'vitest';
 import type { EmailLogEntry, EmailLogListResponse } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
-import { I18nProvider } from '../../i18n';
+import { I18nProvider, useI18n } from '../../i18n';
 import { EmailLogTable, type EmailLogLoader } from './EmailLogTable';
 
 const nextCursor = '00000000-0000-7000-8000-000000000099';
@@ -67,6 +67,18 @@ function renderTable(locale: keyof typeof copy, load: EmailLogLoader, emptyLabel
     <I18nProvider initialLocale={locale}>
       <EmailLogTable load={load} emptyLabel={emptyLabel} />
     </I18nProvider>,
+  );
+}
+
+function LocaleSwitchingTable({ load }: { load: EmailLogLoader }) {
+  const { setLocale } = useI18n();
+  return (
+    <>
+      <button type="button" onClick={() => setLocale('de')}>
+        German
+      </button>
+      <EmailLogTable load={load} />
+    </>
   );
 }
 
@@ -157,4 +169,39 @@ test('keeps an explicit empty label and an ApiError message', async () => {
   );
 
   expect(await screen.findByRole('alert')).toHaveTextContent(apiMessage);
+});
+
+test('keeps loaded pages when the locale changes', async () => {
+  const user = userEvent.setup();
+  const load = vi.fn<EmailLogLoader>().mockResolvedValue({ entries, nextCursor });
+
+  render(
+    <I18nProvider initialLocale="en">
+      <LocaleSwitchingTable load={load} />
+    </I18nProvider>,
+  );
+
+  expect(await screen.findByText(entries[0].recipient)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'German' }));
+
+  expect(await screen.findByRole('button', { name: copy.de.loadMore })).toBeInTheDocument();
+  expect(screen.getByText(entries[0].recipient)).toBeInTheDocument();
+  expect(load).toHaveBeenCalledTimes(1);
+});
+
+test('translates a generic error after a locale change without retrying', async () => {
+  const user = userEvent.setup();
+  const load = vi.fn<EmailLogLoader>().mockRejectedValue(new Error('The request failed.'));
+
+  render(
+    <I18nProvider initialLocale="en">
+      <LocaleSwitchingTable load={load} />
+    </I18nProvider>,
+  );
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong.');
+  await user.click(screen.getByRole('button', { name: 'German' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Etwas ist schiefgelaufen.');
+  expect(load).toHaveBeenCalledTimes(1);
 });
