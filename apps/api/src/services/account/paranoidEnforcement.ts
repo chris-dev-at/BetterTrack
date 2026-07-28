@@ -39,6 +39,9 @@ export interface ParanoidServiceSurface {
   readonly method: string;
 }
 
+/** Synthetic method identity used when an AppContext field is directly callable. */
+export const PARANOID_DIRECT_SERVICE_CALL = '<call>';
+
 export interface ParanoidJobSurface {
   readonly kind: 'job';
   readonly source: ParanoidSurfaceSource;
@@ -143,6 +146,11 @@ export type ParanoidJobPolicy =
       readonly knownGapId?: string;
     };
 
+export interface ParanoidJobPolicyEntry {
+  readonly surface: ParanoidJobSurface;
+  readonly policy: ParanoidJobPolicy;
+}
+
 export interface ParanoidKillRegistryEntry {
   readonly capability: ParanoidKilledCapability;
   readonly routes: readonly ParanoidRouteRule[];
@@ -160,11 +168,6 @@ export const PARANOID_ROUTE_TABLE_SOURCE: ParanoidSurfaceSource = {
 export const PARANOID_ACCOUNT_CONTEXT_SOURCE: ParanoidSurfaceSource = {
   file: 'apps/api/src/http/context.ts',
   symbol: 'AppContext',
-};
-
-export const PARANOID_JOB_REGISTRY_SOURCE: ParanoidSurfaceSource = {
-  file: 'apps/api/src/jobs/types.ts',
-  symbol: 'QUEUE_NAMES',
 };
 
 const serviceBinding = (
@@ -725,107 +728,152 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
 
 const ALERTS_CUSTOM_ASSET_GAP_ID = 'alerts-evaluate-custom-asset-enumeration';
 
-/** Every registered queue must declare its paranoid-mode handling. */
-export const PARANOID_JOB_POLICIES: Readonly<Record<string, ParanoidJobPolicy>> = {
+const jobPolicy = (
+  file: string,
+  symbol: string,
+  name: string,
+  policy: ParanoidJobPolicy,
+): ParanoidJobPolicyEntry => ({
+  surface: {
+    kind: 'job',
+    source: {
+      file: `apps/api/src/jobs/definitions/${file}`,
+      symbol,
+    },
+    name,
+  },
+  policy,
+});
+
+/**
+ * Every production registration must declare its paranoid-mode handling by
+ * concrete definition source as well as queue name. A replacement handler on
+ * an existing queue is therefore a new, unclassified candidate.
+ */
+export const PARANOID_JOB_POLICIES: readonly ParanoidJobPolicyEntry[] = [
+  jobPolicy('heartbeat.ts', 'heartbeatJob', 'system.heartbeat', {
+    capability: null,
+    mode: 'kept',
+    reason: 'The heartbeat is deployment-health infrastructure.',
+  }),
+  jobPolicy('marketDataJobs.ts', 'createPricesRefreshDailyJob', 'prices.refreshDaily', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Global market-price refresh has no account-owned input.',
+  }),
+  jobPolicy('marketDataJobs.ts', 'createPricesBackfillJob', 'prices.backfill', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Global market-history backfill has no account-owned input.',
+  }),
+  jobPolicy('marketDataJobs.ts', 'createFxRefreshSpotJob', 'fx.refreshSpot', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Global FX refresh has no account-owned input.',
+  }),
   // Known gap #884: custom-asset alerts are still enumerated by the evaluator.
   // Keep this explicit temporary exemption visible until #884 adds the guard.
-  'alerts.evaluate': {
+  jobPolicy('alertsJob.ts', 'createAlertsEvaluateJob', 'alerts.evaluate', {
     capability: null,
     mode: 'internallyFiltered',
     reason:
       'Known gap #884: alerts.evaluate must exclude custom-asset alerts owned by paranoid accounts.',
     knownGapId: ALERTS_CUSTOM_ASSET_GAP_ID,
-  },
-  'prices.refreshDaily': {
-    capability: null,
-    mode: 'kept',
-    reason: 'Global market-price refresh has no account-owned input.',
-  },
-  'prices.backfill': {
-    capability: null,
-    mode: 'kept',
-    reason: 'Global market-history backfill has no account-owned input.',
-  },
-  'fx.refreshSpot': {
-    capability: null,
-    mode: 'kept',
-    reason: 'Global FX refresh has no account-owned input.',
-  },
-  'notifications.dispatch': {
+  }),
+  jobPolicy('notificationsJob.ts', 'createNotificationsDispatchJob', 'notifications.dispatch', {
     capability: null,
     mode: 'kept',
     reason:
       'Notification delivery is transport infrastructure; event ownership is handled at its producer.',
-  },
-  'notifications.digestDaily': {
+  }),
+  jobPolicy('digestJobs.ts', 'createDigestDailyJob', 'notifications.digestDaily', {
     capability: null,
     mode: 'kept',
     reason:
       'Digest delivery is notification transport; portfolio-producing jobs are classified separately.',
-  },
-  'notifications.digestWeekly': {
+  }),
+  jobPolicy('digestJobs.ts', 'createDigestWeeklyJob', 'notifications.digestWeekly', {
     capability: null,
     mode: 'kept',
     reason:
       'Digest delivery is notification transport; portfolio-producing jobs are classified separately.',
-  },
-  'notifications.deferredDelivery': {
+  }),
+  jobPolicy('digestJobs.ts', 'createDeferredDeliveryJob', 'notifications.deferredDelivery', {
     capability: null,
     mode: 'kept',
     reason: 'Deferred delivery only releases already-classified notifications.',
-  },
-  'data.export': {
+  }),
+  jobPolicy('exportJobs.ts', 'createExportBuildJob', 'data.export', {
     capability: null,
     mode: 'kept',
     reason: 'Export job metadata is handled by the vault/export protocol.',
-  },
-  'data.exportCleanup': {
+  }),
+  jobPolicy('exportJobs.ts', 'createExportCleanupJob', 'data.exportCleanup', {
     capability: null,
     mode: 'kept',
     reason: 'Expired export cleanup is retention infrastructure.',
-  },
-  'snapshots.recompute': { capability: 'portfolioJobs', mode: 'portfolio' },
-  'snapshots.backfill': { capability: 'portfolioJobs', mode: 'serviceFiltered' },
-  'usage.rollup': {
+  }),
+  jobPolicy('snapshotJobs.ts', 'createSnapshotsRecomputeJob', 'snapshots.recompute', {
+    capability: 'portfolioJobs',
+    mode: 'portfolio',
+  }),
+  jobPolicy('snapshotJobs.ts', 'createSnapshotsBackfillJob', 'snapshots.backfill', {
+    capability: 'portfolioJobs',
+    mode: 'serviceFiltered',
+  }),
+  jobPolicy('usageAnalyticsJobs.ts', 'createUsageRollupJob', 'usage.rollup', {
     capability: null,
     mode: 'kept',
     reason: 'Usage rollups are aggregate telemetry, not portfolio content.',
-  },
-  'notifications.earningsRemind': { capability: 'portfolioJobs', mode: 'perUser' },
-  'marketIntel.dividendScan': { capability: 'portfolioJobs', mode: 'perUser' },
-  'standingOrders.process': { capability: 'standingOrderExecution', mode: 'perUser' },
-  'mirror.replicate': { capability: 'mirrorchain', mode: 'serviceFiltered' },
-  'mirror.inviteCleanup': {
+  }),
+  jobPolicy('earningsReminderJob.ts', 'createEarningsReminderJob', 'notifications.earningsRemind', {
+    capability: 'portfolioJobs',
+    mode: 'perUser',
+  }),
+  jobPolicy('dividendEventsJob.ts', 'createDividendEventsScanJob', 'marketIntel.dividendScan', {
+    capability: 'portfolioJobs',
+    mode: 'perUser',
+  }),
+  jobPolicy('standingOrdersJob.ts', 'createStandingOrdersJob', 'standingOrders.process', {
+    capability: 'standingOrderExecution',
+    mode: 'perUser',
+  }),
+  jobPolicy('mirrorJobs.ts', 'createMirrorReplicateJob', 'mirror.replicate', {
+    capability: 'mirrorchain',
+    mode: 'serviceFiltered',
+  }),
+  jobPolicy('mirrorJobs.ts', 'createMirrorInviteCleanupJob', 'mirror.inviteCleanup', {
     capability: null,
     mode: 'kept',
     reason: 'Expired invite cleanup only removes stale security tokens.',
-  },
-  'mirror.consistencySweep': { capability: 'mirrorchain', mode: 'serviceFiltered' },
-  'webhooks.deliver': { capability: 'portfolioWebhooks', mode: 'event' },
-  'webhooks.deliveryCleanup': {
+  }),
+  jobPolicy('mirrorJobs.ts', 'createMirrorConsistencySweepJob', 'mirror.consistencySweep', {
+    capability: 'mirrorchain',
+    mode: 'serviceFiltered',
+  }),
+  jobPolicy('webhookJobs.ts', 'createWebhookDeliverJob', 'webhooks.deliver', {
+    capability: 'portfolioWebhooks',
+    mode: 'event',
+  }),
+  jobPolicy('webhookJobs.ts', 'createWebhookDeliveryCleanupJob', 'webhooks.deliveryCleanup', {
     capability: null,
     mode: 'kept',
     reason: 'Webhook delivery-log cleanup is retention infrastructure.',
-  },
-  'apiKeys.requestLogCleanup': {
+  }),
+  jobPolicy('apiKeyJobs.ts', 'createApiKeyRequestLogCleanupJob', 'apiKeys.requestLogCleanup', {
     capability: null,
     mode: 'kept',
     reason: 'API-key audit-log cleanup is retention infrastructure.',
-  },
-  'system.heartbeat': {
-    capability: null,
-    mode: 'kept',
-    reason: 'The heartbeat is deployment-health infrastructure.',
-  },
-} as const;
+  }),
+] as const;
 
 const servicesFor = (capability: ParanoidKilledCapability): readonly ParanoidServiceBinding[] =>
   PARANOID_SERVICE_BINDINGS.filter((binding) => binding.capability === capability);
 
 const jobsFor = (capability: ParanoidKilledCapability): readonly string[] =>
-  Object.entries(PARANOID_JOB_POLICIES)
-    .filter(([, policy]) => policy.capability === capability)
-    .map(([name]) => name);
+  PARANOID_JOB_POLICIES.filter((entry) => entry.policy.capability === capability).map(
+    (entry) => entry.surface.name,
+  );
 
 /**
  * The typed §8 kill registry. It is intentionally declarative in this issue;
@@ -1242,13 +1290,20 @@ export function paranoidServiceClassifications(
   return classifications;
 }
 
-/** All job classifications so the harness can detect an omitted queue name. */
-export function paranoidJobClassifications(name: string): readonly ParanoidSurfaceClassification[] {
-  const policy = PARANOID_JOB_POLICIES[name];
-  if (!policy) return [];
-  if (policy.capability) return [guarded(policy.capability)];
-  const knownGap = PARANOID_KNOWN_GAPS.find((gap) => gap.id === policy.knownGapId);
-  return [exempt(policy.reason, knownGap?.issue, policy.knownGapId)];
+/** All job classifications, matched by queue and concrete production source. */
+export function paranoidJobClassifications(
+  surface: ParanoidJobSurface,
+): readonly ParanoidSurfaceClassification[] {
+  return PARANOID_JOB_POLICIES.filter(
+    (entry) =>
+      entry.surface.name === surface.name &&
+      entry.surface.source.file === surface.source.file &&
+      entry.surface.source.symbol === surface.source.symbol,
+  ).map(({ policy }) => {
+    if (policy.capability) return guarded(policy.capability);
+    const knownGap = PARANOID_KNOWN_GAPS.find((gap) => gap.id === policy.knownGapId);
+    return exempt(policy.reason, knownGap?.issue, policy.knownGapId);
+  });
 }
 
 /**
@@ -1263,7 +1318,7 @@ export function paranoidSurfaceClassifications(
   if (surface.kind === 'service') {
     return paranoidServiceClassifications(surface.service, surface.method);
   }
-  if (surface.kind === 'job') return paranoidJobClassifications(surface.name);
+  if (surface.kind === 'job') return paranoidJobClassifications(surface);
   return PARANOID_KNOWN_GAPS.filter(
     (gap) =>
       gap.surface.kind === 'internal' &&

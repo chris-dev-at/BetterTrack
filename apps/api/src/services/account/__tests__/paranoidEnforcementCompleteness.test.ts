@@ -4,15 +4,16 @@ import ts from 'typescript';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { createApp } from '../../../app';
-import { ALL_QUEUE_NAMES } from '../../../jobs';
+import { JOB_REGISTRATION_DESCRIPTORS, type JobRegistrationDescriptor } from '../../../jobs';
 import { buildRouteTable } from '../../../scripts/checkOpenapiCoverage';
 import {
   isParanoidSurfaceClassified,
   PARANOID_ACCOUNT_CONTEXT_SOURCE,
-  PARANOID_JOB_REGISTRY_SOURCE,
+  PARANOID_DIRECT_SERVICE_CALL,
   PARANOID_KNOWN_GAPS,
   PARANOID_ROUTE_TABLE_SOURCE,
   paranoidSurfaceClassifications,
+  type ParanoidJobSurface,
   type ParanoidRouteSurface,
   type ParanoidServiceSurface,
   type ParanoidSurface,
@@ -21,11 +22,24 @@ import {
 const API_PREFIX = '/api/v1';
 const API_TSCONFIG_PATH = fileURLToPath(new URL('../../../../tsconfig.json', import.meta.url));
 const APP_CONTEXT_PATH = fileURLToPath(new URL('../../../http/context.ts', import.meta.url));
+const COMPLETENESS_TEST_PATH = fileURLToPath(import.meta.url);
+const COMPLETENESS_TEST_SOURCE =
+  'apps/api/src/services/account/__tests__/paranoidEnforcementCompleteness.test.ts';
+
+export interface CallableAppContextFixture {
+  directEntryPoint: (userId: string) => Promise<void>;
+}
 
 function surfaceName(surface: ParanoidSurface): string {
   const source = `${surface.source.file}#${surface.source.symbol}`;
   if (surface.kind === 'route') return `${source} (${surface.method} ${surface.path})`;
-  if (surface.kind === 'service') return `${source} (ctx.${surface.service}.${surface.method})`;
+  if (surface.kind === 'service') {
+    const entryPoint =
+      surface.method === PARANOID_DIRECT_SERVICE_CALL
+        ? `ctx.${surface.service}()`
+        : `ctx.${surface.service}.${surface.method}`;
+    return `${source} (${entryPoint})`;
+  }
   if (surface.kind === 'job') return `${source} (job ${surface.name})`;
   return source;
 }
@@ -60,7 +74,15 @@ function mountedRouteSurfaces(
  * runtime own-key inspection misses class/prototype methods, either of which
  * would let a production entry point escape the completeness gate.
  */
-function accountContextServiceSurfaces(): ParanoidServiceSurface[] {
+function accountContextServiceSurfaces({
+  contextPath = APP_CONTEXT_PATH,
+  contextExport = 'AppContext',
+  source = PARANOID_ACCOUNT_CONTEXT_SOURCE,
+}: {
+  readonly contextPath?: string;
+  readonly contextExport?: string;
+  readonly source?: ParanoidServiceSurface['source'];
+} = {}): ParanoidServiceSurface[] {
   const parsedConfig = ts.getParsedCommandLineOfConfigFile(
     API_TSCONFIG_PATH,
     {},
@@ -81,21 +103,21 @@ function accountContextServiceSurfaces(): ParanoidServiceSurface[] {
   }
 
   const program = ts.createProgram({
-    rootNames: [APP_CONTEXT_PATH],
+    rootNames: [contextPath],
     options: parsedConfig.options,
   });
   const checker = program.getTypeChecker();
-  const contextSource = program.getSourceFile(APP_CONTEXT_PATH);
+  const contextSource = program.getSourceFile(contextPath);
   if (!contextSource) {
-    throw new Error('Unable to load AppContext for paranoid surface discovery.');
+    throw new Error(`Unable to load ${contextExport} for paranoid surface discovery.`);
   }
 
   const moduleSymbol = checker.getSymbolAtLocation(contextSource);
   const contextSymbol = moduleSymbol
-    ? checker.getExportsOfModule(moduleSymbol).find((symbol) => symbol.getName() === 'AppContext')
+    ? checker.getExportsOfModule(moduleSymbol).find((symbol) => symbol.getName() === contextExport)
     : undefined;
   if (!contextSymbol) {
-    throw new Error('Unable to resolve AppContext for paranoid surface discovery.');
+    throw new Error(`Unable to resolve ${contextExport} for paranoid surface discovery.`);
   }
 
   const contextType = checker.getDeclaredTypeOfSymbol(contextSymbol);
@@ -108,8 +130,20 @@ function accountContextServiceSurfaces(): ParanoidServiceSurface[] {
     );
     if ((serviceType.flags & ts.TypeFlags.Any) !== 0) {
       throw new Error(
-        `AppContext.${service} is typed as any; paranoid surface discovery must use a callable production type.`,
+        `${contextExport}.${service} is typed as any; paranoid surface discovery must use a callable production type.`,
       );
+    }
+
+    if (serviceType.getCallSignatures().length > 0) {
+      surfaces.push({
+        kind: 'service',
+        source: {
+          ...source,
+          symbol: `${source.symbol}.${service}`,
+        },
+        service,
+        method: PARANOID_DIRECT_SERVICE_CALL,
+      });
     }
 
     for (const methodSymbol of checker.getPropertiesOfType(serviceType)) {
@@ -123,8 +157,8 @@ function accountContextServiceSurfaces(): ParanoidServiceSurface[] {
       surfaces.push({
         kind: 'service',
         source: {
-          ...PARANOID_ACCOUNT_CONTEXT_SOURCE,
-          symbol: `${PARANOID_ACCOUNT_CONTEXT_SOURCE.symbol}.${service}.${method}`,
+          ...source,
+          symbol: `${source.symbol}.${service}.${method}`,
         },
         service,
         method,
@@ -137,11 +171,13 @@ function accountContextServiceSurfaces(): ParanoidServiceSurface[] {
   );
 }
 
-function registeredJobSurfaces(): ParanoidSurface[] {
-  return ALL_QUEUE_NAMES.map((name) => ({
+function registeredJobSurfaces(
+  registrations: readonly JobRegistrationDescriptor[] = JOB_REGISTRATION_DESCRIPTORS,
+): ParanoidJobSurface[] {
+  return registrations.map((registration) => ({
     kind: 'job' as const,
-    source: PARANOID_JOB_REGISTRY_SOURCE,
-    name,
+    source: registration.source,
+    name: registration.name,
   }));
 }
 
@@ -194,6 +230,29 @@ describe('paranoid enforcement completeness', () => {
     );
   });
 
+  it('discovers a directly callable context field as its own entry point', () => {
+    const directSurface = accountContextServiceSurfaces({
+      contextPath: COMPLETENESS_TEST_PATH,
+      contextExport: 'CallableAppContextFixture',
+      source: {
+        file: COMPLETENESS_TEST_SOURCE,
+        symbol: 'CallableAppContextFixture',
+      },
+    }).find((surface) => surface.service === 'directEntryPoint');
+
+    expect(directSurface).toMatchObject({
+      service: 'directEntryPoint',
+      method: PARANOID_DIRECT_SERVICE_CALL,
+      source: {
+        file: COMPLETENESS_TEST_SOURCE,
+        symbol: 'CallableAppContextFixture.directEntryPoint',
+      },
+    });
+    expect(classificationProblems([directSurface!])).toEqual([
+      `${COMPLETENESS_TEST_SOURCE}#CallableAppContextFixture.directEntryPoint (ctx.directEntryPoint()) is unclassified`,
+    ]);
+  });
+
   it('names a newly mounted direct application route when no classification exists', () => {
     // This direct app.get fixture is absent from the app.use mount list. It
     // proves the walker sees a newly added direct endpoint rather than relying
@@ -208,14 +267,39 @@ describe('paranoid enforcement completeness', () => {
         return app;
       }),
       {
-        file: 'apps/api/src/services/account/__tests__/paranoidEnforcementCompleteness.test.ts',
+        file: COMPLETENESS_TEST_SOURCE,
         symbol: 'throwawayParanoidRouteFixture',
       },
     ).find((route) => route.method === 'GET' && route.path === fixturePath);
 
     expect(throwawayRoute).toBeDefined();
     expect(classificationProblems([throwawayRoute!])).toEqual([
-      'apps/api/src/services/account/__tests__/paranoidEnforcementCompleteness.test.ts#throwawayParanoidRouteFixture (GET /paranoid-enforcement-fixture) is unclassified',
+      `${COMPLETENESS_TEST_SOURCE}#throwawayParanoidRouteFixture (GET /paranoid-enforcement-fixture) is unclassified`,
+    ]);
+  });
+
+  it('keeps a replacement job unclassified even when its queue name is already registered', () => {
+    const throwawayRegistration = {
+      key: 'throwawayRegisteredJobFixture',
+      name: 'system.heartbeat',
+      source: {
+        file: COMPLETENESS_TEST_SOURCE,
+        symbol: 'throwawayRegisteredJobFixture',
+      },
+    } satisfies JobRegistrationDescriptor;
+
+    expect(
+      JOB_REGISTRATION_DESCRIPTORS.some(
+        (registration) => registration.name === throwawayRegistration.name,
+      ),
+    ).toBe(true);
+
+    const surfaces = registeredJobSurfaces([
+      ...JOB_REGISTRATION_DESCRIPTORS,
+      throwawayRegistration,
+    ]);
+    expect(classificationProblems(surfaces)).toEqual([
+      `${COMPLETENESS_TEST_SOURCE}#throwawayRegisteredJobFixture (job system.heartbeat) is unclassified`,
     ]);
   });
 
