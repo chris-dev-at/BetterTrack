@@ -85,8 +85,8 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   router.use(limiters.admin);
   router.use(requireAdmin);
 
-  // Admin 2FA management (§6.12, #400) is registered BEFORE the setup gate so it
-  // stays reachable while the admin is not yet enrolled (the bootstrap wizard).
+  // Admin 2FA management (§6.12, #400, #878) is registered before the general
+  // gate, but applies its own per-route assurance/bootstrap gates.
   registerAdminSecurityRoutes(router, ctx);
 
   // Mandatory admin-login 2FA: every admin endpoint below this line 403s with

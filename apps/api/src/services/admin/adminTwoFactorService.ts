@@ -16,7 +16,20 @@ import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
 import { generateRecoveryCodes, normalizeRecoveryCode } from '../auth/totp';
 import type { TwoFactorMutationResult, TwoFactorService } from '../auth/twoFactorService';
-import type { SessionSecurityContext, SessionService } from '../sessions/sessionService';
+import {
+  authenticationMethodOf,
+  isPersistent,
+  type SessionData,
+  type SessionMfaMethod,
+  type SessionSecurityContext,
+  type SessionService,
+} from '../sessions/sessionService';
+
+export interface AdminMfaCompletionResult<T> extends TwoFactorMutationResult<T> {
+  /** Fresh assured session replacing the first-factor/bootstrap session. */
+  sessionId: string;
+  persistent: boolean;
+}
 
 /**
  * Mandatory admin-login two-factor authentication (PROJECTPLAN.md §6.12, #400).
@@ -43,22 +56,22 @@ export interface AdminTwoFactorService {
   /** Begin TOTP enrollment — provisional encrypted secret + provisioning URI. */
   enrollTotp(
     adminId: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
   ): Promise<TwoFactorEnrollResponse>;
   /** Confirm TOTP with a current code; recovery codes returned iff first method. */
   confirmTotp(
     adminId: string,
     code: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
-  ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
+  ): Promise<AdminMfaCompletionResult<TwoFactorMethodEnabledResponse>>;
   /** Turn TOTP off with a valid factor (re-enroll = disable then enroll). */
   disableTotp(
     adminId: string,
     code: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
   ): Promise<TwoFactorMutationResult<void>>;
   /**
    * Set (first time) or change the 2FA email and send a confirmation code to it.
@@ -77,20 +90,20 @@ export interface AdminTwoFactorService {
   confirmEmail(
     adminId: string,
     code: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
-  ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
+  ): Promise<AdminMfaCompletionResult<TwoFactorMethodEnabledResponse>>;
   /** Turn the email method off (session-authorized); clears the 2FA email. */
   disableEmail(
     adminId: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
   ): Promise<TwoFactorMutationResult<void>>;
   /** Regenerate the recovery codes (only while some method is on; old set voided). */
   regenerateRecoveryCodes(
     adminId: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
   ): Promise<TwoFactorMutationResult<TwoFactorRecoveryCodesResponse>>;
 }
 
@@ -101,7 +114,7 @@ export interface AdminTwoFactorServiceDeps {
   audit: AuditService;
   redis: Redis;
   email: EmailService;
-  sessions: Pick<SessionService, 'destroyAllForUser'>;
+  sessions: Pick<SessionService, 'create' | 'destroyAllForUser' | 'get'>;
 }
 
 // The admin email-method setup code (#400): a short-lived numeric code proving the
@@ -139,6 +152,36 @@ export function createAdminTwoFactorService(
       // The committed generation rejects every old cookie even when eager
       // Redis cleanup is unavailable.
     }
+  }
+
+  async function sessionForMfaCompletion(
+    adminId: string,
+    session: SessionSecurityContext,
+  ): Promise<SessionData> {
+    const current = await sessions.get(session.sessionId);
+    if (
+      !current ||
+      current.userId !== adminId ||
+      current.securityGeneration !== session.securityGeneration ||
+      authenticationMethodOf(current) !== 'password'
+    ) {
+      throw unauthorized();
+    }
+    return current;
+  }
+
+  async function rotateAssuredSession<T>(
+    adminId: string,
+    prior: SessionData,
+    method: SessionMfaMethod,
+    result: TwoFactorMutationResult<T>,
+  ): Promise<AdminMfaCompletionResult<T>> {
+    const persistent = isPersistent(prior);
+    const sessionId = await sessions.create(adminId, result.securityGeneration, persistent, {
+      method: 'password',
+      mfaAssurance: { method, verifiedAt: Date.now() },
+    });
+    return { ...result, sessionId, persistent };
   }
 
   async function invalidEmailSetup(adminId: string): Promise<never> {
@@ -205,8 +248,10 @@ export function createAdminTwoFactorService(
       return twoFactor.enrollTotp(adminId, ip, session);
     },
 
-    confirmTotp(adminId, code, ip, session) {
-      return twoFactor.confirmTotp(adminId, code, ip, session);
+    async confirmTotp(adminId, code, ip, session) {
+      const prior = await sessionForMfaCompletion(adminId, session);
+      const result = await twoFactor.confirmTotp(adminId, code, ip, session);
+      return rotateAssuredSession(adminId, prior, 'totp', result);
     },
 
     disableTotp(adminId, code, ip, session) {
@@ -284,6 +329,7 @@ export function createAdminTwoFactorService(
     },
 
     async confirmEmail(adminId, code, ip, session) {
+      const prior = await sessionForMfaCompletion(adminId, session);
       const state = await twoFactorRepo.getState(adminId);
       if (!state) throw unauthorized();
 
@@ -328,7 +374,10 @@ export function createAdminTwoFactorService(
         ip,
       });
       await invalidateSessions(adminId);
-      return { response: { recoveryCodes } };
+      return rotateAssuredSession(adminId, prior, 'email', {
+        response: { recoveryCodes },
+        securityGeneration: committedGeneration,
+      });
     },
 
     async disableEmail(adminId, ip, session) {
@@ -355,7 +404,7 @@ export function createAdminTwoFactorService(
         ip,
       });
       await invalidateSessions(adminId);
-      return { response: undefined };
+      return { response: undefined, securityGeneration };
     },
   };
 }

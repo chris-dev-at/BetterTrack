@@ -147,12 +147,17 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/feature-flags', createFeatureFlagsRouter(ctx));
   app.use('/api/v1/auth', createAuthRouter(ctx, limiters));
   app.use('/api/v1/account', createAccountRouter(ctx, limiters));
-  // bull-board queue inspector (§13.4 V4-P5a), mounted admin-only and BEFORE the
-  // admin router so `/api/v1/admin/queues` resolves here (a non-admin/anonymous
-  // request 404s at requireAdmin — §6.12 no-leak). Mounted at the app root rather
-  // than inside the admin router because it is itself a sub-router; the OpenAPI
-  // coverage gate's route walker only recurses one level of app-level mounts.
-  app.use('/api/v1/admin/queues', requireAdmin, createBullBoardRouter(ctx.queues));
+  // bull-board queue inspector (§13.4 V4-P5a), mounted BEFORE the admin router so
+  // `/api/v1/admin/queues` resolves here. Because it bypasses that parent router,
+  // repeat the COMPLETE boundary explicitly: admin limiter → no-leak role check
+  // → current-session MFA assurance. The adapter itself is read-only/redacted.
+  app.use(
+    '/api/v1/admin/queues',
+    limiters.admin,
+    requireAdmin,
+    requireAdminTwoFactor(ctx),
+    createBullBoardRouter(ctx.queues),
+  );
   app.use('/api/v1/admin', createAdminRouter(ctx, limiters));
   app.use('/api/v1/workboard', createWorkboardRouter(ctx));
   app.use('/api/v1/search', createSearchRouter(ctx, limiters));

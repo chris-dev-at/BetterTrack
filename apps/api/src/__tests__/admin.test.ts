@@ -1,12 +1,24 @@
 import { eq } from 'drizzle-orm';
+import express from 'express';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { adminStatsSchema, createUserResponseSchema } from '@bettertrack/contracts';
+import {
+  adminStatsSchema,
+  createUserResponseSchema,
+  twoFactorEnrollResponseSchema,
+} from '@bettertrack/contracts';
 
 import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
+import {
+  BULL_BOARD_BASE_PATH,
+  BULL_BOARD_REDACTED_VALUE,
+  createBullBoardRouter,
+} from '../http/bullBoard';
+import { ALL_QUEUE_NAMES, type QueueRegistry } from '../jobs';
+import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -42,6 +54,66 @@ async function sessionKeyFor(harness: TestHarness, userId: string): Promise<stri
     if (raw && (JSON.parse(raw) as { userId?: string }).userId === userId) return key;
   }
   throw new Error(`No session found for ${userId}`);
+}
+
+function bullBoardFixture(): {
+  registry: QueueRegistry;
+  activeQueue: string;
+  pause: ReturnType<typeof vi.fn>;
+} {
+  const activeQueue = ALL_QUEUE_NAMES[0]!;
+  const pause = vi.fn();
+  const queues = new Map(
+    ALL_QUEUE_NAMES.map((name) => [
+      name,
+      {
+        metaValues: { version: 'bullmq:test' },
+        name,
+        getJobCounts: async () => ({
+          active: 0,
+          waiting: name === activeQueue ? 1 : 0,
+          'waiting-children': 0,
+          prioritized: 0,
+          completed: 0,
+          failed: 0,
+          delayed: 0,
+          paused: 0,
+        }),
+        isPaused: async () => false,
+        getGlobalConcurrency: async () => null,
+        getJobs: async () =>
+          name === activeQueue
+            ? [
+                {
+                  toJSON: () => ({
+                    id: 'job-1',
+                    name: 'sensitive-job',
+                    progress: 0,
+                    attemptsMade: 0,
+                    timestamp: Date.now(),
+                    failedReason: '',
+                    stacktrace: [],
+                    opts: {},
+                    data: { accessToken: 'payload-secret' },
+                    returnvalue: { downloadUrl: 'result-secret' },
+                  }),
+                },
+              ]
+            : [],
+        pause,
+      },
+    ]),
+  );
+  return {
+    activeQueue,
+    pause,
+    registry: {
+      get: ((name: (typeof ALL_QUEUE_NAMES)[number]) =>
+        queues.get(name)!) as unknown as QueueRegistry['get'],
+      enqueue: vi.fn() as QueueRegistry['enqueue'],
+      close: vi.fn(),
+    },
+  };
 }
 
 /**
@@ -82,6 +154,74 @@ describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
   });
 });
 
+describe('Bull Board administrator boundary (#878)', () => {
+  it('is read-only and redacts job payloads and results from list/detail data', async () => {
+    const { registry, activeQueue, pause } = bullBoardFixture();
+    const app = express();
+    app.use(BULL_BOARD_BASE_PATH, createBullBoardRouter(registry));
+
+    const listed = await request(app)
+      .get(`${BULL_BOARD_BASE_PATH}/api/queues`)
+      .query({ activeQueue, status: 'waiting' });
+    expect(listed.status).toBe(200);
+    const queue = (
+      listed.body.queues as Array<{
+        name: string;
+        readOnlyMode: boolean;
+        allowRetries: boolean;
+        jobs: Array<{ data: unknown; returnValue: unknown }>;
+      }>
+    ).find((entry) => entry.name === activeQueue);
+    expect(queue).toMatchObject({
+      readOnlyMode: true,
+      allowRetries: false,
+      jobs: [
+        {
+          data: BULL_BOARD_REDACTED_VALUE,
+          returnValue: BULL_BOARD_REDACTED_VALUE,
+        },
+      ],
+    });
+    expect(JSON.stringify(listed.body)).not.toContain('payload-secret');
+    expect(JSON.stringify(listed.body)).not.toContain('result-secret');
+
+    const mutation = await request(app).put(
+      `${BULL_BOARD_BASE_PATH}/api/queues/${encodeURIComponent(activeQueue)}/pause`,
+    );
+    expect(mutation.status).toBe(405);
+    expect(pause).not.toHaveBeenCalled();
+  });
+
+  it('applies the admin limiter, role check, and exact-session MFA gate', async () => {
+    const local = await createTestApp({ rateLimitsEnabled: true });
+    const admin = await local.seedAdmin();
+    const bootstrap = await loginAgent(local.app, admin.email, admin.password);
+
+    const setupDenied = await bootstrap.get(BULL_BOARD_BASE_PATH);
+    expect(setupDenied.status).toBe(403);
+    expect(setupDenied.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+    expect(await local.ctx.redis.get(`rl:admin:${admin.id}:n`)).toBe('1');
+
+    const assured = await local.loginAdmin(admin);
+    expect((await assured.get(BULL_BOARD_BASE_PATH)).status).toBe(503);
+
+    // Removing assurance from this exact current-generation session cannot be
+    // rescued by the account's enrolled factor or another session's proof.
+    const key = await sessionKeyFor(local, admin.id);
+    const raw = await local.ctx.redis.get(key);
+    const data = JSON.parse(raw!) as Record<string, unknown>;
+    delete data.mfaAssurance;
+    const pttl = await local.ctx.redis.pttl(key);
+    await local.ctx.redis.set(key, JSON.stringify(data), 'PX', pttl);
+    expect((await assured.get(BULL_BOARD_BASE_PATH)).status).toBe(401);
+
+    const user = await local.seedUser();
+    const userAgent = await loginAgent(local.app, user.email, user.password);
+    expect((await userAgent.get(BULL_BOARD_BASE_PATH)).status).toBe(404);
+    expect((await request(local.app).get(BULL_BOARD_BASE_PATH)).status).toBe(404);
+  });
+});
+
 describe('administrator role-transition generation (#888)', () => {
   it('rejects a pre-promotion session even when eager Redis cleanup fails', async () => {
     const admin = await harness.seedAdmin();
@@ -111,6 +251,22 @@ describe('administrator role-transition generation (#888)', () => {
     // The cookie still exists because cleanup failed, but it cannot inherit the
     // newly committed administrator role.
     expect((await stale.get('/api/v1/admin/security/2fa/status')).status).toBe(404);
+
+    // A fresh password proves only the first factor. Promotion never upgrades
+    // the pre-existing user session or bypasses explicit administrator MFA.
+    const bootstrap = await loginAgent(harness.app, target.email, target.password);
+    const setupRequired = await bootstrap.get('/api/v1/admin/users');
+    expect(setupRequired.status).toBe(403);
+    expect(setupRequired.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+    const { secret } = twoFactorEnrollResponseSchema.parse(
+      (await bootstrap.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
+    );
+    const confirmed = await bootstrap
+      .post('/api/v1/admin/security/2fa/totp/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    expect(confirmed.status).toBe(200);
+    expect((await bootstrap.get('/api/v1/admin/users')).status).toBe(200);
   });
 
   it('fails closed when promotion commits after the session read but before the user read', async () => {
