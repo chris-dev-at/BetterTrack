@@ -878,6 +878,39 @@ merger_step
 [ -f "$QDIR/1004-pr66.json" ] && bad "queue head must park after the refusal cap" || ok "queue head parked after the refusal cap"
 check "refused head escalated to a human" "1" "$(grep -c '^606|' "$HUMAN_LOG")"
 [ -f "$QDIR/.mergefail-pr66-eeee5555" ] && bad "refusal counter must be cleared" || ok "refusal counter cleared"
+
+echo "— merger: BEHIND carry-forward (approval survives non-interacting updates)"
+# disjoint files → carry; any overlap, truncated compare, oversized compare or
+# read failure → fresh review. Pure function tests over stubbed gh reads.
+gh(){ case "$*" in
+  *"compare/main...h1"*) echo base1;;
+  *"compare/base1...main"*) echo '{"truncated":false,"files":[{"filename":"apps/web/a.tsx"},{"filename":"apps/api/b.ts"}]}';;
+  *"--json files"*) printf '%s\n' "apps/web/other.tsx";;
+  *) : ;;
+esac; }
+carry_forward_ok 12 h1 && ok "disjoint files carry the approval" || bad "disjoint files should carry"
+gh(){ case "$*" in
+  *"compare/main...h1"*) echo base1;;
+  *"compare/base1...main"*) echo '{"truncated":false,"files":[{"filename":"apps/web/a.tsx"}]}';;
+  *"--json files"*) printf '%s\n' "apps/web/a.tsx";;
+  *) : ;;
+esac; }
+carry_forward_ok 12 h1 && bad "overlapping file must NOT carry" || ok "overlap forces fresh review"
+gh(){ case "$*" in
+  *"compare/main...h1"*) echo base1;;
+  *"compare/base1...main"*) echo '{"truncated":true,"files":[]}';;
+  *"--json files"*) printf '%s\n' "apps/web/a.tsx";;
+  *) : ;;
+esac; }
+carry_forward_ok 12 h1 && bad "truncated compare must NOT carry" || ok "truncated compare forces fresh review"
+gh(){ return 1; }
+carry_forward_ok 12 h1 && bad "read failure must NOT carry" || ok "read failure forces fresh review"
+QF2=$QDIR/1005-pr13.json
+jq -nc '{pr:13,issue:131,approved_head:"h1"}' >"$QF2"
+queue_carry_head "$QF2" "h2" && ok "carry-head write ok" || bad "carry-head write failed"
+check "carried head recorded beside the original approval" "h2" "$(jq -r '.carried_head' "$QF2")"
+check "original approved head untouched" "h1" "$(jq -r '.approved_head' "$QF2")"
+rm -f "$QF2"
 MF_DRY_RUN=1
 
 echo "— opus5 cap binds at the mflib runtime layer (hand-written files)"
