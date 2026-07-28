@@ -2,7 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -84,6 +84,7 @@ export function VaultRuntimeProvider({
   );
   const [connection, setConnection] = useState<DriveConnectionController | null>(null);
   const runtimeRef = useRef<UnlockedVaultDriveRuntime | null>(null);
+  const operationGenerationRef = useRef(0);
   const tokensRef = useRef<GoogleDriveTokenClient | null>(dependencies?.tokens ?? null);
   const driveRef = useRef<DriveDataHome | null>(dependencies?.drive ?? null);
 
@@ -106,6 +107,7 @@ export function VaultRuntimeProvider({
   }, [tokens]);
 
   const lock = useCallback(async () => {
+    operationGenerationRef.current += 1;
     setConnection(null);
     runtimeRef.current?.dispose();
     runtimeRef.current = null;
@@ -113,7 +115,7 @@ export function VaultRuntimeProvider({
     await core.lock();
   }, [core]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!authenticated) void lock();
     return () => {
       void lock();
@@ -132,7 +134,15 @@ export function VaultRuntimeProvider({
         throw new VaultCryptoError('locked', 'Google Drive is not configured for this deployment.');
       }
 
+      const operationGeneration = operationGenerationRef.current;
+      const ownerId = userId;
       const tokenClient = tokens();
+      let installed: UnlockedVaultDriveRuntime | null = null;
+      const requireCurrentOperation = () => {
+        if (operationGenerationRef.current !== operationGeneration) {
+          throw new VaultCryptoError('locked', 'Vault unlock was cancelled.');
+        }
+      };
       try {
         // Start GIS authorization before any storage/KDF await so this remains
         // attached to the explicit Connect/Sign-in/Disconnect user gesture.
@@ -141,41 +151,53 @@ export function VaultRuntimeProvider({
           if (authorized.status !== 'ok') {
             throw new VaultCryptoError('locked', authorized.message);
           }
+          requireCurrentOperation();
         }
 
         const envelope = unlockOptions.driveOnly
-          ? await readDriveEnvelope(drive())
+          ? await readDriveEnvelope(drive(), requireCurrentOperation)
           : await (
               dependencies?.readEnvelope ??
               ((accountId) =>
                 readProductionEnvelope(
                   accountId,
                   dependencies?.server ?? createServerBlobDataHome(),
+                  requireCurrentOperation,
                 ))
-            )(userId);
+            )(ownerId);
+        requireCurrentOperation();
         await core.unlockWithPassphrase(envelope, passphrase);
+        requireCurrentOperation();
 
-        runtimeRef.current?.dispose();
-        const installed = await core.withVaultKey((vaultKey, keyId) =>
+        installed = await core.withVaultKey((vaultKey, keyId) =>
           (dependencies?.createRuntime ?? createUnlockedVaultDriveRuntime)(vaultKey, keyId, {
-            userId,
+            userId: ownerId,
             clientId,
             tokens: tokenClient,
             drive: driveRef.current ?? undefined,
             server: dependencies?.server,
           }),
         );
+        requireCurrentOperation();
+        runtimeRef.current?.dispose();
         runtimeRef.current = installed;
         await installed.ready;
+        requireCurrentOperation();
 
-        if (core.state.status === 'unlocked') rememberKeyId(userId, core.state.keyId);
+        if (core.state.status === 'unlocked') rememberKeyId(ownerId, core.state.keyId);
         setConnection(installed.controller);
         return installed.controller;
       } catch (cause) {
-        runtimeRef.current?.dispose();
-        runtimeRef.current = null;
-        tokenClient.clear();
-        await core.lock();
+        installed?.dispose();
+        if (runtimeRef.current === installed) runtimeRef.current = null;
+        if (operationGenerationRef.current === operationGeneration) {
+          operationGenerationRef.current += 1;
+          setConnection(null);
+          runtimeRef.current?.dispose();
+          runtimeRef.current = null;
+          tokenClient.clear();
+          await core.lock();
+        }
         throw cause;
       }
     },
@@ -211,8 +233,12 @@ export function useOptionalVaultRuntime(): VaultRuntime | null {
   return useContext(VaultRuntimeContext);
 }
 
-async function readDriveEnvelope(drive: DriveDataHome): Promise<Uint8Array> {
+async function readDriveEnvelope(
+  drive: DriveDataHome,
+  requireCurrentOperation: () => void,
+): Promise<Uint8Array> {
   const result = await drive.read();
+  requireCurrentOperation();
   if (result.status === 'ok') return result.envelope;
   throw new VaultCryptoError(
     'locked',
@@ -222,8 +248,13 @@ async function readDriveEnvelope(drive: DriveDataHome): Promise<Uint8Array> {
   );
 }
 
-async function readProductionEnvelope(userId: string, server: DataHome): Promise<Uint8Array> {
+async function readProductionEnvelope(
+  userId: string,
+  server: DataHome,
+  requireCurrentOperation: () => void,
+): Promise<Uint8Array> {
   const serverResult = await server.read();
+  requireCurrentOperation();
   if (serverResult.status === 'ok') return serverResult.envelope;
 
   // A same-device Drive-only reload can unlock from the encrypted PD5 cache.
@@ -231,6 +262,7 @@ async function readProductionEnvelope(userId: string, server: DataHome): Promise
   const keyId = rememberedKeyId(userId);
   if (keyId != null) {
     const local = await createLocalDataHome({ scope: `vault:${userId}:${keyId}` }).read();
+    requireCurrentOperation();
     if (local.status === 'ok') return local.envelope;
   }
 

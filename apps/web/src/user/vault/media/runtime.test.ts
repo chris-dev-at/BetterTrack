@@ -51,6 +51,27 @@ describe('unlocked Drive runtime', () => {
     await expect(runtime.ready).rejects.toThrow(/not durably synchronized/i);
     expect(proof.ensure).toHaveBeenCalledTimes(1);
   });
+
+  it('stops proof enrollment when the runtime is disposed during reconciliation', async () => {
+    const reconnect = deferred<VaultSyncState>();
+    const sync = coordinator('synced');
+    vi.mocked(sync.reconnect).mockImplementationOnce(() => reconnect.promise);
+    const proof = proofManager();
+    const runtime = createUnlockedVaultDriveRuntime(
+      new Uint8Array(32).fill(1),
+      fixture.initial.header.keyId,
+      dependencies(sync, proof),
+    );
+
+    const ready = runtime.ready;
+    await vi.waitFor(() => expect(sync.reconnect).toHaveBeenCalledTimes(1));
+    runtime.dispose();
+    reconnect.resolve(syncState('synced', baseDocument));
+
+    await expect(ready).rejects.toThrow(/disposed/i);
+    expect(proof.ensure).not.toHaveBeenCalled();
+    expect(sync.mutate).not.toHaveBeenCalled();
+  });
 });
 
 function coordinator(
@@ -135,6 +156,7 @@ function tokenClient(): GoogleDriveTokenClient {
       accessToken: 'memory-only',
       expiresAt: Date.now() + 60_000,
     }),
+    subscribe: vi.fn(() => () => undefined),
     authorize: async () => ({
       status: 'ok',
       accessToken: 'memory-only',
@@ -171,4 +193,12 @@ function unusedApi(): VaultMediaApi {
     requestPurgeChallenge: vi.fn(),
     purgeRetired: vi.fn(),
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }

@@ -101,8 +101,118 @@ describe('Google Drive GIS token client', () => {
     expect(client.getAccessToken()).toMatchObject({ status: 'gesture-required' });
 
     const retry = client.authorize();
+    await vi.waitFor(() => expect(requestAccessToken).toHaveBeenCalledTimes(2));
     client.clear();
     await expect(retry).resolves.toMatchObject({ status: 'gesture-required' });
-    expect(requestAccessToken).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores a successful callback after clear, even when a new request has started', async () => {
+    const callbacks: Array<(response: GoogleTokenResponse) => void> = [];
+    const requestAccessToken = vi.fn();
+    const client = createGoogleDriveTokenClient({
+      clientId: 'browser-client-id',
+      loadOauth2: async () => ({
+        initTokenClient(config) {
+          callbacks.push(config.callback);
+          return { requestAccessToken };
+        },
+      }),
+    });
+
+    const first = client.authorize();
+    await vi.waitFor(() => expect(callbacks).toHaveLength(1));
+    client.clear();
+    await expect(first).resolves.toMatchObject({
+      status: 'gesture-required',
+      message: 'Google sign-in was cancelled.',
+    });
+
+    callbacks[0]!({ access_token: 'stale-after-clear', expires_in: 3600 });
+    expect(client.getAccessToken()).toMatchObject({ status: 'consent-required' });
+
+    const second = client.authorize();
+    await vi.waitFor(() => expect(callbacks).toHaveLength(2));
+    callbacks[0]!({ access_token: 'stale-during-retry', expires_in: 3600 });
+    expect(client.getAccessToken()).toMatchObject({ status: 'consent-required' });
+    callbacks[1]!({ access_token: 'fresh', expires_in: 3600 });
+
+    await expect(second).resolves.toMatchObject({ status: 'ok', accessToken: 'fresh' });
+  });
+
+  it('publishes browser-memory token expiry without another user action', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-28T10:00:00.000Z'));
+    try {
+      let callback!: (response: GoogleTokenResponse) => void;
+      const listener = vi.fn();
+      const client = createGoogleDriveTokenClient({
+        clientId: 'browser-client-id',
+        loadOauth2: async () => ({
+          initTokenClient(config) {
+            callback = config.callback;
+            return {
+              requestAccessToken: () => callback({ access_token: 'short', expires_in: 31 }),
+            };
+          },
+        }),
+      });
+      client.subscribe(listener);
+
+      await expect(client.authorize()).resolves.toMatchObject({ status: 'ok' });
+      expect(client.state).toBe('connected');
+
+      await vi.advanceTimersByTimeAsync(1_001);
+
+      expect(client.state).toBe('token-expired');
+      expect(listener).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('recreates the GIS loader after a transient script failure', async () => {
+    delete window.google;
+    document
+      .querySelector<HTMLScriptElement>('script[src="https://accounts.google.com/gsi/client"]')
+      ?.remove();
+    const client = createGoogleDriveTokenClient({ clientId: 'browser-client-id' });
+
+    const failed = client.authorize();
+    const failedScript = document.querySelector<HTMLScriptElement>(
+      'script[src="https://accounts.google.com/gsi/client"]',
+    );
+    expect(failedScript).not.toBeNull();
+    failedScript!.dispatchEvent(new Event('error'));
+    await expect(failed).resolves.toMatchObject({
+      status: 'gesture-required',
+      message: 'Google sign-in could not be loaded. Try again.',
+    });
+    expect(failedScript!.isConnected).toBe(false);
+
+    let callback!: (response: GoogleTokenResponse) => void;
+    const retried = client.authorize();
+    const retryScript = document.querySelector<HTMLScriptElement>(
+      'script[src="https://accounts.google.com/gsi/client"]',
+    );
+    expect(retryScript).not.toBeNull();
+    expect(retryScript).not.toBe(failedScript);
+    window.google = {
+      accounts: {
+        oauth2: {
+          initTokenClient(config) {
+            callback = config.callback;
+            return {
+              requestAccessToken: () => callback({ access_token: 'recovered', expires_in: 3600 }),
+            };
+          },
+        },
+      },
+    };
+    retryScript!.dispatchEvent(new Event('load'));
+
+    await expect(retried).resolves.toMatchObject({
+      status: 'ok',
+      accessToken: 'recovered',
+    });
   });
 });

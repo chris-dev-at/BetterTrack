@@ -52,6 +52,8 @@ export interface GoogleDriveTokenClient {
   readonly state: DriveAuthorizationState;
   /** Synchronous and side-effect free; never opens a popup on its own. */
   getAccessToken(): DriveAccessTokenResult;
+  /** Observe authorization transitions, including browser-memory token expiry. */
+  subscribe(listener: () => void): () => void;
   /** Must be called from a user gesture. Tokens remain only in this closure. */
   authorize(): Promise<DriveAccessTokenResult>;
   /** Drop the in-memory capability immediately. */
@@ -71,18 +73,56 @@ export function createGoogleDriveTokenClient(
   const loadOauth2 = options.loadOauth2 ?? loadGoogleOauth2;
   let state: DriveAuthorizationState = 'consent-required';
   let token: { accessToken: string; expiresAt: number } | null = null;
-  let clientPromise: Promise<GoogleTokenClient> | null = null;
-  let pending: Promise<DriveAccessTokenResult> | null = null;
-  let finishPending: ((result: DriveAccessTokenResult) => void) | null = null;
+  let oauth2ClientPromise: Promise<GoogleOauth2> | null = null;
+  let authorizationGeneration = 0;
+  let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+  let pending: {
+    generation: number;
+    promise: Promise<DriveAccessTokenResult>;
+    resolve: (result: DriveAccessTokenResult) => void;
+  } | null = null;
+  const listeners = new Set<() => void>();
+
+  function notify(): void {
+    for (const listener of listeners) listener();
+  }
+
+  function clearExpiryTimer(): void {
+    if (expiryTimer == null) return;
+    clearTimeout(expiryTimer);
+    expiryTimer = null;
+  }
+
+  function replaceState(next: DriveAuthorizationState): void {
+    const changed = state !== next;
+    state = next;
+    if (changed) notify();
+  }
+
+  function expireToken(): void {
+    const changed = token != null || state !== 'token-expired';
+    token = null;
+    clearExpiryTimer();
+    state = 'token-expired';
+    if (changed) notify();
+  }
+
+  function scheduleExpiry(expiresAt: number): void {
+    clearExpiryTimer();
+    expiryTimer = setTimeout(
+      () => {
+        expiryTimer = null;
+        if (token?.expiresAt === expiresAt) expireToken();
+      },
+      Math.max(0, expiresAt - TOKEN_EXPIRY_SKEW_MS - now()),
+    );
+  }
 
   function currentToken(): DriveAccessTokenResult {
     if (token && token.expiresAt - TOKEN_EXPIRY_SKEW_MS > now()) {
       return { status: 'ok', ...token };
     }
-    if (token) {
-      token = null;
-      state = 'token-expired';
-    }
+    if (token) expireToken();
     return {
       status: state === 'connected' ? 'token-expired' : state,
       message:
@@ -92,14 +132,22 @@ export function createGoogleDriveTokenClient(
     };
   }
 
-  function finish(result: DriveAccessTokenResult): void {
-    const resolve = finishPending;
-    finishPending = null;
+  function finish(generation: number, result: DriveAccessTokenResult): void {
+    if (pending?.generation !== generation) return;
+    const resolve = pending.resolve;
     pending = null;
-    resolve?.(result);
+    resolve(result);
   }
 
-  function handleResponse(response: GoogleTokenResponse): void {
+  function cancelPending(result: DriveAccessTokenResult): void {
+    authorizationGeneration += 1;
+    const active = pending;
+    pending = null;
+    active?.resolve(result);
+  }
+
+  function handleResponse(generation: number, response: GoogleTokenResponse): void {
+    if (pending?.generation !== generation) return;
     if (
       typeof response.access_token === 'string' &&
       response.access_token.length > 0 &&
@@ -110,110 +158,123 @@ export function createGoogleDriveTokenClient(
         accessToken: response.access_token,
         expiresAt: now() + response.expires_in * 1_000,
       };
-      state = 'connected';
-      finish({ status: 'ok', ...token });
+      replaceState('connected');
+      scheduleExpiry(token.expiresAt);
+      finish(generation, { status: 'ok', ...token });
       return;
     }
 
     token = null;
-    state =
+    clearExpiryTimer();
+    const nextState =
       response.error === 'access_denied' || response.error === 'consent_required'
         ? 'consent-required'
         : 'gesture-required';
-    finish({
-      status: state,
+    replaceState(nextState);
+    finish(generation, {
+      status: nextState,
       message:
         response.error_description ??
-        (state === 'consent-required'
+        (nextState === 'consent-required'
           ? 'Google Drive consent is required.'
           : 'A user gesture is required to sign in to Google Drive.'),
     });
   }
 
-  function handlePopupError(error: { type?: string; message?: string }): void {
+  function handlePopupError(generation: number, error: { type?: string; message?: string }): void {
+    if (pending?.generation !== generation) return;
     token = null;
-    state = 'gesture-required';
-    finish({
+    clearExpiryTimer();
+    replaceState('gesture-required');
+    finish(generation, {
       status: 'gesture-required',
       message: error.message ?? 'Google sign-in needs a new user gesture.',
     });
   }
 
-  async function tokenClient(): Promise<GoogleTokenClient> {
-    clientPromise ??= loadOauth2().then((oauth2) =>
-      oauth2.initTokenClient({
-        client_id: options.clientId,
-        scope: DRIVE_APPDATA_SCOPE,
-        include_granted_scopes: false,
-        callback: handleResponse,
-        error_callback: handlePopupError,
-      }),
-    );
-    return clientPromise;
-  }
-
   return {
     get state() {
-      currentToken();
-      return state;
+      if (token && token.expiresAt - TOKEN_EXPIRY_SKEW_MS <= now()) return 'token-expired';
+      return state === 'connected' && token == null ? 'token-expired' : state;
     },
 
     getAccessToken: currentToken,
 
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+
     async authorize() {
       const existing = currentToken();
       if (existing.status === 'ok') return existing;
-      if (pending) return pending;
+      if (pending) return pending.promise;
 
-      pending = new Promise<DriveAccessTokenResult>((resolve) => {
-        finishPending = resolve;
+      const generation = ++authorizationGeneration;
+      let resolvePending!: (result: DriveAccessTokenResult) => void;
+      const promise = new Promise<DriveAccessTokenResult>((resolve) => {
+        resolvePending = resolve;
       });
-      const result = pending;
+      pending = { generation, promise, resolve: resolvePending };
 
-      let client: GoogleTokenClient;
+      let oauth2: GoogleOauth2;
       try {
-        client = await tokenClient();
+        oauth2ClientPromise ??= loadOauth2();
+        oauth2 = await oauth2ClientPromise;
       } catch {
-        clientPromise = null;
-        state = 'gesture-required';
-        finish({
+        oauth2ClientPromise = null;
+        if (pending?.generation !== generation) return promise;
+        replaceState('gesture-required');
+        finish(generation, {
           status: 'gesture-required',
           message: 'Google sign-in could not be loaded. Try again.',
         });
-        return result;
+        return promise;
       }
 
+      if (pending?.generation !== generation) return promise;
+
       try {
+        const client: GoogleTokenClient = oauth2.initTokenClient({
+          client_id: options.clientId,
+          scope: DRIVE_APPDATA_SCOPE,
+          include_granted_scopes: false,
+          callback: (response) => handleResponse(generation, response),
+          error_callback: (error) => handlePopupError(generation, error),
+        });
         client.requestAccessToken({
           prompt: state === 'consent-required' ? 'consent' : '',
           scope: DRIVE_APPDATA_SCOPE,
           include_granted_scopes: false,
         });
       } catch (cause) {
-        state = 'gesture-required';
-        finish({
+        if (pending?.generation !== generation) return promise;
+        replaceState('gesture-required');
+        finish(generation, {
           status: 'gesture-required',
           message:
             cause instanceof Error ? cause.message : 'Google sign-in needs a new user gesture.',
         });
       }
-      return result;
+      return promise;
     },
 
     clear() {
       token = null;
-      state = 'consent-required';
-      if (pending) {
-        finish({
-          status: 'gesture-required',
-          message: 'Google sign-in was cancelled.',
-        });
-      }
+      clearExpiryTimer();
+      replaceState('consent-required');
+      cancelPending({
+        status: 'gesture-required',
+        message: 'Google sign-in was cancelled.',
+      });
     },
 
     markExpired() {
-      token = null;
-      state = 'token-expired';
+      cancelPending({
+        status: 'token-expired',
+        message: 'Sign in to Google to continue Drive synchronization.',
+      });
+      expireToken();
     },
   };
 }
@@ -224,20 +285,27 @@ async function loadGoogleOauth2(): Promise<GoogleOauth2> {
   const existing = window.google?.accounts?.oauth2;
   if (existing) return existing;
 
-  oauth2Promise ??= new Promise<GoogleOauth2>((resolve, reject) => {
+  if (oauth2Promise) return oauth2Promise;
+
+  const attempt = new Promise<GoogleOauth2>((resolve, reject) => {
     const loaded = document.querySelector<HTMLScriptElement>(`script[src="${GIS_SCRIPT_SRC}"]`);
     const script = loaded ?? document.createElement('script');
+    const cleanup = () => {
+      script.removeEventListener('load', onLoad);
+      script.removeEventListener('error', onError);
+    };
     const onLoad = () => {
+      cleanup();
       const oauth2 = window.google?.accounts?.oauth2;
       if (oauth2) resolve(oauth2);
       else reject(new Error('Google Identity Services did not expose the OAuth token client.'));
     };
+    const onError = () => {
+      cleanup();
+      reject(new Error('Google Identity Services could not be loaded.'));
+    };
     script.addEventListener('load', onLoad, { once: true });
-    script.addEventListener(
-      'error',
-      () => reject(new Error('Google Identity Services could not be loaded.')),
-      { once: true },
-    );
+    script.addEventListener('error', onError, { once: true });
     if (!loaded) {
       script.src = GIS_SCRIPT_SRC;
       script.async = true;
@@ -245,5 +313,11 @@ async function loadGoogleOauth2(): Promise<GoogleOauth2> {
       document.head.append(script);
     }
   });
+  const recoverable = attempt.catch((cause) => {
+    if (oauth2Promise === recoverable) oauth2Promise = null;
+    document.querySelector<HTMLScriptElement>(`script[src="${GIS_SCRIPT_SRC}"]`)?.remove();
+    throw cause;
+  });
+  oauth2Promise = recoverable;
   return oauth2Promise;
 }

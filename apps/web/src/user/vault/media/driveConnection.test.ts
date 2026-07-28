@@ -37,6 +37,7 @@ function setup({
           ? { status: 'ok', accessToken: 'memory-only', expiresAt: Date.now() + 60_000 }
           : { status: state, message: 'sign in' },
     ),
+    subscribe: vi.fn(() => () => undefined),
     authorize: vi.fn(async (): Promise<DriveAccessTokenResult> => {
       state = 'connected';
       return { status: 'ok', accessToken: 'memory-only', expiresAt: Date.now() + 60_000 };

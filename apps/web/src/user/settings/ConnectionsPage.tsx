@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
@@ -235,6 +235,15 @@ function GoogleSection() {
 
 type DriveCardAction = 'connect' | 'disconnect' | 'drive-only' | 'add-server' | 'purge';
 
+function useDriveAuthorization(connection: DriveConnectionController | null) {
+  const subscribe = useCallback(
+    (listener: () => void) => connection?.subscribeAuthorization(listener) ?? (() => undefined),
+    [connection],
+  );
+  const getSnapshot = useCallback(() => connection?.authorization ?? null, [connection]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
 function DriveVaultSection({
   connection,
   configured,
@@ -255,6 +264,7 @@ function DriveVaultSection({
   } | null>(null);
   const [unlockAction, setUnlockAction] = useState<DriveCardAction | null>(null);
   const [passphrase, setPassphrase] = useState('');
+  const authorization = useDriveAuthorization(connection);
   const query = useQuery({
     queryKey: VAULT_MEDIA_KEY,
     queryFn: ({ signal }) => getParanoidMediaState(signal),
@@ -291,7 +301,7 @@ function DriveVaultSection({
   const selected = media.mediaSet.includes('drive');
   if (!configured && !selected) return null;
 
-  const needsSignIn = selected && connection?.authorization !== 'connected';
+  const needsSignIn = selected && authorization !== 'connected';
   const statusKey = working
     ? 'working'
     : selected

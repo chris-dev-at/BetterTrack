@@ -105,19 +105,27 @@ export function createUnlockedVaultDriveRuntime(
   let disposed = false;
   let readyPromise: Promise<void> | null = null;
 
-  async function initialize(): Promise<void> {
+  function requireActive(): void {
     if (disposed) throw new Error('The unlocked Drive runtime was disposed.');
+  }
+
+  async function initialize(): Promise<void> {
+    requireActive();
     const state = await sync.reconnect();
+    requireActive();
     if (state.status !== 'synced' || state.active == null || state.pending != null) {
       throw new Error('Every selected vault medium must be reconciled before storage changes.');
     }
     const ensured = await retirementProof.ensure(state.active.document);
+    requireActive();
     if (ensured.changed) {
       const committed = await sync.mutate(() => ensured.document);
+      requireActive();
       if (committed.status !== 'synced' || committed.active == null || committed.pending != null) {
         throw new Error('Vault retirement proof material was not durably synchronized.');
       }
       const confirmed = await retirementProof.ensure(committed.active.document);
+      requireActive();
       if (confirmed.changed) {
         throw new Error('Committed vault retirement proof material could not be confirmed.');
       }
@@ -137,7 +145,9 @@ export function createUnlockedVaultDriveRuntime(
     switcher,
     ready,
     resumeSync: async () => {
+      requireActive();
       await sync.reconnect();
+      requireActive();
     },
   });
 
@@ -149,8 +159,11 @@ export function createUnlockedVaultDriveRuntime(
     get syncState() {
       return sync.state;
     },
-    reconnect() {
-      return sync.reconnect();
+    async reconnect() {
+      requireActive();
+      const state = await sync.reconnect();
+      requireActive();
+      return state;
     },
     dispose() {
       if (disposed) return;

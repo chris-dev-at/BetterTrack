@@ -11,6 +11,7 @@ export type DriveConnectionActionResult =
 
 export interface DriveConnectionController {
   readonly authorization: DriveAuthorizationState;
+  subscribeAuthorization(listener: () => void): () => void;
   connect(): Promise<DriveConnectionActionResult>;
   disconnect(): Promise<DriveConnectionActionResult>;
   useDriveOnly(): Promise<DriveConnectionActionResult>;
@@ -62,6 +63,10 @@ export function createDriveConnectionController(
   return {
     get authorization() {
       return options.tokens.state;
+    },
+
+    subscribeAuthorization(listener) {
+      return options.tokens.subscribe(listener);
     },
 
     async connect() {

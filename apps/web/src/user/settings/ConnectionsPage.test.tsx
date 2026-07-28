@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -77,6 +77,7 @@ function controller(
 ): DriveConnectionController {
   return {
     authorization,
+    subscribeAuthorization: vi.fn(() => () => undefined),
     connect: vi.fn(async () => ({
       status: 'ok' as const,
       media: BOTH_STATE,
@@ -102,6 +103,26 @@ function controller(
       status: 'ok' as const,
       media: DRIVE_ONLY_STATE,
     })),
+  };
+}
+
+function expiringController(delayMs: number): DriveConnectionController {
+  let authorization: DriveConnectionController['authorization'] = 'connected';
+  const listeners = new Set<() => void>();
+  const base = controller();
+  setTimeout(() => {
+    authorization = 'token-expired';
+    for (const listener of listeners) listener();
+  }, delayMs);
+  return {
+    ...base,
+    get authorization() {
+      return authorization;
+    },
+    subscribeAuthorization(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
   };
 }
 
@@ -261,6 +282,29 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
     expect(await screen.findByText('Needs sign-in')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Sign in to Google to sync' }));
     await waitFor(() => expect(drive.connect).toHaveBeenCalledTimes(1));
+  });
+
+  test('updates an open connection card when its browser token expires', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
+      const drive = expiringController(1_000);
+      renderPage('/settings/connections', {
+        driveConnection: drive,
+        driveConfigured: true,
+      });
+
+      await vi.waitFor(() => expect(screen.getByText('Connected')).toBeInTheDocument());
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+
+      expect(screen.getByText('Needs sign-in')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Sign in to Google to sync' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('routes disconnect through the media controller and withholds last-medium removal', async () => {
