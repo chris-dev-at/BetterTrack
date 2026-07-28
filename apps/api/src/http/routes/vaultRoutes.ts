@@ -224,7 +224,7 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
         throw new ApiError(
           409,
           VAULT_ERROR_CODES.retirementProofRequired,
-          'The active vault has no immutable retirement proof verifier.',
+          'An immutable retirement proof verifier is required before server media can be activated or retired.',
         );
       case 'proof_key_conflict':
         throw new ApiError(

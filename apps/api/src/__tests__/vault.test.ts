@@ -565,6 +565,53 @@ describe('durable paranoid server-media lifecycle', () => {
     expect(rows).toHaveLength(0);
   });
 
+  it('does not promote a Drive-only candidate without a retirement verifier', async () => {
+    const { user, agent } = await seedParanoidAgent('missing-proof@bt.test', 'missingproof');
+    const v1 = envelope(1, new Uint8Array([1, 2, 3]));
+    const driveOnly = { mediaSet: ['drive'], driveAttestedVersion: 1 };
+    const both = { mediaSet: ['server', 'drive'], driveAttestedVersion: 1 };
+
+    await harness.db
+      .update(users)
+      .set({ paranoidMediaSet: driveOnly.mediaSet, paranoidDriveAttestedVersion: 1 })
+      .where(eq(users.id, user.id));
+
+    // Staging can remain resumable without the header, but those bytes must
+    // never become active because they would be impossible to retire safely.
+    const staged = await agent
+      .put('/api/v1/vault/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .send(v1);
+    expect(staged.status).toBe(200);
+    const candidateId = staged.body.candidateId as string;
+    const readback = await agent
+      .get(`/api/v1/vault/media/server-candidate/${candidateId}`)
+      .responseType('blob');
+    expect(readback.status).toBe(200);
+
+    const promotion = await agent
+      .patch('/api/v1/vault/media')
+      .set(...XRW)
+      .send({
+        expected: driveOnly,
+        nextMediaSet: both.mediaSet,
+        verification: {
+          kind: 'server-candidate',
+          candidateId,
+          readback: readback.headers[
+            VAULT_SERVER_CANDIDATE_READBACK_HEADER.toLowerCase()
+          ] as string,
+        },
+      });
+    expect(promotion.status).toBe(409);
+    expect(promotion.body.error.code).toBe('VAULT_RETIRED_SERVER_PROOF_REQUIRED');
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+    const media = await agent.get('/api/v1/vault/media');
+    expect(media.body.mediaState.server.disposition).toBe('inactive-candidate');
+    expect(media.body.mediaState.server.candidate.candidateId).toBe(candidateId);
+  });
+
   it('moves bytes through candidate and retirement states before a retained, advanced-version purge', async () => {
     const { user, agent } = await seedParanoidAgent('lifecycle@bt.test', 'lifecycle');
     const { privateKey, publicKey } = retirementProofKey();

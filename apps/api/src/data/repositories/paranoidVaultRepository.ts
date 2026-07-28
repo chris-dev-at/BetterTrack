@@ -671,6 +671,13 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           ) {
             return { status: 'verification_failed', current: currentState } as const;
           }
+          // Candidate staging is deliberately resumable without a verifier,
+          // but the first Drive-only -> both promotion makes those bytes an
+          // active server vault. Do not create an active vault that can never
+          // complete the signed server-retirement flow.
+          if (!candidate.retirementProofPublicKey) {
+            return { status: 'proof_required', current: currentState } as const;
+          }
           if (
             retirement &&
             candidate.retirementProofPublicKey !== retirement.retirementProofPublicKey
