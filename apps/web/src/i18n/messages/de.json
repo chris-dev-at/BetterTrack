@@ -3809,6 +3809,25 @@
         "imports": "Importe",
         "settings": "Einstellungen"
       }
+    },
+    "emailLog": {
+      "loading": "E-Mail-Protokoll wird geladen…",
+      "empty": "Noch keine E-Mails gesendet.",
+      "emptyForUser": "Noch keine E-Mails an {{email}} gesendet.",
+      "headers": {
+        "when": "Zeitpunkt",
+        "recipient": "Empfänger",
+        "template": "Vorlage",
+        "subject": "Betreff",
+        "status": "Status"
+      },
+      "status": {
+        "sent": "Gesendet",
+        "failed": "Fehlgeschlagen",
+        "suppressed": "Unterdrückt"
+      },
+      "loadMore": "Mehr laden",
+      "loadingMore": "Wird geladen…"
     }
   }
 }
