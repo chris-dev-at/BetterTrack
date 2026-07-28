@@ -531,20 +531,29 @@ check "salvage: fires on dirty tree with no PR" "1" "${SALVAGED}"
 check "salvage: branch landed on origin" "task/503" "$(bare task/503)"
 check "salvage: event line logged" "1" "$(grep -c 'salvaged branch task/503' "$MF_EVENTLOG")"
 
-echo "— single-parse GitHub reads (gojq corrupt-byte class, PR #891 merger jam)"
-# gh --jq (gojq) re-serialization can emit raw control/invalid bytes that C jq
-# rejects; the fetchers now parse GitHub's ORIGINAL JSON exactly once. The gh
-# stub emits two concatenated pages (exactly what --paginate produces) with
-# escaped control characters in a body.
+echo "— single-parse GitHub reads (one parser, one contract)"
+# The fetchers parse GitHub's ORIGINAL JSON exactly once with C jq — gh --jq
+# (gojq) would add a second, gh-version-dependent transformation layer. The gh
+# stub first emits ONE merged array (the real gh >=2.9x --paginate shape), then
+# the older concatenated-arrays shape; 'add' must flatten both. Escaped
+# control characters in a body must round-trip. These are parser-contract
+# tests — the live #891 jam itself was the DIRTY/empty-rollup merger trap
+# covered below.
+gh(){ cat <<'PAGES'
+[{"id":1,"body":"clean","created_at":"c1"},{"id":2,"body":"ctl \u0007 \u0001 body","created_at":"c2"},{"id":3,"body":"page2","created_at":"c3"}]
+PAGES
+}
+CJ=$(mf_pr_comments_json 891) && ok "comments fetch exits 0 (merged-array shape)" || bad "comments fetch failed (merged-array shape)"
+check "merged-array --paginate shape parses" "3" "$(jq 'length' <<<"$CJ")"
 gh(){ cat <<'PAGES'
 [{"id":1,"body":"clean","created_at":"c1"},{"id":2,"body":"ctl \u0007 \u0001 body","created_at":"c2"}]
 [{"id":3,"body":"page2","created_at":"c3"}]
 PAGES
 }
-CJ=$(mf_pr_comments_json 891) && ok "comments fetch exits 0" || bad "comments fetch failed"
-check "comments fetch flattens paginated arrays" "3" "$(jq 'length' <<<"$CJ")"
+CJ=$(mf_pr_comments_json 891) && ok "comments fetch exits 0 (concatenated pages, older gh)" || bad "comments fetch failed (concatenated pages)"
+check "concatenated --paginate pages flatten" "3" "$(jq 'length' <<<"$CJ")"
 check "comments fetch preserves ids in order" "1 2 3" "$(jq -r '[.[].id]|join(" ")' <<<"$CJ")"
-check "control-char body survives the round-trip" "1" "$(jq '[.[]|select(.id==2)]|length' <<<"$CJ")"
+check "escaped-control-char body round-trips" "1" "$(jq '[.[]|select(.id==2)]|length' <<<"$CJ")"
 gh(){ return 1; }
 mf_pr_comments_json 891 >/dev/null 2>&1 && bad "comments fetch must fail when gh fails" || ok "comments fetch fails closed on gh failure"
 gh(){ printf '{"number":9,"title":"t","body":"b","labels":[{"name":"diff:easy"}],"created_at":"c"}'; }
@@ -590,7 +599,7 @@ merger_step
 check "conflict-fix invoked once through the ci-fix role" "1" "$(grep -c '^ci-fix hard$' "$CONFLICT_CALLS")"
 [ -f "$QDIR/1001-pr88.json" ] && bad "no-push conflict-fix must clear the queue head" || ok "no-push conflict-fix cleared the queue head"
 check "no-push conflict-fix escalated to a human" "1" "$(grep -c '^808|' "$HUMAN_LOG")"
-[ -f "$QDIR/.conflictfix-pr88" ] && bad "conflict marker must be cleared" || ok "conflict marker cleared"
+[ -f "$QDIR/.conflictfix-pr88-bbbb2222" ] && bad "conflict marker must be cleared" || ok "conflict marker cleared"
 # pushed-head variant: the resolved merge goes to a fresh review, not a human
 : >"$HUMAN_LOG"; : >"$CONFLICT_CALLS"
 REQUEUED=$T/requeued.log; : >"$REQUEUED"
@@ -602,7 +611,40 @@ merger_step
 check "pushed conflict-fix goes to a fresh review, not a human" "1" "$(grep -c '|909|' "$REQUEUED")"
 check "pushed conflict-fix never escalates" "0" "$(grep -c '^909|' "$HUMAN_LOG")"
 [ -f "$QDIR/1002-pr99.json" ] && bad "requeued head must leave the queue" || ok "requeued head left the queue"
-[ -f "$QDIR/.conflictfix-pr99" ] && bad "pushed-variant marker must be cleared" || ok "pushed-variant marker cleared"
+[ -f "$QDIR/.conflictfix-pr99-cccc3333" ] && bad "pushed-variant marker must be cleared" || ok "pushed-variant marker cleared"
+# orphaned-marker regression (independent review 2026-07-28): a marker left
+# behind by an earlier head (transient post-attempt head-read failure, entry
+# requeued by the head check) must never deny the freshly-approved head its
+# own attempt — and must be swept.
+: >"$QDIR/.conflictfix-pr55-oldhead1"
+: >"$CONFLICT_CALLS"; : >"$REQUEUED"; : >"$HUMAN_LOG"
+jq -nc '{pr:55,issue:505,touches:["w/**"],approved_head:"newhead2",approval_kind:"reviewer",approval_comment_id:"8"}' >"$QDIR/1003-pr55.json"
+mf_pr_head(){ if [ -f "$T/pushed55" ]; then echo pushedhead3; else echo newhead2; fi; }
+mf_cc(){ printf '%s %s\n' "$1" "$2" >>"$CONFLICT_CALLS"; : >"$T/pushed55"; }
+merger_step
+check "orphaned old-head marker never denies the new head its attempt" "1" "$(grep -c '^ci-fix hard$' "$CONFLICT_CALLS")"
+[ -f "$QDIR/.conflictfix-pr55-oldhead1" ] && bad "stale old-head marker must be swept" || ok "stale old-head marker swept"
+check "new head still routes to fresh review" "1" "$(grep -c '|505|' "$REQUEUED")"
+
+echo "— merger: bounded same-head merge refusals (BLOCKED/DRAFT class)"
+: >"$HUMAN_LOG"
+jq -nc '{pr:66,issue:606,touches:["v/**"],approved_head:"eeee5555",approval_kind:"reviewer",approval_comment_id:"9"}' >"$QDIR/1004-pr66.json"
+gh(){ case "$*" in
+  *"--json state"*) echo OPEN;;
+  *"--json statusCheckRollup"*) echo '[{"conclusion":"SUCCESS","status":"","state":""}]';;
+  *"--json mergeStateStatus"*) echo BLOCKED;;
+  *"pr merge"*) return 1;;
+  *) : ;;
+esac; }
+mf_pr_head(){ echo eeee5555; }
+MF_MERGE_FAIL_MAX=2
+merger_step
+[ -f "$QDIR/1004-pr66.json" ] && ok "first same-head merge refusal retains the queue head" || bad "queue head dropped on first refusal"
+check "merge-refusal counter recorded" "1" "$(cat "$QDIR/.mergefail-pr66-eeee5555" 2>/dev/null)"
+merger_step
+[ -f "$QDIR/1004-pr66.json" ] && bad "queue head must park after the refusal cap" || ok "queue head parked after the refusal cap"
+check "refused head escalated to a human" "1" "$(grep -c '^606|' "$HUMAN_LOG")"
+[ -f "$QDIR/.mergefail-pr66-eeee5555" ] && bad "refusal counter must be cleared" || ok "refusal counter cleared"
 MF_DRY_RUN=1
 
 echo

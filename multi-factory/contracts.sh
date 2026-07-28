@@ -273,11 +273,16 @@ mf_latest_approval_for_head(){ # $1=comments JSON $2=head; sets MF_APPROVAL_*
 }
 
 mf_pr_comments_json(){ # $1=PR number
-  # ONE jq parse of GitHub's original JSON. Routing the payload through gh's
-  # embedded jq (gojq) re-serializes comment bodies, and gojq can emit raw
-  # control/invalid bytes that C jq then rejects — a DETERMINISTIC parse
-  # failure that jammed the merge queue for hours on PR #891 (2026-07-28).
-  # --paginate without --jq emits one JSON array per page; slurp+add flattens.
+  # ONE parser, ONE contract: parse GitHub's original JSON exactly once with C
+  # jq. Routing the payload through gh's embedded jq (gojq) adds a second,
+  # gh-version-dependent transformation layer: gh 2.96 rewrites control chars
+  # to caret notation, gojq alphabetizes keys and tolerates lone-surrogate
+  # escapes that C jq rejects. (A 2026-07-28 incident review initially blamed
+  # this layer for the #891 queue jam; disproven — the jam was the DIRTY-head/
+  # empty-rollup trap fixed in merger_step. Single-parse stays for surface
+  # reduction, and the merger's approval-read counter bounds any residual
+  # parse failure.) gh --paginate emits pages either merged into one array
+  # (gh ≥2.9x) or as concatenated arrays (older gh); slurp+add handles both.
   local raw
   raw=$(gh api -H 'Cache-Control: no-cache' --paginate \
     "repos/$REPO/issues/$1/comments?per_page=100" 2>/dev/null) || return 1
@@ -287,7 +292,7 @@ mf_pr_comments_json(){ # $1=PR number
 mf_pr_head(){ gh pr view "$1" --json headRefOid -q .headRefOid 2>/dev/null; }
 
 mf_recent_issues_json(){
-  # Single-parse rule (see mf_pr_comments_json): never re-parse gojq output.
+  # Single-parse rule (see mf_pr_comments_json): one parser, one contract.
   local raw
   raw=$(gh api -H 'Cache-Control: no-cache' \
     "repos/$REPO/issues?state=all&sort=created&direction=desc&per_page=100" \
@@ -296,7 +301,7 @@ mf_recent_issues_json(){
 }
 
 mf_issue_json_by_number(){ # $1=issue number; direct reads avoid list eventual consistency
-  # Single-parse rule (see mf_pr_comments_json): never re-parse gojq output.
+  # Single-parse rule (see mf_pr_comments_json): one parser, one contract.
   local raw
   raw=$(gh api -H 'Cache-Control: no-cache' "repos/$REPO/issues/$1" 2>/dev/null) || return 1
   jq -c 'select(.pull_request==null)
