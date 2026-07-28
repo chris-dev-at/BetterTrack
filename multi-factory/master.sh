@@ -1488,6 +1488,14 @@ merger_step(){
     return 0
   }
   if [ "$merge_state" = DIRTY ]; then
+    # Re-check the head immediately before spending a fixer run — a push in the
+    # intervening second requeues for review instead of wasting an LLM call.
+    local dirty_head
+    dirty_head=$(mf_pr_head "$pr") || return 0
+    if [ "$dirty_head" != "$approved_head" ]; then
+      requeue_for_review "$f" "$n" "head changed from ${approved_head:0:12}"
+      return 0
+    fi
     conflict_fix_step "$f" "$n" "$pr" "$approved_head"
     return 0
   fi
@@ -1546,7 +1554,8 @@ merger_step(){
     fi
     # Same-head refusals (BLOCKED by protection, DRAFT, an admin rule) are the
     # last unbounded head-of-line trap — bound them like approval reads. The
-    # counter is head-scoped so a fresh approval starts a fresh budget.
+    # counter is head-scoped so a stale head's budget never leaks onto a new
+    # head (a re-approval at the SAME head deliberately resumes its count).
     local mergefail=$QUEUE/.mergefail-pr$pr-$approved_head mfails stale
     for stale in "$QUEUE"/.mergefail-pr$pr-*; do
       [ -e "$stale" ] || continue
