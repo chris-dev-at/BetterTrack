@@ -432,13 +432,14 @@ function CleartextExportSection() {
   const [failure, setFailure] = useState<VaultMoneyFailure | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Leaving the page (locking unmounts through the session gate) aborts an
-  // in-flight generation before any bytes are handed over.
+  // Locking drops `session` while this section stays mounted, and leaving the
+  // page unmounts it — both must abort an in-flight generation before any
+  // bytes are handed over, so the cleanup is keyed on the session identity.
   useEffect(
     () => () => {
       abortRef.current?.abort();
     },
-    [],
+    [session],
   );
 
   const exportLocale = locale === 'de' ? 'de' : 'en';

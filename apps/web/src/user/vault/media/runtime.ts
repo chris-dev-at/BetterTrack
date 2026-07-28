@@ -117,8 +117,34 @@ export function createUnlockedVaultDriveRuntime(
   let readyPromise: Promise<void> | null = null;
 
   function requireActive(): void {
-    if (disposed) throw new Error('The unlocked Drive runtime was disposed.');
+    if (disposed) {
+      throw new VaultCryptoError('locked', 'The unlocked Drive runtime was disposed.');
+    }
   }
+
+  // The seam handed out to the money engine/provider. Disposal (lock) revokes
+  // it: a stale holder — an in-flight export's final snapshot check, the
+  // fire-and-forget standing-order catch-up — fails locked instead of reading
+  // or mutating through the retired session's coordinator.
+  const guardedSync: VaultDriveSyncCoordinator = {
+    deviceId: sync.deviceId,
+    get state() {
+      requireActive();
+      return sync.state;
+    },
+    async reconnect() {
+      requireActive();
+      const state = await sync.reconnect();
+      requireActive();
+      return state;
+    },
+    async mutate(mutator) {
+      requireActive();
+      const state = await sync.mutate(mutator);
+      requireActive();
+      return state;
+    },
+  };
 
   async function initialize(): Promise<void> {
     requireActive();
@@ -167,7 +193,7 @@ export function createUnlockedVaultDriveRuntime(
 
   return {
     controller,
-    sync,
+    sync: guardedSync,
     get ready() {
       return ready();
     },

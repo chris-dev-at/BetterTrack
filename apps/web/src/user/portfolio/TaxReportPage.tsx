@@ -485,24 +485,28 @@ export function TaxReportPage() {
   const [expandedYear, setExpandedYear] = useState<number | null>(null);
 
   // Paranoid accounts never fetch server tax data (PD7): every server query
-  // below stays disabled until the account resolves to 'normal'.
+  // below stays disabled until the account resolves to 'normal'. Pre-populated
+  // caches must not leak through either — a cached ['portfolios'] entry would
+  // otherwise resolve an active id and start the settings/report reads while
+  // privacy is still pending or already paranoid.
   const privacy = usePrivacyMode();
+  const serverReadsEnabled = privacy.privacyMode === 'normal';
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
     queryFn: ({ signal }) => listPortfolios(signal),
     staleTime: 60_000,
-    enabled: privacy.privacyMode === 'normal',
+    enabled: serverReadsEnabled,
   });
 
-  const portfolios = portfoliosQuery.data?.portfolios ?? [];
+  const portfolios = serverReadsEnabled ? (portfoliosQuery.data?.portfolios ?? []) : [];
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
   const active = resolveActivePortfolio(portfolios, param);
 
   const settingsQuery = useQuery({
     queryKey: active ? portfolioTaxSettingsKey(active.id) : ['portfolio', 'taxSettings', 'none'],
     queryFn: ({ signal }) => getPortfolioTaxSettings(active!.id, signal),
-    enabled: Boolean(active),
+    enabled: serverReadsEnabled && Boolean(active),
     staleTime: 30_000,
   });
   const mode = settingsQuery.data?.effective.mode ?? 'none';
@@ -511,7 +515,7 @@ export function TaxReportPage() {
   const reportQuery = useQuery({
     queryKey: ['portfolio', 'taxYears', active?.id],
     queryFn: ({ signal }) => getTaxYearReports(active!.id, signal),
-    enabled: Boolean(active) && taxActive,
+    enabled: serverReadsEnabled && Boolean(active) && taxActive,
     staleTime: 30_000,
   });
 

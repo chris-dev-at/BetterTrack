@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -344,5 +344,48 @@ describe('AccountSettingsPage — paranoid cleartext export (PD7)', () => {
     expect(mediaType).toBe('application/zip');
     expect(String(filename)).toMatch(/^bettertrack-cleartext-export-\d{4}-\d{2}-\d{2}\.zip$/);
     expect((bytes as Uint8Array).byteLength).toBeGreaterThan(0);
+  });
+
+  // Locking during generation (PD7 acceptance): the paranoid section stays
+  // mounted while `session` drops to null, so the in-flight export must be
+  // aborted — and the revoked session seam must fail locked — before any
+  // cleartext bytes are handed over.
+  test('locking mid-generation aborts the export — no cleartext leaves after lock', async () => {
+    Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+    vi.mocked(getParanoidMediaState).mockResolvedValue(PARANOID);
+    const fixture = await decryptClientMoneyFixture();
+    const sync = createMutableTestSync(fixture.document, fixture.header, fixture.envelope);
+    const market = createClientMoneyMarket().market;
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0 } },
+    });
+    const ui = (activeSync: typeof sync | null) => (
+      <MemoryRouter>
+        <I18nProvider>
+          <QueryClientProvider client={client}>
+            <VaultMoneyEngineProvider dependencies={{ sync: activeSync, market }}>
+              <AccountSettingsPage />
+            </VaultMoneyEngineProvider>
+          </QueryClientProvider>
+        </I18nProvider>
+      </MemoryRouter>
+    );
+    const view = render(ui(sync));
+
+    // fireEvent, not userEvent: the lock must land while the generation is
+    // still parked on its first browser-task boundary.
+    fireEvent.click(await screen.findByRole('button', { name: 'Build cleartext export' }));
+    view.rerender(ui(null));
+
+    // The section stays mounted and reports the unlock requirement…
+    expect(
+      await screen.findByText(/Unlock your vault to build a cleartext export/i),
+    ).toBeInTheDocument();
+    // …and the aborted generation gets every chance to (incorrectly) finish
+    // before asserting that no bytes were ever delivered.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(deliverClientDownload).not.toHaveBeenCalled();
   });
 });

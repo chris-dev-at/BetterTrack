@@ -22,6 +22,7 @@ import type {
 } from '../dataHome';
 import { decryptVaultDocument, encryptVaultDocument } from '../crypto';
 import type { DriveDataHome, GoogleDriveTokenClient } from '../drive';
+import { VaultCryptoError } from '../errors';
 import { inspectVaultEnvelope } from '../envelope';
 import type { VaultSyncCandidate, VaultSyncState } from '../sync';
 import fixture from '../vectors.fixture.json';
@@ -270,6 +271,32 @@ describe('unlocked Drive runtime', () => {
     expect(api.getState).not.toHaveBeenCalled();
     expect(sync.reconnect).toHaveBeenCalledTimes(2);
     runtime.dispose();
+  });
+
+  it('fails the exposed sync seam locked once the runtime is disposed', async () => {
+    const sync = coordinator('synced');
+    const runtime = createUnlockedVaultDriveRuntime(
+      new Uint8Array(32).fill(1),
+      fixture.initial.header.keyId,
+      dependencies(sync, proofManager()),
+    );
+    await expect(runtime.ready).resolves.toBeUndefined();
+    const seam = runtime.sync;
+    expect(seam.deviceId).toBe('test-device');
+    expect(seam.state.status).toBe('synced');
+
+    runtime.dispose();
+
+    expect(() => seam.state).toThrowError(VaultCryptoError);
+    await expect(seam.reconnect()).rejects.toMatchObject({ code: 'locked' });
+    await expect(
+      seam.mutate(() => {
+        throw new Error('a disposed seam must fail before invoking the mutator');
+      }),
+    ).rejects.toMatchObject({ code: 'locked' });
+    // Only the ready() reconciliation ever reached the live coordinator.
+    expect(sync.reconnect).toHaveBeenCalledTimes(1);
+    expect(sync.mutate).toHaveBeenCalledTimes(1);
   });
 
   it('stops proof enrollment when the runtime is disposed during reconciliation', async () => {

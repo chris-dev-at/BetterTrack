@@ -462,4 +462,40 @@ describe('TaxReportPage — paranoid mode (PD7)', () => {
     expect(portfolioApi.listPortfolios).not.toHaveBeenCalled();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
   });
+
+  // Regression: a cached ['portfolios'] entry (from an earlier normal-mode
+  // session on this client) must not resolve an active id and start the tax
+  // settings/report reads while privacy is still pending or paranoid.
+  test('pre-seeded portfolio and tax-settings caches never start server tax reads', async () => {
+    let resolvePrivacy!: (value: ParanoidMediaStateResponse) => void;
+    vi.mocked(userApi.getParanoidMediaState).mockImplementation(
+      () =>
+        new Promise<ParanoidMediaStateResponse>((resolve) => {
+          resolvePrivacy = resolve;
+        }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['portfolios'], PORTFOLIO_LIST);
+    client.setQueryData(['portfolio', 'taxSettings', 'p1'], AT_TAX_VIEW);
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <TaxReportPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // While privacy is unresolved, the seeded caches alone start nothing.
+    await waitFor(() => expect(userApi.getParanoidMediaState).toHaveBeenCalled());
+    expect(portfolioApi.getPortfolioTaxSettings).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+
+    resolvePrivacy(PARANOID_MEDIA);
+
+    expect(await screen.findByText('Unlock your vault')).toBeInTheDocument();
+    expect(portfolioApi.listPortfolios).not.toHaveBeenCalled();
+    expect(portfolioApi.getPortfolioTaxSettings).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
+  });
 });
