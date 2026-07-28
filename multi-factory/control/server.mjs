@@ -1335,6 +1335,10 @@ setInterval(async () => {
     const { containers } = ps;
     const anyRunning = containers.some((c) => /running|paused/i.test(c.state));
     if (anyRunning) {
+      // Containers back means whatever stopped them is over — including a
+      // terminal-side ./autorun.sh start the dashboard never saw. Clearing the
+      // stop suppression here keeps the watchdog armed for the next incident.
+      watchdogSuppressedByStop = false;
       downSince = 0;
       downNotified = false;
       return;
