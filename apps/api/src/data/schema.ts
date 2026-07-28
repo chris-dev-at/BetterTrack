@@ -75,6 +75,11 @@ export const users = pgTable(
     hasUsablePassword: boolean('has_usable_password').notNull().default(true),
     role: userRoleEnum('role').notNull().default('user'),
     status: userStatusEnum('status').notNull().default('active'),
+    // Server-internal optimistic fence for authority-changing account state
+    // (#888). Every cookie session is bound to the exact generation at issue;
+    // role/password/factor transitions increment it atomically with their
+    // durable mutation, so Redis cleanup is only eager housekeeping.
+    securityGeneration: integer('security_generation').notNull().default(0),
     mustChangePassword: boolean('must_change_password').notNull().default(false),
     // Optional PIN gate (§6.1, §5.5): when enabled the user re-enters this
     // argon2id-hashed code to resume a session, which renews its 30-day window.

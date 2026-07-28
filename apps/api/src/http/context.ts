@@ -931,6 +931,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     redis,
     email,
+    sessions,
   });
 
   // Passkeys / WebAuthn (§13.4 V4-P4): register/manage from Settings → Security and
@@ -959,6 +960,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     redis,
     email,
+    sessions,
   });
 
   const auth = createAuthService({

@@ -8,10 +8,12 @@ import {
   twoFactorEnrollResponseSchema,
 } from '@bettertrack/contracts';
 
-import { emailLog, passwordResetTokens, type EmailLogRow } from '../data/schema';
+import { createUserRepository } from '../data/repositories/userRepository';
+import { emailLog, passwordResetTokens, users, type EmailLogRow } from '../data/schema';
 import { generateTotpCode } from '../services/auth/totp';
 import { hashToken } from '../services/crypto/tokens';
 import type { MailTransport, OutgoingMail } from '../services/email/transport';
+import { createPasswordHasher } from '../services/password/passwordHasher';
 import {
   createTestApp,
   type CreateTestAppOptions,
@@ -322,6 +324,68 @@ describe('self-service reset — SMTP-less deploys and account kinds', () => {
     const relogin = await login(harness, user.email, 'reset-with-2fa-secret-1');
     expect(relogin.status).toBe(200);
     expect(twoFactorChallengeResponseSchema.safeParse(relogin.body).success).toBe(true);
+  });
+
+  it('rejects a reset completion that was admitted before promotion', async () => {
+    const newPassword = 'promotion-race-reset-secret-1';
+    const baseHasher = createPasswordHasher({ memoryCost: 4096, timeCost: 1 });
+    let markHashStarted!: () => void;
+    let releaseHash!: () => void;
+    const hashStarted = new Promise<void>((resolve) => {
+      markHashStarted = resolve;
+    });
+    const hashGate = new Promise<void>((resolve) => {
+      releaseHash = resolve;
+    });
+    const controlledHasher = {
+      async hash(password: string) {
+        if (password === newPassword) {
+          markHashStarted();
+          await hashGate;
+        }
+        return baseHasher.hash(password);
+      },
+      verify: baseHasher.verify,
+    };
+    const { harness, transport } = await enabledHarness({
+      passwordHasher: controlledHasher,
+    });
+    const user = await harness.seedUser();
+
+    await requestReset(harness, user.email);
+    const token = tokenFromMail(transport.sent[0]!);
+    const completingAgent = request.agent(harness.app);
+    const completion = completingAgent
+      .post('/api/v1/auth/password-reset/complete')
+      .set(...XRW)
+      .send({ token, newPassword })
+      .then((response) => response);
+
+    // The reset has validated the user-kind row at generation zero and is
+    // paused in hashing. Promotion advances role + generation in one commit.
+    await hashStarted;
+    const userRepo = createUserRepository(harness.db);
+    expect(await userRepo.setRole(user.id, 'admin')).toBe(1);
+    releaseHash();
+
+    const done = await completion;
+    expect(done.status).toBe(400);
+    expect(done.body.error.code).toBe('INVALID_RESET');
+    expect(setsSessionCookie(done)).toBe(false);
+
+    const [promoted] = await harness.db
+      .select({
+        role: users.role,
+        passwordHash: users.passwordHash,
+        securityGeneration: users.securityGeneration,
+      })
+      .from(users)
+      .where(eq(users.id, user.id));
+    expect(promoted).toMatchObject({ role: 'admin', securityGeneration: 1 });
+    expect(await baseHasher.verify(promoted!.passwordHash, user.password)).toBe(true);
+    expect(await baseHasher.verify(promoted!.passwordHash, newPassword)).toBe(false);
+    // No post-promotion cookie was minted from pre-promotion reset authority.
+    expect((await completingAgent.get('/api/v1/admin/security/2fa/status')).status).toBe(404);
   });
 
   it('does not issue a self-service reset for an admin-kind account', async () => {

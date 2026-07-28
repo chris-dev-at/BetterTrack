@@ -1928,7 +1928,7 @@
       .route-head,
       .mrow {
         display: grid;
-        grid-template-columns: 126px minmax(150px, 0.7fr) minmax(210px, 1.35fr) minmax(
+        grid-template-columns: 126px 108px minmax(150px, 0.7fr) minmax(210px, 1.35fr) minmax(
             120px,
             0.65fr
           );
@@ -1962,6 +1962,22 @@
         border-radius: 999px;
         padding: 4px 10px;
       }
+      /* per-role slot rows: writer / review 1 / completion within one difficulty */
+      .mrow.mid {
+        border-bottom-style: dashed;
+      }
+      .slot-tag {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 720;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 3px 8px;
+        white-space: nowrap;
+      }
       .role-routing {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1981,6 +1997,19 @@
       }
       .role-field select {
         width: 100%;
+      }
+      .role-pin {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .role-pin[hidden] {
+        display: none;
+      }
+      .role-pin select,
+      .role-pin input {
+        flex: 1 1 90px;
+        min-width: 0;
       }
       .segmented {
         display: inline-flex;
@@ -2228,7 +2257,7 @@
         }
         .route-head,
         .mrow {
-          grid-template-columns: 106px minmax(130px, 0.8fr) minmax(180px, 1.2fr) minmax(
+          grid-template-columns: 106px 92px minmax(130px, 0.8fr) minmax(180px, 1.2fr) minmax(
               110px,
               0.6fr
             );
@@ -2423,7 +2452,7 @@
         }
         .route-head,
         .mrow {
-          min-width: 690px;
+          min-width: 780px;
         }
         .event-toolbar input[type='search'] {
           width: 100%;
@@ -2814,7 +2843,7 @@
             <h3>Provider routes</h3>
             <p>
               Choose the agent harness, model, and reasoning effort independently for each
-              difficulty.
+              difficulty — per role slot: writer, first review, completion.
             </p>
           </div>
         </div>
@@ -2839,6 +2868,7 @@
           <div class="route-table" role="table" aria-label="Difficulty routing">
             <div class="route-head" role="row">
               <span role="columnheader">Difficulty</span>
+              <span role="columnheader">Slot</span>
               <span role="columnheader">Harness / provider</span>
               <span role="columnheader">Model</span>
               <span role="columnheader">Effort</span>
@@ -2848,16 +2878,19 @@
           <div class="role-routing">
             <div class="role-field">
               <label for="m-composer">Composer slot</label>
-              <select id="m-composer" onchange="mMark()"></select>
+              <select id="m-composer" onchange="mRoleModeChange('composer')"></select>
+              <span class="role-pin" id="m-composer-pin" hidden></span>
               <span class="hint">Fable · Opus · Sol only</span>
             </div>
             <div class="role-field">
               <label for="m-checker">Checker slot</label>
-              <select id="m-checker" onchange="mMark()"></select>
+              <select id="m-checker" onchange="mRoleModeChange('checker')"></select>
+              <span class="role-pin" id="m-checker-pin" hidden></span>
             </div>
             <div class="role-field">
               <label for="m-floor">Review floor</label>
               <select id="m-floor" onchange="mMark()"></select>
+              <span class="hint">always a difficulty — never a pinned model</span>
             </div>
           </div>
           <div class="addrow" style="margin-top: 12px">
@@ -2879,14 +2912,21 @@
             <summary class="hint" style="cursor: pointer">how difficulty routing works</summary>
             <div class="hint" style="margin-top: 6px; line-height: 1.55">
               The composer labels every issue with exactly one of
-              <b>diff:easy · diff:normal · diff:intermediate · diff:hard · diff:max</b>. Writer,
-              fixer and ci-fix run on the model you map to the issue's difficulty; reviews run at
-              the issue's difficulty but never below the <b>review floor</b>; the composer and
-              checker master-roles use the difficulty slots above. A rejected issue escalates ONE
-              difficulty higher on its triage retry (max stays max). Legacy tier labels still
-              resolve: sonnet→easy, opus→intermediate, fable→max. Effort semantics: Claude =
-              --effort (low…max) · Codex = model-supported reasoning effort (low…max/ultra) ·
-              Antigravity bakes the level into the model name, e.g. “Gemini 3.1 Pro (High)”.
+              <b>diff:easy · diff:normal · diff:intermediate · diff:hard · diff:max</b>. Each
+              difficulty routes three role slots: <b>writer</b> writes the initial implementation;
+              <b>review&nbsp;1</b> is the single first review pass (typically cross-vendor);
+              <b>completion</b> does all later fixing AND reviewing (fixer, ci-fix, checker,
+              re-reviews) until the issue is done. Reviews run at the issue's difficulty but never
+              below the <b>review floor</b>; the composer master-role runs on the writer slot of its
+              difficulty, the checker on the completion slot. Instead of a difficulty, the composer
+              and checker can be <b>pinned</b> to one exact provider/model/effort (“📌 pinned
+              model…”) — a pin bypasses difficulty routing for that role only; issue work keeps
+              following the slot table. A rejected issue escalates ONE difficulty higher on its
+              triage retry (max stays max). Legacy tier labels still resolve: sonnet→easy,
+              opus→intermediate, fable→max. Effort semantics: Claude = --effort (low…max) · Codex =
+              model-supported reasoning effort (low…max/ultra) · Antigravity bakes the level into
+              the model name, e.g. “Gemini 3.1 Pro (High)”. Hard rule enforced here and in the
+              control API: Claude Opus 5 never runs above <b>xhigh</b>.
             </div>
           </details>
         </div>
@@ -3549,8 +3589,17 @@
           short: 'Anthropic OAuth · Claude Code harness',
           description:
             'Native Claude Code agent loop and tools through the Anthropic subscription.',
-          models: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5'],
+          models: [
+            'claude-fable-5',
+            'claude-opus-5',
+            'claude-opus-4-8',
+            'claude-sonnet-5',
+            'claude-haiku-4-5',
+          ],
           efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+          modelEfforts: {
+            'claude-opus-5': ['low', 'medium', 'high', 'xhigh'],
+          },
           defaultModel: 'claude-opus-4-8',
           harness: 'Claude Code',
         },
@@ -3596,6 +3645,49 @@
           defaultModel: 'Gemini 3.1 Pro (High)',
           harness: 'Antigravity',
         },
+      ];
+      /* v2 slotted routing: each difficulty may carry writer/reviewer1/completion
+         sub-routes next to the flat legacy keys (which mirror completion). */
+      const SLOT_LIST = ['writer', 'reviewer1', 'completion'];
+      const SLOT_LABEL = { writer: 'writer', reviewer1: 'review 1', completion: 'completion' };
+      const SLOT_HINT = {
+        writer: 'writes the initial implementation',
+        reviewer1: 'single first review pass (cross-vendor)',
+        completion: 'all later fixing AND reviewing until done',
+      };
+      const mSlotEntry = (entry, slot) => {
+        const sub = entry?.[slot];
+        return sub && typeof sub === 'object' && typeof sub.provider === 'string'
+          ? sub
+          : entry || {};
+      };
+      /* every route a difficulty entry can dispatch: flat legacy + slot routes */
+      const mRoutesOf = (entry) =>
+        entry && typeof entry === 'object'
+          ? [
+              entry,
+              ...SLOT_LIST.map((slot) => entry[slot]).filter((r) => r && typeof r === 'object'),
+            ]
+          : [];
+      /* roles.<role> may be a difficulty string (legacy: resolve through that
+         tier) or a {provider, model, effort} object pinning the role to that
+         exact route (mflib.sh role_pin_cfg). reviewFloor is never a pin. */
+      const mRolePin = (value) =>
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        typeof value.provider === 'string'
+          ? value
+          : null;
+      const mRolePins = (models) =>
+        Object.entries(models?.roles || {})
+          .filter(([role]) => role !== 'reviewFloor')
+          .map(([, value]) => mRolePin(value))
+          .filter(Boolean);
+      /* every route the whole config can dispatch: all difficulty routes + role pins */
+      const mAllRoutes = (models) => [
+        ...Object.values(models?.difficulties || {}).flatMap(mRoutesOf),
+        ...mRolePins(models),
       ];
       let providerDefs = FALLBACK_PROVIDER_DEFS.map((d) => ({
         ...d,
@@ -3644,7 +3736,7 @@
           FALLBACK_PROVIDER_DEFS.map((definition) => [definition.id, definition]),
         );
         const referenced = new Set(
-          Object.values(s?.models?.difficulties || {})
+          mAllRoutes(s?.models)
             .map((entry) => entry?.provider)
             .filter((id) => typeof id === 'string' && /^[a-z0-9_-]{1,48}$/i.test(id)),
         );
@@ -3731,11 +3823,18 @@
           mLast = '';
         }
       }
+      /* HARD RULE: Claude Opus 5 must never run above xhigh — filter the effort
+         choices for any opus-5 model id (also date-suffixed variants). The
+         control API (provider-registry.mjs) enforces the same cap on save. */
+      const OPUS5_MODEL_RE = /^claude-opus-5(?:$|[.:@_-])/i;
       const mEfforts = (provider, model) => {
         const def = providerDef(provider);
-        return listOfStrings(
+        const efforts = listOfStrings(
           def.modelEfforts?.[model] || def.model_efforts?.[model] || def.efforts,
         );
+        return OPUS5_MODEL_RE.test(String(model || '').trim())
+          ? efforts.filter((v) => v !== 'max' && v !== 'ultra')
+          : efforts;
       };
       let mDirty = false,
         mLast = '',
@@ -3756,64 +3855,174 @@
         const defs = providerMap();
         const labels = providerLabels();
         $('mrows').innerHTML =
-          DIFF_LIST.map((d) => {
-            const e = df[d] || {};
-            const p = defs[e.provider] ? e.provider : 'claude';
-            const def = providerDef(p);
-            const providerChoices = providerDefs.filter(
-              (entry) => entry.selectable !== false || entry.id === p,
-            );
-            const efforts = mEfforts(p, e.model);
-            const effortSel = efforts.length
-              ? `<select aria-label="${d} effort" data-d="${d}" data-k="effort" onchange="mMark()">${mOpt(efforts, efforts.includes(e.effort) ? e.effort : efforts.includes('high') ? 'high' : efforts[0])}</select>`
-              : `<span class="hint">effort is part of the model name</span>`;
-            return `<div class="mrow" role="row">
-              <span role="cell"><span class="dchip" style="background:${DIFF_COLOR[d]};color:${DIFF_TEXT[d] || '#fff'}">${d}</span></span>
-              <span role="cell"><select aria-label="${d} provider" data-d="${d}" data-k="provider" onchange="mProvChange('${d}', this.value)">${mOpt(
+          DIFF_LIST.flatMap((d) =>
+            SLOT_LIST.map((slot, index) => {
+              /* a flat v1 config seeds every slot from its legacy route — that is
+                 exactly how mflib.sh resolves it, so the display is faithful */
+              const e = mSlotEntry(df[d], slot);
+              const p = defs[e.provider] ? e.provider : 'claude';
+              const def = providerDef(p);
+              const providerChoices = providerDefs.filter(
+                (entry) => entry.selectable !== false || entry.id === p,
+              );
+              const efforts = mEfforts(p, e.model);
+              const effortSel = efforts.length
+                ? `<select aria-label="${d} ${slot} effort" data-d="${d}" data-s="${slot}" data-k="effort" onchange="mMark()">${mOpt(efforts, efforts.includes(e.effort) ? e.effort : efforts.includes('high') ? 'high' : efforts[0])}</select>`
+                : `<span class="hint">effort is part of the model name</span>`;
+              return `<div class="mrow${index < SLOT_LIST.length - 1 ? ' mid' : ''}" role="row">
+              <span role="cell">${index === 0 ? `<span class="dchip" style="background:${DIFF_COLOR[d]};color:${DIFF_TEXT[d] || '#fff'}">${d}</span>` : ''}</span>
+              <span role="cell"><span class="slot-tag" title="${SLOT_HINT[slot]}">${SLOT_LABEL[slot]}</span></span>
+              <span role="cell"><select aria-label="${d} ${slot} provider" data-d="${d}" data-s="${slot}" data-k="provider" onchange="mProvChange('${d}', '${slot}', this.value)">${mOpt(
                 providerChoices.map((x) => x.id),
                 p,
                 labels,
               )}</select></span>
-              <span role="cell"><input aria-label="${d} model" type="text" data-d="${d}" data-k="model" list="dl-${domToken(p)}" value="${esc(e.model || def.defaultModel)}" oninput="mMark()" onchange="mModelChange('${d}')" spellcheck="false" /></span>
+              <span role="cell"><input aria-label="${d} ${slot} model" type="text" data-d="${d}" data-s="${slot}" data-k="model" list="dl-${domToken(p)}" value="${esc(e.model || def.defaultModel)}" oninput="mMark()" onchange="mModelChange('${d}', '${slot}')" spellcheck="false" /></span>
               <span role="cell">${effortSel}</span>
             </div>`;
-          }).join('') +
+            }),
+          ).join('') +
           providerDefs
             .map(
               (def) =>
                 `<datalist id="dl-${domToken(def.id)}">${def.models.map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`,
             )
             .join('');
-        $('m-composer').innerHTML = mOpt(DIFF_LIST, m.roles?.composer || 'hard');
-        $('m-checker').innerHTML = mOpt(DIFF_LIST, m.roles?.checker || 'hard');
-        $('m-floor').innerHTML = mOpt(DIFF_LIST, m.roles?.reviewFloor || 'intermediate');
+        mRenderRoles(m);
+      }
+      /* role entries the editor has no controls for (e.g. a pinned `reviewer`
+         or `fixer` written by hand) are carried through saves verbatim so the
+         dashboard never corrupts a config it does not fully understand */
+      let mRolesBase = {};
+      const PIN_VALUE = '__pin__';
+      const PIN_LABEL = { [PIN_VALUE]: '📌 pinned model…' };
+      function mRenderRoles(m) {
+        mRolesBase = { ...(m.roles || {}) };
+        for (const role of ['composer', 'checker']) {
+          const value = m.roles?.[role] ?? 'hard';
+          const pin = mRolePin(value);
+          $(`m-${role}`).innerHTML = mOpt(
+            [...DIFF_LIST, PIN_VALUE],
+            pin ? PIN_VALUE : DIFF_LIST.includes(value) ? value : 'hard',
+            PIN_LABEL,
+          );
+          mRenderRolePin(role, pin);
+        }
+        const floor = m.roles?.reviewFloor;
+        $('m-floor').innerHTML = mOpt(
+          DIFF_LIST,
+          DIFF_LIST.includes(floor) ? floor : 'intermediate',
+        );
+      }
+      function mRenderRolePin(role, pin) {
+        const host = $(`m-${role}-pin`);
+        if (!pin) {
+          host.innerHTML = '';
+          host.hidden = true;
+          return;
+        }
+        const defs = providerMap();
+        const labels = providerLabels();
+        const p = defs[pin.provider] ? pin.provider : 'claude';
+        const def = providerDef(p);
+        const providerChoices = providerDefs.filter(
+          (entry) => entry.selectable !== false || entry.id === p,
+        );
+        const model = pin.model || def.defaultModel;
+        const efforts = mEfforts(p, model);
+        host.hidden = false;
+        host.innerHTML =
+          `<select aria-label="${role} pinned provider" data-role="${role}" data-k="provider" onchange="mRolePinProvChange('${role}', this.value)">${mOpt(
+            providerChoices.map((x) => x.id),
+            p,
+            labels,
+          )}</select>` +
+          `<input aria-label="${role} pinned model" type="text" data-role="${role}" data-k="model" list="dl-${domToken(p)}" value="${esc(model)}" oninput="mMark()" onchange="mRolePinModelChange('${role}')" spellcheck="false" />` +
+          (efforts.length
+            ? `<select aria-label="${role} pinned effort" data-role="${role}" data-k="effort" onchange="mMark()">${mOpt(efforts, efforts.includes(pin.effort) ? pin.effort : efforts.includes('high') ? 'high' : efforts[0])}</select>`
+            : `<span class="hint">effort is part of the model name</span>`);
+      }
+      function mRolePinCollect(role) {
+        const g = (k) => document.querySelector(`[data-role="${role}"][data-k="${k}"]`);
+        if (!g('provider')) return null;
+        const effortEl = g('effort');
+        return {
+          provider: g('provider').value,
+          model: g('model').value.trim(),
+          ...(effortEl ? { effort: effortEl.value } : {}),
+        };
+      }
+      function mRoleModeChange(role) {
+        const pinned = $(`m-${role}`).value === PIN_VALUE;
+        mMark();
+        if (!pinned) {
+          mRenderRolePin(role, null);
+          return;
+        }
+        const def = providerDef('claude');
+        const efforts = mEfforts('claude', def.defaultModel);
+        mRenderRolePin(
+          role,
+          mRolePinCollect(role) || {
+            provider: 'claude',
+            model: def.defaultModel,
+            ...(efforts.length ? { effort: efforts.includes('high') ? 'high' : efforts[0] } : {}),
+          },
+        );
+      }
+      function mRolePinProvChange(role, p) {
+        const model = providerDef(p).defaultModel;
+        const efforts = mEfforts(p, model);
+        mMark();
+        mRenderRolePin(role, {
+          provider: p,
+          model,
+          ...(efforts.length ? { effort: efforts.includes('high') ? 'high' : efforts[0] } : {}),
+        });
+      }
+      function mRolePinModelChange(role) {
+        const pin = mRolePinCollect(role);
+        if (!pin) return;
+        const efforts = mEfforts(pin.provider, pin.model);
+        if (efforts.length && !efforts.includes(pin.effort))
+          pin.effort = efforts.includes('high') ? 'high' : efforts[0];
+        mRenderRolePin(role, pin);
       }
       function mCollect() {
+        const roles = { ...mRolesBase };
+        for (const role of ['composer', 'checker']) {
+          const mode = $(`m-${role}`).value;
+          roles[role] = mode === PIN_VALUE ? mRolePinCollect(role) || 'hard' : mode;
+        }
+        roles.reviewFloor = $('m-floor').value;
         const models = {
           difficulties: {},
-          roles: {
-            composer: $('m-composer').value,
-            checker: $('m-checker').value,
-            reviewFloor: $('m-floor').value,
-          },
+          roles,
         };
         for (const d of DIFF_LIST) {
-          const g = (k) => document.querySelector(`[data-d="${d}"][data-k="${k}"]`);
-          const provider = g('provider').value;
-          const effortEl = g('effort');
-          models.difficulties[d] = {
-            provider,
-            model: g('model').value.trim(),
-            ...(effortEl ? { effort: effortEl.value } : {}),
-          };
+          const slots = {};
+          for (const slot of SLOT_LIST) {
+            const g = (k) =>
+              document.querySelector(`[data-d="${d}"][data-s="${slot}"][data-k="${k}"]`);
+            const provider = g('provider').value;
+            const effortEl = g('effort');
+            slots[slot] = {
+              provider,
+              model: g('model').value.trim(),
+              ...(effortEl ? { effort: effortEl.value } : {}),
+            };
+          }
+          /* flat legacy keys mirror the completion slot so pre-slot readers of
+             models.json keep resolving something faithful */
+          models.difficulties[d] = { ...slots.completion, ...slots };
         }
         return models;
       }
-      function mProvChange(d, p) {
+      function mProvChange(d, slot, p) {
         const draft = mCollect();
         const model = providerDef(p).defaultModel;
         const efforts = mEfforts(p, model);
-        draft.difficulties[d] = {
+        draft.difficulties[d][slot] = {
           provider: p,
           model,
           ...(efforts.length ? { effort: efforts.includes('high') ? 'high' : efforts[0] } : {}),
@@ -3821,9 +4030,9 @@
         mMark();
         mRenderRows(draft);
       }
-      function mModelChange(d) {
+      function mModelChange(d, slot) {
         const draft = mCollect();
-        const entry = draft.difficulties[d];
+        const entry = draft.difficulties[d][slot];
         const efforts = mEfforts(entry.provider, entry.model);
         if (efforts.length && !efforts.includes(entry.effort))
           entry.effort = efforts.includes('high') ? 'high' : efforts[0];
@@ -3852,9 +4061,7 @@
           $('provs').innerHTML = providerDefs
             .map((def) => {
               const state = providerState(def, pv[def.id], s);
-              const route = Object.values(s.models?.difficulties || {}).find(
-                (entry) => entry.provider === def.id,
-              );
+              const route = mAllRoutes(s.models).find((entry) => entry.provider === def.id);
               const controlAvailable = controlPlaneState(s).available;
               const canTest =
                 controlAvailable &&
@@ -3893,9 +4100,7 @@
       }
 
       function testProvider(provider, button) {
-        const route = Object.values(S?.models?.difficulties || {}).find(
-          (entry) => entry.provider === provider,
-        );
+        const route = mAllRoutes(S?.models).find((entry) => entry.provider === provider);
         return act('test-provider', button, false, {
           provider,
           ...(route?.model ? { model: route.model } : {}),
@@ -4715,7 +4920,9 @@
             action: 'View usage',
           });
         const usedProviders = new Set(
-          Object.values(s.models?.difficulties || {}).map((entry) => entry.provider),
+          mAllRoutes(s.models)
+            .map((entry) => entry.provider)
+            .filter((id) => typeof id === 'string'),
         );
         for (const id of usedProviders) {
           const def = providerDef(id);
@@ -5121,8 +5328,11 @@
       }
       function routeCaption(route) {
         if (!route) return 'route pending';
-        const def = providerDef(route.provider);
-        return `${def.label} · ${route.model}${route.effort ? ` @ ${route.effort}` : ''}`;
+        const one = (r) =>
+          `${providerDef(r.provider).label} · ${r.model}${r.effort ? ` @ ${r.effort}` : ''}`;
+        if (route.writer && route.reviewer1 && route.completion)
+          return `writer ${one(route.writer)} · review 1 ${one(route.reviewer1)} · completion ${one(route.completion)}`;
+        return one(route);
       }
       function renderFlow(s, state = runtimeState(s?.docker?.multi)) {
         const p = s.protocol || {};
@@ -5169,8 +5379,13 @@
             return `<div class="fnode${busy ? ' pulse' : ' dim'}" id="fn-w${w.id}"><b><span class="tag w${w.id}">w${w.id}</span></b>${busy ? `#${esc(w.status.issue)} · ${esc(ph)}` : esc(ph)}<div class="sub" title="${esc(routeCaption(route))}">${busy ? esc(providerDef(route?.provider).label) : 'lane available'}</div><div class="fsteps">${steps}</div></div>`;
           })
           .join('');
-        const composerDifficulty = s.models?.roles?.composer || 'hard';
-        const composerRoute = routeForDifficulty(s.models, composerDifficulty);
+        const composerRoleValue = s.models?.roles?.composer || 'hard';
+        /* the composer master-role dispatches through its pin when one is set,
+           otherwise through the writer slot of its difficulty */
+        const composerPin = mRolePin(composerRoleValue);
+        const composerEntry = composerPin ? null : routeForDifficulty(s.models, composerRoleValue);
+        const composerRoute =
+          composerPin || (composerEntry ? mSlotEntry(composerEntry, 'writer') : null);
         const composerElapsed = p.masterActivity?.updated_at
           ? tago(p.masterActivity.updated_at).replace(/ ago$/, '') + ' elapsed'
           : 'elapsed time pending';

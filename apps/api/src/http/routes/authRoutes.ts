@@ -49,6 +49,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { ApiError, badRequest, notFound, unauthorized } from '../../errors';
+import type { SecurityMutationContext } from '../../services/sessions/sessionService';
 import {
   clearGoogleOAuthStateCookie,
   clearGoogleRegisterTicketCookie,
@@ -67,6 +68,22 @@ import { validateBody, validateParams } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { toMeResponse, toMeResponseFromRow } from '../serializers';
 import type { AppContext } from '../context';
+
+const securityMutationContextOf = (req: Request): SecurityMutationContext => {
+  if (req.sessionId && req.sessionSecurityGeneration !== undefined) {
+    return {
+      sessionId: req.sessionId,
+      securityGeneration: req.sessionSecurityGeneration,
+    };
+  }
+  if (req.apiKey) {
+    return { securityGeneration: req.apiKey.securityGeneration };
+  }
+  // All callers sit behind requireAuth/requireUser. Reaching this branch means
+  // authentication attached no generation proof, so a security write must fail
+  // closed instead of silently falling back to an unfenced user-id update.
+  throw unauthorized();
+};
 
 /** Auth endpoints (PROJECTPLAN.md §6.1, §8). Controllers stay thin. */
 export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Router {
@@ -217,12 +234,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(changePasswordRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as ChangePasswordRequest;
-      const { user, sessionId, persistent } = await ctx.auth.changePassword(
+      const { user } = await ctx.auth.changePassword(
         req.authUser!.id,
         body,
+        securityMutationContextOf(req),
         req.ip,
       );
-      setSessionCookie(res, ctx.config, sessionId, persistent);
+      if (req.sessionId) clearSessionCookie(res, ctx.config);
       res.json(toMeResponseFromRow(user));
     },
   );
@@ -351,7 +369,9 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // the authenticator app (TOTP: enroll/confirm/disable) and email codes
   // (email/enroll/confirm/disable), sharing recovery codes + status.
   router.post('/2fa/enroll', requireUser, async (req, res) => {
-    res.json(await ctx.twoFactor.enrollTotp(req.authUser!.id, req.ip));
+    res.json(
+      await ctx.twoFactor.enrollTotp(req.authUser!.id, req.ip, securityMutationContextOf(req)),
+    );
   });
 
   // Cancel a pending (unconfirmed) TOTP enrollment (#401). Armed 2FA is
@@ -359,7 +379,11 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // Session + bearer (`account:security`, gated by the /auth/2fa/ policy in
   // bearerAuth); rate-limited by the shared /api/v1 limiter like its siblings.
   router.delete('/2fa/enroll', requireUser, async (req, res) => {
-    await ctx.twoFactor.cancelTotpEnrollment(req.authUser!.id, req.ip);
+    await ctx.twoFactor.cancelTotpEnrollment(
+      req.authUser!.id,
+      req.ip,
+      securityMutationContextOf(req),
+    );
     res.json({ ok: true });
   });
 
@@ -369,7 +393,14 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(twoFactorConfirmRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as TwoFactorConfirmRequest;
-      res.json(await ctx.twoFactor.confirmTotp(req.authUser!.id, body.code, req.ip));
+      const result = await ctx.twoFactor.confirmTotp(
+        req.authUser!.id,
+        body.code,
+        req.ip,
+        securityMutationContextOf(req),
+      );
+      if (req.sessionId) clearSessionCookie(res, ctx.config);
+      res.json(result.response);
     },
   );
 
@@ -379,7 +410,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(twoFactorDisableRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as TwoFactorDisableRequest;
-      await ctx.twoFactor.disableTotp(req.authUser!.id, body.code, req.ip);
+      await ctx.twoFactor.disableTotp(
+        req.authUser!.id,
+        body.code,
+        req.ip,
+        securityMutationContextOf(req),
+      );
+      if (req.sessionId) clearSessionCookie(res, ctx.config);
       res.json({ ok: true });
     },
   );
@@ -388,7 +425,11 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // on (blocked with TWO_FACTOR_EMAIL_UNAVAILABLE when SMTP is off), disable turns
   // it off from the authenticated session alone.
   router.post('/2fa/email/enroll', requireUser, async (req, res) => {
-    await ctx.twoFactor.startEmailEnrollment(req.authUser!.id, req.ip);
+    await ctx.twoFactor.startEmailEnrollment(
+      req.authUser!.id,
+      req.ip,
+      securityMutationContextOf(req),
+    );
     res.json({ ok: true });
   });
 
@@ -398,12 +439,20 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(twoFactorEmailConfirmRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as TwoFactorEmailConfirmRequest;
-      res.json(await ctx.twoFactor.confirmEmail(req.authUser!.id, body.code, req.ip));
+      const result = await ctx.twoFactor.confirmEmail(
+        req.authUser!.id,
+        body.code,
+        req.ip,
+        securityMutationContextOf(req),
+      );
+      if (req.sessionId) clearSessionCookie(res, ctx.config);
+      res.json(result.response);
     },
   );
 
   router.post('/2fa/email/disable', requireUser, async (req, res) => {
-    await ctx.twoFactor.disableEmail(req.authUser!.id, req.ip);
+    await ctx.twoFactor.disableEmail(req.authUser!.id, req.ip, securityMutationContextOf(req));
+    if (req.sessionId) clearSessionCookie(res, ctx.config);
     res.json({ ok: true });
   });
 
@@ -412,7 +461,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   });
 
   router.post('/2fa/recovery-codes', requireUser, async (req, res) => {
-    res.json(await ctx.twoFactor.regenerateRecoveryCodes(req.authUser!.id, req.ip));
+    const result = await ctx.twoFactor.regenerateRecoveryCodes(
+      req.authUser!.id,
+      req.ip,
+      securityMutationContextOf(req),
+    );
+    if (req.sessionId) clearSessionCookie(res, ctx.config);
+    res.json(result.response);
   });
 
   // ── Passkeys / WebAuthn (§13.4 V4-P4) ───────────────────────────────────────

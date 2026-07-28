@@ -661,12 +661,13 @@ async function createCashMovement(
   projectCashLedgerBySource(movements);
   const balances = cashBalancesBySource(movements);
   const sourceId = stringField(committed.data, 'sourceId');
-  const balanceEur = [...balances.values()].reduce((sum, value) => sum + value, 0);
+  const sourceBalanceEur = floorCents(balances.get(sourceId) ?? 0);
+  const balanceEur = floorCents([...balances.values()].reduce((sum, value) => sum + value, 0));
   return parseVaultData(
     () =>
       cashMovementResponseSchema.parse({
         movement: cashMovementFromEntity(committed),
-        sourceBalanceEur: balances.get(sourceId) ?? 0,
+        sourceBalanceEur,
         balanceEur,
       }),
     'The committed cash movement does not match the cash response contract.',

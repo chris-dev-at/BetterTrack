@@ -490,10 +490,198 @@ cat >"$MFSTATE/control/models.json" <<'JSON'
 JSON
 check "cfg: ClaudeX entry accepted" "claudex|gpt-5.6-luna|high" "$(diff_cfg easy)"
 mf_uses_claude && bad "claude-free config should report false" || ok "claude-free config → mf_uses_claude false"
+check "cfg: flat legacy entry serves the writer slot" "claudex|gpt-5.6-luna|high" "$(diff_cfg easy writer)"
+check "cfg: flat legacy entry serves the reviewer1 slot" "claudex|gpt-5.6-luna|high" "$(diff_cfg easy reviewer1)"
+check "cfg: flat legacy entry serves the completion slot" "claudex|gpt-5.6-luna|high" "$(diff_cfg easy completion)"
 rm -f "$MFSTATE/control/models.json"
 check "cfg: missing file → builtin default" "claude|claude-sonnet-5|high" "$(diff_cfg easy)"
+check "cfg: missing file → builtin default for any slot" "claude|claude-sonnet-5|high" "$(diff_cfg easy reviewer1)"
 check "cfg: missing file → role default hard" "hard" "$(role_diff checker)"
 check "cfg: missing file → floor default intermediate" "intermediate" "$(review_floor)"
+
+echo "— per-role slot routing (writer/reviewer1/completion, models.json v2)"
+cat >"$MFSTATE/control/models.json" <<'JSON'
+{"version":2,"difficulties":{
+  "easy":{"provider":"codex","model":"flat-legacy","effort":"low",
+    "writer":{"provider":"codex","model":"w-model","effort":"max"},
+    "reviewer1":{"provider":"claude","model":"claude-opus-5","effort":"medium"},
+    "completion":{"provider":"codex","model":"c-model","effort":"max"}},
+  "normal":{"provider":"codex","model":"flat-only","effort":"high"},
+  "intermediate":{"writer":{"provider":"claudex","model":"bad|pipe","effort":"high"}},
+  "hard":{
+    "writer":{"provider":"codex","model":"gpt-5.6-sol","effort":"ultra"},
+    "reviewer1":{"provider":"pigeon","model":"carrier"},
+    "completion":{"model":"missing-provider"}}
+}}
+JSON
+check "slot: writer resolves its own config" "codex|w-model|max" "$(diff_cfg easy writer)"
+check "slot: reviewer1 resolves its own config" "claude|claude-opus-5|medium" "$(diff_cfg easy reviewer1)"
+check "slot: completion resolves its own config" "codex|c-model|max" "$(diff_cfg easy completion)"
+check "slot: slotless call keeps flat resolution" "codex|flat-legacy|low" "$(diff_cfg easy)"
+check "slot: flat-only entry (v1 file) serves writer" "codex|flat-only|high" "$(diff_cfg normal writer)"
+check "slot: flat-only entry (v1 file) serves reviewer1" "codex|flat-only|high" "$(diff_cfg normal reviewer1)"
+check "slot: flat-only entry (v1 file) serves completion" "codex|flat-only|high" "$(diff_cfg normal completion)"
+check "slot: unknown provider in a slot stays fail-closed" "invalid|pigeon|" "$(diff_cfg hard reviewer1)"
+check "slot: delimiter injection in a slot fails closed" "invalid|claudex|" "$(diff_cfg intermediate writer)"
+check "slot: provider-less slot falls back to builtin default" "claude|claude-opus-4-8|max" "$(diff_cfg hard completion)"
+check "slot: absent slot beside other slots uses builtin default" "claude|claude-opus-4-8|high" "$(diff_cfg intermediate reviewer1)"
+check "slot: unset difficulty uses builtin default for slots" "claude|claude-fable-5|max" "$(diff_cfg max reviewer1)"
+mf_uses_claude && ok "slotted config detects claude usage" || bad "slotted config should detect claude"
+
+echo "— mf_cc slot threading (role defaults + CC_SLOT override)"
+SLOT_MODELS=$T/slot-models.json
+SLOT_DISPATCH=$T/slot-dispatch
+cat >"$SLOT_MODELS" <<'JSON'
+{"version":2,"difficulties":{"normal":{
+  "writer":{"provider":"codex","model":"writer-model","effort":"high"},
+  "reviewer1":{"provider":"claude","model":"reviewer1-model","effort":"medium"},
+  "completion":{"provider":"codex","model":"completion-model","effort":"max"}}}}
+JSON
+(
+  MF_MODELS_FILE=$SLOT_MODELS
+  cc(){ printf 'claude:%s\n' "$1" >>"$SLOT_DISPATCH"; }
+  cc_codex(){ printf 'codex:%s\n' "$1" >>"$SLOT_DISPATCH"; }
+  : >"$SLOT_DISPATCH"
+  mf_cc writer normal p
+  mf_cc reviewer normal p
+  CC_SLOT=completion mf_cc reviewer normal p
+  mf_cc fixer normal p
+  mf_cc checker normal p
+  mf_cc ci-fix normal p
+  CC_SLOT=garbage mf_cc fixer normal p
+)
+check "mf_cc dispatches each role through its slot" \
+"codex:writer-model
+claude:reviewer1-model
+codex:completion-model
+codex:completion-model
+codex:completion-model
+codex:completion-model
+codex:completion-model" "$(<"$SLOT_DISPATCH")"
+unset SLOT_MODELS SLOT_DISPATCH
+rm -f "$MFSTATE/control/models.json"
+
+echo "— role pins: roles.<role> object pins an exact model, strings unchanged"
+log(){ :; }
+cat >"$MFSTATE/control/models.json" <<'JSON'
+{"version":2,"difficulties":{
+  "easy":{"provider":"codex","model":"tier-easy","effort":"low"},
+  "normal":{"provider":"codex","model":"tier-normal","effort":"high"},
+  "intermediate":{"provider":"codex","model":"tier-int","effort":"high"},
+  "hard":{"provider":"codex","model":"gpt-5.6-sol","effort":"ultra"},
+  "max":{"provider":"codex","model":"tier-max","effort":"xhigh"}},
+ "roles":{
+  "composer":{"provider":"claude","model":"claude-fable-5","effort":"xhigh"},
+  "checker":{"provider":"codex","model":"pinned-checker","effort":"high"},
+  "reviewer":"hard",
+  "reviewFloor":"intermediate"}}
+JSON
+check "pin: composer object pin resolves exactly" \
+  "claude|claude-fable-5|xhigh" "$(role_pin_cfg composer)"
+check "pin: checker object pin resolves exactly" \
+  "codex|pinned-checker|high" "$(role_pin_cfg checker)"
+check "pin: string role entry is not a pin" "" "$(role_pin_cfg reviewer)"
+check "pin: absent role entry is not a pin" "" "$(role_pin_cfg fixer)"
+check "pin: object entry no longer resolves as a difficulty string (role_diff default)" \
+  "hard" "$(role_diff composer)"
+check "pin: reviewFloor string keeps working beside pins" "intermediate" "$(review_floor)"
+mf_uses_claude \
+  && ok "valid claude pin flips mf_uses_claude in an all-codex config" \
+  || bad "valid claude pin should flip mf_uses_claude"
+PIN_DISPATCH=$T/pin-dispatch
+(
+  cc(){ printf 'claude:%s:%s\n' "$1" "${CC_EFFORT:-}" >>"$PIN_DISPATCH"; }
+  cc_codex(){ printf 'codex:%s:%s\n' "$1" "$2" >>"$PIN_DISPATCH"; }
+  : >"$PIN_DISPATCH"
+  mf_cc composer "$(role_diff composer)" p
+  CC_SLOT=completion mf_cc checker "$(role_diff checker)" p
+  mf_cc fixer normal p
+  CC_SLOT=reviewer1 mf_cc reviewer normal p
+)
+check "pin: mf_cc honors pins and keeps slot routing for unpinned roles" \
+"claude:claude-fable-5:xhigh
+codex:pinned-checker:high
+codex:tier-normal:high
+codex:tier-normal:high" "$(<"$PIN_DISPATCH")"
+unset PIN_DISPATCH
+
+echo "— role pins: unusable pins fall back safely (never brick a run)"
+cat >"$MFSTATE/control/models.json" <<'JSON'
+{"version":2,"difficulties":{
+  "easy":{"provider":"codex","model":"tier-easy","effort":"low"},
+  "normal":{"provider":"codex","model":"tier-normal","effort":"high"},
+  "intermediate":{"provider":"codex","model":"tier-int","effort":"high"},
+  "hard":{"provider":"codex","model":"tier-hard","effort":"xhigh"},
+  "max":{"provider":"codex","model":"tier-max","effort":"xhigh"}},
+ "roles":{
+  "composer":{"provider":"pigeon","model":"carrier","effort":"high"},
+  "checker":{"provider":"claude","effort":"high"},
+  "writer":{"provider":"claude","model":"bad|pipe","effort":"high"},
+  "fixer":{"provider":"claude","model":"claude-opus-5","effort":"max"},
+  "reviewer":{"provider":"claude","model":"claude-opus-5","effort":"xhigh"}}}
+JSON
+check "pin: unknown provider pin is unusable" "malformed||" "$(role_pin_cfg composer)"
+check "pin: model-less pin is unusable" "malformed||" "$(role_pin_cfg checker)"
+check "pin: delimiter injection in a pin is unusable" "malformed||" "$(role_pin_cfg writer)"
+check "pin: Opus 5 above xhigh is rejected" "malformed||" "$(role_pin_cfg fixer)"
+check "pin: Opus 5 at the xhigh cap is allowed" \
+  "claude|claude-opus-5|xhigh" "$(role_pin_cfg reviewer)"
+mf_opus5_effort_ok claude-opus-5 max \
+  && bad "opus5 cap must reject max effort" || ok "opus5 cap rejects max effort"
+mf_opus5_effort_ok claude-opus-5 ultra \
+  && bad "opus5 cap must reject unknown efforts" || ok "opus5 cap rejects unknown efforts"
+mf_opus5_effort_ok claude-opus-5 xhigh \
+  && ok "opus5 cap allows xhigh" || bad "opus5 cap should allow xhigh"
+mf_opus5_effort_ok claude-fable-5 max \
+  && ok "opus5 cap applies only to Opus 5 models" \
+  || bad "opus5 cap must not touch non-Opus-5 models"
+PIN_FALLBACK=$T/pin-fallback-dispatch
+(
+  cc(){ printf 'claude:%s\n' "$1" >>"$PIN_FALLBACK"; }
+  cc_codex(){ printf 'codex:%s\n' "$1" >>"$PIN_FALLBACK"; }
+  : >"$PIN_FALLBACK"
+  mf_cc fixer normal p
+  CC_SLOT=completion mf_cc checker normal p
+)
+check "pin: unusable pins fall back to difficulty routing (run still dispatches)" \
+"codex:tier-normal
+codex:tier-normal" "$(<"$PIN_FALLBACK")"
+unset PIN_FALLBACK
+(
+  MF_MODELS_FILE=$T/pin-noclaude.json
+  cat >"$MF_MODELS_FILE" <<'JSON'
+{"difficulties":{
+  "easy":{"provider":"codex","model":"c","effort":"low"},
+  "normal":{"provider":"codex","model":"c","effort":"high"},
+  "intermediate":{"provider":"codex","model":"c","effort":"high"},
+  "hard":{"provider":"codex","model":"c","effort":"xhigh"},
+  "max":{"provider":"codex","model":"c","effort":"xhigh"}},
+ "roles":{"fixer":{"provider":"claude","model":"claude-opus-5","effort":"max"}}}
+JSON
+  mf_uses_claude && exit 1 || exit 0
+) && ok "rejected claude pin does not flip mf_uses_claude" \
+  || bad "rejected claude pin must not flip mf_uses_claude"
+PIN_GATE_MODELS=$T/pin-gate-models.json
+PIN_GATE_CAPTURE=$T/pin-gate-dispatch
+rm -f "$PIN_GATE_CAPTURE"
+printf '%s\n' \
+  '{"difficulties":{},"roles":{"composer":{"provider":"codex","model":"gpt-5.6-terra","effort":"max"}}}' \
+  >"$PIN_GATE_MODELS"
+if (
+  MF_MODELS_FILE=$PIN_GATE_MODELS
+  cc_codex(){ : >"$PIN_GATE_CAPTURE"; }
+  mf_cc composer hard 'must not dispatch'
+); then
+  bad "composer route gate must still reject a disallowed pinned model"
+else
+  ok "composer route gate still applies to pinned composer models"
+fi
+[ ! -e "$PIN_GATE_CAPTURE" ] \
+  && ok "disallowed pinned composer makes no provider call" \
+  || bad "disallowed pinned composer reached provider"
+unset PIN_GATE_MODELS PIN_GATE_CAPTURE
+rm -f "$MFSTATE/control/models.json"
+check "pin: missing models.json means no pin" "" "$(role_pin_cfg composer)"
 
 echo "— worker salvage: never lose writer output (#394)"
 # Offline git sandbox: a bare 'origin' + a working clone, no network. Source
@@ -530,6 +718,229 @@ GH_PR="" salvage_branch 503
 check "salvage: fires on dirty tree with no PR" "1" "${SALVAGED}"
 check "salvage: branch landed on origin" "task/503" "$(bare task/503)"
 check "salvage: event line logged" "1" "$(grep -c 'salvaged branch task/503' "$MF_EVENTLOG")"
+
+echo "— reviewer slot selection: first review vs later reviews"
+# worker.sh is already sourced (MF_SOURCE_ONLY). Stub the transport + GitHub
+# reads; the slot decision itself must come from the real evidence-based path
+# (mf_has_canonical_review over the durable PR comment thread — no state file).
+log(){ :; }; notify(){ :; }
+MF_PROTOCOL_ATTEMPTS=1; MF_PROTOCOL_RETRY_SLEEP=0
+MF_COMMENT_DISCOVERY_ATTEMPTS=1; MF_COMMENT_DISCOVERY_SLEEP=0
+MF_PROMPTS=$T/slot-prompts; PROMPTS=$T/slot-prompts; mkdir -p "$MF_PROMPTS"
+printf 'review {{PR}}\n' >"$MF_PROMPTS/reviewer.md"
+printf 'fix {{PR}}\n' >"$MF_PROMPTS/fixer.md"
+SLOT_SEL_LOG=$T/slot-selection.log
+with_pack(){ printf '%s' "$1"; }
+pr_snapshot(){ PR_SNAPSHOT_COMMENTS=$REVIEW_COMMENTS; PR_SNAPSHOT_HEAD=headA; return 0; }
+mf_cc(){ printf '%s:%s:%s\n' "${CC_SLOT:-none}" "$1" "$2" >>"$SLOT_SEL_LOG"; return 0; }
+mf_pr_head(){ echo headA; }
+
+REVIEW_COMMENTS='[]'
+: >"$SLOT_SEL_LOG"
+run_reviewer 7 77 intermediate
+check "first review on a fresh PR runs the reviewer1 slot" \
+  "reviewer1:reviewer:intermediate" "$(<"$SLOT_SEL_LOG")"
+
+REVIEW_COMMENTS='[{"id":1,"body":"earlier review\nFACTORY-REVIEW-HEAD: 0123abc\nFACTORY-VERDICT: REQUEST_CHANGES"}]'
+: >"$SLOT_SEL_LOG"
+run_reviewer 7 77 intermediate
+check "later review (prior verdict on an older head) runs completion" \
+  "completion:reviewer:intermediate" "$(<"$SLOT_SEL_LOG")"
+
+: >"$SLOT_SEL_LOG"
+run_reviewer 7 77 intermediate
+check "resume re-derives the same slot from the same durable comments" \
+  "completion:reviewer:intermediate" "$(<"$SLOT_SEL_LOG")"
+
+REVIEW_COMMENTS='[{"id":2,"body":"prose quoting FACTORY-VERDICT: APPROVE mid-line\nno canonical marker"}]'
+: >"$SLOT_SEL_LOG"
+run_reviewer 7 77 intermediate
+check "quoted marker prose does not demote the first review" \
+  "reviewer1:reviewer:intermediate" "$(<"$SLOT_SEL_LOG")"
+
+REVIEW_COMMENTS='[]'
+: >"$SLOT_SEL_LOG"
+run_fixer 7 77 intermediate
+check "fixer always runs the completion slot" \
+  "completion:fixer:intermediate" "$(<"$SLOT_SEL_LOG")"
+
+echo "— single-parse GitHub reads (one parser, one contract)"
+# The fetchers parse GitHub's ORIGINAL JSON exactly once with C jq — gh --jq
+# (gojq) would add a second, gh-version-dependent transformation layer. The gh
+# stub first emits ONE merged array (the real gh >=2.9x --paginate shape), then
+# the older concatenated-arrays shape; 'add' must flatten both. Escaped
+# control characters in a body must round-trip. These are parser-contract
+# tests — the live #891 jam itself was the DIRTY/empty-rollup merger trap
+# covered below.
+gh(){ cat <<'PAGES'
+[{"id":1,"body":"clean","created_at":"c1"},{"id":2,"body":"ctl \u0007 \u0001 body","created_at":"c2"},{"id":3,"body":"page2","created_at":"c3"}]
+PAGES
+}
+CJ=$(mf_pr_comments_json 891) && ok "comments fetch exits 0 (merged-array shape)" || bad "comments fetch failed (merged-array shape)"
+check "merged-array --paginate shape parses" "3" "$(jq 'length' <<<"$CJ")"
+gh(){ cat <<'PAGES'
+[{"id":1,"body":"clean","created_at":"c1"},{"id":2,"body":"ctl \u0007 \u0001 body","created_at":"c2"}]
+[{"id":3,"body":"page2","created_at":"c3"}]
+PAGES
+}
+CJ=$(mf_pr_comments_json 891) && ok "comments fetch exits 0 (concatenated pages, older gh)" || bad "comments fetch failed (concatenated pages)"
+check "concatenated --paginate pages flatten" "3" "$(jq 'length' <<<"$CJ")"
+check "comments fetch preserves ids in order" "1 2 3" "$(jq -r '[.[].id]|join(" ")' <<<"$CJ")"
+check "escaped-control-char body round-trips" "1" "$(jq '[.[]|select(.id==2)]|length' <<<"$CJ")"
+gh(){ return 1; }
+mf_pr_comments_json 891 >/dev/null 2>&1 && bad "comments fetch must fail when gh fails" || ok "comments fetch fails closed on gh failure"
+gh(){ printf '{"number":9,"title":"t","body":"b","labels":[{"name":"diff:easy"}],"created_at":"c"}'; }
+check "issue-by-number single-parse projects labels" "diff:easy" "$(mf_issue_json_by_number 9 | jq -r '.labels[0]')"
+check "issue_json_read single-parse keeps shape" "9" "$(issue_json_read 9 | jq -r '.number')"
+gh(){ printf '[{"number":8,"title":"t","body":"b","labels":[],"created_at":"c","pull_request":{"url":"x"}},{"number":7,"title":"t","body":"b","labels":[],"created_at":"c"}]'; }
+check "recent-issues single-parse filters PRs" "7" "$(mf_recent_issues_json | jq -r '.[0].number')"
+
+echo "— merger: bounded approval-read failures park the queue head (#891 jam)"
+MF_DRY_RUN=0
+QDIR=$MFSTATE/merge-queue
+HUMAN_LOG=$T/human.log; : >"$HUMAN_LOG"
+mark_human(){ printf '%s|%s\n' "$1" "$2" >>"$HUMAN_LOG"; }
+mstatus(){ :; }
+notify(){ :; }
+jq -nc '{pr:77,issue:707,touches:["x/**"],approved_head:"aaaa1111",approval_kind:"reviewer",approval_comment_id:"5"}' >"$QDIR/1000-pr77.json"
+gh(){ case "$*" in *"--json state"*) echo OPEN;; *) return 1;; esac; }
+mf_pr_head(){ return 1; }          # deterministic approval-read failure
+MF_APPROVAL_READ_MAX=2
+merger_step
+[ -f "$QDIR/1000-pr77.json" ] && ok "first read failure retains the queue head" || bad "queue head dropped on first read failure"
+check "read-failure counter recorded" "1" "$(cat "$QDIR/.apprfail-pr77" 2>/dev/null)"
+merger_step
+[ -f "$QDIR/1000-pr77.json" ] && bad "queue head must park after the failure cap" || ok "queue head parked after the failure cap"
+check "parked head escalated to a human" "1" "$(grep -c '^707|' "$HUMAN_LOG")"
+[ -f "$QDIR/.apprfail-pr77" ] && bad "failure counter must be cleared" || ok "failure counter cleared"
+
+echo "— merger: DIRTY queue head gets one conflict-fix, then review or human"
+: >"$HUMAN_LOG"
+CONFLICT_CALLS=$T/conflict-calls; : >"$CONFLICT_CALLS"
+jq -nc '{pr:88,issue:808,touches:["y/**"],approved_head:"bbbb2222",approval_kind:"reviewer",approval_comment_id:"6"}' >"$QDIR/1001-pr88.json"
+queue_approval_check(){ QUEUE_APPROVAL_STATE=valid; }
+issue_difficulty(){ echo hard; }
+mf_cc(){ printf '%s %s\n' "$1" "$2" >>"$CONFLICT_CALLS"; }
+gh(){ case "$*" in
+  *"--json state"*) echo OPEN;;
+  *"--json statusCheckRollup"*) echo '[]';;   # conflicted PRs have NO fresh rollup
+  *"--json mergeStateStatus"*) echo DIRTY;;
+  *) : ;;
+esac; }
+mf_pr_head(){ echo bbbb2222; }     # conflict-fix pushes nothing
+merger_step
+check "conflict-fix invoked once through the ci-fix role" "1" "$(grep -c '^ci-fix hard$' "$CONFLICT_CALLS")"
+[ -f "$QDIR/1001-pr88.json" ] && bad "no-push conflict-fix must clear the queue head" || ok "no-push conflict-fix cleared the queue head"
+check "no-push conflict-fix escalated to a human" "1" "$(grep -c '^808|' "$HUMAN_LOG")"
+[ -f "$QDIR/.conflictfix-pr88-bbbb2222" ] && bad "conflict marker must be cleared" || ok "conflict marker cleared"
+# pushed-head variant: the resolved merge goes to a fresh review, not a human
+: >"$HUMAN_LOG"; : >"$CONFLICT_CALLS"
+REQUEUED=$T/requeued.log; : >"$REQUEUED"
+requeue_for_review(){ printf '%s|%s|%s\n' "$1" "$2" "$3" >>"$REQUEUED"; rm -f "$1"; }
+jq -nc '{pr:99,issue:909,touches:["z/**"],approved_head:"cccc3333",approval_kind:"reviewer",approval_comment_id:"7"}' >"$QDIR/1002-pr99.json"
+mf_pr_head(){ if [ -f "$T/pushed99" ]; then echo dddd4444; else echo cccc3333; fi; }
+mf_cc(){ printf '%s %s\n' "$1" "$2" >>"$CONFLICT_CALLS"; : >"$T/pushed99"; }
+merger_step
+check "pushed conflict-fix goes to a fresh review, not a human" "1" "$(grep -c '|909|' "$REQUEUED")"
+check "pushed conflict-fix never escalates" "0" "$(grep -c '^909|' "$HUMAN_LOG")"
+[ -f "$QDIR/1002-pr99.json" ] && bad "requeued head must leave the queue" || ok "requeued head left the queue"
+[ -f "$QDIR/.conflictfix-pr99-cccc3333" ] && bad "pushed-variant marker must be cleared" || ok "pushed-variant marker cleared"
+# orphaned-marker regression (independent review 2026-07-28): a marker left
+# behind by an earlier head (transient post-attempt head-read failure, entry
+# requeued by the head check) must never deny the freshly-approved head its
+# own attempt — and must be swept.
+: >"$QDIR/.conflictfix-pr55-oldhead1"
+: >"$CONFLICT_CALLS"; : >"$REQUEUED"; : >"$HUMAN_LOG"
+jq -nc '{pr:55,issue:505,touches:["w/**"],approved_head:"newhead2",approval_kind:"reviewer",approval_comment_id:"8"}' >"$QDIR/1003-pr55.json"
+mf_pr_head(){ if [ -f "$T/pushed55" ]; then echo pushedhead3; else echo newhead2; fi; }
+mf_cc(){ printf '%s %s\n' "$1" "$2" >>"$CONFLICT_CALLS"; : >"$T/pushed55"; }
+merger_step
+check "orphaned old-head marker never denies the new head its attempt" "1" "$(grep -c '^ci-fix hard$' "$CONFLICT_CALLS")"
+[ -f "$QDIR/.conflictfix-pr55-oldhead1" ] && bad "stale old-head marker must be swept" || ok "stale old-head marker swept"
+check "new head still routes to fresh review" "1" "$(grep -c '|505|' "$REQUEUED")"
+
+echo "— merger: bounded same-head merge refusals (BLOCKED/DRAFT class)"
+: >"$HUMAN_LOG"
+jq -nc '{pr:66,issue:606,touches:["v/**"],approved_head:"eeee5555",approval_kind:"reviewer",approval_comment_id:"9"}' >"$QDIR/1004-pr66.json"
+gh(){ case "$*" in
+  *"--json state"*) echo OPEN;;
+  *"--json statusCheckRollup"*) echo '[{"conclusion":"SUCCESS","status":"","state":""}]';;
+  *"--json mergeStateStatus"*) echo BLOCKED;;
+  *"pr merge"*) return 1;;
+  *) : ;;
+esac; }
+mf_pr_head(){ echo eeee5555; }
+MF_MERGE_FAIL_MAX=2
+merger_step
+[ -f "$QDIR/1004-pr66.json" ] && ok "first same-head merge refusal retains the queue head" || bad "queue head dropped on first refusal"
+check "merge-refusal counter recorded" "1" "$(cat "$QDIR/.mergefail-pr66-eeee5555" 2>/dev/null)"
+merger_step
+[ -f "$QDIR/1004-pr66.json" ] && bad "queue head must park after the refusal cap" || ok "queue head parked after the refusal cap"
+check "refused head escalated to a human" "1" "$(grep -c '^606|' "$HUMAN_LOG")"
+[ -f "$QDIR/.mergefail-pr66-eeee5555" ] && bad "refusal counter must be cleared" || ok "refusal counter cleared"
+
+echo "— merger: BEHIND carry-forward (approval survives non-interacting updates)"
+# disjoint files → carry; any overlap, truncated compare, oversized compare or
+# read failure → fresh review. Pure function tests over stubbed gh reads.
+gh(){ case "$*" in
+  *"compare/main...h1"*) echo base1;;
+  *"compare/base1...main"*) echo '{"truncated":false,"files":[{"filename":"apps/web/a.tsx"},{"filename":"apps/api/b.ts"}]}';;
+  *"--json files"*) printf '%s\n' "apps/web/other.tsx";;
+  *) : ;;
+esac; }
+carry_forward_ok 12 h1 && ok "disjoint files carry the approval" || bad "disjoint files should carry"
+gh(){ case "$*" in
+  *"compare/main...h1"*) echo base1;;
+  *"compare/base1...main"*) echo '{"truncated":false,"files":[{"filename":"apps/web/a.tsx"}]}';;
+  *"--json files"*) printf '%s\n' "apps/web/a.tsx";;
+  *) : ;;
+esac; }
+carry_forward_ok 12 h1 && bad "overlapping file must NOT carry" || ok "overlap forces fresh review"
+gh(){ case "$*" in
+  *"compare/main...h1"*) echo base1;;
+  *"compare/base1...main"*) echo '{"truncated":true,"files":[]}';;
+  *"--json files"*) printf '%s\n' "apps/web/a.tsx";;
+  *) : ;;
+esac; }
+carry_forward_ok 12 h1 && bad "truncated compare must NOT carry" || ok "truncated compare forces fresh review"
+gh(){ return 1; }
+carry_forward_ok 12 h1 && bad "read failure must NOT carry" || ok "read failure forces fresh review"
+QF2=$QDIR/1005-pr13.json
+jq -nc '{pr:13,issue:131,approved_head:"h1"}' >"$QF2"
+queue_carry_head "$QF2" "h2" && ok "carry-head write ok" || bad "carry-head write failed"
+check "carried head recorded beside the original approval" "h2" "$(jq -r '.carried_head' "$QF2")"
+check "original approved head untouched" "h1" "$(jq -r '.approved_head' "$QF2")"
+rm -f "$QF2"
+MF_DRY_RUN=1
+
+echo "— opus5 cap binds at the mflib runtime layer (hand-written files)"
+# set-models and the editor already refuse over-cap routes; diff_cfg is the
+# belt for files written by hand: an over-cap slot falls to flat, an over-cap
+# flat falls to the builtin default, pins were already capped (role_pin_cfg).
+(
+  MF_MODELS_FILE=$T/opus5-cap.json
+  cat >"$MF_MODELS_FILE" <<'JSON'
+{"version":2,"difficulties":{
+  "easy":{"provider":"codex","model":"flat-easy","effort":"low",
+    "writer":{"provider":"claude","model":"claude-opus-5","effort":"ultra"}},
+  "hard":{"provider":"claude","model":"claude-opus-5","effort":"max",
+    "writer":{"provider":"claude","model":"claude-opus-5","effort":"max"},
+    "reviewer1":{"provider":"claude","model":"claude-opus-5-20260514","effort":"max"},
+    "completion":{"provider":"codex","model":"gpt-5.6-sol","effort":"ultra"}},
+  "max":{"provider":"claude","model":"claude-fable-5","effort":"max",
+    "reviewer1":{"provider":"claude","model":"claude-opus-5","effort":"xhigh"}}}}
+JSON
+  printf '%s\n' "$(diff_cfg easy writer 2>/dev/null)" "$(diff_cfg hard writer 2>/dev/null)" \
+    "$(diff_cfg hard reviewer1 2>/dev/null)" "$(diff_cfg hard completion 2>/dev/null)" \
+    "$(diff_cfg hard 2>/dev/null)" "$(diff_cfg max 2>/dev/null)" "$(diff_cfg max reviewer1 2>/dev/null)"
+) >"$T/opus5-out"
+check "over-cap slot falls back to a valid flat entry" "codex|flat-easy|low" "$(sed -n 1p "$T/opus5-out")"
+check "over-cap slot above over-cap flat lands on the builtin" "claude|claude-opus-4-8|max" "$(sed -n 2p "$T/opus5-out")"
+check "dated opus5 id is capped identically" "claude|claude-opus-4-8|max" "$(sed -n 3p "$T/opus5-out")"
+check "non-opus5 ultra slot is untouched" "codex|gpt-5.6-sol|ultra" "$(sed -n 4p "$T/opus5-out")"
+check "over-cap flat read lands on the builtin" "claude|claude-opus-4-8|max" "$(sed -n 5p "$T/opus5-out")"
+check "fable at max stays allowed" "claude|claude-fable-5|max" "$(sed -n 6p "$T/opus5-out")"
+check "opus5 at the xhigh cap stays allowed" "claude|claude-opus-5|xhigh" "$(sed -n 7p "$T/opus5-out")"
 
 echo
 echo "passed: $PASS, failed: $FAIL"
