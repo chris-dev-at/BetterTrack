@@ -99,10 +99,12 @@ test('after signing in, the user returns to the originally requested route', asy
   await user.type(screen.getByLabelText('Password'), 'correct horse');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
-  // Landed on the intended route, not the dashboard home.
+  // Landed on the intended route (the legacy /workboard path redirects into
+  // the Workbench destination), not the Home command center.
   expect(
     await screen.findByText('Your watched assets, alerts and conglomerates at a glance.'),
   ).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: /Welcome back/ })).not.toBeInTheDocument();
   expect(api.login).toHaveBeenCalledWith({
     identifier: 'jane',
     password: 'correct horse',
@@ -325,7 +327,7 @@ test('invite accept: an invalid token is rejected with a clear message and no fo
   expect(screen.queryByLabelText('Username')).not.toBeInTheDocument();
 });
 
-test('an unknown path lands on the portfolio home in one hop, without appending segments', async () => {
+test('an unknown path lands on the Home command center in one hop, without appending segments', async () => {
   // The user catch-all already redirects to the absolute `/` (never a relative
   // target), so it cannot loop the way the admin one did. This locks that in:
   // an unknown deep path resolves straight to the home route, not /blabla/….
@@ -334,13 +336,12 @@ test('an unknown path lands on the portfolio home in one hop, without appending 
 
   renderAtWithLocation('/blabla');
 
-  // Reached the authenticated shell (home → /portfolio), not a redirect loop.
+  // Reached the authenticated shell (Home, the redesign's `/`), not a loop.
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
 
   // Settled exactly on the absolute home — no 'blabla', no duplicated segments.
-  // (The `*` → `/` → `/portfolio` chain is all absolute, so it terminates.)
-  await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/portfolio'));
+  await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/'));
   const pathname = screen.getByTestId('location').textContent;
-  expect(pathname).toBe('/portfolio');
+  expect(pathname).toBe('/');
   expect(pathname).not.toContain('blabla');
 });

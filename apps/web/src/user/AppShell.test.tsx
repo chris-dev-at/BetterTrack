@@ -6,14 +6,12 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import type { MeResponse } from '@bettertrack/contracts';
 
 // The shell mounts pages that fetch; auto-mock their data modules so navigation
-// is instant and these tests exercise only the nav/subnav/placeholder shell.
+// is instant and these tests exercise only the rail/topbar/parked shell.
 vi.mock('../lib/userApi');
 vi.mock('../lib/portfolioApi');
 vi.mock('../lib/conglomerateApi');
 vi.mock('../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
-  // The comparisons subnav now mounts the live ComparisonPage (V5-P6), which
-  // reads this query-key root and calls compareConglomerates on render.
   CONGLOMERATE_COMPARE_QUERY_KEY: ['workboard', 'compare'],
   listWorkboard: vi.fn(),
   addToWorkboard: vi.fn(),
@@ -28,6 +26,7 @@ vi.mock('../lib/notificationsApi', () => ({
 
 import * as api from '../lib/userApi';
 import { listNotifications } from '../lib/notificationsApi';
+import { listPortfolios } from '../lib/portfolioApi';
 import { listWorkboard } from '../lib/workboardApi';
 import { UserApp } from './UserApp';
 
@@ -57,34 +56,48 @@ function renderAt(path: string) {
   );
 }
 
+/** The desktop navigation rail (the mobile bottom bar shares the label). */
+async function findRail(): Promise<HTMLElement> {
+  const navs = await screen.findAllByRole('navigation', { name: 'Primary' });
+  const rail = navs.find((nav) => nav.closest('.bt-rail'));
+  expect(rail).toBeDefined();
+  return rail!;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getMe).mockResolvedValue(member);
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
   vi.mocked(listNotifications).mockResolvedValue({ items: [], nextCursor: null, unreadCount: 0 });
 });
 
-// ─── Top nav ──────────────────────────────────────────────────────────────────
+// ─── Suite rail (PRODUCT_BLUEPRINT §4) ────────────────────────────────────────
 
-test('the primary nav shows exactly the six section tabs — no seventh item', async () => {
+test('the rail shows exactly the five suite destinations', async () => {
   renderAt('/portfolio');
 
-  const nav = await screen.findByRole('navigation', { name: 'Primary' });
-  const labels = within(nav)
+  const rail = await findRail();
+  const labels = within(rail)
     .getAllByRole('link')
     .map((el) => el.textContent);
-  // V5-P6b added Forecast (between Workboard and Assets); V5-P9 adds Expenses as
-  // its own top-level area, after Forecast (anti-bloat: one nav entry per new
-  // product area, nothing else).
-  expect(labels).toEqual(['Portfolio', 'Workboard', 'Forecast', 'Expenses', 'Assets', 'Social']);
+  // Origin redesign: Home · Portfolio · Workbench · Assets · People — the
+  // suite nav never grows beyond these five; utilities live below the rule.
+  expect(labels).toEqual(['Home', 'Portfolio', 'Workbench', 'Assets', 'People']);
 
-  // The V1 shell tabs that were removed must not reappear in the primary nav.
-  for (const gone of ['Dashboard', 'Search', 'Conglomerates', 'Settings']) {
-    expect(within(nav).queryByRole('link', { name: gone })).not.toBeInTheDocument();
+  // Retired top-level destinations must not reappear in the suite nav.
+  for (const gone of ['Forecast', 'Expenses', 'Social', 'Workboard', 'Dashboard']) {
+    expect(within(rail).queryByRole('link', { name: gone })).not.toBeInTheDocument();
   }
+});
 
-  // The profile menu (the fifth "area") is a button, not a nav tab.
-  expect(screen.getByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+test('the rail utilities expose Ask, Review and the Control Center', async () => {
+  renderAt('/portfolio');
+
+  const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
+  for (const label of ['Ask BetterTrack', 'Review', 'Control Center']) {
+    expect(within(utilities).getByRole('link', { name: label })).toBeInTheDocument();
+  }
 });
 
 test('the header exposes a live, enabled notification bell', async () => {
@@ -100,9 +113,9 @@ test('the footer shows the passion tagline on every page', async () => {
   expect(await screen.findByText('BetterTrack — finances under your control')).toBeInTheDocument();
 });
 
-// ─── Profile dropdown (§6.11) ─────────────────────────────────────────────────
+// ─── Account menu ─────────────────────────────────────────────────────────────
 
-test('the profile dropdown lists the §6.11 items and Logout works', async () => {
+test('the account menu lists profile, settings, discreet mode and Logout works', async () => {
   vi.mocked(api.logout).mockResolvedValue();
   const user = userEvent.setup();
   renderAt('/portfolio');
@@ -110,29 +123,50 @@ test('the profile dropdown lists the §6.11 items and Logout works', async () =>
   await user.click(await screen.findByRole('button', { name: 'Account menu' }));
 
   const menu = screen.getByRole('menu');
-  expect(within(menu).getByRole('menuitem', { name: 'My Portfolio' })).toBeInTheDocument();
+  expect(within(menu).getByRole('menuitem', { name: 'My profile' })).toBeInTheDocument();
   expect(within(menu).getByRole('menuitem', { name: 'Settings' })).toBeInTheDocument();
-  expect(within(menu).getByRole('menuitem', { name: /Invite Others/ })).toBeDisabled();
-  expect(within(menu).getByRole('menuitem', { name: /Share Profile/ })).toBeDisabled();
+  expect(
+    within(menu).getByRole('menuitemcheckbox', { name: /Discreet mode/ }),
+  ).toBeInTheDocument();
 
   await user.click(within(menu).getByRole('menuitem', { name: 'Logout' }));
   expect(api.logout).toHaveBeenCalledOnce();
 });
 
-// ─── Redirects (§7.2) ─────────────────────────────────────────────────────────
+// ─── Destinations & redirects ─────────────────────────────────────────────────
 
-test('`/` redirects to `/portfolio` and shows the portfolio switcher', async () => {
+test('`/` is the Home command center', async () => {
   renderAt('/');
 
-  // Portfolio section chrome: the multi-portfolio switcher + section subnav.
-  expect(await screen.findByRole('button', { name: 'Switch portfolio' })).toBeInTheDocument();
-  const sectionNav = screen.getByRole('navigation', { name: 'Section' });
-  expect(within(sectionNav).getByRole('link', { name: 'Transactions' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: /Welcome back/ })).toBeInTheDocument();
+  expect(screen.getByText('Net worth')).toBeInTheDocument();
 });
 
-test('`/social` redirects to `/social/friends`', async () => {
+test('the portfolio workspace shows the switcher and its local tabs', async () => {
+  renderAt('/portfolio');
+
+  expect(await screen.findByRole('button', { name: 'Switch portfolio' })).toBeInTheDocument();
+  const tabs = screen.getByRole('navigation', { name: 'Portfolio workspace' });
+  // Parked tabs append the "Planned" dot to their accessible name — anchor the
+  // match so "Plan" does not also match every parked tab's name.
+  for (const tab of ['Overview', 'Activity', 'Cash flow', 'Analysis', 'Tax', 'Plan', 'Files']) {
+    expect(
+      within(tabs).getByRole('link', { name: new RegExp(`^${tab}( Planned)?$`) }),
+    ).toBeInTheDocument();
+  }
+});
+
+test('`/social` redirects to the People destination', async () => {
   renderAt('/social');
   expect(await screen.findByRole('heading', { name: 'Friends' })).toBeInTheDocument();
+});
+
+test('`/workboard` redirects to the Workbench', async () => {
+  renderAt('/workboard');
+  const tabs = await screen.findByRole('navigation', { name: 'Workbench' });
+  for (const tab of ['Overview', 'Studio', 'Forecasts', 'Blueprints', 'Backtests', 'Alerts']) {
+    expect(within(tabs).getByRole('link', { name: new RegExp(tab) })).toBeInTheDocument();
+  }
 });
 
 test('`/settings` redirects to `/settings/account`', async () => {
@@ -140,46 +174,44 @@ test('`/settings` redirects to `/settings/account`', async () => {
   expect(await screen.findByRole('heading', { name: 'Account' })).toBeInTheDocument();
 });
 
-// ─── Per-section subnavs (§6.3/§6.4/§6.9/§6.11) ───────────────────────────────
-
-test('the Workboard section renders its subnav', async () => {
-  renderAt('/workboard/comparisons');
-  const sectionNav = await screen.findByRole('navigation', { name: 'Section' });
-  for (const tab of ['Overview', 'Conglomerates', 'Watchlists', 'Comparisons', 'Saved Ideas']) {
-    expect(within(sectionNav).getByRole('link', { name: new RegExp(tab) })).toBeInTheDocument();
+test('the Assets destination renders its local tabs', async () => {
+  renderAt('/assets/search');
+  const tabs = await screen.findByRole('navigation', { name: 'Assets' });
+  for (const tab of ['Overview', 'Search', 'Watchlists', 'News', 'Discover', 'Screener']) {
+    expect(within(tabs).getByRole('link', { name: new RegExp(tab) })).toBeInTheDocument();
   }
 });
 
-test('the Assets section renders its subnav', async () => {
-  renderAt('/assets/stocks');
-  const sectionNav = await screen.findByRole('navigation', { name: 'Section' });
-  for (const tab of ['Overview', 'Search', 'Stocks', 'ETFs', 'Crypto', 'Commodities']) {
-    expect(within(sectionNav).getByRole('link', { name: new RegExp(tab) })).toBeInTheDocument();
-  }
-});
-
-// ─── Coming-Soon deep links resolve without a 404 (§7.2) ──────────────────────
+// ─── Parked destinations resolve to designed surfaces (no 404) ────────────────
 
 test.each([
-  // /workboard/comparisons is now the live N-way conglomerate comparison page
-  // (V5-P6), no longer Coming Soon — ComparisonPage.test.tsx covers it.
-  ['/assets/stocks', 'Stocks'],
-  ['/assets/etfs', 'ETFs'],
-  ['/assets/crypto', 'Crypto'],
-  ['/assets/commodities', 'Commodities'],
-  ['/assets/custom', 'Custom Assets'],
-  ['/social/ideas', 'Ideas'],
-  // /social/profile is now the live My Public Profile settings page (V3-P6),
-  // no longer Coming Soon.
-  ['/settings/imports', 'Imports & Exports'],
-  // /settings/connections is now the live Connections hub (V5-P0c), no longer
-  // Coming Soon — its own suite covers it.
-  ['/settings/backups', 'Backups'],
-  // /settings/api is now a built page (API Access, V2-P12), no longer Coming Soon.
-])('deep link %s resolves to a designed Coming Soon page', async (path, title) => {
+  ['/portfolio/plan', 'Plan'],
+  ['/portfolio/automate', 'Automate'],
+  ['/portfolio/files', 'Files'],
+  ['/portfolio/settings', 'Portfolio settings'],
+  ['/portfolio/health', 'Data health'],
+  ['/portfolio/private-markets', 'Private markets'],
+  ['/portfolio/rebalance', 'Rebalance'],
+  ['/workbench/studio', 'Studio'],
+  ['/assets/screener', 'Screener'],
+  ['/assets/events', 'Events'],
+  ['/people/teams', 'Teams'],
+  ['/people/approvals', 'Approvals'],
+  ['/control/data', 'Data management'],
+  ['/control/privacy', 'Paranoid mode'],
+  ['/developer/mcp', 'MCP'],
+  ['/developer/logs', 'Request logs'],
+  ['/review', 'Review inbox'],
+])('parked destination %s renders its designed surface', async (path, title) => {
   renderAt(path);
   const heading = await screen.findByRole('heading', { name: title });
   expect(heading).toBeInTheDocument();
-  // The Coming-Soon badge sits in the same section as the heading.
-  expect(within(heading.closest('section')!).getByText(/coming soon/i)).toBeInTheDocument();
+  // Every parked surface carries the "In the works" flag.
+  expect(within(heading.closest('section')!).getByText('In the works')).toBeInTheDocument();
+});
+
+test('legacy category stubs fold into the parked Discover surface', async () => {
+  renderAt('/assets/stocks');
+  expect(await screen.findByRole('heading', { name: 'Discover' })).toBeInTheDocument();
+  expect(screen.getByText('In the works')).toBeInTheDocument();
 });

@@ -244,7 +244,8 @@
       "pre": "Pre-market",
       "post": "After hours"
     },
-    "or": "or"
+    "or": "or",
+    "parked": "Planned"
   },
   "ui": {
     "scopePicker": {
@@ -474,7 +475,18 @@
     "discreetModeError": "Couldn't save that change. Please try again.",
     "inviteOthers": "Invite Others",
     "shareProfile": "Share Profile",
-    "logout": "Logout"
+    "logout": "Logout",
+    "home": "Home",
+    "portfolios": "Portfolio",
+    "workbench": "Workbench",
+    "people": "People",
+    "ask": "Ask BetterTrack",
+    "review": "Review",
+    "controlCenter": "Control Center",
+    "utilities": "Utilities",
+    "myProfile": "My profile",
+    "expandRail": "Expand navigation",
+    "collapseRail": "Collapse navigation"
   },
   "footer": {
     "legal": "Legal",
@@ -1790,7 +1802,8 @@
       },
       "customAssetsComingSoon": {
         "description": "Track real estate, vehicles, collectibles and other unlisted holdings with a value-points editor."
-      }
+      },
+      "aria": "Portfolio workspace"
     },
     "switcher": {
       "triggerAriaLabel": "Switch portfolio",
@@ -2092,6 +2105,20 @@
         "failed": "Failed"
       },
       "startOver": "Import another file"
+    },
+    "tabs": {
+      "overview": "Overview",
+      "activity": "Activity",
+      "customAssets": "Custom assets",
+      "cashFlow": "Cash flow",
+      "analysis": "Analysis",
+      "tax": "Tax",
+      "import": "Import",
+      "plan": "Plan",
+      "automate": "Automate",
+      "files": "Files",
+      "people": "People",
+      "settings": "Settings"
     }
   },
   "workboard": {
@@ -2810,6 +2837,16 @@
       "selectAria": "Select {{symbol}}",
       "select": "Select →",
       "addToConglomerateError": "Could not add to that conglomerate."
+    },
+    "aria": "Assets",
+    "tabs": {
+      "overview": "Overview",
+      "search": "Search",
+      "watchlists": "Watchlists",
+      "news": "News",
+      "discover": "Discover",
+      "events": "Events",
+      "screener": "Screener"
     }
   },
   "sharing": {
@@ -3828,6 +3865,313 @@
       },
       "loadMore": "Load more",
       "loadingMore": "Loading…"
+    }
+  },
+  "create": {
+    "button": "Create",
+    "trade": "Buy or sell",
+    "cashFlow": "Income or expense",
+    "transfer": "Transfer",
+    "blueprint": "New Blueprint",
+    "watchlist": "New watchlist",
+    "alert": "New alert",
+    "idea": "New idea",
+    "portfolio": "New portfolio"
+  },
+  "home": {
+    "greeting": "Welcome back",
+    "subtitle": "Your wealth at a glance — what changed, what needs you, where to go next.",
+    "netWorth": "Net worth",
+    "invested": "Invested",
+    "cash": "Cash",
+    "dayChange": "Today's change",
+    "today": "today",
+    "portfolios": "Portfolios",
+    "acrossPortfolios": "across {{count}} portfolios",
+    "go": {
+      "title": "Jump in",
+      "portfolio": "Open portfolio",
+      "portfolioSub": "Holdings, activity, analysis",
+      "workbench": "Plan in the Workbench",
+      "workbenchSub": "Blueprints, backtests, forecasts",
+      "research": "Research assets",
+      "researchSub": "Search, watchlists, news",
+      "people": "Work with people",
+      "peopleSub": "Sharing, chat, shared items"
+    }
+  },
+  "cashflow": {
+    "aria": "Cash flow",
+    "tabs": {
+      "overview": "Overview",
+      "transactions": "Transactions",
+      "budgets": "Budgets",
+      "categories": "Categories",
+      "rules": "Rules",
+      "import": "Import",
+      "accounts": "Cash accounts"
+    }
+  },
+  "workbench": {
+    "aria": "Workbench",
+    "tabs": {
+      "overview": "Overview",
+      "studio": "Studio",
+      "forecasts": "Forecasts",
+      "blueprints": "Blueprints",
+      "backtests": "Backtests",
+      "compare": "Compare",
+      "ideas": "Ideas",
+      "calculators": "Calculators",
+      "alerts": "Alerts"
+    }
+  },
+  "people": {
+    "aria": "People",
+    "tabs": {
+      "friends": "Friends",
+      "chat": "Chat",
+      "shared": "Shared items",
+      "profile": "Public profile",
+      "teams": "Teams",
+      "approvals": "Approvals"
+    }
+  },
+  "ask": {
+    "title": "Ask BetterTrack",
+    "subtitle": "A scoped, permissioned AI workspace over your data."
+  },
+  "review": {
+    "title": "Review",
+    "subtitle": "One queue for everything that needs your decision."
+  },
+  "control": {
+    "title": "Control Center",
+    "subtitle": "Settings, data and the developer platform — everything that runs the workspace.",
+    "groups": {
+      "account": "Account",
+      "data": "Data",
+      "developer": "Developer platform"
+    },
+    "account": "Account",
+    "accountSub": "Profile, email, language, password",
+    "notifications": "Notifications",
+    "notificationsSub": "Channels, digest, quiet hours",
+    "security": "Security",
+    "securitySub": "Passkeys, two-factor, PIN, sessions",
+    "taxes": "Tax defaults",
+    "taxesSub": "Defaults for new portfolios",
+    "connections": "Connections",
+    "connectionsSub": "Google Drive and data sources",
+    "imports": "Imports & exports",
+    "importsSub": "Broker files, account export",
+    "backups": "Backups",
+    "backupsSub": "Offsite copies of your data",
+    "privacy": "Privacy modes",
+    "privacySub": "Discreet mode and the paranoid vault",
+    "dataManagement": "Data management",
+    "dataManagementSub": "Checkpoints, retention, portability",
+    "developer": "Developer overview",
+    "developerSub": "API keys, OAuth, webhooks, MCP",
+    "apiKeys": "API keys",
+    "apiKeysSub": "Personal tokens with scopes",
+    "webhooks": "Webhooks",
+    "webhooksSub": "Signed event deliveries",
+    "mcp": "MCP",
+    "mcpSub": "Model Context Protocol access",
+    "logs": "Request logs",
+    "logsSub": "Inspect API activity"
+  },
+  "privacy": {
+    "title": "Privacy modes",
+    "subtitle": "Control what the screen shows and where your data lives.",
+    "discreet": {
+      "title": "Discreet mode",
+      "body": "Masks every absolute amount across the app — show BetterTrack to anyone without exposing numbers."
+    }
+  },
+  "parked": {
+    "flag": "In the works",
+    "foot": "Reserved in the product plan — this surface is waiting for its build.",
+    "links": {
+      "forecasts": "Open Forecasts",
+      "taxDefaults": "Tax defaults",
+      "blueprints": "Open Blueprints",
+      "backtests": "Open Backtests",
+      "search": "Open search",
+      "friends": "Open People",
+      "importsExports": "Imports & exports",
+      "security": "Security settings",
+      "aiInsights": "AI insights in Analysis",
+      "nlBuilder": "Blueprint builder",
+      "standingOrders": "Standing orders in Forecasts"
+    },
+    "portfolioPlan": {
+      "title": "Plan",
+      "body": "Goals, target allocation and rebalancing — the portfolio's forward-looking side, connected to the same data as everything else.",
+      "p1": "Goals with target dates and required contributions",
+      "p2": "Target allocation with drift tracking",
+      "p3": "Rebalance proposals you approve before anything changes",
+      "p4": "Forecast links into the Workbench"
+    },
+    "automate": {
+      "title": "Automate",
+      "body": "Standing orders, rules and approved automations for this portfolio. Standing orders already run today — manage them in Forecasts until this tab takes over.",
+      "p1": "Recurring buys and contributions on a schedule",
+      "p2": "Rules that categorize and route new activity",
+      "p3": "Every automation visible, pausable and auditable"
+    },
+    "portfolioFiles": {
+      "title": "Files",
+      "body": "Statements, contracts, receipts and valuation evidence — attached to the portfolio, linked to the numbers they prove.",
+      "p1": "Upload, classify and link documents to activity",
+      "p2": "Versioning with review and restore",
+      "p3": "Evidence links from any consequential number"
+    },
+    "portfolioPeople": {
+      "title": "People",
+      "body": "Roles, access and approvals for this portfolio. Sharing with friends and group portfolios already work — fine-grained roles arrive here.",
+      "p1": "Owner, manager and viewer roles per portfolio",
+      "p2": "Approval rules for consequential changes",
+      "p3": "Access and activity in one audit view"
+    },
+    "portfolioSettings": {
+      "title": "Portfolio settings",
+      "body": "Identity, calculation and lifecycle policy for this portfolio — base currency, tax model, data authority, archive and split.",
+      "p1": "Name, currency and calculation preferences",
+      "p2": "Tax model overrides per portfolio",
+      "p3": "Archive, duplicate, split and merge"
+    },
+    "portfolioEvents": {
+      "title": "Events",
+      "body": "Corporate actions — splits, mergers, spin-offs and dividends in kind — reconciled with evidence and a full receipt trail.",
+      "p1": "Safe actions reconcile directly, uncertain ones go to Review",
+      "p2": "Position, tax and cost-basis effects made explicit",
+      "p3": "A persistent source and receipt trail per event"
+    },
+    "portfolioStructure": {
+      "title": "Structure",
+      "body": "The containment and ownership graph: nested portfolios, ownership stakes and roll-ups without double counting.",
+      "p1": "Households, entities and client mandates as portfolios",
+      "p2": "Reparenting and ownership changes through Review",
+      "p3": "Roll-ups that never count a euro twice"
+    },
+    "dataHealth": {
+      "title": "Data health",
+      "body": "Field-level lineage for every consequential number: source, sync age, gaps and exceptions — with corrections staged for review.",
+      "p1": "Source, import and calculation provenance per field",
+      "p2": "Stale connections and missing data surfaced early",
+      "p3": "Evidence or reasoned exceptions recorded in place",
+      "p4": "Truth-changing corrections go through Review"
+    },
+    "privateMarkets": {
+      "title": "Private markets",
+      "body": "Commitments, capital calls, NAV updates and valuation evidence for non-listed holdings.",
+      "p1": "Commitments with call schedules against liquidity",
+      "p2": "NAV changes staged with their evidence",
+      "p3": "Look-through into allocation and performance"
+    },
+    "rebalance": {
+      "title": "Rebalance",
+      "body": "Constraint-aware rebalancing: exact quantities, costs and tax estimates, frozen into a plan you approve.",
+      "p1": "Targets from Blueprints or the portfolio plan",
+      "p2": "Costs, taxes and policy decisions made explicit",
+      "p3": "A frozen plan checksum submitted to Review"
+    },
+    "studio": {
+      "title": "Studio",
+      "body": "The visual what-if builder: draft scenarios against real portfolio data and apply them only through an explicit review step.",
+      "p1": "Non-destructive drafts over real holdings",
+      "p2": "Contributions, shocks and allocation changes as blocks",
+      "p3": "Charts and comparisons update as you edit",
+      "p4": "Apply-to-portfolio always ends in a review"
+    },
+    "assetEvents": {
+      "title": "Events",
+      "body": "Earnings, dividends, splits and the macro calendar for the assets you own and watch.",
+      "p1": "Earnings dates with estimates and surprises",
+      "p2": "Dividend calendar with projected income",
+      "p3": "Splits and corporate actions ahead of time"
+    },
+    "screener": {
+      "title": "Screener",
+      "body": "Filter the asset universe by fundamentals, performance and exposure — then send results to watchlists or Blueprints.",
+      "p1": "Composable filters over the local asset catalog",
+      "p2": "Saved screens that rerun on fresh data",
+      "p3": "One-click routes into watchlists and Blueprints"
+    },
+    "discover": {
+      "title": "Discover",
+      "body": "Curated entry points into stocks, ETFs, crypto and commodities — browse by category, region and theme.",
+      "p1": "Category browsers for every asset class",
+      "p2": "Regional and thematic collections",
+      "p3": "Straight lines into research and watchlists"
+    },
+    "teams": {
+      "title": "Teams",
+      "body": "Shared workspaces for households, clubs and advisor relationships with roles and a common view.",
+      "p1": "Group portfolios with member roles",
+      "p2": "Advisor and client workspaces with review rules",
+      "p3": "Shared activity without giving up your account"
+    },
+    "approvals": {
+      "title": "Approvals",
+      "body": "Requests that need a second pair of eyes: access grants, consequential edits and automation proposals.",
+      "p1": "Access requests with explicit scopes",
+      "p2": "Consequential changes held until approved",
+      "p3": "A full decision trail per request"
+    },
+    "review": {
+      "title": "Review inbox",
+      "body": "Uncategorized activity, stale connections, drift, missing data and pending invitations — one prioritized queue instead of scattered warnings.",
+      "p1": "Every item actionable in place",
+      "p2": "Priorities that reflect money impact",
+      "p3": "Automation proposals held for your decision",
+      "p4": "Nothing consequential happens silently"
+    },
+    "dataManagement": {
+      "title": "Data management",
+      "body": "Verified checkpoints, previewable restores, portable export manifests and retention policy.",
+      "p1": "Checkpoints you can verify and restore from",
+      "p2": "Portable exports in an open manifest format",
+      "p3": "Retention rules you control"
+    },
+    "paranoid": {
+      "title": "Paranoid mode",
+      "body": "Your data stays with just you: the portfolio lives in a client-encrypted vault — on BetterTrack, your Google Drive, both or Drive-only — and the server can never read it. The client foundations are already merged; the enable flow lands here.",
+      "p1": "Client-side encryption with a key that never leaves your devices",
+      "p2": "Storage media you choose: server, Drive, both or Drive-only",
+      "p3": "Money math computed on your device with the same audited engine",
+      "p4": "Lost key means lost data — by design, with a forced recovery kit"
+    },
+    "mcp": {
+      "title": "MCP",
+      "body": "Connect AI clients through the Model Context Protocol with a portfolio boundary, tool selection and reviewable writes.",
+      "p1": "Streamable HTTP clients with rotating access",
+      "p2": "A hard portfolio boundary per connection",
+      "p3": "Finance writes arrive as reviewable proposals"
+    },
+    "developerLogs": {
+      "title": "Request logs",
+      "body": "Filter API requests by period, path, actor and result; inspect status, latency, scope and response previews.",
+      "p1": "Filters by period, path, actor and result",
+      "p2": "Status, latency and portfolio scope per request",
+      "p3": "CSV export for deeper analysis"
+    },
+    "oauthApps": {
+      "title": "OAuth apps",
+      "body": "Register PKCE or confidential clients, manage redirect URIs and scopes, and inspect authorized grants. Administrators manage OAuth apps today.",
+      "p1": "Public PKCE and confidential clients",
+      "p2": "Credentials revealed once, revocable any time",
+      "p3": "A preview of the authorization model"
+    },
+    "ask": {
+      "title": "Ask BetterTrack",
+      "body": "Questions over your own portfolios with explicit scope, linked answers and reviewable proposals — no unsolicited chat bubbles. AI insights and the natural-language Blueprint builder are live today; the full workspace lands here.",
+      "p1": "You choose exactly which portfolios the answer may read",
+      "p2": "Every figure links back to records and assumptions",
+      "p3": "Scenario answers open as Workbench drafts",
+      "p4": "No write happens without your explicit confirmation"
     }
   }
 }
