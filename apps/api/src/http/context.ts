@@ -524,6 +524,8 @@ export interface BuildContextDeps {
   googleVerifier?: GoogleTokenVerifier;
   /** Test seam: fast poll cadence / small ring for Live Mode tests (V3-P7b). */
   liveModeOptions?: LiveModeServiceOptions;
+  /** Test seam: deterministic process-local realtime command-bucket clock. */
+  realtimeCommandNow?: () => number;
   /**
    * Test seam (#368): the notification center's transport. Defaults to the
    * durable BullMQ enqueue in production and to a direct synchronous
@@ -1554,9 +1556,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // cookie→user resolution verbatim; `portfolio:{id}` room joins enforce
   // owner-or-shared with the same repository checks the shared-view HTTP
   // endpoints use (§6.9), recomputed at join time.
-  // Live Mode core (§6.3, V3-P7b). Hosted in the API process next to the
-  // gateway that drives its watcher counts — the ring buffer lives in Redis, so
-  // moving the loop into the worker later is wiring, not a data-path change.
+  // Live Mode core (§6.3, V3-P7b). API processes retain socket-local watcher
+  // counts; Redis elects one provider poll owner per globally-hot asset and
+  // holds the shared ring buffer used across owner handoff.
   const liveMode = createLiveModeService({
     marketData,
     redis,
@@ -1568,6 +1570,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     config,
     bus: events,
     logger,
+    redis,
+    realtimeCommandNow: deps.realtimeCommandNow,
     resolveSession: async (sessionId, userAgent) => {
       const resolved = await auth.resolveSession(sessionId, userAgent);
       if (!resolved) return null;
