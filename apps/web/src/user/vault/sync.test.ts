@@ -471,6 +471,53 @@ describe('versioned encrypted local cache', () => {
 });
 
 describe('CAS-aware vault synchronization', () => {
+  it('surfaces a document reconciliation failure as a pending conflict without committing', async () => {
+    const localDocument = document([entity(ENTITY_A, 1, DEVICE_A)]);
+    const localEnvelope = await encrypted(localDocument, 1);
+    const remoteEnvelope = await encrypted(
+      document([entity(ENTITY_B, 1, DEVICE_B)]),
+      2,
+      DEVICE_B,
+      '018f0000-0000-7000-8000-0000000000b2',
+    );
+    const local = createLocalDataHome({
+      scope: 'document-reconciliation-failure',
+      storage: memoryLocalStorage(),
+    });
+    await seedLocal(local, localEnvelope, true);
+    const primary = memoryRemote(remoteEnvelope, 2);
+    const engine = createVaultSyncEngine({
+      local,
+      primary,
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      now: () => '2026-07-25T10:02:00.000Z',
+      quarantine: createMemoryVaultQuarantineStore(),
+      documentReconciler() {
+        throw new Error('The durable baseline violates the portfolio invariant.');
+      },
+      requiresCompleteMutationProvenance: false,
+    });
+
+    const expectedConflict = {
+      status: 'conflict',
+      active: { document: localDocument, header: { vaultVersion: 1 } },
+      pending: { document: localDocument, header: { vaultVersion: 1 } },
+      lastFailure: expect.stringContaining(
+        'The durable baseline violates the portfolio invariant.',
+      ),
+    };
+    await expect(engine.start()).resolves.toMatchObject(expectedConflict);
+    await expect(engine.reconnect()).resolves.toMatchObject(expectedConflict);
+    expect(primary.writeCalls).toBe(0);
+    await expect(local.read()).resolves.toMatchObject({
+      status: 'ok',
+      envelope: localEnvelope,
+      info: { version: 1, pendingRemote: true },
+    });
+  });
+
   it('passes every original mutation member to reconciliation before entity winners are filtered', async () => {
     const initialDocument = document([entity(ENTITY_A, 0, DEVICE_A, { state: 'initial' })]);
     const initial = await encrypted(initialDocument, 1);
