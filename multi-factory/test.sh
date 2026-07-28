@@ -581,7 +581,7 @@ issue_difficulty(){ echo hard; }
 mf_cc(){ printf '%s %s\n' "$1" "$2" >>"$CONFLICT_CALLS"; }
 gh(){ case "$*" in
   *"--json state"*) echo OPEN;;
-  *"--json statusCheckRollup"*) echo '[{"conclusion":"SUCCESS","status":"COMPLETED","state":"SUCCESS"}]';;
+  *"--json statusCheckRollup"*) echo '[]';;   # conflicted PRs have NO fresh rollup
   *"--json mergeStateStatus"*) echo DIRTY;;
   *) : ;;
 esac; }

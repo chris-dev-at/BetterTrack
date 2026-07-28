@@ -1423,6 +1423,22 @@ merger_step(){
     invalid) requeue_for_review "$f" "$n" "canonical approval missing/malformed"; return 0;;
   esac
 
+  # A DIRTY (conflicting) head can never merge and typically has NO fresh CI
+  # rollup — GitHub cannot build its merge commit — so it must short-circuit
+  # BEFORE the CI gate or it wedges the queue head as forever-"pending"
+  # (observed live on PRs #891/#890/#873 after the 2026-07-28 jam). The read
+  # is reused for the BEHIND decision after the CI gate; a stale value there
+  # only costs one failed merge attempt, which retries with fresh state.
+  local merge_state
+  merge_state=$(gh pr view "$pr" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null) || {
+    log "merger: merge-state read failed for PR #$pr — retrying next tick"
+    return 0
+  }
+  if [ "$merge_state" = DIRTY ]; then
+    conflict_fix_step "$f" "$n" "$pr" "$approved_head"
+    return 0
+  fi
+
   # CI rollup, non-blocking (empty rollup = checks not reported yet = pending).
   local rollup_state rollup_json
   rollup_json=$(gh pr view "$pr" --json statusCheckRollup \
@@ -1443,18 +1459,10 @@ merger_step(){
 
   # Green. A strict-BEHIND update changes code and therefore invalidates review;
   # update now, then let the normal head check requeue it for a fresh review.
-  local merge_state current_head
-  merge_state=$(gh pr view "$pr" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null) || {
-    log "merger: merge-state read failed for PR #$pr — retrying next tick"
-    return 0
-  }
+  local current_head
   current_head=$(mf_pr_head "$pr") || return 0
   if [ "$current_head" != "$approved_head" ]; then
     requeue_for_review "$f" "$n" "head changed before merge"
-    return 0
-  fi
-  if [ "$merge_state" = DIRTY ]; then
-    conflict_fix_step "$f" "$n" "$pr" "$approved_head"
     return 0
   fi
   if [ "$merge_state" = BEHIND ]; then
