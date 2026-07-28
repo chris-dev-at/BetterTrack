@@ -34,18 +34,11 @@ if [ "${MF_SOURCE_ONLY:-0}" != 1 ]; then
   . /work/mf/mflib.sh
 fi
 
-# owner 2026-07-22 (b): Fable meter critical — EVERY stage of diff:max issues ran at hard
-# (Opus), writer included; only the composer still spent Fable.
-#
-# SUPERSEDED by the owner's 2026-07-28 crosswork routing directive, which names the max
-# row explicitly: writer claude-fable-5 xhigh, reviewer1 gpt-5.6-sol ultra, completion
-# claude-fable-5 xhigh. With the demotion in place a diff:max issue was written by Sol
-# through the hard row and the max row only ever fired for the composer — i.e. the
-# configured table could not take effect at all. The demotion is removed so diff:max
-# resolves to the max row as configured. Per-slot routing now provides the finer control
-# the demotion was approximating; to re-cap Fable, change the max row's writer/completion
-# slots in models.json rather than reinstating a blanket demotion here.
-post_write_diff(){ printf '%s\n' "$1"; }
+# The 2026-07-22 "Fable meter critical" post_write_diff demotion (every diff:max
+# stage forced to hard) is GONE — superseded by the owner's 2026-07-28 per-slot
+# routing directive: diff:max now resolves to the max row as configured. To
+# re-cap Fable, edit the max row's writer/completion slots in models.json; never
+# reinstate a blanket demotion here, it silently bypasses the configured table.
 
 atomic_write(){ local tmp; tmp=$(mktemp "$(dirname "$1")/.tmp.XXXXXX") || return 1
   printf '%s\n' "$2" >"$tmp" && mv -f "$tmp" "$1"; }
@@ -318,7 +311,7 @@ run_fixer(){ # $1=issue $2=pr $3=difficulty $4=optional diagnosis prefix
 # the second fixer is never allowed to fall through to triage unreviewed.
 review_fix_cycle(){ # $1=issue $2=pr
   local n=$1 pr=$2 review_diff round
-  review_diff=$(post_write_diff "$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")")
+  review_diff=$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")
   REVIEW_CYCLE_RESULT=protocol
   run_reviewer "$n" "$pr" "$review_diff" || return 1
   if [ "$LAST_REVIEW_VERDICT" = "FACTORY-VERDICT: APPROVE" ]; then
@@ -328,7 +321,7 @@ review_fix_cycle(){ # $1=issue $2=pr
   for round in 1 2; do
     log "fix round $round/2: changes requested"
     wstatus fixing "$n" "$pr"
-    run_fixer "$n" "$pr" "$(post_write_diff "$CYCLE_DIFF")" || return 1
+    run_fixer "$n" "$pr" "$CYCLE_DIFF" || return 1
     wstatus reviewing "$n" "$pr"
     run_reviewer "$n" "$pr" "$review_diff" || return 1
     if [ "$LAST_REVIEW_VERDICT" = "FACTORY-VERDICT: APPROVE" ]; then
@@ -613,7 +606,7 @@ triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked
         triage_state_save "$sf" "$n" "$pr" "$TRIAGE_STAGE" || return 2
         log "triage: one escalated fixer at diff:$esc (was diff:$CYCLE_DIFF)"
         wstatus fixing "$n" "$pr"
-        if run_escalated_fixer_once "$n" "$pr" "$(post_write_diff "$esc")" \
+        if run_escalated_fixer_once "$n" "$pr" "$esc" \
           "$TRIAGE_FIXER_BASE_HEAD" \
           "TRIAGE DIAGNOSIS BRIEF (address this root cause):
 $LAST_CHECKER_BODY"; then
@@ -648,7 +641,7 @@ $LAST_CHECKER_BODY"; then
       escalated-review-pending)
         wstatus reviewing "$n" "$pr"
         run_reviewer "$n" "$pr" \
-          "$(post_write_diff "$(diff_at_least "$TRIAGE_ESC_DIFF" "$(review_floor)")")" \
+          "$(diff_at_least "$TRIAGE_ESC_DIFF" "$(review_floor)")" \
           || return 2
         if [ "$LAST_REVIEW_VERDICT" = "FACTORY-VERDICT: APPROVE" ]; then
           enqueue_merge "$pr" "$n" "$LAST_REVIEW_HEAD" reviewer "$LAST_REVIEW_COMMENT_ID" \
@@ -859,7 +852,7 @@ run_cycle(){ # $1=issue $2=relocated
       local writer_transport=1 w_try
       for w_try in $(seq 1 "${WRITER_RETRIES:-2}"); do
         hb_ensure
-        if CC_SLOT=writer mf_cc writer "$(post_write_diff "$CYCLE_DIFF")" \
+        if CC_SLOT=writer mf_cc writer "$CYCLE_DIFF" \
           "$(with_pack "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")")"; then
           writer_transport=0
           break

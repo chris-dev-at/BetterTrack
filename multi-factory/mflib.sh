@@ -26,9 +26,10 @@
 #                "reviewFloor":"<diff>" } }
 #
 # Slot resolution (diff_cfg <diff> <slot>): the slot object wins; a missing or
-# malformed slot falls back to the flat legacy entry; a missing/malformed flat
-# entry falls back to the builtin all-Claude defaults. A present-but-unknown
-# provider stays explicit ("invalid|<provider>|") and fails closed downstream —
+# non-object slot falls back to the flat legacy entry; a missing flat entry
+# falls back to the builtin all-Claude defaults. A PRESENT-but-malformed slot
+# or flat entry with a string provider stays explicit ("invalid|<provider>|")
+# and fails closed downstream — it never silently falls through —
 # a typo must never silently reroute a role to Claude. A v1 (flat-only) file
 # therefore keeps working unchanged: every slot resolves to the flat entry.
 #
@@ -163,11 +164,35 @@ diff_slot_cfg_from_json(){ # $1=file $2=difficulty $3=slot — invalid provider 
   ' "$1" 2>/dev/null || true
 }
 
+mf_opus5_route_ok(){ # $1="provider|model|effort" — the Opus-5 ≤ xhigh owner rule
+  local provider model effort
+  IFS='|' read -r provider model effort <<<"$1"
+  mf_opus5_effort_ok "$model" "$effort"
+}
+
 diff_cfg(){ # $1=difficulty $2=slot (optional: writer|reviewer1|completion)
+  # The Opus-5 cap binds HERE too, not only in set-models/the editor — a
+  # hand-written models.json must never run Opus 5 above xhigh. An over-cap
+  # slot falls to the flat entry, an over-cap flat entry falls to the builtin
+  # default (mirrors role_pin_cfg's fall-back semantics). Notes go to stderr:
+  # diff_cfg runs inside command substitutions, so log() would corrupt the
+  # returned route string.
   local d=$1 slot=${2:-} out=""
   if [ -f "$MF_MODELS_FILE" ]; then
-    [ -n "$slot" ] && out=$(diff_slot_cfg_from_json "$MF_MODELS_FILE" "$d" "$slot")
-    [ -n "$out" ] || out=$(diff_cfg_from_json "$MF_MODELS_FILE" "$d")
+    if [ -n "$slot" ]; then
+      out=$(diff_slot_cfg_from_json "$MF_MODELS_FILE" "$d" "$slot")
+      if [ -n "$out" ] && ! mf_opus5_route_ok "$out"; then
+        printf 'opus5 cap: %s.%s route exceeds xhigh — falling back\n' "$d" "$slot" >&2
+        out=""
+      fi
+    fi
+    if [ -z "$out" ]; then
+      out=$(diff_cfg_from_json "$MF_MODELS_FILE" "$d")
+      if [ -n "$out" ] && ! mf_opus5_route_ok "$out"; then
+        printf 'opus5 cap: %s flat route exceeds xhigh — using the builtin default\n' "$d" >&2
+        out=""
+      fi
+    fi
   fi
   [ -n "$out" ] || out=$(diff_default_cfg "$d")
   printf '%s\n' "$out"

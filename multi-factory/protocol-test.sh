@@ -288,9 +288,17 @@ unset arg_max large_payload large_before review_obj large_after
 echo "— prior canonical review detection (reviewer1 vs completion routing)"
 mf_has_canonical_review '[]' \
   && bad "empty thread must have no prior review" || ok "empty thread → no prior review"
-mf_has_canonical_review "$after_ok" \
+# A dedicated fixture with a commit-SHA-shaped head: the body-declared head is
+# untrusted and only plain hex shapes are accepted (see mf_has_canonical_review).
+CANON_REVIEW='[{"id":8,"body":"review body\nFACTORY-REVIEW-HEAD: abc1234\nFACTORY-VERDICT: APPROVE"}]'
+mf_has_canonical_review "$CANON_REVIEW" \
   && ok "canonical verdict counts as a prior review" \
   || bad "canonical verdict should count as a prior review"
+NONHEX_HEAD='[{"id":9,"body":"r\nFACTORY-REVIEW-HEAD: .*\nFACTORY-VERDICT: APPROVE"}]'
+mf_has_canonical_review "$NONHEX_HEAD" \
+  && bad "regex-shaped head must never self-validate" \
+  || ok "regex-shaped head is rejected"
+unset CANON_REVIEW NONHEX_HEAD
 OLDHEAD_REVIEW='[{"id":9,"body":"r\nFACTORY-REVIEW-HEAD: 0123abc\nFACTORY-VERDICT: REQUEST_CHANGES"}]'
 mf_has_canonical_review "$OLDHEAD_REVIEW" \
   && ok "verdict for an older head still counts as a prior review" \

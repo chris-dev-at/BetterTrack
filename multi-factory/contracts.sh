@@ -238,6 +238,10 @@ mf_has_canonical_review(){ # $1=comments JSON
     body=$(jq -r '.body // ""' <<<"$obj")
     head=$(sed -n 's/^FACTORY-REVIEW-HEAD: //p' <<<"$body" | head -1)
     [ -n "$head" ] || continue
+    # The head here comes from the UNTRUSTED comment body (every other caller
+    # passes one from GitHub) and is interpolated into a grep pattern — accept
+    # only plain commit-SHA shapes so `.*`-style bodies cannot self-validate.
+    printf '%s' "$head" | grep -qE '^[0-9a-fA-F]{7,40}$' || continue
     if mf_comment_marker_valid review "$head" "$body"; then
       return 0
     fi

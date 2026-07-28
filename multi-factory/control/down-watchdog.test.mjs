@@ -21,7 +21,20 @@ test('down watchdog debounces with a bounded grace period and fires once per epi
   assert.match(block, /downNotified \|\| Date\.now\(\) - downSince < WATCHDOG_GRACE_MS/);
   // recovery re-arms: every early-return path resets both episode fields
   const resets = block.match(/downSince = 0;\s*\n\s*downNotified = false;/g) || [];
-  assert.ok(resets.length >= 2, 'both the not-should-run and recovered paths re-arm');
+  assert.ok(resets.length >= 3, 'not-should-run, suppressed and recovered paths all re-arm');
+});
+
+test('down watchdog cannot misread docker failures or deliberate stops as incidents', () => {
+  // a docker-CLI failure freezes the episode instead of counting as "killed"
+  assert.match(block, /if \(ps\.error\) return;/);
+  // deliberate stop/down and in-flight operations (builds) suppress the watchdog
+  assert.match(block, /watchdogSuppressedByStop \|\| inflight\.size/);
+  // suppression is wired to owner actions: stop/down set it, any start clears it
+  assert.match(src, /action === 'stop' \|\| action === 'down'\) watchdogSuppressedByStop = true/);
+  assert.match(
+    src,
+    /action === 'start' \|\| action === 'restart' \|\| action === 'start-dry'\)\s*\n\s*watchdogSuppressedByStop = false/,
+  );
 });
 
 test('down watchdog reads the webhook from factory/.env read-only and never throws outward', () => {
@@ -31,6 +44,8 @@ test('down watchdog reads the webhook from factory/.env read-only and never thro
   assert.match(block, /no webhook configured/);
   assert.match(block, /\.catch\(\(\) => \{\}\)/);
   assert.match(block, /catch \{\s*\n\s*\/\* watchdog must survive/);
-  // the URL is never exposed through an API payload
-  assert.equal(/factoryWebhookUrl/.test(src.slice(src.indexOf('const handleRequest'))), false);
+  // the URL helper exists ONLY inside the watchdog block — no API/SSE/snapshot
+  // code path anywhere else in the module can reach or expose it
+  const outside = src.replace(block, '');
+  assert.equal(/factoryWebhookUrl/.test(outside), false);
 });

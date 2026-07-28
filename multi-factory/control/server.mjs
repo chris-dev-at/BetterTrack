@@ -850,6 +850,11 @@ function spawnLogged(name, cmd, args, cwd) {
 }
 
 async function doAction(action, payload = {}) {
+  // Down-watchdog suppression: an owner-driven stop/down is not an incident;
+  // any start re-arms the watchdog (see the factory-down watchdog section).
+  if (action === 'stop' || action === 'down') watchdogSuppressedByStop = true;
+  if (action === 'start' || action === 'restart' || action === 'start-dry')
+    watchdogSuppressedByStop = false;
   switch (action) {
     case 'start':
       return spawnLogged('start', 'bash', ['autorun.sh'], MF_DIR);
@@ -1291,6 +1296,10 @@ setInterval(async () => {
 const WATCHDOG_GRACE_MS = Number(process.env.MF_DOWN_WATCHDOG_GRACE_MS || 300000);
 let downSince = 0;
 let downNotified = false;
+// A DELIBERATE owner stop/down leaves mode=run and phase=running behind (only
+// the master writes phase, and it is gone) — the watchdog must stay quiet
+// until the next start. Set/cleared in doAction.
+let watchdogSuppressedByStop = false;
 async function factoryWebhookUrl() {
   const env = await readText(join(REPO_ROOT, 'factory', '.env'));
   if (!env) return '';
@@ -1312,7 +1321,18 @@ setInterval(async () => {
       downNotified = false;
       return;
     }
-    const { containers } = await composePs(MF_PROJECT);
+    // Deliberate stop/down and in-flight operations (start builds can exceed
+    // the grace window) are not incidents.
+    if (watchdogSuppressedByStop || inflight.size) {
+      downSince = 0;
+      downNotified = false;
+      return;
+    }
+    const ps = await composePs(MF_PROJECT);
+    // A docker-CLI failure (daemon stopped, Docker Desktop updating) says
+    // nothing about the factory — freeze the episode rather than misread it.
+    if (ps.error) return;
+    const { containers } = ps;
     const anyRunning = containers.some((c) => /running|paused/i.test(c.state));
     if (anyRunning) {
       downSince = 0;

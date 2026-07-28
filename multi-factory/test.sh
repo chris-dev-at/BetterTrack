@@ -741,7 +741,7 @@ run_reviewer 7 77 intermediate
 check "first review on a fresh PR runs the reviewer1 slot" \
   "reviewer1:reviewer:intermediate" "$(<"$SLOT_SEL_LOG")"
 
-REVIEW_COMMENTS='[{"id":1,"body":"earlier review\nFACTORY-REVIEW-HEAD: 0ldhead\nFACTORY-VERDICT: REQUEST_CHANGES"}]'
+REVIEW_COMMENTS='[{"id":1,"body":"earlier review\nFACTORY-REVIEW-HEAD: 0123abc\nFACTORY-VERDICT: REQUEST_CHANGES"}]'
 : >"$SLOT_SEL_LOG"
 run_reviewer 7 77 intermediate
 check "later review (prior verdict on an older head) runs completion" \
@@ -879,6 +879,35 @@ merger_step
 check "refused head escalated to a human" "1" "$(grep -c '^606|' "$HUMAN_LOG")"
 [ -f "$QDIR/.mergefail-pr66-eeee5555" ] && bad "refusal counter must be cleared" || ok "refusal counter cleared"
 MF_DRY_RUN=1
+
+echo "— opus5 cap binds at the mflib runtime layer (hand-written files)"
+# set-models and the editor already refuse over-cap routes; diff_cfg is the
+# belt for files written by hand: an over-cap slot falls to flat, an over-cap
+# flat falls to the builtin default, pins were already capped (role_pin_cfg).
+(
+  MF_MODELS_FILE=$T/opus5-cap.json
+  cat >"$MF_MODELS_FILE" <<'JSON'
+{"version":2,"difficulties":{
+  "easy":{"provider":"codex","model":"flat-easy","effort":"low",
+    "writer":{"provider":"claude","model":"claude-opus-5","effort":"ultra"}},
+  "hard":{"provider":"claude","model":"claude-opus-5","effort":"max",
+    "writer":{"provider":"claude","model":"claude-opus-5","effort":"max"},
+    "reviewer1":{"provider":"claude","model":"claude-opus-5-20260514","effort":"max"},
+    "completion":{"provider":"codex","model":"gpt-5.6-sol","effort":"ultra"}},
+  "max":{"provider":"claude","model":"claude-fable-5","effort":"max",
+    "reviewer1":{"provider":"claude","model":"claude-opus-5","effort":"xhigh"}}}}
+JSON
+  printf '%s\n' "$(diff_cfg easy writer 2>/dev/null)" "$(diff_cfg hard writer 2>/dev/null)" \
+    "$(diff_cfg hard reviewer1 2>/dev/null)" "$(diff_cfg hard completion 2>/dev/null)" \
+    "$(diff_cfg hard 2>/dev/null)" "$(diff_cfg max 2>/dev/null)" "$(diff_cfg max reviewer1 2>/dev/null)"
+) >"$T/opus5-out"
+check "over-cap slot falls back to a valid flat entry" "codex|flat-easy|low" "$(sed -n 1p "$T/opus5-out")"
+check "over-cap slot above over-cap flat lands on the builtin" "claude|claude-opus-4-8|max" "$(sed -n 2p "$T/opus5-out")"
+check "dated opus5 id is capped identically" "claude|claude-opus-4-8|max" "$(sed -n 3p "$T/opus5-out")"
+check "non-opus5 ultra slot is untouched" "codex|gpt-5.6-sol|ultra" "$(sed -n 4p "$T/opus5-out")"
+check "over-cap flat read lands on the builtin" "claude|claude-opus-4-8|max" "$(sed -n 5p "$T/opus5-out")"
+check "fable at max stays allowed" "claude|claude-fable-5|max" "$(sed -n 6p "$T/opus5-out")"
+check "opus5 at the xhigh cap stays allowed" "claude|claude-opus-5|xhigh" "$(sed -n 7p "$T/opus5-out")"
 
 echo
 echo "passed: $PASS, failed: $FAIL"
