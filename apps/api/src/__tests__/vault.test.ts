@@ -770,7 +770,7 @@ describe('durable paranoid server-media lifecycle', () => {
     expect((await agent.get('/api/v1/vault/history/1')).status).toBe(404);
   });
 
-  it('removes an expired candidate while purging a retained server retirement', async () => {
+  it('removes an abandoned expired candidate while reporting media state', async () => {
     const { user, agent } = await seedParanoidAgent(
       'expired-candidate@bt.test',
       'expiredcandidate',
@@ -812,7 +812,6 @@ describe('durable paranoid server-media lifecycle', () => {
       .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
       .send(v1);
     expect(staged.status).toBe(200);
-    const candidateId = staged.body.candidateId as string;
     await harness.db
       .update(paranoidVaultServerCandidates)
       .set({ expiresAt: new Date(Date.now() - 1) })
@@ -821,6 +820,20 @@ describe('durable paranoid server-media lifecycle', () => {
       .update(paranoidVaultRetirements)
       .set({ retiredAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) })
       .where(eq(paranoidVaultRetirements.userId, user.id));
+
+    // A reload cannot use the now-expired candidate ID. The state endpoint must
+    // dispose of its ciphertext in the same transaction instead of only hiding
+    // its metadata from the response.
+    const media = await agent.get('/api/v1/vault/media');
+    expect(media.status).toBe(200);
+    expect(media.body.mediaState.server.disposition).toBe('retired');
+    expect(media.body.mediaState.server.candidate).toBeNull();
+    expect(
+      await harness.db
+        .select({ id: paranoidVaultServerCandidates.id })
+        .from(paranoidVaultServerCandidates)
+        .where(eq(paranoidVaultServerCandidates.userId, user.id)),
+    ).toEqual([]);
 
     const prepared = await agent
       .post('/api/v1/vault/media/retired/purge/challenge')
@@ -839,11 +852,8 @@ describe('durable paranoid server-media lifecycle', () => {
       });
     expect(purged.status).toBe(200);
     expect((await agent.get('/api/v1/vault/history/1')).status).toBe(404);
-    expect((await agent.get(`/api/v1/vault/media/server-candidate/${candidateId}`)).status).toBe(
-      404,
-    );
-    const media = await agent.get('/api/v1/vault/media');
-    expect(media.body.mediaState.server.disposition).toBe('empty');
+    const afterPurge = await agent.get('/api/v1/vault/media');
+    expect(afterPurge.body.mediaState.server.disposition).toBe('empty');
   });
 
   it('rejects a stale candidate promotion after another browser promotes a different candidate', async () => {

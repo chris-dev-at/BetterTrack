@@ -253,40 +253,55 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
     },
 
     async getMediaState(userId) {
-      const [user] = await db
-        .select({
-          privacyMode: users.privacyMode,
-          mediaSet: users.paranoidMediaSet,
-          driveAttestedVersion: users.paranoidDriveAttestedVersion,
-        })
-        .from(users)
-        .where(eq(users.id, userId));
-      if (!user) return null;
-      if (user.privacyMode === 'normal') return { privacyMode: 'normal', mediaState: null };
+      return db.transaction(async (tx) => {
+        // Media writers take this same account lock. Keeping state reporting in
+        // the transaction means an expired staged ciphertext is physically
+        // disposed before the client observes that it has no candidate to
+        // recover, rather than being merely hidden in the response.
+        const [user] = await tx
+          .select({
+            privacyMode: users.privacyMode,
+            mediaSet: users.paranoidMediaSet,
+            driveAttestedVersion: users.paranoidDriveAttestedVersion,
+          })
+          .from(users)
+          .where(eq(users.id, userId))
+          .for('update');
+        if (!user) return null;
+        if (user.privacyMode === 'normal') return { privacyMode: 'normal', mediaState: null };
 
-      const now = new Date();
-      const [[active], [candidate], [retirement]] = await Promise.all([
-        db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, userId)).limit(1),
-        db
+        const now = new Date();
+        const [active] = await tx
+          .select()
+          .from(paranoidVaults)
+          .where(eq(paranoidVaults.userId, userId))
+          .limit(1);
+        let [candidate] = await tx
           .select()
           .from(paranoidVaultServerCandidates)
           .where(eq(paranoidVaultServerCandidates.userId, userId))
-          .limit(1),
-        db
+          .for('update');
+        if (candidate && candidate.expiresAt.getTime() <= now.getTime()) {
+          await tx
+            .delete(paranoidVaultServerCandidates)
+            .where(eq(paranoidVaultServerCandidates.id, candidate.id));
+          candidate = undefined;
+        }
+        const [retirement] = await tx
           .select()
           .from(paranoidVaultRetirements)
           .where(eq(paranoidVaultRetirements.userId, userId))
-          .limit(1),
-      ]);
-      return {
-        privacyMode: 'paranoid',
-        mediaState: mediaStateOf(
-          mediaSelectionOf(user),
-          Boolean(active),
-          candidate && candidate.expiresAt.getTime() > now.getTime() ? candidate : null,
-          retirement ?? null,
-        ),
-      };
+          .limit(1);
+        return {
+          privacyMode: 'paranoid',
+          mediaState: mediaStateOf(
+            mediaSelectionOf(user),
+            Boolean(active),
+            candidate ?? null,
+            retirement ?? null,
+          ),
+        };
+      });
     },
 
     async listHistory(userId, input = {}) {
