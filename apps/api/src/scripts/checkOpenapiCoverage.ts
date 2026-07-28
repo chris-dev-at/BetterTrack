@@ -1,3 +1,4 @@
+import { METHODS } from 'node:http';
 import { pathToFileURL } from 'node:url';
 
 import express, { type Application } from 'express';
@@ -28,8 +29,18 @@ export interface MountedRoute {
 }
 
 /**
- * An explicit-path `app.use` mount whose terminal handler is not an inspectable
- * Express router. It may consume any method or descendant path, so it cannot be
+ * An `app.all`/`router.all` route. OpenAPI has no single all-method operation,
+ * so the documentation comparison ignores this synthetic surface while the
+ * paranoid completeness inventory still requires an explicit classification.
+ */
+export interface AllMethodsMountedRoute {
+  readonly kind: 'all-methods-route';
+  readonly path: string;
+}
+
+/**
+ * An `app.use`/`router.use` mount whose handler is not an inspectable Express
+ * router. It may consume any method or descendant path, so it cannot be
  * represented as a finite OpenAPI operation. The paranoid completeness sweep
  * still consumes this identity; OpenAPI comparison deliberately does not.
  */
@@ -37,9 +48,11 @@ export interface OpaqueMountedSurface {
   readonly kind: 'opaque-mount';
   readonly path: string;
   readonly handler: string;
+  /** One-based occurrence among handlers with the same mounted path and name. */
+  readonly occurrence: number;
 }
 
-export type MountedSurface = MountedRoute | OpaqueMountedSurface;
+export type MountedSurface = MountedRoute | AllMethodsMountedRoute | OpaqueMountedSurface;
 
 interface PathItemLike {
   [method: string]: unknown;
@@ -70,6 +83,7 @@ const API_PREFIX = '/api/v1';
 
 /** The HTTP methods a path item's operations can be keyed by (per {@link EndpointDef}). */
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'];
+const EXPRESS_HTTP_METHODS = METHODS.map((method) => method.toLowerCase());
 
 function toOpenApiPath(path: string): string {
   return path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
@@ -178,119 +192,196 @@ function buildInertContext(): AppContext {
   };
 }
 
+interface RecordedUseMount {
+  readonly paths: readonly string[];
+}
+
+function literalPaths(value: unknown, registration: string): readonly string[] {
+  const paths = Array.isArray(value) ? value : [value];
+  if (paths.length === 0 || !paths.every((path): path is string => typeof path === 'string')) {
+    throw new Error(
+      `checkOpenapiCoverage: ${registration} uses a non-literal path; extend the route-table ` +
+        'walker before trusting this report.',
+    );
+  }
+  return paths;
+}
+
+function useMountPaths(args: readonly unknown[]): readonly string[] {
+  let candidate = args[0];
+  while (Array.isArray(candidate) && candidate.length > 0) candidate = candidate[0];
+  return typeof candidate === 'function' ? ['/'] : literalPaths(args[0], 'router.use');
+}
+
+function joinMountedPath(base: string, suffix: string): string {
+  const normalizedBase = base === '/' ? '' : base.replace(/\/+$/, '');
+  const normalizedSuffix = suffix === '/' ? '' : suffix.replace(/^\/?/, '/');
+  return toOpenApiPath(normalizedBase + normalizedSuffix || '/');
+}
+
+function handlerName(handler: unknown): string {
+  return typeof handler === 'function' && handler.name.length > 0 ? handler.name : '<anonymous>';
+}
+
 function collectRouterRoutes(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   stack: any[],
   base: string,
   out: MountedSurface[],
+  recordedUseMounts: WeakMap<object, RecordedUseMount>,
+  opaqueOccurrences: Map<string, number>,
 ): void {
   for (const layer of stack) {
     if (layer.route) {
+      const routePaths = literalPaths(layer.route.path, 'app/router route');
       const methods = Object.keys(layer.route.methods).filter(
         (method) => layer.route.methods[method] && method !== '_all',
       );
-      // A router's own root route (`router.get('/', ...)`) contributes a bare
-      // `/` segment; appended to its mount prefix that would leave a spurious
-      // trailing slash no path in the spec ever has (e.g. `/workboard/`
-      // instead of `/workboard`).
-      const suffix = layer.route.path === '/' ? '' : layer.route.path;
-      for (const method of methods) {
+      const handlesAllMethods =
+        layer.route.methods._all === true ||
+        EXPRESS_HTTP_METHODS.every((method) => layer.route.methods[method] === true);
+
+      for (const path of routePaths) {
+        const mountedPath = joinMountedPath(base, path);
+        if (handlesAllMethods) {
+          out.push({ kind: 'all-methods-route', path: mountedPath });
+          continue;
+        }
+        for (const method of methods) {
+          out.push({
+            kind: 'route',
+            method: method.toUpperCase(),
+            path: mountedPath,
+          });
+        }
+      }
+      continue;
+    }
+
+    const mount =
+      layer && typeof layer === 'object' ? recordedUseMounts.get(layer as object) : undefined;
+    if (!mount) {
+      throw new Error(
+        `checkOpenapiCoverage: found an unrecorded router layer "${handlerName(
+          layer?.handle,
+        )}" under "${base || '/'}"; extend the route-table walker before trusting this report.`,
+      );
+    }
+
+    for (const path of mount.paths) {
+      const mountedPath = joinMountedPath(base, path);
+      if (layer.handle?.stack && Array.isArray(layer.handle.stack)) {
+        collectRouterRoutes(
+          layer.handle.stack,
+          mountedPath,
+          out,
+          recordedUseMounts,
+          opaqueOccurrences,
+        );
+      } else {
+        const handler = handlerName(layer.handle);
+        const occurrenceKey = `${mountedPath}\0${handler}`;
+        const occurrence = (opaqueOccurrences.get(occurrenceKey) ?? 0) + 1;
+        opaqueOccurrences.set(occurrenceKey, occurrence);
         out.push({
-          kind: 'route',
-          method: method.toUpperCase(),
-          path: toOpenApiPath(base + suffix),
+          kind: 'opaque-mount',
+          path: mountedPath,
+          handler,
+          occurrence,
         });
       }
-    } else if (layer.handle?.stack) {
-      // None of app.ts's routers mount a further sub-router today — every
-      // group is registered directly on `app`. If that ever changes, this
-      // needs to learn the nested mount path the same way `buildRouteTable`
-      // does below, so it fails loudly instead of silently under-counting.
-      throw new Error(
-        `checkOpenapiCoverage: found a router nested under "${base}" — extend ` +
-          'collectRouterRoutes to reconstruct its mount path before trusting this report.',
-      );
     }
   }
 }
 
 /**
- * Direct application routes (`app.get`, `app.post`, `app.route`, etc.) live on
- * the application's own router stack rather than inside an `app.use` mount.
- * They are uncommon today, but omitting them here would create an invisible
- * path whenever one is added to `createApp`.
+ * Express keeps literal `use` paths only in matcher closures. Record the exact
+ * path on each layer as production registers it so nested routers, leaf
+ * middleware, every handler position, and nested handler arrays all remain
+ * mechanically discoverable.
  */
-function collectDirectApplicationRoutes(app: Application, out: MountedSurface[]): void {
-  // Express does not expose the application's stack in its public TypeScript
-  // surface. It is nonetheless the same router stack that powers dispatch;
-  // fail closed if that implementation detail changes instead of silently
-  // treating direct application endpoints as documented.
-  const router = (app as unknown as { router?: { stack?: unknown } }).router;
-  if (!Array.isArray(router?.stack)) {
+function routerUseOwner(): { use: (...args: unknown[]) => unknown } {
+  let owner: object | null = Object.getPrototypeOf(express.Router());
+  while (owner && !Object.prototype.hasOwnProperty.call(owner, 'use')) {
+    owner = Object.getPrototypeOf(owner);
+  }
+  if (!owner || typeof (owner as { use?: unknown }).use !== 'function') {
     throw new Error(
-      'checkOpenapiCoverage: could not inspect the application router stack for direct routes; ' +
+      'checkOpenapiCoverage: could not inspect the Express Router.use implementation; ' +
         'extend the route-table walker before trusting this report.',
     );
   }
-
-  for (const layer of router.stack) {
-    if (!layer?.route) continue;
-    collectRouterRoutes([layer], '', out);
-  }
+  return owner as { use: (...args: unknown[]) => unknown };
 }
 
 /**
- * Builds the real app while recording every `app.use(path, handler)` call it
- * makes, then walks both mounted-router stacks and direct application routes
- * (where `route.path` is always the literal string passed to
- * `.get`/`.post`/etc.) to recover the full route table. The optional factory
- * keeps the production path fixed to `createApp`, while allowing focused tests
- * to attach a real direct application endpoint and verify this walker.
+ * Builds the real app while recording every layer created by
+ * `app.use`/`router.use`, then walks the application's actual router stack.
+ * Direct routes retain their literal `route.path`; use layers get their literal
+ * mount path from the registration record above. The optional factory keeps
+ * the production path fixed to `createApp`, while allowing focused tests to
+ * prove that every supported Express registration shape reaches the inventory.
  */
 export function buildRouteTable(
   appFactory: (ctx: AppContext) => Application = createApp,
 ): MountedSurface[] {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mounts: { prefix: string; handler: any; usesExplicitPath: boolean }[] = [];
-  const originalUse = express.application.use;
+  const recordedUseMounts = new WeakMap<object, RecordedUseMount>();
+  const useOwner = routerUseOwner();
+  const originalUse = useOwner.use;
   let app: Application | undefined;
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (express.application as any).use = function patchedUse(this: Application, ...args: any[]) {
-      const [first, ...rest] = args;
-      const usesExplicitPath = typeof first === 'string';
-      mounts.push({
-        prefix: usesExplicitPath ? first : '',
-        handler: usesExplicitPath ? rest[rest.length - 1] : first,
-        usesExplicitPath,
-      });
+    useOwner.use = function patchedUse(this: { stack?: unknown }, ...args: any[]) {
+      const paths = useMountPaths(args);
+      const before = Array.isArray(this.stack) ? this.stack.length : -1;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (originalUse as any).apply(this, args);
+      const result = (originalUse as any).apply(this, args);
+      if (!Array.isArray(this.stack) || before < 0) {
+        throw new Error(
+          'checkOpenapiCoverage: Router.use did not expose a stack; extend the route-table ' +
+            'walker before trusting this report.',
+        );
+      }
+      const layers = this.stack.slice(before);
+      if (layers.length === 0) {
+        throw new Error(
+          'checkOpenapiCoverage: Router.use added no inspectable layers; extend the route-table ' +
+            'walker before trusting this report.',
+        );
+      }
+      for (const layer of layers) {
+        if (!layer || typeof layer !== 'object') {
+          throw new Error(
+            'checkOpenapiCoverage: Router.use added a non-object layer; extend the route-table ' +
+              'walker before trusting this report.',
+          );
+        }
+        recordedUseMounts.set(layer, { paths });
+      }
+      return result;
     };
     app = appFactory(buildInertContext());
   } finally {
-    express.application.use = originalUse;
+    useOwner.use = originalUse;
   }
 
   if (!app) {
     throw new Error('checkOpenapiCoverage: application factory did not return an Express app.');
   }
 
-  const surfaces: MountedSurface[] = [];
-  for (const { prefix, handler, usesExplicitPath } of mounts) {
-    if (handler?.stack && Array.isArray(handler.stack)) {
-      collectRouterRoutes(handler.stack, prefix, surfaces);
-    } else if (usesExplicitPath) {
-      surfaces.push({
-        kind: 'opaque-mount',
-        path: toOpenApiPath(prefix),
-        handler:
-          typeof handler === 'function' && handler.name.length > 0 ? handler.name : '<anonymous>',
-      });
-    }
+  // Express does not expose the application's stack in its public TypeScript
+  // surface. Fail closed if that implementation detail changes.
+  const router = (app as unknown as { router?: { stack?: unknown } }).router;
+  if (!Array.isArray(router?.stack)) {
+    throw new Error(
+      'checkOpenapiCoverage: could not inspect the application router stack; extend the ' +
+        'route-table walker before trusting this report.',
+    );
   }
-  collectDirectApplicationRoutes(app, surfaces);
+
+  const surfaces: MountedSurface[] = [];
+  collectRouterRoutes(router.stack, '', surfaces, recordedUseMounts, new Map());
   return surfaces;
 }
 

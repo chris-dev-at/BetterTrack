@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 
+import { Router, type RequestHandler } from 'express';
 import ts from 'typescript';
 import { beforeAll, describe, expect, it } from 'vitest';
 
@@ -9,6 +10,7 @@ import { buildRouteTable, type MountedSurface } from '../../../scripts/checkOpen
 import {
   isParanoidSurfaceClassified,
   PARANOID_ACCOUNT_CONTEXT_SOURCE,
+  PARANOID_ALL_METHODS_ROUTE_METHOD,
   PARANOID_DIRECT_SERVICE_CALL,
   PARANOID_KNOWN_GAPS,
   PARANOID_OPAQUE_MOUNT_METHOD,
@@ -69,11 +71,19 @@ function mountedRouteSurfaces(
         path,
       };
     }
+    if (route.kind === 'all-methods-route') {
+      return {
+        kind: 'route' as const,
+        source,
+        method: PARANOID_ALL_METHODS_ROUTE_METHOD,
+        path,
+      };
+    }
     return {
       kind: 'route' as const,
       source: {
         ...source,
-        symbol: `${source.symbol}.${route.handler}`,
+        symbol: `${source.symbol}.${route.handler}[${route.occurrence}]@${route.path}`,
       },
       method: PARANOID_OPAQUE_MOUNT_METHOD,
       path,
@@ -306,30 +316,130 @@ describe('paranoid enforcement completeness', () => {
     ]);
   });
 
-  it('names a newly mounted opaque leaf handler when no classification exists', () => {
+  it('records every app.use handler position, including nested handler arrays', () => {
     const fixturePath = '/paranoid-enforcement-fixture';
-    const throwawayRoute = mountedRouteSurfaces(
+    const throwawayRoutes = mountedRouteSurfaces(
       buildRouteTable((ctx) => {
         const app = createApp(ctx);
-        app.use(
-          fixturePath,
-          (_request, _response, next) => next(),
-          function leafRequestHandler(_request, response) {
-            response.sendStatus(204);
-          },
-        );
+        const earlierTerminatingRequestHandler: RequestHandler = (_request, response) => {
+          response.sendStatus(204);
+        };
+        const leafRequestHandler: RequestHandler = (_request, response) => {
+          response.sendStatus(204);
+        };
+        app.use(fixturePath, earlierTerminatingRequestHandler, [leafRequestHandler]);
         return app;
       }),
       {
         file: COMPLETENESS_TEST_SOURCE,
         symbol: 'throwawayParanoidLeafMountFixture',
       },
-    ).find((route) => route.method === PARANOID_OPAQUE_MOUNT_METHOD && route.path === fixturePath);
+    ).filter(
+      (route) => route.method === PARANOID_OPAQUE_MOUNT_METHOD && route.path === fixturePath,
+    );
+
+    expect(throwawayRoutes).toHaveLength(2);
+    expect(classificationProblems(throwawayRoutes)).toEqual([
+      `${COMPLETENESS_TEST_SOURCE}#throwawayParanoidLeafMountFixture.earlierTerminatingRequestHandler[1]@/paranoid-enforcement-fixture (${PARANOID_OPAQUE_MOUNT_METHOD} /paranoid-enforcement-fixture) is unclassified`,
+      `${COMPLETENESS_TEST_SOURCE}#throwawayParanoidLeafMountFixture.leafRequestHandler[1]@/paranoid-enforcement-fixture (${PARANOID_OPAQUE_MOUNT_METHOD} /paranoid-enforcement-fixture) is unclassified`,
+    ]);
+  });
+
+  it('discovers an earlier app.use router and its router.use leaf', () => {
+    const fixturePath = '/paranoid-router-leaf-fixture';
+    const throwawayRoutes = mountedRouteSurfaces(
+      buildRouteTable((ctx) => {
+        const app = createApp(ctx);
+        const router = Router();
+        router.use(fixturePath, function routerLeafRequestHandler(_request, response) {
+          response.sendStatus(204);
+        });
+        app.use(API_PREFIX, router, function trailingApiRootLeaf(_request, response) {
+          response.sendStatus(204);
+        });
+        return app;
+      }),
+      {
+        file: COMPLETENESS_TEST_SOURCE,
+        symbol: 'throwawayParanoidRouterLeafFixture',
+      },
+    ).filter(
+      (route) =>
+        route.method === PARANOID_OPAQUE_MOUNT_METHOD &&
+        (route.path === fixturePath || route.source.symbol.includes('trailingApiRootLeaf')),
+    );
+
+    expect(throwawayRoutes).toHaveLength(2);
+    expect(classificationProblems(throwawayRoutes)).toEqual([
+      `${COMPLETENESS_TEST_SOURCE}#throwawayParanoidRouterLeafFixture.routerLeafRequestHandler[1]@/api/v1/paranoid-router-leaf-fixture (${PARANOID_OPAQUE_MOUNT_METHOD} /paranoid-router-leaf-fixture) is unclassified`,
+      `${COMPLETENESS_TEST_SOURCE}#throwawayParanoidRouterLeafFixture.trailingApiRootLeaf[1]@/api/v1 (${PARANOID_OPAQUE_MOUNT_METHOD} /) is unclassified`,
+    ]);
+  });
+
+  it('discovers app.all and router.all as synthetic all-method surfaces', () => {
+    const appFixturePath = '/paranoid-app-all-fixture';
+    const routerFixturePath = '/paranoid-router-all-fixture';
+    const throwawayRoutes = mountedRouteSurfaces(
+      buildRouteTable((ctx) => {
+        const app = createApp(ctx);
+        const router = Router();
+        router.all(routerFixturePath, (_request, response) => {
+          response.sendStatus(204);
+        });
+        app.use(API_PREFIX, router);
+        app.all(appFixturePath, (_request, response) => {
+          response.sendStatus(204);
+        });
+        return app;
+      }),
+      {
+        file: COMPLETENESS_TEST_SOURCE,
+        symbol: 'throwawayParanoidAllMethodsFixture',
+      },
+    ).filter(
+      (route) =>
+        route.method === PARANOID_ALL_METHODS_ROUTE_METHOD &&
+        (route.path === appFixturePath || route.path === routerFixturePath),
+    );
+
+    expect(throwawayRoutes).toHaveLength(2);
+    expect(classificationProblems(throwawayRoutes)).toEqual([
+      `${COMPLETENESS_TEST_SOURCE}#throwawayParanoidAllMethodsFixture (${PARANOID_ALL_METHODS_ROUTE_METHOD} /paranoid-router-all-fixture) is unclassified`,
+      `${COMPLETENESS_TEST_SOURCE}#throwawayParanoidAllMethodsFixture (${PARANOID_ALL_METHODS_ROUTE_METHOD} /paranoid-app-all-fixture) is unclassified`,
+    ]);
+  });
+
+  it('does not give a new opaque API-root leaf the cross-cutting middleware exemption', () => {
+    const throwawayRoute = mountedRouteSurfaces(
+      buildRouteTable((ctx) => {
+        const app = createApp(ctx);
+        app.use(API_PREFIX, function sensitiveApiRootLeaf(_request, response) {
+          response.sendStatus(204);
+        });
+        return app;
+      }),
+    ).find(
+      (route) =>
+        route.method === PARANOID_OPAQUE_MOUNT_METHOD &&
+        route.path === '/' &&
+        route.source.symbol.includes('sensitiveApiRootLeaf'),
+    );
 
     expect(throwawayRoute).toBeDefined();
     expect(classificationProblems([throwawayRoute!])).toEqual([
-      `${COMPLETENESS_TEST_SOURCE}#throwawayParanoidLeafMountFixture.leafRequestHandler (${PARANOID_OPAQUE_MOUNT_METHOD} /paranoid-enforcement-fixture) is unclassified`,
+      `apps/api/src/app.ts#createApp.sensitiveApiRootLeaf[1]@/api/v1 (${PARANOID_OPAQUE_MOUNT_METHOD} /) is unclassified`,
     ]);
+  });
+
+  it('discovers production router-level Telegram and Discord leaf mounts', () => {
+    const channelLeaves = mountedRouteSurfaces().filter(
+      (route) =>
+        route.method === PARANOID_OPAQUE_MOUNT_METHOD &&
+        (route.path === '/settings/telegram' || route.path === '/settings/discord'),
+    );
+
+    expect(channelLeaves).toHaveLength(2);
+    expect(classificationProblems(channelLeaves)).toEqual([]);
   });
 
   it('discovers the opaque Grafana proxy mount through the admin exemption', () => {
@@ -337,7 +447,7 @@ describe('paranoid enforcement completeness', () => {
       (route) =>
         route.method === PARANOID_OPAQUE_MOUNT_METHOD &&
         route.path === '/admin/monitoring/grafana' &&
-        route.source.symbol === 'createApp.grafanaProxy',
+        route.source.symbol === 'createApp.grafanaProxy[1]@/api/v1/admin/monitoring/grafana',
     );
 
     expect(grafanaMount).toBeDefined();

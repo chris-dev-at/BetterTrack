@@ -38,6 +38,9 @@ export interface ParanoidRouteSurface {
 /** Synthetic method identity for an explicit-path opaque `app.use` leaf mount. */
 export const PARANOID_OPAQUE_MOUNT_METHOD = '<opaque-mount>';
 
+/** Synthetic method identity for an `app.all`/`router.all` route. */
+export const PARANOID_ALL_METHODS_ROUTE_METHOD = '<all-methods>';
+
 export interface ParanoidServiceSurface {
   readonly kind: 'service';
   readonly source: ParanoidSurfaceSource;
@@ -89,6 +92,8 @@ export interface ParanoidRouteRule {
   readonly exact?: string;
   readonly prefix?: string;
   readonly pattern?: RegExp;
+  /** Required for exemptions that apply only to one known opaque handler. */
+  readonly source?: ParanoidSurfaceSource;
 }
 
 export interface ParanoidExemptRouteRule extends ParanoidRouteRule {
@@ -1027,14 +1032,127 @@ const keptRoutes = (
   rules: readonly ParanoidRouteRule[],
 ): readonly ParanoidExemptRouteRule[] => rules.map((rule) => ({ ...rule, reason }));
 
+const productionOpaqueRoute = ({
+  mountedPath,
+  normalizedPath,
+  handler,
+  occurrence = 1,
+}: {
+  readonly mountedPath: string;
+  readonly normalizedPath: string;
+  readonly handler: string;
+  readonly occurrence?: number;
+}): ParanoidRouteRule => ({
+  method: PARANOID_OPAQUE_MOUNT_METHOD,
+  exact: normalizedPath,
+  source: {
+    ...PARANOID_ROUTE_TABLE_SOURCE,
+    symbol: `${PARANOID_ROUTE_TABLE_SOURCE.symbol}.${handler}[${occurrence}]@${mountedPath}`,
+  },
+});
+
 /**
  * Explicit kept route classification. Mixed routers enumerate their allowed
  * families so a newly mounted endpoint cannot fall through to an implicit allow.
  */
 export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
   ...keptRoutes(
-    'The API-root opaque mounts are cross-cutting authentication, audit, rate-limit, and request-policy middleware; concrete operations are classified separately.',
-    [{ method: PARANOID_OPAQUE_MOUNT_METHOD, exact: '/' }],
+    'These origin-root opaque mounts are the known instrumentation, browser-security, parsing, and terminal error middleware; concrete operations are classified separately.',
+    [
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: '<anonymous>',
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: 'helmetMiddleware',
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: '<anonymous>',
+        occurrence: 2,
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: 'jsonParser',
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: 'cookieParser',
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: '<anonymous>',
+        occurrence: 3,
+      }),
+    ],
+  ),
+  ...keptRoutes(
+    'These API-root opaque mounts are the known authentication, audit, rate-limit, and request-policy middleware; concrete operations are classified separately.',
+    [
+      ...Array.from({ length: 8 }, (_, index) =>
+        productionOpaqueRoute({
+          mountedPath: '/api/v1',
+          normalizedPath: '/',
+          handler: '<anonymous>',
+          occurrence: index + 1,
+        }),
+      ),
+      productionOpaqueRoute({
+        mountedPath: '/api/v1',
+        normalizedPath: '/',
+        handler: 'enforcePasswordChange',
+      }),
+    ],
+  ),
+  ...keptRoutes(
+    'These exact opaque mounts are the production session-admission middleware; concrete operations are classified separately.',
+    [
+      productionOpaqueRoute({
+        mountedPath: '/api/v1/assets',
+        normalizedPath: '/assets',
+        handler: 'requireUser',
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/api/v1/assets',
+        normalizedPath: '/assets',
+        handler: 'requireUser',
+        occurrence: 2,
+      }),
+      ...[
+        '/backtest',
+        '/expenses',
+        '/analytics',
+        '/social',
+        '/mirrorchain',
+        '/chat',
+        '/ai',
+        '/settings',
+        '/oauth',
+      ].map((normalizedPath) =>
+        productionOpaqueRoute({
+          mountedPath: `/api/v1${normalizedPath}`,
+          normalizedPath,
+          handler: 'requireUser',
+        }),
+      ),
+    ],
+  ),
+  ...keptRoutes(
+    'This exact opaque mount is the production chat feature gate; concrete chat operations are classified separately.',
+    [
+      productionOpaqueRoute({
+        mountedPath: '/api/v1/chat',
+        normalizedPath: '/chat',
+        handler: '<anonymous>',
+      }),
+    ],
   ),
   ...keptRoutes('Public self-documenting API documentation contains no account data.', [
     { method: 'GET', exact: '/docs' },
@@ -1056,6 +1174,7 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
     { prefix: '/account/' },
   ]),
   ...keptRoutes('Administrator routes are independently authorized operational surfaces.', [
+    { exact: '/admin' },
     { prefix: '/admin/' },
   ]),
   ...keptRoutes('OAuth credential lifecycle is separate from portfolio scopes.', [
@@ -1224,13 +1343,24 @@ export const PARANOID_KNOWN_GAPS: readonly ParanoidKnownGap[] = [
   ),
 ] as const;
 
-/** True only when an HTTP method/path meets one complete declarative rule. */
-export function routeMatches(rule: ParanoidRouteRule, method: string, path: string): boolean {
-  if (rule.method && rule.method !== method) return false;
-  if (rule.exact !== undefined && rule.exact !== path) return false;
-  if (rule.prefix !== undefined && !path.startsWith(rule.prefix)) return false;
-  if (rule.pattern !== undefined && !rule.pattern.test(path)) return false;
-  return rule.exact !== undefined || rule.prefix !== undefined || rule.pattern !== undefined;
+/** True only when a mounted route surface meets one complete declarative rule. */
+export function routeMatches(rule: ParanoidRouteRule, surface: ParanoidRouteSurface): boolean {
+  if (rule.method && rule.method !== surface.method) return false;
+  if (rule.exact !== undefined && rule.exact !== surface.path) return false;
+  if (rule.prefix !== undefined && !surface.path.startsWith(rule.prefix)) return false;
+  if (rule.pattern !== undefined && !rule.pattern.test(surface.path)) return false;
+  if (
+    rule.source &&
+    (rule.source.file !== surface.source.file || rule.source.symbol !== surface.source.symbol)
+  ) {
+    return false;
+  }
+  return (
+    rule.exact !== undefined ||
+    rule.prefix !== undefined ||
+    rule.pattern !== undefined ||
+    rule.source !== undefined
+  );
 }
 
 /** Match an exact method, all methods, or a suffix `*` method family. */
@@ -1261,17 +1391,16 @@ function exempt(
 
 /** All route classifications so the harness can detect missing or overlapping rules. */
 export function paranoidRouteClassifications(
-  method: string,
-  path: string,
+  surface: ParanoidRouteSurface,
 ): readonly ParanoidSurfaceClassification[] {
   const classifications: ParanoidSurfaceClassification[] = [];
   for (const entry of PARANOID_KILL_REGISTRY) {
-    if (entry.routes.some((rule) => routeMatches(rule, method, path))) {
+    if (entry.routes.some((rule) => routeMatches(rule, surface))) {
       classifications.push(guarded(entry.capability));
     }
   }
   for (const rule of PARANOID_KEPT_ROUTE_RULES) {
-    if (routeMatches(rule, method, path)) classifications.push(exempt(rule.reason));
+    if (routeMatches(rule, surface)) classifications.push(exempt(rule.reason));
   }
   return classifications;
 }
@@ -1328,7 +1457,7 @@ export function paranoidJobClassifications(
 export function paranoidSurfaceClassifications(
   surface: ParanoidSurface,
 ): readonly ParanoidSurfaceClassification[] {
-  if (surface.kind === 'route') return paranoidRouteClassifications(surface.method, surface.path);
+  if (surface.kind === 'route') return paranoidRouteClassifications(surface);
   if (surface.kind === 'service') {
     return paranoidServiceClassifications(surface.service, surface.method);
   }
