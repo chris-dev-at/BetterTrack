@@ -128,26 +128,26 @@ function NotificationRow({
   const unread = notification.readAt === null;
   const to = notificationLink(notification);
   const rowClassName = cx(
-    'flex w-full flex-col gap-0.5 px-3 py-2.5 text-left transition-colors hover:bg-neutral-800',
-    unread ? 'bg-neutral-800/60' : undefined,
+    'flex w-full flex-col gap-0.5 px-3 py-2.5 text-left transition-colors ',
+    unread ? 'bg-[var(--bt-surface-soft)]' : undefined,
   );
   const inner = (
     <>
       <span className="flex items-center gap-2">
         {unread ? (
-          <span aria-hidden="true" className="h-1.5 w-1.5 flex-none rounded-full bg-sky-400" />
+          <span aria-hidden="true" className="bt-dot bt-dot--gold h-1.5 w-1.5 flex-none" />
         ) : null}
         <span
           className={cx(
             'truncate text-sm font-medium',
-            unread ? 'text-neutral-100' : 'text-neutral-400',
+            unread ? '' : 'bt-muted',
           )}
         >
           {notification.title}
         </span>
       </span>
-      <span className="truncate text-xs text-neutral-500">{notification.body}</span>
-      <span className="text-[0.65rem] uppercase tracking-wide text-neutral-600">
+      <span className="truncate text-xs bt-muted">{notification.body}</span>
+      <span className="text-[0.65rem] uppercase tracking-wide bt-muted">
         {formatRelativeTime(notification.createdAt)}
       </span>
     </>
@@ -236,7 +236,7 @@ export function NotificationBell() {
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={unreadCount > 0 ? `Notifications (${unreadCount} unread)` : 'Notifications'}
-        className="relative grid h-9 w-9 place-items-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+        className="relative grid h-9 w-9 place-items-center rounded-full bt-muted transition-colors hover:bt-soft"
       >
         <svg
           aria-hidden="true"
@@ -254,7 +254,7 @@ export function NotificationBell() {
         {unreadCount > 0 ? (
           <span
             aria-hidden="true"
-            className="absolute right-0.5 top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-sky-500 px-1 text-[0.625rem] font-semibold leading-none text-white ring-2 ring-neutral-900"
+            className="absolute right-0.5 top-0.5 grid h-4 min-w-4 place-items-center rounded-full px-1 text-[0.625rem] font-semibold leading-none" style={{ background: 'var(--bt-gold)', color: 'var(--bt-gold-ink)', boxShadow: '0 0 0 2px var(--bt-bg)' }}
           >
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
@@ -265,17 +265,17 @@ export function NotificationBell() {
         <div
           role="dialog"
           aria-label={t('settings.notifications.title')}
-          className="absolute right-0 z-40 mt-2 w-80 rounded-lg border border-neutral-800 bg-neutral-900 shadow-xl"
+          className="bt-popover w-80" style={{ right: 0, top: 'calc(100% + 6px)', padding: 0 }}
         >
-          <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-2">
-            <span className="text-sm font-medium text-neutral-200">
+          <div className="flex items-center justify-between bt-b-rule px-3 py-2">
+            <span className="text-sm font-medium bt-soft">
               {t('settings.notifications.title')}
             </span>
             <button
               type="button"
               onClick={() => markReadMutation.mutate({ all: true })}
               disabled={unreadCount === 0 || markReadMutation.isPending}
-              className="text-xs font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+              className="text-xs font-medium bt-link disabled:cursor-not-allowed disabled:bt-muted"
             >
               {t('settings.notifications.markAllRead')}
             </button>
@@ -307,7 +307,7 @@ export function NotificationBell() {
               className="py-10"
             />
           ) : (
-            <ul className="max-h-96 divide-y divide-neutral-800 overflow-y-auto">
+            <ul className="max-h-96 bt-band overflow-y-auto">
               {items.map((notification) => (
                 <NotificationRow
                   key={notification.id}
@@ -323,11 +323,11 @@ export function NotificationBell() {
             </ul>
           )}
 
-          <div className="border-t border-neutral-800 px-3 py-2 text-center">
+          <div className="bt-t-rule px-3 py-2 text-center">
             <Link
               to="/settings/notifications"
               onClick={() => setOpen(false)}
-              className="text-xs font-medium text-sky-400 hover:text-sky-300"
+              className="text-xs font-medium bt-link"
             >
               {t('settings.notifications.allTitle')}
             </Link>

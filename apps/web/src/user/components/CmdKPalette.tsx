@@ -47,14 +47,14 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
     >
       <div
         ref={dialogRef}
-        className="w-full max-w-2xl rounded-xl border border-neutral-700 bg-neutral-900 shadow-2xl"
+        className="bt-dialog__panel w-full max-w-2xl" style={{ maxHeight: 'none' }}
       >
         <div className="p-4">
           <AssetSearchBox autoFocus onAction={onClose} />
         </div>
-        <div className="border-t border-neutral-800 px-4 py-2">
-          <span className="text-xs text-neutral-600">
-            <kbd className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-neutral-400">
+        <div className="bt-t-rule px-4 py-2">
+          <span className="text-xs bt-muted">
+            <kbd className="bt-kbd">
               {t('common.escKey')}
             </kbd>{' '}
             {t('common.escToClose')}
