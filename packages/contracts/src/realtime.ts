@@ -47,6 +47,58 @@ import { currencyCodeSchema, marketStateSchema } from './market';
 /** Socket.IO `path` for the realtime gateway on the API origin (§4.5). */
 export const REALTIME_PATH = '/ws';
 
+// ── V5 admission policy (#881) ───────────────────────────────────────────────
+
+/**
+ * Conservative V5 realtime budgets. They live beside the wire protocol so the
+ * gateway, admission service, and tests share one named source of truth.
+ */
+export const REALTIME_MAX_CONNECTIONS_PER_USER = 5;
+export const REALTIME_MAX_CONNECTIONS_PER_BEARER = 3;
+export const REALTIME_SOCKET_COMMANDS_PER_SECOND = 20;
+export const REALTIME_SOCKET_COMMAND_BURST = 40;
+export const REALTIME_USER_COMMANDS_PER_SECOND = 50;
+export const REALTIME_USER_COMMAND_BURST = 100;
+export const REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET = 8;
+export const REALTIME_MAX_WATCHED_ASSETS_PER_USER = 16;
+export const REALTIME_MAX_GLOBAL_LIVE_ASSETS = 250;
+/** A bounded global semaphore; excess watch-start/backfill work is rejected. */
+export const REALTIME_MAX_CONCURRENT_WATCH_STARTS = 16;
+/** Keep at most two serialized watch starts pending on one socket. */
+export const REALTIME_MAX_PENDING_WATCH_STARTS_PER_SOCKET = 2;
+/**
+ * Legacy `1s` and `2s` request values remain parseable for old clients, but the
+ * server clamps them to this provider-safe floor before registering a loop.
+ */
+export const LIVE_MIN_POLL_INTERVAL_MS = 5_000;
+
+/** Typed Socket.IO handshake failures surfaced through `connect_error`. */
+export const REALTIME_CONNECTION_ERRORS = [
+  'UNAUTHORIZED',
+  'UNAVAILABLE',
+  'USER_CONNECTION_LIMIT',
+  'BEARER_CONNECTION_LIMIT',
+] as const;
+export const realtimeConnectionErrorSchema = z.enum(REALTIME_CONNECTION_ERRORS);
+export type RealtimeConnectionError = z.infer<typeof realtimeConnectionErrorSchema>;
+
+/** Typed acknowledgement failures shared by every client command. */
+export const REALTIME_ACK_ERRORS = [
+  'BAD_REQUEST',
+  'FORBIDDEN',
+  'NOT_FOUND',
+  'UNAVAILABLE',
+  'GONE',
+  'RATE_LIMITED',
+  'SOCKET_WATCH_LIMIT',
+  'USER_WATCH_LIMIT',
+  'GLOBAL_LIVE_LIMIT',
+  'LIVE_WORK_BUSY',
+  'LIVE_START_FAILED',
+] as const;
+export const realtimeAckErrorSchema = z.enum(REALTIME_ACK_ERRORS);
+export type RealtimeAckError = z.infer<typeof realtimeAckErrorSchema>;
+
 /**
  * The bearer authorization matrix for every realtime event or command. Keeping
  * this adjacent to the socket protocol prevents a new frame from silently
@@ -91,7 +143,7 @@ export type RealtimeRoomRequest = z.infer<typeof realtimeRoomRequestSchema>;
 export const realtimeRoomAckSchema = z.object({
   ok: z.boolean(),
   /** Machine-readable reason when `ok` is false (e.g. `FORBIDDEN`, `BAD_REQUEST`). */
-  error: z.string().optional(),
+  error: realtimeAckErrorSchema.optional(),
 });
 export type RealtimeRoomAck = z.infer<typeof realtimeRoomAckSchema>;
 
@@ -159,12 +211,12 @@ export const LIVE_WINDOW_MS: Record<LiveWindow, number> = {
 };
 
 /**
- * The refresh rates a viewer may request for a live watch (#372), down to 1 s.
- * The rate is a REQUEST, not a promise: one shared per-asset loop serves all
- * viewers and polls at the finest rate any ACTIVE viewer requested — the
- * minimum, never a common divisor (4 s + 2 s viewers ⇒ one 2 s loop, NOT 1 s).
- * Viewers coarser than the loop downsample client-side; nobody's request ever
- * makes upstream calls faster than the fastest active viewer needs.
+ * The refresh-rate values a viewer may send (#372). `1s` and `2s` stay valid
+ * for wire compatibility, but since V5-P14 the gateway clamps every requested
+ * cadence below {@link LIVE_MIN_POLL_INTERVAL_MS} to that 5-second floor.
+ * Above the floor, the rate remains a REQUEST, not a promise: one shared
+ * per-asset loop serves all viewers and polls at the finest effective rate any
+ * ACTIVE viewer requested. Coarser viewers downsample client-side.
  */
 export const LIVE_RATES = ['1s', '2s', '5s', '10s', '30s', '60s'] as const;
 
@@ -233,7 +285,7 @@ export type RealtimeLiveWatchRequest = z.infer<typeof realtimeLiveWatchRequestSc
 export const realtimeLiveWatchAckSchema = z.object({
   ok: z.boolean(),
   /** Machine-readable reason when `ok` is false (e.g. `NOT_FOUND`, `UNAVAILABLE`). */
-  error: z.string().optional(),
+  error: realtimeAckErrorSchema.optional(),
   frames: z.array(realtimeLiveFrameSchema).optional(),
   /**
    * The earliest instant the backfill honestly covers (ISO-8601) — the oldest
