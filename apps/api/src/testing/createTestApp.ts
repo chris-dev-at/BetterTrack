@@ -12,7 +12,10 @@ import RedisMock from 'ioredis-mock';
 import postgres from 'postgres';
 import request from 'supertest';
 
-import { twoFactorEnrollResponseSchema } from '@bettertrack/contracts';
+import {
+  twoFactorChallengeResponseSchema,
+  twoFactorEnrollResponseSchema,
+} from '@bettertrack/contracts';
 
 import { createApp } from '../app';
 import { loadConfig } from '../config/env';
@@ -30,7 +33,7 @@ import type { GoogleTokenVerifier } from '../services/auth/googleVerifier';
 import type { PasskeyWebAuthnEngine } from '../services/auth/passkeyService';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import type { WebhookTransport } from '../services/webhooks';
-import { createPasswordHasher } from '../services/password/passwordHasher';
+import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
 
 /**
  * In-process integration harness. Default mode: PGlite (WASM) + ioredis-mock —
@@ -167,10 +170,9 @@ export interface TestHarness {
   seedUser(input?: Partial<Omit<SeededUser, 'id'>>): Promise<SeededUser>;
   /**
    * Log a freshly-seeded admin in AND satisfy the mandatory admin-login 2FA gate
-   * (§6.12, #400) by enrolling TOTP in-session — the enroll/confirm set is exempt
-   * from the setup gate, so the same session then reaches every admin route (the
-   * AC1 bootstrap behavior). Returns the authenticated agent. Use this wherever a
-   * test needs an admin that can actually call admin endpoints.
+   * (§6.12, #400) by enrolling TOTP, then performing the mandatory fresh login
+   * after that security transition. Returns the authenticated post-2FA agent.
+   * Use this wherever a test needs an admin that can call ordinary admin routes.
    */
   loginAdmin(admin: SeededAdmin): Promise<ReturnType<typeof request.agent>>;
 }
@@ -180,6 +182,8 @@ export interface CreateTestAppOptions {
   env?: Partial<NodeJS.ProcessEnv>;
   /** Fake mail transport injected in place of a real SMTP connection. */
   emailTransport?: MailTransport | null;
+  /** Controlled password hasher for deterministic credential-transition races. */
+  passwordHasher?: PasswordHasher;
   /** Stubbed market-data service, in place of the live Yahoo/manual providers. */
   marketData?: MarketDataService;
   /** Backfill scheduler (e.g. a recording fake) to assert first-touch enqueues. */
@@ -277,7 +281,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     marketData: options.marketData,
     backfill: options.backfill,
     googleVerifier: options.googleVerifier,
-    passwordHasher: testPasswordHasher,
+    passwordHasher: options.passwordHasher ?? testPasswordHasher,
     passkeyEngine: options.passkeyEngine,
     liveModeOptions: options.liveModeOptions,
     realtimeCommandNow: options.realtimeCommandNow,
@@ -332,9 +336,8 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
       .set('X-Requested-With', 'BetterTrack')
       .send({ identifier: admin.email, password: admin.password });
     // A freshly-seeded admin has no 2FA yet, so password login mints a session in
-    // the setup-required state (never a challenge). Enroll TOTP on that session —
-    // the enroll/confirm endpoints are exempt from the setup gate — and the same
-    // session is then cleared to reach every admin route (#400, AC1).
+    // the setup-required state (never a challenge). Enroll TOTP on that session;
+    // confirmation invalidates every cookie under the security-transition policy.
     if (res.body?.twoFactorRequired) {
       throw new Error('loginAdmin expects a fresh (un-enrolled) admin');
     }
@@ -349,6 +352,24 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
       .post('/api/v1/admin/security/2fa/totp/confirm')
       .set('X-Requested-With', 'BetterTrack')
       .send({ code: generateTotpCode(secret) });
+
+    // The acting device must now perform a fresh explicit password + factor
+    // login before it can reach ordinary administrator routes.
+    const challenge = twoFactorChallengeResponseSchema.parse(
+      (
+        await agent
+          .post('/api/v1/auth/login')
+          .set('X-Requested-With', 'BetterTrack')
+          .send({ identifier: admin.email, password: admin.password })
+      ).body,
+    );
+    const verified = await agent
+      .post('/api/v1/auth/2fa/verify')
+      .set('X-Requested-With', 'BetterTrack')
+      .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) });
+    if (verified.status !== 200) {
+      throw new Error(`loginAdmin failed fresh factor login (${verified.status})`);
+    }
     return agent;
   }
 

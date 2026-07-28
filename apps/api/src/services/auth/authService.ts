@@ -36,7 +36,11 @@ import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import { describeUserAgent } from '../sessions/deviceLabel';
-import { isPersistent, type SessionService } from '../sessions/sessionService';
+import {
+  isPersistent,
+  type SecurityMutationContext,
+  type SessionService,
+} from '../sessions/sessionService';
 import {
   clearLoginThrottle,
   clearPasswordThrottle,
@@ -95,6 +99,10 @@ export interface SessionResult {
   sessionId: string;
   /** Whether the minted session is persistent (V4-P2b) — drives the cookie's Max-Age. */
   persistent: boolean;
+}
+
+export interface PasswordChangeResult {
+  user: UserRow;
 }
 
 /** The login-time 2FA challenge handed back when an account has 2FA enabled (§6.1). */
@@ -184,17 +192,18 @@ export interface AuthService {
    * (V3-P11a) — a throttled write to a side key that never touches the fixed
    * 30-day window (§6.1). `userAgent` comes from the request; omit it off the
    * request path. Returns the resolved user together with the session's
-   * persistence marker (V4-P2b) so the caller can re-issue the matching cookie.
+   * persistence marker (V4-P2b) for explicit renewal/security-rotation handlers.
    */
   resolveSession(
     sessionId: string,
     userAgent?: string | null,
-  ): Promise<{ user: UserRow; persistent: boolean } | null>;
+  ): Promise<{ user: UserRow; persistent: boolean; securityGeneration: number } | null>;
   changePassword(
     userId: string,
     input: ChangePasswordRequest,
+    security: SecurityMutationContext,
     ip?: string | null,
-  ): Promise<SessionResult>;
+  ): Promise<PasswordChangeResult>;
   validateInvite(token: string): Promise<{ valid: boolean; email: string | null }>;
   acceptInvite(input: AcceptInviteRequest, ip?: string | null): Promise<SessionResult>;
   /**
@@ -342,6 +351,8 @@ const emailCodeKey = (token: string) => `2fa_email_code:${token}`;
 /** The Redis-side pending-2FA state — never a session, so no route honours it. */
 interface Pending2faState {
   userId: string;
+  /** Durable authority generation that established the first-factor proof. */
+  securityGeneration: number;
   /** A pre-login session id to rotate out on successful verify, if any. */
   priorSessionId?: string;
   /**
@@ -541,13 +552,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
    */
   async function issueTwoFactorChallenge(
     user: UserRow,
+    securityGeneration: number,
     ip?: string | null,
     priorSessionId?: string,
     persistent?: boolean,
   ): Promise<TwoFactorChallenge> {
     const methods = await twoFactor.getMethods(user.id);
     const pendingToken = randomBytes(32).toString('base64url');
-    const state: Pending2faState = { userId: user.id };
+    const state: Pending2faState = { userId: user.id, securityGeneration };
     if (priorSessionId) state.priorSessionId = priorSessionId;
     // Carry the password-step persistence choice to the verify step (V4-P2b).
     if (persistent !== undefined) state.persistent = persistent;
@@ -570,6 +582,21 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
   }
 
   const clearFailures = (userId: string) => clearLoginThrottle(redis, userId);
+  const destroySessionBestEffort = async (sessionId: string): Promise<void> => {
+    try {
+      await sessions.destroy(sessionId);
+    } catch {
+      // Durable generation equality is the revocation boundary. Redis deletion
+      // is eager cleanup only and may not turn a committed transition into a 500.
+    }
+  };
+  const destroyAllSessionsBestEffort = async (userId: string): Promise<void> => {
+    try {
+      await sessions.destroyAllForUser(userId);
+    } catch {
+      // See destroySessionBestEffort: every surviving cookie is already stale.
+    }
+  };
   // Correct-password clear that deliberately spares the second-factor throttle
   // so its §10 escalation lock accumulates across re-logins (see
   // clearPasswordThrottle). Used at the password step; the full clear above runs
@@ -587,7 +614,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     user: UserRow,
     ip?: string | null,
   ): Promise<{ sessionId: string; user: UserRow }> {
-    const sessionId = await sessions.create(user.id, false);
+    const sessionId = await sessions.create(user.id, user.securityGeneration, false);
     const now = new Date();
     await userRepo.setLastLogin(user.id, now);
     await audit.record({
@@ -683,6 +710,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (await twoFactor.isEnabled(user.id)) {
         const challenge = await issueTwoFactorChallenge(
           user,
+          user.securityGeneration,
           ip,
           currentSessionId ?? undefined,
           persistent,
@@ -694,7 +722,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (currentSessionId) {
         await destroySessionAndInvalidate(currentSessionId);
       }
-      const sessionId = await sessions.create(user.id, persistent);
+      const sessionId = await sessions.create(user.id, user.securityGeneration, persistent);
 
       const now = new Date();
       await userRepo.setLastLogin(user.id, now);
@@ -728,19 +756,26 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (!state) throw pendingInvalid();
       const { userId } = state;
 
+      const user = await userRepo.findById(userId);
+      if (
+        !user ||
+        user.status !== 'active' ||
+        !Number.isSafeInteger(state.securityGeneration) ||
+        state.securityGeneration !== user.securityGeneration
+      ) {
+        // The first-factor authority is valid only at the generation that
+        // issued this challenge. Password, factor, recovery, and role changes
+        // all advance it, so reject before consuming any second factor.
+        await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
+        throw pendingInvalid();
+      }
+
       // Already cooling down from prior wrong factors: reject before verifying so
       // blocked retries — even a correct code — cannot brute-force through the
       // cooldown (§10). Mirrors the password limiter's peek-before-check.
       const cooling = await twoFactorThrottle.peek(userId);
       if (cooling > 0) {
         throw tooManyRequests(cooling, 'Too many incorrect codes. Please wait and try again.');
-      }
-
-      const user = await userRepo.findById(userId);
-      if (!user || user.status !== 'active') {
-        // Account vanished/suspended mid-challenge: drop the pending state.
-        await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
-        throw pendingInvalid();
       }
 
       // 2FA turned off between challenge issue and verify: every factor now
@@ -794,7 +829,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Honour the persistence choice made at the password step (V4-P2b); a
       // reset-originated challenge carries none → persistent, today's behavior.
       const persistent = state.persistent ?? true;
-      const sessionId = await sessions.create(userId, persistent);
+      const sessionId = await sessions.create(userId, state.securityGeneration, persistent);
 
       const now = new Date();
       await userRepo.setLastLogin(userId, now);
@@ -814,7 +849,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const state = await loadPending(pendingToken);
       if (!state) throw pendingInvalid();
       const user = await userRepo.findById(state.userId);
-      if (!user || user.status !== 'active') {
+      if (
+        !user ||
+        user.status !== 'active' ||
+        !Number.isSafeInteger(state.securityGeneration) ||
+        state.securityGeneration !== user.securityGeneration
+      ) {
         await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
         throw pendingInvalid();
       }
@@ -844,7 +884,20 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const user = await userRepo.findById(data.userId);
       if (!user || user.status !== 'active') {
         // Disabled/deleted out from under a live session → terminate it.
-        await sessions.destroy(sessionId);
+        await destroySessionBestEffort(sessionId);
+        await invalidateSession(data.userId, sessionId);
+        return null;
+      }
+      // The equality check happens only after the fresh durable user read. Thus
+      // a request that loaded its Redis record before promotion/reset but loads
+      // the user afterward sees the new generation and fails closed. Legacy,
+      // malformed, and stale records are never normalized in place.
+      if (
+        !Number.isSafeInteger(data.securityGeneration) ||
+        data.securityGeneration < 0 ||
+        data.securityGeneration !== user.securityGeneration
+      ) {
+        await destroySessionBestEffort(sessionId);
         await invalidateSession(data.userId, sessionId);
         return null;
       }
@@ -857,7 +910,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (user.role === 'admin') {
         const lifetimeMs = (await appSettings.getAdminSessionLifetimeHours()) * 60 * 60 * 1000;
         if (Date.now() - data.createdAt >= lifetimeMs) {
-          await sessions.destroy(sessionId);
+          await destroySessionBestEffort(sessionId);
           await invalidateSession(data.userId, sessionId);
           return null;
         }
@@ -871,13 +924,17 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (userAgent !== undefined) {
         await sessions.touchLastSeen(sessionId, userAgent);
       }
-      return { user, persistent: isPersistent(data) };
+      return {
+        user,
+        persistent: isPersistent(data),
+        securityGeneration: data.securityGeneration,
+      };
     },
 
-    async changePassword(userId, input, ip) {
-      // The target is always THIS session's account (`userId` came from the
-      // session cookie), so the outcome never depends on any admin session
-      // elsewhere — no context leakage (§6.1, #248 item 6).
+    async changePassword(userId, input, security, ip) {
+      // The target is always the authenticated principal's own account. Cookie
+      // callers carry their exact session generation; bearer callers carry the
+      // generation read while their token was authenticated.
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
 
@@ -896,12 +953,21 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (!policy.ok) throw badRequest(policy.reason, 'WEAK_PASSWORD');
 
       const passwordHash = await passwordHasher.hash(input.newPassword);
-      await userRepo.updatePassword(user.id, passwordHash, false);
+      const securityGeneration = await userRepo.updatePassword(
+        user.id,
+        passwordHash,
+        false,
+        security.securityGeneration,
+      );
+      if (securityGeneration === null) throw unauthorized();
 
-      // Kill every session, then re-establish one for the current device.
-      await sessions.destroyAllForUser(user.id);
+      // Cleanup is best effort: even a Redis failure leaves every prior cookie
+      // fenced by the committed generation. Security transitions deliberately
+      // retain no session, including the acting cookie; every device must log in
+      // again explicitly at the committed generation. No session survives, so
+      // the realtime invalidation carries no exception.
+      await destroyAllSessionsBestEffort(user.id);
       await invalidateAllSessions(user.id);
-      const sessionId = await sessions.create(user.id);
 
       await audit.record({
         actorId: user.id,
@@ -913,10 +979,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       const updated = await userRepo.findById(user.id);
       return {
-        user: updated ?? { ...user, passwordHash, mustChangePassword: false },
-        sessionId,
-        // A password change re-establishes a normal persistent session (§6.1).
-        persistent: true,
+        user: updated ?? {
+          ...user,
+          passwordHash,
+          mustChangePassword: false,
+          securityGeneration,
+        },
       };
     },
 
@@ -995,7 +1063,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
-      const sessionId = await sessions.create(user.id);
+      const sessionId = await sessions.create(user.id, user.securityGeneration);
       return { user, sessionId, persistent: true };
     },
 
@@ -1049,14 +1117,20 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (!policy.ok) throw badRequest(policy.reason, 'WEAK_PASSWORD');
 
       const passwordHash = await passwordHasher.hash(newPassword);
-      await userRepo.updatePassword(user.id, passwordHash, false);
+      const securityGeneration = await userRepo.updatePassword(
+        user.id,
+        passwordHash,
+        false,
+        user.securityGeneration,
+      );
+      if (securityGeneration === null) throw invalid();
 
       // Consume this token and revoke every other outstanding one for the user.
       await passwordResetRepo.markUsed(record.id, new Date());
       await passwordResetRepo.deleteForUser(user.id);
 
       // A password change kills all sessions (§6.1).
-      await sessions.destroyAllForUser(user.id);
+      await destroyAllSessionsBestEffort(user.id);
       await invalidateAllSessions(user.id);
 
       await audit.record({
@@ -1079,15 +1153,20 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // on, withhold the session and require a second factor, mirroring login;
       // otherwise the reset lands the user signed in with no redundant prompt.
       if (await twoFactor.isEnabled(user.id)) {
-        const challenge = await issueTwoFactorChallenge(user, ip);
+        const challenge = await issueTwoFactorChallenge(user, securityGeneration, ip);
         return { status: 'two_factor_required', challenge };
       }
 
-      const sessionId = await sessions.create(user.id);
+      const sessionId = await sessions.create(user.id, securityGeneration);
       const updated = await userRepo.findById(user.id);
       return {
         status: 'authenticated',
-        user: updated ?? { ...user, passwordHash, mustChangePassword: false },
+        user: updated ?? {
+          ...user,
+          passwordHash,
+          mustChangePassword: false,
+          securityGeneration,
+        },
         sessionId,
         // A completed reset lands a normal persistent session (§6.1, #268).
         persistent: true,
@@ -1241,7 +1320,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
-      const sessionId = await sessions.create(user.id);
+      const sessionId = await sessions.create(user.id, user.securityGeneration);
       return { status: 'authenticated', user, sessionId, persistent: true };
     },
 
