@@ -80,15 +80,22 @@ export function HealthPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <PageHeader title={t('admin.health.title')} description={t('admin.health.subtitle')} />
-        <Button variant="secondary" onClick={reload}>
+        <Button variant="secondary" onClick={reload} disabled={loading}>
           {t('admin.health.refresh')}
         </Button>
       </div>
 
-      {loading && !data ? <Spinner label={t('common.loading')} /> : null}
-      {error ? <Alert tone="error">{t('admin.health.loadError')}</Alert> : null}
+      <section aria-busy={loading} aria-label={t('admin.health.title')}>
+        {loading && !data ? <Spinner label={t('common.loading')} /> : null}
+        {loading && data ? (
+          <span className="sr-only" role="status" aria-label={t('common.loading')}>
+            {t('common.loading')}
+          </span>
+        ) : null}
+        {error ? <Alert tone="error">{t('admin.health.loadError')}</Alert> : null}
 
-      {data ? <HealthBody data={data} /> : null}
+        {data ? <HealthBody data={data} /> : null}
+      </section>
     </div>
   );
 }
