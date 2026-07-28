@@ -134,6 +134,7 @@ describe('replicated DataHome through the PD5 coordinator', () => {
       '018f0000-0000-7000-8000-0000000000a1',
       '018f0000-0000-7000-8000-0000000000b1',
     ]);
+    expect(setup.coordinator.state).toMatchObject({ status: 'synced', pending: null });
     expect(setup.server.envelope).toEqual(setup.drive.envelope);
     expect(version(setup.server.envelope!)).toBe(Math.max(a, b) + 1);
   });
@@ -145,7 +146,7 @@ describe('replicated DataHome through the PD5 coordinator', () => {
 
     setup.drive.failure = true;
     await setup.coordinator.reconnect();
-    const pending = await setup.engine.mutate(({ document: current }) => ({
+    const pending = await setup.coordinator.mutate(({ document: current }) => ({
       ...current,
       entities: {
         ...current.entities,
@@ -157,6 +158,7 @@ describe('replicated DataHome through the PD5 coordinator', () => {
     }));
     expect(pending.status).toBe('pending-offline');
     expect(pending.pending).not.toBeNull();
+    expect(setup.coordinator.state).toEqual(pending);
     expect(setup.server.envelope).toEqual(initial);
 
     setup.drive.failure = false;
@@ -178,7 +180,7 @@ describe('replicated DataHome through the PD5 coordinator', () => {
 
     setup.drive.failure = true;
     await setup.coordinator.reconnect();
-    await setup.engine.mutate(({ document: current }) => ({
+    await setup.coordinator.mutate(({ document: current }) => ({
       ...current,
       entities: {
         ...current.entities,
@@ -220,11 +222,13 @@ describe('replicated DataHome through the PD5 coordinator', () => {
 
       const state = await setup.coordinator.reconnect();
 
-      expect(state).toMatchObject({
+      const expectedPending = {
         status: 'pending-offline',
         active: { header: { vaultVersion: 1 } },
         pending: { header: { vaultVersion: 1 } },
-      });
+      };
+      expect(state).toMatchObject(expectedPending);
+      expect(setup.coordinator.state).toEqual(state);
       expect(state.lastFailure).toContain(
         failure === 'absent'
           ? 'selected server vault replica is absent'
@@ -233,6 +237,38 @@ describe('replicated DataHome through the PD5 coordinator', () => {
             : 'server corrupt',
       );
       expect(setup.drive.envelope).toEqual(initial);
+
+      const mutated = await setup.coordinator.mutate(({ document: current }) => ({
+        ...current,
+        entities: {
+          ...current.entities,
+          portfolio: [
+            ...(current.entities.portfolio ?? []),
+            entity('018f0000-0000-7000-8000-0000000000c1'),
+          ],
+        },
+      }));
+      // An absent replica is repaired by the successful replicated write.
+      // Unreachable or corrupt observations block that write and stay pending.
+      expect(mutated.status).toBe(failure === 'absent' ? 'synced' : 'pending-offline');
+      expect(setup.coordinator.state).toEqual(mutated);
+      if (failure !== 'absent') {
+        expect(setup.coordinator.state.pending).not.toBeNull();
+      }
+
+      setup.server.envelope ??= initial.slice();
+      setup.server.failure = false;
+      setup.server.corrupt = false;
+      const repaired = await setup.coordinator.reconnect();
+
+      expect(repaired).toMatchObject({ status: 'synced', pending: null });
+      expect(setup.coordinator.state).toEqual(repaired);
+      expect(setup.server.envelope).toEqual(setup.drive.envelope);
+      expect(
+        repaired.active?.document.entities.portfolio?.some(
+          (candidate) => candidate.id === '018f0000-0000-7000-8000-0000000000c1',
+        ),
+      ).toBe(true);
     },
   );
 });

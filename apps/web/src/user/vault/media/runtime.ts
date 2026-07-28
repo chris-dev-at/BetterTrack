@@ -195,13 +195,7 @@ function createDefaultSyncCoordinator(options: {
     requiresCompleteMutationProvenance: true,
   });
   const replicaCoordinator = createReplicaReconcileCoordinator(engine, primary);
-  return {
-    get state() {
-      return engine.state;
-    },
-    reconnect: replicaCoordinator.reconnect,
-    mutate: engine.mutate.bind(engine),
-  };
+  return replicaCoordinator;
 }
 
 function browserVaultDeviceId(userId: string, keyId: string): string {

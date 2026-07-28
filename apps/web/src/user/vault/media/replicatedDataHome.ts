@@ -234,21 +234,66 @@ export function createReplicatedVaultDataHome(
  * second divergent/offline replica remains unobserved.
  */
 export function createReplicaReconcileCoordinator(
-  engine: Pick<VaultSyncEngine, 'reconnect'>,
+  engine: Pick<VaultSyncEngine, 'state' | 'reconnect' | 'mutate'>,
   primary: ReplicatedVaultDataHome,
-): Pick<VaultSyncEngine, 'reconnect'> {
+): Pick<VaultSyncEngine, 'state' | 'reconnect' | 'mutate'> {
+  // The last single-replica engine pass is an implementation detail. Only this
+  // finalized aggregate may escape through a return value or a later state read.
+  let state = engine.state;
+  let operationTail = Promise.resolve();
+
+  function snapshot(): VaultSyncState {
+    return { ...state };
+  }
+
+  function publish(next: VaultSyncState): VaultSyncState {
+    state = primary.finalizeReconcileState(next);
+    return snapshot();
+  }
+
+  function serialize(operation: () => Promise<VaultSyncState>): Promise<VaultSyncState> {
+    const result = operationTail.then(operation, operation);
+    operationTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   return {
-    async reconnect(): Promise<VaultSyncState> {
-      await primary.beginReconcileCycle();
-      let state = await engine.reconnect();
-      while (
-        state.status !== 'unresolved' &&
-        state.status !== 'locked' &&
-        primary.advanceReplicaObservation()
-      ) {
-        state = await engine.reconnect();
-      }
-      return primary.finalizeReconcileState(state);
+    get state() {
+      return snapshot();
+    },
+
+    reconnect(): Promise<VaultSyncState> {
+      return serialize(async () => {
+        try {
+          await primary.beginReconcileCycle();
+          let next = await engine.reconnect();
+          while (
+            next.status !== 'unresolved' &&
+            next.status !== 'locked' &&
+            primary.advanceReplicaObservation()
+          ) {
+            next = await engine.reconnect();
+          }
+          return publish(next);
+        } catch (cause) {
+          publish(engine.state);
+          throw cause;
+        }
+      });
+    },
+
+    mutate(mutator): Promise<VaultSyncState> {
+      return serialize(async () => {
+        try {
+          return publish(await engine.mutate(mutator));
+        } catch (cause) {
+          publish(engine.state);
+          throw cause;
+        }
+      });
     },
   };
 }

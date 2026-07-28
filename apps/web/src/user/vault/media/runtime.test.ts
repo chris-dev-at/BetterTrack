@@ -1,9 +1,26 @@
-import { describe, expect, it, vi } from 'vitest';
+import { webcrypto } from 'node:crypto';
 
-import type { VaultDocumentV1, VaultEnvelopeHeader } from '@bettertrack/contracts';
+import 'fake-indexeddb/auto';
 
-import type { DataHome } from '../dataHome';
-import type { DriveDataHome, GoogleDriveTokenClient } from '../drive';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type {
+  ParanoidMediaStateResponse,
+  VaultDocumentV1,
+  VaultEnvelopeHeader,
+  VaultMedium,
+} from '@bettertrack/contracts';
+
+import { base64ToBytes } from '../bytes';
+import type {
+  DataHome,
+  DataHomeInfoResult,
+  DataHomeReadResult,
+  DataHomeWriteOptions,
+  DataHomeWriteResult,
+} from '../dataHome';
+import type { DriveDataHome, DriveDeleteResult, GoogleDriveTokenClient } from '../drive';
+import { inspectVaultEnvelope } from '../envelope';
 import type { VaultSyncCandidate, VaultSyncState } from '../sync';
 import fixture from '../vectors.fixture.json';
 import type { VaultMediaApi } from './mediaSwitcher';
@@ -20,6 +37,10 @@ const securedDocument: VaultDocumentV1 = {
     },
   },
 };
+
+beforeEach(() => {
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+});
 
 describe('unlocked Drive runtime', () => {
   it('commits proof material through the existing coordinator before becoming ready', async () => {
@@ -72,7 +93,129 @@ describe('unlocked Drive runtime', () => {
     expect(proof.ensure).not.toHaveBeenCalled();
     expect(sync.mutate).not.toHaveBeenCalled();
   });
+
+  it.each(['absent', 'transport-failure', 'corrupt'] as const)(
+    'keeps a server-first %s authoritative through runtime.syncState until repair',
+    async (failure) => {
+      const initial = base64ToBytes(fixture.initial.envelopeBase64, 'envelope-invalid');
+      const server = new RuntimeRemote('server', initial);
+      const drive = new RuntimeDrive(initial);
+      if (failure === 'absent') server.envelope = null;
+      if (failure === 'transport-failure') server.failure = true;
+      if (failure === 'corrupt') server.corrupt = true;
+      const api = replicatedApi(version(initial));
+      const runtime = createUnlockedVaultDriveRuntime(
+        base64ToBytes(fixture.vaultKeyBase64, 'envelope-invalid'),
+        fixture.initial.header.keyId,
+        {
+          userId: crypto.randomUUID(),
+          clientId: 'browser-client-id',
+          tokens: tokenClient(),
+          server,
+          drive,
+          api,
+          retirementProof: proofManager(),
+        },
+      );
+
+      const reconnect = await runtime.reconnect();
+
+      expect(reconnect).toMatchObject({
+        status: 'pending-offline',
+        active: { header: { vaultVersion: 1 } },
+        pending: { header: { vaultVersion: 1 } },
+      });
+      expect(runtime.syncState).toEqual(reconnect);
+
+      server.envelope ??= initial.slice();
+      server.failure = false;
+      server.corrupt = false;
+      const repaired = await runtime.reconnect();
+
+      expect(repaired).toMatchObject({ status: 'synced', pending: null });
+      expect(runtime.syncState).toEqual(repaired);
+      runtime.dispose();
+    },
+  );
 });
+
+class RuntimeRemote implements DataHome {
+  envelope: Uint8Array | null;
+  failure = false;
+  corrupt = false;
+
+  constructor(
+    readonly medium: VaultMedium,
+    envelope: Uint8Array | null,
+  ) {
+    this.envelope = envelope?.slice() ?? null;
+  }
+
+  async read(): Promise<DataHomeReadResult> {
+    if (this.failure) {
+      return {
+        status: 'transport-failure',
+        medium: this.medium,
+        failure: { code: 'offline', message: `${this.medium} offline` },
+      };
+    }
+    if (this.corrupt) {
+      return {
+        status: 'corrupt',
+        medium: this.medium,
+        envelope: this.envelope?.slice(),
+        version: this.envelope ? version(this.envelope) : null,
+        updatedAt: null,
+        reason: 'corrupt-bytes',
+        message: `${this.medium} corrupt`,
+      };
+    }
+    if (!this.envelope) return { status: 'absent', medium: this.medium };
+    return {
+      status: 'ok',
+      medium: this.medium,
+      envelope: this.envelope.slice(),
+      info: runtimeInfo(this.medium, this.envelope),
+    };
+  }
+
+  async write(
+    envelope: Uint8Array,
+    { ifVersion }: DataHomeWriteOptions,
+  ): Promise<DataHomeWriteResult> {
+    const currentVersion = this.envelope ? version(this.envelope) : null;
+    if (currentVersion !== ifVersion) {
+      return { status: 'conflict', medium: this.medium, currentVersion };
+    }
+    this.envelope = envelope.slice();
+    return {
+      status: 'ok',
+      medium: this.medium,
+      info: runtimeInfo(this.medium, envelope),
+    };
+  }
+
+  async info(): Promise<DataHomeInfoResult> {
+    const result = await this.read();
+    return result.status === 'ok'
+      ? { status: 'ok', medium: this.medium, info: result.info }
+      : result;
+  }
+}
+
+class RuntimeDrive extends RuntimeRemote implements DriveDataHome {
+  override readonly medium = 'drive' as const;
+
+  constructor(envelope: Uint8Array | null) {
+    super('drive', envelope);
+  }
+
+  async delete(): Promise<DriveDeleteResult> {
+    const deleted = this.envelope != null;
+    this.envelope = null;
+    return { status: 'ok', deleted };
+  }
+}
 
 function coordinator(
   reconnectStatus: VaultSyncState['status'],
@@ -192,6 +335,38 @@ function unusedApi(): VaultMediaApi {
     readServerCandidate: vi.fn(),
     requestPurgeChallenge: vi.fn(),
     purgeRetired: vi.fn(),
+  };
+}
+
+function replicatedApi(driveVersion: number): VaultMediaApi {
+  const response: ParanoidMediaStateResponse = {
+    privacyMode: 'paranoid',
+    mediaState: {
+      mediaSet: ['server', 'drive'],
+      driveAttestedVersion: driveVersion,
+      server: { disposition: 'active', candidate: null, retired: null },
+    },
+  };
+  return {
+    ...unusedApi(),
+    getState: vi.fn(async () => structuredClone(response)),
+  };
+}
+
+function version(envelope: Uint8Array): number {
+  const inspected = inspectVaultEnvelope(envelope);
+  if (inspected.status !== 'supported') throw new Error('unsupported test envelope');
+  return inspected.envelope.header.vaultVersion;
+}
+
+function runtimeInfo(medium: VaultMedium, envelope: Uint8Array) {
+  const inspected = inspectVaultEnvelope(envelope);
+  if (inspected.status !== 'supported') throw new Error('unsupported test envelope');
+  return {
+    medium,
+    version: inspected.envelope.header.vaultVersion,
+    sizeBytes: envelope.byteLength,
+    updatedAt: inspected.envelope.header.writtenAt,
   };
 }
 
