@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { VaultDocumentV1, VaultEntity, VaultMergeRecord } from '@bettertrack/contracts';
+import type { VaultDocument, VaultEntity, VaultMergeRecord } from '@bettertrack/contracts';
 
 import { VaultCryptoError } from './errors';
 import {
@@ -29,7 +29,7 @@ function entity(overrides: Partial<VaultEntity> = {}): VaultEntity {
   };
 }
 
-function document(entities: VaultEntity[], mergeLog: VaultMergeRecord[] = []): VaultDocumentV1 {
+function document(entities: VaultEntity[], mergeLog: VaultMergeRecord[] = []): VaultDocument {
   return {
     schemaVersion: 1,
     entities: { transaction: entities },
@@ -38,8 +38,8 @@ function document(entities: VaultEntity[], mergeLog: VaultMergeRecord[] = []): V
 }
 
 function merge(
-  left: VaultDocumentV1,
-  right: VaultDocumentV1,
+  left: VaultDocument,
+  right: VaultDocument,
   overrides: Partial<MergeVaultDocumentsInput> = {},
 ) {
   return mergeVaultDocuments({

@@ -1,9 +1,12 @@
 import {
-  vaultDocumentV1Schema,
+  VAULT_DOCUMENT_V1_VERSION,
+  VAULT_DOCUMENT_VERSION,
+  vaultDocumentSchema,
   vaultEntitySchema,
   vaultMergeRecordSchema,
   vaultVersionSchema,
-  type VaultDocumentV1,
+  type VaultClientSecurity,
+  type VaultDocument,
   type VaultEntity,
   type VaultEntityKind,
   type VaultMergeRecord,
@@ -14,9 +17,9 @@ import { VaultCryptoError } from './errors';
 export const VAULT_MERGE_LOG_LIMIT = 20;
 
 export interface MergeVaultDocumentsInput {
-  left: VaultDocumentV1;
+  left: VaultDocument;
   leftVersion: number;
-  right: VaultDocumentV1;
+  right: VaultDocument;
   rightVersion: number;
   /** A known locally pending write is an offline fork, even when it dominates. */
   forceDivergent?: boolean;
@@ -27,7 +30,7 @@ export interface MergeVaultDocumentsInput {
 }
 
 export interface MergedVaultDocument {
-  document: VaultDocumentV1;
+  document: VaultDocument;
   vaultVersion: number;
   /** Whether a new CAS successor must be written. */
   divergent: boolean;
@@ -72,7 +75,7 @@ export function mergeVaultDocuments(input: MergeVaultDocumentsInput): MergedVaul
     ...(Object.keys(left.entities) as VaultEntityKind[]),
     ...(Object.keys(right.entities) as VaultEntityKind[]),
   ]);
-  const entities: VaultDocumentV1['entities'] = {};
+  const entities: VaultDocument['entities'] = {};
   for (const kind of [...entityKinds].sort(compareText)) {
     const merged = mergeEntityKind(left.entities[kind] ?? [], right.entities[kind] ?? []);
     if (merged.length > 0) entities[kind] = merged;
@@ -84,16 +87,20 @@ export function mergeVaultDocuments(input: MergeVaultDocumentsInput): MergedVaul
     into: vaultVersion,
     deviceId: input.deviceId,
   });
+  const clientSecurity = mergedClientSecurity(left, right);
+  const common = {
+    entities,
+    mergeLog: appendMergeRecord(left.mergeLog, right.mergeLog, record),
+  };
+  const document: VaultDocument =
+    clientSecurity == null
+      ? { schemaVersion: VAULT_DOCUMENT_V1_VERSION, ...common }
+      : { schemaVersion: VAULT_DOCUMENT_VERSION, ...common, clientSecurity };
 
   return {
     vaultVersion,
     divergent: true,
-    document: {
-      schemaVersion: left.schemaVersion,
-      entities,
-      mergeLog: appendMergeRecord(left.mergeLog, right.mergeLog, record),
-      ...mergedClientSecurity(left, right),
-    },
+    document,
   };
 }
 
@@ -133,13 +140,13 @@ export function chooseVaultEntity(left: VaultEntity, right: VaultEntity): VaultE
 }
 
 /** True only when every atomic state in `right` already loses to `left`. */
-export function documentDominates(left: VaultDocumentV1, right: VaultDocumentV1): boolean {
+export function documentDominates(left: VaultDocument, right: VaultDocument): boolean {
   return documentDominatesParsed(parseDocument(left), parseDocument(right));
 }
 
-function documentDominatesParsed(left: VaultDocumentV1, right: VaultDocumentV1): boolean {
-  const leftSecurity = left.clientSecurity;
-  const rightSecurity = right.clientSecurity;
+function documentDominatesParsed(left: VaultDocument, right: VaultDocument): boolean {
+  const leftSecurity = clientSecurityOf(left);
+  const rightSecurity = clientSecurityOf(right);
   if (rightSecurity != null && leftSecurity == null) return false;
   if (
     leftSecurity != null &&
@@ -167,16 +174,22 @@ function documentDominatesParsed(left: VaultDocumentV1, right: VaultDocumentV1):
 }
 
 function mergedClientSecurity(
-  left: VaultDocumentV1,
-  right: VaultDocumentV1,
-): Pick<VaultDocumentV1, 'clientSecurity'> | Record<string, never> {
-  if (left.clientSecurity == null && right.clientSecurity == null) return {};
-  if (left.clientSecurity == null) return { clientSecurity: right.clientSecurity };
-  if (right.clientSecurity == null) return { clientSecurity: left.clientSecurity };
-  if (canonicalJson(left.clientSecurity) !== canonicalJson(right.clientSecurity)) {
+  left: VaultDocument,
+  right: VaultDocument,
+): VaultClientSecurity | undefined {
+  const leftSecurity = clientSecurityOf(left);
+  const rightSecurity = clientSecurityOf(right);
+  if (leftSecurity == null && rightSecurity == null) return undefined;
+  if (leftSecurity == null) return rightSecurity;
+  if (rightSecurity == null) return leftSecurity;
+  if (canonicalJson(leftSecurity) !== canonicalJson(rightSecurity)) {
     throw documentInvalid('Vault retirement proof material diverged across replicas.');
   }
-  return { clientSecurity: left.clientSecurity };
+  return leftSecurity;
+}
+
+function clientSecurityOf(document: VaultDocument): VaultClientSecurity | undefined {
+  return document.schemaVersion === VAULT_DOCUMENT_VERSION ? document.clientSecurity : undefined;
 }
 
 function mergeEntityKind(left: VaultEntity[], right: VaultEntity[]): VaultEntity[] {
@@ -218,8 +231,8 @@ function appendMergeRecord(
   return [...history, appended];
 }
 
-function parseDocument(document: VaultDocumentV1): VaultDocumentV1 {
-  const parsed = vaultDocumentV1Schema.safeParse(document);
+function parseDocument(document: VaultDocument): VaultDocument {
+  const parsed = vaultDocumentSchema.safeParse(document);
   if (!parsed.success) {
     throw documentInvalid('Vault document does not match the current schema.');
   }
@@ -295,7 +308,7 @@ function compareInstants(left: NormalizedInstant, right: NormalizedInstant): num
   return compareText(left.fraction.padEnd(width, '0'), right.fraction.padEnd(width, '0'));
 }
 
-function sameDocument(left: VaultDocumentV1, right: VaultDocumentV1): boolean {
+function sameDocument(left: VaultDocument, right: VaultDocument): boolean {
   return canonicalJson(left) === canonicalJson(right);
 }
 

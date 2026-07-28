@@ -1,9 +1,10 @@
 import {
   serializeRetiredServerPurgeTranscript,
+  VAULT_DOCUMENT_VERSION,
   vaultClientSecuritySchema,
   type RetiredServerPurgeRequest,
   type VaultClientSecurity,
-  type VaultDocumentV1,
+  type VaultDocument,
 } from '@bettertrack/contracts';
 
 import { VaultCryptoError } from '../errors';
@@ -18,8 +19,8 @@ export interface VaultRetirementProofManager {
    * document must be committed through the normal PD5 sync engine before media
    * transitions continue.
    */
-  ensure(document: VaultDocumentV1): Promise<{
-    document: VaultDocumentV1;
+  ensure(document: VaultDocument): Promise<{
+    document: VaultDocument;
     changed: boolean;
   }>;
   sign(input: {
@@ -32,7 +33,7 @@ export interface VaultRetirementProofManager {
 
 /**
  * Owns the in-memory Ed25519 signing capability. Exported private bytes exist
- * only while encrypted inside `VaultDocumentV1.clientSecurity`; the BetterTrack
+ * only while encrypted inside `VaultDocument.clientSecurity`; the BetterTrack
  * API receives just the public verifier header and signed purge transcript.
  */
 export function createVaultRetirementProofManager(
@@ -78,7 +79,7 @@ export function createVaultRetirementProofManager(
     },
 
     async ensure(document) {
-      if (document.clientSecurity != null) {
+      if (document.schemaVersion === VAULT_DOCUMENT_VERSION) {
         await install(document.clientSecurity);
         return { document, changed: false };
       }
@@ -100,7 +101,11 @@ export function createVaultRetirementProofManager(
       await install(clientSecurity);
       return {
         changed: true,
-        document: { ...document, clientSecurity },
+        document: {
+          ...document,
+          schemaVersion: VAULT_DOCUMENT_VERSION,
+          clientSecurity,
+        },
       };
     },
 

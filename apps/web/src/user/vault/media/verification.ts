@@ -1,11 +1,11 @@
-import type { VaultDocumentV1, VaultEnvelopeHeader } from '@bettertrack/contracts';
+import type { VaultDocument, VaultEnvelopeHeader } from '@bettertrack/contracts';
 
 import { decryptVaultDocument, type VaultKeyMaterial } from '../crypto';
 
 export interface AuthenticatedVaultCopy {
   envelope: Uint8Array;
   header: VaultEnvelopeHeader;
-  document: VaultDocumentV1;
+  document: VaultDocument;
   vaultVersion: number;
   writeId: string;
   envelopeSha256: string;

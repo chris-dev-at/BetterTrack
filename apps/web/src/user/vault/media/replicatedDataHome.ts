@@ -24,12 +24,16 @@ interface ReconcileCycle {
   selectedIndex: number;
 }
 
+const MAX_MUTATION_PREPARATION_ATTEMPTS = 4;
+
 export interface ReplicatedVaultDataHome extends DataHome {
   /**
    * Freeze one set of per-medium CAS observations for a coordinator pass.
    * `write()` consumes only these tokens; it never discovers its own CAS state.
    */
   beginReconcileCycle(): Promise<void>;
+  /** Whether the current frozen observations are still available for one write. */
+  hasReconcileCycle(): boolean;
   /**
    * Present the next distinct replica to the same PD5 engine. This is how
    * same-version and higher-version divergence enters its normal merge/retry
@@ -65,12 +69,97 @@ export function createReplicatedVaultDataHome(
   };
   let cycle: ReconcileCycle | null = null;
 
+  async function readMediaState(): Promise<ParanoidVaultMediaState | null> {
+    const response = await options.api.getState();
+    return response.privacyMode === 'paranoid' ? response.mediaState : null;
+  }
+
+  async function verifyReplicatedWrite(
+    frozen: ReconcileCycle,
+    envelope: Uint8Array,
+  ): Promise<DataHomeWriteResult> {
+    let beforeRead: ParanoidVaultMediaState | null;
+    try {
+      beforeRead = await readMediaState();
+    } catch (cause) {
+      cycle = null;
+      return replicationPending('Could not revalidate the selected vault media.', cause);
+    }
+    if (beforeRead == null || !sameMediaSet(beforeRead.mediaSet, frozen.media.mediaSet)) {
+      cycle = null;
+      return replicationPending('The selected vault media changed during replication.');
+    }
+
+    let observations: ReplicaObservation[];
+    try {
+      observations = await Promise.all(
+        beforeRead.mediaSet.map(async (medium) => ({
+          medium,
+          result: await homes[medium].read(),
+        })),
+      );
+    } catch (cause) {
+      cycle = null;
+      return replicationPending('Could not verify the replicated vault write.', cause);
+    }
+
+    let afterRead: ParanoidVaultMediaState | null;
+    try {
+      afterRead = await readMediaState();
+    } catch (cause) {
+      cycle = null;
+      return replicationPending('Could not revalidate the selected vault media.', cause);
+    }
+    if (
+      afterRead == null ||
+      !sameMediaSet(afterRead.mediaSet, frozen.media.mediaSet) ||
+      !sameMediaSet(afterRead.mediaSet, beforeRead.mediaSet)
+    ) {
+      cycle = null;
+      return replicationPending('The selected vault media changed during replication.');
+    }
+
+    for (const observation of observations) {
+      if (
+        observation.result.status !== 'ok' ||
+        !equalBytes(observation.result.envelope, envelope)
+      ) {
+        cycle = null;
+        return replicationPending(replicaVerificationFailure(observation));
+      }
+    }
+
+    cycle = null;
+    const inspected = inspectVaultEnvelope(envelope);
+    if (inspected.status === 'update-required') {
+      return {
+        status: 'corrupt',
+        medium: 'server',
+        envelope: envelope.slice(),
+        version: null,
+        updatedAt: null,
+        reason: 'unsupported-version',
+        message: 'The replicated vault was written by a newer app version.',
+      };
+    }
+    return {
+      status: 'ok',
+      medium: 'server',
+      info: {
+        medium: 'server',
+        version: inspected.envelope.header.vaultVersion,
+        sizeBytes: envelope.byteLength,
+        updatedAt: inspected.envelope.header.writtenAt,
+      },
+    };
+  }
+
   return {
     medium: 'server',
 
     async beginReconcileCycle() {
-      const response = await options.api.getState();
-      if (response.privacyMode !== 'paranoid' || response.mediaState == null) {
+      const media = await readMediaState();
+      if (media == null) {
         cycle = {
           media: fallbackMedia(),
           selectedIndex: 0,
@@ -84,7 +173,6 @@ export function createReplicatedVaultDataHome(
         return;
       }
 
-      const media = response.mediaState;
       const results = await Promise.all(
         media.mediaSet.map(async (medium) => ({
           medium,
@@ -96,6 +184,10 @@ export function createReplicatedVaultDataHome(
         selectedIndex: 0,
         observations: results,
       };
+    },
+
+    hasReconcileCycle() {
+      return cycle != null;
     },
 
     advanceReplicaObservation() {
@@ -120,7 +212,8 @@ export function createReplicatedVaultDataHome(
       if (cycle == null) {
         return writeFailure('Vault replica CAS observations are unavailable.');
       }
-      const selected = cycle.observations[cycle.selectedIndex]!.result;
+      const frozen = cycle;
+      const selected = frozen.observations[frozen.selectedIndex]!.result;
       const selectedVersion = observedVersion(selected);
       if (selectedVersion === undefined) {
         return writeFailure('The selected vault replica has no usable CAS version.');
@@ -129,7 +222,7 @@ export function createReplicatedVaultDataHome(
         return {
           status: 'conflict',
           medium: 'server',
-          currentVersion: highestObservedVersion(cycle.observations),
+          currentVersion: highestObservedVersion(frozen.observations),
         };
       }
 
@@ -138,14 +231,14 @@ export function createReplicatedVaultDataHome(
       // push without changing any medium; the outer coordinator immediately
       // advances to the next frozen observation. Only the final observation may
       // acknowledge a write across the whole selected set.
-      if (cycle.selectedIndex + 1 < cycle.observations.length) {
+      if (frozen.selectedIndex + 1 < frozen.observations.length) {
         return writeFailure('Vault replica reconciliation is still in progress.');
       }
 
       // Do not start a partial replication when one selected medium was already
       // known to be unreachable/corrupt. The encrypted local candidate stays
       // pending until the next unlock or authorization gesture.
-      for (const observation of cycle.observations) {
+      for (const observation of frozen.observations) {
         if (observation.result.status === 'transport-failure') {
           return {
             status: 'transport-failure',
@@ -162,7 +255,7 @@ export function createReplicatedVaultDataHome(
       }
 
       let wroteAny = false;
-      for (const observation of cycle.observations) {
+      for (const observation of frozen.observations) {
         const before = observation.result;
         if (before.status === 'ok' && equalBytes(before.envelope, envelope)) continue;
         const expected = before.status === 'ok' ? before.info.version : null;
@@ -171,11 +264,9 @@ export function createReplicatedVaultDataHome(
         });
         if (result.status === 'conflict') {
           cycle = null;
-          return {
-            status: 'conflict',
-            medium: 'server',
-            currentVersion: result.currentVersion,
-          };
+          return replicationPending(
+            `The ${observation.medium} vault replica changed during replication.`,
+          );
         }
         if (result.status === 'corrupt') {
           cycle = null;
@@ -194,31 +285,7 @@ export function createReplicatedVaultDataHome(
         }
         wroteAny = true;
       }
-
-      const inspected = inspectVaultEnvelope(envelope);
-      if (inspected.status === 'update-required') {
-        cycle = null;
-        return {
-          status: 'corrupt',
-          medium: 'server',
-          envelope: envelope.slice(),
-          version: null,
-          updatedAt: null,
-          reason: 'unsupported-version',
-          message: 'The replicated vault was written by a newer app version.',
-        };
-      }
-      cycle = null;
-      return {
-        status: 'ok',
-        medium: 'server',
-        info: {
-          medium: 'server',
-          version: inspected.envelope.header.vaultVersion,
-          sizeBytes: envelope.byteLength,
-          updatedAt: inspected.envelope.header.writtenAt,
-        },
-      };
+      return verifyReplicatedWrite(frozen, envelope);
     },
 
     async info(): Promise<DataHomeInfoResult> {
@@ -260,6 +327,19 @@ export function createReplicaReconcileCoordinator(
     return result;
   }
 
+  async function reconcileFreshCycle(): Promise<VaultSyncState> {
+    await primary.beginReconcileCycle();
+    let next = await engine.reconnect();
+    while (
+      next.status !== 'unresolved' &&
+      next.status !== 'locked' &&
+      primary.advanceReplicaObservation()
+    ) {
+      next = await engine.reconnect();
+    }
+    return next;
+  }
+
   return {
     get state() {
       return snapshot();
@@ -268,16 +348,7 @@ export function createReplicaReconcileCoordinator(
     reconnect(): Promise<VaultSyncState> {
       return serialize(async () => {
         try {
-          await primary.beginReconcileCycle();
-          let next = await engine.reconnect();
-          while (
-            next.status !== 'unresolved' &&
-            next.status !== 'locked' &&
-            primary.advanceReplicaObservation()
-          ) {
-            next = await engine.reconnect();
-          }
-          return publish(next);
+          return publish(await reconcileFreshCycle());
         } catch (cause) {
           publish(engine.state);
           throw cause;
@@ -288,6 +359,13 @@ export function createReplicaReconcileCoordinator(
     mutate(mutator): Promise<VaultSyncState> {
       return serialize(async () => {
         try {
+          for (let attempt = 0; attempt < MAX_MUTATION_PREPARATION_ATTEMPTS; attempt += 1) {
+            const prepared = await reconcileFreshCycle();
+            if (prepared.status !== 'synced' || primary.hasReconcileCycle()) break;
+            if (attempt === MAX_MUTATION_PREPARATION_ATTEMPTS - 1) {
+              throw new Error('Vault replicas changed too often to prepare a safe mutation.');
+            }
+          }
           return publish(await engine.mutate(mutator));
         } catch (cause) {
           publish(engine.state);
@@ -382,6 +460,39 @@ function writeFailure(
   message: string,
 ): Extract<DataHomeWriteResult, { status: 'transport-failure' }> {
   return failure(message);
+}
+
+function replicationPending(
+  message: string,
+  cause?: unknown,
+): Extract<DataHomeWriteResult, { status: 'transport-failure' }> {
+  return {
+    status: 'transport-failure',
+    medium: 'server',
+    failure: {
+      code: 'api-failure',
+      message,
+      indeterminate: true,
+      cause,
+    },
+  };
+}
+
+function replicaVerificationFailure(observation: ReplicaObservation): string {
+  switch (observation.result.status) {
+    case 'ok':
+      return `The ${observation.medium} vault replica changed after it was written.`;
+    case 'absent':
+      return `The ${observation.medium} vault replica disappeared after it was written.`;
+    case 'corrupt':
+      return observation.result.message;
+    case 'transport-failure':
+      return observation.result.failure.message;
+  }
+}
+
+function sameMediaSet(left: readonly VaultMedium[], right: readonly VaultMedium[]): boolean {
+  return left.length === right.length && left.every((medium) => right.includes(medium));
 }
 
 function fallbackMedia(): ParanoidVaultMediaState {

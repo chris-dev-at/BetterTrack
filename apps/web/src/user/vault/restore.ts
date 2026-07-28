@@ -6,7 +6,7 @@ import {
   VAULT_HISTORY_SIZE_BYTES_HEADER,
   vaultHistoryListResponseSchema,
   vaultHistoryMetadataSchema,
-  type VaultDocumentV1,
+  type VaultDocument,
   type VaultHistoryMetadata,
 } from '@bettertrack/contracts';
 
@@ -76,9 +76,9 @@ export interface RestoreOptions {
   vaultKey: VaultKeyMaterial;
   /** Exact current destination version previously observed by the caller. */
   activeVersion: number | null;
-  encrypt(document: VaultDocumentV1, vaultVersion: number): Promise<Uint8Array>;
+  encrypt(document: VaultDocument, vaultVersion: number): Promise<Uint8Array>;
   /** Runs only after the monotonic remote CAS succeeds. */
-  activate(document: VaultDocumentV1, envelope: Uint8Array, version: number): Promise<void> | void;
+  activate(document: VaultDocument, envelope: Uint8Array, version: number): Promise<void> | void;
 }
 
 export type RestoreResult =

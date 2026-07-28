@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type {
   ParanoidMediaStateResponse,
-  VaultDocumentV1,
+  VaultDocument,
   VaultEnvelopeHeader,
   VaultMedium,
 } from '@bettertrack/contracts';
@@ -32,6 +32,7 @@ import {
   createReplicaReconcileCoordinator,
   createReplicatedVaultDataHome,
 } from './replicatedDataHome';
+import { createVaultRetirementProofManager } from './retirementProof';
 
 const vaultKey = base64ToBytes(fixture.vaultKeyBase64, 'envelope-invalid');
 const baseHeader = fixture.initial.header as VaultEnvelopeHeader;
@@ -42,6 +43,7 @@ class MemoryRemote implements DataHome {
   envelope: Uint8Array | null;
   failure = false;
   corrupt = false;
+  afterWrite?: (envelope: Uint8Array) => Promise<void> | void;
 
   constructor(medium: VaultMedium, envelope: Uint8Array | null) {
     this.medium = medium;
@@ -90,6 +92,9 @@ class MemoryRemote implements DataHome {
       return { status: 'conflict', medium: this.medium, currentVersion: current };
     }
     this.envelope = envelope.slice();
+    const afterWrite = this.afterWrite;
+    this.afterWrite = undefined;
+    await afterWrite?.(envelope.slice());
     return { status: 'ok', medium: this.medium, info: info(this.medium, envelope) };
   }
 
@@ -171,6 +176,93 @@ describe('replicated DataHome through the PD5 coordinator', () => {
         (candidate) => candidate.id === '018f0000-0000-7000-8000-0000000000c1',
       ),
     ).toBe(true);
+  });
+
+  it('refreshes observations for proof bootstrap and consecutive online mutations', async () => {
+    const initial = await encrypted(document('018f0000-0000-7000-8000-0000000000a1'), 1, 0xa1);
+    const setup = coordinator(initial, initial);
+    const proof = createVaultRetirementProofManager(webcrypto.subtle as unknown as SubtleCrypto);
+    const opened = await setup.coordinator.reconnect();
+    const secured = await proof.ensure(opened.active!.document);
+    let mutatorCalls = 0;
+
+    const bootstrapped = await setup.coordinator.mutate(() => {
+      mutatorCalls += 1;
+      return secured.document;
+    });
+    expect(bootstrapped).toMatchObject({
+      status: 'synced',
+      active: { header: { vaultVersion: 2 }, document: { schemaVersion: 2 } },
+    });
+    expect(setup.server.envelope).toEqual(setup.drive.envelope);
+
+    const first = await setup.coordinator.mutate(({ document: current }) => {
+      mutatorCalls += 1;
+      return appendEntity(current, '018f0000-0000-7000-8000-0000000000c1');
+    });
+    expect(first).toMatchObject({
+      status: 'synced',
+      active: { header: { vaultVersion: 3 } },
+    });
+    expect(setup.server.envelope).toEqual(setup.drive.envelope);
+
+    const second = await setup.coordinator.mutate(({ document: current }) => {
+      mutatorCalls += 1;
+      return appendEntity(current, '018f0000-0000-7000-8000-0000000000d1');
+    });
+    expect(second).toMatchObject({
+      status: 'synced',
+      active: { header: { vaultVersion: 4 } },
+    });
+    expect(setup.coordinator.state).toEqual(second);
+    expect(setup.server.envelope).toEqual(setup.drive.envelope);
+    expect(mutatorCalls).toBe(3);
+  });
+
+  it('keeps a mutation pending when a replica moves after its write', async () => {
+    const initial = await encrypted(document('018f0000-0000-7000-8000-0000000000a1'), 1, 0xa1);
+    const concurrent = await encrypted(document('018f0000-0000-7000-8000-0000000000b1'), 3, 0xb1);
+    const setup = coordinator(initial, initial);
+    await setup.coordinator.reconnect();
+    setup.drive.afterWrite = () => {
+      setup.server.envelope = concurrent.slice();
+    };
+
+    const pending = await setup.coordinator.mutate(({ document: current }) =>
+      appendEntity(current, '018f0000-0000-7000-8000-0000000000c1'),
+    );
+
+    expect(pending).toMatchObject({ status: 'pending-offline', pending: {} });
+    expect(setup.coordinator.state).toEqual(pending);
+    expect(version(setup.server.envelope!)).toBe(3);
+    expect(version(setup.drive.envelope!)).toBe(2);
+
+    const repaired = await setup.coordinator.reconnect();
+    expect(repaired).toMatchObject({ status: 'synced', pending: null });
+    expect(setup.server.envelope).toEqual(setup.drive.envelope);
+  });
+
+  it('does not acknowledge a server-only write across a concurrent move to both media', async () => {
+    const initial = await encrypted(document('018f0000-0000-7000-8000-0000000000a1'), 1, 0xa1);
+    const setup = coordinator(initial, initial, ['server']);
+    await setup.coordinator.reconnect();
+    setup.server.afterWrite = () => {
+      setup.media.mediaState!.mediaSet = ['server', 'drive'];
+      setup.media.mediaState!.driveAttestedVersion = 1;
+    };
+
+    const pending = await setup.coordinator.mutate(({ document: current }) =>
+      appendEntity(current, '018f0000-0000-7000-8000-0000000000c1'),
+    );
+
+    expect(pending).toMatchObject({ status: 'pending-offline', pending: {} });
+    expect(setup.coordinator.state).toEqual(pending);
+    expect(version(setup.server.envelope!)).toBe(2);
+    expect(version(setup.drive.envelope!)).toBe(1);
+
+    const repaired = await setup.coordinator.reconnect();
+    expect(repaired).toMatchObject({ status: 'synced', pending: null });
+    expect(setup.server.envelope).toEqual(setup.drive.envelope);
   });
 
   it('does not overwrite an unobserved Drive branch while a local mutation is pending', async () => {
@@ -273,14 +365,20 @@ describe('replicated DataHome through the PD5 coordinator', () => {
   );
 });
 
-function coordinator(serverEnvelope: Uint8Array, driveEnvelope: Uint8Array) {
+function coordinator(
+  serverEnvelope: Uint8Array,
+  driveEnvelope: Uint8Array,
+  mediaSet: ['server'] | ['drive'] | ['server', 'drive'] = ['server', 'drive'],
+) {
   const server = new MemoryRemote('server', serverEnvelope);
   const drive = new MemoryDrive(driveEnvelope);
   const media: ParanoidMediaStateResponse = {
     privacyMode: 'paranoid',
     mediaState: {
-      mediaSet: ['server', 'drive'],
-      driveAttestedVersion: version(driveEnvelope),
+      mediaSet,
+      driveAttestedVersion: mediaSet.some((medium) => medium === 'drive')
+        ? version(driveEnvelope)
+        : null,
       server: { disposition: 'active', candidate: null, retired: null },
     },
   };
@@ -309,13 +407,14 @@ function coordinator(serverEnvelope: Uint8Array, driveEnvelope: Uint8Array) {
   return {
     server,
     drive,
+    media,
     engine,
     coordinator: createReplicaReconcileCoordinator(engine, primary),
   };
 }
 
 async function encrypted(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   vaultVersion: number,
   marker: number,
 ): Promise<Uint8Array> {
@@ -335,7 +434,7 @@ async function encrypted(
   ).envelope;
 }
 
-function document(id: string): VaultDocumentV1 {
+function document(id: string): VaultDocument {
   return {
     schemaVersion: 1,
     entities: { portfolio: [entity(id)] },
@@ -351,6 +450,16 @@ function entity(id: string) {
     editedBy: DEVICE_ID,
     deletedAt: null,
     data: { name: id },
+  };
+}
+
+function appendEntity(document: VaultDocument, id: string): VaultDocument {
+  return {
+    ...document,
+    entities: {
+      ...document.entities,
+      portfolio: [...(document.entities.portfolio ?? []), entity(id)],
+    },
   };
 }
 

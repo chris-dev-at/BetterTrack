@@ -50,8 +50,10 @@ export const VAULT_MAGIC = 'BTVAULT1';
 export const VAULT_HEADER_LENGTH_PREFIX_BYTES = 4;
 /** Envelope layout version (`formatVersion` in the header). */
 export const VAULT_FORMAT_VERSION = 1;
-/** Payload document version (`schemaVersion` in the header + document). */
-export const VAULT_DOCUMENT_VERSION = 1;
+/** First payload document version, retained for legacy encrypted vaults. */
+export const VAULT_DOCUMENT_V1_VERSION = 1;
+/** Latest payload document version (`schemaVersion` in the header + document). */
+export const VAULT_DOCUMENT_VERSION = 2;
 /** Content cipher — WebCrypto AES-256-GCM (native on every target platform). */
 export const VAULT_CONTENT_CIPHER = 'A256GCM';
 /** KEK derivation — Argon2id (the server's own argon2id cost family). */
@@ -1023,7 +1025,7 @@ export type VaultMergeRecord = z.infer<typeof vaultMergeRecordSchema>;
 /** Strict v1 restore payload; newer versions are rejected without coercion. */
 export const vaultStrictDocumentV1Schema = z
   .object({
-    schemaVersion: z.literal(VAULT_DOCUMENT_VERSION),
+    schemaVersion: z.literal(VAULT_DOCUMENT_V1_VERSION),
     entities: z.array(vaultStrictEntitySchema),
     mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
   })
@@ -1031,23 +1033,42 @@ export const vaultStrictDocumentV1Schema = z
 export type VaultStrictDocumentV1 = z.infer<typeof vaultStrictDocumentV1Schema>;
 
 /**
- * The decrypted vault document, version 1 (`§2`). A per-kind map of sync-tracked
- * entities plus a bounded merge log. Clients migrate older documents forward
- * with pure `v(n)→v(n+1)` functions and write back at the current version; a
- * client meeting a newer version than it knows goes read-only, never destructive.
+ * The original decrypted vault document (`§2`). A per-kind map of sync-tracked
+ * entities plus a bounded merge log. It remains readable so a client can
+ * provision the v2 retirement proof during its unlocked initialization.
  */
 export const vaultDocumentV1Schema = z.object({
+  schemaVersion: z.literal(VAULT_DOCUMENT_V1_VERSION),
+  entities: z.record(vaultEntityKindSchema, z.array(vaultEntitySchema)),
+  mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
+});
+export type VaultDocumentV1 = z.infer<typeof vaultDocumentV1Schema>;
+
+/**
+ * Version 2 binds the client-held retirement private key to a payload/header
+ * version that v1 clients reject before parsing. `clientSecurity` is required:
+ * a v2 writer can never silently downgrade a verifier-backed vault to a
+ * headerless/keyless document.
+ */
+export const vaultDocumentV2Schema = z.object({
   schemaVersion: z.literal(VAULT_DOCUMENT_VERSION),
   entities: z.record(vaultEntityKindSchema, z.array(vaultEntitySchema)),
   mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
   /**
-   * Browser-only proof material. Optional keeps existing v1 envelopes valid;
-   * the unlocked client provisions it before activating or retiring server
-   * media. It is deliberately absent from the rehydration DTO above.
+   * Browser-only proof material. The unlocked client provisions it before
+   * activating or retiring server media. It is deliberately absent from the
+   * rehydration DTO above.
    */
-  clientSecurity: vaultClientSecuritySchema.optional(),
+  clientSecurity: vaultClientSecuritySchema,
 });
-export type VaultDocumentV1 = z.infer<typeof vaultDocumentV1Schema>;
+export type VaultDocumentV2 = z.infer<typeof vaultDocumentV2Schema>;
+
+/** Every payload version this client can read without destructive coercion. */
+export const vaultDocumentSchema = z.discriminatedUnion('schemaVersion', [
+  vaultDocumentV1Schema,
+  vaultDocumentV2Schema,
+]);
+export type VaultDocument = z.infer<typeof vaultDocumentSchema>;
 
 // ── Internal disable / rehydration DTOs ──────────────────────────────────────
 

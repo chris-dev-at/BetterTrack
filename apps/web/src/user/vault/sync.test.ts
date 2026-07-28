@@ -12,7 +12,7 @@ import {
   VAULT_HISTORY_PAGE_MAX,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
   VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER,
-  type VaultDocumentV1,
+  type VaultDocument,
   type VaultEntity,
   type VaultEnvelopeHeader,
 } from '@bettertrack/contracts';
@@ -110,7 +110,7 @@ function entity(
   };
 }
 
-function document(rows: VaultEntity[]): VaultDocumentV1 {
+function document(rows: VaultEntity[]): VaultDocument {
   return { schemaVersion: 1, entities: { transaction: rows }, mergeLog: [] };
 }
 
@@ -130,7 +130,7 @@ function header(
 }
 
 async function encrypted(
-  value: VaultDocumentV1,
+  value: VaultDocument,
   version: number,
   deviceId = DEVICE_A,
   writeId = VECTOR_WRITE_ID,
@@ -1627,7 +1627,7 @@ describe('restore candidate seam', () => {
     const options = {
       vaultKey: KEY,
       activeVersion: 3,
-      encrypt: (value: VaultDocumentV1, version: number) => encrypted(value, version),
+      encrypt: (value: VaultDocument, version: number) => encrypted(value, version),
       activate: () => {
         activations += 1;
       },

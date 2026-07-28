@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   ParanoidMediaStateResponse,
-  VaultDocumentV1,
+  VaultDocument,
   VaultEnvelopeHeader,
   VaultMedium,
 } from '@bettertrack/contracts';
@@ -27,9 +27,10 @@ import type { VaultMediaApi } from './mediaSwitcher';
 import type { VaultRetirementProofManager } from './retirementProof';
 import { createUnlockedVaultDriveRuntime, type VaultDriveSyncCoordinator } from './runtime';
 
-const baseDocument: VaultDocumentV1 = { schemaVersion: 1, entities: {}, mergeLog: [] };
-const securedDocument: VaultDocumentV1 = {
+const baseDocument: VaultDocument = { schemaVersion: 1, entities: {}, mergeLog: [] };
+const securedDocument: VaultDocument = {
   ...baseDocument,
+  schemaVersion: 2,
   clientSecurity: {
     retirementProof: {
       publicKey: 'public-proof',
@@ -236,7 +237,7 @@ function coordinator(
   return sync;
 }
 
-function syncState(status: VaultSyncState['status'], document: VaultDocumentV1): VaultSyncState {
+function syncState(status: VaultSyncState['status'], document: VaultDocument): VaultSyncState {
   const active = candidate(document);
   return {
     status,
@@ -245,7 +246,7 @@ function syncState(status: VaultSyncState['status'], document: VaultDocumentV1):
   };
 }
 
-function candidate(document: VaultDocumentV1): VaultSyncCandidate {
+function candidate(document: VaultDocument): VaultSyncCandidate {
   return {
     home: dataHome('local'),
     envelope: new Uint8Array([1]),
