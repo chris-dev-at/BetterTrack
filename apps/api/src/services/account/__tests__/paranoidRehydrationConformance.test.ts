@@ -968,6 +968,154 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     );
   });
 
+  it('keeps a solvent exact prefix after sequential quantity and metadata edits', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = '018f0000-0a00-7000-8000-000000000a01';
+    const assetId = '018f0000-0a00-7000-8000-000000000a02';
+    const cutoffAssetId = '018f0000-0a00-7000-8000-000000000a03';
+    const roundingAssetId = '018f0000-0a00-7000-8000-000000000a04';
+    await seedGlobalAsset(harness, assetId, 'SEQUENTIAL-PATCHES');
+    await seedGlobalAsset(harness, cutoffAssetId, 'SEQUENTIAL-PATCHES-CUTOFF');
+    await seedGlobalAsset(harness, roundingAssetId, 'SEQUENTIAL-PATCHES-ROUNDING');
+
+    const writeIds = ['018f0000-0a00-7000-8000-000000000a05'];
+    writeIds.push(nextUuidV7WriteId(writeIds[0]!));
+    writeIds.push(nextUuidV7WriteId(writeIds[1]!));
+    writeIds.push(nextUuidV7WriteId(writeIds[2]!));
+    const legacyDocument = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: writeIds[0]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '1.00000000',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+      transactionEntity({
+        id: writeIds[1]!,
+        portfolioId,
+        assetId,
+        side: 'sell',
+        quantity: '1.00000000',
+        executedAt: '2026-07-23T10:01:00.000Z',
+      }),
+      transactionEntity({
+        id: writeIds[2]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '3.00000000',
+        executedAt: '2026-07-23T10:02:00.000Z',
+      }),
+      // This later exact row has no public-number preimage, fixing the final
+      // document's strict-v1 cutoff after every edited row above.
+      transactionEntity({
+        id: writeIds[3]!,
+        portfolioId,
+        assetId: cutoffAssetId,
+        side: 'buy',
+        quantity: '90071992547.12345678',
+        executedAt: '2026-07-23T10:03:00.000Z',
+      }),
+    ]);
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      legacyDocument,
+      FIRST_REHYDRATION_ID,
+      'initial exact history before sequential edits',
+    );
+
+    const transactionRepo = createTransactionRepository(harness.db);
+    const legacyRows = await transactionRepo.listForAsset(portfolioId, assetId);
+    const legacyBuy = legacyRows.find((transaction) => transaction.id === writeIds[0]);
+    const legacySell = legacyRows.find((transaction) => transaction.id === writeIds[1]);
+    const metadataBuy = legacyRows.find((transaction) => transaction.id === writeIds[2]);
+    if (!legacyBuy || !legacySell || !metadataBuy) {
+      throw new Error('expected all pre-transition edit fixtures');
+    }
+
+    // Exercise the unchanged update oracle one PATCH at a time. The
+    // intermediate 2-buy / 1-sell state is solvent before the sell is patched.
+    await harness.ctx.portfolio.updateTransaction(user.id, portfolioId, legacyBuy.id, {
+      quantity: 2,
+    });
+    const afterBuyPatch = await transactionRepo.listForAsset(portfolioId, assetId);
+    expect(afterBuyPatch.find((transaction) => transaction.id === legacyBuy.id)?.quantity).toBe(2);
+    expect(afterBuyPatch.find((transaction) => transaction.id === legacySell.id)?.quantity).toBe(1);
+
+    await harness.ctx.portfolio.updateTransaction(user.id, portfolioId, legacySell.id, {
+      quantity: 2,
+    });
+    // This edit bumps strict-vault revision metadata without changing quantity.
+    await harness.ctx.portfolio.updateTransaction(user.id, portfolioId, metadataBuy.id, {
+      note: 'metadata-only edit',
+    });
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId: roundingAssetId,
+        side: 'buy',
+        quantity: 1.0000000046,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:04:00.000Z',
+      },
+      {
+        assetId: roundingAssetId,
+        side: 'sell',
+        quantity: 1.0000000051,
+        price: 11,
+        fee: 0,
+        executedAt: '2026-07-23T10:05:00.000Z',
+      },
+    ]);
+
+    const resultingDocument = await capturePortfolioDocument(harness, portfolioId);
+    const resultingTransactions = quantityEntities(resultingDocument);
+    const revisedBuy = resultingTransactions.find((transaction) => transaction.id === legacyBuy.id);
+    const revisedSell = resultingTransactions.find(
+      (transaction) => transaction.id === legacySell.id,
+    );
+    const metadataRevision = resultingTransactions.find(
+      (transaction) => transaction.id === metadataBuy.id,
+    );
+    if (!revisedBuy || !revisedSell || !metadataRevision) {
+      throw new Error('expected all edited rows in the strict document');
+    }
+    revisedBuy.rev = 1;
+    revisedSell.rev = 1;
+    metadataRevision.rev = 1;
+    revisedBuy.editedAt = '2026-07-25T10:00:00.000Z';
+    revisedSell.editedAt = '2026-07-25T10:01:00.000Z';
+    metadataRevision.editedAt = '2026-07-25T10:02:00.000Z';
+
+    expect(revisedBuy.data.quantity).toBe('2.00000000');
+    expect(revisedSell.data.quantity).toBe('2.00000000');
+    expect(metadataRevision.data).toMatchObject({
+      quantity: '3.00000000',
+      note: 'metadata-only edit',
+    });
+    const roundingSell = resultingTransactions.find(
+      (transaction) =>
+        transaction.data.assetId === roundingAssetId && transaction.data.side === 'sell',
+    );
+    if (!roundingSell) throw new Error('expected appended rounding sell');
+    expect(roundingSell.data.quantity).toBe('1.00000001');
+    expect(roundingSell.id > writeIds[3]!).toBe(true);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      resultingDocument,
+      SECOND_REHYDRATION_ID,
+      'solvent exact prefix after sequential quantity and metadata edits',
+    );
+  });
+
   it('composes a pre-transition normal PATCH before a later rounding CREATE batch', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();

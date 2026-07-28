@@ -300,16 +300,17 @@ const EXECUTED_AT_DIGIT_POSITIONS = [
  *
  * The strict-v1 payload does not retain CREATE batch identities or trustworthy
  * PATCH provenance, so this validator never searches for either. Instead it
- * makes one fixed legacy-cutoff choice, proves at most one pre-cutoff PATCH per
- * portfolio/asset, and proves every storage-rounding CREATE from the
- * zero-balance epoch that directly contains it. Each row is visited by a fixed
- * number of streaming passes. Ordering is bounded to 81 fixed-width radix keys
- * per row (32 document UUID keys; 32 UUID tie-breaker plus 17 canonical UTC
- * timestamp keys for chronological replay), and witness epochs may contain no
- * more than the public 500-row CREATE limit. The insolvent direct proof also
- * fails closed unless every creation key is UUIDv7. A document outside that
- * direct proof is rejected before restore writes rather than guessed at or
- * explored with a span search.
+ * makes one fixed legacy-cutoff choice, replays that prefix exactly, proves
+ * only its deficit-causing revised row as a singleton PATCH when necessary,
+ * and proves every storage-rounding CREATE from the zero-balance epoch that
+ * directly contains it. Each row is visited by a fixed number of streaming
+ * passes. Ordering is bounded to 81 fixed-width radix keys per row (32 document
+ * UUID keys; 32 UUID tie-breaker plus 17 canonical UTC timestamp keys for
+ * chronological replay), and witness epochs may contain no more than the
+ * public 500-row CREATE limit. The insolvent direct proof also fails closed
+ * unless every creation key is UUIDv7. A document outside that direct proof is
+ * rejected before restore writes rather than guessed at or explored with a
+ * span search.
  */
 interface NormalCreateWitness {
   /** Inclusive UUIDv7 write positions of one direct CREATE witness. */
@@ -494,19 +495,26 @@ function orderByReplayTimeline(
   );
 }
 
+interface ExactLegacyPrefixFailure {
+  readonly group: readonly QuantityReplayRow[];
+  readonly row: QuantityReplayRow;
+}
+
 function exactLegacyPrefixFailure(
   groups: readonly (readonly QuantityReplayRow[])[],
   legacyCutoff: number,
-): QuantityReplayRow | null {
+): ExactLegacyPrefixFailure | null {
   for (const group of groups) {
     let held = 0n;
     for (const row of group) {
-      if (row.writeOrder >= legacyCutoff || row.revisionCandidate) continue;
+      if (row.writeOrder >= legacyCutoff) continue;
       if (row.transaction.data.side === 'buy') {
         held += row.quantity;
         continue;
       }
-      if (row.quantity > held && !row.transaction.data.allowUncovered) return row;
+      if (row.quantity > held && !row.transaction.data.allowUncovered) {
+        return { group, row };
+      }
       held = row.quantity > held ? 0n : held - row.quantity;
     }
   }
@@ -514,32 +522,32 @@ function exactLegacyPrefixFailure(
 }
 
 /**
- * A strict-v1 revision has no prior value, so a direct snapshot proof accepts
- * at most one legal quantity PATCH for one portfolio/asset prefix. The final
- * row is replayed as the PATCH input while every other pre-cutoff row is the
- * repository-number state that such a PATCH would have read.
+ * Revision metadata alone is not quantity-PATCH provenance. The fixed legacy
+ * prefix is therefore replayed exactly first; a solvent prefix needs no PATCH
+ * witness regardless of how many rows were edited. If the exact prefix has a
+ * deficit, only its deficit-causing revised sell can be identified without
+ * searching candidates or PATCH orders. Replay that row alone as the PATCH
+ * input while every other pre-cutoff row uses the repository-number state that
+ * updateTransaction would have read. Shapes requiring cooperating raw revised
+ * rows fail closed.
  */
-function validatePrefixRevisionWitnesses(
-  groups: readonly (readonly QuantityReplayRow[])[],
+function validatePrefixRevisionWitness(
+  failure: ExactLegacyPrefixFailure,
   legacyCutoff: number,
 ): void {
-  for (const group of groups) {
-    const revisions = group.filter((row) => row.writeOrder < legacyCutoff && row.revisionCandidate);
-    if (revisions.length > 1) {
-      throw quantityReachabilityError(
-        revisions[1]!,
-        'transaction quantity reachability cannot establish multiple pre-transition PATCHes',
-      );
-    }
-    const [revision] = revisions;
-    if (!revision) continue;
-    const prefix = group.filter((row) => row.writeOrder < legacyCutoff);
-    if (!normalRowsCanReplay(prefix, (row) => row.transaction.id === revision.transaction.id)) {
-      throw quantityReachabilityError(
-        revision,
-        'transaction quantity cannot replay as a pre-transition normal PATCH',
-      );
-    }
+  const revision = failure.row;
+  if (!revision.revisionCandidate) {
+    throw quantityReachabilityError(
+      revision,
+      'transaction quantity cannot replay through the direct strict-v1 prefix',
+    );
+  }
+  const prefix = failure.group.filter((row) => row.writeOrder < legacyCutoff);
+  if (!normalRowsCanReplay(prefix, (row) => row.transaction.id === revision.transaction.id)) {
+    throw quantityReachabilityError(
+      revision,
+      'transaction quantity cannot replay as a pre-transition normal PATCH',
+    );
   }
 }
 
@@ -906,12 +914,8 @@ function storageRoundingSellIdsFor(
   );
   const legacyFailure = exactLegacyPrefixFailure(replayGroups, legacyCutoff);
   if (legacyFailure) {
-    throw quantityReachabilityError(
-      legacyFailure,
-      'transaction quantity cannot replay through the direct strict-v1 prefix',
-    );
+    validatePrefixRevisionWitness(legacyFailure, legacyCutoff);
   }
-  validatePrefixRevisionWitnesses(replayGroups, legacyCutoff);
 
   const storageRoundingSellIds = oneQuantumStorageRoundingSellIds(replayGroups);
   const createWitnesses = collectNormalCreateWitnesses(
