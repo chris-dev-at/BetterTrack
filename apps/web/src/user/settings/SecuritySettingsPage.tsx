@@ -47,14 +47,18 @@ import {
   setPinLockIdleMinutes,
 } from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
+import { Badge, Button, Input, SectionHead, Select } from '../../ui/origin';
 import { PinInput } from '../components/PinInput';
-import { Alert, Button } from '../components/ui';
+import { Alert } from '../components/ui';
 
 const ME_KEY = ['auth', 'me'] as const;
 const SESSION_KEY = ['auth', 'session'] as const;
 const SESSIONS_KEY = ['auth', 'sessions'] as const;
 const TWO_FACTOR_KEY = ['auth', '2fa', 'status'] as const;
 const PASSKEYS_KEY = ['auth', 'passkeys'] as const;
+
+/** Monospace surface for the recovery codes and the TOTP setup key/URI. */
+const MONO_FONT = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 
 function pinErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
@@ -74,10 +78,8 @@ function SessionInfo() {
   });
 
   return (
-    <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
-      <h3 className="text-sm font-semibold text-neutral-100">
-        {t('settings.security.session.title')}
-      </h3>
+    <section className="bt-panel bt-panel--pad flex flex-col gap-3">
+      <h3 className="bt-h3">{t('settings.security.session.title')}</h3>
       {query.isPending ? (
         <Skeleton height="h-6" />
       ) : query.isError ? (
@@ -86,7 +88,7 @@ function SessionInfo() {
           description={t('settings.retryHint')}
         />
       ) : (
-        <p className="text-sm text-neutral-400">
+        <p className="bt-soft">
           {/* Ephemeral sessions die on browser close and are server-capped
               (≤6h) — reporting the persistent 30-day window would lie (V4-P2b). */}
           {t(
@@ -147,12 +149,10 @@ function SessionsSection() {
   const otherCount = sessions.filter((s) => !s.current).length;
 
   return (
-    <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+    <section className="bt-panel bt-panel--pad flex flex-col gap-4">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.security.sessions.title')}
-        </h3>
-        <p className="text-xs text-neutral-500">{t('settings.security.sessions.description')}</p>
+        <h3 className="bt-h3">{t('settings.security.sessions.title')}</h3>
+        <p className="bt-meta">{t('settings.security.sessions.description')}</p>
       </div>
 
       {error ? <Alert tone="error">{error}</Alert> : null}
@@ -165,28 +165,28 @@ function SessionsSection() {
           description={t('settings.retryHint')}
         />
       ) : (
-        <ul className="flex flex-col gap-2">
+        /* A ruled device band (list semantics preserved — no table swap). */
+        <ul className="bt-band bt-t-rule bt-b-rule flex flex-col">
           {sessions.map((session) => (
             <li
               key={session.id}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-3"
+              className="bt-band__row flex flex-wrap items-center justify-between gap-3"
+              style={{ paddingInline: 0 }}
             >
-              <div className="flex flex-col gap-0.5">
-                <span className="text-sm font-medium text-neutral-100">
+              <div className="flex flex-col gap-1">
+                <span className="bt-row-title flex flex-wrap items-center gap-2">
                   <span>{session.device}</span>
                   {session.current ? (
-                    <span className="ml-2 rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-300">
-                      {t('settings.security.sessions.currentDevice')}
-                    </span>
+                    <Badge tone="gold">{t('settings.security.sessions.currentDevice')}</Badge>
                   ) : null}
                   {/* Persistent vs ephemeral ("stay signed in") — V4-P2b, §399 §A. */}
-                  <span className="ml-2 rounded-full bg-neutral-800 px-2 py-0.5 text-xs font-medium text-neutral-400">
+                  <Badge outline>
                     {session.persistent
                       ? t('settings.security.sessions.persistent')
                       : t('settings.security.sessions.ephemeral')}
-                  </span>
+                  </Badge>
                 </span>
-                <span className="text-xs text-neutral-500">
+                <span className="bt-row-sub">
                   {t('settings.security.sessions.timestamps', {
                     createdAt: formatDateTime(session.createdAt),
                     lastSeenAt: formatDateTime(session.lastSeenAt),
@@ -196,7 +196,8 @@ function SessionsSection() {
               {session.current ? null : (
                 <Button
                   type="button"
-                  variant="ghost"
+                  variant="danger"
+                  size="sm"
                   disabled={revokeOne.isPending}
                   onClick={() => {
                     setError(null);
@@ -213,8 +214,8 @@ function SessionsSection() {
 
       {otherCount > 0 ? (
         confirmingOthers ? (
-          <div className="flex flex-col gap-3 border-t border-neutral-800 pt-4">
-            <p className="text-sm text-neutral-400">
+          <div className="bt-t-rule flex flex-col gap-3 pt-4">
+            <p className="bt-soft">
               {t(
                 otherCount === 1
                   ? 'settings.security.sessions.confirmLogoutOthersOne'
@@ -225,7 +226,7 @@ function SessionsSection() {
             <div className="flex flex-wrap gap-3">
               <Button
                 type="button"
-                variant="secondary"
+                variant="danger"
                 disabled={revokeOthers.isPending}
                 onClick={() => revokeOthers.mutate()}
               >
@@ -233,16 +234,16 @@ function SessionsSection() {
                   ? t('settings.security.sessions.loggingOut')
                   : t('settings.security.sessions.logOutAllOthers')}
               </Button>
-              <Button type="button" variant="ghost" onClick={() => setConfirmingOthers(false)}>
+              <Button type="button" variant="quiet" onClick={() => setConfirmingOthers(false)}>
                 {t('common.cancel')}
               </Button>
             </div>
           </div>
         ) : (
-          <div className="border-t border-neutral-800 pt-4">
+          <div className="bt-t-rule pt-4">
             <Button
               type="button"
-              variant="ghost"
+              variant="danger"
               onClick={() => {
                 setError(null);
                 setConfirmingOthers(true);
@@ -355,24 +356,20 @@ function PinWindowSection({ windowMinutes }: { windowMinutes: number | null }) {
   const selected = windowMinutes ?? DEFAULT_PIN_WINDOW_MINUTES;
 
   return (
-    <div className="flex flex-col gap-3 border-t border-neutral-800 pt-4">
+    <div className="bt-t-rule flex flex-col gap-3 pt-4">
       <div className="flex flex-col gap-0.5">
-        <span className="text-sm font-medium text-neutral-100">
-          {t('settings.security.pin.lockAfterInactivity')}
-        </span>
-        <span className="text-xs text-neutral-500">
-          {t('settings.security.pin.lockDescription')}
-        </span>
+        <span className="bt-row-title">{t('settings.security.pin.lockAfterInactivity')}</span>
+        <span className="bt-row-sub">{t('settings.security.pin.lockDescription')}</span>
       </div>
 
-      <label className="flex items-center gap-2 text-sm text-neutral-400">
+      <label className="bt-soft flex items-center gap-2">
         {t('settings.security.pin.idleForLabel')}
-        <select
+        <Select
           aria-label={t('settings.security.pin.unlockWindowAriaLabel')}
           value={selected}
           disabled={mutation.isPending}
           onChange={(e) => mutation.mutate(Number(e.target.value))}
-          className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          style={{ width: 'auto' }}
         >
           {(WINDOW_MINUTE_OPTIONS as readonly number[]).includes(selected) ? null : (
             <option value={selected}>{windowOptionLabel(t, selected)}</option>
@@ -382,7 +379,7 @@ function PinWindowSection({ windowMinutes }: { windowMinutes: number | null }) {
               {windowOptionLabel(t, m)}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
 
       {error ? <Alert tone="error">{error}</Alert> : null}
@@ -416,12 +413,10 @@ function PinSection({
   });
 
   return (
-    <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+    <section className="bt-panel bt-panel--pad flex flex-col gap-4">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.security.pin.title')}
-        </h3>
-        <p className="text-xs text-neutral-500">{t('settings.security.pin.description')}</p>
+        <h3 className="bt-h3">{t('settings.security.pin.title')}</h3>
+        <p className="bt-meta">{t('settings.security.pin.description')}</p>
       </div>
 
       {notice ? <Alert tone="success">{notice}</Alert> : null}
@@ -445,19 +440,19 @@ function PinSection({
                 }}
               />
               <div>
-                <Button type="button" variant="ghost" onClick={() => setChanging(false)}>
+                <Button type="button" variant="quiet" onClick={() => setChanging(false)}>
                   {t('common.cancel')}
                 </Button>
               </div>
             </div>
           ) : (
-            <div className="flex flex-col gap-3">
-              <p className="text-sm text-neutral-400">{t('settings.security.pin.isOn')}</p>
+            <div className="flex flex-col items-start gap-3">
+              {/* Element kept a <p> on purpose: security copy keeps its semantics. */}
+              <p className="bt-pos">{t('settings.security.pin.isOn')}</p>
               {error ? <Alert tone="error">{error}</Alert> : null}
               <div className="flex flex-wrap gap-3">
                 <Button
                   type="button"
-                  variant="secondary"
                   onClick={() => {
                     setNotice(null);
                     setChanging(true);
@@ -467,7 +462,7 @@ function PinSection({
                 </Button>
                 <Button
                   type="button"
-                  variant="ghost"
+                  variant="danger"
                   disabled={disable.isPending}
                   onClick={() => {
                     setNotice(null);
@@ -526,21 +521,24 @@ function RecoveryCodesCard({ codes, onDone }: { codes: readonly string[]; onDone
   return (
     <div className="flex flex-col gap-4">
       <Alert tone="info">{t('settings.security.twoFactor.recoveryCodes.saveNotice')}</Alert>
-      <div className="grid grid-cols-2 gap-2 rounded-md border border-neutral-800 bg-neutral-950 p-4 font-mono text-sm text-neutral-100">
+      <div
+        className="bt-panel bt-panel--soft bt-num grid grid-cols-2 gap-2"
+        style={{ fontFamily: MONO_FONT, padding: 16 }}
+      >
         {codes.map((code) => (
           <span key={code}>{code}</span>
         ))}
       </div>
       <div className="flex flex-wrap gap-3">
-        <Button type="button" variant="secondary" onClick={handleCopy}>
+        <Button type="button" onClick={handleCopy}>
           {copied
             ? t('settings.security.twoFactor.recoveryCodes.copied')
             : t('settings.security.twoFactor.recoveryCodes.copy')}
         </Button>
-        <Button type="button" variant="secondary" onClick={handleDownload}>
+        <Button type="button" onClick={handleDownload}>
           {t('settings.security.twoFactor.recoveryCodes.download')}
         </Button>
-        <Button type="button" onClick={onDone}>
+        <Button type="button" onClick={onDone} variant="quiet">
           {t('settings.security.twoFactor.recoveryCodes.done')}
         </Button>
       </div>
@@ -594,9 +592,7 @@ function EnrollWizard({
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <p className="text-sm text-neutral-400">
-        {t('settings.security.twoFactor.totp.scanInstructions')}
-      </p>
+      <p className="bt-soft">{t('settings.security.twoFactor.totp.scanInstructions')}</p>
       {/* QR needs a light quiet-zone to scan reliably against the dark theme. */}
       <div className="self-start rounded-md bg-white p-3">
         <QRCodeSVG
@@ -606,19 +602,21 @@ function EnrollWizard({
           aria-label={t('settings.security.twoFactor.totp.qrAriaLabel')}
         />
       </div>
-      <details className="rounded-md border border-neutral-800 bg-neutral-950 p-4">
-        <summary className="cursor-pointer text-xs font-medium text-neutral-400">
+      <details className="bt-panel bt-panel--soft" style={{ padding: 16 }}>
+        <summary className="bt-meta cursor-pointer">
           {t('settings.security.twoFactor.totp.manualEntryToggle')}
         </summary>
         <div className="mt-3 flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-neutral-500">
-            {t('settings.security.twoFactor.totp.setupKeyLabel')}
-          </span>
-          <code className="break-all text-sm text-neutral-100">{enroll.data.secret}</code>
-          <span className="mt-2 text-xs font-medium text-neutral-500">
+          <span className="bt-label">{t('settings.security.twoFactor.totp.setupKeyLabel')}</span>
+          <code className="bt-num break-all" style={{ fontFamily: MONO_FONT }}>
+            {enroll.data.secret}
+          </code>
+          <span className="bt-label mt-2">
             {t('settings.security.twoFactor.totp.otpauthUriLabel')}
           </span>
-          <code className="break-all text-xs text-neutral-400">{enroll.data.otpauthUri}</code>
+          <code className="bt-meta break-all" style={{ fontFamily: MONO_FONT }}>
+            {enroll.data.otpauthUri}
+          </code>
         </div>
       </details>
       <PinInput
@@ -635,7 +633,7 @@ function EnrollWizard({
             ? t('settings.security.twoFactor.confirming')
             : t('settings.security.twoFactor.confirmAndEnable')}
         </Button>
-        <Button type="button" variant="ghost" onClick={onCancel}>
+        <Button type="button" variant="quiet" onClick={onCancel}>
           {t('common.cancel')}
         </Button>
       </div>
@@ -664,23 +662,22 @@ function DisableForm({ onDisabled, onCancel }: { onDisabled: () => void; onCance
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-3">
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-300">
+      <label className="bt-field bt-soft max-w-xs" style={{ fontSize: 12, fontWeight: 570 }}>
         {t('settings.security.twoFactor.totp.disableCodeLabel')}
-        <input
+        <Input
           type="text"
           autoComplete="off"
           value={code}
           onChange={(e) => setCode(e.target.value)}
-          className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
         />
       </label>
       <div className="flex flex-wrap gap-3">
-        <Button type="submit" variant="secondary" disabled={disable.isPending || code.length < 6}>
+        <Button type="submit" variant="danger" disabled={disable.isPending || code.length < 6}>
           {disable.isPending
             ? t('settings.security.pin.disabling')
             : t('settings.security.twoFactor.totp.turnOffFull')}
         </Button>
-        <Button type="button" variant="ghost" onClick={onCancel}>
+        <Button type="button" variant="quiet" onClick={onCancel}>
           {t('common.cancel')}
         </Button>
       </div>
@@ -699,10 +696,10 @@ function MethodCard({
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-4">
+    <div className="bt-panel bt-panel--soft flex flex-col gap-3" style={{ padding: 16 }}>
       <div className="flex flex-col gap-0.5">
-        <h4 className="text-sm font-semibold text-neutral-100">{title}</h4>
-        <p className="text-xs text-neutral-500">{description}</p>
+        <h4 className="bt-h3">{title}</h4>
+        <p className="bt-meta">{description}</p>
       </div>
       {children}
     </div>
@@ -764,13 +761,11 @@ function AuthenticatorMethodCard({
         />
       ) : (
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-neutral-400">
-            {t('settings.security.twoFactor.enabledLabel')}
-          </p>
+          <p className="bt-pos">{t('settings.security.twoFactor.enabledLabel')}</p>
           <div>
             <Button
               type="button"
-              variant="ghost"
+              variant="danger"
               onClick={() => {
                 setNotice(null);
                 setView('disabling');
@@ -850,13 +845,11 @@ function EmailMethodCard({
       {error ? <Alert tone="error">{error}</Alert> : null}
       {enabled ? (
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-neutral-400">
-            {t('settings.security.twoFactor.enabledLabel')}
-          </p>
+          <p className="bt-pos">{t('settings.security.twoFactor.enabledLabel')}</p>
           <div>
             <Button
               type="button"
-              variant="ghost"
+              variant="danger"
               disabled={disable.isPending}
               onClick={() => {
                 setNotice(null);
@@ -871,9 +864,7 @@ function EmailMethodCard({
         </div>
       ) : view === 'confirming' ? (
         <form onSubmit={onConfirm} className="flex flex-col gap-4">
-          <p className="text-sm text-neutral-400">
-            {t('settings.security.twoFactor.email.confirmInstructions')}
-          </p>
+          <p className="bt-soft">{t('settings.security.twoFactor.email.confirmInstructions')}</p>
           <PinInput
             label={t('settings.security.twoFactor.email.codeLabel')}
             length={TOTP_CODE_LENGTH}
@@ -890,7 +881,7 @@ function EmailMethodCard({
             </Button>
             <Button
               type="button"
-              variant="ghost"
+              variant="quiet"
               onClick={() => {
                 setView('status');
                 setCode('');
@@ -945,7 +936,7 @@ function RecoveryCodesControl({
       title={t('settings.security.twoFactor.recoveryCodes.cardTitle')}
       description={t('settings.security.twoFactor.recoveryCodes.cardDescription')}
     >
-      <p className="text-sm text-neutral-400">
+      <p className="bt-soft">
         {t(
           remaining === 1
             ? 'settings.security.twoFactor.recoveryCodes.remainingOne'
@@ -957,7 +948,6 @@ function RecoveryCodesControl({
       <div>
         <Button
           type="button"
-          variant="secondary"
           disabled={regenerate.isPending}
           onClick={() => regenerate.mutate()}
         >
@@ -994,12 +984,10 @@ function TwoFactorSection() {
   const anyEnabled = (s: TwoFactorStatusResponse) => s.totpEnabled || s.emailEnabled;
 
   return (
-    <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+    <section className="bt-panel bt-panel--pad flex flex-col gap-4">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.security.twoFactor.title')}
-        </h3>
-        <p className="text-xs text-neutral-500">{t('settings.security.twoFactor.description')}</p>
+        <h3 className="bt-h3">{t('settings.security.twoFactor.title')}</h3>
+        <p className="bt-meta">{t('settings.security.twoFactor.description')}</p>
       </div>
 
       {recoveryCodes ? (
@@ -1076,32 +1064,31 @@ function AddPasskeyForm({ onAdded, onCancel }: { onAdded: () => void; onCancel: 
   return (
     <form
       onSubmit={onSubmit}
-      className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-4"
+      className="bt-panel bt-panel--soft flex flex-col gap-3"
+      style={{ padding: 16 }}
     >
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-300">
+      <label className="bt-field bt-soft max-w-sm" style={{ fontSize: 12, fontWeight: 570 }}>
         {t('settings.security.passkeys.nameLabel')}
-        <input
+        <Input
           type="text"
           autoComplete="off"
           maxLength={PASSKEY_NAME_MAX}
           value={name}
           placeholder={t('settings.security.passkeys.namePlaceholder')}
           onChange={(e) => setName(e.target.value)}
-          className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
         />
       </label>
-      <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-300">
+      <label className="bt-field bt-soft max-w-sm" style={{ fontSize: 12, fontWeight: 570 }}>
         {t('settings.security.passkeys.passwordLabel')}
-        <input
+        <Input
           type="password"
           autoComplete="current-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
         />
       </label>
-      <p className="text-xs text-neutral-500">{t('settings.security.passkeys.reauthHint')}</p>
+      <p className="bt-meta">{t('settings.security.passkeys.reauthHint')}</p>
       <div className="flex flex-wrap gap-3">
         <Button
           type="submit"
@@ -1111,7 +1098,7 @@ function AddPasskeyForm({ onAdded, onCancel }: { onAdded: () => void; onCancel: 
             ? t('settings.security.passkeys.adding')
             : t('settings.security.passkeys.addSubmit')}
         </Button>
-        <Button type="button" variant="ghost" onClick={onCancel}>
+        <Button type="button" variant="quiet" onClick={onCancel}>
           {t('common.cancel')}
         </Button>
       </div>
@@ -1158,7 +1145,7 @@ function PasskeyRow({
   }
 
   return (
-    <div className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-4">
+    <div className="bt-band__row flex flex-col gap-3" style={{ paddingInline: 0 }}>
       {error ? <Alert tone="error">{error}</Alert> : null}
       {mode === 'rename' ? (
         <form
@@ -1169,15 +1156,14 @@ function PasskeyRow({
           }}
           className="flex flex-col gap-3"
         >
-          <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-300">
+          <label className="bt-field bt-soft max-w-sm" style={{ fontSize: 12, fontWeight: 570 }}>
             {t('settings.security.passkeys.nameLabel')}
-            <input
+            <Input
               type="text"
               autoComplete="off"
               maxLength={PASSKEY_NAME_MAX}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
           </label>
           <div className="flex flex-wrap gap-3">
@@ -1186,7 +1172,7 @@ function PasskeyRow({
                 ? t('settings.security.passkeys.renaming')
                 : t('settings.security.passkeys.renameSave')}
             </Button>
-            <Button type="button" variant="ghost" onClick={reset}>
+            <Button type="button" variant="quiet" onClick={reset}>
               {t('common.cancel')}
             </Button>
           </div>
@@ -1205,36 +1191,35 @@ function PasskeyRow({
               ? t('settings.security.passkeys.lastWarning')
               : t('settings.security.passkeys.deleteConfirm')}
           </Alert>
-          <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-300">
+          <label className="bt-field bt-soft max-w-sm" style={{ fontSize: 12, fontWeight: 570 }}>
             {t('settings.security.passkeys.passwordLabel')}
-            <input
+            <Input
               type="password"
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
           </label>
           <div className="flex flex-wrap gap-3">
             <Button
               type="submit"
-              variant="secondary"
+              variant="danger"
               disabled={remove.isPending || password.length === 0}
             >
               {remove.isPending
                 ? t('settings.security.passkeys.deleting')
                 : t('settings.security.passkeys.deleteSubmit')}
             </Button>
-            <Button type="button" variant="ghost" onClick={reset}>
+            <Button type="button" variant="quiet" onClick={reset}>
               {t('common.cancel')}
             </Button>
           </div>
         </form>
       ) : (
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-col gap-0.5">
-            <span className="text-sm font-medium text-neutral-100">{passkey.name}</span>
-            <span className="text-xs text-neutral-500">
+          <div className="flex flex-col gap-1">
+            <span className="bt-row-title">{passkey.name}</span>
+            <span className="bt-row-sub">
               {t('settings.security.passkeys.added', { date: formatDateTime(passkey.createdAt) })}
               {' · '}
               {passkey.lastUsedAt
@@ -1245,10 +1230,10 @@ function PasskeyRow({
             </span>
           </div>
           <div className="flex gap-2">
-            <Button type="button" variant="ghost" onClick={() => setMode('rename')}>
+            <Button type="button" size="sm" variant="quiet" onClick={() => setMode('rename')}>
               {t('settings.security.passkeys.rename')}
             </Button>
-            <Button type="button" variant="ghost" onClick={() => setMode('delete')}>
+            <Button type="button" size="sm" variant="danger" onClick={() => setMode('delete')}>
               {t('settings.security.passkeys.delete')}
             </Button>
           </div>
@@ -1275,12 +1260,10 @@ function PasskeysSection() {
   }
 
   return (
-    <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+    <section className="bt-panel bt-panel--pad flex flex-col gap-4">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.security.passkeys.title')}
-        </h3>
-        <p className="text-xs text-neutral-500">{t('settings.security.passkeys.description')}</p>
+        <h3 className="bt-h3">{t('settings.security.passkeys.title')}</h3>
+        <p className="bt-meta">{t('settings.security.passkeys.description')}</p>
       </div>
 
       {query.isPending ? (
@@ -1293,9 +1276,10 @@ function PasskeysSection() {
       ) : (
         <div className="flex flex-col gap-3">
           {query.data.length === 0 ? (
-            <p className="text-sm text-neutral-400">{t('settings.security.passkeys.empty')}</p>
+            <p className="bt-soft">{t('settings.security.passkeys.empty')}</p>
           ) : (
-            <ul className="flex flex-col gap-3">
+            /* Ruled key band — one hairline per credential, no card-in-card. */
+            <ul className="bt-band bt-t-rule bt-b-rule flex flex-col">
               {query.data.map((p) => (
                 <li key={p.id}>
                   <PasskeyRow passkey={p} isLast={query.data.length === 1} refresh={refresh} />
@@ -1304,9 +1288,7 @@ function PasskeysSection() {
             </ul>
           )}
           {!supported ? (
-            <p className="text-xs text-neutral-500">
-              {t('settings.security.passkeys.unsupported')}
-            </p>
+            <p className="bt-meta">{t('settings.security.passkeys.unsupported')}</p>
           ) : adding ? (
             <AddPasskeyForm
               onAdded={() => {
@@ -1317,7 +1299,7 @@ function PasskeysSection() {
             />
           ) : (
             <div>
-              <Button type="button" variant="secondary" onClick={() => setAdding(true)}>
+              <Button type="button" onClick={() => setAdding(true)}>
                 {t('settings.security.passkeys.addButton')}
               </Button>
             </div>
@@ -1343,11 +1325,8 @@ export function SecuritySettingsPage() {
   });
 
   return (
-    <div className="flex flex-col gap-8">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">{t('settings.security.title')}</h2>
-        <p className="text-sm text-neutral-500">{t('settings.security.subtitle')}</p>
-      </div>
+    <div className="flex flex-col gap-5">
+      <SectionHead sub={t('settings.security.subtitle')} title={t('settings.security.title')} />
 
       <SessionInfo />
 

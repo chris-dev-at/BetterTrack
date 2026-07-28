@@ -14,7 +14,8 @@ import {
   unlinkGoogle,
 } from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
-import { Alert, Button, TextField, cx } from '../components/ui';
+import { Badge, Button, Field, Input, SectionHead, type BadgeTone } from '../../ui/origin';
+import { Alert } from '../components/ui';
 import type {
   DriveConnectionActionResult,
   DriveConnectionController,
@@ -118,10 +119,8 @@ function GoogleSection() {
   if (query.isError) {
     if (query.error instanceof ApiError && query.error.status === 404) return null;
     return (
-      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.security.google.title')}
-        </h3>
+      <section className="bt-panel bt-panel--pad flex flex-col gap-3">
+        <h3 className="bt-h3">{t('settings.security.google.title')}</h3>
         <EmptyState
           title={t('settings.security.google.loadError')}
           description={t('settings.retryHint')}
@@ -131,10 +130,8 @@ function GoogleSection() {
   }
   if (query.isPending) {
     return (
-      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.security.google.title')}
-        </h3>
+      <section className="bt-panel bt-panel--pad flex flex-col gap-3">
+        <h3 className="bt-h3">{t('settings.security.google.title')}</h3>
         <Skeleton height="h-6" />
       </section>
     );
@@ -143,21 +140,20 @@ function GoogleSection() {
   const status = query.data;
 
   return (
-    <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
-      <h3 className="text-sm font-semibold text-neutral-100">
-        {t('settings.security.google.title')}
-      </h3>
-      <p className="text-xs text-neutral-500">{t('settings.security.google.description')}</p>
+    <section className="bt-panel bt-panel--pad flex flex-col gap-3">
+      <h3 className="bt-h3">{t('settings.security.google.title')}</h3>
+      <p className="bt-meta">{t('settings.security.google.description')}</p>
       {connectError ? <Alert tone="error">{connectError}</Alert> : null}
       {notice ? <Alert tone="success">{notice}</Alert> : null}
       {status.linked ? (
         <div className="flex flex-col gap-3">
-          <div>
-            <p className="text-sm text-neutral-300">
+          <div className="flex flex-col items-start gap-1">
+            {/* The linked identity IS the status — one badge, no duplicate line. */}
+            <Badge tone="pos">
               {t('settings.security.google.linkedAs', { email: status.email ?? '' })}
-            </p>
+            </Badge>
             {status.linkedAt ? (
-              <p className="text-xs text-neutral-500">
+              <p className="bt-meta">
                 {t('settings.security.google.linkedOn', {
                   date: formatDateTime(status.linkedAt),
                 })}
@@ -175,33 +171,37 @@ function GoogleSection() {
                 }}
               >
                 {error ? <Alert tone="error">{error}</Alert> : null}
-                <p className="text-xs text-neutral-400">
-                  {t('settings.security.google.unlinkPrompt')}
-                </p>
-                <TextField
+                <p className="bt-meta">{t('settings.security.google.unlinkPrompt')}</p>
+                <Field
+                  className="max-w-sm"
+                  htmlFor="google-unlink-password"
                   label={t('settings.security.google.passwordLabel')}
-                  type="password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
+                >
+                  <Input
+                    autoComplete="current-password"
+                    id="google-unlink-password"
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    type="password"
+                    value={password}
+                  />
+                </Field>
                 <div className="flex gap-2">
                   <Button
-                    type="submit"
-                    variant="secondary"
                     disabled={unlink.isPending || password.length === 0}
+                    type="submit"
+                    variant="danger"
                   >
                     {t('settings.security.google.confirmUnlink')}
                   </Button>
                   <Button
-                    type="button"
-                    variant="ghost"
                     onClick={() => {
                       setUnlinking(false);
                       setError(null);
                       setPassword('');
                     }}
+                    type="button"
+                    variant="quiet"
                   >
                     {t('settings.security.google.cancel')}
                   </Button>
@@ -209,7 +209,7 @@ function GoogleSection() {
               </form>
             ) : (
               <div>
-                <Button variant="secondary" onClick={() => setUnlinking(true)}>
+                <Button onClick={() => setUnlinking(true)}>
                   {t('settings.security.google.unlinkButton')}
                 </Button>
               </div>
@@ -219,12 +219,9 @@ function GoogleSection() {
           )}
         </div>
       ) : (
-        <div className="flex flex-col gap-3">
-          <p className="text-sm text-neutral-400">{t('settings.security.google.notLinked')}</p>
-          <a
-            href={googleStartUrl()}
-            className="inline-flex w-fit items-center justify-center rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm font-semibold text-neutral-200 transition-colors hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-          >
+        <div className="flex flex-col items-start gap-3">
+          <Badge>{t('settings.security.google.notLinked')}</Badge>
+          <a className="bt-btn" href={googleStartUrl()}>
             {t('settings.security.google.connectButton')}
           </a>
         </div>
@@ -234,6 +231,14 @@ function GoogleSection() {
 }
 
 type DriveCardAction = 'connect' | 'disconnect' | 'drive-only' | 'add-server' | 'purge';
+
+/** Status → badge tone: live is positive, "needs you" is gold, idle is quiet. */
+const DRIVE_STATUS_TONE: Record<string, BadgeTone> = {
+  connected: 'pos',
+  needsSignIn: 'gold',
+  working: 'blue',
+  disconnected: 'neutral',
+};
 
 function useDriveAuthorization(connection: DriveConnectionController | null) {
   const subscribe = useCallback(
@@ -274,10 +279,8 @@ function DriveVaultSection({
 
   if (query.isError) {
     return (
-      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.connections.drive.title')}
-        </h3>
+      <section className="bt-panel bt-panel--pad flex flex-col gap-3">
+        <h3 className="bt-h3">{t('settings.connections.drive.title')}</h3>
         <EmptyState
           title={t('settings.connections.drive.loadError')}
           description={t('settings.retryHint')}
@@ -287,10 +290,8 @@ function DriveVaultSection({
   }
   if (query.isPending) {
     return (
-      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.connections.drive.title')}
-        </h3>
+      <section className="bt-panel bt-panel--pad flex flex-col gap-3">
+        <h3 className="bt-h3">{t('settings.connections.drive.title')}</h3>
         <Skeleton height="h-6" />
       </section>
     );
@@ -457,52 +458,55 @@ function DriveVaultSection({
   }
 
   return (
-    <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+    <section className="bt-panel bt-panel--pad flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.connections.drive.title')}
-        </h3>
-        <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-neutral-300">
+        <h3 className="bt-h3">{t('settings.connections.drive.title')}</h3>
+        <Badge tone={DRIVE_STATUS_TONE[statusKey] ?? 'neutral'}>
           {t(`settings.connections.drive.status.${statusKey}`)}
-        </span>
+        </Badge>
       </div>
-      <p className="text-xs text-neutral-500">{t('settings.connections.drive.description')}</p>
+      <p className="bt-meta">{t('settings.connections.drive.description')}</p>
       {message ? <Alert tone={message.tone}>{t(message.key)}</Alert> : null}
       {!configured ? (
         <Alert tone="info">{t('settings.connections.drive.configMissing')}</Alert>
       ) : null}
       {unlockAction ? (
         <form
-          className="flex max-w-sm flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-3"
+          className="bt-panel bt-panel--soft flex max-w-sm flex-col gap-3"
           onSubmit={(event) => {
             event.preventDefault();
             void unlockAndContinue();
           }}
+          style={{ padding: 14 }}
         >
-          <p className="text-xs text-neutral-400">{t('settings.connections.drive.unlockPrompt')}</p>
-          <TextField
-            id="drive-vault-passphrase"
-            type="password"
-            autoComplete="current-password"
+          <p className="bt-meta">{t('settings.connections.drive.unlockPrompt')}</p>
+          <Field
+            htmlFor="drive-vault-passphrase"
             label={t('settings.connections.drive.passphraseLabel')}
-            value={passphrase}
-            onChange={(event) => setPassphrase(event.target.value)}
-            disabled={working}
-            required
-            autoFocus
-          />
+          >
+            <Input
+              autoComplete="current-password"
+              autoFocus
+              disabled={working}
+              id="drive-vault-passphrase"
+              onChange={(event) => setPassphrase(event.target.value)}
+              required
+              type="password"
+              value={passphrase}
+            />
+          </Field>
           <div className="flex flex-wrap gap-2">
-            <Button type="submit" disabled={working || passphrase.length === 0}>
+            <Button disabled={working || passphrase.length === 0} type="submit">
               {t('settings.connections.drive.unlockAndContinue')}
             </Button>
             <Button
-              type="button"
-              variant="ghost"
               disabled={working}
               onClick={() => {
                 setUnlockAction(null);
                 setPassphrase('');
               }}
+              type="button"
+              variant="quiet"
             >
               {t('common.cancel')}
             </Button>
@@ -513,12 +517,12 @@ function DriveVaultSection({
         <Alert tone="info">{t('settings.connections.drive.lastMedium')}</Alert>
       ) : null}
       {selected ? (
-        <details className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2">
-          <summary className="cursor-pointer text-xs font-medium text-neutral-300">
+        <details className="bt-panel bt-panel--soft" style={{ padding: '9px 13px' }}>
+          <summary className="bt-h3 cursor-pointer">
             {t('settings.connections.drive.storage.title')}
           </summary>
           <div className="mt-2 flex flex-col items-start gap-2">
-            <p className="text-xs text-neutral-500">
+            <p className="bt-meta">
               {t(
                 media.mediaSet.includes('server')
                   ? 'settings.connections.drive.storage.both'
@@ -526,12 +530,12 @@ function DriveVaultSection({
               )}
             </p>
             <Button
-              type="button"
-              variant="ghost"
               disabled={working || !configured}
               onClick={() =>
                 void run(media.mediaSet.includes('server') ? 'drive-only' : 'add-server')
               }
+              size="sm"
+              type="button"
             >
               {t(
                 media.mediaSet.includes('server')
@@ -543,12 +547,12 @@ function DriveVaultSection({
         </details>
       ) : null}
       {canPurgeRetiredServer ? (
-        <details className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2">
-          <summary className="cursor-pointer text-xs font-medium text-neutral-300">
+        <details className="bt-panel bt-panel--soft" style={{ padding: '9px 13px' }}>
+          <summary className="bt-h3 cursor-pointer">
             {t('settings.connections.drive.retired.title')}
           </summary>
-          <div className="mt-2 flex flex-col gap-2">
-            <p className="text-xs text-neutral-500">
+          <div className="mt-2 flex flex-col items-start gap-2">
+            <p className="bt-meta">
               {t(
                 purgeReady
                   ? 'settings.connections.drive.retired.ready'
@@ -557,10 +561,11 @@ function DriveVaultSection({
               )}
             </p>
             <Button
-              type="button"
-              variant="ghost"
               disabled={working || !purgeReady || !configured}
               onClick={() => void run('purge')}
+              size="sm"
+              type="button"
+              variant="danger"
             >
               {t('settings.connections.drive.retired.purge')}
             </Button>
@@ -570,10 +575,10 @@ function DriveVaultSection({
       <div className="flex flex-wrap gap-2">
         {configured && (!selected || needsSignIn) ? (
           <Button
-            type="button"
-            variant="secondary"
             disabled={working}
             onClick={() => void run('connect')}
+            type="button"
+            variant="primary"
           >
             {t(
               selected ? 'settings.connections.drive.signIn' : 'settings.connections.drive.connect',
@@ -582,10 +587,10 @@ function DriveVaultSection({
         ) : null}
         {configured && selected && media.mediaSet.length > 1 ? (
           <Button
-            type="button"
-            variant="ghost"
             disabled={working}
             onClick={() => void run('disconnect')}
+            type="button"
+            variant="quiet"
           >
             {t('settings.connections.drive.disconnect')}
           </Button>
@@ -610,19 +615,13 @@ const CONNECTOR_SLOTS = [
 function ConnectorSlot({ slotKey, sync }: { slotKey: string; sync: 'oneTime' | 'stayConnected' }) {
   const t = useT();
   return (
-    <li className="flex flex-col gap-1 rounded-md border border-neutral-800 bg-neutral-950 px-4 py-3">
+    <li className="bt-band__row flex flex-col gap-1" style={{ paddingInline: 0 }}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm font-medium text-neutral-200">
-          {t(`settings.connections.slots.${slotKey}.name`)}
-        </span>
-        <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-neutral-400">
-          {t('settings.connections.comingSoon')}
-        </span>
+        <span className="bt-row-title">{t(`settings.connections.slots.${slotKey}.name`)}</span>
+        <Badge outline>{t('settings.connections.comingSoon')}</Badge>
       </div>
-      <p className="text-xs text-neutral-500">
-        {t(`settings.connections.slots.${slotKey}.purpose`)}
-      </p>
-      <p className="text-xs text-neutral-600">
+      <p className="bt-row-sub">{t(`settings.connections.slots.${slotKey}.purpose`)}</p>
+      <p className="bt-row-sub" style={{ color: 'var(--bt-faint)' }}>
         {t(
           sync === 'oneTime'
             ? 'settings.connections.sync.oneTime'
@@ -636,27 +635,24 @@ function ConnectorSlot({ slotKey, sync }: { slotKey: string; sync: 'oneTime' | '
 function ConnectorSlots() {
   const t = useT();
   return (
-    <details className="group rounded-md border border-neutral-800 bg-neutral-900">
+    <details className="bt-panel group">
       <summary
-        className={cx(
-          'flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-4',
-          'text-sm font-semibold text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-        )}
+        className="flex cursor-pointer list-none items-center justify-between gap-3"
+        style={{ padding: '15px 20px' }}
       >
         <span className="flex flex-col gap-0.5">
-          <span>{t('settings.connections.slotsTitle')}</span>
-          <span className="text-xs font-normal text-neutral-500">
-            {t('settings.connections.slotsSubtitle')}
-          </span>
+          <span className="bt-h3">{t('settings.connections.slotsTitle')}</span>
+          <span className="bt-meta">{t('settings.connections.slotsSubtitle')}</span>
         </span>
         <span
           aria-hidden="true"
-          className="text-neutral-500 transition-transform group-open:rotate-90"
+          className="transition-transform group-open:rotate-90"
+          style={{ color: 'var(--bt-faint)' }}
         >
           ▸
         </span>
       </summary>
-      <ul className="flex flex-col gap-2 px-5 pb-5">
+      <ul className="bt-band bt-t-rule flex flex-col" style={{ padding: '0 20px 6px' }}>
         {CONNECTOR_SLOTS.map((slot) => (
           <ConnectorSlot key={slot.key} slotKey={slot.key} sync={slot.sync} />
         ))}
@@ -689,13 +685,8 @@ export function ConnectionsPage({
   const resolvedDriveUnlock =
     driveUnlock === undefined ? (runtime?.unlockWithPassphrase ?? null) : driveUnlock;
   return (
-    <div className="flex flex-col gap-8">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">
-          {t('settings.connections.title')}
-        </h2>
-        <p className="text-sm text-neutral-500">{t('settings.connections.subtitle')}</p>
-      </div>
+    <div className="flex flex-col gap-5">
+      <SectionHead sub={t('settings.connections.subtitle')} title={t('settings.connections.title')} />
 
       <GoogleSection />
 

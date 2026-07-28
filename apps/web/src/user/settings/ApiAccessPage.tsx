@@ -26,13 +26,26 @@ import {
 } from '../../lib/oauthApi';
 import { formatDate } from '../../lib/format';
 import { EmptyState, ScopePicker, Skeleton } from '../../ui';
+import { Badge, Button, Field, Input, SectionHead } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, TextField, cx } from '../components/ui';
+import { Alert } from '../components/ui';
 import { WebhooksSection } from './WebhooksSection';
 
 const API_KEYS_KEY = ['settings', 'api-keys'] as const;
 const OAUTH_CLIENTS_KEY = ['settings', 'oauth-clients'] as const;
 const OAUTH_GRANTS_KEY = ['settings', 'oauth-grants'] as const;
+
+/** Monospace secret/identifier surface — the show-once tokens and client ids. */
+const MONO_FONT = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+
+/** One scope token, rendered as a quiet monospace chip. */
+function ScopeChip({ scope }: { scope: string }) {
+  return (
+    <Badge outline style={{ fontFamily: MONO_FONT, fontSize: 11, minHeight: 18 }}>
+      {scope}
+    </Badge>
+  );
+}
 
 /** The one-time token modal — the plaintext is available here and never again. */
 function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose: () => void }) {
@@ -56,18 +69,21 @@ function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose
     >
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-2">
-          <code className="flex-1 overflow-x-auto rounded-md bg-neutral-950 px-3 py-2 font-mono text-sm text-emerald-300 ring-1 ring-inset ring-neutral-700">
+          <code
+            className="bt-panel bt-panel--soft bt-num flex-1 overflow-x-auto"
+            style={{ fontFamily: MONO_FONT, padding: '8px 11px', color: 'var(--bt-pos)' }}
+          >
             {result.token}
           </code>
-          <Button variant="secondary" onClick={copy}>
-            {copied ? t('settings.api.copied') : t('settings.api.copy')}
-          </Button>
+          <Button onClick={copy}>{copied ? t('settings.api.copied') : t('settings.api.copy')}</Button>
         </div>
         <Alert tone="info">
           {t('settings.api.keys.tokenModal.storeWarning', { name: result.key.name })}
         </Alert>
         <div className="flex justify-end">
-          <Button onClick={onClose}>{t('settings.api.done')}</Button>
+          <Button onClick={onClose} variant="primary">
+            {t('settings.api.done')}
+          </Button>
         </div>
       </div>
     </Dialog>
@@ -109,19 +125,19 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
-      <h3 className="text-sm font-semibold text-neutral-100">
-        {t('settings.api.keys.createTitle')}
-      </h3>
+      <h3 className="bt-h3">{t('settings.api.keys.createTitle')}</h3>
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <TextField
-        label={t('settings.api.keys.nameLabel')}
-        name="name"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        maxLength={80}
-        placeholder={t('settings.api.keys.namePlaceholder')}
-        required
-      />
+      <Field className="max-w-sm" htmlFor="name" label={t('settings.api.keys.nameLabel')}>
+        <Input
+          id="name"
+          maxLength={80}
+          name="name"
+          onChange={(e) => setName(e.target.value)}
+          placeholder={t('settings.api.keys.namePlaceholder')}
+          required
+          value={name}
+        />
+      </Field>
       {/* V5-P0b: one row per module, collapsed by default so an unrelated key
           form doesn't hog vertical space above the OAuth registration. */}
       <ScopePicker
@@ -131,7 +147,8 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
         legend={t('settings.api.scopesLegend')}
       />
       <div>
-        <Button type="submit" disabled={mutation.isPending}>
+        {/* The page's single primary action (§ Origin controls: one loud action). */}
+        <Button disabled={mutation.isPending} type="submit" variant="primary">
           {mutation.isPending ? t('settings.api.keys.creating') : t('settings.api.keys.create')}
         </Button>
       </div>
@@ -155,20 +172,15 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeySummary }) {
   });
 
   return (
-    <li className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+    <li className="bt-band__row flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex flex-col gap-1">
-        <span className="text-sm font-medium text-neutral-100">{apiKey.name}</span>
+        <span className="bt-row-title">{apiKey.name}</span>
         <span className="flex flex-wrap gap-1">
           {apiKey.scopes.map((scope) => (
-            <span
-              key={scope}
-              className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[0.65rem] text-neutral-300"
-            >
-              {scope}
-            </span>
+            <ScopeChip key={scope} scope={scope} />
           ))}
         </span>
-        <span className="text-xs text-neutral-500">
+        <span className="bt-row-sub">
           {apiKey.lastUsedAt
             ? t('settings.api.keys.createdLastUsed', {
                 createdAt: formatDate(apiKey.createdAt),
@@ -178,29 +190,23 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeySummary }) {
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {error ? (
-          <span className="text-xs text-red-400">{t('settings.api.revokeFailed')}</span>
-        ) : null}
+        {error ? <span className="bt-field__error">{t('settings.api.revokeFailed')}</span> : null}
         {confirming ? (
           <>
             <Button
-              variant="secondary"
-              className={cx('text-red-300 ring-red-900 hover:bg-red-950')}
               disabled={mutation.isPending}
               onClick={() => mutation.mutate()}
+              size="sm"
+              variant="danger"
             >
               {mutation.isPending ? t('settings.api.revoking') : t('settings.api.confirmRevoke')}
             </Button>
-            <Button
-              variant="ghost"
-              disabled={mutation.isPending}
-              onClick={() => setConfirming(false)}
-            >
+            <Button disabled={mutation.isPending} onClick={() => setConfirming(false)} size="sm" variant="quiet">
               {t('common.cancel')}
             </Button>
           </>
         ) : (
-          <Button variant="ghost" onClick={() => setConfirming(true)}>
+          <Button onClick={() => setConfirming(true)} size="sm" variant="danger">
             {t('settings.api.keys.revoke')}
           </Button>
         )}
@@ -248,23 +254,25 @@ function OAuthCredentialsModal({
     >
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('settings.api.oauth.clientIdLabel')}
-          </span>
-          <code className="overflow-x-auto rounded-md bg-neutral-950 px-3 py-2 font-mono text-sm text-neutral-200 ring-1 ring-inset ring-neutral-700">
+          <span className="bt-label">{t('settings.api.oauth.clientIdLabel')}</span>
+          <code
+            className="bt-panel bt-panel--soft bt-num overflow-x-auto"
+            style={{ fontFamily: MONO_FONT, padding: '8px 11px', color: 'var(--bt-text-soft)' }}
+          >
             {result.client.clientId}
           </code>
         </div>
         {result.clientSecret ? (
           <div className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">
-              {t('settings.api.oauth.clientSecretLabel')}
-            </span>
+            <span className="bt-label">{t('settings.api.oauth.clientSecretLabel')}</span>
             <div className="flex items-center gap-2">
-              <code className="flex-1 overflow-x-auto rounded-md bg-neutral-950 px-3 py-2 font-mono text-sm text-emerald-300 ring-1 ring-inset ring-neutral-700">
+              <code
+                className="bt-panel bt-panel--soft bt-num flex-1 overflow-x-auto"
+                style={{ fontFamily: MONO_FONT, padding: '8px 11px', color: 'var(--bt-pos)' }}
+              >
                 {result.clientSecret}
               </code>
-              <Button variant="secondary" onClick={copySecret}>
+              <Button onClick={copySecret}>
                 {copiedSecret ? t('settings.api.copied') : t('settings.api.copy')}
               </Button>
             </div>
@@ -276,7 +284,9 @@ function OAuthCredentialsModal({
             : t('settings.api.oauth.credentialsModal.publicClientNotice')}
         </Alert>
         <div className="flex justify-end">
-          <Button onClick={onClose}>{t('settings.api.done')}</Button>
+          <Button onClick={onClose} variant="primary">
+            {t('settings.api.done')}
+          </Button>
         </div>
       </div>
     </Dialog>
@@ -348,47 +358,49 @@ function RegisterOAuthClientForm({
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
-      <h3 className="text-sm font-semibold text-neutral-100">
-        {t('settings.api.oauth.registerTitle')}
-      </h3>
+      <h3 className="bt-h3">{t('settings.api.oauth.registerTitle')}</h3>
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <TextField
+      <Field
+        className="max-w-sm"
+        htmlFor="oauth-name"
         label={t('settings.api.oauth.appNameLabel')}
-        name="oauth-name"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        maxLength={80}
-        placeholder={t('settings.api.oauth.appNamePlaceholder')}
-        required
-      />
+      >
+        <Input
+          id="oauth-name"
+          maxLength={80}
+          name="oauth-name"
+          onChange={(e) => setName(e.target.value)}
+          placeholder={t('settings.api.oauth.appNamePlaceholder')}
+          required
+          value={name}
+        />
+      </Field>
       <fieldset className="flex flex-col gap-2">
-        <legend className="text-sm font-medium text-neutral-300">
-          {t('settings.api.oauth.redirectUrisLegend')}
-        </legend>
-        <p className="text-xs text-neutral-500">
+        <legend className="bt-label">{t('settings.api.oauth.redirectUrisLegend')}</legend>
+        <p className="bt-meta">
           {t('settings.api.oauth.redirectUrisHintBefore')}
-          <code className="font-mono text-neutral-400">{'myapp://callback'}</code>
+          <code style={{ fontFamily: MONO_FONT }}>{'myapp://callback'}</code>
           {t('settings.api.oauth.redirectUrisHintAfter')}
         </p>
         {redirectUris.map((uri, index) => (
           // Index keys are acceptable: the inputs are controlled and the list is
           // only ever appended to / removed from, never reordered.
-          <div key={index} className="flex items-center gap-2">
-            <input
-              type="text"
-              value={uri}
+          <div key={index} className="flex max-w-xl items-center gap-2">
+            <Input
+              aria-label={t('settings.api.oauth.redirectUriAriaLabel', { index: index + 1 })}
               onChange={(e) => setUriAt(index, e.target.value)}
               placeholder={t('settings.api.oauth.redirectPlaceholder')}
-              aria-label={t('settings.api.oauth.redirectUriAriaLabel', { index: index + 1 })}
-              className="flex-1 rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              type="text"
+              value={uri}
             />
             {redirectUris.length > 1 ? (
               <Button
-                variant="ghost"
                 aria-label={t('settings.api.oauth.removeRedirectUriAriaLabel', {
                   index: index + 1,
                 })}
                 onClick={() => removeUriAt(index)}
+                size="sm"
+                variant="quiet"
               >
                 {t('settings.api.oauth.removeUri')}
               </Button>
@@ -397,7 +409,7 @@ function RegisterOAuthClientForm({
         ))}
         {redirectUris.length < 10 ? (
           <div>
-            <Button variant="ghost" onClick={addUri}>
+            <Button onClick={addUri} size="sm" variant="quiet">
               {t('settings.api.oauth.addUri')}
             </Button>
           </div>
@@ -407,7 +419,7 @@ function RegisterOAuthClientForm({
           Collapsed by default per the anti-bloat rule so registering an app
           doesn't scroll past every module tick to reach the public toggle. */}
       <div className="flex flex-col gap-1.5">
-        <p className="text-xs text-neutral-500">{t('settings.api.oauth.scopesHint')}</p>
+        <p className="bt-meta">{t('settings.api.oauth.scopesHint')}</p>
         <ScopePicker
           scopes={scopes}
           onChange={setScopes}
@@ -415,24 +427,24 @@ function RegisterOAuthClientForm({
           legend={t('settings.api.scopesLegend')}
         />
       </div>
-      <label className="flex cursor-pointer items-start gap-3 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2">
+      <label
+        className="bt-panel bt-panel--soft flex cursor-pointer items-start gap-3"
+        style={{ padding: '9px 13px' }}
+      >
         <input
           type="checkbox"
           checked={isPublic}
           onChange={(e) => setIsPublic(e.target.checked)}
-          className="mt-1 h-4 w-4 accent-sky-500"
+          className="mt-1 h-4 w-4"
+          style={{ accentColor: 'var(--bt-gold)' }}
         />
         <span className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium text-neutral-100">
-            {t('settings.api.oauth.publicClientLabel')}
-          </span>
-          <span className="text-xs text-neutral-500">
-            {t('settings.api.oauth.publicClientDescription')}
-          </span>
+          <span className="bt-row-title">{t('settings.api.oauth.publicClientLabel')}</span>
+          <span className="bt-row-sub">{t('settings.api.oauth.publicClientDescription')}</span>
         </span>
       </label>
       <div>
-        <Button type="submit" disabled={mutation.isPending}>
+        <Button disabled={mutation.isPending} type="submit">
           {mutation.isPending
             ? t('settings.api.oauth.registering')
             : t('settings.api.oauth.register')}
@@ -460,62 +472,59 @@ function OAuthClientRow({ client }: { client: OAuthClientSummary }) {
   });
 
   return (
-    <li className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+    <li className="bt-band__row flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
       <div className="flex flex-col gap-1">
         <span className="flex items-center gap-2">
-          <span className="text-sm font-medium text-neutral-100">{client.name}</span>
-          <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[0.65rem] text-neutral-300">
+          <span className="bt-row-title">{client.name}</span>
+          <Badge tone={client.public ? 'blue' : 'neutral'}>
             {client.public ? t('settings.api.oauth.public') : t('settings.api.oauth.confidential')}
-          </span>
+          </Badge>
         </span>
-        <code className="font-mono text-xs text-neutral-400">{client.clientId}</code>
+        <code className="bt-meta" style={{ fontFamily: MONO_FONT }}>
+          {client.clientId}
+        </code>
         <span className="flex flex-wrap gap-1">
           {client.scopes.map((scope) => (
-            <span
-              key={scope}
-              className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[0.65rem] text-neutral-300"
-            >
-              {scope}
-            </span>
+            <ScopeChip key={scope} scope={scope} />
           ))}
         </span>
         <span className="flex flex-col gap-0.5">
           {client.redirectUris.map((uri) => (
-            <span key={uri} className="break-all font-mono text-[0.65rem] text-neutral-500">
+            <span
+              key={uri}
+              className="bt-row-sub break-all"
+              style={{ fontFamily: MONO_FONT, fontSize: 11 }}
+            >
               {uri}
             </span>
           ))}
         </span>
-        <span className="text-xs text-neutral-500">
+        <span className="bt-row-sub">
           {t('settings.api.oauth.registeredOn', { createdAt: formatDate(client.createdAt) })}
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {error ? (
-          <span className="text-xs text-red-400">{t('settings.api.oauth.deleteFailed')}</span>
+          <span className="bt-field__error">{t('settings.api.oauth.deleteFailed')}</span>
         ) : null}
         {confirming ? (
           <>
             <Button
-              variant="secondary"
-              className={cx('text-red-300 ring-red-900 hover:bg-red-950')}
               disabled={mutation.isPending}
               onClick={() => mutation.mutate()}
+              size="sm"
+              variant="danger"
             >
               {mutation.isPending
                 ? t('settings.api.oauth.deleting')
                 : t('settings.api.oauth.confirmDelete')}
             </Button>
-            <Button
-              variant="ghost"
-              disabled={mutation.isPending}
-              onClick={() => setConfirming(false)}
-            >
+            <Button disabled={mutation.isPending} onClick={() => setConfirming(false)} size="sm" variant="quiet">
               {t('common.cancel')}
             </Button>
           </>
         ) : (
-          <Button variant="ghost" onClick={() => setConfirming(true)}>
+          <Button onClick={() => setConfirming(true)} size="sm" variant="danger">
             {t('common.delete')}
           </Button>
         )}
@@ -540,19 +549,19 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
   });
 
   return (
-    <li className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
+    <li className="bt-band__row flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
       <div className="flex flex-col gap-1">
-        <span className="text-sm font-medium text-neutral-100">
+        <span className="bt-row-title">
           {t('settings.api.grants.canAccess', { appName: grant.appName })}
         </span>
         <ul className="flex flex-col gap-0.5">
           {grant.scopes.map((scope) => (
-            <li key={scope} className="text-xs text-neutral-400">
+            <li key={scope} className="bt-row-sub">
               · {OAUTH_SCOPE_LABELS[scope]}
             </li>
           ))}
         </ul>
-        <span className="text-xs text-neutral-500">
+        <span className="bt-row-sub">
           {grant.lastUsedAt
             ? t('settings.api.grants.authorizedLastUsed', {
                 createdAt: formatDate(grant.createdAt),
@@ -564,29 +573,23 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {error ? (
-          <span className="text-xs text-red-400">{t('settings.api.revokeFailed')}</span>
-        ) : null}
+        {error ? <span className="bt-field__error">{t('settings.api.revokeFailed')}</span> : null}
         {confirming ? (
           <>
             <Button
-              variant="secondary"
-              className={cx('text-red-300 ring-red-900 hover:bg-red-950')}
               disabled={mutation.isPending}
               onClick={() => mutation.mutate()}
+              size="sm"
+              variant="danger"
             >
               {mutation.isPending ? t('settings.api.revoking') : t('settings.api.confirmRevoke')}
             </Button>
-            <Button
-              variant="ghost"
-              disabled={mutation.isPending}
-              onClick={() => setConfirming(false)}
-            >
+            <Button disabled={mutation.isPending} onClick={() => setConfirming(false)} size="sm" variant="quiet">
               {t('common.cancel')}
             </Button>
           </>
         ) : (
-          <Button variant="ghost" onClick={() => setConfirming(true)}>
+          <Button onClick={() => setConfirming(true)} size="sm" variant="danger">
             {t('settings.api.grants.revokeAccess')}
           </Button>
         )}
@@ -610,22 +613,18 @@ function OAuthAppsSection({
   const clients = query.data?.clients ?? [];
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">
-          {t('settings.api.oauth.sectionTitle')}
-        </h2>
-        <p className="text-sm text-neutral-500">{t('settings.api.oauth.sectionDescription')}</p>
-      </div>
+    <div className="flex flex-col gap-5">
+      <SectionHead
+        sub={t('settings.api.oauth.sectionDescription')}
+        title={t('settings.api.oauth.sectionTitle')}
+      />
 
-      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
+      <section className="bt-panel bt-panel--pad">
         <RegisterOAuthClientForm onCreated={onCreated} />
       </section>
 
       <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.api.oauth.yourApps')}
-        </h3>
+        <h3 className="bt-h3">{t('settings.api.oauth.yourApps')}</h3>
         {query.isPending ? (
           <Skeleton height="h-20" />
         ) : query.isError ? (
@@ -640,7 +639,7 @@ function OAuthAppsSection({
             description={t('settings.api.oauth.empty.description')}
           />
         ) : (
-          <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
+          <ul className="bt-panel bt-band">
             {clients.map((client) => (
               <OAuthClientRow key={client.id} client={client} />
             ))}
@@ -662,13 +661,11 @@ function AuthorizedAppsSection() {
   const grants = query.data?.grants ?? [];
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">
-          {t('settings.api.grants.sectionTitle')}
-        </h2>
-        <p className="text-sm text-neutral-500">{t('settings.api.grants.sectionDescription')}</p>
-      </div>
+    <div className="flex flex-col gap-5">
+      <SectionHead
+        sub={t('settings.api.grants.sectionDescription')}
+        title={t('settings.api.grants.sectionTitle')}
+      />
 
       <section className="flex flex-col gap-3">
         {query.isPending ? (
@@ -685,7 +682,7 @@ function AuthorizedAppsSection() {
             description={t('settings.api.grants.empty.description')}
           />
         ) : (
-          <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
+          <ul className="bt-panel bt-band">
             {grants.map((grant) => (
               <OAuthGrantRow key={grant.id} grant={grant} />
             ))}
@@ -715,26 +712,30 @@ export function ApiAccessPage() {
   const keys = query.data?.keys ?? [];
 
   return (
-    <div className="flex flex-col gap-8">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">{t('settings.api.title')}</h2>
-        <p className="text-sm text-neutral-500">
-          {t('settings.api.introBefore')}
-          <code className="font-mono text-neutral-300">{'Authorization: Bearer …'}</code>
-          {t('settings.api.introMiddle')}
-          <code className="font-mono text-neutral-300">{'/docs'}</code>
-          {t('settings.api.introAfter')}
-        </p>
-      </div>
+    <div className="flex flex-col gap-6">
+      <SectionHead
+        sub={
+          <>
+            {t('settings.api.introBefore')}
+            <code className="bt-soft" style={{ fontFamily: MONO_FONT }}>
+              {'Authorization: Bearer …'}
+            </code>
+            {t('settings.api.introMiddle')}
+            <code className="bt-soft" style={{ fontFamily: MONO_FONT }}>
+              {'/docs'}
+            </code>
+            {t('settings.api.introAfter')}
+          </>
+        }
+        title={t('settings.api.title')}
+      />
 
-      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
+      <section className="bt-panel bt-panel--pad">
         <CreateApiKeyForm onCreated={setMinted} />
       </section>
 
       <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.api.keys.sectionTitle')}
-        </h3>
+        <h3 className="bt-h3">{t('settings.api.keys.sectionTitle')}</h3>
         {query.isPending ? (
           <Skeleton height="h-20" />
         ) : query.isError ? (
@@ -749,7 +750,7 @@ export function ApiAccessPage() {
             description={t('settings.api.keys.empty.description')}
           />
         ) : (
-          <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
+          <ul className="bt-panel bt-band">
             {keys.map((apiKey) => (
               <ApiKeyRow key={apiKey.id} apiKey={apiKey} />
             ))}
@@ -757,15 +758,15 @@ export function ApiAccessPage() {
         )}
       </section>
 
-      <hr className="border-neutral-800" />
+      <hr className="bt-rule" />
 
       <WebhooksSection />
 
-      <hr className="border-neutral-800" />
+      <hr className="bt-rule" />
 
       <OAuthAppsSection onCreated={setRegistered} />
 
-      <hr className="border-neutral-800" />
+      <hr className="bt-rule" />
 
       <AuthorizedAppsSection />
 

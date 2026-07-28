@@ -52,8 +52,9 @@ import {
   type WebPushState,
 } from '../../lib/webPushClient';
 import { ComingSoon, EmptyState, Skeleton } from '../../ui';
+import { Badge, Button, Input, SectionHead, Select } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert, cx } from '../components/ui';
 import { LocalNav, type LocalNavItem } from '../components/LocalNav';
 
 export { AccountSettingsPage } from './AccountSettingsPage';
@@ -283,13 +284,13 @@ function MirrorGroupRow({
     return 'mixed';
   };
   return (
-    <tr className="border-t border-neutral-800/60">
-      <td className="px-4 py-2.5">
+    <tr>
+      <td>
         <div className="flex flex-col gap-0.5">
-          <span className="font-medium text-neutral-100">
+          <span className="bt-row-title">
             {t('settings.notifications.mirrorchain.groupLabel')}
           </span>
-          <span className="text-xs text-neutral-500">
+          <span className="bt-row-sub">
             {t('settings.notifications.mirrorchain.groupHint')}
           </span>
         </div>
@@ -297,13 +298,23 @@ function MirrorGroupRow({
       {channels.map((channel) => {
         const state = summary(channel);
         return (
-          <td key={channel} className="px-3 py-2.5 text-center align-middle">
+          <td key={channel} className="text-center align-middle">
+            {/* Origin switch look, unchanged semantics: the real input keeps
+                role/aria-checked (incl. the tri-state "mixed") and its label. */}
             <label
               className={cx(
-                'relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors',
-                state === 'on' ? 'bg-sky-600' : 'bg-neutral-700',
-                gridDisabled && 'cursor-not-allowed opacity-50',
+                'relative inline-flex shrink-0 cursor-pointer items-center',
+                gridDisabled && 'cursor-not-allowed',
               )}
+              style={{
+                width: 34,
+                height: 20,
+                borderRadius: 999,
+                border: `1px solid ${state === 'on' ? 'var(--bt-gold)' : 'var(--bt-border-strong)'}`,
+                background: state === 'on' ? 'var(--bt-gold)' : 'var(--bt-surface-soft)',
+                opacity: gridDisabled ? 0.5 : undefined,
+                transition: 'background var(--bt-t-fast), border-color var(--bt-t-fast)',
+              }}
             >
               <input
                 type="checkbox"
@@ -319,11 +330,21 @@ function MirrorGroupRow({
               />
               <span
                 aria-hidden="true"
-                className={cx(
-                  'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
-                  state === 'on' ? 'translate-x-4' : 'translate-x-1',
-                  state === 'mixed' && 'bg-sky-300',
-                )}
+                className="inline-block"
+                style={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: '50%',
+                  marginLeft: 2,
+                  transform: state === 'on' ? 'translateX(14px)' : undefined,
+                  background:
+                    state === 'on'
+                      ? 'var(--bt-gold-ink)'
+                      : state === 'mixed'
+                        ? 'var(--bt-gold)'
+                        : 'var(--bt-muted)',
+                  transition: 'transform var(--bt-t-fast), background var(--bt-t-fast)',
+                }}
               />
             </label>
           </td>
@@ -358,10 +379,8 @@ function MatrixCell({
       checked={locked ? channel === 'email' : checked}
       disabled={disabled || locked}
       onChange={(event) => onToggle(event.target.checked)}
-      className={cx(
-        'h-4 w-4 accent-sky-500',
-        (disabled || locked) && 'cursor-not-allowed opacity-50',
-      )}
+      className={cx('h-4 w-4', (disabled || locked) && 'cursor-not-allowed')}
+      style={{ accentColor: 'var(--bt-gold)', opacity: disabled || locked ? 0.5 : undefined }}
     />
   );
 }
@@ -416,19 +435,15 @@ function NotificationMatrixGrid({
 
   return (
     <div
-      className={cx(
-        'overflow-x-auto rounded-md border border-neutral-800 bg-neutral-900',
-        settings.muted && 'opacity-60',
-      )}
+      className="bt-table-wrap bt-table-wrap--panel"
+      style={{ opacity: settings.muted ? 0.6 : undefined }}
     >
-      <table className="w-full text-sm">
+      <table className="bt-table">
         <thead>
-          <tr className="border-b border-neutral-800 text-xs uppercase tracking-wide text-neutral-500">
-            <th scope="col" className="px-4 py-2 text-left font-medium">
-              {t('settings.notifications.title')}
-            </th>
+          <tr>
+            <th scope="col">{t('settings.notifications.title')}</th>
             {channels.map((channel) => (
-              <th scope="col" key={channel} className="px-3 py-2 text-center font-medium">
+              <th scope="col" key={channel} style={{ textAlign: 'center' }}>
                 {chLabels[channel]}
               </th>
             ))}
@@ -441,10 +456,14 @@ function NotificationMatrixGrid({
           // one, all-or-nothing per channel.
           const isMirrorchain = category.key === 'mirrorchain';
           return (
-            <tbody key={category.key} className="border-b border-neutral-800 last:border-b-0">
-              <tr className="bg-neutral-950/40">
-                <th scope="rowgroup" colSpan={channels.length + 1} className="px-4 py-2 text-left">
-                  <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+            <tbody key={category.key}>
+              <tr>
+                <th
+                  scope="rowgroup"
+                  colSpan={channels.length + 1}
+                  style={{ position: 'static', background: 'var(--bt-surface-soft)' }}
+                >
+                  <label className="bt-label flex items-center gap-2">
                     <input
                       type="checkbox"
                       role="switch"
@@ -454,10 +473,11 @@ function NotificationMatrixGrid({
                       checked={categoryEnabled(category.types)}
                       disabled={gridDisabled}
                       onChange={(event) => toggleCategory(category.types, event.target.checked)}
-                      className={cx(
-                        'h-4 w-4 accent-sky-500',
-                        gridDisabled && 'cursor-not-allowed opacity-50',
-                      )}
+                      className={cx('h-4 w-4', gridDisabled && 'cursor-not-allowed')}
+                      style={{
+                        accentColor: 'var(--bt-gold)',
+                        opacity: gridDisabled ? 0.5 : undefined,
+                      }}
                     />
                     {catLabels[category.key]}
                   </label>
@@ -481,11 +501,11 @@ function NotificationMatrixGrid({
                 />
               ) : (
                 category.types.map((type) => (
-                  <tr key={type} className="border-t border-neutral-800/60">
-                    <td className="px-4 py-2.5">
+                  <tr key={type}>
+                    <td>
                       <div className="flex flex-col gap-0.5">
-                        <span className="font-medium text-neutral-100">{typeMeta[type].label}</span>
-                        <span className="text-xs text-neutral-500">
+                        <span className="bt-row-title">{typeMeta[type].label}</span>
+                        <span className="bt-row-sub">
                           {type === 'account.invite'
                             ? t('settings.notifications.grid.inviteHint')
                             : type === 'account.temp_password'
@@ -495,7 +515,7 @@ function NotificationMatrixGrid({
                       </div>
                     </td>
                     {channels.map((channel) => (
-                      <td key={channel} className="px-3 py-2.5 text-center align-middle">
+                      <td key={channel} className="text-center align-middle">
                         <MatrixCell
                           type={type}
                           channel={channel}
@@ -541,21 +561,22 @@ function NotificationCadenceControls({
   const types = NOTIFICATION_TYPES.filter((type) => type !== 'account.invite');
 
   return (
-    <details className="rounded-md border border-neutral-800 bg-neutral-900">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-neutral-100">
+    <details className="bt-panel">
+      <summary className="bt-h3 cursor-pointer" style={{ padding: '13px 20px' }}>
         {t('settings.notifications.digest.title')}
-        <p className="mt-0.5 text-xs font-normal text-neutral-500">
+        <p className="bt-meta" style={{ marginTop: 2, fontWeight: 400 }}>
           {t('settings.notifications.digest.description')}
         </p>
       </summary>
-      <ul className="flex flex-col border-t border-neutral-800">
+      <ul className="bt-band bt-t-rule flex flex-col">
         {types.map((type) => (
           <li
             key={type}
-            className="flex items-center justify-between gap-3 border-b border-neutral-800/60 px-4 py-2.5 last:border-b-0"
+            className="bt-band__row flex items-center justify-between gap-3"
+            style={{ paddingBlock: 10 }}
           >
-            <span className="min-w-0 text-sm text-neutral-200">{typeMeta[type].label}</span>
-            <select
+            <span className="bt-soft min-w-0">{typeMeta[type].label}</span>
+            <Select
               aria-label={t('settings.notifications.digest.selectAria', {
                 type: typeMeta[type].label,
               })}
@@ -564,17 +585,15 @@ function NotificationCadenceControls({
               onChange={(event) =>
                 onUpdate({ cadence: { [type]: event.target.value as NotificationCadence } })
               }
-              className={cx(
-                'rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100',
-                busy && 'cursor-not-allowed opacity-50',
-              )}
+              className={cx(busy && 'cursor-not-allowed')}
+              style={{ width: 'auto', minHeight: 28, opacity: busy ? 0.5 : undefined }}
             >
               {NOTIFICATION_CADENCES.map((cadence) => (
                 <option key={cadence} value={cadence}>
                   {t(`settings.notifications.digest.${cadence}`)}
                 </option>
               ))}
-            </select>
+            </Select>
           </li>
         ))}
       </ul>
@@ -639,18 +658,16 @@ function QuietHoursControls({
   const detected = detectedTimeZone();
 
   return (
-    <details className="rounded-md border border-neutral-800 bg-neutral-900">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-neutral-100">
+    <details className="bt-panel">
+      <summary className="bt-h3 cursor-pointer" style={{ padding: '13px 20px' }}>
         {t('settings.notifications.quietHours.title')}
-        <p className="mt-0.5 text-xs font-normal text-neutral-500">
+        <p className="bt-meta" style={{ marginTop: 2, fontWeight: 400 }}>
           {t('settings.notifications.quietHours.description')}
         </p>
       </summary>
-      <div className="flex flex-col gap-3 border-t border-neutral-800 px-4 py-3">
+      <div className="bt-t-rule flex flex-col gap-3" style={{ padding: '13px 20px' }}>
         <label className="flex items-center justify-between gap-3">
-          <span className="text-sm text-neutral-200">
-            {t('settings.notifications.quietHours.enable')}
-          </span>
+          <span className="bt-soft">{t('settings.notifications.quietHours.enable')}</span>
           <input
             type="checkbox"
             role="switch"
@@ -658,15 +675,16 @@ function QuietHoursControls({
             checked={quiet.enabled}
             disabled={busy}
             onChange={(event) => onUpdate({ quietHours: { enabled: event.target.checked } })}
-            className={cx('h-4 w-4 accent-sky-500', busy && 'cursor-not-allowed opacity-50')}
+            className={cx('h-4 w-4', busy && 'cursor-not-allowed')}
+            style={{ accentColor: 'var(--bt-gold)', opacity: busy ? 0.5 : undefined }}
           />
         </label>
         {quiet.enabled ? (
           <div className="flex flex-col gap-3">
             <div className="flex flex-wrap gap-4">
-              <label className="flex flex-col gap-1 text-sm text-neutral-300">
+              <label className="bt-field bt-soft" style={{ fontSize: 12, fontWeight: 570 }}>
                 {t('settings.notifications.quietHours.start')}
-                <input
+                <Input
                   type="time"
                   value={timeFromMinutes(quiet.startMinute)}
                   disabled={busy}
@@ -674,12 +692,12 @@ function QuietHoursControls({
                     const minute = minutesFromTime(event.target.value);
                     if (minute !== null) onUpdate({ quietHours: { startMinute: minute } });
                   }}
-                  className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100"
+                  style={{ width: 'auto' }}
                 />
               </label>
-              <label className="flex flex-col gap-1 text-sm text-neutral-300">
+              <label className="bt-field bt-soft" style={{ fontSize: 12, fontWeight: 570 }}>
                 {t('settings.notifications.quietHours.end')}
-                <input
+                <Input
                   type="time"
                   value={timeFromMinutes(quiet.endMinute)}
                   disabled={busy}
@@ -687,13 +705,16 @@ function QuietHoursControls({
                     const minute = minutesFromTime(event.target.value);
                     if (minute !== null) onUpdate({ quietHours: { endMinute: minute } });
                   }}
-                  className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100"
+                  style={{ width: 'auto' }}
                 />
               </label>
             </div>
-            <label className="flex flex-col gap-1 text-sm text-neutral-300">
+            <label
+              className="bt-field bt-soft max-w-sm"
+              style={{ fontSize: 12, fontWeight: 570 }}
+            >
               {t('settings.notifications.quietHours.timezone')}
-              <select
+              <Select
                 value={quiet.timezone ?? ''}
                 disabled={busy}
                 onChange={(event) =>
@@ -701,7 +722,6 @@ function QuietHoursControls({
                     quietHours: { timezone: event.target.value === '' ? null : event.target.value },
                   })
                 }
-                className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100"
               >
                 <option value="">{t('settings.notifications.quietHours.timezoneNone')}</option>
                 {zones.map((zone) => (
@@ -709,17 +729,19 @@ function QuietHoursControls({
                     {zone}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             {detected && quiet.timezone !== detected ? (
-              <button
+              <Button
                 type="button"
+                size="sm"
+                variant="quiet"
+                className="self-start"
                 disabled={busy}
                 onClick={() => onUpdate({ quietHours: { timezone: detected } })}
-                className="self-start text-xs font-medium text-sky-400 hover:text-sky-300 disabled:opacity-50"
               >
                 {t('settings.notifications.quietHours.useDetected', { zone: detected })}
-              </button>
+              </Button>
             ) : null}
           </div>
         ) : null}
@@ -765,64 +787,57 @@ function TelegramLinkPanel({ initial }: { initial: TelegramSettingsResponse }) {
       : null;
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+    <div className="bt-panel flex flex-col gap-2" style={{ padding: '13px 16px' }}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-neutral-100">
-            {t('settings.notifications.telegram.title')}
-          </p>
-          <p className="text-xs text-neutral-500">
-            {t('settings.notifications.telegram.description')}
-          </p>
+          <p className="bt-row-title">{t('settings.notifications.telegram.title')}</p>
+          <p className="bt-row-sub">{t('settings.notifications.telegram.description')}</p>
         </div>
         {settings.linked ? (
-          <button
+          <Button
             type="button"
+            size="sm"
+            variant="danger"
             onClick={() => unlinkMutation.mutate()}
             disabled={unlinkMutation.isPending}
-            className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-300 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {t('settings.notifications.telegram.unlink')}
-          </button>
+          </Button>
         ) : settings.pending && deepLink ? (
           <div className="flex flex-col items-end gap-1">
-            <a
-              href={deepLink}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-md border border-sky-500 px-3 py-1.5 text-sm font-medium text-sky-400 hover:bg-sky-500/10"
-            >
+            <a className="bt-btn bt-btn--sm" href={deepLink} target="_blank" rel="noreferrer">
               {t('settings.notifications.telegram.openBot')}
             </a>
-            <button
+            <Button
               type="button"
+              size="sm"
+              variant="quiet"
               onClick={() => confirmMutation.mutate()}
               disabled={confirmMutation.isPending}
-              className="text-xs font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
             >
               {confirmMutation.isPending
                 ? t('settings.notifications.telegram.confirming')
                 : t('settings.notifications.telegram.confirm')}
-            </button>
+            </Button>
           </div>
         ) : (
-          <button
+          <Button
             type="button"
+            size="sm"
             onClick={() => startMutation.mutate()}
             disabled={startMutation.isPending}
-            className="rounded-md border border-sky-500 px-3 py-1.5 text-sm font-medium text-sky-400 hover:bg-sky-500/10 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {t('settings.notifications.telegram.startLink')}
-          </button>
+          </Button>
         )}
       </div>
       {settings.linked && settings.chatIdMasked ? (
-        <span className="text-xs text-emerald-400">
+        <span className="bt-pos" style={{ fontSize: 12 }}>
           {t('settings.notifications.telegram.linked', { id: settings.chatIdMasked })}
         </span>
       ) : null}
       {settings.pending && settings.pendingCode ? (
-        <span className="text-xs text-neutral-400">
+        <span className="bt-row-sub">
           {t('settings.notifications.telegram.codeHint', { code: settings.pendingCode })}
         </span>
       ) : null}
@@ -893,42 +908,39 @@ function DiscordWebhookPanel({ initial }: { initial: DiscordSettingsResponse }) 
   });
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+    <div className="bt-panel flex flex-col gap-2" style={{ padding: '13px 16px' }}>
       <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium text-neutral-100">
-          {t('settings.notifications.discord.title')}
-        </p>
-        <p className="text-xs text-neutral-500">
-          {t('settings.notifications.discord.description')}
-        </p>
+        <p className="bt-row-title">{t('settings.notifications.discord.title')}</p>
+        <p className="bt-row-sub">{t('settings.notifications.discord.description')}</p>
       </div>
       {settings.linked && settings.webhookIdMasked ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs text-emerald-400">
+          <span className="bt-pos" style={{ fontSize: 12 }}>
             {t('settings.notifications.discord.linked', { id: settings.webhookIdMasked })}
           </span>
           <div className="flex flex-wrap items-center gap-2">
-            <button
+            <Button
               type="button"
+              size="sm"
               onClick={() => {
                 setTestResult(null);
                 testMutation.mutate();
               }}
               disabled={testMutation.isPending}
-              className="rounded-md border border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-200 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {testMutation.isPending
                 ? t('settings.notifications.discord.testing')
                 : t('settings.notifications.discord.test')}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              size="sm"
+              variant="danger"
               onClick={() => removeMutation.mutate()}
               disabled={removeMutation.isPending}
-              className="rounded-md border border-neutral-700 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {t('settings.notifications.discord.remove')}
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
@@ -939,26 +951,26 @@ function DiscordWebhookPanel({ initial }: { initial: DiscordSettingsResponse }) 
           }}
           className="flex flex-col gap-2"
         >
-          <label className="flex flex-col gap-1 text-xs text-neutral-500">
-            <span>{t('settings.notifications.discord.urlLabel')}</span>
-            <input
+          <label className="bt-field max-w-xl">
+            <span className="bt-label">{t('settings.notifications.discord.urlLabel')}</span>
+            <Input
               type="url"
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               placeholder={t('settings.notifications.discord.urlPlaceholder')}
-              className="rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none"
               required
             />
           </label>
-          <button
+          <Button
             type="submit"
+            size="sm"
+            className="self-start"
             disabled={saveMutation.isPending || url.trim() === ''}
-            className="self-start rounded-md border border-sky-500 px-3 py-1.5 text-sm font-medium text-sky-400 hover:bg-sky-500/10 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {saveMutation.isPending
               ? t('settings.notifications.discord.saving')
               : t('settings.notifications.discord.save')}
-          </button>
+          </Button>
         </form>
       )}
       {saveErrorKey ? <Alert tone="error">{t(saveErrorKey)}</Alert> : null}
@@ -1049,45 +1061,32 @@ function WebPushOptIn({ publicKey }: { publicKey: string }) {
 
   const supported = isWebPushSupported();
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+    <div className="bt-panel flex flex-col gap-2" style={{ padding: '13px 16px' }}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium text-neutral-100">
-            {t('settings.notifications.webPush.title')}
-          </span>
-          <span className="text-xs text-neutral-500">
-            {t('settings.notifications.webPush.description')}
-          </span>
+          <span className="bt-row-title">{t('settings.notifications.webPush.title')}</span>
+          <span className="bt-row-sub">{t('settings.notifications.webPush.description')}</span>
         </div>
         {!supported ? (
-          <span className="text-xs text-neutral-500">
-            {t('settings.notifications.webPush.unsupported')}
-          </span>
+          <span className="bt-meta">{t('settings.notifications.webPush.unsupported')}</span>
         ) : state === 'denied' ? (
-          <span className="text-xs text-amber-400">
-            {t('settings.notifications.webPush.denied')}
-          </span>
+          <Badge tone="gold">{t('settings.notifications.webPush.denied')}</Badge>
         ) : (
-          <button
+          <Button
             type="button"
+            size="sm"
+            variant={state === 'enabled' ? 'danger' : 'neutral'}
             disabled={pending || state === 'unknown'}
             onClick={() => toggle(state !== 'enabled')}
-            className={cx(
-              'rounded-md border px-3 py-1.5 text-sm font-medium',
-              state === 'enabled'
-                ? 'border-neutral-700 text-neutral-300 hover:bg-neutral-800'
-                : 'border-sky-500 text-sky-400 hover:bg-sky-500/10',
-              'disabled:cursor-not-allowed disabled:opacity-60',
-            )}
           >
             {state === 'enabled'
               ? t('settings.notifications.webPush.disable')
               : t('settings.notifications.webPush.enable')}
-          </button>
+          </Button>
         )}
       </div>
       {state === 'enabled' ? (
-        <span className="text-xs text-emerald-400">
+        <span className="bt-pos" style={{ fontSize: 12 }}>
           {t('settings.notifications.webPush.enabled')}
         </span>
       ) : null}
@@ -1143,68 +1142,73 @@ function NotificationListRow({
   const t = useT();
   const unread = notification.readAt === null;
   const archived = notification.archivedAt !== null;
-  const actionClass =
-    'rounded px-2 py-1 text-xs font-medium text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 disabled:cursor-not-allowed disabled:opacity-50';
   return (
-    <li className="flex items-start gap-1 px-2 py-1">
+    <li className="bt-band__row flex items-start gap-1" style={{ paddingBlock: 4 }}>
       <button
         type="button"
         onClick={onRead}
         disabled={!unread || busy}
         className={cx(
-          'flex min-w-0 flex-1 flex-col gap-0.5 rounded px-2 py-2 text-left transition-colors',
-          unread ? 'bg-neutral-800/60 hover:bg-neutral-800' : 'disabled:cursor-default',
+          'flex min-w-0 flex-1 flex-col gap-0.5 px-2 py-2 text-left',
+          !unread && 'disabled:cursor-default',
         )}
+        style={{
+          border: 0,
+          borderRadius: 6,
+          background: unread ? 'var(--bt-gold-soft)' : 'none',
+          color: 'inherit',
+          font: 'inherit',
+          cursor: unread && !busy ? 'pointer' : undefined,
+          transition: 'background var(--bt-t-fast)',
+        }}
       >
         <span className="flex items-center gap-2">
           {unread ? (
-            <span aria-hidden="true" className="h-1.5 w-1.5 flex-none rounded-full bg-sky-400" />
+            <span aria-hidden="true" className="bt-dot bt-dot--gold" style={{ width: 6, height: 6 }} />
           ) : null}
-          <span
-            className={cx(
-              'truncate text-sm font-medium',
-              unread ? 'text-neutral-100' : 'text-neutral-400',
-            )}
-          >
+          <span className={cx('truncate', unread ? 'bt-row-title' : 'bt-muted')}>
             {notification.title}
           </span>
         </span>
-        <span className="text-xs text-neutral-500">{notification.body}</span>
-        <span className="text-[0.65rem] uppercase tracking-wide text-neutral-600">
+        <span className="bt-row-sub">{notification.body}</span>
+        <span className="bt-label" style={{ fontSize: 10.5 }}>
           {formatRelativeTime(notification.createdAt)}
         </span>
       </button>
       <div className="flex flex-none items-center gap-1 pt-2">
         {archived ? (
-          <button
+          <Button
             type="button"
+            size="sm"
+            variant="quiet"
             onClick={() => onAction('unarchive')}
             disabled={busy}
             aria-label={t('settings.notifications.unarchiveAria', { title: notification.title })}
-            className={actionClass}
           >
             {t('settings.notifications.unarchive')}
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
             type="button"
+            size="sm"
+            variant="quiet"
             onClick={() => onAction('archive')}
             disabled={busy}
             aria-label={t('settings.notifications.archiveAria', { title: notification.title })}
-            className={actionClass}
           >
             {t('settings.notifications.archive')}
-          </button>
+          </Button>
         )}
-        <button
+        <Button
           type="button"
+          size="sm"
+          variant="danger"
           onClick={() => onAction('delete')}
           disabled={busy}
           aria-label={t('settings.notifications.deleteAria', { title: notification.title })}
-          className={cx(actionClass, 'text-red-400 hover:bg-red-950/60 hover:text-red-300')}
         >
           {t('common.delete')}
-        </button>
+        </Button>
       </div>
     </li>
   );
@@ -1236,16 +1240,10 @@ function BulkDeleteDialog({
       <div className="flex flex-col gap-4">
         <Alert tone="error">{t(`settings.notifications.${base}.description`)}</Alert>
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose} disabled={busy}>
+          <Button type="button" variant="quiet" onClick={onClose} disabled={busy}>
             {t('common.cancel')}
           </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            className="text-red-300 ring-red-900 hover:bg-red-950"
-            onClick={onConfirm}
-            disabled={busy}
-          >
+          <Button type="button" variant="danger" onClick={onConfirm} disabled={busy}>
             {busy
               ? t('settings.notifications.deleting')
               : t('settings.notifications.confirmDeleteAction')}
@@ -1326,39 +1324,35 @@ function NotificationList() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-medium text-neutral-300">
-          {t('settings.notifications.allTitle')}
-        </h3>
-        <div className="flex flex-wrap items-center gap-3">
-          <button
+        <h3 className="bt-h3">{t('settings.notifications.allTitle')}</h3>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
             type="button"
+            size="sm"
+            variant="quiet"
             onClick={() => markReadMutation.mutate({ all: true })}
             disabled={unreadCount === 0 || markReadMutation.isPending}
-            className="text-xs font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
           >
             {t('settings.notifications.markAllRead')}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            size="sm"
+            variant="danger"
             onClick={() => setConfirmScope('archived')}
-            className="text-xs font-medium text-red-400 hover:text-red-300"
           >
             {t('settings.notifications.deleteArchived')}
-          </button>
-          <button
-            type="button"
-            onClick={() => setConfirmScope('all')}
-            className="text-xs font-medium text-red-400 hover:text-red-300"
-          >
+          </Button>
+          <Button type="button" size="sm" variant="danger" onClick={() => setConfirmScope('all')}>
             {t('settings.notifications.deleteAll')}
-          </button>
+          </Button>
         </div>
       </div>
 
       <div
         role="tablist"
         aria-label={t('settings.notifications.viewFilterAria')}
-        className="flex w-fit items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 p-1"
+        className="bt-seg w-fit"
       >
         {NOTIFICATION_VIEWS.map((candidate) => (
           <button
@@ -1367,12 +1361,7 @@ function NotificationList() {
             role="tab"
             aria-selected={view === candidate}
             onClick={() => setView(candidate)}
-            className={cx(
-              'rounded px-3 py-1 text-xs font-medium transition-colors',
-              view === candidate
-                ? 'bg-neutral-800 text-neutral-100'
-                : 'text-neutral-400 hover:text-neutral-200',
-            )}
+            className={cx(view === candidate && 'is-active')}
           >
             {viewLabels[candidate]}
           </button>
@@ -1412,7 +1401,7 @@ function NotificationList() {
           {query.isError ? (
             <Alert tone="error">{t('settings.notifications.refreshError')}</Alert>
           ) : null}
-          <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
+          <ul className="bt-panel bt-band">
             {items.map((notification) => (
               <NotificationListRow
                 key={notification.id}
@@ -1424,16 +1413,17 @@ function NotificationList() {
             ))}
           </ul>
           {query.hasNextPage ? (
-            <button
+            <Button
               type="button"
+              variant="quiet"
+              className="self-center"
               onClick={() => void query.fetchNextPage()}
               disabled={query.isFetchingNextPage}
-              className="self-center text-sm font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
             >
               {query.isFetchingNextPage
                 ? t('common.loading')
                 : t('settings.notifications.loadMore')}
-            </button>
+            </Button>
           ) : null}
         </>
       )}
@@ -1474,12 +1464,10 @@ export function NotificationSettingsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">
-          {t('settings.notifications.title')}
-        </h2>
-        <p className="text-sm text-neutral-500">{t('settings.notifications.subtitle')}</p>
-      </div>
+      <SectionHead
+        sub={t('settings.notifications.subtitle')}
+        title={t('settings.notifications.title')}
+      />
 
       {query.isPending ? (
         <div className="flex flex-col gap-3">
@@ -1493,14 +1481,13 @@ export function NotificationSettingsPage() {
         />
       ) : (
         <div className="flex flex-col gap-3">
-          <label className="flex items-start justify-between gap-4 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+          <label
+            className="bt-panel flex items-start justify-between gap-4"
+            style={{ padding: '13px 16px' }}
+          >
             <span className="flex flex-col gap-0.5">
-              <span className="text-sm font-medium text-neutral-100">
-                {t('settings.notifications.mute.label')}
-              </span>
-              <span className="text-xs text-neutral-500">
-                {t('settings.notifications.mute.description')}
-              </span>
+              <span className="bt-row-title">{t('settings.notifications.mute.label')}</span>
+              <span className="bt-row-sub">{t('settings.notifications.mute.description')}</span>
             </span>
             <input
               type="checkbox"
@@ -1509,10 +1496,11 @@ export function NotificationSettingsPage() {
               checked={query.data.muted}
               disabled={mutation.isPending}
               onChange={(event) => mutation.mutate({ muted: event.target.checked })}
-              className={cx(
-                'mt-0.5 h-4 w-4 accent-sky-500',
-                mutation.isPending && 'cursor-not-allowed opacity-50',
-              )}
+              className={cx('mt-0.5 h-4 w-4', mutation.isPending && 'cursor-not-allowed')}
+              style={{
+                accentColor: 'var(--bt-gold)',
+                opacity: mutation.isPending ? 0.5 : undefined,
+              }}
             />
           </label>
 
