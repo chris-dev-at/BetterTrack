@@ -3401,6 +3401,68 @@
       "list": "Ankündigungen"
     }
   },
+  "vaultExports": {
+    "tax": {
+      "title": "Steuerbericht",
+      "section": "Abschnitt",
+      "summary": "Zusammenfassung",
+      "germany": "Deutschland (Abgeltungsteuer)",
+      "positions": "Positionen",
+      "sells": "Verkäufe",
+      "dividends": "Dividenden",
+      "empty": "Keine Verkäufe oder Dividenden in diesem Jahr.",
+      "year": "Jahr",
+      "realized": "Realisierter G/V",
+      "realizedEur": "Realisierter G/V (EUR)",
+      "dividendsGross": "Dividenden brutto",
+      "dividendsGrossEur": "Dividenden brutto (EUR)",
+      "withheld": "Einbehaltene Steuer",
+      "withheldEur": "Einbehaltene Steuer (EUR)",
+      "refunded": "Erstattete Steuer",
+      "refundedEur": "Erstattete Steuer (EUR)",
+      "net": "Netto-Steuer",
+      "netEur": "Netto-Steuer (EUR)",
+      "tax": "Steuer",
+      "taxEur": "Steuer (EUR)",
+      "date": "Datum",
+      "quantity": "Anzahl",
+      "proceeds": "Erlös",
+      "proceedsEur": "Erlös (EUR)",
+      "costBasis": "Einstand",
+      "costBasisEur": "Einstand (EUR)",
+      "gross": "Brutto",
+      "grossEur": "Brutto (EUR)",
+      "allowance": "Pauschbetrag genutzt / verbleibend",
+      "allowanceUsedEur": "Genutzter Pauschbetrag (EUR)",
+      "allowanceRemainingEur": "Verbleibender Pauschbetrag (EUR)",
+      "shareLossPot": "Aktien-Verlusttopf ein / aus",
+      "shareLossPotInEur": "Aktien-Verlusttopf ein (EUR)",
+      "shareLossPotOutEur": "Aktien-Verlusttopf aus (EUR)",
+      "otherLossPot": "Sonstiger Verlusttopf ein / aus",
+      "otherLossPotInEur": "Sonstiger Verlusttopf ein (EUR)",
+      "otherLossPotOutEur": "Sonstiger Verlusttopf aus (EUR)",
+      "kapest": "KapESt",
+      "kapestEur": "KapESt (EUR)",
+      "soli": "Soli",
+      "soliEur": "Soli (EUR)",
+      "symbol": "Symbol",
+      "name": "Name",
+      "taxMode": "Steuermodus",
+      "disclaimerLabel": "Haftungsausschluss",
+      "disclaimer": "Schätzwerte nur für deine persönliche Übersicht — keine Steuerberatung, keine Gewähr für Richtigkeit, kein Dokument für die Steuererklärung."
+    },
+    "cleartext": {
+      "readme": "BetterTrack — lokaler Klartext-Export\n\nDieses Archiv wurde lokal aus deinem entsperrten verschlüsselten Tresor erstellt.\nEs enthält Quelldaten als JSON sowie CSV-Dateien für Transaktionen,\nGeldbewegungen und Bestände. Tresorschlüssel, Passphrasen,\nWiederherstellungsdaten, Chiffretext, Sync-Metadaten, Quarantäne-Blobs und\nabgeleitete Caches sind nicht enthalten.\n",
+      "skipped": {
+        "importBatches": "Import-Zwischenspeicher; übernommene Zeilen werden in ihren endgültigen Datensätzen exportiert.",
+        "importRows": "Import-Zwischenspeicher; übernommene Zeilen werden in ihren endgültigen Datensätzen exportiert.",
+        "portfolioSnapshots": "Abgeleiteter Bewertungscache; wird aus Quelldaten und Marktdaten neu erstellt.",
+        "snapshotState": "Abgeleitete Buchführung zur Snapshot-Invalidierung.",
+        "standingOrderRuns": "Idempotenz-Buchführung; gebuchte Zeilen und Definitionen werden exportiert.",
+        "expenseBudgetFires": "Abgeleitete Buchführung für Alarmzustellungen."
+      }
+    }
+  },
   "admin": {
     "nav": {
       "security": "Sicherheit",
