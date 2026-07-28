@@ -85,13 +85,14 @@ export function HealthPage() {
         </Button>
       </div>
 
+      {loading && data ? (
+        <span className="sr-only" role="status" aria-label={t('common.loading')}>
+          {t('common.loading')}
+        </span>
+      ) : null}
+
       <section aria-busy={loading} aria-label={t('admin.health.title')}>
         {loading && !data ? <Spinner label={t('common.loading')} /> : null}
-        {loading && data ? (
-          <span className="sr-only" role="status" aria-label={t('common.loading')}>
-            {t('common.loading')}
-          </span>
-        ) : null}
         {error ? <Alert tone="error">{t('admin.health.loadError')}</Alert> : null}
 
         {data ? <HealthBody data={data} /> : null}

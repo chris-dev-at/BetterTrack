@@ -171,7 +171,9 @@ test('keeps stale health visible and announces reload progress while a refresh i
     'aria-busy',
     'true',
   );
-  expect(screen.getByRole('status', { name: 'Loading…' })).toBeInTheDocument();
+  const progress = screen.getByRole('status', { name: 'Loading…' });
+  expect(progress).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'System health' })).not.toContainElement(progress);
 
   fireEvent.click(refresh);
   expect(api.getAdminHealth).toHaveBeenCalledTimes(callsBeforeReload + 1);
