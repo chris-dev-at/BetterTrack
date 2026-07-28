@@ -8,10 +8,19 @@ import { listMyShared } from '../../lib/socialApi';
 import { ALERT_SHARING_QUERY_KEY, getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { useT } from '../../i18n';
-import { EmptyState, Skeleton } from '../../ui';
+import { EmptyState } from '../../ui';
+import {
+  Badge,
+  Button,
+  PageHead,
+  SectionHead,
+  SkeletonBlock,
+  Switch,
+  type BadgeTone,
+} from '../../ui/origin';
 import { AudiencePicker } from '../components/AudiencePicker';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert } from '../components/ui';
 
 const MY_SHARED_STALE_MS = 30_000;
 const MY_SHARED_KEY = ['social', 'my-shared'] as const;
@@ -27,16 +36,11 @@ interface PickerTarget {
   mirrorSyncedCopy?: boolean;
 }
 
-function SectionHeading({ children }: { children: string }) {
-  return (
-    <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">{children}</h3>
-  );
-}
-
 /**
  * The per-item "who can see this" summary (V3-P6) — the audience read straight off
  * the single audience model, so it never disagrees with what is actually shared.
- * A private item is dimmed; every shared tier is a tinted chip, with the named
+ * A private item is dimmed (outline only); every shared tier is a tinted chip —
+ * gold for the public link, analytical blue for the friend tiers — with the named
  * count for `specific_friends`.
  */
 function WhoSeesThis({ audience, friendCount }: { audience: ShareAudience; friendCount: number }) {
@@ -45,14 +49,12 @@ function WhoSeesThis({ audience, friendCount }: { audience: ShareAudience; frien
     audience === 'specific_friends' && friendCount > 0
       ? `${t('sharing.badge.specific_friends')} · ${friendCount}`
       : t(`sharing.badge.${audience}`);
-  const tone =
-    audience === 'private'
-      ? 'border-neutral-700 text-neutral-400'
-      : audience === 'public_link'
-        ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-        : 'border-sky-500/40 bg-sky-500/10 text-sky-200';
+  const tone: BadgeTone =
+    audience === 'private' ? 'neutral' : audience === 'public_link' ? 'gold' : 'blue';
   return (
-    <span className={cx('rounded-full border px-2 py-0.5 text-xs font-medium', tone)}>{label}</span>
+    <Badge outline={audience === 'private'} tone={tone}>
+      {label}
+    </Badge>
   );
 }
 
@@ -67,15 +69,15 @@ interface SharedRowProps {
 
 function SharedRow({ name, audience, friendCount, detail, onShare, shareLabel }: SharedRowProps) {
   return (
-    <li className="flex items-center justify-between gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-3">
+    <li className="flex items-center justify-between gap-3 py-3">
       <div className="flex min-w-0 flex-col gap-1">
-        <span className="truncate text-sm font-medium text-neutral-100">{name}</span>
+        <span className="bt-row-title truncate">{name}</span>
         <div className="flex flex-wrap items-center gap-2">
           <WhoSeesThis audience={audience} friendCount={friendCount} />
-          {detail ? <span className="text-xs text-neutral-500">{detail}</span> : null}
+          {detail ? <span className="bt-meta">{detail}</span> : null}
         </div>
       </div>
-      <Button variant="secondary" onClick={onShare}>
+      <Button onClick={onShare} size="sm">
         {shareLabel}
       </Button>
     </li>
@@ -113,46 +115,36 @@ function AlertSharingControl() {
   const on = data.visibleToFollowers;
 
   return (
-    <section className="flex flex-col gap-2">
-      <SectionHeading>{t('social.alertSharing.heading')}</SectionHeading>
-      <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+    <section className="bt-section">
+      <SectionHead title={t('social.alertSharing.heading')} />
+      <div className="flex flex-col gap-2">
+        <div
+          className="bt-b-rule flex flex-wrap items-center justify-between gap-3"
+          style={{ paddingBottom: 14 }}
+        >
           <div className="min-w-0">
-            <p className="text-sm font-medium text-neutral-100">{t('social.alertSharing.title')}</p>
-            <p className="text-xs text-neutral-500">
+            <p className="bt-row-title">{t('social.alertSharing.title')}</p>
+            <p className="bt-meta">
               {t(on ? 'social.alertSharing.onHint' : 'social.alertSharing.offHint')}
             </p>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={on}
+          <Switch
             aria-label={t('social.alertSharing.toggleAria')}
+            checked={on}
             disabled={mutation.isPending}
-            onClick={() =>
-              on ? mutation.mutate({ visibleToFollowers: false }) : setConfirming(true)
+            onChange={(next) =>
+              next ? setConfirming(true) : mutation.mutate({ visibleToFollowers: false })
             }
-            className={cx(
-              'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60',
-              on ? 'bg-sky-600' : 'bg-neutral-700',
-            )}
-          >
-            <span
-              className={cx(
-                'inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform',
-                on ? 'translate-x-[18px]' : 'translate-x-1',
-              )}
-            />
-          </button>
+          />
         </div>
         {mutation.isError ? <Alert tone="error">{t('social.alertSharing.error')}</Alert> : null}
       </div>
       {confirming ? (
         <Dialog title={t('social.alertSharing.confirmTitle')} onClose={() => setConfirming(false)}>
           <div className="flex flex-col gap-4">
-            <p className="text-sm text-amber-400">{t('social.alertSharing.confirmWarning')}</p>
+            <p className="bt-gold">{t('social.alertSharing.confirmWarning')}</p>
             <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setConfirming(false)}>
+              <Button onClick={() => setConfirming(false)} variant="quiet">
                 {t('social.alertSharing.confirmCancel')}
               </Button>
               <Button
@@ -160,6 +152,7 @@ function AlertSharingControl() {
                 onClick={() =>
                   mutation.mutate({ visibleToFollowers: true, acknowledgeFollowers: true })
                 }
+                variant="primary"
               >
                 {t('social.alertSharing.confirmEnable')}
               </Button>
@@ -212,9 +205,9 @@ export function MySharedItemsPage() {
 
   if (isLoading) {
     return (
-      <section className="flex flex-col gap-3">
-        <Skeleton height="h-6" width="w-48" />
-        <Skeleton height="h-16" />
+      <section className="flex flex-col gap-4">
+        <SkeletonBlock height={28} width={210} />
+        <SkeletonBlock height={92} />
       </section>
     );
   }
@@ -232,11 +225,8 @@ export function MySharedItemsPage() {
   const shareLabel = t('sharing.shareButton');
 
   return (
-    <div className="flex flex-col gap-8">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">{t('social.myShared.title')}</h2>
-        <p className="text-sm text-neutral-500">{t('social.myShared.subtitle')}</p>
-      </div>
+    <div className="flex flex-col">
+      <PageHead sub={t('social.myShared.subtitle')} title={t('social.myShared.title')} />
       {nothing ? (
         <EmptyState
           title={t('social.myShared.emptyTitle')}
@@ -244,9 +234,9 @@ export function MySharedItemsPage() {
         />
       ) : null}
       {data.portfolios.length > 0 ? (
-        <section className="flex flex-col gap-2">
-          <SectionHeading>{t('social.kind.portfolios')}</SectionHeading>
-          <ul className="flex flex-col gap-2">
+        <section className="bt-section">
+          <SectionHead title={t('social.kind.portfolios')} />
+          <ul className="bt-band flex flex-col">
             {data.portfolios.map((p) => (
               <SharedRow
                 key={p.portfolioId}
@@ -269,9 +259,9 @@ export function MySharedItemsPage() {
       ) : null}
 
       {data.conglomerates.length > 0 ? (
-        <section className="flex flex-col gap-2">
-          <SectionHeading>{t('social.kind.conglomerates')}</SectionHeading>
-          <ul className="flex flex-col gap-2">
+        <section className="bt-section">
+          <SectionHead title={t('social.kind.conglomerates')} />
+          <ul className="bt-band flex flex-col">
             {data.conglomerates.map((c) => (
               <SharedRow
                 key={c.conglomerateId}
@@ -290,9 +280,9 @@ export function MySharedItemsPage() {
       ) : null}
 
       {data.watchlists.length > 0 ? (
-        <section className="flex flex-col gap-2">
-          <SectionHeading>{t('social.kind.watchlists')}</SectionHeading>
-          <ul className="flex flex-col gap-2">
+        <section className="bt-section">
+          <SectionHead title={t('social.kind.watchlists')} />
+          <ul className="bt-band flex flex-col">
             {data.watchlists.map((w) => (
               <SharedRow
                 key={w.watchlistId}
@@ -311,9 +301,9 @@ export function MySharedItemsPage() {
       ) : null}
 
       {data.ideas.length > 0 ? (
-        <section className="flex flex-col gap-2">
-          <SectionHeading>{t('social.kind.ideas')}</SectionHeading>
-          <ul className="flex flex-col gap-2">
+        <section className="bt-section">
+          <SectionHead title={t('social.kind.ideas')} />
+          <ul className="bt-band flex flex-col">
             {data.ideas.map((i) => (
               <SharedRow
                 key={i.ideaId}
@@ -331,11 +321,8 @@ export function MySharedItemsPage() {
 
       <AlertSharingControl />
 
-      <div className="border-t border-neutral-800 pt-5">
-        <Link
-          to="/social/profile"
-          className="inline-flex items-center gap-1.5 rounded text-sm font-medium text-sky-400 transition-colors hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-        >
+      <div className="bt-section bt-t-rule" style={{ paddingTop: 18 }}>
+        <Link className="bt-link inline-flex items-center gap-1.5" to="/social/profile">
           {t('social.myShared.publicProfileLink')}
           <span aria-hidden="true">→</span>
         </Link>

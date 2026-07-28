@@ -10,7 +10,8 @@ import { assetTypeLabels } from '../portfolio/assetTypeLabels';
 import { getSharedPortfolio } from '../../lib/socialApi';
 import { cx } from '../../lib/cx';
 import { formatQuantity, formatSignedPercent } from '../../lib/format';
-import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
+import { EmptyState, MoneyText, Skeleton } from '../../ui';
+import { PageHead, Stat, StatStrip } from '../../ui/origin';
 import { AllocationDonut, PriceChart } from '../../ui/charts';
 import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
@@ -18,42 +19,35 @@ import type { AllocationSegment } from '../../ui/charts';
 import { Alert } from '../components/ui';
 
 function DeltaPct({ value }: { value: number | null }) {
-  const cls =
-    value == null
-      ? 'text-neutral-400'
-      : value > 0
-        ? 'text-emerald-400'
-        : value < 0
-          ? 'text-red-400'
-          : 'text-neutral-400';
-  return <span className={cx('tabular-nums', cls)}>{formatSignedPercent(value)}</span>;
+  const cls = value == null ? 'bt-muted' : value > 0 ? 'bt-pos' : value < 0 ? 'bt-neg' : 'bt-muted';
+  return <span className={cx('bt-num', cls)}>{formatSignedPercent(value)}</span>;
 }
 
+/** Ruled stat strip sharing one baseline — the read-only twin of the owner's own. */
 function TotalsHeader({ totals }: { totals: PortfolioTotals }) {
   const t = useT();
   return (
-    <section
-      aria-label={t('portfolio.overview.totalsAriaLabel')}
-      className="grid grid-cols-2 gap-3 sm:grid-cols-4"
-    >
-      <StatCard
-        label={t('portfolio.overview.field.marketValue')}
-        value={<MoneyText amount={totals.marketValueEur} />}
-      />
-      <StatCard
-        label={t('portfolio.overview.field.invested')}
-        value={<MoneyText amount={totals.investedEur} />}
-      />
-      <StatCard
-        label={t('portfolio.overview.field.unrealizedPnl')}
-        value={<MoneyText amount={totals.unrealizedPnlEur} signed />}
-        subValue={<DeltaPct value={totals.unrealizedPnlPct} />}
-      />
-      <StatCard
-        label={t('portfolio.overview.field.dayChange')}
-        value={<MoneyText amount={totals.dayChangeEur} signed />}
-        subValue={<DeltaPct value={totals.dayChangePct} />}
-      />
+    <section aria-label={t('portfolio.overview.totalsAriaLabel')}>
+      <StatStrip>
+        <Stat
+          label={t('portfolio.overview.field.marketValue')}
+          value={<MoneyText amount={totals.marketValueEur} />}
+        />
+        <Stat
+          label={t('portfolio.overview.field.invested')}
+          value={<MoneyText amount={totals.investedEur} />}
+        />
+        <Stat
+          delta={<DeltaPct value={totals.unrealizedPnlPct} />}
+          label={t('portfolio.overview.field.unrealizedPnl')}
+          value={<MoneyText amount={totals.unrealizedPnlEur} signed />}
+        />
+        <Stat
+          delta={<DeltaPct value={totals.dayChangePct} />}
+          label={t('portfolio.overview.field.dayChange')}
+          value={<MoneyText amount={totals.dayChangeEur} signed />}
+        />
+      </StatStrip>
     </section>
   );
 }
@@ -82,27 +76,32 @@ function AllocationSection({ holdings }: { holdings: Holding[] }) {
   if (byAsset.length === 0) return null;
 
   return (
-    <section
-      aria-label={t('portfolio.overview.allocationAriaLabel')}
-      className="grid gap-6 sm:grid-cols-2"
-    >
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-        <h3 className="mb-4 text-sm font-semibold text-neutral-200">
-          {t('portfolio.overview.allocation.byAssetTitle')}
-        </h3>
-        <AllocationDonut
-          data={byAsset}
-          title={t('portfolio.overview.allocation.byAssetChartTitle')}
-        />
-      </div>
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-        <h3 className="mb-4 text-sm font-semibold text-neutral-200">
-          {t('portfolio.overview.allocation.byTypeTitle')}
-        </h3>
-        <AllocationDonut
-          data={byType}
-          title={t('portfolio.overview.allocation.byTypeChartTitle')}
-        />
+    <section aria-label={t('portfolio.overview.allocationAriaLabel')} className="bt-section">
+      <div
+        style={{
+          display: 'grid',
+          gap: 'clamp(20px, 4vw, 44px)',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+        }}
+      >
+        <div>
+          <h3 className="bt-h3" style={{ marginBottom: 14 }}>
+            {t('portfolio.overview.allocation.byAssetTitle')}
+          </h3>
+          <AllocationDonut
+            data={byAsset}
+            title={t('portfolio.overview.allocation.byAssetChartTitle')}
+          />
+        </div>
+        <div>
+          <h3 className="bt-h3" style={{ marginBottom: 14 }}>
+            {t('portfolio.overview.allocation.byTypeTitle')}
+          </h3>
+          <AllocationDonut
+            data={byType}
+            title={t('portfolio.overview.allocation.byTypeChartTitle')}
+          />
+        </div>
       </div>
     </section>
   );
@@ -115,60 +114,59 @@ function AllocationSection({ holdings }: { holdings: Holding[] }) {
 function HoldingsTable({ holdings }: { holdings: Holding[] }) {
   const t = useT();
   return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-800">
-      <table className="w-full text-left text-sm">
+    <div className="bt-table-wrap">
+      <table className="bt-table">
         <thead>
-          <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
-            <th scope="col" className="px-3 py-2">
-              {t('portfolio.overview.field.asset')}
-            </th>
-            <th scope="col" className="px-3 py-2 text-right">
+          <tr>
+            <th scope="col">{t('portfolio.overview.field.asset')}</th>
+            <th className="is-num" scope="col">
               {t('portfolio.overview.field.qty')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right">
+            <th className="is-num" scope="col">
               {t('portfolio.overview.field.price')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right">
+            <th className="is-num" scope="col">
               {t('portfolio.overview.field.marketValue')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right">
+            <th className="is-num" scope="col">
               {t('portfolio.overview.field.unrealizedPnl')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right">
+            <th className="is-num" scope="col">
               {t('portfolio.overview.field.day')}
             </th>
           </tr>
         </thead>
         <tbody>
           {holdings.map((h) => (
-            <tr key={h.asset.id} className="border-b border-neutral-800 last:border-b-0">
-              <td className="min-w-0 px-3 py-2">
+            <tr key={h.asset.id}>
+              <td className="min-w-0">
                 <Link
+                  className="bt-row-title"
+                  style={{ textDecoration: 'none' }}
                   to={`/assets/${h.asset.id}`}
-                  className="font-mono text-sm font-medium text-neutral-100 hover:text-sky-400"
                 >
                   {h.asset.symbol}
                 </Link>
-                <p className="max-w-[10rem] truncate text-xs text-neutral-500" title={h.asset.name}>
+                <p className="bt-row-sub max-w-[10rem] truncate" title={h.asset.name}>
                   {h.asset.name}
                 </p>
               </td>
-              <td className="px-3 py-2 text-right tabular-nums">{formatQuantity(h.quantity)}</td>
-              <td className="px-3 py-2 text-right">
+              <td className="is-num">{formatQuantity(h.quantity)}</td>
+              <td className="is-num">
                 <MoneyText amount={h.price} currency={h.asset.currency} unitPrice />
               </td>
-              <td className="px-3 py-2 text-right">
+              <td className="is-num">
                 <MoneyText amount={h.marketValueEur} />
               </td>
-              <td className="px-3 py-2 text-right">
+              <td className="is-num">
                 <MoneyText amount={h.unrealizedPnlEur} signed />
-                <div>
+                <div className="bt-meta">
                   <DeltaPct value={h.unrealizedPnlPct} />
                 </div>
               </td>
-              <td className="px-3 py-2 text-right">
+              <td className="is-num">
                 <MoneyText amount={h.dayChangeEur} signed />
-                <div>
+                <div className="bt-meta">
                   <DeltaPct value={h.dayChangePct} />
                 </div>
               </td>
@@ -208,12 +206,8 @@ export function SharedPortfolioPage() {
     return (
       <div className="flex flex-col gap-6">
         <Skeleton height="h-8" width="w-48" />
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Skeleton height="h-20" />
-          <Skeleton height="h-20" />
-          <Skeleton height="h-20" />
-          <Skeleton height="h-20" />
-        </div>
+        {/* One band, not four boxes — the totals now render as a ruled stat strip. */}
+        <Skeleton height="h-20" />
         <Skeleton height="h-80" />
       </div>
     );
@@ -226,26 +220,25 @@ export function SharedPortfolioPage() {
   const { name, owner, totals, holdings } = query.data;
 
   return (
-    <div className="flex flex-col gap-8">
-      <div>
-        <Link
-          to="/social/friends"
-          className="text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-        >
-          {t('social.shared.backToFriends')}
-        </Link>
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">{name}</h1>
+    <div className="flex flex-col">
+      <Link
+        to="/social/friends"
+        className="bt-link self-start"
+        style={{ fontSize: 12.5, marginBottom: 10 }}
+      >
+        {t('social.shared.backToFriends')}
+      </Link>
+      <PageHead
+        actions={
           <ItemFollowButton
             kind="portfolio"
             subjectId={query.data.portfolioId}
             ownerId={owner.id}
           />
-        </div>
-        <p className="mt-1 text-sm text-neutral-400">
-          {t('social.shared.sharedByReadOnly', { username: owner.username })}
-        </p>
-      </div>
+        }
+        sub={t('social.shared.sharedByReadOnly', { username: owner.username })}
+        title={name}
+      />
 
       {holdings.length === 0 ? (
         <EmptyState
@@ -256,36 +249,34 @@ export function SharedPortfolioPage() {
         <>
           <TotalsHeader totals={totals} />
 
-          <section
-            aria-label={t('portfolio.overview.chart.heading')}
-            className="flex flex-col gap-3"
-          >
-            <h2 className="text-lg font-semibold text-neutral-200">
-              {t('portfolio.overview.chart.heading')}
-            </h2>
-            <PriceChart
-              series={chartPoints}
-              mode="area"
-              showRangeToggle={false}
-              ariaLabel={t('social.shared.portfolioChartAria')}
-            />
+          <section aria-label={t('portfolio.overview.chart.heading')} className="bt-section">
+            <div className="bt-section__head">
+              <h2 className="bt-h2">{t('portfolio.overview.chart.heading')}</h2>
+            </div>
+            <div className="bt-chart">
+              <PriceChart
+                series={chartPoints}
+                mode="area"
+                showRangeToggle={false}
+                ariaLabel={t('social.shared.portfolioChartAria')}
+              />
+            </div>
           </section>
 
           <AllocationSection holdings={holdings} />
 
-          <section
-            aria-label={t('portfolio.overview.holdingsAriaLabel')}
-            className="flex flex-col gap-3"
-          >
-            <h2 className="text-lg font-semibold text-neutral-200">
-              {t('portfolio.overview.holdingsHeading')}
-            </h2>
+          <section aria-label={t('portfolio.overview.holdingsAriaLabel')} className="bt-section">
+            <div className="bt-section__head">
+              <h2 className="bt-h2">{t('portfolio.overview.holdingsHeading')}</h2>
+            </div>
             <HoldingsTable holdings={holdings} />
           </section>
         </>
       )}
 
-      <CommentThread kind="portfolio" subjectId={query.data.portfolioId} />
+      <div className="bt-section">
+        <CommentThread kind="portfolio" subjectId={query.data.portfolioId} />
+      </div>
     </div>
   );
 }

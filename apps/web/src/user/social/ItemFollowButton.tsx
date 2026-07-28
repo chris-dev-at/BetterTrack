@@ -4,13 +4,11 @@ import type { ShareKind } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { followItem, listItemFollows, unfollowItem } from '../../lib/socialApi';
+import { cx } from '../components/ui';
 import { useOptionalAuth } from '../AuthContext';
 
 /** Shared query key for "items I follow" — one deduped fetch across buttons + the list. */
 export const ITEM_FOLLOWS_QUERY_KEY = ['social', 'item-follows'] as const;
-
-const BUTTON_BASE =
-  'inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60';
 
 function BookmarkIcon({ filled }: { filled: boolean }) {
   return (
@@ -19,7 +17,7 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
         d="M6 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18l-6-4-6 4V4z"
         fill={filled ? 'currentColor' : 'none'}
         stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="1.6"
         strokeLinejoin="round"
       />
     </svg>
@@ -32,6 +30,9 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
  * query feeds every button, and mutations invalidate that key so the Following
  * collection stays in sync. Rendered only for a logged-in viewer who isn't the
  * item's owner — the server independently re-checks both, plus visibility.
+ *
+ * Origin styling matches {@link FollowButton}: a `bt-subtab` whose `.is-active`
+ * state (filled bookmark) reads as a selection, never as a gold call to action.
  */
 export function ItemFollowButton({
   kind,
@@ -84,7 +85,7 @@ export function ItemFollowButton({
         disabled={busy}
         aria-label={t('social.itemFollow.unfollowAria')}
         onClick={() => unfollowMutation.mutate()}
-        className={`${BUTTON_BASE} bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-700 ${className ?? ''}`}
+        className={cx('bt-subtab is-active', className)}
       >
         <BookmarkIcon filled />
         {t('social.itemFollow.following')}
@@ -98,7 +99,7 @@ export function ItemFollowButton({
       disabled={busy}
       aria-label={t('social.itemFollow.followAria')}
       onClick={() => followMutation.mutate()}
-      className={`${BUTTON_BASE} bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-700 ${className ?? ''}`}
+      className={cx('bt-subtab', className)}
     >
       <BookmarkIcon filled={false} />
       {t('social.itemFollow.follow')}

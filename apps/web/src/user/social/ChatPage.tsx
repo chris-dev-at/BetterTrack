@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import {
@@ -29,11 +29,12 @@ import { usePresence, useRealtimeEvent } from '../../lib/realtime';
 import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
 import { formatDateTime } from '../../lib/format';
 import { useT, type TranslateFn } from '../../i18n';
-import { EmptyState, Skeleton } from '../../ui';
+import { EmptyState } from '../../ui';
+import { Badge, Button, PageHead, SkeletonBlock } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert, cx } from '../components/ui';
 
 const CONVERSATIONS_KEY = ['chat', 'conversations'] as const;
 const threadKey = (conversationId: string) => ['chat', 'thread', conversationId] as const;
@@ -45,7 +46,15 @@ const THREAD_PAGE = 40;
 
 // ── Chip kind glyphs ─────────────────────────────────────────────────────────
 
-function ChipIcon({ kind, className }: { kind: ChatChip['kind']; className?: string }) {
+function ChipIcon({
+  kind,
+  className,
+  style,
+}: {
+  kind: ChatChip['kind'];
+  className?: string;
+  style?: CSSProperties;
+}) {
   const paths: Record<ChatChip['kind'], string> = {
     asset: 'M4 18l5-6 4 4 6-8',
     portfolio: 'M12 3v9l7 3M12 3a9 9 0 100 18 9 9 0 000-18z',
@@ -56,10 +65,11 @@ function ChipIcon({ kind, className }: { kind: ChatChip['kind']; className?: str
   return (
     <svg
       className={className}
+      style={style}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.75}
+      strokeWidth={1.6}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
@@ -69,14 +79,15 @@ function ChipIcon({ kind, className }: { kind: ChatChip['kind']; className?: str
   );
 }
 
-function LockIcon({ className }: { className?: string }) {
+function LockIcon({ className, style }: { className?: string; style?: CSSProperties }) {
   return (
     <svg
       className={className}
+      style={style}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.75}
+      strokeWidth={1.6}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
@@ -116,37 +127,54 @@ function chipKindLabel(t: TranslateFn, kind: ChatChip['kind']): string {
 
 // ── Share chip ───────────────────────────────────────────────────────────────
 
+/**
+ * A shared item inside a bubble reads as an *inset* surface: the raised canvas
+ * tone with a 1px rule, so it sits back from both bubble fills. Its affordance
+ * is the analytical blue link, not gold — gold stays with the composer's send.
+ */
+const CHIP_SURFACE = {
+  background: 'var(--bt-bg-raised)',
+  border: '1px solid var(--bt-border-strong)',
+  borderRadius: 7,
+  padding: '8px 11px',
+} as const;
+
 function ShareChipView({ chip }: { chip: ChatChip }) {
   const t = useT();
   if (!chip.viewable) {
     // "Not shared with you" — never leaks the item's name or any data.
     return (
-      <div className="flex items-center gap-2.5 rounded-lg border border-neutral-700 bg-neutral-900/60 px-3 py-2">
-        <LockIcon className="h-5 w-5 shrink-0 text-neutral-500" />
+      <div className="flex items-center gap-2.5" style={CHIP_SURFACE}>
+        <LockIcon className="h-5 w-5 shrink-0" style={{ color: 'var(--bt-faint)' }} />
         <div className="min-w-0">
-          <p className="text-sm font-medium text-neutral-300">{chipKindLabel(t, chip.kind)}</p>
-          <p className="text-xs text-neutral-500">{t('social.chat.chip.notShared')}</p>
+          <p className="bt-row-title">{chipKindLabel(t, chip.kind)}</p>
+          <p className="bt-row-sub">{t('social.chat.chip.notShared')}</p>
         </div>
       </div>
     );
   }
   return (
     <Link
+      className="flex items-center gap-2.5"
+      style={{ ...CHIP_SURFACE, textDecoration: 'none' }}
       to={chipHref(chip)}
-      className="flex items-center gap-2.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 transition-colors hover:bg-sky-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
     >
-      <ChipIcon kind={chip.kind} className="h-6 w-6 shrink-0 text-sky-300" />
+      <ChipIcon
+        kind={chip.kind}
+        className="h-5 w-5 shrink-0"
+        style={{ color: 'var(--bt-muted)' }}
+      />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold text-neutral-100">
-          {chip.title ?? chipKindLabel(t, chip.kind)}
-        </p>
-        <p className="truncate text-xs text-neutral-400">
+        <p className="bt-row-title truncate">{chip.title ?? chipKindLabel(t, chip.kind)}</p>
+        <p className="bt-row-sub truncate">
           {chip.subtitle
             ? `${chipKindLabel(t, chip.kind)} · ${chip.subtitle}`
             : chipKindLabel(t, chip.kind)}
         </p>
       </div>
-      <span className="text-xs font-semibold text-sky-300">{t('social.chat.chip.view')}</span>
+      <span className="bt-link" style={{ fontSize: 12, fontWeight: 570 }}>
+        {t('social.chat.chip.view')}
+      </span>
     </Link>
   );
 }
@@ -211,22 +239,19 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
   if (admitted) return null;
 
   return (
-    <div className="flex flex-col gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2">
-      <p className="text-xs text-neutral-400">
+    <div className="flex flex-col items-start gap-1.5" style={CHIP_SURFACE}>
+      <p className="bt-meta">
         {t('social.chat.chip.shortcut.prompt', { username: recipient.username })}
       </p>
-      <button
-        type="button"
-        onClick={() => mutation.mutate()}
-        disabled={mutation.isPending}
-        className="self-start rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs font-semibold text-sky-300 transition-colors hover:bg-sky-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-50"
-      >
+      <Button disabled={mutation.isPending} onClick={() => mutation.mutate()} size="sm">
         {mutation.isPending
           ? t('social.chat.chip.shortcut.sharing')
           : t('social.chat.chip.shortcut.action')}
-      </button>
+      </Button>
       {mutation.isError ? (
-        <p className="text-xs text-rose-400">{t('social.chat.chip.shortcut.error')}</p>
+        <p className="bt-neg" style={{ fontSize: 12 }}>
+          {t('social.chat.chip.shortcut.error')}
+        </p>
       ) : null}
     </div>
   );
@@ -245,22 +270,26 @@ function MessageBubble({
 }) {
   return (
     <div className={cx('flex', mine ? 'justify-end' : 'justify-start')}>
+      {/* Flat surfaces, 8px radii, one clipped corner as the speech tail — the
+          only tonal difference between the two speakers is the fill: my own
+          messages take the brand's soft gold wash and its accent rule; the
+          partner's take the neutral strong surface. */}
       <div
-        className={cx(
-          'flex max-w-[85%] flex-col gap-1.5 rounded-2xl border px-3 py-2 sm:max-w-[70%]',
-          mine
-            ? 'rounded-br-sm border-sky-500/40 bg-sky-500/15'
-            : 'rounded-bl-sm border-neutral-800 bg-neutral-900/70',
-        )}
+        className="flex max-w-[85%] flex-col gap-1.5 sm:max-w-[70%]"
+        style={{
+          background: mine ? 'var(--bt-gold-soft)' : 'var(--bt-surface-strong)',
+          border: `1px solid ${mine ? 'var(--bt-border-accent)' : 'var(--bt-border)'}`,
+          borderRadius: 8,
+          [mine ? 'borderBottomRightRadius' : 'borderBottomLeftRadius']: 3,
+          padding: '8px 11px',
+        }}
       >
         {message.chip ? <ShareChipView chip={message.chip} /> : null}
         {mine && message.chip && recipient ? (
           <ChipShareShortcut chip={message.chip} recipient={recipient} />
         ) : null}
-        {message.body ? (
-          <p className="whitespace-pre-wrap break-words text-sm text-neutral-100">{message.body}</p>
-        ) : null}
-        <span className={cx('text-[0.65rem] text-neutral-500', mine ? 'text-right' : 'text-left')}>
+        {message.body ? <p className="whitespace-pre-wrap break-words">{message.body}</p> : null}
+        <span className={cx('bt-meta', mine ? 'text-right' : 'text-left')} style={{ fontSize: 11 }}>
           {formatDateTime(message.createdAt)}
         </span>
       </div>
@@ -300,45 +329,56 @@ function ConversationRow({
   // readable (anonymized) and renders under the localized placeholder name.
   const displayName = convo.user?.username ?? t('social.chat.deletedUser');
   return (
+    // The selected row borrows the navigation rail's own selected language —
+    // strong surface plus an inset gold edge — so "where am I" reads the same
+    // everywhere in the suite.
     <button
       type="button"
       onClick={onClick}
-      className={cx(
-        'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500',
-        active ? 'bg-neutral-800' : 'hover:bg-neutral-800/50',
-      )}
+      className="flex w-full items-center gap-3 text-left"
+      style={{
+        background: active ? 'var(--bt-surface-strong)' : 'none',
+        border: 0,
+        boxShadow: active ? 'inset 2px 0 0 var(--bt-gold)' : undefined,
+        color: 'inherit',
+        cursor: 'pointer',
+        font: 'inherit',
+        padding: '11px 14px',
+        transition: 'background var(--bt-t-fast)',
+      }}
     >
       <Avatar name={displayName} iconId={convo.user?.profileIcon ?? null} size="md" />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center gap-2">
+          {/* `.bt-row-title` is declared after `.bt-muted` in origin.css, so a
+              deleted partner's dimmed tone has to come from the token directly. */}
           <span
-            className={cx(
-              'truncate text-sm',
-              convo.user ? 'text-neutral-100' : 'italic text-neutral-400',
-              unread ? 'font-bold' : 'font-semibold',
-            )}
+            className="bt-row-title truncate"
+            style={{
+              color: convo.user ? undefined : 'var(--bt-muted)',
+              fontStyle: convo.user ? undefined : 'italic',
+              fontWeight: unread ? 700 : 590,
+            }}
           >
             {displayName}
           </span>
           {convo.lastMessageAt ? (
-            <span className="ml-auto shrink-0 text-[0.65rem] text-neutral-500">
+            <span className="bt-meta ml-auto shrink-0" style={{ fontSize: 11 }}>
               {formatDateTime(convo.lastMessageAt)}
             </span>
           ) : null}
         </span>
         <span className="flex items-center gap-2">
           <span
-            className={cx(
-              'truncate text-xs',
-              unread ? 'font-medium text-neutral-300' : 'text-neutral-500',
-            )}
+            className={cx('truncate', unread ? 'bt-soft' : 'bt-muted')}
+            style={{ fontSize: 11.5, fontWeight: unread ? 550 : undefined }}
           >
             {conversationPreview(t, convo, selfId)}
           </span>
           {unread ? (
-            <span className="ml-auto inline-flex h-5 min-w-[1.25rem] shrink-0 items-center justify-center rounded-full bg-sky-500 px-1.5 text-[0.65rem] font-bold text-white">
+            <Badge className="ml-auto" tone="gold">
               {convo.unreadCount}
-            </span>
+            </Badge>
           ) : null}
         </span>
       </span>
@@ -357,11 +397,11 @@ function NewChatDialog({ onClose }: { onClose: () => void }) {
   return (
     <Dialog title={t('social.chat.new')} onClose={onClose}>
       <div className="flex flex-col gap-3">
-        <p className="text-sm text-neutral-400">{t('social.chat.newPrompt')}</p>
+        <p className="bt-soft">{t('social.chat.newPrompt')}</p>
         {isLoading ? (
-          <Skeleton height="h-16" />
+          <SkeletonBlock height={64} />
         ) : friends.length === 0 ? (
-          <p className="text-sm text-neutral-500">{t('social.chat.noFriends')}</p>
+          <p className="bt-meta">{t('social.chat.noFriends')}</p>
         ) : (
           <ul className="flex max-h-80 flex-col gap-1 overflow-y-auto">
             {friends.map((f) => (
@@ -372,10 +412,11 @@ function NewChatDialog({ onClose }: { onClose: () => void }) {
                     onClose();
                     navigate(`/social/chat/${f.user.id}`);
                   }}
-                  className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+                  className="bt-menu-item"
+                  style={{ minHeight: 40 }}
                 >
                   <Avatar name={f.user.username} iconId={f.user.profileIcon} size="sm" />
-                  <span className="text-sm font-medium text-neutral-100">{f.user.username}</span>
+                  <span className="bt-row-title truncate">{f.user.username}</span>
                 </button>
               </li>
             ))}
@@ -405,33 +446,35 @@ function ConversationListPane({
   });
 
   return (
-    <div className="flex h-full flex-col gap-3 rounded-xl border border-neutral-800 bg-neutral-900/40 p-3">
-      <div className="flex items-center justify-between px-1">
-        <h2 className="text-sm font-semibold text-neutral-200">{t('social.chat.title')}</h2>
-        <Button
-          variant="secondary"
-          onClick={() => setNewOpen(true)}
-          className="px-2.5 py-1 text-xs"
-        >
+    <div className="bt-panel flex h-full flex-col overflow-hidden">
+      <div
+        className="bt-b-rule flex items-center justify-between gap-2"
+        style={{ padding: '10px 14px' }}
+      >
+        <h2 className="bt-h3">{t('social.chat.title')}</h2>
+        <Button icon="plus" onClick={() => setNewOpen(true)} size="sm" variant="quiet">
           {t('social.chat.new')}
         </Button>
       </div>
 
       {isLoading ? (
-        <div className="flex flex-col gap-2 p-1">
-          <Skeleton height="h-12" />
-          <Skeleton height="h-12" />
+        <div className="flex flex-col gap-2" style={{ padding: 14 }}>
+          <SkeletonBlock height={48} />
+          <SkeletonBlock height={48} />
         </div>
       ) : isError ? (
-        <Alert tone="error">{t('social.chat.error')}</Alert>
+        <div style={{ padding: 14 }}>
+          <Alert tone="error">{t('social.chat.error')}</Alert>
+        </div>
       ) : !data || data.conversations.length === 0 ? (
         <EmptyState
+          compact
           icon="💬"
           title={t('social.chat.empty.title')}
           description={t('social.chat.empty.body')}
         />
       ) : (
-        <ul className="flex flex-1 flex-col gap-0.5 overflow-y-auto">
+        <ul className="bt-band flex flex-1 flex-col overflow-y-auto">
           {data.conversations.map((convo) => (
             <li key={convo.id}>
               <ConversationRow
@@ -500,12 +543,17 @@ function SharePickerDialog({
         <button
           type="button"
           onClick={() => onPick(item)}
-          className="flex w-full items-center gap-3 rounded-lg border border-neutral-800 px-3 py-2 text-left hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+          className="bt-menu-item"
+          style={{ minHeight: 44 }}
         >
-          <ChipIcon kind={item.kind} className="h-5 w-5 shrink-0 text-neutral-400" />
+          <ChipIcon
+            kind={item.kind}
+            className="h-5 w-5 shrink-0"
+            style={{ color: 'var(--bt-muted)' }}
+          />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium text-neutral-100">{item.name}</span>
-            <span className="block text-xs text-neutral-500">{chipKindLabel(t, item.kind)}</span>
+            <span className="bt-row-title block truncate">{item.name}</span>
+            <span className="bt-row-sub block">{chipKindLabel(t, item.kind)}</span>
           </span>
         </button>
       </li>
@@ -515,13 +563,13 @@ function SharePickerDialog({
   return (
     <Dialog title={t('social.chat.share.title')} onClose={onClose}>
       <div className="flex flex-col gap-3">
-        <p className="text-xs text-neutral-500">{t('social.chat.share.disclaimer')}</p>
+        <p className="bt-meta">{t('social.chat.share.disclaimer')}</p>
         {portfoliosQuery.isLoading || conglomeratesQuery.isLoading || ideasQuery.isLoading ? (
-          <Skeleton height="h-16" />
+          <SkeletonBlock height={64} />
         ) : empty ? (
-          <p className="text-sm text-neutral-500">{t('social.chat.share.empty')}</p>
+          <p className="bt-meta">{t('social.chat.share.empty')}</p>
         ) : (
-          <ul className="flex max-h-80 flex-col gap-1.5 overflow-y-auto">
+          <ul className="flex max-h-80 flex-col overflow-y-auto">
             {portfolios.map((p) => row({ kind: 'portfolio', subjectId: p.id, name: p.name }))}
             {conglomerates.map((c) => row({ kind: 'conglomerate', subjectId: c.id, name: c.name }))}
             {ideas.map((i) => row({ kind: 'idea', subjectId: i.id, name: i.name }))}
@@ -575,21 +623,21 @@ function MessageComposer({
   }
 
   return (
-    <form onSubmit={submit} className="flex items-end gap-2 border-t border-neutral-800 p-3">
+    <form onSubmit={submit} className="bt-t-rule flex items-end gap-2" style={{ padding: 12 }}>
       <button
         type="button"
         onClick={() => setShareOpen(true)}
         disabled={disabled}
         title={t('social.chat.attach')}
         aria-label={t('social.chat.attach')}
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 disabled:opacity-50"
+        className="bt-btn bt-btn--quiet bt-btn--icon"
       >
         <svg
           className="h-5 w-5"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          strokeWidth={1.75}
+          strokeWidth={1.6}
           strokeLinecap="round"
           strokeLinejoin="round"
           aria-hidden="true"
@@ -597,6 +645,8 @@ function MessageComposer({
           <path d="M21 12.5l-8.5 8.5a5 5 0 01-7-7l9-9a3.5 3.5 0 015 5l-9 9a2 2 0 01-3-3l8.5-8.5" />
         </svg>
       </button>
+      {/* Native element (not the `Textarea` primitive) because the composer owns
+          a ref for the focus dance; the Origin class carries the same visuals. */}
       <textarea
         ref={inputRef}
         value={text}
@@ -607,9 +657,16 @@ function MessageComposer({
         rows={1}
         placeholder={t('social.chat.composerPlaceholder')}
         disabled={disabled}
-        className="max-h-32 min-h-[2.5rem] flex-1 resize-none rounded-2xl border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-600 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
+        className="bt-textarea max-h-32 flex-1 resize-none"
+        style={{ minHeight: 34 }}
       />
-      <Button type="submit" disabled={disabled || !text.trim()} className="h-10 shrink-0">
+      {/* The composer's send is the one gold action on this screen. */}
+      <Button
+        className="shrink-0"
+        disabled={disabled || !text.trim()}
+        type="submit"
+        variant="primary"
+      >
         {t('social.chat.send')}
       </Button>
       {shareOpen ? (
@@ -707,7 +764,7 @@ function ChatThreadPane({
   if (convoQuery.isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <Skeleton height="h-24" width="w-48" />
+        <SkeletonBlock height={96} width={192} />
       </div>
     );
   }
@@ -729,52 +786,48 @@ function ChatThreadPane({
   const otherName = other?.username ?? t('social.chat.deletedUser');
 
   return (
-    <div className="flex h-full flex-col rounded-xl border border-neutral-800 bg-neutral-900/40">
-      <div className="flex items-center gap-3 border-b border-neutral-800 px-4 py-3">
-        <Link
-          to="/social/chat"
-          className="md:hidden text-neutral-400 hover:text-neutral-100"
-          aria-label={t('common.back')}
-        >
+    <div className="bt-panel flex h-full flex-col overflow-hidden">
+      <div className="bt-b-rule flex items-center gap-3" style={{ padding: '10px 14px' }}>
+        <Link className="bt-muted md:hidden" to="/social/chat" aria-label={t('common.back')}>
           ←
         </Link>
         <Avatar name={otherName} iconId={other?.profileIcon ?? null} size="sm" />
         <span
-          className={cx(
-            'text-sm font-semibold',
-            other ? 'text-neutral-100' : 'italic text-neutral-400',
-          )}
+          className="bt-h3"
+          style={{
+            color: other ? undefined : 'var(--bt-muted)',
+            fontStyle: other ? undefined : 'italic',
+          }}
         >
           {otherName}
         </span>
       </div>
 
-      <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
+      <div className="flex flex-1 flex-col gap-2 overflow-y-auto" style={{ padding: 16 }}>
         {threadQuery.hasNextPage ? (
-          <button
-            type="button"
-            onClick={() => void threadQuery.fetchNextPage()}
+          <Button
+            className="mx-auto"
             disabled={threadQuery.isFetchingNextPage}
-            className="mx-auto rounded-full border border-neutral-700 px-3 py-1 text-xs text-neutral-400 hover:bg-neutral-800 disabled:opacity-50"
+            onClick={() => void threadQuery.fetchNextPage()}
+            size="sm"
+            variant="quiet"
           >
             {t('social.chat.loadEarlier')}
-          </button>
+          </Button>
         ) : null}
 
         {threadQuery.isLoading ? (
           <div className="flex flex-col gap-2">
-            <Skeleton height="h-12" />
-            <Skeleton height="h-12" />
+            <SkeletonBlock height={48} />
+            <SkeletonBlock height={48} />
           </div>
         ) : threadQuery.isError ? (
           <Alert tone="error">{t('social.chat.error')}</Alert>
         ) : messages.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
             <Avatar name={otherName} iconId={other?.profileIcon ?? null} size="lg" />
-            <p className="text-base font-semibold text-neutral-100">
-              {t('social.chat.sayHi', { username: otherName })}
-            </p>
-            <p className="max-w-xs text-sm text-neutral-500">{t('social.chat.sayHiBody')}</p>
+            <p className="bt-h2">{t('social.chat.sayHi', { username: otherName })}</p>
+            <p className="bt-meta max-w-xs">{t('social.chat.sayHiBody')}</p>
           </div>
         ) : (
           messages.map((m) => (
@@ -790,7 +843,7 @@ function ChatThreadPane({
       </div>
 
       {sendMutation.isError && !banned ? (
-        <div className="px-3">
+        <div style={{ padding: '0 12px 8px' }}>
           <Alert tone="error">{t('social.chat.sendError')}</Alert>
         </div>
       ) : null}
@@ -799,7 +852,7 @@ function ChatThreadPane({
         // Admin chat ban (§13.4 V4-P0d): a neutral, localized notice — the server
         // refused the send (CHAT_BANNED). Existing history stays readable above and
         // incoming messages still arrive; only sending is closed off.
-        <p className="border-t border-neutral-800 px-4 py-3 text-center text-xs text-neutral-500">
+        <p className="bt-t-rule bt-meta text-center" style={{ padding: '12px 16px' }}>
           {t('social.chat.banned')}
         </p>
       ) : other ? (
@@ -813,7 +866,7 @@ function ChatThreadPane({
       ) : (
         // The partner deleted their account (#362): history stays readable, the
         // thread is closed to new messages — mirror the server's 403.
-        <p className="border-t border-neutral-800 px-4 py-3 text-center text-xs text-neutral-500">
+        <p className="bt-t-rule bt-meta text-center" style={{ padding: '12px 16px' }}>
           {t('social.chat.deletedClosed')}
         </p>
       )}
@@ -847,13 +900,8 @@ export function ChatPage() {
   });
 
   return (
-    <div className="flex flex-col gap-3">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
-          {t('social.chat.title')}
-        </h1>
-        <p className="mt-1 text-sm text-neutral-400">{t('social.chat.subhead')}</p>
-      </div>
+    <div className="flex flex-col">
+      <PageHead sub={t('social.chat.subhead')} title={t('social.chat.title')} />
 
       <div className="flex h-[70vh] gap-4">
         <aside className={cx('w-full shrink-0 md:w-80', selected && 'hidden md:block')}>
@@ -863,7 +911,10 @@ export function ChatPage() {
           {selected ? (
             <ChatThreadPane key={selected} userId={userId} fixedConversationId={conversationId} />
           ) : (
-            <div className="flex h-full items-center justify-center rounded-xl border border-neutral-800 bg-neutral-900/40 p-6">
+            <div
+              className="bt-panel flex h-full items-center justify-center"
+              style={{ padding: 24 }}
+            >
               <EmptyState
                 icon="💬"
                 title={t('social.chat.selectTitle')}
