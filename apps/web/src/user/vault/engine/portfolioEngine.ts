@@ -500,7 +500,14 @@ function marketDemandByAsset(
         );
         return reducePosition(throughDay).quantity > QTY_EPSILON;
       });
-      const quote = throughToday.length > 0 && reducePosition(throughToday).quantity > QTY_EPSILON;
+      /*
+       * Current holdings intentionally match the shared/server domain and are
+       * derived from the complete persisted transaction set, including
+       * future-dated rows. Quote demand must use that same set or holdings can
+       * become positive after the loader has decided that no quote is needed.
+       * Historical series remain bounded by `today`.
+       */
+      const quote = transactions.length > 0 && reducePosition(transactions).quantity > QTY_EPSILON;
       return [assetId, { history, quote }] as const;
     }),
   );

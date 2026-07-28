@@ -1,4 +1,5 @@
 import {
+  STANDING_ORDER_AMOUNT_MAX,
   customTaxParamsSchema,
   taxSettingsResponseSchema,
   updateTaxSettingsRequestSchema,
@@ -13,6 +14,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type { VaultSyncEngine, VaultSyncState } from '../sync';
+import { dueStandingOrderOccurrence } from '../standingOrders/schedule';
 import { moneyFailure } from './errors';
 import type { ClientTaxReport } from './types';
 
@@ -414,6 +416,12 @@ function validateRelationships(document: VaultDocumentV1): string {
   const portfolioIds = new Set(portfolios.map((portfolio) => portfolio.id));
   const assets = liveEntities(document, 'customAsset');
   const assetIds = new Set(assets.map((asset) => asset.id));
+  const assetCurrency = new Map(
+    assets.map((asset) => [
+      asset.id,
+      VAULT_ENTITY_ROW_SCHEMAS.customAsset.parse(asset.data).currency,
+    ]),
+  );
   for (const asset of assets) {
     const assetOwner = nullableField(asset, 'ownerId');
     if (assetOwner !== null && assetOwner !== ownerUserId) {
@@ -514,17 +522,29 @@ function validateRelationships(document: VaultDocumentV1): string {
     if (assetId !== null && !assetIds.has(assetId)) {
       invalidReference('standingOrder', order.id, 'assetId');
     }
+    validatePersistedStandingOrder(document, order, assetCurrency);
   }
   const runKeys = new Set<string>();
   for (const run of liveEntities(document, 'standingOrderRun')) {
-    if (!orderPortfolio.has(field(run, 'standingOrderId'))) {
+    const standingOrderId = field(run, 'standingOrderId');
+    if (!orderPortfolio.has(standingOrderId)) {
       invalidReference('standingOrderRun', run.id, 'standingOrderId');
     }
-    const key = `${field(run, 'standingOrderId')}\u0000${field(run, 'periodKey')}`;
+    const periodKey = field(run, 'periodKey');
+    const key = `${standingOrderId}\u0000${periodKey}`;
     if (runKeys.has(key)) {
       throw moneyFailure('VAULT_CORRUPT', `Vault contains duplicate standing-order run ${key}.`);
     }
     runKeys.add(key);
+    const order = liveEntities(document, 'standingOrder').find(
+      (candidate) => candidate.id === standingOrderId,
+    );
+    if (order !== undefined && !isStandingOrderOccurrence(order, periodKey)) {
+      invalidStandingOrder(
+        order.id,
+        `run ${run.id} does not belong to a reachable schedule occurrence`,
+      );
+    }
   }
   const taxSettings = liveEntities(document, 'taxSetting');
   if (taxSettings.length > 1) {
@@ -580,6 +600,76 @@ function validateRelationships(document: VaultDocumentV1): string {
     }
   }
   return ownerUserId;
+}
+
+function validatePersistedStandingOrder(
+  document: VaultDocumentV1,
+  entity: VaultEntity,
+  assetCurrency: ReadonlyMap<string, string>,
+): void {
+  const row = VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse(entity.data);
+  const isBuy = row.kind === 'buy-asset';
+  if (isBuy !== (row.assetId !== null)) {
+    invalidStandingOrder(entity.id, 'an asset is required exactly for an asset buy');
+  }
+  if (isBuy) {
+    if (assetCurrency.get(row.assetId!) !== row.currency) {
+      invalidStandingOrder(entity.id, 'the buy currency does not match its asset');
+    }
+  } else if (row.currency !== 'EUR') {
+    invalidStandingOrder(entity.id, 'cash orders must use EUR');
+  }
+
+  const amount = Number(row.amount);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > STANDING_ORDER_AMOUNT_MAX) {
+    invalidStandingOrder(entity.id, 'the amount is outside the persisted positive bounds');
+  }
+  if (
+    (row.cadence === 'daily' && row.anchorDay !== null) ||
+    (row.cadence === 'monthly' &&
+      (row.anchorDay === null || row.anchorDay < 1 || row.anchorDay > 31))
+  ) {
+    invalidStandingOrder(entity.id, 'cadence and anchor day are inconsistent');
+  }
+
+  try {
+    dueStandingOrderOccurrence(row, row.startDate);
+  } catch (cause) {
+    throw moneyFailure(
+      'VAULT_CORRUPT',
+      `Vault standingOrder ${entity.id} has an unreachable schedule.`,
+      { cause },
+    );
+  }
+
+  if ((row.lastRunAt === null) !== (row.lastPeriodKey === null)) {
+    invalidStandingOrder(entity.id, 'the run watermark is incomplete');
+  }
+  if (row.lastPeriodKey !== null) {
+    if (!isStandingOrderOccurrence(entity, row.lastPeriodKey)) {
+      invalidStandingOrder(entity.id, 'the run watermark is outside its schedule');
+    }
+    const matchingRun = liveEntities(document, 'standingOrderRun').some((run) => {
+      const runRow = VAULT_ENTITY_ROW_SCHEMAS.standingOrderRun.parse(run.data);
+      return runRow.standingOrderId === entity.id && runRow.periodKey === row.lastPeriodKey;
+    });
+    if (!matchingRun) {
+      invalidStandingOrder(entity.id, 'the run watermark has no durable period claim');
+    }
+  }
+}
+
+function isStandingOrderOccurrence(entity: VaultEntity, periodKey: string): boolean {
+  const row = VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse(entity.data);
+  try {
+    return dueStandingOrderOccurrence(row, periodKey) === periodKey;
+  } catch {
+    return false;
+  }
+}
+
+function invalidStandingOrder(id: string, reason: string): never {
+  throw moneyFailure('VAULT_CORRUPT', `Vault standingOrder ${id} is unreachable: ${reason}.`);
 }
 
 function field(entity: VaultEntity, key: string): string {

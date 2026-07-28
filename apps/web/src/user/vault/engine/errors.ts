@@ -86,6 +86,8 @@ function storeFailure(cause: VaultPortfolioStoreError): VaultMoneyFailure {
       return typedFailure('VAULT_LOCKED', cause.message, true);
     case 'VAULT_DATA_UNAVAILABLE':
       return typedFailure('VAULT_DATA_UNAVAILABLE', cause.message, true);
+    case 'VAULT_OPERATION_ABORTED':
+      return typedFailure('OPERATION_ABORTED', cause.message, true);
     case 'VAULT_OPERATION_UNAVAILABLE':
     case 'VAULT_LAST_ACTIVE_PORTFOLIO':
       return typedFailure('VAULT_OPERATION_UNSUPPORTED', cause.message, false);

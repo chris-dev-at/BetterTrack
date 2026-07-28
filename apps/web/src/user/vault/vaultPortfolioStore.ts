@@ -59,6 +59,7 @@ export const VAULT_PORTFOLIO_STORE_ERROR_CODES = [
   'VAULT_CORRUPT',
   'VAULT_DATA_UNAVAILABLE',
   'VAULT_ENTITY_NOT_FOUND',
+  'VAULT_OPERATION_ABORTED',
   'VAULT_OPERATION_UNAVAILABLE',
   'VAULT_DATA_INVALID',
   'VAULT_LAST_ACTIVE_PORTFOLIO',
@@ -94,6 +95,12 @@ export interface VaultStandingOrderOccurrenceInput {
   timezone: string;
   /** The authenticated client's wall-clock booking time. */
   executedAt: string;
+  /** Authenticated candidate from which the due occurrence and quote were selected. */
+  expectedCandidate: {
+    vaultVersion: number;
+    vaultKeyId: string;
+    writeId: string;
+  };
   /** Required exactly for `buy-asset`, in the standing order's native currency. */
   price?: number;
   quoteCurrency?: string;
@@ -728,13 +735,15 @@ async function materializeStandingOrderOccurrence(
     );
   }
   const current = requireDocument(context.engine);
+  assertStandingOrderCandidate(context.engine, current, undefined, input.expectedCandidate);
   assertStandingOrderDefinition(current, requireLiveStandingOrder(current, input.orderId), input);
   const alreadyCommitted = existingStandingOrderOccurrence(current, input);
   if (alreadyCommitted != null) return alreadyCommitted;
 
   let created = false;
-  const mutationState = await context.engine.mutate(({ document }) => {
+  const mutationState = await context.engine.mutate(({ document, currentVersion }) => {
     signal?.throwIfAborted();
+    assertStandingOrderCandidate(context.engine, document, currentVersion, input.expectedCandidate);
     const concurrent = existingStandingOrderOccurrence(document, input);
     if (concurrent != null) return document;
 
@@ -887,9 +896,35 @@ function assertStandingOrderOccurrenceInput(input: VaultStandingOrderOccurrenceI
     !day.test(input.dueDate) ||
     !day.test(input.calendarDay) ||
     input.timezone.trim().length === 0 ||
-    !Number.isFinite(Date.parse(input.executedAt))
+    !Number.isFinite(Date.parse(input.executedAt)) ||
+    !Number.isSafeInteger(input.expectedCandidate.vaultVersion) ||
+    input.expectedCandidate.vaultVersion < 0 ||
+    !uuid.test(input.expectedCandidate.vaultKeyId) ||
+    !uuid.test(input.expectedCandidate.writeId)
   ) {
     throw storeError('VAULT_DATA_INVALID', 'The standing-order occurrence identity is invalid.');
+  }
+}
+
+function assertStandingOrderCandidate(
+  engine: VaultSyncEngine,
+  document: VaultDocumentV1,
+  currentVersion: number | undefined,
+  expected: VaultStandingOrderOccurrenceInput['expectedCandidate'],
+): void {
+  const active = engine.state.active;
+  if (
+    active === null ||
+    active.document !== document ||
+    (currentVersion !== undefined && currentVersion !== expected.vaultVersion) ||
+    active.header.vaultVersion !== expected.vaultVersion ||
+    active.header.keyId !== expected.vaultKeyId ||
+    active.header.writeId !== expected.writeId
+  ) {
+    throw storeError(
+      'VAULT_OPERATION_ABORTED',
+      'The authenticated vault candidate changed before the standing order could be committed.',
+    );
   }
 }
 

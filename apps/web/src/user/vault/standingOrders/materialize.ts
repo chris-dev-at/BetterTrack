@@ -45,7 +45,7 @@ export interface MaterializedStandingOrder {
 export interface DeferredStandingOrder {
   orderId: string;
   dueDate: string;
-  reason: 'insufficient-cash' | 'invalid-order';
+  reason: 'insufficient-cash';
 }
 
 export interface StandingOrderMaterializationResult {
@@ -93,21 +93,30 @@ export async function materializeDueStandingOrders(
         calendarDay: today,
         timezone,
         executedAt: now.toISOString(),
+        expectedCandidate: {
+          vaultVersion: snapshot.vaultVersion,
+          vaultKeyId: snapshot.vaultKeyId,
+          writeId: snapshot.writeId,
+        },
       });
       if (existing !== null) continue;
 
       let quote: { price: number; currency: string } | null = null;
       if (order.row.kind === 'buy-asset') {
         if (order.row.assetId === null) {
-          result.deferred.push({ orderId: order.entity.id, dueDate, reason: 'invalid-order' });
-          continue;
+          throw moneyFailure(
+            'VAULT_CORRUPT',
+            `Buy standing order ${order.entity.id} has no asset.`,
+          );
         }
         try {
           const model = readPortfolioModel(snapshot.document, order.row.portfolioId);
           const asset = model.assets.get(order.row.assetId);
           if (asset === undefined) {
-            result.deferred.push({ orderId: order.entity.id, dueDate, reason: 'invalid-order' });
-            continue;
+            throw moneyFailure(
+              'VAULT_CORRUPT',
+              `Buy standing order ${order.entity.id} references an unavailable asset.`,
+            );
           }
           if (asset.providerId === 'manual') {
             const manual = localManualAssetMarket(snapshot.document, asset);
@@ -194,6 +203,11 @@ export async function materializeDueStandingOrders(
             calendarDay: today,
             timezone,
             executedAt: now.toISOString(),
+            expectedCandidate: {
+              vaultVersion: snapshot.vaultVersion,
+              vaultKeyId: snapshot.vaultKeyId,
+              writeId: snapshot.writeId,
+            },
             ...(quote === null ? {} : { price: quote.price, quoteCurrency: quote.currency }),
           },
           signal,

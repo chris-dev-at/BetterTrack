@@ -672,6 +672,38 @@ describe('paranoid client money engine', () => {
     expect(market.calls.history).toEqual([]);
   });
 
+  it('uses the live quote for a future buy included by shared holdings derivation', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    const buy = document.entities.transaction!.find(
+      (entity) => entity.data.assetId === CLIENT_MONEY_IDS.eurAsset && entity.data.side === 'buy',
+    )!;
+    const executedAt = '2026-07-28T10:00:00.000Z';
+    buy.data.executedAt = executedAt;
+    buy.editedAt = executedAt;
+    document.entities.transaction = [buy];
+    const market = createClientMoneyMarket();
+
+    const result = await createVaultMoneyEngine(
+      createMutableTestSync(document, fixture.header),
+      market.market,
+      { now: () => NOW },
+    ).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+
+    expect(result.ok, result.ok ? undefined : JSON.stringify(result.error)).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.holdings).toEqual([
+      expect.objectContaining({
+        assetId: CLIENT_MONEY_IDS.eurAsset,
+        quantity: 10,
+        price: 130,
+        marketValueEur: 1300,
+      }),
+    ]);
+    expect(market.calls.quote).toEqual([CLIENT_MONEY_IDS.eurAsset]);
+    expect(market.calls.history).toEqual([]);
+  });
+
   it('caches derived work by vault version, market watermark, and range in memory only', async () => {
     const fixture = await decryptClientMoneyFixture();
     const sync = createMutableTestSync(fixture.document, fixture.header);
