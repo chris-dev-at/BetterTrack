@@ -223,7 +223,11 @@ test('Opus 5 can never be routed above xhigh, in any shape', () => {
     }).writer,
     undefined,
   );
-  assert.ok(publicProviderRegistry().find((p) => p.id === 'claude').modelSuggestions.includes('claude-opus-5'));
+  assert.ok(
+    publicProviderRegistry()
+      .find((p) => p.id === 'claude')
+      .modelSuggestions.includes('claude-opus-5'),
+  );
 });
 
 test('v2 slotted routing normalizes per slot and survives round-tripping', () => {
@@ -284,12 +288,22 @@ test('v2 slotted routing normalizes per slot and survives round-tripping', () =>
 
 test('role pins: object entries pin a role, strings keep difficulty semantics', () => {
   // mirror of the role set mflib.sh scans; reviewFloor is deliberately not pinnable
-  assert.deepEqual(PINNABLE_ROLES, ['composer', 'checker', 'writer', 'reviewer', 'fixer', 'ci-fix']);
-  assert.deepEqual(normalizeRolePin({ provider: 'claude', model: 'claude-fable-5', effort: 'xhigh' }), {
-    provider: 'claude',
-    model: 'claude-fable-5',
-    effort: 'xhigh',
-  });
+  assert.deepEqual(PINNABLE_ROLES, [
+    'composer',
+    'checker',
+    'writer',
+    'reviewer',
+    'fixer',
+    'ci-fix',
+  ]);
+  assert.deepEqual(
+    normalizeRolePin({ provider: 'claude', model: 'claude-fable-5', effort: 'xhigh' }),
+    {
+      provider: 'claude',
+      model: 'claude-fable-5',
+      effort: 'xhigh',
+    },
+  );
   // strings and absent entries are not pins
   assert.equal(normalizeRolePin('hard'), null);
   assert.equal(normalizeRolePin(undefined), null);
@@ -298,18 +312,27 @@ test('role pins: object entries pin a role, strings keep difficulty semantics', 
   // malformed pins are rejected (unknown provider, missing model, bad effort)
   assert.equal(normalizeRolePin({ provider: 'constructor', model: 'x', effort: 'high' }), null);
   assert.equal(normalizeRolePin({ provider: 'claude', model: '', effort: 'high' }), null);
-  assert.equal(normalizeRolePin({ provider: 'codex', model: 'gpt-5.6-sol', effort: 'turbo' }), null);
+  assert.equal(
+    normalizeRolePin({ provider: 'codex', model: 'gpt-5.6-sol', effort: 'turbo' }),
+    null,
+  );
   // HARD RULE: an Opus 5 pin above xhigh is never valid, dated ids included
-  assert.equal(normalizeRolePin({ provider: 'claude', model: 'claude-opus-5', effort: 'max' }), null);
+  assert.equal(
+    normalizeRolePin({ provider: 'claude', model: 'claude-opus-5', effort: 'max' }),
+    null,
+  );
   assert.equal(
     normalizeRolePin({ provider: 'claude', model: 'claude-opus-5-20260514', effort: 'max' }),
     null,
   );
-  assert.deepEqual(normalizeRolePin({ provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' }), {
-    provider: 'claude',
-    model: 'claude-opus-5',
-    effort: 'xhigh',
-  });
+  assert.deepEqual(
+    normalizeRolePin({ provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' }),
+    {
+      provider: 'claude',
+      model: 'claude-opus-5',
+      effort: 'xhigh',
+    },
+  );
 });
 
 test('routing normalization round-trips role pins without corrupting them', () => {

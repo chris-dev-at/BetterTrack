@@ -2917,17 +2917,16 @@
               <b>review&nbsp;1</b> is the single first review pass (typically cross-vendor);
               <b>completion</b> does all later fixing AND reviewing (fixer, ci-fix, checker,
               re-reviews) until the issue is done. Reviews run at the issue's difficulty but never
-              below the <b>review floor</b>; the composer master-role runs on the writer slot of
-              its difficulty, the checker on the completion slot. Instead of a difficulty, the
-              composer and checker can be <b>pinned</b> to one exact provider/model/effort
-              (“📌 pinned model…”) — a pin bypasses difficulty routing for that role only; issue
-              work keeps following the slot table. A rejected issue escalates ONE
-              difficulty higher on its triage retry (max stays max). Legacy tier labels still
-              resolve: sonnet→easy, opus→intermediate, fable→max. Effort semantics: Claude =
-              --effort (low…max) · Codex = model-supported reasoning effort (low…max/ultra) ·
-              Antigravity bakes the level into the model name, e.g. “Gemini 3.1 Pro (High)”.
-              Hard rule enforced here and in the control API: Claude Opus 5 never runs above
-              <b>xhigh</b>.
+              below the <b>review floor</b>; the composer master-role runs on the writer slot of its
+              difficulty, the checker on the completion slot. Instead of a difficulty, the composer
+              and checker can be <b>pinned</b> to one exact provider/model/effort (“📌 pinned
+              model…”) — a pin bypasses difficulty routing for that role only; issue work keeps
+              following the slot table. A rejected issue escalates ONE difficulty higher on its
+              triage retry (max stays max). Legacy tier labels still resolve: sonnet→easy,
+              opus→intermediate, fable→max. Effort semantics: Claude = --effort (low…max) · Codex =
+              model-supported reasoning effort (low…max/ultra) · Antigravity bakes the level into
+              the model name, e.g. “Gemini 3.1 Pro (High)”. Hard rule enforced here and in the
+              control API: Claude Opus 5 never runs above <b>xhigh</b>.
             </div>
           </details>
         </div>
@@ -3665,13 +3664,19 @@
       /* every route a difficulty entry can dispatch: flat legacy + slot routes */
       const mRoutesOf = (entry) =>
         entry && typeof entry === 'object'
-          ? [entry, ...SLOT_LIST.map((slot) => entry[slot]).filter((r) => r && typeof r === 'object')]
+          ? [
+              entry,
+              ...SLOT_LIST.map((slot) => entry[slot]).filter((r) => r && typeof r === 'object'),
+            ]
           : [];
       /* roles.<role> may be a difficulty string (legacy: resolve through that
          tier) or a {provider, model, effort} object pinning the role to that
          exact route (mflib.sh role_pin_cfg). reviewFloor is never a pin. */
       const mRolePin = (value) =>
-        value && typeof value === 'object' && !Array.isArray(value) && typeof value.provider === 'string'
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        typeof value.provider === 'string'
           ? value
           : null;
       const mRolePins = (models) =>

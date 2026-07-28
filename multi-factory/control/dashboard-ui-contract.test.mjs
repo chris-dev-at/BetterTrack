@@ -323,7 +323,10 @@ test('models editor understands role pins and never corrupts unknown role entrie
   assert.match(script, /const roles = \{ \.\.\.mRolesBase \}/);
   assert.match(script, /mode === PIN_VALUE \? mRolePinCollect\(role\)/);
   // the flow diagram resolves a pinned composer to its pin, not a difficulty row
-  assert.match(script, /composerPin \|\| \(composerEntry \? mSlotEntry\(composerEntry, 'writer'\) : null\)/);
+  assert.match(
+    script,
+    /composerPin \|\| \(composerEntry \? mSlotEntry\(composerEntry, 'writer'\) : null\)/,
+  );
   // static markup carries the pin hosts the renderer fills in
   assert.match(html, /id="m-composer-pin"/);
   assert.match(html, /id="m-checker-pin"/);

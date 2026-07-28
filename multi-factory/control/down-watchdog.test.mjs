@@ -7,10 +7,7 @@ import { fileURLToPath } from 'node:url';
 // Source-contract tests over server.mjs (same style as usage-history.test.mjs):
 // the factory-down watchdog must exist with its safety properties intact.
 const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'server.mjs'), 'utf8');
-const block = src.slice(
-  src.indexOf('// ---- factory-down watchdog'),
-  src.indexOf('// ---- http'),
-);
+const block = src.slice(src.indexOf('// ---- factory-down watchdog'), src.indexOf('// ---- http'));
 
 test('down watchdog exists and only fires for owner-intended running states', () => {
   assert.ok(block.length > 0, 'watchdog block present');

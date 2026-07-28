@@ -957,7 +957,10 @@ async function doAction(action, payload = {}) {
       for (const [role, value] of Object.entries(isRecord(roles) ? roles : {})) {
         if (value == null) continue;
         if (!knownRoles.has(role))
-          return { ok: false, message: `unknown role '${role}' — expected one of ${[...knownRoles].join('/')}` };
+          return {
+            ok: false,
+            message: `unknown role '${role}' — expected one of ${[...knownRoles].join('/')}`,
+          };
         if (typeof value === 'string' && DIFFS.includes(value)) {
           out.roles[role] = value;
           continue;
@@ -965,7 +968,10 @@ async function doAction(action, payload = {}) {
         if (role !== 'reviewFloor' && isRecord(value)) {
           const pin = normalizeRouteEntry(value);
           if (!pin)
-            return { ok: false, message: `invalid pinned provider/model/effort for role '${role}'` };
+            return {
+              ok: false,
+              message: `invalid pinned provider/model/effort for role '${role}'`,
+            };
           out.roles[role] = pin; // Opus-5 ≤ xhigh already enforced by normalizeRouteEntry
           out.version = 2; // pins are v2 schema
           continue;
@@ -986,7 +992,8 @@ async function doAction(action, payload = {}) {
       if (!composerRouteAllowed(composerEntry))
         return {
           ok: false,
-          message: 'composer route (pin or writer slot) must use Claude Fable, Claude Opus, or GPT-5.6 Sol',
+          message:
+            'composer route (pin or writer slot) must use Claude Fable, Claude Opus, or GPT-5.6 Sol',
         };
       await mkdir(CONTROL, { recursive: true });
       const tmp = `${MODELS_FILE}.tmp${Date.now()}`;
