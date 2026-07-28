@@ -29,14 +29,14 @@ No Critical-class vulnerability, conventional SQL injection, direct React HTML-i
 
 ## Review passes
 
-| Pass | Focus |
-| --- | --- |
-| [01 — Backend security](01-backend-security.md) | Authentication, authorization, sessions, OAuth, API keys, realtime, imports, notifications, races, and data handling |
-| [02 — Frontend usability](02-frontend-usability.md) | Client security, privacy, accessibility, resilience, responsive behavior, localization, and product completeness |
-| [03 — Infrastructure and supply chain](03-infrastructure-supply-chain.md) | Docker, nginx, CI/CD, autonomous factories, secrets, deployment, backups, health, and operations |
-| [04 — Privacy, legal, and data governance](04-privacy-legal-data-governance.md) | Deletion, retention, exports, processors, cookies, legal routes, and policy/implementation consistency |
-| [05 — Remediation roadmap](05-remediation-roadmap.md) | Ordered release gates, implementation guidance, and required regression tests |
-| [06 — Validation and limitations](06-validation-and-limitations.md) | Scope, commands that ran, unavailable checks, external-state boundaries, and worktree notes |
+| Pass                                                                            | Focus                                                                                                                |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| [01 — Backend security](01-backend-security.md)                                 | Authentication, authorization, sessions, OAuth, API keys, realtime, imports, notifications, races, and data handling |
+| [02 — Frontend usability](02-frontend-usability.md)                             | Client security, privacy, accessibility, resilience, responsive behavior, localization, and product completeness     |
+| [03 — Infrastructure and supply chain](03-infrastructure-supply-chain.md)       | Docker, nginx, CI/CD, autonomous factories, secrets, deployment, backups, health, and operations                     |
+| [04 — Privacy, legal, and data governance](04-privacy-legal-data-governance.md) | Deletion, retention, exports, processors, cookies, legal routes, and policy/implementation consistency               |
+| [05 — Remediation roadmap](05-remediation-roadmap.md)                           | Ordered release gates, implementation guidance, and required regression tests                                        |
+| [06 — Validation and limitations](06-validation-and-limitations.md)             | Scope, commands that ran, unavailable checks, external-state boundaries, and worktree notes                          |
 
 ## Severity model
 
