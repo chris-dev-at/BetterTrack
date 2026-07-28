@@ -57,6 +57,11 @@ const TYPE_BADGE: Record<string, string> = {
 };
 
 export interface AssetSearchBoxProps {
+  /**
+   * Notified with the raw query on every keystroke — the ⌘K palette listens so
+   * its command sections (navigate/create/settings) filter on the same input.
+   */
+  onQueryChange?: (query: string) => void;
   /** Called after any per-result action fires — lets a palette close itself. */
   onAction?: () => void;
   /**
@@ -77,6 +82,7 @@ export interface AssetSearchBoxProps {
  */
 export function AssetSearchBox({
   onAction,
+  onQueryChange,
   onSelect,
   autoFocus = false,
   placeholder,
@@ -285,7 +291,10 @@ export function AssetSearchBox({
         autoFocus={autoFocus}
         type="search"
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          onQueryChange?.(e.target.value);
+        }}
         placeholder={placeholder ?? t('assets.searchBox.placeholder')}
         aria-label={t('assets.searchBox.inputAria')}
         className={cx(

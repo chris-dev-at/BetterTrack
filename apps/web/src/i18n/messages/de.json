@@ -4190,5 +4190,11 @@
       "p3": "Szenario-Antworten öffnen sich als Workbench-Entwürfe",
       "p4": "Kein Schreibzugriff ohne deine ausdrückliche Bestätigung"
     }
+  },
+  "palette": {
+    "goTo": "Gehe zu",
+    "create": "Neu",
+    "control": "Kontrollzentrum",
+    "commandsAria": "Befehle"
   }
 }

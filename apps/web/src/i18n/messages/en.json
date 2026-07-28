@@ -4190,5 +4190,11 @@
       "p3": "Scenario answers open as Workbench drafts",
       "p4": "No write happens without your explicit confirmation"
     }
+  },
+  "palette": {
+    "goTo": "Go to",
+    "create": "Create",
+    "control": "Control Center",
+    "commandsAria": "Commands"
   }
 }
