@@ -1761,7 +1761,7 @@ check "spent reviews are durable" 5 "$(jq -r .reviews_spent "$TRIAGE_FILE")"
 
 # Probe failures are bounded and park loudly instead of spinning silently.
 ESC_REVIEW_CALLS=0; HUMANS=0
-MF_QUEUE_PROBE_MAX_SAVE=$MF_QUEUE_PROBE_MAX; MF_QUEUE_PROBE_MAX=2
+MF_QUEUE_PROBE_MAX_SAVE=${MF_QUEUE_PROBE_MAX:-40}; MF_QUEUE_PROBE_MAX=2
 gh(){ [ "$1 $2" = "pr view" ] && echo OPEN; }
 run_reviewer(){
   ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1))

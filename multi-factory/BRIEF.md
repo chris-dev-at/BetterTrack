@@ -211,7 +211,7 @@ paid review attempts in total per state, then the issue parks `needs-human`.
 
 **Re-arming a `needs-human` issue whose triage state completed:** archive the
 state file first, then relabel —
-`mv state/triage/issue-<n>-pr<m>.json state/rearm-archive/issue-<n>-pr<m>-r-<UTCstamp>` and
+`mkdir -p state/rearm-archive && mv state/triage/issue-<n>-pr<m>.json state/rearm-archive/issue-<n>-pr<m>-r-<UTCstamp>` and
 `gh issue edit <n> --add-label autopilot --remove-label needs-human`.
 A `complete/human` state left in place re-parks the issue on the next tick by
 design; relabeling alone is not a re-arm.

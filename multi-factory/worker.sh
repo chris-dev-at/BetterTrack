@@ -633,6 +633,10 @@ triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked
             triage_state_save "$sf" "$n" "$pr" complete || return 2
             return 1
           fi
+          # Best-effort save, deliberately: if the triage dir is ALSO
+          # unwritable the counter cannot advance and this stays a free
+          # no-op loop — a whole-volume outage is an ops incident caught
+          # by heartbeats, not something state can fix.
           triage_state_save "$sf" "$n" "$pr" complete || :
           return 0
         fi
