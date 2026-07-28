@@ -618,13 +618,14 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
         );
 
         if (
-          sameMediaSelection(selection, {
-            mediaSet: input.nextMediaSet,
-            driveAttestedVersion: selection.driveAttestedVersion,
-          })
+          isIdempotentMediaTransition(
+            input,
+            selection,
+            active,
+            candidate ?? null,
+            retirement ?? null,
+          )
         ) {
-          // This path only admits a repeat of an earlier, valid edge: contracts
-          // reject a caller whose expected set already equals the target.
           return { status: 'ok', state: currentState, idempotent: true } as const;
         }
         if (!sameMediaSelection(selection, input.expected)) {
@@ -956,6 +957,61 @@ function mediaStateOf(
       retired: retiredMetadata,
     },
   };
+}
+
+/**
+ * A target-only match is not enough to acknowledge a retried media change:
+ * another browser may have reached the same target first. Non-candidate edges
+ * leave enough durable state to tie a retry to its read-back assertion. A
+ * promoted candidate is deliberately deleted and its id never becomes active
+ * vault metadata, so it cannot be safely identified after promotion. Such a
+ * retry must reach the expected-state conflict below rather than report a
+ * false successful promotion.
+ */
+function isIdempotentMediaTransition(
+  input: ParanoidMediaTransitionInput,
+  selection: VaultMediaSelection,
+  active: ParanoidVaultRow | undefined,
+  candidate: ParanoidVaultServerCandidateRow | null,
+  retirement: ParanoidVaultRetirementRow | null,
+): boolean {
+  const transition = oneMediumTransition(input.expected.mediaSet, input.nextMediaSet);
+  if (!transition || candidate) return false;
+
+  switch (input.verification.kind) {
+    case 'server-candidate':
+      return false;
+    case 'server':
+      return (
+        transition.removed === 'drive' &&
+        active?.version === input.verification.version &&
+        sameMediaSelection(selection, {
+          mediaSet: canonicalMediaSet(input.nextMediaSet),
+          driveAttestedVersion: null,
+        })
+      );
+    case 'drive':
+      if (transition.added === 'drive') {
+        return (
+          active !== undefined &&
+          active.version <= input.verification.version &&
+          sameMediaSelection(selection, {
+            mediaSet: canonicalMediaSet(input.nextMediaSet),
+            driveAttestedVersion: input.verification.version,
+          })
+        );
+      }
+      return (
+        transition.removed === 'server' &&
+        active === undefined &&
+        retirement !== null &&
+        retirement.retiredVersion <= input.verification.version &&
+        sameMediaSelection(selection, {
+          mediaSet: canonicalMediaSet(input.nextMediaSet),
+          driveAttestedVersion: input.verification.version,
+        })
+      );
+  }
 }
 
 function canonicalMediaSet(mediaSet: readonly VaultMedium[]): VaultMediaSet {

@@ -846,6 +846,92 @@ describe('durable paranoid server-media lifecycle', () => {
     expect(media.body.mediaState.server.disposition).toBe('empty');
   });
 
+  it('rejects a stale candidate promotion after another browser promotes a different candidate', async () => {
+    const { user, agent: firstBrowser } = await seedParanoidAgent(
+      'concurrent-candidate@bt.test',
+      'concurrentcandidate',
+    );
+    const secondBrowser = await loginAgent(harness.app, user.email, 'user-strong-password-1');
+    const { publicKey } = retirementProofKey();
+    const firstBytes = envelope(1, new Uint8Array([1, 2, 3]));
+    const secondBytes = envelope(1, new Uint8Array([4, 5, 6]));
+    const driveOnly = { mediaSet: ['drive'], driveAttestedVersion: 1 };
+    const both = { mediaSet: ['server', 'drive'], driveAttestedVersion: 1 };
+
+    await harness.db
+      .update(users)
+      .set({ paranoidMediaSet: driveOnly.mediaSet, paranoidDriveAttestedVersion: 1 })
+      .where(eq(users.id, user.id));
+
+    const firstCandidate = await firstBrowser
+      .put('/api/v1/vault/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+      .send(firstBytes);
+    expect(firstCandidate.status).toBe(200);
+    const firstCandidateId = firstCandidate.body.candidateId as string;
+    const firstReadback = await firstBrowser
+      .get(`/api/v1/vault/media/server-candidate/${firstCandidateId}`)
+      .responseType('blob');
+    expect(firstReadback.status).toBe(200);
+    const firstReceipt = firstReadback.headers[
+      VAULT_SERVER_CANDIDATE_READBACK_HEADER.toLowerCase()
+    ] as string;
+
+    const secondCandidate = await secondBrowser
+      .put('/api/v1/vault/media/server-candidate')
+      .set(...XRW)
+      .set(...OCTET)
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+      .send(secondBytes);
+    expect(secondCandidate.status).toBe(200);
+    const secondCandidateId = secondCandidate.body.candidateId as string;
+    expect(secondCandidateId).not.toBe(firstCandidateId);
+    const secondReadback = await secondBrowser
+      .get(`/api/v1/vault/media/server-candidate/${secondCandidateId}`)
+      .responseType('blob');
+    expect(secondReadback.status).toBe(200);
+    const secondReceipt = secondReadback.headers[
+      VAULT_SERVER_CANDIDATE_READBACK_HEADER.toLowerCase()
+    ] as string;
+
+    await secondBrowser
+      .patch('/api/v1/vault/media')
+      .set(...XRW)
+      .send({
+        expected: driveOnly,
+        nextMediaSet: both.mediaSet,
+        verification: {
+          kind: 'server-candidate',
+          candidateId: secondCandidateId,
+          readback: secondReceipt,
+        },
+      })
+      .expect(200);
+
+    // The first browser still has a valid receipt for its own candidate, but
+    // that candidate lost the race. A target-only retry must not claim that it
+    // promoted bytes belonging to the other browser.
+    const stalePromotion = await firstBrowser
+      .patch('/api/v1/vault/media')
+      .set(...XRW)
+      .send({
+        expected: driveOnly,
+        nextMediaSet: both.mediaSet,
+        verification: {
+          kind: 'server-candidate',
+          candidateId: firstCandidateId,
+          readback: firstReceipt,
+        },
+      });
+    expect(stalePromotion.status).toBe(409);
+    expect(stalePromotion.body.error.code).toBe('VAULT_MEDIA_STATE_CONFLICT');
+    const active = await secondBrowser.get('/api/v1/vault').responseType('blob');
+    expect(active.status).toBe(200);
+    expect((active.body as Buffer).equals(secondBytes)).toBe(true);
+  });
+
   it('fails closed for a conflicting same-version candidate and proofs derived without the vault key', async () => {
     const { agent } = await seedParanoidAgent('proofs@bt.test', 'proofs');
     const { privateKey, publicKey } = retirementProofKey();
