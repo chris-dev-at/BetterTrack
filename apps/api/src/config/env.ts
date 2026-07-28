@@ -4,6 +4,11 @@ import { join as joinPath } from 'node:path';
 
 import { z } from 'zod';
 
+import {
+  createSecretBoxKeyring,
+  type SecretBoxKey,
+  type SecretBoxKeyring,
+} from '../services/crypto/secretBox';
 import type { ProgressiveSchedule } from '../services/security/progressiveLimiter';
 import { API_SERVICE_NAME, API_VERSION } from '../version';
 
@@ -19,6 +24,10 @@ import { API_SERVICE_NAME, API_VERSION } from '../version';
 const optionalUrl = z.preprocess(
   (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
   z.string().url().optional(),
+);
+const optionalNonEmpty = z.preprocess(
+  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+  z.string().optional(),
 );
 
 const envSchema = z.object({
@@ -126,13 +135,23 @@ const envSchema = z.object({
   // Falls back to NODE_ENV when unset.
   BT_SENTRY_ENVIRONMENT: z.string().optional(),
 
+  // ── Stored-record encryption (#879) ────────────────────────────────────────
+  // TOTP secrets + Discord webhook URLs use one long-lived keyring that is
+  // independent of cookie signing. The active id is public envelope metadata;
+  // key material is a server secret. Previous entries are ordered
+  // `id=material,id=material` and exist only while records are being re-encrypted.
+  // Production requires both active fields; development/test use a fixed,
+  // session-independent local fallback so rotating SESSION_SECRET can never
+  // rotate stored-record encryption accidentally.
+  BT_DATA_ENCRYPTION_KEY_ID: optionalNonEmpty,
+  BT_DATA_ENCRYPTION_KEY: optionalNonEmpty,
+  BT_DATA_ENCRYPTION_DECRYPT_KEYS: optionalNonEmpty,
+
   // ── Two-factor auth (§6.1, §13.2 V2-P5) ────────────────────────────────────
   // Issuer label baked into the `otpauth://` URI so the code shows up as
   // "BetterTrack (user@…)" in an authenticator app. TOTP_ENCRYPTION_KEY is the
-  // secret that encrypts each user's TOTP secret at rest (AES-256-GCM); any
-  // length is accepted and folded to a 32-byte key. When unset it is DERIVED
-  // from SESSION_SECRET so a stock deploy still encrypts — set a dedicated value
-  // to rotate 2FA encryption independently of session signing.
+  // deprecated pre-#879 key input: it remains a legacy-v1 decrypt candidate so
+  // existing records survive the move to BT_DATA_ENCRYPTION_*.
   TOTP_ISSUER: z.string().min(1).default('BetterTrack'),
   TOTP_ENCRYPTION_KEY: z.string().min(1).optional(),
 
@@ -294,6 +313,52 @@ function boolFrom(value: string | undefined, dflt: boolean): boolean {
   return v === 'true' || v === '1' || v === 'yes' || v === 'on';
 }
 
+const DATA_ENCRYPTION_KEY_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const DEVELOPMENT_DATA_ENCRYPTION_KEY_ID = 'development-v1';
+const DEVELOPMENT_DATA_ENCRYPTION_KEY =
+  'bettertrack-fixed-local-record-encryption-key-v1-not-for-production';
+
+function dataEncryptionKey(material: string): Buffer {
+  return createHash('sha256').update('bettertrack:data-encryption:v1\0').update(material).digest();
+}
+
+function legacyTwoFactorKey(material: string): Buffer {
+  return createHash('sha256').update(material).digest();
+}
+
+function legacySessionEncryptionKeys(rawSessionSecret: string): Buffer[] {
+  const rawSegments = rawSessionSecret.split(',');
+  const orderedSuffixes = rawSegments
+    .map((_, index) => rawSegments.slice(index).join(','))
+    .filter((suffix) => suffix.trim().length > 0);
+  const individualSecrets = rawSegments
+    .map((secret) => secret.trim())
+    .filter((secret) => secret.length > 0);
+
+  return [...orderedSuffixes, ...individualSecrets].map((material) =>
+    legacyTwoFactorKey(`bt-2fa:${material}`),
+  );
+}
+
+function parsePreviousDataEncryptionKeys(value: string | undefined): SecretBoxKey[] {
+  if (!value) return [];
+
+  return value.split(',').map((rawEntry) => {
+    const entry = rawEntry.trim();
+    const separator = entry.indexOf('=');
+    const id = separator > 0 ? entry.slice(0, separator).trim() : '';
+    const material = separator > 0 ? entry.slice(separator + 1).trim() : '';
+    if (!DATA_ENCRYPTION_KEY_ID.test(id) || material.length < 32) {
+      throw new Error(
+        'Invalid environment configuration:\n' +
+          '  - BT_DATA_ENCRYPTION_DECRYPT_KEYS: expected comma-separated id=key entries ' +
+          '(ids use letters, digits, _ or -; keys are at least 32 characters)',
+      );
+    }
+    return { id, key: dataEncryptionKey(material) };
+  });
+}
+
 /**
  * Known-unsafe Grafana admin passwords that must NEVER count as "set" for the
  * external-exposure gate: the image default and the `.env.*.example` placeholder.
@@ -422,6 +487,11 @@ export interface AppConfig {
   corsOrigins: string[];
   /** First secret signs new cookies; all are accepted for verification (rotation). */
   sessionSecrets: string[];
+  /**
+   * Long-lived server-side record encryption, independent of cookie signing.
+   * TOTP and Discord use the active key for writes and the full ring for reads.
+   */
+  recordEncryption: SecretBoxKeyring;
   cookie: {
     name: string;
     /** Derived from the API origin scheme (https → Secure), not NODE_ENV. */
@@ -581,7 +651,10 @@ export interface AppConfig {
   twoFactor: {
     /** Issuer label embedded in the `otpauth://` provisioning URI. */
     issuer: string;
-    /** 32-byte AES-256-GCM key encrypting each user's TOTP secret at rest. */
+    /**
+     * Compatibility key for older, out-of-scope secretBox consumers. TOTP and
+     * Discord use {@link AppConfig.recordEncryption}.
+     */
     encryptionKey: Buffer;
   };
   /**
@@ -686,6 +759,52 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const e = parsed.data;
   const isProduction = e.NODE_ENV === 'production';
   const isTest = e.NODE_ENV === 'test';
+  const sessionSecrets = e.SESSION_SECRET.split(',')
+    .map((secret) => secret.trim())
+    .filter((secret) => secret.length > 0);
+  if (sessionSecrets.length === 0) {
+    throw new Error(
+      'Invalid environment configuration:\n  - SESSION_SECRET: at least one secret is required',
+    );
+  }
+
+  const hasDataEncryptionId = e.BT_DATA_ENCRYPTION_KEY_ID !== undefined;
+  const hasDataEncryptionKey = e.BT_DATA_ENCRYPTION_KEY !== undefined;
+  if (hasDataEncryptionId !== hasDataEncryptionKey) {
+    throw new Error(
+      'Invalid environment configuration:\n' +
+        '  - BT_DATA_ENCRYPTION_KEY_ID/BT_DATA_ENCRYPTION_KEY: set both fields together',
+    );
+  }
+  if (isProduction && (!hasDataEncryptionId || !hasDataEncryptionKey)) {
+    throw new Error(
+      'Invalid environment configuration:\n' +
+        '  - BT_DATA_ENCRYPTION_KEY: dedicated record-encryption configuration is required in production',
+    );
+  }
+
+  const activeDataEncryptionId =
+    e.BT_DATA_ENCRYPTION_KEY_ID?.trim() ?? DEVELOPMENT_DATA_ENCRYPTION_KEY_ID;
+  const activeDataEncryptionMaterial =
+    e.BT_DATA_ENCRYPTION_KEY?.trim() ?? DEVELOPMENT_DATA_ENCRYPTION_KEY;
+  if (!DATA_ENCRYPTION_KEY_ID.test(activeDataEncryptionId)) {
+    throw new Error(
+      'Invalid environment configuration:\n' +
+        '  - BT_DATA_ENCRYPTION_KEY_ID: use 1-64 letters, digits, underscores, or hyphens',
+    );
+  }
+  if (activeDataEncryptionMaterial.length < 32) {
+    throw new Error(
+      'Invalid environment configuration:\n' +
+        '  - BT_DATA_ENCRYPTION_KEY: must be at least 32 characters',
+    );
+  }
+  if (isProduction && /^change_me/i.test(activeDataEncryptionMaterial)) {
+    throw new Error(
+      'Invalid environment configuration:\n' +
+        '  - BT_DATA_ENCRYPTION_KEY: replace the example placeholder before production',
+    );
+  }
 
   // General steady-state schedule, defined up front so the burst dimension can
   // reuse its escalation ladder and decay verbatim (§10 — the burst window feeds
@@ -703,12 +822,42 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // cookie is actually accepted by the browser.
   const cookieSecure = topology.apiOrigin.startsWith('https://');
 
-  // Fold the configured key material (or, when unset, the session secret under a
-  // domain-separated label) into a fixed 32-byte AES-256-GCM key. Deriving from
-  // SESSION_SECRET keeps a stock deploy encrypting without extra config; a
-  // dedicated TOTP_ENCRYPTION_KEY rotates 2FA encryption on its own.
-  const twoFactorKeyMaterial = e.TOTP_ENCRYPTION_KEY ?? `bt-2fa:${e.SESSION_SECRET}`;
-  const twoFactorEncryptionKey = createHash('sha256').update(twoFactorKeyMaterial).digest();
+  const previousDataEncryptionKeys = parsePreviousDataEncryptionKeys(
+    e.BT_DATA_ENCRYPTION_DECRYPT_KEYS,
+  );
+  const historicalLegacyKeys = [
+    // Dedicated key used by pre-#879 deployments, when configured.
+    ...(e.TOTP_ENCRYPTION_KEY ? [legacyTwoFactorKey(e.TOTP_ENCRYPTION_KEY)] : []),
+    // Before #879 the fallback hashed the complete, unsplit SESSION_SECRET.
+    // Preserve every ordered raw suffix so prepending `newer` to an existing
+    // `new,old` rotation list still admits records written under `new,old`.
+    // Individual trimmed values also retain the original `old` -> `new,old`
+    // compatibility when operators used whitespace around delimiters.
+    ...legacySessionEncryptionKeys(e.SESSION_SECRET),
+  ];
+  let recordEncryption: SecretBoxKeyring;
+  try {
+    recordEncryption = createSecretBoxKeyring({
+      active: {
+        id: activeDataEncryptionId,
+        key: dataEncryptionKey(activeDataEncryptionMaterial),
+      },
+      previous: previousDataEncryptionKeys,
+      legacyKeys: historicalLegacyKeys,
+    });
+  } catch {
+    throw new Error(
+      'Invalid environment configuration:\n' +
+        '  - BT_DATA_ENCRYPTION_DECRYPT_KEYS: key identifiers must be unique',
+    );
+  }
+
+  // Compatibility for out-of-scope v1 secretBox consumers. Preserve the exact
+  // pre-#879 derivation, including a raw comma-separated cookie-rotation list,
+  // so their existing envelopes remain readable. TOTP and Discord use
+  // `recordEncryption` instead.
+  const compatibilityKeyMaterial = e.TOTP_ENCRYPTION_KEY ?? `bt-2fa:${e.SESSION_SECRET}`;
+  const twoFactorEncryptionKey = legacyTwoFactorKey(compatibilityKeyMaterial);
 
   return {
     nodeEnv: e.NODE_ENV,
@@ -720,9 +869,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     appOrigin: topology.webOrigin,
     topology,
     corsOrigins: [topology.webOrigin, topology.adminOrigin],
-    sessionSecrets: e.SESSION_SECRET.split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0),
+    sessionSecrets,
+    recordEncryption,
     cookie: {
       name: 'bt_sid',
       secure: cookieSecure,

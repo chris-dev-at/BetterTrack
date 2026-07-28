@@ -11,6 +11,8 @@ export interface EmptyStateProps {
   description?: string;
   /** Call-to-action slot — e.g. a Button or link. */
   cta?: ReactNode;
+  /** Use reduced vertical spacing when the surrounding surface is already compact. */
+  compact?: boolean;
   className?: string;
 }
 
@@ -19,10 +21,21 @@ export interface EmptyStateProps {
  * gets one instead of a blank area, with an optional CTA to the obvious next
  * step.
  */
-export function EmptyState({ icon, title, description, cta, className }: EmptyStateProps) {
+export function EmptyState({
+  icon,
+  title,
+  description,
+  cta,
+  compact = false,
+  className,
+}: EmptyStateProps) {
   return (
     <div
-      className={cx('flex flex-col items-center justify-center gap-4 py-16 text-center', className)}
+      className={cx(
+        'flex flex-col items-center justify-center gap-4 text-center',
+        compact ? 'py-10' : 'py-16',
+        className,
+      )}
     >
       {icon != null ? (
         <span className="text-4xl text-neutral-600" aria-hidden="true">

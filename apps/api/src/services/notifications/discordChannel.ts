@@ -1,6 +1,6 @@
 import type { DiscordWebhookRepository } from '../../data/repositories/discordWebhookRepository';
 import type { Logger } from '../../logger';
-import { decryptSecret } from '../crypto/secretBox';
+import { decryptSecret, type SecretBoxKeyring } from '../crypto/secretBox';
 
 import type { PushMessage } from './fcm';
 
@@ -54,8 +54,8 @@ export interface DiscordChannel {
 
 export interface CreateDiscordChannelDeps {
   webhooks: DiscordWebhookRepository;
-  /** Same envelope key as `services/crypto/secretBox` (`config.twoFactor.encryptionKey`). */
-  encryptionKey: Buffer;
+  /** Dedicated record-encryption keyring (`config.recordEncryption`). */
+  encryptionKey: SecretBoxKeyring;
   logger: Logger;
   fetchFn?: typeof fetch;
   now?: () => number;

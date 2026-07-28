@@ -70,6 +70,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   // Custom assets (owner_id set) + their user-entered value points.
   assets: exported('customAssets'),
   price_history: exported('customAssetPriceHistory'),
+  asset_identities: skipped(
+    'Content-free asset UUID integrity anchors plus opaque account claims; contain no asset or portfolio content.',
+  ),
 
   // ── Global / not user-owned ───────────────────────────────────────────────
   announcements: skipped('Global admin-authored content, not owned by any user.'),
@@ -240,6 +243,15 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   paranoid_vault_history: skipped(
     'Paranoid-vault bounded ciphertext history (V5-P13) — the corruption/bad-write safety net; opaque superseded blobs, not user data to carry out.',
   ),
+  paranoid_vault_server_candidates: skipped(
+    'Paranoid-vault inactive server candidate (V5-P13 PD6) — short-lived opaque ciphertext staged only for a verified media transition.',
+  ),
+  paranoid_vault_retired: skipped(
+    'Paranoid-vault recoverable retired ciphertext (V5-P13 PD6) — opaque copies retained only until a client-proved purge.',
+  ),
+  paranoid_vault_retirements: skipped(
+    'Paranoid-vault retirement proof and retention bookkeeping (V5-P13 PD6) — non-portfolio transition metadata.',
+  ),
   paranoid_rehydration_receipts: skipped(
     'Paranoid-disable idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
   ),
@@ -341,6 +353,9 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
 
   // ── server: identity + auth (kept, unchanged) ──────────────────────────────
   users: 'server',
+  // Opaque asset UUID + nullable account UUID claim: preserves referential
+  // integrity and authorizes same-account restore while content is detached.
+  asset_identities: 'server',
   api_keys: 'server',
   api_key_tiers: 'server',
   api_key_request_log: 'server',
@@ -420,6 +435,9 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   // explicitly server-classified (§1).
   paranoid_vaults: 'server',
   paranoid_vault_history: 'server',
+  paranoid_vault_server_candidates: 'server',
+  paranoid_vault_retired: 'server',
+  paranoid_vault_retirements: 'server',
   // PD3a completion receipt + non-sensitive data-home metadata remain server-side.
   paranoid_rehydration_receipts: 'server',
 };

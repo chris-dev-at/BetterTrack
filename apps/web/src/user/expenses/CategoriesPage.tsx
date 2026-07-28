@@ -9,7 +9,7 @@ import {
   deleteExpenseCategory,
   listExpenseCategories,
 } from '../../lib/expensesApi';
-import { Skeleton } from '../../ui';
+import { EmptyState, Skeleton } from '../../ui';
 import { Alert, Button } from '../components/ui';
 
 import { CategoryDialog } from './CategoryDialog';
@@ -44,6 +44,10 @@ export function CategoriesPage() {
 
   const categories = query.data?.categories ?? [];
 
+  function retryCategories() {
+    void query.refetch();
+  }
+
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -51,13 +55,27 @@ export function CategoriesPage() {
         <Button onClick={() => setCreating(true)}>{t('expenses.categories.new')}</Button>
       </div>
 
-      {query.isLoading ? (
+      {query.isPending ? (
         <div className="flex flex-col gap-2">
           <Skeleton height="h-12" />
           <Skeleton height="h-12" />
         </div>
       ) : query.isError ? (
-        <Alert tone="error">{t('expenses.categories.loadError')}</Alert>
+        <div className="flex flex-wrap items-center gap-3">
+          <Alert tone="error">{t('expenses.categories.loadError')}</Alert>
+          <Button variant="secondary" onClick={retryCategories} disabled={query.isFetching}>
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : categories.length === 0 ? (
+        <EmptyState
+          title={t('expenses.categories.emptyTitle')}
+          description={t('expenses.categories.emptyDescription')}
+          compact
+          cta={
+            <Button onClick={() => setCreating(true)}>{t('expenses.categories.emptyCta')}</Button>
+          }
+        />
       ) : (
         EXPENSE_DIRECTIONS.map((direction) => {
           const group = categories.filter((c) => c.direction === direction);

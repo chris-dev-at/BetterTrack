@@ -16,9 +16,10 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
  * token — a personal key (`btk_…`) or an OAuth access token (`bto_…`) — to its
  * owning user and attaches `req.authUser` + `req.apiKey`, so cookie-session
  * middleware downstream stands down (it early-returns when `req.apiKey` is set).
- * A malformed / unknown / **revoked** token is a hard `401` — no fallthrough to
- * anonymous, since the caller clearly intended to authenticate. Both token kinds
- * enforce the same coarse scopes and are equally barred from admin endpoints.
+ * A malformed / unknown / **revoked** or suspended-account token is a hard `401`
+ * — no fallthrough to anonymous, since the caller clearly intended to
+ * authenticate. Both token kinds enforce the same coarse scopes and are equally
+ * barred from admin endpoints.
  *
  * Requests with no bearer header pass straight through untouched, leaving the
  * session cookie path unchanged.
@@ -33,7 +34,9 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
       }
       const token = header.slice(BEARER_PREFIX.length).trim();
       const keyPrincipal = await ctx.apiKeys.authenticate(token);
-      if (keyPrincipal) {
+      // Services make this status check at their credential choke points; retain
+      // it at the HTTP attachment boundary as a defense-in-depth assertion.
+      if (keyPrincipal?.user.status === 'active') {
         req.authUser = toAuthUser(keyPrincipal.user);
         req.apiKey = {
           id: keyPrincipal.keyId,
@@ -49,7 +52,7 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
         return;
       }
       const oauthPrincipal = await ctx.oauth.authenticateToken(token);
-      if (oauthPrincipal) {
+      if (oauthPrincipal?.user.status === 'active') {
         req.authUser = toAuthUser(oauthPrincipal.user);
         req.apiKey = { id: oauthPrincipal.grantId, scopes: oauthPrincipal.scopes, kind: 'oauth' };
         next();
@@ -195,6 +198,10 @@ function resolvePolicy(path: string): PathPolicy {
   if (path === '/settings/webhooks' || path.startsWith('/settings/webhooks/')) {
     return { kind: 'session-only' };
   }
+  // Client-encrypted vault media is strictly browser-cookie-session only. A
+  // personal API key or delegated OAuth bearer never gets to stage, retire,
+  // recover, or purge opaque vault bytes — even with account:security.
+  if (path === '/vault' || path.startsWith('/vault/')) return { kind: 'session-only' };
   // Notification preferences live under /settings but belong to the notifications
   // scope (#361), checked before the coarse `/settings` → social catch-all.
   if (path === '/settings/notifications' || path.startsWith('/settings/notifications/')) {
