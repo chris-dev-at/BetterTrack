@@ -16,20 +16,7 @@ import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
 import { generateRecoveryCodes, normalizeRecoveryCode } from '../auth/totp';
 import type { TwoFactorMutationResult, TwoFactorService } from '../auth/twoFactorService';
-import {
-  authenticationMethodOf,
-  isPersistent,
-  type SessionData,
-  type SessionMfaMethod,
-  type SessionSecurityContext,
-  type SessionService,
-} from '../sessions/sessionService';
-
-export interface AdminMfaCompletionResult<T> extends TwoFactorMutationResult<T> {
-  /** Fresh assured session replacing the first-factor/bootstrap session. */
-  sessionId: string;
-  persistent: boolean;
-}
+import type { SessionSecurityContext, SessionService } from '../sessions/sessionService';
 
 /**
  * Mandatory admin-login two-factor authentication (PROJECTPLAN.md §6.12, #400).
@@ -65,7 +52,7 @@ export interface AdminTwoFactorService {
     code: string,
     ip: string | null | undefined,
     session: SessionSecurityContext,
-  ): Promise<AdminMfaCompletionResult<TwoFactorMethodEnabledResponse>>;
+  ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
   /** Turn TOTP off with a valid factor (re-enroll = disable then enroll). */
   disableTotp(
     adminId: string,
@@ -92,7 +79,7 @@ export interface AdminTwoFactorService {
     code: string,
     ip: string | null | undefined,
     session: SessionSecurityContext,
-  ): Promise<AdminMfaCompletionResult<TwoFactorMethodEnabledResponse>>;
+  ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
   /** Turn the email method off (session-authorized); clears the 2FA email. */
   disableEmail(
     adminId: string,
@@ -114,7 +101,7 @@ export interface AdminTwoFactorServiceDeps {
   audit: AuditService;
   redis: Redis;
   email: EmailService;
-  sessions: Pick<SessionService, 'create' | 'destroyAllForUser' | 'get'>;
+  sessions: Pick<SessionService, 'destroyAllForUser'>;
 }
 
 // The admin email-method setup code (#400): a short-lived numeric code proving the
@@ -152,36 +139,6 @@ export function createAdminTwoFactorService(
       // The committed generation rejects every old cookie even when eager
       // Redis cleanup is unavailable.
     }
-  }
-
-  async function sessionForMfaCompletion(
-    adminId: string,
-    session: SessionSecurityContext,
-  ): Promise<SessionData> {
-    const current = await sessions.get(session.sessionId);
-    if (
-      !current ||
-      current.userId !== adminId ||
-      current.securityGeneration !== session.securityGeneration ||
-      authenticationMethodOf(current) !== 'password'
-    ) {
-      throw unauthorized();
-    }
-    return current;
-  }
-
-  async function rotateAssuredSession<T>(
-    adminId: string,
-    prior: SessionData,
-    method: SessionMfaMethod,
-    result: TwoFactorMutationResult<T>,
-  ): Promise<AdminMfaCompletionResult<T>> {
-    const persistent = isPersistent(prior);
-    const sessionId = await sessions.create(adminId, result.securityGeneration, persistent, {
-      method: 'password',
-      mfaAssurance: { method, verifiedAt: Date.now() },
-    });
-    return { ...result, sessionId, persistent };
   }
 
   async function invalidEmailSetup(adminId: string): Promise<never> {
@@ -248,10 +205,8 @@ export function createAdminTwoFactorService(
       return twoFactor.enrollTotp(adminId, ip, session);
     },
 
-    async confirmTotp(adminId, code, ip, session) {
-      const prior = await sessionForMfaCompletion(adminId, session);
-      const result = await twoFactor.confirmTotp(adminId, code, ip, session);
-      return rotateAssuredSession(adminId, prior, 'totp', result);
+    confirmTotp(adminId, code, ip, session) {
+      return twoFactor.confirmTotp(adminId, code, ip, session);
     },
 
     disableTotp(adminId, code, ip, session) {
@@ -329,7 +284,6 @@ export function createAdminTwoFactorService(
     },
 
     async confirmEmail(adminId, code, ip, session) {
-      const prior = await sessionForMfaCompletion(adminId, session);
       const state = await twoFactorRepo.getState(adminId);
       if (!state) throw unauthorized();
 
@@ -374,10 +328,10 @@ export function createAdminTwoFactorService(
         ip,
       });
       await invalidateSessions(adminId);
-      return rotateAssuredSession(adminId, prior, 'email', {
+      return {
         response: { recoveryCodes },
         securityGeneration: committedGeneration,
-      });
+      };
     },
 
     async disableEmail(adminId, ip, session) {

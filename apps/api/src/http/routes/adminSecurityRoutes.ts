@@ -16,7 +16,7 @@ import {
 import { unauthorized } from '../../errors';
 import type { SessionSecurityContext } from '../../services/sessions/sessionService';
 import type { AppContext } from '../context';
-import { clearSessionCookie, setSessionCookie } from '../cookies';
+import { clearSessionCookie } from '../cookies';
 import { requireAdminTwoFactor } from '../middleware/session';
 import { validateBody } from '../middleware/validate';
 import { toAdminSessionPolicy } from '../serializers';
@@ -72,7 +72,7 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
         req.ip,
         sessionSecurityContextOf(req),
       );
-      setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
+      clearSessionCookie(res, ctx.config);
       res.json(result.response);
     },
   );
@@ -123,7 +123,7 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
         req.ip,
         sessionSecurityContextOf(req),
       );
-      setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
+      clearSessionCookie(res, ctx.config);
       res.json(result.response);
     },
   );

@@ -138,7 +138,7 @@ async function loginAdminWithEmail(
   return agent;
 }
 
-/** Take a fresh admin through TOTP enrollment; confirmation rotates its session. */
+/** Take a fresh admin through TOTP enrollment; confirmation logs it out. */
 async function enrollAdminTotp(harness: TestHarness, admin: SeededAdmin) {
   const agent = await loginAdminAgent(harness, admin);
   const { secret } = twoFactorEnrollResponseSchema.parse(
@@ -149,8 +149,8 @@ async function enrollAdminTotp(harness: TestHarness, admin: SeededAdmin) {
     .set(...XRW)
     .send({ code: generateTotpCode(secret) });
   const { recoveryCodes } = twoFactorMethodEnabledResponseSchema.parse(confirm.body);
-  expect(setsSessionCookie(confirm)).toBe(true);
-  expect(clearsSessionCookie(confirm)).toBe(false);
+  expect(clearsSessionCookie(confirm)).toBe(true);
+  expect(setsSessionCookie(confirm)).toBe(false);
   return { secret, recoveryCodes: recoveryCodes! };
 }
 
@@ -206,7 +206,7 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     });
   });
 
-  it('completing enrollment rotates the acting session and immediately lifts the gate', async () => {
+  it('completing enrollment logs out every session and a fresh login lifts the gate', async () => {
     const harness = await createTestApp();
     const admin = await harness.seedAdmin();
     const agent = await loginAdminAgent(harness, admin);
@@ -220,41 +220,33 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
       securityGeneration: 0,
     });
     expect(before.data.mfaAssurance).toBeUndefined();
-    const verificationStartedAt = Date.now();
     const confirm = await agent
       .post('/api/v1/admin/security/2fa/totp/confirm')
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
     expect(confirm.status).toBe(200);
-    expect(clearsSessionCookie(confirm)).toBe(false);
-    expect(setsSessionCookie(confirm)).toBe(true);
+    expect(clearsSessionCookie(confirm)).toBe(true);
+    expect(setsSessionCookie(confirm)).toBe(false);
     const { recoveryCodes } = twoFactorMethodEnabledResponseSchema.parse(confirm.body);
     expect(recoveryCodes).toHaveLength(10);
 
-    const after = await sessionRecordFor(harness, admin.id);
-    expect(after.sessionId).not.toBe(before.sessionId);
     expect(await harness.ctx.redis.get(before.key)).toBeNull();
-    expect(after.data).toMatchObject({
-      authenticationMethod: 'password',
-      securityGeneration: 1,
-      mfaAssurance: { method: 'totp' },
-    });
-    const verifiedAt = (after.data.mfaAssurance as { verifiedAt: number }).verifiedAt;
-    expect(verifiedAt).toBeGreaterThanOrEqual(verificationStartedAt);
-    expect(verifiedAt).toBeLessThanOrEqual(Date.now());
+    expect(await sessionRecordsFor(harness, admin.id)).toEqual([]);
 
-    // The replacement carries this browser's MFA proof and reaches ordinary
-    // admin routes without another challenge.
-    expect((await agent.get('/api/v1/admin/users')).status).toBe(200);
+    // No session survives the factor transition, including the acting device.
+    expect((await agent.get('/api/v1/admin/users')).status).toBe(404);
+
+    const fresh = await loginAdminWithTotp(harness, admin, secret);
+    expect((await fresh.get('/api/v1/admin/users')).status).toBe(200);
     const status = adminTwoFactorStatusResponseSchema.parse(
-      (await agent.get('/api/v1/admin/security/2fa/status')).body,
+      (await fresh.get('/api/v1/admin/security/2fa/status')).body,
     );
     expect(status.setupRequired).toBe(false);
     expect(status.totpEnabled).toBe(true);
     expect(status.recoveryCodesRemaining).toBe(10);
   });
 
-  it('rotates the confirming bootstrap session and invalidates every sibling', async () => {
+  it('invalidates the confirming bootstrap session and every sibling', async () => {
     const harness = await createTestApp();
     const admin = await harness.seedAdmin();
     const current = await loginAdminAgent(harness, admin);
@@ -272,13 +264,15 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
       .send({ code: generateTotpCode(secret) });
     cleanup.mockRestore();
     expect(confirm.status).toBe(200);
-    expect(clearsSessionCookie(confirm)).toBe(false);
-    expect(setsSessionCookie(confirm)).toBe(true);
+    expect(clearsSessionCookie(confirm)).toBe(true);
+    expect(setsSessionCookie(confirm)).toBe(false);
 
     // Eager cleanup failed, but both G0 cookies are rejected by the durable G1
-    // boundary. Only the confirming browser gets an assured G1 replacement.
-    expect((await current.get('/api/v1/admin/users')).status).toBe(200);
+    // boundary and no G1 replacement was minted.
+    expect((await current.get('/api/v1/admin/users')).status).toBe(404);
     expect((await sibling.get('/api/v1/admin/security/2fa/status')).status).toBe(404);
+    const fresh = await loginAdminWithTotp(harness, admin, secret);
+    expect((await fresh.get('/api/v1/admin/users')).status).toBe(200);
   });
 
   it('rechecks the captured generation at the final bootstrap gate', async () => {
@@ -312,14 +306,15 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     const staleRequest = current.get('/api/v1/admin/users').then((response) => response);
     await gateEntered.promise;
 
-    // Request A commits first-factor enrollment at generation 1, invalidates
-    // every G0 cookie, and rotates the confirming browser onto assured G1.
+    // Request A commits first-factor enrollment at generation 1 and logs out
+    // every cookie before B is allowed to finish.
     const confirm = await current
       .post('/api/v1/admin/security/2fa/totp/confirm')
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
     expect(confirm.status).toBe(200);
-    expect(setsSessionCookie(confirm)).toBe(true);
+    expect(clearsSessionCookie(confirm)).toBe(true);
+    expect(setsSessionCookie(confirm)).toBe(false);
 
     // B must compare its captured G0 with the factor-state read at G1 instead of
     // inheriting the newly enabled administrator assurance.
@@ -331,9 +326,11 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     expect(protectedHandler).not.toHaveBeenCalled();
     protectedHandler.mockRestore();
 
-    // B finishes last and cannot restore the old cookie. The confirming browser
-    // keeps only its freshly rotated current-session assurance.
-    expect((await current.get('/api/v1/admin/users')).status).toBe(200);
+    // B finishes last and cannot restore the old cookie. Only a fresh explicit
+    // password + factor login establishes a new session.
+    expect((await current.get('/api/v1/admin/users')).status).toBe(404);
+    const fresh = await loginAdminWithTotp(harness, admin, secret);
+    expect((await fresh.get('/api/v1/admin/users')).status).toBe(200);
   });
 
   it('rejects bootstrap status when break-glass advances the captured generation', async () => {
@@ -563,8 +560,9 @@ describe('mandatory admin-login 2FA — email OTP to the 2FA email (§6.12, #400
       .set(...XRW)
       .send({ code: lastEmailedCode(transport) });
     expect(confirm.status).toBe(200);
-    expect(setsSessionCookie(confirm)).toBe(true);
-    expect(clearsSessionCookie(confirm)).toBe(false);
+    expect(clearsSessionCookie(confirm)).toBe(true);
+    expect(setsSessionCookie(confirm)).toBe(false);
+    expect((await agent.get('/api/v1/admin/users')).status).toBe(404);
     const authenticated = await loginAdminWithEmail(harness, admin, transport);
     const status = adminTwoFactorStatusResponseSchema.parse(
       (await authenticated.get('/api/v1/admin/security/2fa/status')).body,
@@ -637,8 +635,8 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
       .post('/api/v1/admin/security/2fa/totp/confirm')
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
-    expect(setsSessionCookie(totpConfirm)).toBe(true);
-    expect(clearsSessionCookie(totpConfirm)).toBe(false);
+    expect(clearsSessionCookie(totpConfirm)).toBe(true);
+    expect(setsSessionCookie(totpConfirm)).toBe(false);
     let agent = await loginAdminWithTotp(harness, admin, secret);
 
     // Setting the 2FA email while already enrolled requires a fresh proof.
@@ -661,8 +659,8 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
       .set(...XRW)
       .send({ code: lastEmailedCode(transport) });
     expect(confirm.status).toBe(200);
-    expect(setsSessionCookie(confirm)).toBe(true);
-    expect(clearsSessionCookie(confirm)).toBe(false);
+    expect(clearsSessionCookie(confirm)).toBe(true);
+    expect(setsSessionCookie(confirm)).toBe(false);
 
     agent = await loginAdminWithTotp(harness, admin, secret);
     const firstStatus = adminTwoFactorStatusResponseSchema.parse(
@@ -700,8 +698,8 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
       .set(...XRW)
       .send({ code: lastEmailedCode(transport) });
     expect(changeConfirm.status).toBe(200);
-    expect(setsSessionCookie(changeConfirm)).toBe(true);
-    expect(clearsSessionCookie(changeConfirm)).toBe(false);
+    expect(clearsSessionCookie(changeConfirm)).toBe(true);
+    expect(setsSessionCookie(changeConfirm)).toBe(false);
 
     agent = await loginAdminWithTotp(harness, admin, secret);
     const changedStatus = adminTwoFactorStatusResponseSchema.parse(
