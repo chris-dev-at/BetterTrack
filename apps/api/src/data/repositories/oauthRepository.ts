@@ -178,14 +178,32 @@ export function createOAuthRepository(db: Database) {
 
     /**
      * Delete a first-party client by id (admin panel; cascades grants/tokens).
+     * Lock and retain the active grant principals before the cascade so the
+     * service can disconnect precisely those live OAuth sockets afterwards.
      * Scoped to `is_first_party` so this path can never touch a user-owned app.
      */
-    async deleteFirstPartyClient(id: string): Promise<OAuthClientRow | undefined> {
-      const [row] = await db
-        .delete(oauthClients)
-        .where(and(eq(oauthClients.id, id), eq(oauthClients.isFirstParty, true)))
-        .returning();
-      return row;
+    async deleteFirstPartyClient(id: string) {
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const [client] = await executor
+          .select()
+          .from(oauthClients)
+          .where(and(eq(oauthClients.id, id), eq(oauthClients.isFirstParty, true)))
+          .limit(1)
+          .for('update');
+        if (!client) return undefined;
+
+        const activeGrants = await executor
+          .select({ id: oauthGrants.id, userId: oauthGrants.userId })
+          .from(oauthGrants)
+          .where(and(eq(oauthGrants.clientId, client.id), isNull(oauthGrants.revokedAt)));
+        const [deleted] = await executor
+          .delete(oauthClients)
+          .where(eq(oauthClients.id, client.id))
+          .returning();
+        if (!deleted) throw new Error('Failed to delete OAuth client');
+        return { client: deleted, activeGrants };
+      });
     },
 
     /** Resolve a first-party client by internal id (admin edit: before-state + 404). */
@@ -265,15 +283,32 @@ export function createOAuthRepository(db: Database) {
 
     /**
      * Delete a client the caller owns (cascades grants, codes and tokens).
-     * Returns the deleted row, or undefined when the id isn't the caller's — so
-     * the service can 404 without leaking another user's client ids.
+     * Lock and retain active grant principals before the cascade so the service
+     * can disconnect precisely those live OAuth sockets afterwards. Returns
+     * undefined when the id isn't the caller's, avoiding a client-id leak.
      */
-    async deleteClient(userId: string, id: string): Promise<OAuthClientRow | undefined> {
-      const [row] = await db
-        .delete(oauthClients)
-        .where(and(eq(oauthClients.id, id), eq(oauthClients.userId, userId)))
-        .returning();
-      return row;
+    async deleteClient(userId: string, id: string) {
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const [client] = await executor
+          .select()
+          .from(oauthClients)
+          .where(and(eq(oauthClients.id, id), eq(oauthClients.userId, userId)))
+          .limit(1)
+          .for('update');
+        if (!client) return undefined;
+
+        const activeGrants = await executor
+          .select({ id: oauthGrants.id, userId: oauthGrants.userId })
+          .from(oauthGrants)
+          .where(and(eq(oauthGrants.clientId, client.id), isNull(oauthGrants.revokedAt)));
+        const [deleted] = await executor
+          .delete(oauthClients)
+          .where(eq(oauthClients.id, client.id))
+          .returning();
+        if (!deleted) throw new Error('Failed to delete OAuth client');
+        return { client: deleted, activeGrants };
+      });
     },
 
     // ── Grants ───────────────────────────────────────────────────────────────

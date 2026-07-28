@@ -33,14 +33,23 @@ import {
 import {
   cashBalancesBySource,
   floorCents,
+  InsufficientCashError,
   projectCashLedgerBySource,
   type SourcedCashMovement,
 } from '@bettertrack/domain/cashLedger';
+import { OversellError, reducePosition } from '@bettertrack/domain/holdings';
 import { viennaYearOf } from '@bettertrack/domain/tax';
 import { uuidv7 } from 'uuidv7';
 
 import { VaultCryptoError } from './errors';
-import type { VaultSyncEngine } from './sync';
+import type {
+  VaultAtomicMutation,
+  VaultDocumentReconcileContext,
+  VaultDocumentReconcileResult,
+  VaultMutationEntityDelta,
+  VaultSyncEngine,
+  VaultSyncState,
+} from './sync';
 
 export const VAULT_PORTFOLIO_STORE_ERROR_CODES = [
   'VAULT_LOCKED',
@@ -238,28 +247,51 @@ export function createVaultPortfolioStore(
         data: transactionDataForStorage(portfolioId, input),
       }));
       assertLocallySupportedTransactions(current, portfolioId, candidates, context.now());
+      const initialCandidate = appendTransactionCandidates(
+        current,
+        candidates,
+        engine.deviceId,
+        context.now(),
+      );
+      assertProspectiveAssetTimelines(
+        initialCandidate.document,
+        portfolioId,
+        candidates.map(({ input }) => input.assetId),
+      );
+      let expectedEntities: VaultEntity[] = [];
 
-      await engine.mutate(({ document }) => {
+      const mutationState = await engine.mutate(({ document }) => {
         requirePortfolio(document, portfolioId);
         assertLocallySupportedTransactions(document, portfolioId, candidates, context.now());
-        const timestamp = context.now();
-        const entities = candidates.map(({ id, input, data }) => {
-          resolveTransactionAsset(document, input.assetId);
-          return entityRecord(id, engine.deviceId, timestamp, data);
-        });
-        return appendEntities(document, 'transaction', entities);
+        const candidate = appendTransactionCandidates(
+          document,
+          candidates,
+          engine.deviceId,
+          context.now(),
+        );
+        assertProspectiveAssetTimelines(
+          candidate.document,
+          portfolioId,
+          candidates.map(({ input }) => input.assetId),
+        );
+        expectedEntities = candidate.entities;
+        return candidate.document;
       });
 
-      const committed = requireDocument(engine);
-      return candidates.map(({ id }) => {
-        const entity = findLiveEntity(committed, 'transaction', id);
-        if (entity == null) {
+      return expectedEntities.map((expected) => {
+        const committed = requireCommittedMutationEntity(
+          mutationState,
+          'transaction',
+          expected.id,
+          expected,
+        );
+        if (committed.entity.deletedAt !== null) {
           throw storeError(
             'VAULT_DATA_UNAVAILABLE',
             'The committed vault transaction is not readable.',
           );
         }
-        return transactionFromEntity(committed, entity);
+        return transactionFromEntity(committed.document, committed.entity);
       });
     },
 
@@ -281,6 +313,20 @@ export function createVaultPortfolioStore(
         financialEdit,
         context.now(),
       );
+      if (financialEdit) {
+        const prospective: VaultEntity = {
+          ...currentEntity,
+          rev: currentEntity.rev + 1,
+          editedAt: context.now(),
+          editedBy: engine.deviceId,
+          data: { ...currentEntity.data, ...persistedDataPatch },
+        };
+        assertProspectiveAssetTimelines(
+          replaceEntity(current, 'transaction', prospective),
+          portfolioId,
+          [stringField(currentEntity.data, 'assetId')],
+        );
+      }
       const entity = await updateEntity(
         context,
         'transaction',
@@ -296,6 +342,12 @@ export function createVaultPortfolioStore(
           );
           return { ...data, ...persistedDataPatch };
         },
+        financialEdit
+          ? (document) =>
+              assertProspectiveAssetTimelines(document, portfolioId, [
+                stringField(currentEntity.data, 'assetId'),
+              ])
+          : undefined,
       );
       return transactionFromEntity(requireDocument(engine), entity);
     },
@@ -305,6 +357,15 @@ export function createVaultPortfolioStore(
       requirePortfolio(document, portfolioId);
       const transaction = requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
       assertTransactionDeleteTaxSupported(document, portfolioId, transaction, context.now());
+      const prospective = tombstoneTransactionTree(
+        document,
+        transaction,
+        engine.deviceId,
+        context.now(),
+      );
+      assertProspectiveAssetTimelines(prospective, portfolioId, [
+        stringField(transaction.data, 'assetId'),
+      ]);
       await deleteTransactionTree(context, portfolioId, transactionId);
     },
 
@@ -366,13 +427,18 @@ async function appendEntity(
 ): Promise<VaultEntity> {
   requireDocument(context.engine);
   let id: string | null = null;
-  await context.engine.mutate(({ document }) => {
+  let expected: VaultEntity | null = null;
+  const mutationState = await context.engine.mutate(({ document }) => {
     id = safeNewId(context);
     const entity = build(document, id, context.now());
+    expected = entity;
     return appendEntities(document, kind, [entity]);
   });
-  const committed = id == null ? null : findLiveEntity(requireDocument(context.engine), kind, id);
-  if (committed == null) {
+  if (id == null || expected == null) {
+    throw storeError('VAULT_DATA_UNAVAILABLE', 'The vault mutation was not committed locally.');
+  }
+  const committed = requireCommittedMutationEntity(mutationState, kind, id, expected).entity;
+  if (committed.deletedAt !== null) {
     throw storeError('VAULT_DATA_UNAVAILABLE', 'The vault mutation was not committed locally.');
   }
   return committed;
@@ -387,9 +453,11 @@ async function updateEntity(
     document: VaultDocumentV1,
     entity: VaultEntity,
   ) => Record<string, unknown>,
+  validateDocument?: (document: VaultDocumentV1) => void,
 ): Promise<VaultEntity> {
   requireDocument(context.engine);
-  await context.engine.mutate(({ document }) => {
+  let expected: VaultEntity | null = null;
+  const mutationState = await context.engine.mutate(({ document }) => {
     const entities = document.entities[kind] ?? [];
     const existing = entities.find((entity) => entity.id === id && entity.deletedAt === null);
     if (existing == null) {
@@ -402,10 +470,13 @@ async function updateEntity(
       editedBy: context.engine.deviceId,
       data: mutateData(existing.data, document, existing),
     };
-    return replaceEntity(document, kind, updated);
+    const next = replaceEntity(document, kind, updated);
+    validateDocument?.(next);
+    expected = updated;
+    return next;
   });
-  const committed = findLiveEntity(requireDocument(context.engine), kind, id);
-  if (committed == null) {
+  const committed = requireCommittedMutationEntity(mutationState, kind, id, expected).entity;
+  if (committed.deletedAt !== null) {
     throw storeError('VAULT_DATA_UNAVAILABLE', 'The updated vault entity is not readable.');
   }
   return committed;
@@ -413,7 +484,8 @@ async function updateEntity(
 
 async function deletePortfolioTree(context: StoreContext, portfolioId: string): Promise<void> {
   requireDocument(context.engine);
-  await context.engine.mutate(({ document }) => {
+  const mutationState = await context.engine.mutate(({ document }) => {
+    assertCascadeReferences(document);
     const portfolio = requirePortfolio(document, portfolioId);
     const summaries = portfolioSummariesFromDocument(document);
     const summary = summaries.find((candidate) => candidate.id === portfolio.id);
@@ -428,28 +500,42 @@ async function deletePortfolioTree(context: StoreContext, portfolioId: string): 
       );
     }
     const timestamp = context.now();
+    const descendants = liveCascadeDescendants(document, 'portfolio', portfolioId);
     let next = replaceEntity(
       document,
       'portfolio',
       tombstoneEntity(portfolio, context.engine.deviceId, timestamp),
     );
-    for (const kind of PORTFOLIO_CHILD_ENTITY_KINDS) {
-      const children = liveEntities(next, kind).filter(
-        (entity) => stringField(entity.data, 'portfolioId') === portfolioId,
+    for (const descendant of descendants) {
+      const entity = findLiveEntity(next, descendant.kind, descendant.id);
+      if (entity == null) continue;
+      next = replaceEntity(
+        next,
+        descendant.kind,
+        tombstoneEntity(entity, context.engine.deviceId, timestamp),
       );
-      for (const child of children) {
-        next = replaceEntity(
-          next,
-          kind,
-          tombstoneEntity(child, context.engine.deviceId, timestamp),
-        );
-      }
     }
+    assertCascadeReferences(next);
     return next;
   });
-  const committed = findEntity(requireDocument(context.engine), 'portfolio', portfolioId);
-  if (committed?.deletedAt == null) {
+  const committedDocument = mutationState.active?.document;
+  const committed =
+    committedDocument == null ? undefined : findEntity(committedDocument, 'portfolio', portfolioId);
+  if (
+    committedDocument == null ||
+    committed?.deletedAt == null ||
+    liveCascadeDescendants(committedDocument, 'portfolio', portfolioId).length > 0
+  ) {
     throw storeError('VAULT_DATA_UNAVAILABLE', 'The portfolio deletion was not committed locally.');
+  }
+  try {
+    assertCascadeReferences(committedDocument);
+  } catch (cause) {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      'The portfolio deletion left an invalid descendant reference.',
+      cause,
+    );
   }
 }
 
@@ -459,34 +545,55 @@ async function deleteTransactionTree(
   transactionId: string,
 ): Promise<void> {
   requireDocument(context.engine);
-  await context.engine.mutate(({ document }) => {
+  const mutationState = await context.engine.mutate(({ document }) => {
     requirePortfolio(document, portfolioId);
     const transaction = requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
     assertTransactionDeleteTaxSupported(document, portfolioId, transaction, context.now());
-    const timestamp = context.now();
-    let next = replaceEntity(
+    const next = tombstoneTransactionTree(
       document,
-      'transaction',
-      tombstoneEntity(transaction, context.engine.deviceId, timestamp),
+      transaction,
+      context.engine.deviceId,
+      context.now(),
     );
-    for (const movement of liveEntities(next, 'cashMovement').filter(
-      (entity) => nullableStringField(entity.data, 'transactionId') === transactionId,
-    )) {
-      next = replaceEntity(
-        next,
-        'cashMovement',
-        tombstoneEntity(movement, context.engine.deviceId, timestamp),
-      );
-    }
+    assertProspectiveAssetTimelines(next, portfolioId, [stringField(transaction.data, 'assetId')]);
     return next;
   });
-  const committed = findEntity(requireDocument(context.engine), 'transaction', transactionId);
-  if (committed?.deletedAt == null) {
+  const committedDocument = mutationState.active?.document;
+  const committed =
+    committedDocument == null
+      ? undefined
+      : findEntity(committedDocument, 'transaction', transactionId);
+  if (
+    committedDocument == null ||
+    committed?.deletedAt == null ||
+    liveEntities(committedDocument, 'cashMovement').some(
+      (entity) => nullableStringField(entity.data, 'transactionId') === transactionId,
+    )
+  ) {
     throw storeError(
       'VAULT_DATA_UNAVAILABLE',
       'The transaction deletion was not committed locally.',
     );
   }
+}
+
+function tombstoneTransactionTree(
+  document: VaultDocumentV1,
+  transaction: VaultEntity,
+  deviceId: string,
+  timestamp: string,
+): VaultDocumentV1 {
+  let next = replaceEntity(
+    document,
+    'transaction',
+    tombstoneEntity(transaction, deviceId, timestamp),
+  );
+  for (const movement of liveEntities(next, 'cashMovement').filter(
+    (entity) => nullableStringField(entity.data, 'transactionId') === transaction.id,
+  )) {
+    next = replaceEntity(next, 'cashMovement', tombstoneEntity(movement, deviceId, timestamp));
+  }
+  return next;
 }
 
 async function createCashMovement(
@@ -499,8 +606,9 @@ async function createCashMovement(
   const parsedBody = cashEntryRequestSchema.parse(body);
   const amountEur = floorCents(parsedBody.amountEur);
   let createdId: string | null = null;
+  let expected: VaultEntity | null = null;
 
-  await context.engine.mutate(({ document }) => {
+  const mutationState = await context.engine.mutate(({ document }) => {
     requirePortfolio(document, portfolioId);
     const sourceId = resolveCashSourceId(document, portfolioId, parsedBody.sourceId);
     const timestamp = context.now();
@@ -530,13 +638,22 @@ async function createCashMovement(
       domainCashMovement(entity),
     ]);
     createdId = id;
+    expected = entity;
     return appendEntities(document, 'cashMovement', [entity]);
   });
 
-  const committedDocument = requireDocument(context.engine);
-  const committed =
-    createdId == null ? null : findLiveEntity(committedDocument, 'cashMovement', createdId);
-  if (committed == null) {
+  if (createdId == null || expected == null) {
+    throw storeError('VAULT_DATA_UNAVAILABLE', 'The cash movement was not committed locally.');
+  }
+  const committedMutation = requireCommittedMutationEntity(
+    mutationState,
+    'cashMovement',
+    createdId,
+    expected,
+  );
+  const committedDocument = committedMutation.document;
+  const committed = committedMutation.entity;
+  if (committed.deletedAt !== null) {
     throw storeError('VAULT_DATA_UNAVAILABLE', 'The cash movement was not committed locally.');
   }
 
@@ -595,14 +712,41 @@ function entityRecord(
   return { id, rev: 0, editedAt: timestamp, editedBy: deviceId, deletedAt: null, data };
 }
 
-const PORTFOLIO_CHILD_ENTITY_KINDS = [
-  'transaction',
-  'dividend',
-  'cashSource',
-  'cashMovement',
-  'portfolioSetting',
-  'standingOrder',
-] as const satisfies readonly VaultEntityKind[];
+interface VaultCascadeRelation {
+  parentKind: VaultEntityKind;
+  childKind: VaultEntityKind;
+  field: string;
+  nullable?: boolean;
+}
+
+/**
+ * Complete portfolio-owned entity graph in document v1. Local deletion,
+ * reconciliation, and referential validation all use the same relationships.
+ */
+const VAULT_PORTFOLIO_CASCADE_RELATIONS = [
+  { parentKind: 'portfolio', childKind: 'transaction', field: 'portfolioId' },
+  { parentKind: 'portfolio', childKind: 'dividend', field: 'portfolioId' },
+  { parentKind: 'portfolio', childKind: 'cashSource', field: 'portfolioId' },
+  { parentKind: 'portfolio', childKind: 'cashMovement', field: 'portfolioId' },
+  { parentKind: 'portfolio', childKind: 'portfolioSetting', field: 'portfolioId' },
+  { parentKind: 'portfolio', childKind: 'standingOrder', field: 'portfolioId' },
+  { parentKind: 'portfolio', childKind: 'importBatch', field: 'portfolioId' },
+  { parentKind: 'portfolio', childKind: 'portfolioDailySnapshot', field: 'portfolioId' },
+  { parentKind: 'portfolio', childKind: 'portfolioSnapshotState', field: 'portfolioId' },
+  {
+    parentKind: 'transaction',
+    childKind: 'cashMovement',
+    field: 'transactionId',
+    nullable: true,
+  },
+  { parentKind: 'standingOrder', childKind: 'standingOrderRun', field: 'standingOrderId' },
+  { parentKind: 'importBatch', childKind: 'importRow', field: 'batchId' },
+] as const satisfies readonly VaultCascadeRelation[];
+
+interface VaultEntityRef {
+  kind: VaultEntityKind;
+  id: string;
+}
 
 function tombstoneEntity(entity: VaultEntity, deviceId: string, timestamp: string): VaultEntity {
   return {
@@ -616,6 +760,43 @@ function tombstoneEntity(entity: VaultEntity, deviceId: string, timestamp: strin
 
 function liveEntities(document: VaultDocumentV1, kind: VaultEntityKind): VaultEntity[] {
   return (document.entities[kind] ?? []).filter((entity) => entity.deletedAt === null);
+}
+
+function liveCascadeDescendants(
+  document: VaultDocumentV1,
+  rootKind: VaultEntityKind,
+  rootId: string,
+): VaultEntityRef[] {
+  const queue: VaultEntityRef[] = [{ kind: rootKind, id: rootId }];
+  const visited = new Set([entityRefKey(rootKind, rootId)]);
+  const live: VaultEntityRef[] = [];
+
+  for (let index = 0; index < queue.length; index += 1) {
+    const parent = queue[index]!;
+    for (const relation of VAULT_PORTFOLIO_CASCADE_RELATIONS) {
+      if (relation.parentKind !== parent.kind) continue;
+      for (const child of document.entities[relation.childKind] ?? []) {
+        if (cascadeReference(child, relation) !== parent.id) continue;
+        const key = entityRefKey(relation.childKind, child.id);
+        if (visited.has(key)) continue;
+        visited.add(key);
+        const ref = { kind: relation.childKind, id: child.id };
+        queue.push(ref);
+        if (child.deletedAt === null) live.push(ref);
+      }
+    }
+  }
+  return live;
+}
+
+function cascadeReference(entity: VaultEntity, relation: VaultCascadeRelation): string | null {
+  return relation.nullable
+    ? nullableStringField(entity.data, relation.field)
+    : stringField(entity.data, relation.field);
+}
+
+function entityRefKey(kind: VaultEntityKind, id: string): string {
+  return `${kind}\u0000${id}`;
 }
 
 function findEntity(
@@ -633,6 +814,390 @@ function findLiveEntity(
 ): VaultEntity | undefined {
   const entity = findEntity(document, kind, id);
   return entity?.deletedAt === null ? entity : undefined;
+}
+
+function requireCommittedMutationEntity(
+  state: VaultSyncState,
+  kind: VaultEntityKind,
+  id: string,
+  expected: VaultEntity | null,
+): { document: VaultDocumentV1; entity: VaultEntity } {
+  const document = state.active?.document;
+  if (document == null || expected == null) {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      'The requested vault update did not survive commit and reconciliation.',
+    );
+  }
+  const committed = findEntity(document, kind, id);
+  if (committed == null || !sameVaultEntity(committed, expected)) {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      'The requested vault update did not survive commit and reconciliation.',
+    );
+  }
+  return { document, entity: committed };
+}
+
+function sameVaultEntity(left: VaultEntity, right: VaultEntity): boolean {
+  return (
+    left.id === right.id &&
+    left.rev === right.rev &&
+    left.editedAt === right.editedAt &&
+    left.editedBy === right.editedBy &&
+    left.deletedAt === right.deletedAt &&
+    sameJsonValue(left.data, right.data)
+  );
+}
+
+function sameOptionalVaultEntity(
+  left: VaultEntity | undefined,
+  right: VaultEntity | undefined,
+): boolean {
+  return left === undefined || right === undefined ? left === right : sameVaultEntity(left, right);
+}
+
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameJsonValue(value, right[index]))
+    );
+  }
+  if (left == null || right == null || typeof left !== 'object' || typeof right !== 'object') {
+    return false;
+  }
+
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) => key === rightKeys[index] && sameJsonValue(leftRecord[key], rightRecord[key]),
+    )
+  );
+}
+
+interface ReconcileChange extends VaultMutationEntityDelta {
+  local: VaultEntity | undefined;
+  remote: VaultEntity | undefined;
+}
+
+interface ReconcileGroup {
+  sequence: number;
+  changes: ReconcileChange[];
+}
+
+class VaultAggregateConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'VaultAggregateConflictError';
+  }
+}
+
+/**
+ * Reconcile portfolio-domain mutations before the sync engine encrypts or
+ * publishes a divergent merge. Each complete mutation stays in its original
+ * sequence position: collapsing overlapping mutations would move later entity
+ * snapshots ahead of unrelated intervening work. A rejected group receives
+ * dominating compensation, and its entity lineage remains rejected, so no
+ * winning subset can reappear on a later reconnect.
+ */
+export function reconcilePortfolioDocument(
+  document: VaultDocumentV1,
+  context: VaultDocumentReconcileContext,
+): VaultDocumentReconcileResult {
+  const groups = reconcileGroups(context.mutations, context);
+  let reconciled = document;
+  for (const group of groups) {
+    for (const change of group.changes) {
+      reconciled = setEntity(reconciled, change.kind, change.id, change.remote);
+    }
+  }
+  assertPortfolioDocumentInvariants(reconciled, context.remote);
+
+  const rejectedEntityKeys = new Set<string>();
+  const rebasedMutations: VaultAtomicMutation[] = [];
+  for (const group of groups) {
+    const beforeGroup = reconciled;
+    const completeGroupWon = group.changes.every(
+      (change) =>
+        !rejectedEntityKeys.has(entityRefKey(change.kind, change.id)) &&
+        sameOptionalVaultEntity(findEntity(document, change.kind, change.id), change.local),
+    );
+    if (!completeGroupWon) {
+      reconciled = compensateRejectedGroup(reconciled, group, context);
+      for (const change of group.changes) {
+        rejectedEntityKeys.add(entityRefKey(change.kind, change.id));
+      }
+    } else {
+      let candidate = reconciled;
+      for (const change of group.changes) {
+        candidate = setEntity(candidate, change.kind, change.id, change.after);
+      }
+      candidate = enforceDeletionCascades(candidate, context);
+
+      try {
+        assertPortfolioDocumentInvariants(candidate, context.remote);
+        reconciled = candidate;
+      } catch (cause) {
+        if (!isAggregateConflict(cause)) throw cause;
+        reconciled = compensateRejectedGroup(reconciled, group, context);
+        for (const change of group.changes) {
+          rejectedEntityKeys.add(entityRefKey(change.kind, change.id));
+        }
+      }
+    }
+
+    const rebased = rebaseReconcileGroup(group, beforeGroup, reconciled);
+    if (rebased != null) rebasedMutations.push(rebased);
+  }
+
+  assertPortfolioDocumentInvariants(reconciled, context.remote);
+  return { document: reconciled, mutations: rebasedMutations };
+}
+
+function reconcileGroups(
+  mutations: readonly VaultAtomicMutation[],
+  context: VaultDocumentReconcileContext,
+): ReconcileGroup[] {
+  return mutations
+    .filter((mutation) => mutation.changes.length > 0)
+    .map(
+      (mutation): ReconcileGroup => ({
+        sequence: mutation.sequence,
+        changes: [...mutation.changes]
+          .sort((left, right) =>
+            entityRefKey(left.kind, left.id).localeCompare(entityRefKey(right.kind, right.id)),
+          )
+          .map((change) => ({
+            ...change,
+            local: findEntity(context.local, change.kind, change.id),
+            remote: findEntity(context.remote, change.kind, change.id),
+          })),
+      }),
+    )
+    .sort(
+      (left, right) =>
+        left.sequence - right.sequence ||
+        left.changes
+          .map((change) => entityRefKey(change.kind, change.id))
+          .join('\u0000')
+          .localeCompare(
+            right.changes.map((change) => entityRefKey(change.kind, change.id)).join('\u0000'),
+          ),
+    );
+}
+
+function rebaseReconcileGroup(
+  group: ReconcileGroup,
+  before: VaultDocumentV1,
+  after: VaultDocumentV1,
+): VaultAtomicMutation | null {
+  const refs = new Map<string, VaultEntityRef>();
+  for (const change of group.changes) {
+    refs.set(entityRefKey(change.kind, change.id), { kind: change.kind, id: change.id });
+  }
+
+  const kinds = new Set<VaultEntityKind>([
+    ...(Object.keys(before.entities) as VaultEntityKind[]),
+    ...(Object.keys(after.entities) as VaultEntityKind[]),
+  ]);
+  for (const kind of kinds) {
+    const beforeById = new Map((before.entities[kind] ?? []).map((entity) => [entity.id, entity]));
+    const afterById = new Map((after.entities[kind] ?? []).map((entity) => [entity.id, entity]));
+    for (const id of new Set([...beforeById.keys(), ...afterById.keys()])) {
+      if (sameOptionalVaultEntity(beforeById.get(id), afterById.get(id))) continue;
+      refs.set(entityRefKey(kind, id), { kind, id });
+    }
+  }
+
+  const changes = [...refs.values()]
+    .sort((left, right) =>
+      entityRefKey(left.kind, left.id).localeCompare(entityRefKey(right.kind, right.id)),
+    )
+    .map(
+      ({ kind, id }): VaultMutationEntityDelta => ({
+        kind,
+        id,
+        before: findEntity(before, kind, id),
+        after: findEntity(after, kind, id),
+      }),
+    );
+  return changes.some((change) => !sameOptionalVaultEntity(change.before, change.after))
+    ? { sequence: group.sequence, changes }
+    : null;
+}
+
+function compensateRejectedGroup(
+  document: VaultDocumentV1,
+  group: ReconcileGroup,
+  context: VaultDocumentReconcileContext,
+): VaultDocumentV1 {
+  let compensated = document;
+  for (const change of group.changes) {
+    const desired = findEntity(compensated, change.kind, change.id);
+    if (sameOptionalVaultEntity(change.local, desired)) continue;
+    compensated = setEntity(
+      compensated,
+      change.kind,
+      change.id,
+      compensationEntity(change.local, desired, context),
+    );
+  }
+  compensated = enforceDeletionCascades(compensated, context);
+  assertPortfolioDocumentInvariants(compensated, context.remote);
+  return compensated;
+}
+
+function setEntity(
+  document: VaultDocumentV1,
+  kind: VaultEntityKind,
+  id: string,
+  entity: VaultEntity | undefined,
+): VaultDocumentV1 {
+  const existing = document.entities[kind] ?? [];
+  const next =
+    entity == null
+      ? existing.filter((candidate) => candidate.id !== id)
+      : existing.some((candidate) => candidate.id === id)
+        ? existing.map((candidate) => (candidate.id === id ? entity : candidate))
+        : [...existing, entity].sort((left, right) => left.id.localeCompare(right.id));
+  return {
+    ...document,
+    entities: {
+      ...document.entities,
+      [kind]: next,
+    },
+  };
+}
+
+function enforceDeletionCascades(
+  document: VaultDocumentV1,
+  context: VaultDocumentReconcileContext,
+): VaultDocumentV1 {
+  let next = document;
+  let changed: boolean;
+  do {
+    changed = false;
+    for (const relation of VAULT_PORTFOLIO_CASCADE_RELATIONS) {
+      const deletedParentIds = new Set(
+        (next.entities[relation.parentKind] ?? [])
+          .filter((entity) => entity.deletedAt !== null)
+          .map((entity) => entity.id),
+      );
+      if (deletedParentIds.size === 0) continue;
+
+      for (const child of liveEntities(next, relation.childKind)) {
+        const parentId = cascadeReference(child, relation);
+        if (parentId == null || !deletedParentIds.has(parentId)) continue;
+        next = replaceEntity(
+          next,
+          relation.childKind,
+          tombstoneEntity(child, context.deviceId, context.reconciledAt),
+        );
+        changed = true;
+      }
+    }
+  } while (changed);
+  return next;
+}
+
+function compensationEntity(
+  rejected: VaultEntity | undefined,
+  desired: VaultEntity | undefined,
+  context: VaultDocumentReconcileContext,
+): VaultEntity | undefined {
+  if (rejected == null) return desired;
+  if (desired == null) {
+    return tombstoneEntity(rejected, context.deviceId, context.reconciledAt);
+  }
+  return {
+    ...desired,
+    rev: Math.max(rejected.rev, desired.rev) + 1,
+    editedAt: context.reconciledAt,
+    editedBy: context.deviceId,
+    deletedAt: desired.deletedAt === null ? null : context.reconciledAt,
+  };
+}
+
+function assertPortfolioDocumentInvariants(
+  document: VaultDocumentV1,
+  durableBaseline: VaultDocumentV1,
+): void {
+  assertCascadeReferences(document);
+
+  const activePortfolioRows = (document.entities.portfolio ?? []).filter(
+    (entity) => nullableStringField(entity.data, 'archivedAt') === null,
+  );
+  if (
+    activePortfolioRows.length > 0 &&
+    activePortfolioRows.every((entity) => entity.deletedAt !== null)
+  ) {
+    throw new VaultAggregateConflictError(
+      'A reconciled vault must retain at least one active portfolio.',
+    );
+  }
+
+  const mainCounts = new Map<string, number>();
+  for (const source of liveEntities(document, 'cashSource')) {
+    if (!booleanField(source.data, 'isMain', false)) continue;
+    const portfolioId = stringField(source.data, 'portfolioId');
+    mainCounts.set(portfolioId, (mainCounts.get(portfolioId) ?? 0) + 1);
+  }
+  if ([...mainCounts.values()].some((count) => count > 1)) {
+    throw new VaultAggregateConflictError(
+      'A reconciled vault must have at most one live Main cash source per portfolio.',
+    );
+  }
+
+  const assetTimelines = new Set<string>();
+  for (const entity of liveEntities(document, 'transaction')) {
+    const portfolioId = stringField(entity.data, 'portfolioId');
+    const assetId = stringField(entity.data, 'assetId');
+    assetTimelines.add(`${portfolioId}\u0000${assetId}`);
+  }
+  for (const timeline of assetTimelines) {
+    const [portfolioId, assetId] = timeline.split('\u0000');
+    if (portfolioId == null || assetId == null) {
+      throw storeError('VAULT_DATA_INVALID', 'A vault transaction timeline is malformed.');
+    }
+    if (sameAssetTimeline(document, durableBaseline, portfolioId, assetId)) continue;
+    assertValidAssetTimeline(document, portfolioId, assetId);
+  }
+
+  const cashPortfolioIds = new Set(
+    liveEntities(document, 'cashMovement').map((entity) => stringField(entity.data, 'portfolioId')),
+  );
+  for (const portfolioId of cashPortfolioIds) {
+    projectCashLedgerBySource(domainCashMovements(document, portfolioId));
+  }
+}
+
+function assertCascadeReferences(document: VaultDocumentV1): void {
+  for (const relation of VAULT_PORTFOLIO_CASCADE_RELATIONS) {
+    for (const child of liveEntities(document, relation.childKind)) {
+      const parentId = cascadeReference(child, relation);
+      if (parentId == null) continue;
+      if (findLiveEntity(document, relation.parentKind, parentId) != null) continue;
+      throw new VaultAggregateConflictError(
+        `A live ${relation.childKind} must reference a live ${relation.parentKind}.`,
+      );
+    }
+  }
+}
+
+function isAggregateConflict(cause: unknown): boolean {
+  return (
+    cause instanceof OversellError ||
+    cause instanceof InsufficientCashError ||
+    cause instanceof VaultAggregateConflictError
+  );
 }
 
 function resolveCashSourceId(
@@ -846,6 +1411,28 @@ function transactionDataForStorage(
   );
 }
 
+interface TransactionCreateCandidate {
+  id: string;
+  input: ReturnType<typeof transactionInputSchema.parse>;
+  data: Record<string, unknown>;
+}
+
+function appendTransactionCandidates(
+  document: VaultDocumentV1,
+  candidates: readonly TransactionCreateCandidate[],
+  deviceId: string,
+  timestamp: string,
+): { document: VaultDocumentV1; entities: VaultEntity[] } {
+  const entities = candidates.map(({ id, input, data }) => {
+    resolveTransactionAsset(document, input.assetId);
+    return entityRecord(id, deviceId, timestamp, data);
+  });
+  return {
+    document: appendEntities(document, 'transaction', entities),
+    entities,
+  };
+}
+
 /** Keep financial patches in the same persisted decimal representation as creates. */
 function transactionPatchForStorage(patch: TransactionDataPatch): Record<string, unknown> {
   return {
@@ -920,6 +1507,92 @@ function domainCashMovement(entity: VaultEntity): SourcedCashMovement {
     occurredAt: movement.executedAt,
     sourceId: movement.sourceId,
   };
+}
+
+function assertValidAssetTimeline(
+  document: VaultDocumentV1,
+  portfolioId: string,
+  assetId: string,
+): void {
+  const transactions = liveEntities(document, 'transaction')
+    .filter(
+      (entity) =>
+        stringField(entity.data, 'portfolioId') === portfolioId &&
+        stringField(entity.data, 'assetId') === assetId,
+    )
+    .map((entity) => ({
+      entity,
+      executedAtMs: transactionExecutedAtMs(entity),
+    }))
+    .sort(
+      (left, right) =>
+        left.executedAtMs - right.executedAtMs || left.entity.id.localeCompare(right.entity.id),
+    )
+    .map(({ entity }) => transactionFromEntity(document, entity));
+  reducePosition(transactions);
+}
+
+function assertProspectiveAssetTimelines(
+  document: VaultDocumentV1,
+  portfolioId: string,
+  assetIds: readonly string[],
+): void {
+  try {
+    for (const assetId of new Set(assetIds)) {
+      assertValidAssetTimeline(document, portfolioId, assetId);
+    }
+  } catch (cause) {
+    if (!(cause instanceof OversellError)) throw cause;
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'The transaction mutation would oversell the available holding.',
+      cause,
+    );
+  }
+}
+
+function transactionExecutedAtMs(entity: VaultEntity): number {
+  const executedAt = stringField(entity.data, 'executedAt');
+  const executedAtMs = Date.parse(executedAt);
+  if (!Number.isFinite(executedAtMs)) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A vault transaction has an invalid execution timestamp.',
+    );
+  }
+  return executedAtMs;
+}
+
+function sameAssetTimeline(
+  left: VaultDocumentV1,
+  right: VaultDocumentV1,
+  portfolioId: string,
+  assetId: string,
+): boolean {
+  const timeline = (document: VaultDocumentV1) =>
+    liveEntities(document, 'transaction')
+      .filter(
+        (entity) =>
+          stringField(entity.data, 'portfolioId') === portfolioId &&
+          stringField(entity.data, 'assetId') === assetId,
+      )
+      .sort((first, second) => first.id.localeCompare(second.id))
+      .map((entity) => ({
+        id: entity.id,
+        side: entity.data.side,
+        quantity: entity.data.quantity,
+        price: entity.data.price,
+        fee: entity.data.fee,
+        executedAt: entity.data.executedAt,
+        allowUncovered: entity.data.allowUncovered,
+        uncoveredEntryPrice: entity.data.uncoveredEntryPrice,
+      }));
+  const leftRows = timeline(left);
+  const rightRows = timeline(right);
+  return (
+    leftRows.length === rightRows.length &&
+    leftRows.every((transaction, index) => sameJsonValue(transaction, rightRows[index]))
+  );
 }
 
 function hasFinancialTransactionPatch(patch: TransactionDataPatch): boolean {

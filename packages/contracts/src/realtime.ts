@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import type { ApiKeyScope } from './apiKeys';
 import { currencyCodeSchema, marketStateSchema } from './market';
 
 /**
@@ -12,8 +13,9 @@ import { currencyCodeSchema, marketStateSchema } from './market';
  * derives its types from them, exactly like the HTTP contracts.
  *
  * ── Handshake auth ──────────────────────────────────────────────────────────
- * The handshake authenticates with EITHER credential, resolved to the user id
- * that owns the socket's `user:{id}` room:
+ * The handshake authenticates with EITHER credential, resolved to one typed
+ * principal. Cookie sessions own the socket's `user:{id}` room; bearers enter
+ * only the capability-specific companion rooms their scopes permit:
  *
  *   - **Session cookie** — the web SPA path: the signed session cookie, resolved
  *     through the auth service's cookie→user resolution (verbatim the HTTP path).
@@ -23,11 +25,9 @@ import { currencyCodeSchema, marketStateSchema } from './market';
  *     and/or an `Authorization: Bearer …` upgrade header (either is accepted).
  *     The token is validated through the SAME service the HTTP bearer middleware
  *     uses — revocation, expiry and consent-scope clamping included — so socket
- *     auth never drifts from, or widens, the HTTP surface. Because the gateway
- *     pushes invalidation signals only (no data crosses the socket; the client
- *     refetches each payload through the HTTP enforcement layer), an
- *     authenticated user in their own room is the correct bar — the gateway does
- *     no per-event scope filtering.
+ *     auth never drifts from, or widens, the HTTP surface. The gateway enforces
+ *     the bearer scope matrix for every emitted family, room, and command;
+ *     invalidation and quote frames remain deliberately compact.
  *
  * ── Transports ──────────────────────────────────────────────────────────────
  * Both Engine.IO transports are supported: a client may open the websocket
@@ -46,6 +46,74 @@ import { currencyCodeSchema, marketStateSchema } from './market';
 
 /** Socket.IO `path` for the realtime gateway on the API origin (§4.5). */
 export const REALTIME_PATH = '/ws';
+
+// ── V5 admission policy (#881) ───────────────────────────────────────────────
+
+/**
+ * Conservative V5 realtime budgets. They live beside the wire protocol so the
+ * gateway, admission service, and tests share one named source of truth.
+ */
+export const REALTIME_MAX_CONNECTIONS_PER_USER = 5;
+export const REALTIME_MAX_CONNECTIONS_PER_BEARER = 3;
+export const REALTIME_SOCKET_COMMANDS_PER_SECOND = 20;
+export const REALTIME_SOCKET_COMMAND_BURST = 40;
+export const REALTIME_USER_COMMANDS_PER_SECOND = 50;
+export const REALTIME_USER_COMMAND_BURST = 100;
+export const REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET = 8;
+export const REALTIME_MAX_WATCHED_ASSETS_PER_USER = 16;
+export const REALTIME_MAX_GLOBAL_LIVE_ASSETS = 250;
+/** A bounded global semaphore; excess watch-start/backfill work is rejected. */
+export const REALTIME_MAX_CONCURRENT_WATCH_STARTS = 16;
+/** Keep at most two serialized watch starts pending on one socket. */
+export const REALTIME_MAX_PENDING_WATCH_STARTS_PER_SOCKET = 2;
+/**
+ * Legacy `1s` and `2s` request values remain parseable for old clients, but the
+ * server clamps them to this provider-safe floor before registering a loop.
+ */
+export const LIVE_MIN_POLL_INTERVAL_MS = 5_000;
+
+/** Typed Socket.IO handshake failures surfaced through `connect_error`. */
+export const REALTIME_CONNECTION_ERRORS = [
+  'UNAUTHORIZED',
+  'UNAVAILABLE',
+  'USER_CONNECTION_LIMIT',
+  'BEARER_CONNECTION_LIMIT',
+] as const;
+export const realtimeConnectionErrorSchema = z.enum(REALTIME_CONNECTION_ERRORS);
+export type RealtimeConnectionError = z.infer<typeof realtimeConnectionErrorSchema>;
+
+/** Typed acknowledgement failures shared by every client command. */
+export const REALTIME_ACK_ERRORS = [
+  'BAD_REQUEST',
+  'FORBIDDEN',
+  'NOT_FOUND',
+  'UNAVAILABLE',
+  'GONE',
+  'RATE_LIMITED',
+  'SOCKET_WATCH_LIMIT',
+  'USER_WATCH_LIMIT',
+  'GLOBAL_LIVE_LIMIT',
+  'LIVE_WORK_BUSY',
+  'LIVE_START_FAILED',
+] as const;
+export const realtimeAckErrorSchema = z.enum(REALTIME_ACK_ERRORS);
+export type RealtimeAckError = z.infer<typeof realtimeAckErrorSchema>;
+
+/**
+ * The bearer authorization matrix for every realtime event or command. Keeping
+ * this adjacent to the socket protocol prevents a new frame from silently
+ * inheriting the old "any authenticated user" behavior.
+ */
+export const REALTIME_BEARER_SCOPE_REQUIREMENTS = {
+  notificationNew: 'notifications:read',
+  portfolioChanged: 'portfolio:read',
+  chatMessage: 'chat:read',
+  assetRoom: 'market:read',
+  portfolioRoom: 'portfolio:read',
+  liveWatch: 'market:read',
+  chatPresence: 'chat:read',
+} as const satisfies Readonly<Record<string, ApiKeyScope>>;
+export type RealtimeBearerCapability = keyof typeof REALTIME_BEARER_SCOPE_REQUIREMENTS;
 
 // ── Rooms ────────────────────────────────────────────────────────────────────
 
@@ -75,7 +143,7 @@ export type RealtimeRoomRequest = z.infer<typeof realtimeRoomRequestSchema>;
 export const realtimeRoomAckSchema = z.object({
   ok: z.boolean(),
   /** Machine-readable reason when `ok` is false (e.g. `FORBIDDEN`, `BAD_REQUEST`). */
-  error: z.string().optional(),
+  error: realtimeAckErrorSchema.optional(),
 });
 export type RealtimeRoomAck = z.infer<typeof realtimeRoomAckSchema>;
 
@@ -143,12 +211,12 @@ export const LIVE_WINDOW_MS: Record<LiveWindow, number> = {
 };
 
 /**
- * The refresh rates a viewer may request for a live watch (#372), down to 1 s.
- * The rate is a REQUEST, not a promise: one shared per-asset loop serves all
- * viewers and polls at the finest rate any ACTIVE viewer requested — the
- * minimum, never a common divisor (4 s + 2 s viewers ⇒ one 2 s loop, NOT 1 s).
- * Viewers coarser than the loop downsample client-side; nobody's request ever
- * makes upstream calls faster than the fastest active viewer needs.
+ * The refresh-rate values a viewer may send (#372). `1s` and `2s` stay valid
+ * for wire compatibility, but since V5-P14 the gateway clamps every requested
+ * cadence below {@link LIVE_MIN_POLL_INTERVAL_MS} to that 5-second floor.
+ * Above the floor, the rate remains a REQUEST, not a promise: one shared
+ * per-asset loop serves all viewers and polls at the finest effective rate any
+ * ACTIVE viewer requested. Coarser viewers downsample client-side.
  */
 export const LIVE_RATES = ['1s', '2s', '5s', '10s', '30s', '60s'] as const;
 
@@ -217,7 +285,7 @@ export type RealtimeLiveWatchRequest = z.infer<typeof realtimeLiveWatchRequestSc
 export const realtimeLiveWatchAckSchema = z.object({
   ok: z.boolean(),
   /** Machine-readable reason when `ok` is false (e.g. `NOT_FOUND`, `UNAVAILABLE`). */
-  error: z.string().optional(),
+  error: realtimeAckErrorSchema.optional(),
   frames: z.array(realtimeLiveFrameSchema).optional(),
   /**
    * The earliest instant the backfill honestly covers (ISO-8601) — the oldest
