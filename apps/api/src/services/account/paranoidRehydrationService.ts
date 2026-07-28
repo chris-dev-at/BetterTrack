@@ -98,6 +98,8 @@ export interface ParanoidRehydrationServiceDeps {
   testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity;
   /** Test-only trace proving the quantity-ordering pass count is fixed per row. */
   testOnlyObserveQuantityReachabilityOrder?: TestOnlyObserveQuantityReachabilityOrder;
+  /** Test-only seam for proving the numeric(20,8) quantity-rounding boundary. */
+  testOnlyTransactionQuantityRoundingTolerance?: bigint;
 }
 
 export type ParanoidRehydrationStage =
@@ -137,6 +139,8 @@ interface ExactDecimal {
 const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
 const NUMBER_DECIMAL_PATTERN = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i;
 const pow10 = (scale: number): bigint => 10n ** BigInt(scale);
+const TRANSACTION_QUANTITY_STORAGE_PRECISION = 20;
+const TRANSACTION_QUANTITY_STORAGE_SCALE = 8;
 
 /**
  * Repository writes serialize public number inputs with String(value) and
@@ -826,9 +830,10 @@ function storageRoundingSellIdsFor(
   cashLinkedTransactionIds: ReadonlySet<string>,
   testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity,
   testOnlyObserveQuantityReachabilityOrder?: TestOnlyObserveQuantityReachabilityOrder,
+  testOnlyTransactionQuantityRoundingTolerance?: bigint,
 ): ReadonlySet<string> {
   const unorderedRows = transactions.map((transaction): QuantityReplayRow => {
-    const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+    const quantity = quantizedTransactionQuantity(transaction.data.quantity);
     const normalInputQuantity = quantityNumberPreimage(
       quantity,
       transaction.data.side === 'buy' ? 'upper' : 'lower',
@@ -910,6 +915,27 @@ function storageRoundingSellIdsFor(
         : undefined,
     ),
   );
+  if (testOnlyTransactionQuantityRoundingTolerance !== undefined) {
+    for (const group of replayGroups) {
+      let held = 0n;
+      for (const row of group) {
+        if (row.transaction.data.side === 'buy') {
+          held += row.quantity;
+          continue;
+        }
+        const shortfall = row.quantity - held;
+        if (
+          shortfall > testOnlyTransactionQuantityRoundingTolerance &&
+          !row.transaction.data.allowUncovered
+        ) {
+          throw new Error(
+            `transaction quantity ${JSON.stringify(row.transaction.data.quantity)} would oversell its position`,
+          );
+        }
+        held = shortfall > 0n ? 0n : held - row.quantity;
+      }
+    }
+  }
   const persistedInsolventGroups = replayGroups.filter((group) => !isPersistedSolvent(group));
   if (persistedInsolventGroups.length === 0) {
     testOnlyObserveQuantityReachabilityOrder?.({
@@ -994,6 +1020,41 @@ function persistedNumeric(value: string, precision: number, scale: number, label
     );
   }
   return decimal.coefficient * pow10(scale - decimal.scale);
+}
+
+function absolute(value: bigint): bigint {
+  return value < 0n ? -value : value;
+}
+
+function roundToScale(value: ExactDecimal, scale: number): bigint {
+  if (value.scale <= scale) {
+    return value.coefficient * pow10(scale - value.scale);
+  }
+
+  const divisor = pow10(value.scale - scale);
+  const quotient = value.coefficient / divisor;
+  const remainder = value.coefficient % divisor;
+  // PostgreSQL numeric coercion rounds halfway cases away from zero.
+  if (absolute(remainder) * 2n < divisor) return quotient;
+  return quotient + (value.coefficient < 0n ? -1n : 1n);
+}
+
+/**
+ * Mirror PostgreSQL's `numeric(20,8)` coercion before the pre-write position
+ * replay. Paranoid-vault transactions can retain the user's raw decimal input;
+ * the restore repository will round it on insert, so comparing raw values here
+ * would validate a different position history than the one we persist.
+ */
+function quantizedTransactionQuantity(value: string): bigint {
+  const label = 'transaction quantity';
+  const quantized = roundToScale(exactDecimal(value, label), TRANSACTION_QUANTITY_STORAGE_SCALE);
+  if (absolute(quantized) >= pow10(TRANSACTION_QUANTITY_STORAGE_PRECISION)) {
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      `${label} exceeds its persisted precision`,
+    );
+  }
+  return quantized;
 }
 
 function requirePositive(value: bigint, label: string): void {
@@ -1254,7 +1315,7 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
   }
 
   for (const transaction of rows(entities, 'transaction')) {
-    const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+    const quantity = quantizedTransactionQuantity(transaction.data.quantity);
     const price = persistedNumeric(transaction.data.price, 20, 6, 'transaction price');
     const fee = persistedNumeric(transaction.data.fee, 20, 6, 'transaction fee');
     requirePositive(quantity, 'transaction quantity');
@@ -1429,6 +1490,7 @@ function validateGraph(
   entities: readonly Entity[],
   testOnlyRejectPersistedTransactionQuantity?: TestOnlyRejectPersistedTransactionQuantity,
   testOnlyObserveQuantityReachabilityOrder?: TestOnlyObserveQuantityReachabilityOrder,
+  testOnlyTransactionQuantityRoundingTolerance?: bigint,
 ): ValidatedGraph {
   validateUniqueRestoredIds(entities);
   validateOwnedRows(userId, entities);
@@ -2066,6 +2128,7 @@ function validateGraph(
       ),
       testOnlyRejectPersistedTransactionQuantity,
       testOnlyObserveQuantityReachabilityOrder,
+      testOnlyTransactionQuantityRoundingTolerance,
     )) {
       storageRoundingSellIds.add(sellId);
     }
@@ -2148,6 +2211,12 @@ export function createParanoidRehydrationService(
   deps: ParanoidRehydrationServiceDeps,
 ): ParanoidRehydrationService {
   const now = deps.now ?? (() => new Date());
+  if (
+    deps.testOnlyTransactionQuantityRoundingTolerance !== undefined &&
+    deps.testOnlyTransactionQuantityRoundingTolerance < 0n
+  ) {
+    throw new Error('transaction quantity rounding tolerance must not be negative');
+  }
   const toCashEur =
     deps.toCashEur ??
     (async (amount, currency) => {
@@ -2179,6 +2248,7 @@ export function createParanoidRehydrationService(
         entities,
         deps.testOnlyRejectPersistedTransactionQuantity,
         deps.testOnlyObserveQuantityReachabilityOrder,
+        deps.testOnlyTransactionQuantityRoundingTolerance,
       );
 
       return withParanoidRehydrationTransaction(deps.db, async (tx) => {

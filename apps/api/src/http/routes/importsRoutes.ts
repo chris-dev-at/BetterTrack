@@ -11,7 +11,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { badRequest } from '../../errors';
-import { createIdempotency } from '../middleware/idempotency';
+import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -96,13 +96,12 @@ export function createImportsRouter(ctx: AppContext): Router {
     '/:batchId/apply',
     validateParams(importBatchIdParamSchema),
     idempotency,
-    validateBody(applyImportRequestSchema),
-    async (req, res) => {
+    withIdempotencyExecution(validateBody(applyImportRequestSchema), async (req, res) => {
       const { batchId } = req.valid?.params as { batchId: string };
       const body = req.valid?.body as ApplyImportRequest;
       const result = await ctx.imports.applyBatch(req.authUser!.id, batchId, body);
       res.json(result);
-    },
+    }),
   );
 
   // DELETE /imports/:batchId — discard a staged batch (staging data only).

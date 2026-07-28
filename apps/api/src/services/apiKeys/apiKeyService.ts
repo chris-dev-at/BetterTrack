@@ -17,8 +17,10 @@ import {
 import type { ApiKeyRepository } from '../../data/repositories/apiKeyRepository';
 import type { ApiKeyRequestLogRepository } from '../../data/repositories/apiKeyRequestLogRepository';
 import type { ApiKeyTierRepository } from '../../data/repositories/apiKeyTierRepository';
+import type { UserRepository } from '../../data/repositories/userRepository';
 import type { ApiKeyRequestLogRow, ApiKeyRow, ApiKeyTierRow, UserRow } from '../../data/schema';
 import { badRequest, notFound } from '../../errors';
+import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
 import type { Logger } from '../../logger';
 import { redactString } from '../observability/scrubber';
 import { AuditAction, type AuditService } from '../audit/auditService';
@@ -43,6 +45,10 @@ export interface ApiKeyServiceDeps {
   repo: ApiKeyRepository;
   tierRepo: ApiKeyTierRepository;
   requestLogRepo: ApiKeyRequestLogRepository;
+  /** Fresh user-status lookup for fail-closed realtime principal revalidation. */
+  userRepo?: Pick<UserRepository, 'findById'>;
+  /** Best-effort lifecycle fan-out to disconnect already-open realtime sockets. */
+  events?: Pick<EventBus, 'publish'>;
   audit: AuditService;
   redis: Redis;
   logger: Logger;
@@ -63,8 +69,15 @@ export interface ApiKeyService {
   }): Promise<CreateApiKeyResponse>;
   list(userId: string): Promise<ApiKeySummary[]>;
   revoke(input: { userId: string; id: string; ip?: string | null }): Promise<void>;
+  /** Administrative suspension: revoke all of one user's personal keys. */
+  revokeAllForUser(userId: string): Promise<void>;
   /** Bearer-auth lookup: resolve an active key by its plaintext token, else null. */
   authenticate(token: string): Promise<ApiKeyPrincipal | null>;
+  /**
+   * Revalidate a connected realtime principal without retaining its bearer
+   * secret. Missing wiring deliberately fails closed.
+   */
+  revalidatePrincipal(input: { userId: string; keyId: string }): Promise<ApiKeyPrincipal | null>;
   /** Record a scope-denied bearer attempt (called by the enforcement middleware). */
   recordScopeDenied(input: {
     userId: string;
@@ -164,7 +177,17 @@ function mintToken(): { token: string; tokenHash: string } {
  * PII-scrubbed per-key request-log audit trail.
  */
 export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
-  const { repo, tierRepo, requestLogRepo, audit, redis, logger, defaultRateLimit } = deps;
+  const {
+    repo,
+    tierRepo,
+    requestLogRepo,
+    userRepo,
+    events,
+    audit,
+    redis,
+    logger,
+    defaultRateLimit,
+  } = deps;
 
   // In-process cache of the admin-marked default tier so a key with no explicit
   // tier resolves its limit without a DB hit on every bearer request. Admin edits
@@ -184,6 +207,26 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
   const invalidateDefaultTier = (): void => {
     defaultTierCache = null;
   };
+
+  async function publishInvalidation(
+    event: Omit<RealtimePrincipalInvalidatedEvent, 'type' | 'occurredAt'>,
+  ): Promise<void> {
+    if (!events) return;
+    try {
+      await events.publish({
+        type: 'realtime.principal.invalidated',
+        ...event,
+        occurredAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      // Physical revocation already succeeded. The gateway's bounded principal
+      // revalidation is intentionally the fail-closed backstop for this miss.
+      logger.warn(
+        { err, userId: event.userId, kind: event.kind },
+        'api-key realtime invalidation publish failed',
+      );
+    }
+  }
 
   return {
     async create({ userId, name, scopes, ip }) {
@@ -212,6 +255,12 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
         // key ids can't be probed across accounts.
         throw notFound('API key not found.', 'API_KEY_NOT_FOUND');
       }
+      await publishInvalidation({
+        userId,
+        kind: 'personal',
+        credentialId: row.id,
+        exceptCredentialId: null,
+      });
       await audit.record({
         actorId: userId,
         action: AuditAction.ApiKeyRevoked,
@@ -221,10 +270,22 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       });
     },
 
+    async revokeAllForUser(userId) {
+      await repo.revokeAllForUser(userId);
+      await publishInvalidation({
+        userId,
+        kind: 'personal',
+        credentialId: null,
+        exceptCredentialId: null,
+      });
+    },
+
     async authenticate(token) {
       if (!token.startsWith(API_KEY_TOKEN_PREFIX)) return null;
       const found = await repo.findActiveByTokenHash(hashToken(token));
-      if (!found) return null;
+      // The personal-key choke point must fail closed even if an administrative
+      // suspension has not yet completed physical key revocation.
+      if (!found || found.user.status !== 'active') return null;
 
       // Throttle the lastUsedAt write: only the first hit within the window
       // touches the DB, so a busy key doesn't write on every request.
@@ -248,6 +309,17 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
         scopes: found.key.scopes as ApiKeyScope[],
         rateLimit,
       };
+    },
+
+    async revalidatePrincipal({ userId, keyId }) {
+      // A real API process always injects the user repository. Returning null
+      // for a deliberately-minimal test/service construction is fail closed.
+      if (!userRepo) return null;
+      const [key, user] = await Promise.all([repo.getById(keyId), userRepo.findById(userId)]);
+      if (!key || key.userId !== userId || key.revokedAt || !user || user.status !== 'active') {
+        return null;
+      }
+      return { user, keyId: key.id, scopes: key.scopes as ApiKeyScope[] };
     },
 
     async recordScopeDenied({ userId, keyId, requiredScope, method, path, ip }) {

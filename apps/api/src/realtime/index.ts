@@ -4,6 +4,11 @@ export {
   userRoom,
   assetRoom,
   portfolioRoom,
+  REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS,
   type RealtimeGateway,
   type RealtimeGatewayDeps,
+  type RealtimePrincipal,
+  type RealtimeSessionPrincipal,
+  type RealtimePersonalPrincipal,
+  type RealtimeOAuthPrincipal,
 } from './gateway';

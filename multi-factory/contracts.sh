@@ -224,6 +224,31 @@ mf_new_canonical_comment(){ # $1=before comments JSON $2=after JSON $3=kind $4=h
     <<<"$MF_COMMENT_BODY")
 }
 
+# Does the PR thread already carry ANY canonical reviewer verdict (any head)?
+# Used only for per-role model routing: the FIRST review on a PR runs the
+# reviewer1 slot, every later review runs the completion slot. The answer is
+# derived purely from the durable GitHub comment thread — no local state file —
+# so resuming a PR after a restart lands on the same slot. Each candidate is
+# validated with the full canonical contract against the head the comment
+# itself declares; prose merely quoting the marker never counts.
+mf_has_canonical_review(){ # $1=comments JSON
+  local comments=$1 obj body head
+  while IFS= read -r obj; do
+    [ -n "$obj" ] || continue
+    body=$(jq -r '.body // ""' <<<"$obj")
+    head=$(sed -n 's/^FACTORY-REVIEW-HEAD: //p' <<<"$body" | head -1)
+    [ -n "$head" ] || continue
+    # The head here comes from the UNTRUSTED comment body (every other caller
+    # passes one from GitHub) and is interpolated into a grep pattern — accept
+    # only plain commit-SHA shapes so `.*`-style bodies cannot self-validate.
+    printf '%s' "$head" | grep -qE '^[0-9a-fA-F]{7,40}$' || continue
+    if mf_comment_marker_valid review "$head" "$body"; then
+      return 0
+    fi
+  done < <(jq -c '.[]?' <<<"$comments" 2>/dev/null)
+  return 1
+}
+
 mf_comment_by_id_valid(){ # $1=comments JSON $2=id $3=kind $4=head
   local comments=$1 id=$2 kind=$3 head=$4 body
   body=$(jq -r --arg id "$id" '.[] | select((.id|tostring)==$id) | .body' <<<"$comments")
@@ -273,27 +298,39 @@ mf_latest_approval_for_head(){ # $1=comments JSON $2=head; sets MF_APPROVAL_*
 }
 
 mf_pr_comments_json(){ # $1=PR number
-  local out
-  out=$(gh api -H 'Cache-Control: no-cache' --paginate \
-    "repos/$REPO/issues/$1/comments?per_page=100" \
-    --jq '.[] | {id,body,created_at}' 2>/dev/null) || return 1
-  jq -cs '.' <<<"$out"
+  # ONE parser, ONE contract: parse GitHub's original JSON exactly once with C
+  # jq. Routing the payload through gh's embedded jq (gojq) adds a second,
+  # gh-version-dependent transformation layer: gh 2.96 rewrites control chars
+  # to caret notation, gojq alphabetizes keys and tolerates lone-surrogate
+  # escapes that C jq rejects. (A 2026-07-28 incident review initially blamed
+  # this layer for the #891 queue jam; disproven — the jam was the DIRTY-head/
+  # empty-rollup trap fixed in merger_step. Single-parse stays for surface
+  # reduction, and the merger's approval-read counter bounds any residual
+  # parse failure.) gh --paginate emits pages either merged into one array
+  # (gh ≥2.9x) or as concatenated arrays (older gh); slurp+add handles both.
+  local raw
+  raw=$(gh api -H 'Cache-Control: no-cache' --paginate \
+    "repos/$REPO/issues/$1/comments?per_page=100" 2>/dev/null) || return 1
+  jq -cs 'add // [] | map({id,body,created_at})' <<<"$raw"
 }
 
 mf_pr_head(){ gh pr view "$1" --json headRefOid -q .headRefOid 2>/dev/null; }
 
 mf_recent_issues_json(){
-  gh api -H 'Cache-Control: no-cache' \
+  # Single-parse rule (see mf_pr_comments_json): one parser, one contract.
+  local raw
+  raw=$(gh api -H 'Cache-Control: no-cache' \
     "repos/$REPO/issues?state=all&sort=created&direction=desc&per_page=100" \
-    --jq '[.[] | select(.pull_request==null) | {number,title,body,labels:[.labels[].name],created_at}]' \
-    2>/dev/null
+    2>/dev/null) || return 1
+  jq -c '[.[] | select(.pull_request==null) | {number,title,body,labels:[.labels[].name],created_at}]' <<<"$raw"
 }
 
 mf_issue_json_by_number(){ # $1=issue number; direct reads avoid list eventual consistency
-  gh api -H 'Cache-Control: no-cache' "repos/$REPO/issues/$1" \
-    --jq 'select(.pull_request==null)
-      | {number,title,body,labels:[.labels[].name],created_at}' \
-    2>/dev/null
+  # Single-parse rule (see mf_pr_comments_json): one parser, one contract.
+  local raw
+  raw=$(gh api -H 'Cache-Control: no-cache' "repos/$REPO/issues/$1" 2>/dev/null) || return 1
+  jq -c 'select(.pull_request==null)
+      | {number,title,body,labels:[.labels[].name],created_at}' <<<"$raw"
 }
 
 mf_new_issue_numbers(){ # $1=before JSON $2=after JSON
