@@ -4,12 +4,41 @@
 
 export const DIFFICULTIES = Object.freeze(['easy', 'normal', 'intermediate', 'hard', 'max']);
 
+// v2 per-role routing: each difficulty may carry three slot objects in addition
+// to the flat legacy provider/model/effort keys (which mirror `completion` for
+// stale readers). Order matches MF_SLOT_ORDER in mflib.sh.
+export const SLOTS = Object.freeze(['writer', 'reviewer1', 'completion']);
+
+// Roles whose `roles.<role>` entry may be a direct {provider, model, effort}
+// pin instead of a difficulty string. Mirrors the roles mflib.sh scans in
+// mf_uses_claude / role_pin_cfg. reviewFloor is deliberately absent — it is a
+// floor, always a difficulty name, never a model.
+export const PINNABLE_ROLES = Object.freeze([
+  'composer',
+  'checker',
+  'writer',
+  'reviewer',
+  'fixer',
+  'ci-fix',
+]);
+
 const CLAUDE_EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+
+// Owner hard rule (2026-07): no Opus 5 route may ever run above xhigh.
+// Matches claude-opus-5 and suffixed variants (claude-opus-5-20260514, …) but
+// not claude-opus-4-8. Enforced by filtering the effort list every validator
+// and effort picker consults, so it binds flat entries and all three slots.
+const OPUS5_MODEL = /^claude-opus-5(?:$|[.:@_-])/i;
+const EFFORTS_ABOVE_XHIGH = Object.freeze(['max', 'ultra']);
+export function isOpusFiveModel(model) {
+  return OPUS5_MODEL.test(typeof model === 'string' ? model.trim() : '');
+}
 
 const MODEL_CATALOGS = Object.freeze({
   claude: Object.freeze([
     'claude-fable-5',
+    'claude-opus-5',
     'claude-opus-4-8',
     'claude-sonnet-5',
     'claude-haiku-4-5',
@@ -52,6 +81,9 @@ const registry = {
       containerTest: false,
       apiEquivalentEstimate: false,
       dynamicModelCatalog: false,
+    },
+    modelEfforts: {
+      'claude-opus-5': Object.freeze(['low', 'medium', 'high', 'xhigh']),
     },
   },
   claudex: {
@@ -135,7 +167,10 @@ export function providerDefinition(id) {
 export function providerEfforts(provider, model = '') {
   const definition = providerDefinition(provider);
   if (!definition) return [];
-  return definition.modelEfforts?.[model] || definition.efforts;
+  const efforts = definition.modelEfforts?.[model] || definition.efforts;
+  if (isOpusFiveModel(model))
+    return efforts.filter((effort) => !EFFORTS_ABOVE_XHIGH.includes(effort));
+  return efforts;
 }
 
 export function normalizeProviderModel(provider, value) {
@@ -199,6 +234,36 @@ export function defaultRouteForProvider(provider) {
   };
 }
 
+// Extract the valid slot routes of one difficulty entry (v2 schema). Invalid
+// or absent slots are omitted — mflib.sh fails closed on them at run time, and
+// the editor re-seeds a missing slot from the flat route before saving.
+export function normalizeSlotRoutes(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return {};
+  const slots = {};
+  for (const slot of SLOTS) {
+    const normalized = normalizeRouteEntry(entry[slot]);
+    if (normalized) slots[slot] = normalized;
+  }
+  return slots;
+}
+
+// Every route an entry can dispatch: the flat legacy route plus any slots.
+export function entryRoutes(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+  return [entry, ...SLOTS.map((slot) => entry[slot]).filter((r) => r && typeof r === 'object')];
+}
+
+// roles.<role> accepts EITHER a difficulty string (legacy meaning: resolve
+// through that tier) OR a {provider, model, effort} object pinning the role to
+// that exact route. Returns the normalized pin, or null when the entry is not
+// a valid pin (strings, absent entries and malformed objects all yield null —
+// mflib.sh falls back to difficulty routing on those). validateRouteEntry
+// enforces the Opus-5 ≤ xhigh cap, so an over-effort Opus 5 pin is never valid.
+export function normalizeRolePin(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  return normalizeRouteEntry(entry);
+}
+
 export function normalizeModelRouting(raw, defaults) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const fallback =
@@ -208,14 +273,36 @@ export function normalizeModelRouting(raw, defaults) {
     difficulties: {},
     roles: { ...(fallback.roles || {}) },
   };
+  let hasSlots = false;
   for (const difficulty of DIFFICULTIES) {
     const entry = source.difficulties?.[difficulty];
-    out.difficulties[difficulty] = normalizeRouteEntry(entry) || {
+    const flat = normalizeRouteEntry(entry) || {
       ...(fallback.difficulties?.[difficulty] || {}),
     };
+    const slots = normalizeSlotRoutes(entry);
+    if (Object.keys(slots).length) hasSlots = true;
+    out.difficulties[difficulty] = { ...flat, ...slots };
   }
-  for (const role of ['composer', 'checker', 'reviewFloor'])
-    if (DIFFICULTIES.includes(source.roles?.[role])) out.roles[role] = source.roles[role];
+  let hasPins = false;
+  for (const role of new Set([...PINNABLE_ROLES, 'reviewFloor'])) {
+    const value = source.roles?.[role];
+    if (typeof value === 'string' && DIFFICULTIES.includes(value)) {
+      // Difficulty strings keep their legacy meaning everywhere; under worker
+      // role names they are inert for mflib but preserved so a save round-trip
+      // cannot drop them.
+      out.roles[role] = value;
+      continue;
+    }
+    if (role === 'reviewFloor') continue; // the floor is never a pin
+    const pin = normalizeRolePin(value);
+    if (pin) {
+      out.roles[role] = pin;
+      hasPins = true;
+    }
+    // Malformed pins are dropped: mflib ignores them at run time, and
+    // persisting them would only preserve a route nothing can dispatch.
+  }
+  if (hasSlots || hasPins) out.version = 2;
   return out;
 }
 

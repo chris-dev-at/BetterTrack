@@ -2,13 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DIFFICULTIES,
+  PINNABLE_ROLES,
   PROVIDER_IDS,
+  SLOTS,
   composerRouteAllowed,
   defaultRouteForProvider,
+  entryRoutes,
   expectedModelSelector,
+  isOpusFiveModel,
   normalizeModelRouting,
   normalizeProviderModel,
+  normalizeRolePin,
   normalizeRouteEntry,
+  normalizeSlotRoutes,
   providerDefinition,
   providerEfforts,
   publicProviderRegistry,
@@ -179,4 +185,169 @@ test('routing normalization preserves explicit empty effort and contains malform
     checker: 'max',
     reviewFloor: 'intermediate',
   });
+});
+
+test('slot order matches MF_SLOT_ORDER in mflib.sh', () => {
+  assert.deepEqual(SLOTS, ['writer', 'reviewer1', 'completion']);
+});
+
+test('Opus 5 can never be routed above xhigh, in any shape', () => {
+  assert.equal(isOpusFiveModel('claude-opus-5'), true);
+  assert.equal(isOpusFiveModel('claude-opus-5-20260514'), true);
+  assert.equal(isOpusFiveModel('claude-opus-4-8'), false);
+  assert.equal(isOpusFiveModel('claude-fable-5'), false);
+  assert.deepEqual(providerEfforts('claude', 'claude-opus-5'), ['low', 'medium', 'high', 'xhigh']);
+  assert.equal(providerEfforts('claude', 'claude-opus-5-20260514').includes('max'), false);
+  assert.equal(
+    validateRouteEntry({ provider: 'claude', model: 'claude-opus-5', effort: 'max' }),
+    false,
+  );
+  assert.equal(
+    validateRouteEntry({ provider: 'claude', model: 'claude-opus-5-20260514', effort: 'max' }),
+    false,
+  );
+  assert.equal(
+    validateRouteEntry({ provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' }),
+    true,
+  );
+  // other Claude models keep their full effort range
+  assert.equal(
+    validateRouteEntry({ provider: 'claude', model: 'claude-fable-5', effort: 'max' }),
+    true,
+  );
+  // the cap also binds when an opus-5 route appears inside a slot object
+  assert.equal(
+    normalizeSlotRoutes({
+      writer: { provider: 'claude', model: 'claude-opus-5', effort: 'max' },
+      reviewer1: { provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' },
+    }).writer,
+    undefined,
+  );
+  assert.ok(publicProviderRegistry().find((p) => p.id === 'claude').modelSuggestions.includes('claude-opus-5'));
+});
+
+test('v2 slotted routing normalizes per slot and survives round-tripping', () => {
+  const raw = {
+    version: 2,
+    difficulties: {
+      hard: {
+        provider: 'claude',
+        model: 'claude-opus-5',
+        effort: 'xhigh',
+        writer: { provider: 'codex', model: 'gpt-5.6-sol', effort: 'ultra' },
+        reviewer1: { provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' },
+        completion: { provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' },
+      },
+      max: {
+        provider: 'claude',
+        model: 'claude-fable-5',
+        effort: 'xhigh',
+        writer: { provider: 'claude', model: 'claude-fable-5', effort: 'xhigh' },
+        reviewer1: { provider: 'constructor', model: 'gpt-5.6-sol', effort: 'ultra' },
+        completion: { provider: 'claudex', model: ' codex-api/gpt-5.6-sol ', effort: 'high' },
+      },
+    },
+  };
+  const normalized = normalizeModelRouting(raw, { difficulties: {}, roles: {} });
+  assert.equal(normalized.version, 2);
+  assert.deepEqual(normalized.difficulties.hard.writer, {
+    provider: 'codex',
+    model: 'gpt-5.6-sol',
+    effort: 'ultra',
+  });
+  assert.deepEqual(normalized.difficulties.hard.reviewer1, {
+    provider: 'claude',
+    model: 'claude-opus-5',
+    effort: 'xhigh',
+  });
+  // invalid slot providers are dropped, valid siblings survive and normalize
+  assert.equal(normalized.difficulties.max.reviewer1, undefined);
+  assert.deepEqual(normalized.difficulties.max.completion, {
+    provider: 'claudex',
+    model: 'gpt-5.6-sol',
+    effort: 'high',
+  });
+  // flat mirror keys stay intact for pre-slot readers
+  assert.equal(normalized.difficulties.hard.provider, 'claude');
+  assert.equal(normalized.difficulties.hard.model, 'claude-opus-5');
+  // a flat v1 config stays version 1 with no slot keys invented
+  const flat = normalizeModelRouting(
+    { difficulties: { easy: { provider: 'codex', model: 'gpt-5.6-terra', effort: 'max' } } },
+    { difficulties: {}, roles: {} },
+  );
+  assert.equal(flat.version, 1);
+  assert.equal(flat.difficulties.easy.writer, undefined);
+  // entryRoutes surfaces flat + slot routes for provider scans
+  assert.equal(entryRoutes(normalized.difficulties.hard).length, 4);
+  assert.equal(entryRoutes(flat.difficulties.easy).length, 1);
+});
+
+test('role pins: object entries pin a role, strings keep difficulty semantics', () => {
+  // mirror of the role set mflib.sh scans; reviewFloor is deliberately not pinnable
+  assert.deepEqual(PINNABLE_ROLES, ['composer', 'checker', 'writer', 'reviewer', 'fixer', 'ci-fix']);
+  assert.deepEqual(normalizeRolePin({ provider: 'claude', model: 'claude-fable-5', effort: 'xhigh' }), {
+    provider: 'claude',
+    model: 'claude-fable-5',
+    effort: 'xhigh',
+  });
+  // strings and absent entries are not pins
+  assert.equal(normalizeRolePin('hard'), null);
+  assert.equal(normalizeRolePin(undefined), null);
+  assert.equal(normalizeRolePin(null), null);
+  assert.equal(normalizeRolePin(['claude']), null);
+  // malformed pins are rejected (unknown provider, missing model, bad effort)
+  assert.equal(normalizeRolePin({ provider: 'constructor', model: 'x', effort: 'high' }), null);
+  assert.equal(normalizeRolePin({ provider: 'claude', model: '', effort: 'high' }), null);
+  assert.equal(normalizeRolePin({ provider: 'codex', model: 'gpt-5.6-sol', effort: 'turbo' }), null);
+  // HARD RULE: an Opus 5 pin above xhigh is never valid, dated ids included
+  assert.equal(normalizeRolePin({ provider: 'claude', model: 'claude-opus-5', effort: 'max' }), null);
+  assert.equal(
+    normalizeRolePin({ provider: 'claude', model: 'claude-opus-5-20260514', effort: 'max' }),
+    null,
+  );
+  assert.deepEqual(normalizeRolePin({ provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' }), {
+    provider: 'claude',
+    model: 'claude-opus-5',
+    effort: 'xhigh',
+  });
+});
+
+test('routing normalization round-trips role pins without corrupting them', () => {
+  const fallbackRoles = { composer: 'hard', checker: 'hard', reviewFloor: 'intermediate' };
+  const normalized = normalizeModelRouting(
+    {
+      difficulties: {},
+      roles: {
+        composer: { provider: 'claude', model: 'claude-fable-5', effort: 'xhigh' },
+        checker: 'hard',
+        reviewer: { provider: 'codex', model: 'gpt-5.6-sol', effort: 'ultra' },
+        fixer: 'intermediate', // inert string under a worker role — preserved verbatim
+        'ci-fix': { provider: 'claude', model: 'claude-opus-5', effort: 'max' }, // over-cap → dropped
+        reviewFloor: { provider: 'claude', model: 'claude-fable-5' }, // floor is never a pin
+      },
+    },
+    { difficulties: {}, roles: fallbackRoles },
+  );
+  assert.deepEqual(normalized.roles.composer, {
+    provider: 'claude',
+    model: 'claude-fable-5',
+    effort: 'xhigh',
+  });
+  assert.equal(normalized.roles.checker, 'hard');
+  assert.deepEqual(normalized.roles.reviewer, {
+    provider: 'codex',
+    model: 'gpt-5.6-sol',
+    effort: 'ultra',
+  });
+  assert.equal(normalized.roles.fixer, 'intermediate');
+  assert.equal(normalized.roles['ci-fix'], undefined);
+  assert.equal(normalized.roles.reviewFloor, 'intermediate'); // fallback, pin ignored
+  assert.equal(normalized.version, 2); // pins are v2 schema
+  // a pin-free config keeps byte-identical legacy roles handling
+  const flat = normalizeModelRouting(
+    { difficulties: {}, roles: { composer: 'max', checker: 'hard', reviewFloor: 'easy' } },
+    { difficulties: {}, roles: fallbackRoles },
+  );
+  assert.deepEqual(flat.roles, { composer: 'max', checker: 'hard', reviewFloor: 'easy' });
+  assert.equal(flat.version, 1);
 });

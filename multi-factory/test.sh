@@ -490,10 +490,198 @@ cat >"$MFSTATE/control/models.json" <<'JSON'
 JSON
 check "cfg: ClaudeX entry accepted" "claudex|gpt-5.6-luna|high" "$(diff_cfg easy)"
 mf_uses_claude && bad "claude-free config should report false" || ok "claude-free config → mf_uses_claude false"
+check "cfg: flat legacy entry serves the writer slot" "claudex|gpt-5.6-luna|high" "$(diff_cfg easy writer)"
+check "cfg: flat legacy entry serves the reviewer1 slot" "claudex|gpt-5.6-luna|high" "$(diff_cfg easy reviewer1)"
+check "cfg: flat legacy entry serves the completion slot" "claudex|gpt-5.6-luna|high" "$(diff_cfg easy completion)"
 rm -f "$MFSTATE/control/models.json"
 check "cfg: missing file → builtin default" "claude|claude-sonnet-5|high" "$(diff_cfg easy)"
+check "cfg: missing file → builtin default for any slot" "claude|claude-sonnet-5|high" "$(diff_cfg easy reviewer1)"
 check "cfg: missing file → role default hard" "hard" "$(role_diff checker)"
 check "cfg: missing file → floor default intermediate" "intermediate" "$(review_floor)"
+
+echo "— per-role slot routing (writer/reviewer1/completion, models.json v2)"
+cat >"$MFSTATE/control/models.json" <<'JSON'
+{"version":2,"difficulties":{
+  "easy":{"provider":"codex","model":"flat-legacy","effort":"low",
+    "writer":{"provider":"codex","model":"w-model","effort":"max"},
+    "reviewer1":{"provider":"claude","model":"claude-opus-5","effort":"medium"},
+    "completion":{"provider":"codex","model":"c-model","effort":"max"}},
+  "normal":{"provider":"codex","model":"flat-only","effort":"high"},
+  "intermediate":{"writer":{"provider":"claudex","model":"bad|pipe","effort":"high"}},
+  "hard":{
+    "writer":{"provider":"codex","model":"gpt-5.6-sol","effort":"ultra"},
+    "reviewer1":{"provider":"pigeon","model":"carrier"},
+    "completion":{"model":"missing-provider"}}
+}}
+JSON
+check "slot: writer resolves its own config" "codex|w-model|max" "$(diff_cfg easy writer)"
+check "slot: reviewer1 resolves its own config" "claude|claude-opus-5|medium" "$(diff_cfg easy reviewer1)"
+check "slot: completion resolves its own config" "codex|c-model|max" "$(diff_cfg easy completion)"
+check "slot: slotless call keeps flat resolution" "codex|flat-legacy|low" "$(diff_cfg easy)"
+check "slot: flat-only entry (v1 file) serves writer" "codex|flat-only|high" "$(diff_cfg normal writer)"
+check "slot: flat-only entry (v1 file) serves reviewer1" "codex|flat-only|high" "$(diff_cfg normal reviewer1)"
+check "slot: flat-only entry (v1 file) serves completion" "codex|flat-only|high" "$(diff_cfg normal completion)"
+check "slot: unknown provider in a slot stays fail-closed" "invalid|pigeon|" "$(diff_cfg hard reviewer1)"
+check "slot: delimiter injection in a slot fails closed" "invalid|claudex|" "$(diff_cfg intermediate writer)"
+check "slot: provider-less slot falls back to builtin default" "claude|claude-opus-4-8|max" "$(diff_cfg hard completion)"
+check "slot: absent slot beside other slots uses builtin default" "claude|claude-opus-4-8|high" "$(diff_cfg intermediate reviewer1)"
+check "slot: unset difficulty uses builtin default for slots" "claude|claude-fable-5|max" "$(diff_cfg max reviewer1)"
+mf_uses_claude && ok "slotted config detects claude usage" || bad "slotted config should detect claude"
+
+echo "— mf_cc slot threading (role defaults + CC_SLOT override)"
+SLOT_MODELS=$T/slot-models.json
+SLOT_DISPATCH=$T/slot-dispatch
+cat >"$SLOT_MODELS" <<'JSON'
+{"version":2,"difficulties":{"normal":{
+  "writer":{"provider":"codex","model":"writer-model","effort":"high"},
+  "reviewer1":{"provider":"claude","model":"reviewer1-model","effort":"medium"},
+  "completion":{"provider":"codex","model":"completion-model","effort":"max"}}}}
+JSON
+(
+  MF_MODELS_FILE=$SLOT_MODELS
+  cc(){ printf 'claude:%s\n' "$1" >>"$SLOT_DISPATCH"; }
+  cc_codex(){ printf 'codex:%s\n' "$1" >>"$SLOT_DISPATCH"; }
+  : >"$SLOT_DISPATCH"
+  mf_cc writer normal p
+  mf_cc reviewer normal p
+  CC_SLOT=completion mf_cc reviewer normal p
+  mf_cc fixer normal p
+  mf_cc checker normal p
+  mf_cc ci-fix normal p
+  CC_SLOT=garbage mf_cc fixer normal p
+)
+check "mf_cc dispatches each role through its slot" \
+"codex:writer-model
+claude:reviewer1-model
+codex:completion-model
+codex:completion-model
+codex:completion-model
+codex:completion-model
+codex:completion-model" "$(<"$SLOT_DISPATCH")"
+unset SLOT_MODELS SLOT_DISPATCH
+rm -f "$MFSTATE/control/models.json"
+
+echo "— role pins: roles.<role> object pins an exact model, strings unchanged"
+log(){ :; }
+cat >"$MFSTATE/control/models.json" <<'JSON'
+{"version":2,"difficulties":{
+  "easy":{"provider":"codex","model":"tier-easy","effort":"low"},
+  "normal":{"provider":"codex","model":"tier-normal","effort":"high"},
+  "intermediate":{"provider":"codex","model":"tier-int","effort":"high"},
+  "hard":{"provider":"codex","model":"gpt-5.6-sol","effort":"ultra"},
+  "max":{"provider":"codex","model":"tier-max","effort":"xhigh"}},
+ "roles":{
+  "composer":{"provider":"claude","model":"claude-fable-5","effort":"xhigh"},
+  "checker":{"provider":"codex","model":"pinned-checker","effort":"high"},
+  "reviewer":"hard",
+  "reviewFloor":"intermediate"}}
+JSON
+check "pin: composer object pin resolves exactly" \
+  "claude|claude-fable-5|xhigh" "$(role_pin_cfg composer)"
+check "pin: checker object pin resolves exactly" \
+  "codex|pinned-checker|high" "$(role_pin_cfg checker)"
+check "pin: string role entry is not a pin" "" "$(role_pin_cfg reviewer)"
+check "pin: absent role entry is not a pin" "" "$(role_pin_cfg fixer)"
+check "pin: object entry no longer resolves as a difficulty string (role_diff default)" \
+  "hard" "$(role_diff composer)"
+check "pin: reviewFloor string keeps working beside pins" "intermediate" "$(review_floor)"
+mf_uses_claude \
+  && ok "valid claude pin flips mf_uses_claude in an all-codex config" \
+  || bad "valid claude pin should flip mf_uses_claude"
+PIN_DISPATCH=$T/pin-dispatch
+(
+  cc(){ printf 'claude:%s:%s\n' "$1" "${CC_EFFORT:-}" >>"$PIN_DISPATCH"; }
+  cc_codex(){ printf 'codex:%s:%s\n' "$1" "$2" >>"$PIN_DISPATCH"; }
+  : >"$PIN_DISPATCH"
+  mf_cc composer "$(role_diff composer)" p
+  CC_SLOT=completion mf_cc checker "$(role_diff checker)" p
+  mf_cc fixer normal p
+  CC_SLOT=reviewer1 mf_cc reviewer normal p
+)
+check "pin: mf_cc honors pins and keeps slot routing for unpinned roles" \
+"claude:claude-fable-5:xhigh
+codex:pinned-checker:high
+codex:tier-normal:high
+codex:tier-normal:high" "$(<"$PIN_DISPATCH")"
+unset PIN_DISPATCH
+
+echo "— role pins: unusable pins fall back safely (never brick a run)"
+cat >"$MFSTATE/control/models.json" <<'JSON'
+{"version":2,"difficulties":{
+  "easy":{"provider":"codex","model":"tier-easy","effort":"low"},
+  "normal":{"provider":"codex","model":"tier-normal","effort":"high"},
+  "intermediate":{"provider":"codex","model":"tier-int","effort":"high"},
+  "hard":{"provider":"codex","model":"tier-hard","effort":"xhigh"},
+  "max":{"provider":"codex","model":"tier-max","effort":"xhigh"}},
+ "roles":{
+  "composer":{"provider":"pigeon","model":"carrier","effort":"high"},
+  "checker":{"provider":"claude","effort":"high"},
+  "writer":{"provider":"claude","model":"bad|pipe","effort":"high"},
+  "fixer":{"provider":"claude","model":"claude-opus-5","effort":"max"},
+  "reviewer":{"provider":"claude","model":"claude-opus-5","effort":"xhigh"}}}
+JSON
+check "pin: unknown provider pin is unusable" "malformed||" "$(role_pin_cfg composer)"
+check "pin: model-less pin is unusable" "malformed||" "$(role_pin_cfg checker)"
+check "pin: delimiter injection in a pin is unusable" "malformed||" "$(role_pin_cfg writer)"
+check "pin: Opus 5 above xhigh is rejected" "malformed||" "$(role_pin_cfg fixer)"
+check "pin: Opus 5 at the xhigh cap is allowed" \
+  "claude|claude-opus-5|xhigh" "$(role_pin_cfg reviewer)"
+mf_opus5_effort_ok claude-opus-5 max \
+  && bad "opus5 cap must reject max effort" || ok "opus5 cap rejects max effort"
+mf_opus5_effort_ok claude-opus-5 ultra \
+  && bad "opus5 cap must reject unknown efforts" || ok "opus5 cap rejects unknown efforts"
+mf_opus5_effort_ok claude-opus-5 xhigh \
+  && ok "opus5 cap allows xhigh" || bad "opus5 cap should allow xhigh"
+mf_opus5_effort_ok claude-fable-5 max \
+  && ok "opus5 cap applies only to Opus 5 models" \
+  || bad "opus5 cap must not touch non-Opus-5 models"
+PIN_FALLBACK=$T/pin-fallback-dispatch
+(
+  cc(){ printf 'claude:%s\n' "$1" >>"$PIN_FALLBACK"; }
+  cc_codex(){ printf 'codex:%s\n' "$1" >>"$PIN_FALLBACK"; }
+  : >"$PIN_FALLBACK"
+  mf_cc fixer normal p
+  CC_SLOT=completion mf_cc checker normal p
+)
+check "pin: unusable pins fall back to difficulty routing (run still dispatches)" \
+"codex:tier-normal
+codex:tier-normal" "$(<"$PIN_FALLBACK")"
+unset PIN_FALLBACK
+(
+  MF_MODELS_FILE=$T/pin-noclaude.json
+  cat >"$MF_MODELS_FILE" <<'JSON'
+{"difficulties":{
+  "easy":{"provider":"codex","model":"c","effort":"low"},
+  "normal":{"provider":"codex","model":"c","effort":"high"},
+  "intermediate":{"provider":"codex","model":"c","effort":"high"},
+  "hard":{"provider":"codex","model":"c","effort":"xhigh"},
+  "max":{"provider":"codex","model":"c","effort":"xhigh"}},
+ "roles":{"fixer":{"provider":"claude","model":"claude-opus-5","effort":"max"}}}
+JSON
+  mf_uses_claude && exit 1 || exit 0
+) && ok "rejected claude pin does not flip mf_uses_claude" \
+  || bad "rejected claude pin must not flip mf_uses_claude"
+PIN_GATE_MODELS=$T/pin-gate-models.json
+PIN_GATE_CAPTURE=$T/pin-gate-dispatch
+rm -f "$PIN_GATE_CAPTURE"
+printf '%s\n' \
+  '{"difficulties":{},"roles":{"composer":{"provider":"codex","model":"gpt-5.6-terra","effort":"max"}}}' \
+  >"$PIN_GATE_MODELS"
+if (
+  MF_MODELS_FILE=$PIN_GATE_MODELS
+  cc_codex(){ : >"$PIN_GATE_CAPTURE"; }
+  mf_cc composer hard 'must not dispatch'
+); then
+  bad "composer route gate must still reject a disallowed pinned model"
+else
+  ok "composer route gate still applies to pinned composer models"
+fi
+[ ! -e "$PIN_GATE_CAPTURE" ] \
+  && ok "disallowed pinned composer makes no provider call" \
+  || bad "disallowed pinned composer reached provider"
+unset PIN_GATE_MODELS PIN_GATE_CAPTURE
+rm -f "$MFSTATE/control/models.json"
+check "pin: missing models.json means no pin" "" "$(role_pin_cfg composer)"
 
 echo "— worker salvage: never lose writer output (#394)"
 # Offline git sandbox: a bare 'origin' + a working clone, no network. Source
@@ -530,6 +718,51 @@ GH_PR="" salvage_branch 503
 check "salvage: fires on dirty tree with no PR" "1" "${SALVAGED}"
 check "salvage: branch landed on origin" "task/503" "$(bare task/503)"
 check "salvage: event line logged" "1" "$(grep -c 'salvaged branch task/503' "$MF_EVENTLOG")"
+
+echo "— reviewer slot selection: first review vs later reviews"
+# worker.sh is already sourced (MF_SOURCE_ONLY). Stub the transport + GitHub
+# reads; the slot decision itself must come from the real evidence-based path
+# (mf_has_canonical_review over the durable PR comment thread — no state file).
+log(){ :; }; notify(){ :; }
+MF_PROTOCOL_ATTEMPTS=1; MF_PROTOCOL_RETRY_SLEEP=0
+MF_COMMENT_DISCOVERY_ATTEMPTS=1; MF_COMMENT_DISCOVERY_SLEEP=0
+MF_PROMPTS=$T/slot-prompts; PROMPTS=$T/slot-prompts; mkdir -p "$MF_PROMPTS"
+printf 'review {{PR}}\n' >"$MF_PROMPTS/reviewer.md"
+printf 'fix {{PR}}\n' >"$MF_PROMPTS/fixer.md"
+SLOT_SEL_LOG=$T/slot-selection.log
+with_pack(){ printf '%s' "$1"; }
+pr_snapshot(){ PR_SNAPSHOT_COMMENTS=$REVIEW_COMMENTS; PR_SNAPSHOT_HEAD=headA; return 0; }
+mf_cc(){ printf '%s:%s:%s\n' "${CC_SLOT:-none}" "$1" "$2" >>"$SLOT_SEL_LOG"; return 0; }
+mf_pr_head(){ echo headA; }
+
+REVIEW_COMMENTS='[]'
+: >"$SLOT_SEL_LOG"
+run_reviewer 7 77 intermediate
+check "first review on a fresh PR runs the reviewer1 slot" \
+  "reviewer1:reviewer:intermediate" "$(<"$SLOT_SEL_LOG")"
+
+REVIEW_COMMENTS='[{"id":1,"body":"earlier review\nFACTORY-REVIEW-HEAD: 0ldhead\nFACTORY-VERDICT: REQUEST_CHANGES"}]'
+: >"$SLOT_SEL_LOG"
+run_reviewer 7 77 intermediate
+check "later review (prior verdict on an older head) runs completion" \
+  "completion:reviewer:intermediate" "$(<"$SLOT_SEL_LOG")"
+
+: >"$SLOT_SEL_LOG"
+run_reviewer 7 77 intermediate
+check "resume re-derives the same slot from the same durable comments" \
+  "completion:reviewer:intermediate" "$(<"$SLOT_SEL_LOG")"
+
+REVIEW_COMMENTS='[{"id":2,"body":"prose quoting FACTORY-VERDICT: APPROVE mid-line\nno canonical marker"}]'
+: >"$SLOT_SEL_LOG"
+run_reviewer 7 77 intermediate
+check "quoted marker prose does not demote the first review" \
+  "reviewer1:reviewer:intermediate" "$(<"$SLOT_SEL_LOG")"
+
+REVIEW_COMMENTS='[]'
+: >"$SLOT_SEL_LOG"
+run_fixer 7 77 intermediate
+check "fixer always runs the completion slot" \
+  "completion:fixer:intermediate" "$(<"$SLOT_SEL_LOG")"
 
 echo "— single-parse GitHub reads (gojq corrupt-byte class, PR #891 merger jam)"
 # gh --jq (gojq) re-serialization can emit raw control/invalid bytes that C jq

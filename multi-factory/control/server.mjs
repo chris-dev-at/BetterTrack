@@ -17,8 +17,11 @@ import { dirname, join, resolve } from 'node:path';
 import { buildUsageAnalytics, ledgerEquivalentUsd, parseUsageRange } from './usage-analytics.mjs';
 import {
   DIFFICULTIES,
+  PINNABLE_ROLES,
+  SLOTS,
   composerRouteAllowed,
   defaultRouteForProvider,
+  entryRoutes,
   normalizeModelRouting,
   normalizeRouteEntry,
   publicProviderRegistry,
@@ -913,31 +916,93 @@ async function doAction(action, payload = {}) {
       return { ok: true, message: 'trigger removed' };
     }
     case 'set-models': {
+      // Accepts the legacy flat shape and the v2 slotted shape. A difficulty
+      // that carries slots must carry all three; its flat keys are rewritten to
+      // mirror `completion` so stale readers (and mflib's flat fallback) stay
+      // faithful. validateRouteEntry enforces the Opus-5 ≤ xhigh cap per slot.
       const m = payload.models || {};
       const out = { version: 1, difficulties: {}, roles: {} };
+      let hasSlots = false;
       for (const d of DIFFS) {
         const e = m.difficulties?.[d];
-        if (!validateRouteEntry(e))
+        const slots = {};
+        for (const slot of SLOTS) {
+          if (e?.[slot] == null) continue;
+          const normalizedSlot = normalizeRouteEntry(e[slot]);
+          if (!normalizedSlot)
+            return { ok: false, message: `invalid provider/model/effort for '${d}.${slot}'` };
+          slots[slot] = normalizedSlot;
+        }
+        const slotCount = Object.keys(slots).length;
+        if (slotCount && slotCount < SLOTS.length)
+          return {
+            ok: false,
+            message: `'${d}' must define all of ${SLOTS.join('/')} — or none for the legacy flat shape`,
+          };
+        const flatSource = slotCount ? slots.completion : e;
+        if (!validateRouteEntry(flatSource))
           return { ok: false, message: `invalid provider/model/effort for '${d}'` };
-        out.difficulties[d] = normalizeRouteEntry(e);
+        out.difficulties[d] = { ...normalizeRouteEntry(flatSource), ...slots };
+        if (slotCount) hasSlots = true;
       }
+      // roles.<role>: a difficulty string keeps its legacy meaning (resolve
+      // through that tier); a {provider, model, effort} object pins the role
+      // to that exact route (mflib.sh role_pin_cfg). reviewFloor is always a
+      // difficulty name. Present-but-invalid entries are rejected — never
+      // silently defaulted — so a save can never quietly drop or rewrite a pin.
       const roles = m.roles || {};
-      out.roles = {
-        composer: DIFFS.includes(roles.composer) ? roles.composer : 'hard',
-        checker: DIFFS.includes(roles.checker) ? roles.checker : 'hard',
-        reviewFloor: DIFFS.includes(roles.reviewFloor) ? roles.reviewFloor : 'intermediate',
-      };
-      if (!composerRouteAllowed(out.difficulties[out.roles.composer]))
+      const isRecord = (v) => v && typeof v === 'object' && !Array.isArray(v);
+      out.roles = { composer: 'hard', checker: 'hard', reviewFloor: 'intermediate' };
+      const knownRoles = new Set([...PINNABLE_ROLES, 'reviewFloor']);
+      for (const [role, value] of Object.entries(isRecord(roles) ? roles : {})) {
+        if (value == null) continue;
+        if (!knownRoles.has(role))
+          return { ok: false, message: `unknown role '${role}' — expected one of ${[...knownRoles].join('/')}` };
+        if (typeof value === 'string' && DIFFS.includes(value)) {
+          out.roles[role] = value;
+          continue;
+        }
+        if (role !== 'reviewFloor' && isRecord(value)) {
+          const pin = normalizeRouteEntry(value);
+          if (!pin)
+            return { ok: false, message: `invalid pinned provider/model/effort for role '${role}'` };
+          out.roles[role] = pin; // Opus-5 ≤ xhigh already enforced by normalizeRouteEntry
+          out.version = 2; // pins are v2 schema
+          continue;
+        }
         return {
           ok: false,
-          message: 'composer route must use Claude Fable, Claude Opus, or GPT-5.6 Sol',
+          message: `role '${role}' must be a difficulty (${DIFFS.join('/')})${role === 'reviewFloor' ? '' : ' or a {provider, model, effort} pin'}`,
+        };
+      }
+      if (hasSlots) out.version = 2;
+      // The composer master-role dispatches through its pin when one is set,
+      // otherwise through the writer slot of its difficulty (mf_role_slot:
+      // composer→writer) — gate whichever route will actually run.
+      const composerRoleValue = out.roles.composer;
+      const composerEntry = isRecord(composerRoleValue)
+        ? composerRoleValue
+        : out.difficulties[composerRoleValue].writer || out.difficulties[composerRoleValue];
+      if (!composerRouteAllowed(composerEntry))
+        return {
+          ok: false,
+          message: 'composer route (pin or writer slot) must use Claude Fable, Claude Opus, or GPT-5.6 Sol',
         };
       await mkdir(CONTROL, { recursive: true });
       const tmp = `${MODELS_FILE}.tmp${Date.now()}`;
       await writeFile(tmp, JSON.stringify(out, null, 2));
       await rename(tmp, MODELS_FILE);
+      const routeText = (r) => `${r.provider}/${r.model}${r.effort ? '@' + r.effort : ''}`;
       await clog(
-        `models → ${DIFFS.map((d) => `${d}:${out.difficulties[d].provider}/${out.difficulties[d].model}${out.difficulties[d].effort ? '@' + out.difficulties[d].effort : ''}`).join(' ')}`,
+        `models → ${DIFFS.map((d) => {
+          const entry = out.difficulties[d];
+          return entry.writer
+            ? `${d}:[w:${routeText(entry.writer)} r1:${routeText(entry.reviewer1)} c:${routeText(entry.completion)}]`
+            : `${d}:${routeText(entry)}`;
+        }).join(' ')}${Object.entries(out.roles)
+          .filter(([, v]) => isRecord(v))
+          .map(([r, v]) => ` ${r}=pin:${routeText(v)}`)
+          .join('')}`,
       );
       return { ok: true, message: 'model routing saved — applies from the next agent run' };
     }
@@ -945,7 +1010,10 @@ async function doAction(action, payload = {}) {
       const p = String(payload.provider || '');
       const routes = await readModels();
       const configured =
-        DIFFS.map((d) => routes.difficulties[d]).find((e) => e.provider === p) ||
+        DIFFS.flatMap((d) => entryRoutes(routes.difficulties[d])).find((e) => e.provider === p) ||
+        Object.values(routes.roles || {}).find(
+          (v) => v && typeof v === 'object' && v.provider === p,
+        ) ||
         defaultRouteForProvider(p);
       const requested = {
         provider: p,
@@ -1202,6 +1270,72 @@ setInterval(async () => {
     autoDownBusy = false;
   }
 }, 5000);
+
+// ---- factory-down watchdog -------------------------------------------------------
+// 2026-07-28 incident: the compose project was destroyed mid-run while
+// control/phase still said "running" — the pipeline sat dead for 1.5h with no
+// signal to the owner. When the owner-intended state (mode=run, phase
+// running/draining) disagrees with the actual runtime (zero running/paused
+// multi-factory containers) continuously for MF_DOWN_WATCHDOG_GRACE_MS, ping
+// the factory webhook ONCE per episode; recovery (containers back, phase or
+// mode moved) re-arms it. The webhook URL comes from factory/.env — the
+// containers' own notify() channel — parsed read-only; absence disables the
+// ping silently (the mismatch still lands in control.log and the dashboard).
+const WATCHDOG_GRACE_MS = Number(process.env.MF_DOWN_WATCHDOG_GRACE_MS || 300000);
+let downSince = 0;
+let downNotified = false;
+async function factoryWebhookUrl() {
+  const env = await readText(join(REPO_ROOT, 'factory', '.env'));
+  if (!env) return '';
+  for (const line of env.split('\n')) {
+    const m = /^\s*(?:export\s+)?FACTORY_WEBHOOK_URL\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))\s*$/.exec(
+      line,
+    );
+    if (m) return m[1] ?? m[2] ?? m[3] ?? '';
+  }
+  return '';
+}
+setInterval(async () => {
+  try {
+    const mode = (await readText(join(CONTROL, 'mode'))) || 'run';
+    const phase = await readText(join(CONTROL, 'phase'));
+    const shouldRun = mode === 'run' && (phase === 'running' || phase === 'draining');
+    if (!shouldRun) {
+      downSince = 0;
+      downNotified = false;
+      return;
+    }
+    const { containers } = await composePs(MF_PROJECT);
+    const anyRunning = containers.some((c) => /running|paused/i.test(c.state));
+    if (anyRunning) {
+      downSince = 0;
+      downNotified = false;
+      return;
+    }
+    if (!downSince) {
+      downSince = Date.now();
+      return;
+    }
+    if (downNotified || Date.now() - downSince < WATCHDOG_GRACE_MS) return;
+    downNotified = true;
+    const minutes = Math.round((Date.now() - downSince) / 60000);
+    const url = await factoryWebhookUrl();
+    await clog(
+      `down-watchdog: mode=${mode} phase=${phase} but no multi-factory containers for ${minutes}m${url ? ' — pinging owner webhook' : ' (no webhook configured)'}`,
+    );
+    if (url)
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          content: `🏭 BetterTrack factory: ⚠️ control says ${phase.toUpperCase()} (mode=${mode}) but no multi-factory containers exist for ${minutes}m — the factory looks killed mid-run. Check the dashboard on :8790.`,
+        }),
+        signal: AbortSignal.timeout(10000),
+      }).catch(() => {});
+  } catch {
+    /* watchdog must survive transient docker/fs errors */
+  }
+}, 15000);
 
 // ---- http ------------------------------------------------------------------------------
 const sseClients = new Set();

@@ -253,6 +253,82 @@ test('legacy control APIs cannot offer a new ClaudeX route but preserve an exist
   );
 });
 
+test('models editor understands v2 role slots and caps Opus 5 below max', () => {
+  const helpers = new Function(`
+    let mLast = '';
+    ${between(script, 'const OPENAI_MODELS =', 'let mDirty =')}
+    return { SLOT_LIST, mSlotEntry, mRoutesOf, mEfforts };
+  `)();
+
+  assert.deepEqual(helpers.SLOT_LIST, ['writer', 'reviewer1', 'completion']);
+
+  const slotted = {
+    provider: 'claude',
+    model: 'claude-opus-5',
+    effort: 'xhigh',
+    writer: { provider: 'codex', model: 'gpt-5.6-sol', effort: 'ultra' },
+    reviewer1: { provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' },
+    completion: { provider: 'claude', model: 'claude-opus-5', effort: 'xhigh' },
+  };
+  assert.deepEqual(helpers.mSlotEntry(slotted, 'writer'), slotted.writer);
+  // a flat v1 entry seeds every slot from its legacy route
+  const flat = { provider: 'codex', model: 'gpt-5.6-terra', effort: 'max' };
+  assert.deepEqual(helpers.mSlotEntry(flat, 'reviewer1'), flat);
+  assert.equal(helpers.mRoutesOf(slotted).length, 4);
+  assert.equal(helpers.mRoutesOf(flat).length, 1);
+  assert.ok(helpers.mRoutesOf(slotted).some((r) => r.provider === 'codex'));
+
+  // Opus 5 hard cap: no effort above xhigh is offered, including dated ids
+  assert.deepEqual(helpers.mEfforts('claude', 'claude-opus-5'), ['low', 'medium', 'high', 'xhigh']);
+  assert.equal(helpers.mEfforts('claude', 'claude-opus-5-20260514').includes('max'), false);
+  assert.ok(helpers.mEfforts('claude', 'claude-fable-5').includes('max'));
+
+  // rendered routing table carries the Slot column and per-slot inputs
+  assert.match(html, />Slot<\/span>/);
+  assert.match(script, /data-s="\$\{slot\}"/);
+  assert.match(script, /SLOT_LIST\.map\(\(slot, index\)/);
+});
+
+test('models editor understands role pins and never corrupts unknown role entries', () => {
+  const helpers = new Function(`
+    let mLast = '';
+    ${between(script, 'const OPENAI_MODELS =', 'let mDirty =')}
+    return { mRolePin, mRolePins, mAllRoutes };
+  `)();
+
+  const pin = { provider: 'claude', model: 'claude-fable-5', effort: 'xhigh' };
+  // a difficulty string is not a pin; an object route is
+  assert.equal(helpers.mRolePin('hard'), null);
+  assert.equal(helpers.mRolePin(null), null);
+  assert.deepEqual(helpers.mRolePin(pin), pin);
+  const models = {
+    difficulties: { easy: { provider: 'codex', model: 'gpt-5.6-terra', effort: 'max' } },
+    roles: {
+      composer: pin,
+      checker: 'hard',
+      reviewer: { provider: 'gemini', model: 'Gemini 3.1 Pro (High)' },
+      reviewFloor: 'easy',
+    },
+  };
+  // pins are surfaced (reviewFloor never is), so provider scans see pinned-only providers
+  assert.deepEqual(helpers.mRolePins(models), [pin, models.roles.reviewer]);
+  const providers = helpers.mAllRoutes(models).map((route) => route.provider);
+  assert.ok(providers.includes('codex'));
+  assert.ok(providers.includes('claude'));
+  assert.ok(providers.includes('gemini'));
+
+  // editor wiring: pin mode option, per-role pinned inputs, base-role passthrough on collect
+  assert.match(script, /const PIN_VALUE = '__pin__'/);
+  assert.match(script, /data-role="\$\{role\}"/);
+  assert.match(script, /const roles = \{ \.\.\.mRolesBase \}/);
+  assert.match(script, /mode === PIN_VALUE \? mRolePinCollect\(role\)/);
+  // the flow diagram resolves a pinned composer to its pin, not a difficulty row
+  assert.match(script, /composerPin \|\| \(composerEntry \? mSlotEntry\(composerEntry, 'writer'\) : null\)/);
+  // static markup carries the pin hosts the renderer fills in
+  assert.match(html, /id="m-composer-pin"/);
+  assert.match(html, /id="m-checker-pin"/);
+});
+
 test('OpenAI issue rows identify Sol, Terra and Luna for model or models payloads', () => {
   const { openAIModelLabel, openAIProviderLabel, openAIHarnessLabel } = new Function(`
     ${between(script, 'const openAIModelLabel =', 'function codexIssueRows')}

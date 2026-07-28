@@ -285,6 +285,26 @@ mf_new_canonical_comment "$large_before" "$large_after" review abc \
   || bad "large PR history exceeded the reviewer selector argument limit"
 unset arg_max large_payload large_before review_obj large_after
 
+echo "— prior canonical review detection (reviewer1 vs completion routing)"
+mf_has_canonical_review '[]' \
+  && bad "empty thread must have no prior review" || ok "empty thread → no prior review"
+mf_has_canonical_review "$after_ok" \
+  && ok "canonical verdict counts as a prior review" \
+  || bad "canonical verdict should count as a prior review"
+OLDHEAD_REVIEW='[{"id":9,"body":"r\nFACTORY-REVIEW-HEAD: 0123abc\nFACTORY-VERDICT: REQUEST_CHANGES"}]'
+mf_has_canonical_review "$OLDHEAD_REVIEW" \
+  && ok "verdict for an older head still counts as a prior review" \
+  || bad "older-head verdict should count as a prior review"
+QUOTED_MARKER='[{"id":3,"body":"writer log: a FACTORY-VERDICT: APPROVE will be needed later"}]'
+mf_has_canonical_review "$QUOTED_MARKER" \
+  && bad "quoted marker prose must not count as a prior review" \
+  || ok "quoted marker prose is not a prior review"
+NONFINAL_REVIEW=$(jq -cn --arg body "$REVIEW_NONFINAL" '[{id:4,body:$body}]')
+mf_has_canonical_review "$NONFINAL_REVIEW" \
+  && bad "non-final marker must not count as a prior review" \
+  || ok "non-final marker is not a prior review"
+unset OLDHEAD_REVIEW QUOTED_MARKER NONFINAL_REVIEW
+
 TRIAGE_MULTI='FACTORY-TRIAGE-HEAD: abc
 FACTORY-TRIAGE: RETRY_ESCALATED
 FACTORY-TRIAGE: NEEDS_HUMAN'
