@@ -15,6 +15,7 @@ import {
   VAULT_MAGIC,
   VAULT_VERSION_MAX,
   vaultDocumentV1Schema,
+  vaultClientSecuritySchema,
   vaultEnvelopeHeaderSchema,
   vaultEtag,
   VaultEnvelopeError,
@@ -28,6 +29,7 @@ import {
   retiredServerPurgeRequestSchema,
   vaultMediaSetSchema,
   vaultRetirementProofPublicKeySchema,
+  vaultRetirementProofPrivateKeySchema,
   vaultServerHeaderSchema,
   vaultVersionSchema,
 } from './vault';
@@ -168,15 +170,24 @@ describe('durable media transition contracts', () => {
   });
 
   it('accepts only canonical Ed25519 SPKI retirement verifiers', () => {
-    const ed25519 = generateKeyPairSync('ed25519')
-      .publicKey.export({ type: 'spki', format: 'der' })
+    const pair = generateKeyPairSync('ed25519');
+    const ed25519 = pair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64url');
+    const privateKey = pair.privateKey
+      .export({ type: 'pkcs8', format: 'der' })
       .toString('base64url');
     const x25519 = generateKeyPairSync('x25519')
       .publicKey.export({ type: 'spki', format: 'der' })
       .toString('base64url');
 
     expect(vaultRetirementProofPublicKeySchema.safeParse(ed25519).success).toBe(true);
+    expect(vaultRetirementProofPrivateKeySchema.safeParse(privateKey).success).toBe(true);
+    expect(
+      vaultClientSecuritySchema.safeParse({
+        retirementProof: { publicKey: ed25519, privateKey },
+      }).success,
+    ).toBe(true);
     expect(vaultRetirementProofPublicKeySchema.safeParse(x25519).success).toBe(false);
+    expect(vaultRetirementProofPrivateKeySchema.safeParse('a'.repeat(64)).success).toBe(false);
     expect(vaultRetirementProofPublicKeySchema.safeParse('a'.repeat(59)).success).toBe(false);
   });
 });

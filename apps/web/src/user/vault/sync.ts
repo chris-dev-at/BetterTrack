@@ -1,5 +1,5 @@
 import type {
-  VaultDocumentV1,
+  VaultDocument,
   VaultEntity,
   VaultEntityKind,
   VaultEnvelopeHeader,
@@ -19,7 +19,7 @@ export interface VaultSyncCandidate {
   home: DataHome;
   envelope: Uint8Array;
   header: VaultEnvelopeHeader;
-  document: VaultDocumentV1;
+  document: VaultDocument;
 }
 
 export type VaultSyncStatus =
@@ -61,7 +61,7 @@ export interface VaultSyncEngineOptions {
 }
 
 export interface VaultMutationContext {
-  document: VaultDocumentV1;
+  document: VaultDocument;
   currentVersion: number;
 }
 
@@ -86,9 +86,9 @@ export interface VaultAtomicMutation {
 
 export interface VaultDocumentReconcileContext {
   /** The locally pending/in-memory branch whose changes are being considered. */
-  local: VaultDocumentV1;
+  local: VaultDocument;
   /** The already-observed durable branch that forms the reconciliation baseline. */
-  remote: VaultDocumentV1;
+  remote: VaultDocument;
   /** Complete local mutation deltas, ordered before entity-winner filtering. */
   mutations: readonly VaultAtomicMutation[];
   deviceId: string;
@@ -96,13 +96,13 @@ export interface VaultDocumentReconcileContext {
 }
 
 export interface VaultDocumentReconcileResult {
-  document: VaultDocumentV1;
+  document: VaultDocument;
   /** Rebased groups that still separate every pending operation and compensation. */
   mutations: readonly VaultAtomicMutation[];
 }
 
 export type VaultDocumentReconciler = (
-  document: VaultDocumentV1,
+  document: VaultDocument,
   context: VaultDocumentReconcileContext,
 ) => VaultDocumentReconcileResult;
 
@@ -111,7 +111,7 @@ export interface VaultSyncEngine {
   readonly state: VaultSyncState;
   start(): Promise<VaultSyncState>;
   reconnect(): Promise<VaultSyncState>;
-  mutate(mutator: (context: VaultMutationContext) => VaultDocumentV1): Promise<VaultSyncState>;
+  mutate(mutator: (context: VaultMutationContext) => VaultDocument): Promise<VaultSyncState>;
 }
 
 interface RemoteObservation {
@@ -130,7 +130,7 @@ interface ReadableCandidateResult {
 }
 
 interface ReconciledDocument {
-  document: VaultDocumentV1;
+  document: VaultDocument;
   pendingMutations: VaultAtomicMutation[];
 }
 
@@ -304,7 +304,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   }
 
   async function mutate(
-    mutator: (context: VaultMutationContext) => VaultDocumentV1,
+    mutator: (context: VaultMutationContext) => VaultDocument,
   ): Promise<VaultSyncState> {
     const active = state.active;
     if (active == null || state.status === 'locked') {
@@ -835,9 +835,9 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   }
 
   function reconcileMergedDocument(
-    document: VaultDocumentV1,
-    local: VaultDocumentV1,
-    remote: VaultDocumentV1,
+    document: VaultDocument,
+    local: VaultDocument,
+    remote: VaultDocument,
     reconciledAt: string,
   ): ReconcileMergedDocumentResult {
     try {
@@ -986,7 +986,7 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   }
 
   async function encryptCandidate(
-    document: VaultDocumentV1,
+    document: VaultDocument,
     vaultVersion: number,
     baseHeader: VaultEnvelopeHeader,
   ): Promise<VaultSyncCandidate> {
@@ -1012,8 +1012,8 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
 }
 
 function captureMutation(
-  before: VaultDocumentV1,
-  after: VaultDocumentV1,
+  before: VaultDocument,
+  after: VaultDocument,
   sequence: number,
 ): VaultAtomicMutation {
   const changes: VaultMutationEntityDelta[] = [];
