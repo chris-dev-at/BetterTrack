@@ -1508,8 +1508,11 @@
 }
 
 @media (max-width: 760px) {
+  /* All rail states collapse to one column — the [data-rail] variants must be
+     listed so this outranks the equal-specificity tablet rules above. */
   .bt-shell,
-  .bt-shell[data-rail='collapsed'] {
+  .bt-shell[data-rail='collapsed'],
+  .bt-shell[data-rail='expanded'] {
     grid-template-columns: minmax(0, 1fr);
   }
 

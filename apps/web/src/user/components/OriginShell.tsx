@@ -255,11 +255,12 @@ function CreateMenu() {
       <Button
         aria-expanded={open}
         aria-haspopup="menu"
+        aria-label={t('create.button')}
         icon="plus"
         onClick={() => setOpen((value) => !value)}
         variant="primary"
       >
-        {t('create.button')}
+        <span className="bt-hide-below-sm">{t('create.button')}</span>
       </Button>
       {open ? (
         <div
