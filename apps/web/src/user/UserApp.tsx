@@ -18,6 +18,7 @@ import { LoginPage } from './auth/LoginPage';
 import { RegisterPage } from './auth/RegisterPage';
 import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
+import { VaultRuntimeProvider } from './vault/VaultRuntimeProvider';
 import { ForecastPage } from './forecast/ForecastPage';
 import { ExpensesLayout } from './expenses/ExpensesSection';
 import { DashboardPage as ExpenseDashboardPage } from './expenses/DashboardPage';
@@ -267,6 +268,18 @@ function RealtimeRoot({ children }: { children: ReactNode }) {
   return <RealtimeProvider enabled={status === 'authenticated'}>{children}</RealtimeProvider>;
 }
 
+function VaultRuntimeRoot({ children }: { children: ReactNode }) {
+  const { status, user } = useAuth();
+  return (
+    <VaultRuntimeProvider
+      authenticated={status === 'authenticated'}
+      userId={status === 'authenticated' ? user?.id : null}
+    >
+      {children}
+    </VaultRuntimeProvider>
+  );
+}
+
 /** Renders the global 429 toast while it's active (§7.4). Fixed-position overlay — no layout impact. */
 function RateLimitToastPortal() {
   const { rateLimitBanner, clearRateLimitBanner } = useAuth();
@@ -307,12 +320,14 @@ export function UserApp() {
     <I18nProvider>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <LocaleSync />
-          <RateLimitToastPortal />
-          <RealtimeRoot>
-            <AnnouncementBannerRoot />
-            <UserShell />
-          </RealtimeRoot>
+          <VaultRuntimeRoot>
+            <LocaleSync />
+            <RateLimitToastPortal />
+            <RealtimeRoot>
+              <AnnouncementBannerRoot />
+              <UserShell />
+            </RealtimeRoot>
+          </VaultRuntimeRoot>
         </AuthProvider>
       </QueryClientProvider>
     </I18nProvider>

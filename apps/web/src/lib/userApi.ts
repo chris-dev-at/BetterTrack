@@ -1,9 +1,13 @@
 import {
+  apiErrorSchema,
   googleLinkStatusResponseSchema,
   googleRegisterTicketResponseSchema,
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
+  paranoidMediaStateResponseSchema,
+  paranoidMediaTransitionResponseSchema,
+  paranoidServerCandidateMetadataSchema,
   passkeyListResponseSchema,
   passkeyLoginOptionsResponseSchema,
   passkeyRegisterOptionsResponseSchema,
@@ -12,11 +16,19 @@ import {
   publicRegistrationInfoResponseSchema,
   registerResponseSchema,
   rememberedDeviceResponseSchema,
+  retiredServerPurgeChallengeResponseSchema,
+  retiredServerPurgeResponseSchema,
   revokeSessionsResponseSchema,
   sessionInfoResponseSchema,
   sessionListResponseSchema,
   exportRequestResponseSchema,
   exportStatusResponseSchema,
+  parseVaultEtag,
+  VAULT_CONTENT_TYPE,
+  VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER,
+  VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER,
+  VAULT_SERVER_CANDIDATE_ID_HEADER,
+  VAULT_SERVER_CANDIDATE_READBACK_HEADER,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type DeleteAccountRequest,
@@ -38,6 +50,10 @@ import {
   type PasskeyRegisterVerifyRequest,
   type PasswordResetComplete,
   type PasswordResetRequest,
+  type ParanoidMediaStateResponse,
+  type ParanoidMediaTransitionRequest,
+  type ParanoidMediaTransitionResponse,
+  type ParanoidServerCandidateMetadata,
   type PublicRegistrationInfoResponse,
   type RegisterRequest,
   type RegisterResponse,
@@ -46,6 +62,8 @@ import {
   type PinVerifyRequest,
   type RememberedDeviceResponse,
   type RevokeSessionsResponse,
+  type RetiredServerPurgeChallengeResponse,
+  type RetiredServerPurgeRequest,
   type SessionInfoResponse,
   type SessionSummary,
   type SetPinLockRequest,
@@ -54,7 +72,7 @@ import {
   type TwoFactorVerifyRequest,
 } from '@bettertrack/contracts';
 
-import { apiRequest } from './apiClient';
+import { ApiError, apiRequest } from './apiClient';
 import { apiBaseUrl } from './runtimeConfig';
 
 /**
@@ -112,6 +130,142 @@ export async function logout(): Promise<void> {
 export async function getMe(signal?: AbortSignal): Promise<MeResponse> {
   const data = await apiRequest<unknown>('/auth/me', { signal, suppressAuthRedirect: true });
   return meResponseSchema.parse(data);
+}
+
+/** Portfolio-free paranoid media state; no Drive capability crosses this API. */
+export async function getParanoidMediaState(
+  signal?: AbortSignal,
+): Promise<ParanoidMediaStateResponse> {
+  const data = await apiRequest<unknown>('/vault/media', { signal });
+  return paranoidMediaStateResponseSchema.parse(data);
+}
+
+/** Persist one verified migrate-then-drop media edge. */
+export async function transitionParanoidMedia(
+  body: ParanoidMediaTransitionRequest,
+): Promise<ParanoidMediaTransitionResponse> {
+  const data = await apiRequest<unknown>('/vault/media', {
+    method: 'PATCH',
+    body,
+  });
+  return paranoidMediaTransitionResponseSchema.parse(data);
+}
+
+/** Stage opaque Drive bytes outside the active server vault. */
+export async function stageParanoidServerCandidate(
+  envelope: Uint8Array,
+  retirementProofPublicKey: string,
+): Promise<ParanoidServerCandidateMetadata> {
+  const response = await rawVaultRequest('/vault/media/server-candidate', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': VAULT_CONTENT_TYPE,
+      'X-Requested-With': 'BetterTrack',
+      [VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER]: retirementProofPublicKey,
+    },
+    body: envelope.slice(),
+  });
+  const payload: unknown = await response.json().catch(() => undefined);
+  if (!response.ok) throwRawApiError(response.status, payload);
+  return paranoidServerCandidateMetadataSchema.parse(payload);
+}
+
+export interface ParanoidServerCandidateReadback {
+  envelope: Uint8Array;
+  verification: {
+    kind: 'server-candidate';
+    candidateId: string;
+    readback: string;
+  };
+}
+
+/** Read the exact inactive candidate back and capture its session-bound receipt. */
+export async function readParanoidServerCandidate(
+  candidate: ParanoidServerCandidateMetadata,
+): Promise<ParanoidServerCandidateReadback> {
+  const response = await rawVaultRequest(
+    `/vault/media/server-candidate/${encodeURIComponent(candidate.candidateId)}`,
+  );
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => undefined);
+    throwRawApiError(response.status, payload);
+  }
+
+  const responseId = response.headers.get(VAULT_SERVER_CANDIDATE_ID_HEADER);
+  const responseVersion = parseVaultEtag(response.headers.get('ETag'));
+  const responseExpiry = response.headers.get(VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER);
+  const readback = response.headers.get(VAULT_SERVER_CANDIDATE_READBACK_HEADER);
+  if (
+    responseId !== candidate.candidateId ||
+    responseVersion !== candidate.version ||
+    responseExpiry !== candidate.expiresAt ||
+    readback == null
+  ) {
+    throw new ApiError(
+      response.status,
+      'INVALID_SERVER_CANDIDATE',
+      'The server candidate read did not match its staging receipt.',
+    );
+  }
+  const envelope = new Uint8Array(await response.arrayBuffer());
+  if (envelope.byteLength !== candidate.sizeBytes) {
+    throw new ApiError(
+      response.status,
+      'INVALID_SERVER_CANDIDATE',
+      'The server candidate size did not match its staging receipt.',
+    );
+  }
+  return {
+    envelope,
+    verification: {
+      kind: 'server-candidate',
+      candidateId: candidate.candidateId,
+      readback,
+    },
+  };
+}
+
+/** Obtain the short-lived server nonce for an explicit retired-copy purge. */
+export async function requestRetiredServerPurgeChallenge(
+  retiredVersion: number,
+): Promise<RetiredServerPurgeChallengeResponse> {
+  const data = await apiRequest<unknown>('/vault/media/retired/purge/challenge', {
+    method: 'POST',
+    body: { retiredVersion },
+  });
+  return retiredServerPurgeChallengeResponseSchema.parse(data);
+}
+
+/** Submit the client-held Ed25519 proof; no Drive capability crosses this API. */
+export async function purgeRetiredParanoidServer(body: RetiredServerPurgeRequest): Promise<void> {
+  const data = await apiRequest<unknown>('/vault/media/retired/purge', {
+    method: 'POST',
+    body,
+  });
+  retiredServerPurgeResponseSchema.parse(data);
+}
+
+async function rawVaultRequest(path: string, init: RequestInit = {}): Promise<Response> {
+  try {
+    return await fetch(`${apiBaseUrl()}${path}`, {
+      ...init,
+      credentials: 'include',
+    });
+  } catch {
+    throw new ApiError(0, 'NETWORK_ERROR', 'Unable to reach the server. Check your connection.');
+  }
+}
+
+function throwRawApiError(status: number, payload: unknown): never {
+  const parsed = apiErrorSchema.safeParse(payload);
+  throw parsed.success
+    ? new ApiError(
+        status,
+        parsed.data.error.code,
+        parsed.data.error.message,
+        parsed.data.error.details,
+      )
+    : new ApiError(status, 'UNKNOWN', 'Request failed.');
 }
 
 /**

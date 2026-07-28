@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { VAULT_DOCUMENT_VERSION, vaultStrictDocumentV1Schema } from '@bettertrack/contracts';
+import { VAULT_DOCUMENT_V1_VERSION, vaultStrictDocumentV1Schema } from '@bettertrack/contracts';
 
 import { expenseTransactions, paranoidVaults, users } from '../../../data/schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
@@ -71,7 +71,7 @@ describe('strict vault expense dedup regression', () => {
     const restoredDocument = vaultStrictDocumentV1Schema.parse(
       JSON.parse(
         JSON.stringify({
-          schemaVersion: VAULT_DOCUMENT_VERSION,
+          schemaVersion: VAULT_DOCUMENT_V1_VERSION,
           entities: [
             {
               id: '018f0000-0000-7000-8000-000000000100',
