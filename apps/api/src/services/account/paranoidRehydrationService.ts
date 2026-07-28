@@ -349,8 +349,10 @@ const EXECUTED_AT_DIGIT_POSITIONS = [
  * seeded with its prior repository-readback holding. Each row is visited by a
  * fixed number of streaming passes. Ordering is bounded to 81 fixed-width radix
  * keys per row (32 document UUID keys; 32 UUID tie-breaker plus 17 canonical
- * UTC timestamp keys for chronological replay), and witness epochs may contain
- * no more than the public 500-row CREATE limit. The insolvent direct proof also
+ * UTC timestamp keys for chronological replay), and a witness epoch is admitted
+ * only when it satisfies every batch-wide invariant of the CREATE call it claims
+ * ({@link normalWriteBatchKey}, within the public 500-row limit) rather than
+ * merely escaping a list of known-bad shapes. The insolvent direct proof also
  * fails closed unless every creation key is UUIDv7. A document outside that
  * direct proof is rejected before restore writes rather than guessed at or
  * explored with a span search.
@@ -704,25 +706,57 @@ function collectNormalCreateWitnesses(
 }
 
 /**
- * Verify the direct witnesses globally. Overlapping witnesses must be one
- * CREATE operation, so their union still has to fit the public 500-row,
- * single-portfolio request. Disjoint witnesses can be independent calls.
+ * A witness claims that its span was written by one `createTransactions` call,
+ * so it is admitted only when every value that call fixes for the whole batch is
+ * positively proven for every row in the span — anything else fails closed
+ * rather than being admitted because no rule happens to forbid it.
+ *
+ * Enumerated against the service signature `(userId, portfolioId, inputs, opts:
+ * { source, force })`:
+ *
+ * - `userId` — a strict document belongs to exactly one account, so every row in
+ *   it already shares the owner.
+ * - `portfolioId` — one call writes into one portfolio.
+ * - `source` — one call stamps `opts?.source ?? 'manual'` onto every row it
+ *   writes. The HTTP body carries no source and the strict/normal PATCH surface
+ *   has no `source` key, so a row's tag is immutable after creation: rows that
+ *   disagree on it cannot have shared a call.
+ * - `inputs` — bounded by {@link NORMAL_WRITE_BATCH_MAX_TRANSACTIONS}, checked
+ *   as the span length.
+ * - `force` — only the `sync:mirrorchain` replication path passes it, and that
+ *   tag can no longer share a span with `manual` / `import:*` rows, so the
+ *   replica overdraw semantics stay out of this proof by construction.
+ *
+ * This key is deliberately the whole batch-wide tuple: a new per-call invariant
+ * belongs here rather than in a separate rejection rule.
+ */
+function normalWriteBatchKey(transaction: EntityOf<'transaction'>): string {
+  return `${transaction.data.portfolioId}\u0000${transaction.data.source}`;
+}
+
+/**
+ * Verify the direct witnesses globally. Overlapping witnesses must be one CREATE
+ * operation, so their union still has to fit the public 500-row request and a
+ * single batch key. Disjoint witnesses can be independent calls.
  */
 function validateNormalCreateWitnesses(
   witnesses: readonly NormalCreateWitness[],
   writeHistory: readonly QuantityReplayRow[],
 ): void {
-  const portfolioRunEnds = Array.from({ length: writeHistory.length }, () => 0);
+  // Maximal runs of one batch key in UUID write order. Building them costs one
+  // linear pass with O(1) state per row, and every span check below stays O(1) —
+  // no span search and no per-row sibling scan.
+  const batchRunEnds = Array.from({ length: writeHistory.length }, () => 0);
   for (let start = 0; start < writeHistory.length; ) {
-    const portfolioId = writeHistory[start]!.transaction.data.portfolioId;
+    const batchKey = normalWriteBatchKey(writeHistory[start]!.transaction);
     let end = start + 1;
     while (
       end < writeHistory.length &&
-      writeHistory[end]!.transaction.data.portfolioId === portfolioId
+      normalWriteBatchKey(writeHistory[end]!.transaction) === batchKey
     ) {
       end += 1;
     }
-    for (let index = start; index < end; index += 1) portfolioRunEnds[index] = end - 1;
+    for (let index = start; index < end; index += 1) batchRunEnds[index] = end - 1;
     start = end;
   }
 
@@ -730,7 +764,7 @@ function validateNormalCreateWitnesses(
   for (const witness of witnesses) {
     if (
       witness.end - witness.start + 1 > NORMAL_WRITE_BATCH_MAX_TRANSACTIONS ||
-      portfolioRunEnds[witness.start]! < witness.end
+      batchRunEnds[witness.start]! < witness.end
     ) {
       throw quantityReachabilityError(
         witness.sell,
@@ -758,7 +792,12 @@ function validateNormalCreateWitnesses(
         continue;
       }
       activeEnd = Math.max(activeEnd, witness.end);
-      if (activeEnd - activeStart + 1 > NORMAL_WRITE_BATCH_MAX_TRANSACTIONS) {
+      // The merged span must satisfy the same per-call invariants as a single
+      // witness: it is claimed to be one CREATE too.
+      if (
+        activeEnd - activeStart + 1 > NORMAL_WRITE_BATCH_MAX_TRANSACTIONS ||
+        batchRunEnds[activeStart]! < activeEnd
+      ) {
         throw quantityReachabilityError(
           activeSell ?? witness.sell,
           'transaction quantity reachability cannot establish compatible normal CREATE witnesses',

@@ -82,6 +82,8 @@ function transactionEntity(input: {
   side: StrictTransactionEntity['data']['side'];
   quantity: string;
   executedAt: string;
+  /** Batch-wide provenance tag; `manual` unless a fixture needs an import run. */
+  source?: string;
 }): StrictTransactionEntity {
   return entity(input.id, 'transaction', {
     portfolioId: input.portfolioId,
@@ -98,7 +100,7 @@ function transactionEntity(input: {
     taxParams: null,
     allowUncovered: false,
     uncoveredEntryPrice: null,
-    source: 'manual',
+    source: input.source ?? 'manual',
   });
 }
 
@@ -947,6 +949,134 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     } finally {
       mutationTransaction.mockRestore();
     }
+  });
+
+  it('rejects a mixed-source rounding pair outside the bounded CREATE witness before restore writes', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const assetId = '018f0000-0620-7000-8000-000000000621';
+    await seedGlobalAsset(harness, assetId, 'MIXED-SOURCE-ROUNDING');
+
+    const writeIds = ['018f0000-0620-7000-8000-000000000622'];
+    writeIds.push(nextUuidV7WriteId(writeIds[0]!));
+    // Adjacent in write order, same portfolio, same asset, and each quantity has
+    // a favorable public-number preimage — but one `createTransactions` call
+    // stamps one source tag on every row it writes, and no PATCH can change a
+    // tag afterwards. The pair therefore names an operation that cannot exist:
+    // once the flatex buy is persisted, the ibkr call reads a holding of exactly
+    // 1 and every preimage of the stored sell oversells it beyond QTY_EPSILON.
+    const impossibleSell = transactionEntity({
+      id: writeIds[1]!,
+      portfolioId,
+      assetId,
+      side: 'sell',
+      quantity: '1.00000001',
+      executedAt: '2026-07-23T10:00:01.000Z',
+      source: 'import:ibkr',
+    });
+    const document = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: writeIds[0]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '1.00000000',
+        executedAt: '2026-07-23T10:00:00.000Z',
+        source: 'import:flatex',
+      }),
+      impossibleSell,
+    ]);
+    expect(writeIds).toEqual([...writeIds].sort());
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    try {
+      await expect(
+        createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
+          rehydrationId: FIRST_REHYDRATION_ID,
+          document,
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_CASH_LEDGER',
+        message: expect.stringContaining(quantityField(impossibleSell)),
+      });
+      expect(mutationTransaction).not.toHaveBeenCalled();
+      expect(await harness.db.select().from(transactions)).toEqual([]);
+    } finally {
+      mutationTransaction.mockRestore();
+    }
+  });
+
+  it('rehydrates the same rounding pair when one uniform import batch wrote it', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const assetId = '018f0000-0620-7000-8000-000000000631';
+    await seedGlobalAsset(harness, assetId, 'UNIFORM-IMPORT-ROUNDING');
+
+    // The legitimate half of the rule above: a real CSV-import apply writes one
+    // call with one non-manual tag, so an import batch must keep round-tripping.
+    await harness.ctx.portfolio.createTransactions(
+      user.id,
+      portfolioId,
+      [
+        {
+          assetId,
+          side: 'buy',
+          quantity: 1.0000000046,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-23T10:00:00.000Z',
+        },
+        {
+          assetId,
+          side: 'sell',
+          quantity: 1.0000000051,
+          price: 11,
+          fee: 0,
+          executedAt: '2026-07-23T10:01:00.000Z',
+        },
+      ],
+      { source: 'import:flatex' },
+    );
+
+    const document = await capturePortfolioDocument(harness, portfolioId);
+    expect(
+      quantityEntities(document)
+        .map((transaction) => ({
+          side: transaction.data.side,
+          quantity: transaction.data.quantity,
+          source: transaction.data.source,
+        }))
+        .sort((left, right) => left.side.localeCompare(right.side)),
+    ).toEqual([
+      { side: 'buy', quantity: '1.00000000', source: 'import:flatex' },
+      { side: 'sell', quantity: '1.00000001', source: 'import:flatex' },
+    ]);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      document,
+      FIRST_REHYDRATION_ID,
+      'uniform import-tagged rounding batch',
+    );
+
+    const restored = await harness.db
+      .select({
+        side: transactions.side,
+        quantity: transactions.quantity,
+        source: transactions.source,
+      })
+      .from(transactions)
+      .where(eq(transactions.portfolioId, portfolioId));
+    expect(restored.sort((left, right) => left.side.localeCompare(right.side))).toEqual([
+      { side: 'buy', quantity: '1.00000000', source: 'import:flatex' },
+      { side: 'sell', quantity: '1.00000001', source: 'import:flatex' },
+    ]);
   });
 
   it('rejects cross-asset rounding windows that cannot share one legal create partition', async () => {
