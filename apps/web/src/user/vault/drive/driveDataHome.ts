@@ -50,6 +50,10 @@ export type DriveDeleteResult =
   | { status: 'ok'; deleted: boolean }
   | { status: 'transport-failure'; failure: DataHomeTransportFailure };
 
+export type DriveReplicaVerifier = (
+  observations: readonly DataHomeReadResult[],
+) => Promise<boolean>;
+
 export interface DriveReplicaCycle {
   /**
    * Every same-name Drive object, in deterministic metadata order. The PD5
@@ -62,12 +66,17 @@ export interface DriveReplicaCycle {
    * then remove the other objects only after a verified read-back.
    */
   converge(envelope: Uint8Array): Promise<DataHomeWriteResult>;
+  /**
+   * Delete the single frozen object only after its complete revision/byte
+   * observation is unchanged and the caller authenticates that exact copy
+   * again. File and revision ids remain private to this adapter.
+   */
+  deleteIfUnchanged(verify: DriveReplicaVerifier): Promise<DriveDeleteResult>;
 }
 
 export interface DriveDataHome extends DataHome {
   readonly medium: 'drive';
   observeReplicas(): Promise<DriveReplicaCycle>;
-  delete(): Promise<DriveDeleteResult>;
 }
 
 export interface DriveDataHomeOptions {
@@ -175,60 +184,40 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       const read = await this.read();
       return read.status === 'ok' ? { status: 'ok', medium: 'drive', info: read.info } : read;
     },
-
-    async delete(): Promise<DriveDeleteResult> {
-      const found = await findFile();
-      if (found.status === 'absent') return { status: 'ok', deleted: false };
-      if (found.status === 'failure') {
-        return { status: 'transport-failure', failure: found.failure };
-      }
-      if (found.status === 'corrupt') {
-        return {
-          status: 'transport-failure',
-          failure: { code: 'api-failure', message: found.result.message },
-        };
-      }
-      let deletedAny = false;
-      for (const file of found.files) {
-        const deleted = await driveFetch(`${DRIVE_API}/files/${encodeURIComponent(file.id)}`, {
-          method: 'DELETE',
-        });
-        if (deleted.status === 'failure') {
-          return { status: 'transport-failure', failure: deleted.failure };
-        }
-        if (deleted.response.status === 404) continue;
-        if (!deleted.response.ok) {
-          return {
-            status: 'transport-failure',
-            failure: httpFailure(deleted.response, 'Drive vault deletion failed.'),
-          };
-        }
-        deletedAny = true;
-      }
-      return { status: 'ok', deleted: deletedAny };
-    },
   };
 
   async function observeReplicas(): Promise<DriveReplicaCycle> {
     const found = await findFile();
     if (found.status === 'absent') {
-      return fixedReplicaCycle([{ status: 'absent', medium: 'drive' }]);
+      return fixedReplicaCycle([{ status: 'absent', medium: 'drive' }], async () => {
+        const current = await findFile();
+        return current.status === 'absent'
+          ? { status: 'ok', deleted: false }
+          : blockedDelete(current, 'Drive changed after the empty cleanup observation.');
+      });
     }
     if (found.status === 'failure') {
-      return fixedReplicaCycle([transport(found.failure)]);
+      return fixedReplicaCycle([transport(found.failure)], async () => ({
+        status: 'transport-failure',
+        failure: found.failure,
+      }));
     }
     if (found.status === 'corrupt') {
-      return fixedReplicaCycle([found.result]);
+      return fixedReplicaCycle([found.result], async () => deletePending(found.result.message));
     }
 
     const observations = await Promise.all(found.files.map(download));
     return {
       observations: observations.map(cloneReadResult),
       converge: (envelope) => convergeDuplicateFiles(found.files, observations, envelope),
+      deleteIfUnchanged: (verify) => deleteObservedFile(found.files, observations, verify),
     };
   }
 
-  function fixedReplicaCycle(observations: readonly DataHomeReadResult[]): DriveReplicaCycle {
+  function fixedReplicaCycle(
+    observations: readonly DataHomeReadResult[],
+    deleteIfUnchanged: DriveReplicaCycle['deleteIfUnchanged'],
+  ): DriveReplicaCycle {
     return {
       observations,
       async converge() {
@@ -237,6 +226,100 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
           message: 'Drive convergence requires more than one observed object.',
         });
       },
+      deleteIfUnchanged,
+    };
+  }
+
+  async function deleteObservedFile(
+    frozenFiles: readonly ValidDriveFile[],
+    frozenObservations: readonly DataHomeReadResult[],
+    verify: DriveReplicaVerifier,
+  ): Promise<DriveDeleteResult> {
+    // Multi-object deletion cannot be atomic. Duplicate sets must first pass
+    // through authenticated convergence, which leaves one canonical object.
+    if (frozenFiles.length !== 1 || frozenObservations.length !== 1) {
+      return deletePending('Drive cleanup requires one converged vault object.');
+    }
+    if (frozenObservations[0]?.status !== 'ok') {
+      return deletePending('Drive cleanup requires one readable vault object.');
+    }
+
+    const beforeAuthentication = await findFile();
+    if (
+      beforeAuthentication.status !== 'ok' ||
+      !sameFileSet(beforeAuthentication.files, frozenFiles)
+    ) {
+      return blockedDelete(beforeAuthentication, 'Drive changed before cleanup authentication.');
+    }
+
+    const refreshedObservations = await Promise.all(beforeAuthentication.files.map(download));
+    if (!sameReadableObservationSet(refreshedObservations, frozenObservations)) {
+      return deletePending('Drive bytes changed before cleanup authentication.');
+    }
+
+    let authenticated = false;
+    try {
+      authenticated = await verify(refreshedObservations.map(cloneReadResult));
+    } catch (cause) {
+      return deletePending('Drive cleanup authentication failed.', cause);
+    }
+    if (!authenticated) {
+      return deletePending('Drive cleanup authentication did not match the frozen copy.');
+    }
+
+    const beforeDelete = await findFile();
+    if (beforeDelete.status !== 'ok' || !sameFileSet(beforeDelete.files, frozenFiles)) {
+      return blockedDelete(beforeDelete, 'Drive changed at the cleanup barrier.');
+    }
+    const exact = await getFile(frozenFiles[0]!.id);
+    if (
+      exact.status !== 'ok' ||
+      exact.files.length !== 1 ||
+      !sameDriveFile(exact.file, frozenFiles[0]!)
+    ) {
+      return blockedDelete(exact, 'Drive changed at the cleanup barrier.');
+    }
+    const destructiveBarrier = await findFile();
+    if (destructiveBarrier.status !== 'ok' || !sameFileSet(destructiveBarrier.files, frozenFiles)) {
+      return blockedDelete(destructiveBarrier, 'Drive changed at the cleanup barrier.');
+    }
+
+    const deleted = await driveFetch(
+      `${DRIVE_API}/files/${encodeURIComponent(frozenFiles[0]!.id)}`,
+      { method: 'DELETE' },
+    );
+    if (deleted.status === 'failure') {
+      return {
+        status: 'transport-failure',
+        failure: { ...deleted.failure, indeterminate: true },
+      };
+    }
+    if (deleted.response.status === 404) {
+      return deletePending('Drive changed while the frozen copy was being deleted.');
+    }
+    if (!deleted.response.ok) {
+      return {
+        status: 'transport-failure',
+        failure: httpFailure(deleted.response, 'Drive vault deletion failed.', true),
+      };
+    }
+    return { status: 'ok', deleted: true };
+  }
+
+  function blockedDelete(result: DriveFileResult, message: string): DriveDeleteResult {
+    if (result.status === 'failure') {
+      return { status: 'transport-failure', failure: result.failure };
+    }
+    if (result.status === 'corrupt') {
+      return deletePending(result.result.message);
+    }
+    return deletePending(message);
+  }
+
+  function deletePending(message: string, cause?: unknown): DriveDeleteResult {
+    return {
+      status: 'transport-failure',
+      failure: { code: 'api-failure', message, cause },
     };
   }
 
@@ -744,6 +827,26 @@ function sameFileSet(
     current.every((file) => {
       const expected = frozen.find((candidate) => candidate.id === file.id);
       return expected != null && sameDriveFile(file, expected);
+    })
+  );
+}
+
+function sameReadableObservationSet(
+  current: readonly DataHomeReadResult[],
+  frozen: readonly DataHomeReadResult[],
+): boolean {
+  return (
+    current.length === frozen.length &&
+    current.every((observation, index) => {
+      const expected = frozen[index];
+      return (
+        observation.status === 'ok' &&
+        expected?.status === 'ok' &&
+        equalBytes(observation.envelope, expected.envelope) &&
+        observation.info.version === expected.info.version &&
+        observation.info.sizeBytes === expected.info.sizeBytes &&
+        observation.info.updatedAt === expected.info.updatedAt
+      );
     })
   );
 }

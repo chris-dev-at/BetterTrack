@@ -406,8 +406,10 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
     });
 
     expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
-    expect(screen.queryByText('Retired server copy')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Purge retired copy' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Retained server recovery copy')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Delete retained server copy' }),
+    ).not.toBeInTheDocument();
   });
 
   test('unlocks from the user gesture before starting a storage transition', async () => {

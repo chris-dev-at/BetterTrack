@@ -156,8 +156,9 @@ export function createUnlockedVaultDriveRuntime(
     ready,
     resumeSync: async () => {
       requireActive();
-      await sync.reconnect();
+      const state = await sync.reconnect();
       requireActive();
+      return state;
     },
   });
 

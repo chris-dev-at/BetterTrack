@@ -71,11 +71,13 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
           async converge() {
             throw new Error('The single-file test Drive cannot converge duplicates.');
           },
+          async deleteIfUnchanged() {
+            throw new Error('The provider regression does not delete Drive.');
+          },
         };
       },
       write: vi.fn(),
       info: vi.fn(),
-      delete: vi.fn(),
     };
     const controller = connection();
     const dispose = vi.fn();

@@ -21,7 +21,7 @@ import type {
   DataHomeWriteResult,
 } from '../dataHome';
 import { decryptVaultDocument, encryptVaultDocument } from '../crypto';
-import type { DriveDataHome, DriveDeleteResult, GoogleDriveTokenClient } from '../drive';
+import type { DriveDataHome, GoogleDriveTokenClient } from '../drive';
 import { inspectVaultEnvelope } from '../envelope';
 import type { VaultSyncCandidate, VaultSyncState } from '../sync';
 import fixture from '../vectors.fixture.json';
@@ -180,6 +180,54 @@ describe('unlocked Drive runtime', () => {
     expect(proof.ensure).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['pending-offline', 'conflict'] as const)(
+    'preserves a committed media result when resume resolves %s',
+    async (status) => {
+      const synced = syncState('synced', securedDocument);
+      const unresolved = syncState(status, securedDocument);
+      let current = synced;
+      let reconnects = 0;
+      const sync: VaultDriveSyncCoordinator = {
+        get state() {
+          return current;
+        },
+        reconnect: vi.fn(async () => {
+          current = reconnects++ === 0 ? synced : unresolved;
+          return current;
+        }),
+        mutate: vi.fn(),
+      };
+      const api = {
+        ...unusedApi(),
+        getState: vi.fn(
+          async (): Promise<ParanoidMediaStateResponse> => ({
+            privacyMode: 'paranoid',
+            mediaState: {
+              mediaSet: ['server', 'drive'],
+              driveAttestedVersion: 1,
+              server: { disposition: 'active', candidate: null, retired: null },
+            },
+          }),
+        ),
+      };
+      const runtime = createUnlockedVaultDriveRuntime(
+        new Uint8Array(32).fill(1),
+        fixture.initial.header.keyId,
+        { ...dependencies(sync, proofManager()), api },
+      );
+
+      await expect(runtime.controller.connect()).resolves.toMatchObject({
+        status: 'noop',
+        synchronization: {
+          status: 'pending',
+          state: { status, active: {}, pending: {} },
+        },
+      });
+      expect(runtime.syncState).toEqual(unresolved);
+      runtime.dispose();
+    },
+  );
+
   it('stops proof enrollment when the runtime is disposed during reconciliation', async () => {
     const reconnect = deferred<VaultSyncState>();
     const sync = coordinator('synced');
@@ -323,13 +371,10 @@ class RuntimeDrive extends RuntimeRemote implements DriveDataHome {
       async converge() {
         throw new Error('The single-file test Drive cannot converge duplicates.');
       },
+      async deleteIfUnchanged() {
+        throw new Error('Replica cleanup is not used by this runtime test.');
+      },
     };
-  }
-
-  async delete(): Promise<DriveDeleteResult> {
-    const deleted = this.envelope != null;
-    this.envelope = null;
-    return { status: 'ok', deleted };
   }
 }
 
@@ -490,9 +535,11 @@ function driveHome(): DriveDataHome {
         async converge() {
           throw new Error('The single-file test Drive cannot converge duplicates.');
         },
+        async deleteIfUnchanged() {
+          throw new Error('Replica cleanup is not used by this runtime test.');
+        },
       };
     },
-    delete: vi.fn(),
   };
 }
 

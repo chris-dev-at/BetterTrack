@@ -545,6 +545,29 @@ describe('Drive appdata DataHome', () => {
     });
   });
 
+  it('does not delete when the frozen Drive revision moves at the cleanup barrier', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(json({ files: [metadata()] }))
+      .mockResolvedValueOnce(new Response(envelope.slice(), { status: 200 }))
+      .mockResolvedValueOnce(json({ files: [metadata()] }))
+      .mockResolvedValueOnce(new Response(envelope.slice(), { status: 200 }))
+      .mockResolvedValueOnce(json({ files: [metadata()] }))
+      .mockResolvedValueOnce(json(metadata()))
+      .mockResolvedValueOnce(json({ files: [metadata({ headRevisionId: 'revision-advanced' })] }));
+    const home = createTestDriveDataHome({ tokens: tokenSource(), fetch });
+    const replicas = await home.observeReplicas();
+    const verify = vi.fn(async () => true);
+
+    await expect(replicas.deleteIfUnchanged(verify)).resolves.toMatchObject({
+      status: 'transport-failure',
+      failure: { message: expect.stringMatching(/changed/i) },
+    });
+
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false);
+  });
+
   it('keeps consent, expiry, offline, missing, malformed, corrupt, and API states distinct', async () => {
     const consent = createTestDriveDataHome({
       tokens: {

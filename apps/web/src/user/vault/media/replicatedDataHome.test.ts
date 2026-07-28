@@ -27,7 +27,7 @@ import {
 import { createMemoryVaultQuarantineStore } from '../quarantine';
 import { createVaultSyncEngine } from '../sync';
 import fixture from '../vectors.fixture.json';
-import type { DriveDataHome, DriveDeleteResult, DriveReplicaCycle } from '../drive';
+import type { DriveDataHome, DriveReplicaCycle } from '../drive';
 import {
   createReplicaReconcileCoordinator,
   createReplicatedVaultDataHome,
@@ -106,24 +106,31 @@ class MemoryRemote implements DataHome {
 
 class MemoryDrive extends MemoryRemote implements DriveDataHome {
   override readonly medium = 'drive' as const;
+  extraReplica: Uint8Array | null = null;
 
   constructor(envelope: Uint8Array | null) {
     super('drive', envelope);
   }
 
   async observeReplicas(): Promise<DriveReplicaCycle> {
+    const observations = [await this.read()];
+    if (this.extraReplica != null) {
+      observations.push({
+        status: 'ok',
+        medium: 'drive',
+        envelope: this.extraReplica.slice(),
+        info: info('drive', this.extraReplica),
+      });
+    }
     return {
-      observations: [await this.read()],
+      observations,
       async converge() {
         throw new Error('The single-file test Drive cannot converge duplicates.');
       },
+      async deleteIfUnchanged() {
+        throw new Error('Replica cleanup is not used by coordinator tests.');
+      },
     };
-  }
-
-  async delete(): Promise<DriveDeleteResult> {
-    const deleted = this.envelope != null;
-    this.envelope = null;
-    return { status: 'ok', deleted };
   }
 }
 
@@ -155,6 +162,9 @@ class DuplicateMemoryDrive extends MemoryDrive {
         };
         this.replicas = [result];
         return { status: 'ok', medium: 'drive', info: info('drive', envelope) };
+      },
+      async deleteIfUnchanged() {
+        throw new Error('Replica cleanup is not used by coordinator tests.');
       },
     };
   }
@@ -282,6 +292,27 @@ describe('replicated DataHome through the PD5 coordinator', () => {
     const repaired = await setup.coordinator.reconnect();
     expect(repaired).toMatchObject({ status: 'synced', pending: null });
     expect(setup.server.envelope).toEqual(setup.drive.envelope);
+  });
+
+  it('does not acknowledge a write when a Drive duplicate appears before confirmation', async () => {
+    const initial = await encrypted(document('018f0000-0000-7000-8000-0000000000a1'), 1, 0xa1);
+    const setup = coordinator(initial, initial);
+    await setup.coordinator.reconnect();
+    setup.drive.afterWrite = (written) => {
+      setup.drive.extraReplica = written.slice();
+    };
+
+    const pending = await setup.coordinator.mutate(({ document: current }) =>
+      appendEntity(current, '018f0000-0000-7000-8000-0000000000c1'),
+    );
+
+    expect(pending).toMatchObject({
+      status: 'pending-offline',
+      pending: {},
+      lastFailure: expect.stringMatching(/converged to one completely observed object/i),
+    });
+    expect(setup.coordinator.state).toEqual(pending);
+    expect(setup.drive.extraReplica).not.toBeNull();
   });
 
   it('does not acknowledge a server-only write across a concurrent move to both media', async () => {

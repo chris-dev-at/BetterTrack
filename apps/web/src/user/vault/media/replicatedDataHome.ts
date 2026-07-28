@@ -92,18 +92,35 @@ export function createReplicatedVaultDataHome(
       return replicationPending('The selected vault media changed during replication.');
     }
 
-    let observations: ReplicaObservation[];
+    let batches: Array<{ medium: VaultMedium; results: readonly DataHomeReadResult[] }>;
     try {
-      observations = await Promise.all(
-        beforeRead.mediaSet.map(async (medium) => ({
-          medium,
-          result: await homes[medium].read(),
-        })),
+      batches = await Promise.all(
+        beforeRead.mediaSet.map(async (medium) =>
+          medium === 'drive'
+            ? {
+                medium,
+                results: (await options.drive.observeReplicas()).observations,
+              }
+            : {
+                medium,
+                results: [await homes[medium].read()],
+              },
+        ),
       );
     } catch (cause) {
       cycle = null;
       return replicationPending('Could not verify the replicated vault write.', cause);
     }
+    const driveBatch = batches.find(({ medium }) => medium === 'drive');
+    if (driveBatch != null && driveBatch.results.length !== 1) {
+      cycle = null;
+      return replicationPending(
+        'The Drive vault has not converged to one completely observed object.',
+      );
+    }
+    const observations = batches.flatMap(({ medium, results }) =>
+      results.map((result) => ({ medium, result })),
+    );
 
     let afterRead: ParanoidVaultMediaState | null;
     try {

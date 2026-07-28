@@ -1,4 +1,5 @@
 import type { DriveAuthorizationState, GoogleDriveTokenClient } from '../drive';
+import type { VaultSyncState } from '../sync';
 import type {
   VaultMediaSwitcher,
   VaultMediaSwitchResult,
@@ -16,7 +17,8 @@ export type DriveConnectionActionResult =
        */
       synchronization?: {
         status: 'pending';
-        cause: unknown;
+        state?: VaultSyncState;
+        cause?: unknown;
       };
     });
 
@@ -42,7 +44,7 @@ export interface DriveConnectionControllerOptions {
   /** Runtime initialization provisions proof material through the PD5 engine. */
   ready?: () => Promise<void>;
   /** Re-run that same coordinator after a fresh gesture/token. */
-  resumeSync?: () => Promise<void>;
+  resumeSync: () => Promise<VaultSyncState>;
 }
 
 export function createDriveConnectionController(
@@ -75,7 +77,13 @@ export function createDriveConnectionController(
     result: Extract<VaultMediaSwitchResult, { status: 'ok' | 'noop' | 'drive-leftover' }>,
   ): Promise<DriveConnectionActionResult> {
     try {
-      await options.resumeSync?.();
+      const state = await options.resumeSync();
+      if (!isFullySynchronized(state)) {
+        return {
+          ...result,
+          synchronization: { status: 'pending', state },
+        };
+      }
       return result;
     } catch (cause) {
       return {
@@ -128,7 +136,7 @@ export function createDriveConnectionController(
       const authorization = await authorize();
       if (authorization.status !== 'ok') return authorization;
       await options.ready?.();
-      await options.resumeSync?.();
+      await options.resumeSync();
       return { status: 'ok' };
     },
 
@@ -139,4 +147,8 @@ export function createDriveConnectionController(
       return options.switcher.purgeRetiredServer();
     },
   };
+}
+
+function isFullySynchronized(state: VaultSyncState): boolean {
+  return state.status === 'synced' && state.active != null && state.pending == null;
 }

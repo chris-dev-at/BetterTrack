@@ -16,7 +16,7 @@ import type {
   DataHomeWriteOptions,
   DataHomeWriteResult,
 } from '../dataHome';
-import type { DriveDataHome, DriveDeleteResult } from '../drive';
+import type { DriveDataHome, DriveDeleteResult, DriveReplicaCycle } from '../drive';
 import { createVaultMediaSwitcher, type VaultMediaApi } from './mediaSwitcher';
 import type { VaultRetirementProofManager } from './retirementProof';
 import type { AuthenticatedVaultCopy } from './verification';
@@ -88,32 +88,69 @@ class MemoryDriveHome extends MemoryHome implements DriveDataHome {
   override readonly medium = 'drive' as const;
   deleteFailure = false;
   deletes = 0;
+  beforeDelete: (() => void) | null = null;
+  private revision = 1;
 
   constructor(value: Uint8Array | null) {
     super('drive', value);
   }
 
-  async observeReplicas() {
+  async observeReplicas(): Promise<DriveReplicaCycle> {
+    const observations = [await this.read()];
+    const frozenValue = this.value?.slice() ?? null;
+    const frozenRevision = this.revision;
     return {
-      observations: [await this.read()],
+      observations,
       async converge() {
         throw new Error('The single-file test Drive cannot converge duplicates.');
+      },
+      deleteIfUnchanged: async (verify): Promise<DriveDeleteResult> => {
+        const beforeDelete = this.beforeDelete;
+        this.beforeDelete = null;
+        beforeDelete?.();
+        if (this.revision !== frozenRevision || !optionalBytesEqual(this.value, frozenValue)) {
+          return cleanupMoved();
+        }
+        if (this.value == null) return { status: 'ok', deleted: false };
+        const refreshed = [await this.read()];
+        if (!(await verify(refreshed)) || this.revision !== frozenRevision) {
+          return cleanupMoved();
+        }
+        if (this.deleteFailure) {
+          return {
+            status: 'transport-failure',
+            failure: { code: 'api-failure', message: 'Drive delete failed.' },
+          };
+        }
+        this.deletes += 1;
+        this.value = null;
+        this.revision += 1;
+        return { status: 'ok', deleted: true };
       },
     };
   }
 
-  async delete(): Promise<DriveDeleteResult> {
-    this.deletes += 1;
-    if (this.deleteFailure) {
-      return {
-        status: 'transport-failure',
-        failure: { code: 'api-failure', message: 'Drive delete failed.' },
-      };
-    }
-    const deleted = this.value !== null;
-    this.value = null;
-    return { status: 'ok', deleted };
+  advance(value: Uint8Array): void {
+    this.value = value.slice();
+    this.revision += 1;
   }
+}
+
+function optionalBytesEqual(left: Uint8Array | null, right: Uint8Array | null): boolean {
+  return (
+    left === right ||
+    (left != null &&
+      right != null &&
+      left.length === right.length &&
+      left.every((value, index) => value === right[index]))
+  );
+}
+
+function cleanupMoved(): Extract<DriveDeleteResult, { status: 'transport-failure' }> {
+  return {
+    status: 'transport-failure',
+    failure: { code: 'api-failure', message: 'Drive changed before cleanup.' },
+  };
 }
 
 class FakeMediaApi implements VaultMediaApi {
@@ -395,6 +432,21 @@ describe('verified vault media switch matrix', () => {
     flow.drive.deleteFailure = false;
     expect(await flow.switcher.remove('drive')).toMatchObject({ status: 'noop' });
     expect(flow.drive.value).toBeNull();
+  });
+
+  it('leaves a newer Drive revision untouched when it advances after removal proof', async () => {
+    const flow = setup(['server', 'drive'], bytes(1, 1), bytes(1, 1));
+    flow.drive.beforeDelete = () => flow.drive.advance(bytes(2, 2));
+
+    await expect(flow.switcher.remove('drive')).resolves.toMatchObject({
+      status: 'drive-leftover',
+      driveLeftover: true,
+      media: { mediaSet: ['server'] },
+    });
+
+    expect(flow.drive.deletes).toBe(0);
+    expect(flow.drive.value).toEqual(bytes(2, 2));
+    expect(flow.server.value).toEqual(bytes(1, 1));
   });
 
   it('never removes the last medium and signs only a freshly authenticated Drive purge', async () => {

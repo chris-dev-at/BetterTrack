@@ -1638,6 +1638,9 @@ describe('restore candidate seam', () => {
           async converge() {
             throw new Error('The single-file test Drive cannot converge duplicates.');
           },
+          async deleteIfUnchanged() {
+            throw new Error('The retirement regression does not delete Drive.');
+          },
         };
       },
       async info() {
@@ -1654,9 +1657,6 @@ describe('restore candidate seam', () => {
       },
       async write() {
         throw new Error('The retirement regression does not write Drive.');
-      },
-      async delete() {
-        return { status: 'ok', deleted: false };
       },
     };
     const transition = vi.fn(async () => retiredMedia);

@@ -10,7 +10,7 @@ import type {
 
 import type { ParanoidServerCandidateReadback } from '../../../lib/userApi';
 import type { DataHome, DataHomeReadResult, DataHomeWriteResult } from '../dataHome';
-import type { DriveDataHome, DriveDeleteResult } from '../drive';
+import type { DriveDataHome, DriveDeleteResult, DriveReplicaCycle } from '../drive';
 import type { VaultRetirementProofManager } from './retirementProof';
 import {
   copiesMatch,
@@ -92,17 +92,40 @@ export interface VaultMediaSwitcher {
   purgeRetiredServer(): Promise<VaultRetiredPurgeResult>;
 }
 
+interface DriveCleanupProof {
+  cycle: DriveReplicaCycle;
+  copy: AuthenticatedVaultCopy | null;
+  replicaCount: number;
+}
+
+type AuthenticatedSourceResult =
+  | {
+      status: 'ok';
+      copy: AuthenticatedVaultCopy;
+      driveCleanup: DriveCleanupProof | null;
+    }
+  | {
+      status: 'failed';
+      stage: 'read-source' | 'authenticate-source' | 'verify-round-trip';
+      message: string;
+      cause?: unknown;
+    };
+
+type PreparedDriveCleanupResult =
+  | { status: 'ok'; proof: DriveCleanupProof }
+  | {
+      status: 'failed';
+      stage: 'read-source' | 'authenticate-source' | 'verify-round-trip';
+      message: string;
+      cause?: unknown;
+    };
+
 /**
  * Deterministic migrate-then-drop orchestration. Every remote write is read
  * back and authenticated before durable media metadata changes. Candidate and
  * retirement transitions are delegated to the atomic server foundation.
  */
 export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): VaultMediaSwitcher {
-  const homes: Record<VaultMedium, DataHome> = {
-    server: options.server,
-    drive: options.drive,
-  };
-
   return {
     async add(medium) {
       const mediaResult = await currentMedia();
@@ -111,7 +134,7 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       if (media.mediaSet.includes(medium)) return success('noop', media);
 
       const sourceMedium = media.mediaSet[0]!;
-      const sourceResult = await readAuthenticated(homes[sourceMedium]);
+      const sourceResult = await readAuthenticatedSource(sourceMedium);
       if (sourceResult.status === 'failed') {
         return failure(media, sourceResult.stage, sourceResult.message, sourceResult.cause);
       }
@@ -128,7 +151,11 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
 
       if (!media.mediaSet.includes(medium)) {
         if (medium === 'drive') {
-          const cleanup = await options.drive.delete();
+          const prepared = await prepareDriveCleanup();
+          if (prepared.status === 'failed') {
+            return driveLeftover(media, cleanupFailure(prepared.message, prepared.cause));
+          }
+          const cleanup = await deletePreparedDrive(prepared.proof);
           if (cleanup.status === 'transport-failure') return driveLeftover(media, cleanup);
         }
         return success('noop', media);
@@ -139,8 +166,8 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
 
       const remaining = media.mediaSet.find((candidate) => candidate !== medium)!;
       const [remainingResult, removedResult] = await Promise.all([
-        readAuthenticated(homes[remaining]),
-        readAuthenticated(homes[medium]),
+        readAuthenticatedSource(remaining),
+        readAuthenticatedSource(medium),
       ]);
       if (remainingResult.status === 'failed') {
         return failure(
@@ -163,7 +190,7 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
 
       // The destination is checked again immediately before PATCH, not merely
       // trusted from the first comparison above.
-      const freshRemaining = await readAuthenticated(homes[remaining]);
+      const freshRemaining = await readAuthenticatedSource(remaining);
       if (freshRemaining.status === 'failed') {
         return failure(media, freshRemaining.stage, freshRemaining.message, freshRemaining.cause);
       }
@@ -195,7 +222,13 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       }
 
       if (medium === 'drive') {
-        const deleted = await options.drive.delete();
+        if (removedResult.driveCleanup == null) {
+          return driveLeftover(
+            updated,
+            cleanupFailure('The authenticated Drive cleanup proof is unavailable.'),
+          );
+        }
+        const deleted = await deletePreparedDrive(removedResult.driveCleanup);
         if (deleted.status === 'transport-failure') return driveLeftover(updated, deleted);
       }
       return success('ok', updated);
@@ -267,25 +300,23 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
     media: ParanoidVaultMediaState,
     source: AuthenticatedVaultCopy,
   ): Promise<VaultMediaSwitchResult> {
-    const targetBefore = await options.drive.read();
+    const targetBefore = await prepareDriveCleanup();
+    if (targetBefore.status === 'failed') {
+      return failure(media, 'write-target', targetBefore.message, targetBefore.cause);
+    }
     let targetMatches = false;
-    if (targetBefore.status === 'ok') {
-      const authenticated = await authenticate(targetBefore);
-      if (authenticated.status === 'failed') {
-        return failure(media, authenticated.stage, authenticated.message, authenticated.cause);
-      }
-      targetMatches = copiesMatch(source, authenticated.copy);
+    if (targetBefore.proof.copy != null) {
+      targetMatches =
+        targetBefore.proof.replicaCount === 1 && copiesMatch(source, targetBefore.proof.copy);
       if (!targetMatches) {
         // Drive is not selected yet, so a stale leftover is not authoritative.
         // Delete it before a create-only write; the active server copy remains
         // untouched if either operation fails.
-        const deleted = await options.drive.delete();
+        const deleted = await deletePreparedDrive(targetBefore.proof);
         if (deleted.status === 'transport-failure') {
           return failure(media, 'write-target', deleted.failure.message);
         }
       }
-    } else if (targetBefore.status !== 'absent') {
-      return failure(media, 'write-target', outcomeMessage(targetBefore));
     }
 
     if (!targetMatches) {
@@ -295,7 +326,7 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       }
     }
 
-    const readBack = await readAuthenticated(options.drive);
+    const readBack = await readAuthenticatedSource('drive');
     if (readBack.status === 'failed') {
       return failure(media, 'read-back', readBack.message, readBack.cause);
     }
@@ -372,7 +403,7 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       );
     }
 
-    const freshDrive = await readAuthenticated(options.drive);
+    const freshDrive = await readAuthenticatedSource('drive');
     if (freshDrive.status === 'failed' || !copiesMatch(staged, freshDrive.copy)) {
       return failure(
         media,
@@ -423,6 +454,115 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
         ),
       };
     }
+  }
+
+  async function readAuthenticatedSource(medium: VaultMedium): Promise<AuthenticatedSourceResult> {
+    if (medium === 'server') {
+      const authenticated = await readAuthenticated(options.server);
+      return authenticated.status === 'ok'
+        ? { ...authenticated, driveCleanup: null }
+        : authenticated;
+    }
+
+    const prepared = await prepareDriveCleanup();
+    if (prepared.status === 'failed') return prepared;
+    if (prepared.proof.copy == null) {
+      return {
+        status: 'failed',
+        stage: 'read-source',
+        message: 'The encrypted Drive vault copy is missing.',
+      };
+    }
+    if (prepared.proof.replicaCount !== 1) {
+      return {
+        status: 'failed',
+        stage: 'verify-round-trip',
+        message: 'The Drive vault has not converged to one authenticated copy.',
+      };
+    }
+    return {
+      status: 'ok',
+      copy: prepared.proof.copy,
+      driveCleanup: prepared.proof,
+    };
+  }
+
+  async function prepareDriveCleanup(): Promise<PreparedDriveCleanupResult> {
+    let cycle: DriveReplicaCycle;
+    try {
+      cycle = await options.drive.observeReplicas();
+    } catch (cause) {
+      return {
+        status: 'failed',
+        stage: 'read-source',
+        message: 'The complete Drive vault replica set could not be observed.',
+        cause,
+      };
+    }
+    const authenticated = await authenticateDriveObservations(cycle.observations);
+    if (authenticated.status === 'failed') return authenticated;
+    return {
+      status: 'ok',
+      proof: {
+        cycle,
+        copy: authenticated.copy,
+        replicaCount: cycle.observations.length,
+      },
+    };
+  }
+
+  async function authenticateDriveObservations(
+    observations: readonly DataHomeReadResult[],
+  ): Promise<
+    | { status: 'ok'; copy: AuthenticatedVaultCopy | null }
+    | Extract<PreparedDriveCleanupResult, { status: 'failed' }>
+  > {
+    if (observations.length === 1 && observations[0]?.status === 'absent') {
+      return { status: 'ok', copy: null };
+    }
+    if (observations.length === 0) {
+      return {
+        status: 'failed',
+        stage: 'read-source',
+        message: 'Drive returned no complete vault replica observation.',
+      };
+    }
+
+    const copies: AuthenticatedVaultCopy[] = [];
+    for (const observation of observations) {
+      if (observation.status !== 'ok') {
+        return {
+          status: 'failed',
+          stage: 'read-source',
+          message: outcomeMessage(observation),
+        };
+      }
+      const authenticated = await authenticate(observation);
+      if (authenticated.status === 'failed') return authenticated;
+      copies.push(authenticated.copy);
+    }
+    const copy = copies[0]!;
+    if (!copies.every((candidate) => copiesMatch(copy, candidate))) {
+      return {
+        status: 'failed',
+        stage: 'verify-round-trip',
+        message: 'The Drive vault replica set contains divergent authenticated copies.',
+      };
+    }
+    return { status: 'ok', copy };
+  }
+
+  async function deletePreparedDrive(proof: DriveCleanupProof): Promise<DriveDeleteResult> {
+    return proof.cycle.deleteIfUnchanged(async (observations) => {
+      const authenticated = await authenticateDriveObservations(observations);
+      return (
+        authenticated.status === 'ok' &&
+        authenticated.copy != null &&
+        proof.copy != null &&
+        observations.length === proof.replicaCount &&
+        copiesMatch(proof.copy, authenticated.copy)
+      );
+    });
   }
 
   async function readAuthenticated(home: DataHome): Promise<
@@ -501,6 +641,16 @@ function driveLeftover(
     driveLeftover: true,
     stage: 'delete-drive',
     message: result.failure.message,
+  };
+}
+
+function cleanupFailure(
+  message: string,
+  cause?: unknown,
+): Extract<DriveDeleteResult, { status: 'transport-failure' }> {
+  return {
+    status: 'transport-failure',
+    failure: { code: 'api-failure', message, cause },
   };
 }
 

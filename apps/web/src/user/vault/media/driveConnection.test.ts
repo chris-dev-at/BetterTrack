@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ParanoidVaultMediaState } from '@bettertrack/contracts';
 
 import type { DriveAccessTokenResult, GoogleDriveTokenClient } from '../drive';
+import type { VaultSyncCandidate, VaultSyncState } from '../sync';
 import { createDriveConnectionController } from './driveConnection';
 import type {
   VaultMediaSwitcher,
@@ -20,10 +21,12 @@ function setup({
   authorized = false,
   leftover = false,
   resumeFailure = null,
+  resumeStatus = 'synced',
 }: {
   authorized?: boolean;
   leftover?: boolean;
   resumeFailure?: Error | null;
+  resumeStatus?: VaultSyncState['status'];
 } = {}) {
   let state: GoogleDriveTokenClient['state'] = authorized ? 'connected' : 'token-expired';
   const clear = vi.fn(() => {
@@ -74,8 +77,15 @@ function setup({
     ),
   };
   const ready = vi.fn(async () => undefined);
+  const active = {} as VaultSyncCandidate;
+  const resumeState: VaultSyncState = {
+    status: resumeStatus,
+    active,
+    pending: resumeStatus === 'synced' ? null : active,
+  };
   const resumeSync = vi.fn(async () => {
     if (resumeFailure) throw resumeFailure;
+    return resumeState;
   });
   const controller = createDriveConnectionController({ tokens, switcher, ready, resumeSync });
   return { controller, tokens, switcher, ready, resumeSync, clear };
@@ -138,6 +148,25 @@ describe('Drive connection controller', () => {
     expect(setupResult.switcher.remove).toHaveBeenCalledWith('server');
     expect(setupResult.resumeSync).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['pending-offline', 'conflict'] as const)(
+    'preserves a committed switch when synchronization resolves %s',
+    async (resumeStatus) => {
+      const setupResult = setup({ authorized: true, resumeStatus });
+
+      await expect(setupResult.controller.useDriveOnly()).resolves.toMatchObject({
+        status: 'ok',
+        media,
+        driveLeftover: false,
+        synchronization: {
+          status: 'pending',
+          state: { status: resumeStatus, active: {}, pending: {} },
+        },
+      });
+
+      expect(setupResult.resumeSync).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('does not suppress a committed Drive-leftover result when resuming fails', async () => {
     const setupResult = setup({
