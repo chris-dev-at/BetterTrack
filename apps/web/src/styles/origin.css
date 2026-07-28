@@ -242,7 +242,6 @@
 .bt-rail-item.is-active {
   background: var(--bt-surface-strong);
   color: var(--bt-text);
-  box-shadow: inset 2px 0 0 var(--bt-gold);
 }
 
 .bt-rail-item > svg {
