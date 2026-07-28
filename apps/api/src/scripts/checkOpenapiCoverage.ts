@@ -196,15 +196,45 @@ function collectRouterRoutes(
 }
 
 /**
- * Builds the real app while recording every `app.use(path, handler)` call it
- * makes, then walks each mounted router's own stack (where `route.path` is
- * always the literal string passed to `.get`/`.post`/etc.) to recover the
- * full route table.
+ * Direct application routes (`app.get`, `app.post`, `app.route`, etc.) live on
+ * the application's own router stack rather than inside an `app.use` mount.
+ * They are uncommon today, but omitting them here would create an invisible
+ * path whenever one is added to `createApp`.
  */
-export function buildRouteTable(): MountedRoute[] {
+function collectDirectApplicationRoutes(app: Application, out: MountedRoute[]): void {
+  // Express does not expose the application's stack in its public TypeScript
+  // surface. It is nonetheless the same router stack that powers dispatch;
+  // fail closed if that implementation detail changes instead of silently
+  // treating direct application endpoints as documented.
+  const router = (app as unknown as { router?: { stack?: unknown } }).router;
+  if (!Array.isArray(router?.stack)) {
+    throw new Error(
+      'checkOpenapiCoverage: could not inspect the application router stack for direct routes; ' +
+        'extend the route-table walker before trusting this report.',
+    );
+  }
+
+  for (const layer of router.stack) {
+    if (!layer?.route) continue;
+    collectRouterRoutes([layer], '', out);
+  }
+}
+
+/**
+ * Builds the real app while recording every `app.use(path, handler)` call it
+ * makes, then walks both mounted-router stacks and direct application routes
+ * (where `route.path` is always the literal string passed to
+ * `.get`/`.post`/etc.) to recover the full route table. The optional factory
+ * keeps the production path fixed to `createApp`, while allowing focused tests
+ * to attach a real direct application endpoint and verify this walker.
+ */
+export function buildRouteTable(
+  appFactory: (ctx: AppContext) => Application = createApp,
+): MountedRoute[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mounts: { prefix: string; handler: any }[] = [];
   const originalUse = express.application.use;
+  let app: Application | undefined;
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -218,9 +248,13 @@ export function buildRouteTable(): MountedRoute[] {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (originalUse as any).apply(this, args);
     };
-    createApp(buildInertContext());
+    app = appFactory(buildInertContext());
   } finally {
     express.application.use = originalUse;
+  }
+
+  if (!app) {
+    throw new Error('checkOpenapiCoverage: application factory did not return an Express app.');
   }
 
   const routes: MountedRoute[] = [];
@@ -229,6 +263,7 @@ export function buildRouteTable(): MountedRoute[] {
       collectRouterRoutes(handler.stack, prefix, routes);
     }
   }
+  collectDirectApplicationRoutes(app, routes);
   return routes;
 }
 

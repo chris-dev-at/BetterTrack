@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import { createApp } from '../../../app';
 import { ALL_QUEUE_NAMES } from '../../../jobs';
 import { buildRouteTable } from '../../../scripts/checkOpenapiCoverage';
 import { createTestApp } from '../../../testing/createTestApp';
@@ -117,16 +118,24 @@ describe('paranoid enforcement completeness', () => {
     expect(surfaces.every(isParanoidSurfaceClassified)).toBe(true);
   });
 
-  it('names a newly discovered route fixture when no classification exists', () => {
-    // This is the test-only equivalent of adding a new route to the mounted
-    // table. It must not fall through to an implicit allow or a generic default.
-    const [throwawayRoute] = mountedRouteSurfaces(
-      [{ method: 'GET', path: '/api/v1/paranoid-enforcement-fixture' }],
+  it('names a newly mounted direct application route when no classification exists', () => {
+    // This direct app.get fixture is absent from the app.use mount list. It
+    // proves the walker sees a newly added direct endpoint rather than relying
+    // on a hand-authored route-table entry in this test.
+    const fixturePath = '/paranoid-enforcement-fixture';
+    const throwawayRoute = mountedRouteSurfaces(
+      buildRouteTable((ctx) => {
+        const app = createApp(ctx);
+        app.get(`${API_PREFIX}${fixturePath}`, (_request, response) => {
+          response.sendStatus(204);
+        });
+        return app;
+      }),
       {
         file: 'apps/api/src/services/account/__tests__/paranoidEnforcementCompleteness.test.ts',
         symbol: 'throwawayParanoidRouteFixture',
       },
-    );
+    ).find((route) => route.method === 'GET' && route.path === fixturePath);
 
     expect(throwawayRoute).toBeDefined();
     expect(classificationProblems([throwawayRoute!])).toEqual([
