@@ -490,7 +490,7 @@ describe('paranoid standing-order materialization', () => {
     ).toHaveLength(1);
   });
 
-  it('defers missing quotes and insufficient cash without claiming the period', async () => {
+  it('fails unavailable quotes while keeping insufficient cash as a business deferral', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = withOrders(fixture.document, [
       standingOrder(MONTHLY_BUY_ID, {
@@ -526,18 +526,43 @@ describe('paranoid standing-order materialization', () => {
     );
 
     expect(outcome).toMatchObject({
-      ok: true,
-      value: {
-        booked: [],
-        deferred: [
-          { orderId: MONTHLY_BUY_ID, dueDate: '2026-07-27', reason: 'market-data' },
-          { orderId: DEDUCT_ID, dueDate: '2026-07-27', reason: 'insufficient-cash' },
-        ],
-      },
+      ok: false,
+      error: { code: 'MARKET_DATA_UNAVAILABLE', retryable: true },
     });
     expect(sync.state.active!.document.entities.standingOrderRun).toBeUndefined();
     expect(order(sync.state.active!.document, MONTHLY_BUY_ID).data.lastPeriodKey).toBeNull();
     expect(order(sync.state.active!.document, DEDUCT_ID).data.lastPeriodKey).toBeNull();
+    expect(sync.mutationCount).toBe(0);
+
+    const insufficientDocument = withOrders(fixture.document, [
+      standingOrder(DEDUCT_ID, {
+        kind: 'cash-deduct',
+        amount: '5000',
+        currency: 'EUR',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const insufficientSync = createMutableTestSync(insufficientDocument, fixture.header);
+    await expect(
+      materializeDueStandingOrders(
+        insufficientSync,
+        createVaultPortfolioStore(insufficientSync),
+        createClientMoneyMarket().market,
+        {
+          now: () => new Date(BOOKED_AT),
+          timezone: 'Europe/Vienna',
+        },
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        booked: [],
+        deferred: [{ orderId: DEDUCT_ID, dueDate: '2026-07-27', reason: 'insufficient-cash' }],
+      },
+    });
+    expect(order(insufficientSync.state.active!.document, DEDUCT_ID).data.lastPeriodKey).toBeNull();
 
     const invalidSync = createMutableTestSync(document, fixture.header);
     const invalidMarket = createClientMoneyMarket();
@@ -608,7 +633,98 @@ describe('paranoid standing-order materialization', () => {
     });
   });
 
-  it('blocks a stale quote and books exactly once after fresh-data recovery', async () => {
+  it.each(['missing', 'stale'] as const)(
+    'blocks a %s quote and books exactly once after fresh-data recovery',
+    async (failureKind) => {
+      const fixture = await decryptClientMoneyFixture();
+      const document = withOrders(fixture.document, [
+        standingOrder(MONTHLY_BUY_ID, {
+          kind: 'buy-asset',
+          assetId: CLIENT_MONEY_IDS.eurAsset,
+          amount: '1',
+          currency: 'EUR',
+          cadence: 'daily',
+          anchorDay: null,
+          startDate: '2026-07-20',
+        }),
+      ]);
+      const sync = createMutableTestSync(document, fixture.header);
+      const market = createClientMoneyMarket();
+      if (failureKind === 'missing') {
+        market.setMissingQuote(CLIENT_MONEY_IDS.eurAsset, true);
+      } else {
+        market.setStale(true);
+      }
+      const lifecycle = createStandingOrderMaterializationLifecycle(sync, market.market, {
+        retryCount: 0,
+        now: () => new Date(BOOKED_AT),
+        timezone: 'Europe/Vienna',
+      });
+      const engine = createVaultMoneyEngine(sync, market.market, {
+        now: () => new Date(BOOKED_AT).getTime(),
+        standingOrders: lifecycle,
+      });
+      const occurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-27');
+
+      await expect(engine.onAppOpen()).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'MARKET_DATA_UNAVAILABLE', retryable: true },
+      });
+      expect(live(sync.state.active!.document, 'transaction', occurrenceId)).toBeUndefined();
+      expect(live(sync.state.active!.document, 'standingOrderRun', occurrenceId)).toBeUndefined();
+      expect(sync.mutationCount).toBe(0);
+      await expect(
+        engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX'),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'MARKET_DATA_UNAVAILABLE', retryable: true },
+      });
+      expect(market.calls.history).toEqual([]);
+
+      if (failureKind === 'missing') {
+        market.setMissingQuote(CLIENT_MONEY_IDS.eurAsset, false);
+      } else {
+        market.setStale(false);
+      }
+      await expect(
+        engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX'),
+      ).resolves.toMatchObject({
+        ok: true,
+      });
+      await expect(engine.onAppOpen()).resolves.toMatchObject({
+        ok: true,
+        value: {
+          booked: [
+            {
+              occurrenceId,
+              orderId: MONTHLY_BUY_ID,
+              dueDate: '2026-07-27',
+              status: 'created',
+            },
+          ],
+        },
+      });
+      await expect(
+        engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX'),
+      ).resolves.toMatchObject({
+        ok: true,
+      });
+
+      expect(
+        sync.state.active?.document.entities.transaction?.filter(
+          (entity) => entity.id === occurrenceId && entity.deletedAt === null,
+        ),
+      ).toHaveLength(1);
+      expect(
+        sync.state.active?.document.entities.standingOrderRun?.filter(
+          (entity) => entity.id === occurrenceId && entity.deletedAt === null,
+        ),
+      ).toHaveLength(1);
+      expect(sync.mutationCount).toBe(1);
+    },
+  );
+
+  it('fails a due manual buy when no local valuation exists', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = withOrders(fixture.document, [
       standingOrder(MONTHLY_BUY_ID, {
@@ -621,60 +737,28 @@ describe('paranoid standing-order materialization', () => {
         startDate: '2026-07-20',
       }),
     ]);
+    const asset = document.entities.customAsset!.find(
+      (entity) => entity.id === CLIENT_MONEY_IDS.eurAsset,
+    )!;
+    asset.data.providerId = 'manual';
+    asset.data.providerRef = asset.id;
+    asset.data.ownerId = CLIENT_MONEY_IDS.user;
+    asset.data.type = 'custom';
+    document.entities.customAssetValue = [];
     const sync = createMutableTestSync(document, fixture.header);
     const market = createClientMoneyMarket();
-    market.setStale(true);
-    const lifecycle = createStandingOrderMaterializationLifecycle(sync, market.market, {
-      retryCount: 0,
-      now: () => new Date(BOOKED_AT),
-      timezone: 'Europe/Vienna',
-    });
-    const engine = createVaultMoneyEngine(sync, market.market, {
-      now: () => new Date(BOOKED_AT).getTime(),
-      standingOrders: lifecycle,
-    });
-    const occurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-27');
 
-    await expect(engine.onAppOpen()).resolves.toMatchObject({
+    await expect(
+      materializeDueStandingOrders(sync, createVaultPortfolioStore(sync), market.market, {
+        now: () => new Date(BOOKED_AT),
+        timezone: 'Europe/Vienna',
+      }),
+    ).resolves.toMatchObject({
       ok: false,
       error: { code: 'MARKET_DATA_UNAVAILABLE', retryable: true },
     });
-    expect(live(sync.state.active!.document, 'transaction', occurrenceId)).toBeUndefined();
-    expect(live(sync.state.active!.document, 'standingOrderRun', occurrenceId)).toBeUndefined();
     expect(sync.mutationCount).toBe(0);
-
-    market.setStale(false);
-    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
-      ok: true,
-    });
-    await expect(engine.onAppOpen()).resolves.toMatchObject({
-      ok: true,
-      value: {
-        booked: [
-          {
-            occurrenceId,
-            orderId: MONTHLY_BUY_ID,
-            dueDate: '2026-07-27',
-            status: 'created',
-          },
-        ],
-      },
-    });
-    await expect(engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX')).resolves.toMatchObject({
-      ok: true,
-    });
-
-    expect(
-      sync.state.active?.document.entities.transaction?.filter(
-        (entity) => entity.id === occurrenceId && entity.deletedAt === null,
-      ),
-    ).toHaveLength(1);
-    expect(
-      sync.state.active?.document.entities.standingOrderRun?.filter(
-        (entity) => entity.id === occurrenceId && entity.deletedAt === null,
-      ),
-    ).toHaveLength(1);
-    expect(sync.mutationCount).toBe(1);
+    expect(market.calls.quote).toEqual([]);
   });
 
   it('prices a vault-only manual asset locally instead of deferring to the server', async () => {

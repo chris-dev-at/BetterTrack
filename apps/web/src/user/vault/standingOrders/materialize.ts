@@ -45,7 +45,7 @@ export interface MaterializedStandingOrder {
 export interface DeferredStandingOrder {
   orderId: string;
   dueDate: string;
-  reason: 'market-data' | 'insufficient-cash' | 'invalid-order';
+  reason: 'insufficient-cash' | 'invalid-order';
 }
 
 export interface StandingOrderMaterializationResult {
@@ -112,8 +112,14 @@ export async function materializeDueStandingOrders(
           if (asset.providerId === 'manual') {
             const manual = localManualAssetMarket(snapshot.document, asset);
             if (manual.quote === null) {
-              result.deferred.push({ orderId: order.entity.id, dueDate, reason: 'market-data' });
-              continue;
+              throw moneyFailure(
+                'MARKET_DATA_UNAVAILABLE',
+                `A standing-order valuation is unavailable for manual asset ${order.row.assetId}.`,
+                {
+                  retryable: true,
+                  details: { assetId: order.row.assetId },
+                },
+              );
             }
             quote = { price: manual.quote.price, currency: asset.currency };
           } else {
@@ -160,9 +166,21 @@ export async function materializeDueStandingOrders(
             if (cause.code === 'MARKET_DATA_UNSUPPORTED') {
               throw moneyFailure('MARKET_DATA_UNSUPPORTED', cause.message, { cause });
             }
+            throw moneyFailure('MARKET_DATA_UNAVAILABLE', cause.message, {
+              retryable: true,
+              details: { assetId: order.row.assetId },
+              cause,
+            });
           }
-          result.deferred.push({ orderId: order.entity.id, dueDate, reason: 'market-data' });
-          continue;
+          throw moneyFailure(
+            'MARKET_DATA_UNAVAILABLE',
+            `A standing-order quote is unavailable for asset ${order.row.assetId}.`,
+            {
+              retryable: true,
+              details: { assetId: order.row.assetId },
+              cause,
+            },
+          );
         }
       }
 

@@ -61,6 +61,11 @@ interface LoadedAssetMarket {
   watermark: string;
 }
 
+interface AssetMarketDemand {
+  history: boolean;
+  quote: boolean;
+}
+
 interface PortfolioEngineOptions {
   now?: () => number;
   cache?: VaultDerivedCache<ClientPortfolioDerivation>;
@@ -332,9 +337,9 @@ async function loadMarketInputs(
   market: MarketDataSource,
   signal?: AbortSignal,
 ): Promise<LoadedAssetMarket[]> {
-  const assetIds = [...new Set(model.transactions.map((transaction) => transaction.assetId))];
+  const demandByAsset = marketDemandByAsset(model, today);
   return Promise.all(
-    assetIds.map(async (assetId): Promise<LoadedAssetMarket> => {
+    [...demandByAsset].map(async ([assetId, demand]): Promise<LoadedAssetMarket> => {
       signal?.throwIfAborted();
       const asset = model.assets.get(assetId);
       if (asset === undefined) {
@@ -343,86 +348,160 @@ async function loadMarketInputs(
       const local = storedPrices(document, assetId);
       if (asset.providerId === 'manual') {
         const manual = localManualAssetMarket(document, asset);
-        if (manual.prices.length === 0 || manual.quote === null) {
+        if (demand.history && manual.prices.length === 0) {
           throw moneyFailure(
             'MARKET_DATA_MISSING',
-            `A local valuation is unavailable for manual asset ${assetId}.`,
+            `Historical local valuations are unavailable for manual asset ${assetId}.`,
             { retryable: true, details: { assetId } },
           );
         }
+        if (demand.quote && manual.quote === null) {
+          throw moneyFailure(
+            'MARKET_DATA_MISSING',
+            `A current local valuation is unavailable for manual asset ${assetId}.`,
+            { retryable: true, details: { assetId } },
+          );
+        }
+        const prices = demand.history ? [...manual.prices] : [];
+        if (demand.quote && manual.quote !== null) {
+          prices.push({ date: today, close: manual.quote.price });
+        }
         return {
           asset,
-          prices: manual.prices,
-          quote: manual.quote,
+          prices,
+          quote: demand.quote ? manual.quote : null,
           historyStale: false,
           quoteStale: false,
-          historyMissing: manual.prices.length === 0,
-          quoteMissing: manual.quote === null,
-          watermark: manual.watermark,
+          historyMissing: false,
+          quoteMissing: false,
+          watermark: [
+            demand.history ? `history:${manual.watermark}` : 'history:not-required',
+            demand.quote ? `quote:${manual.watermark}` : 'quote:not-required',
+          ].join(':'),
         };
       }
 
       const [historyResult, quoteResult] = await Promise.all([
-        requiredMarketResult(`daily history for asset ${assetId}`, () =>
-          market.history(assetId, 'MAX', signal),
-        ),
-        requiredMarketResult(`quote for asset ${assetId}`, () => market.quote(assetId, signal)),
+        demand.history
+          ? requiredMarketResult(`daily history for asset ${assetId}`, () =>
+              market.history(assetId, 'MAX', signal),
+            )
+          : null,
+        demand.quote
+          ? requiredMarketResult(`quote for asset ${assetId}`, () => market.quote(assetId, signal))
+          : null,
       ]);
-      assertFreshMarketResult(historyResult, `daily history for asset ${assetId}`);
-      assertFreshMarketResult(quoteResult, `quote for asset ${assetId}`);
-      if (historyResult.value.length === 0) {
-        throw moneyFailure('MARKET_DATA_MISSING', `Daily history for asset ${assetId} is empty.`, {
-          retryable: true,
-          details: { assetId },
-        });
-      }
-      assertMarketWatermark(historyResult.watermark, assetId);
-      for (const point of historyResult.value) {
-        if (
-          !Number.isFinite(Date.parse(point.time)) ||
-          !Number.isFinite(point.close) ||
-          point.close <= 0
-        ) {
-          throw moneyFailure('MARKET_DATA_INVALID', `Daily close for ${assetId} is invalid.`);
+      if (historyResult !== null) {
+        assertFreshMarketResult(historyResult, `daily history for asset ${assetId}`);
+        if (historyResult.value.length === 0) {
+          throw moneyFailure(
+            'MARKET_DATA_MISSING',
+            `Daily history for asset ${assetId} is empty.`,
+            {
+              retryable: true,
+              details: { assetId },
+            },
+          );
+        }
+        assertMarketWatermark(historyResult.watermark, assetId);
+        for (const point of historyResult.value) {
+          if (
+            !Number.isFinite(Date.parse(point.time)) ||
+            !Number.isFinite(point.close) ||
+            point.close <= 0
+          ) {
+            throw moneyFailure('MARKET_DATA_INVALID', `Daily close for ${assetId} is invalid.`);
+          }
         }
       }
-      assertMarketWatermark(quoteResult.watermark, assetId);
-      if (
-        !Number.isFinite(quoteResult.value.price) ||
-        quoteResult.value.price <= 0 ||
-        (quoteResult.value.prevClose != null &&
-          (!Number.isFinite(quoteResult.value.prevClose) || quoteResult.value.prevClose <= 0))
-      ) {
-        throw moneyFailure('MARKET_DATA_INVALID', `Quote for ${assetId} is invalid.`);
+      if (quoteResult !== null) {
+        assertFreshMarketResult(quoteResult, `quote for asset ${assetId}`);
+        assertMarketWatermark(quoteResult.watermark, assetId);
+        if (
+          !Number.isFinite(quoteResult.value.price) ||
+          quoteResult.value.price <= 0 ||
+          (quoteResult.value.prevClose != null &&
+            (!Number.isFinite(quoteResult.value.prevClose) || quoteResult.value.prevClose <= 0))
+        ) {
+          throw moneyFailure('MARKET_DATA_INVALID', `Quote for ${assetId} is invalid.`);
+        }
+        if (quoteResult.value.currency.toUpperCase() !== asset.currency.toUpperCase()) {
+          throw moneyFailure(
+            'MARKET_DATA_INVALID',
+            `Quote currency for ${assetId} does not match its vault asset currency.`,
+          );
+        }
       }
-      if (quoteResult.value.currency.toUpperCase() !== asset.currency.toUpperCase()) {
-        throw moneyFailure(
-          'MARKET_DATA_INVALID',
-          `Quote currency for ${assetId} does not match its vault asset currency.`,
-        );
+      const byDate = new Map(
+        (demand.history ? local : []).map((point) => [point.date, point.close]),
+      );
+      if (historyResult !== null) {
+        for (const point of historyResult.value) {
+          const day = point.time.slice(0, 10);
+          if (day < today) byDate.set(day, point.close);
+        }
       }
-      const byDate = new Map(local.map((point) => [point.date, point.close]));
-      for (const point of historyResult.value) {
-        const day = point.time.slice(0, 10);
-        if (day < today) byDate.set(day, point.close);
-      }
-      byDate.set(today, quoteResult.value.price);
+      if (quoteResult !== null) byDate.set(today, quoteResult.value.price);
       const prices = [...byDate]
         .map(([date, close]) => ({ date, close }))
         .sort((left, right) => left.date.localeCompare(right.date));
       return {
         asset,
         prices,
-        quote: {
-          price: quoteResult.value.price,
-          prevClose: quoteResult.value.prevClose ?? null,
-        },
+        quote:
+          quoteResult === null
+            ? null
+            : {
+                price: quoteResult.value.price,
+                prevClose: quoteResult.value.prevClose ?? null,
+              },
         historyStale: false,
         quoteStale: false,
         historyMissing: false,
         quoteMissing: false,
-        watermark: [historyResult.watermark, quoteResult.watermark].join(':'),
+        watermark: [
+          historyResult === null ? 'history:not-required' : `history:${historyResult.watermark}`,
+          quoteResult === null ? 'quote:not-required' : `quote:${quoteResult.watermark}`,
+        ].join(':'),
       };
+    }),
+  );
+}
+
+function marketDemandByAsset(
+  model: ClientPortfolioModel,
+  today: string,
+): Map<string, AssetMarketDemand> {
+  const transactionsByAsset = new Map<string, ClientPortfolioModel['transactions']>();
+  for (const transaction of model.transactions) {
+    const transactions = transactionsByAsset.get(transaction.assetId);
+    if (transactions === undefined) {
+      transactionsByAsset.set(transaction.assetId, [transaction]);
+    } else {
+      transactions.push(transaction);
+    }
+  }
+
+  return new Map(
+    [...transactionsByAsset].map(([assetId, transactions]) => {
+      const throughToday = transactions.filter(
+        (transaction) => transaction.executedAt.slice(0, 10) <= today,
+      );
+      const priorDays = [
+        ...new Set(
+          throughToday
+            .map((transaction) => transaction.executedAt.slice(0, 10))
+            .filter((day) => day < today),
+        ),
+      ];
+      const history = priorDays.some((day) => {
+        const throughDay = throughToday.filter(
+          (transaction) => transaction.executedAt.slice(0, 10) <= day,
+        );
+        return reducePosition(throughDay).quantity > QTY_EPSILON;
+      });
+      const quote = throughToday.length > 0 && reducePosition(throughToday).quantity > QTY_EPSILON;
+      return [assetId, { history, quote }] as const;
     }),
   );
 }
