@@ -1593,6 +1593,7 @@ TRIAGE_ESC_DIFF=normal
 TRIAGE_FIXER_BASE_HEAD=abc
 TRIAGE_FIXER_HEAD=def
 TRIAGE_OUTCOME=enqueued
+TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
 CYCLE_DIFF=easy
 TRIAGE_FILE=$(triage_state_file 12 22)
 triage_state_save "$TRIAGE_FILE" 12 22 complete
@@ -1646,6 +1647,7 @@ LAST_CHECKER_PR_DISPOSITION=MERGEABLE
 LAST_CHECKER_NEW=502
 TRIAGE_ESC_DIFF=""
 TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
 CYCLE_DIFF=easy
 TRIAGE_FILE=$(triage_state_file 13 23)
 triage_state_save "$TRIAGE_FILE" 13 23 complete
@@ -1660,7 +1662,7 @@ LAST_CHECKER_PR_DISPOSITION=""
 LAST_CHECKER_NEW=""
 TRIAGE_ESC_DIFF=normal
 TRIAGE_OUTCOME=enqueued
-TRIAGE_REVALIDATIONS=0
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
 TRIAGE_FILE=$(triage_state_file 14 24)
 triage_state_save "$TRIAGE_FILE" 14 24 complete
 gh(){ return 1; }
@@ -1690,7 +1692,7 @@ run_reviewer(){
   return 0
 }
 TRIAGE_OUTCOME=enqueued
-TRIAGE_REVALIDATIONS=0
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
 TRIAGE_FILE=$(triage_state_file 15 25)
 triage_state_save "$TRIAGE_FILE" 15 25 complete
 triage 15 25 false; triage 15 25 false; triage 15 25 false
@@ -1705,6 +1707,7 @@ check "budget exhaustion is a durable human outcome" human "$(jq -r .outcome "$T
 # A live queue entry short-circuits the review stage itself (salvage case).
 ESC_REVIEW_CALLS=0
 TRIAGE_OUTCOME=""
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
 TRIAGE_FILE=$(triage_state_file 16 26)
 triage_state_save "$TRIAGE_FILE" 16 26 escalated-review-pending
 printf '%s\n' '{"pr":26}' >"$MFSTATE/merge-queue/7-pr26.json"
@@ -1717,6 +1720,7 @@ rm -f "$MFSTATE/merge-queue/7-pr26.json"
 # An entry appearing between probe and write is a salvage, not a protocol loop.
 enqueue_merge(){ printf '%s\n' '{"pr":27}' >"$MFSTATE/merge-queue/8-pr27.json"; return 1; }
 TRIAGE_OUTCOME=""
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
 TRIAGE_FILE=$(triage_state_file 17 27)
 triage_state_save "$TRIAGE_FILE" 17 27 escalated-review-pending
 triage 17 27 false
@@ -1727,12 +1731,87 @@ rm -f "$MFSTATE/merge-queue/8-pr27.json"
 # A genuine queue write failure still requeues the protocol.
 enqueue_merge(){ return 1; }
 TRIAGE_OUTCOME=""
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
 TRIAGE_FILE=$(triage_state_file 18 28)
 triage_state_save "$TRIAGE_FILE" 18 28 escalated-review-pending
 triage 18 28 false
 check "true queue write failure requeues protocol" 2 "$?"
 
 check "invalid difficulty normalizes to the floor" intermediate "$(diff_at_least banana intermediate)"
+
+# The review budget is spent at the spend site: a latched review stage
+# (deterministic reviewer artifact failure → return 2 → resume) cannot buy
+# reviews past MF_REVALIDATE_MAX+1 while the transition counter sits frozen.
+ESC_REVIEW_CALLS=0; HUMANS=0
+run_reviewer(){ ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1)); return 1; }
+enqueue_merge(){ return 0; }
+TRIAGE_ESC_DIFF=normal
+TRIAGE_OUTCOME=""
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+TRIAGE_FILE=$(triage_state_file 19 29)
+triage_state_save "$TRIAGE_FILE" 19 29 escalated-review-pending
+for tick in 1 2 3 4; do triage 19 29 false; done
+check "latched review stage keeps requeueing under budget" 2 "$?"
+check "latched review stage spends up to the cap" 4 "$ESC_REVIEW_CALLS"
+triage 19 29 false
+check "review budget exhaustion parks" 1 "$?"
+check "review budget exhaustion pays nothing further" 4 "$ESC_REVIEW_CALLS"
+check "review budget exhaustion marks human" 1 "$HUMANS"
+check "spent reviews are durable" 5 "$(jq -r .reviews_spent "$TRIAGE_FILE")"
+
+# Probe failures are bounded and park loudly instead of spinning silently.
+ESC_REVIEW_CALLS=0; HUMANS=0
+MF_QUEUE_PROBE_MAX_SAVE=$MF_QUEUE_PROBE_MAX; MF_QUEUE_PROBE_MAX=2
+gh(){ [ "$1 $2" = "pr view" ] && echo OPEN; }
+run_reviewer(){
+  ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1))
+  LAST_REVIEW_VERDICT="FACTORY-VERDICT: APPROVE"
+  LAST_REVIEW_HEAD=stu
+  LAST_REVIEW_COMMENT_ID=103
+  return 0
+}
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+TRIAGE_FILE=$(triage_state_file 20 30)
+triage_state_save "$TRIAGE_FILE" 20 30 complete
+QUEUE_REAL=$QUEUE; QUEUE=$MFSTATE/queue-gone
+triage 20 30 false; triage 20 30 false
+check "probe failures under the cap stay terminal" 0 "$?"
+check "probe failure count is durable" 2 "$(jq -r .probe_failures "$TRIAGE_FILE")"
+triage 20 30 false
+check "probe failure cap parks loudly" 1 "$?"
+check "probe failure park marks human" 1 "$HUMANS"
+check "probe failures never buy reviews" 0 "$ESC_REVIEW_CALLS"
+QUEUE=$QUEUE_REAL; MF_QUEUE_PROBE_MAX=$MF_QUEUE_PROBE_MAX_SAVE
+
+# A recovered probe resets the failure count before it can drift to a park.
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=1
+TRIAGE_FILE=$(triage_state_file 21 31)
+triage_state_save "$TRIAGE_FILE" 21 31 complete
+printf '%s\n' '{"pr":31}' >"$MFSTATE/merge-queue/9-pr31.json"
+triage 21 31 false
+check "recovered probe stays terminal" 0 "$?"
+check "recovered probe resets the failure count" 0 "$(jq -r .probe_failures "$TRIAGE_FILE")"
+rm -f "$MFSTATE/merge-queue/9-pr31.json"
+
+# Dotfile markers in the queue are never live entries.
+ESC_REVIEW_CALLS=0
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+TRIAGE_FILE=$(triage_state_file 22 32)
+triage_state_save "$TRIAGE_FILE" 22 32 complete
+printf '%s\n' '{}' >"$MFSTATE/merge-queue/.marker-pr32.json"
+triage 22 32 false
+check "dotfile marker is not a live queue entry" 0 "$?"
+check "dotfile marker still triggers the revalidation review" 1 "$ESC_REVIEW_CALLS"
+rm -f "$MFSTATE/merge-queue/.marker-pr32.json"
+
+# Non-numeric or leading-zero budget knobs normalize at source time.
+check "non-numeric revalidation knob falls back to default" 3 \
+  "$( (MF_REVALIDATE_MAX=off; . ./worker.sh >/dev/null 2>&1; printf %s "$MF_REVALIDATE_MAX") )"
+check "leading-zero revalidation knob normalizes decimal" 7 \
+  "$( (MF_REVALIDATE_MAX=07; . ./worker.sh >/dev/null 2>&1; printf %s "$MF_REVALIDATE_MAX") )"
 
 echo "— queue write acknowledgement + CI-fix approval invalidation"
 # Restore production worker helpers after the stage-resume stubs above.
