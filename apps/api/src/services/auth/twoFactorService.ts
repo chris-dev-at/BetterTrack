@@ -20,11 +20,7 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import { decryptSecret, encryptSecret } from '../crypto/secretBox';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
-import type {
-  SecurityMutationContext,
-  SecuritySessionRotation,
-  SessionService,
-} from '../sessions/sessionService';
+import type { SecurityMutationContext, SessionService } from '../sessions/sessionService';
 import {
   buildOtpauthUri,
   generateRecoveryCodes,
@@ -42,12 +38,8 @@ export interface TwoFactorServiceDeps {
   redis: Redis;
   /** Sends the email-method setup code; also the SMTP-configured signal for the guard. */
   email: EmailService;
-  /**
-   * Rotates only the authenticated current cookie after a generation transition.
-   * Omitted in the worker, whose export-only service instance never receives a
-   * session security context.
-   */
-  sessions?: Pick<SessionService, 'rotateAfterSecurityMutation' | 'destroyAllForUser'>;
+  /** Omitted in the worker, whose export-only instance never mutates factors. */
+  sessions?: Pick<SessionService, 'destroyAllForUser'>;
 }
 
 /** Which second-factor methods an account has switched on (#298). */
@@ -64,13 +56,9 @@ export interface TwoFactorAuthorizationState {
   securityGeneration: number;
 }
 
-/**
- * Internal result for a factor mutation. The HTTP layer emits only `response`;
- * `sessionRotation` is used solely to replace a cookie after the durable commit.
- */
+/** Internal result wrapper; the HTTP layer emits only `response`. */
 export interface TwoFactorMutationResult<T> {
   response: T;
-  sessionRotation: SecuritySessionRotation | null;
 }
 
 export interface TwoFactorService {
@@ -127,7 +115,11 @@ export interface TwoFactorService {
    * when SMTP is unconfigured and email would be the *only* method — a user must
    * never lock themselves out behind mail that can't be sent.
    */
-  startEmailEnrollment(userId: string, ip?: string | null): Promise<void>;
+  startEmailEnrollment(
+    userId: string,
+    ip?: string | null,
+    security?: SecurityMutationContext,
+  ): Promise<void>;
   /**
    * Confirm email-method enrollment (#298): a valid setup code turns the email
    * method on. Recovery codes are issued only when this is the FIRST method
@@ -185,6 +177,11 @@ export interface TwoFactorService {
 const EMAIL_SETUP_CODE_TTL_MINUTES = 10;
 const emailSetupKey = (userId: string) => `2fa_email_setup:${userId}`;
 
+interface EmailSetupState {
+  codeHash: string;
+  securityGeneration: number;
+}
+
 export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorService {
   const { config, userRepo, twoFactorRepo, audit, redis, email, sessions } = deps;
 
@@ -206,24 +203,35 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
     return { codes, hashes };
   }
 
-  async function rotateCurrentSession(
-    userId: string,
-    security: SecurityMutationContext | undefined,
-    securityGeneration: number,
-  ): Promise<SecuritySessionRotation | null> {
-    if (!sessions) {
-      if (security?.sessionId) throw unauthorized();
-      return null;
+  async function invalidateSessions(userId: string): Promise<void> {
+    if (!sessions) return;
+    try {
+      await sessions.destroyAllForUser(userId);
+    } catch {
+      // The committed generation rejects every old cookie even when eager
+      // Redis cleanup is unavailable.
     }
-    if (!security?.sessionId) {
-      try {
-        await sessions.destroyAllForUser(userId);
-      } catch {
-        // The committed generation already fences every cookie.
+  }
+
+  async function invalidEmailSetup(userId: string): Promise<never> {
+    await redis.del(emailSetupKey(userId));
+    throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
+  }
+
+  async function parseEmailSetup(userId: string, raw: string): Promise<EmailSetupState> {
+    try {
+      const parsed = JSON.parse(raw) as Partial<EmailSetupState>;
+      if (
+        typeof parsed.codeHash !== 'string' ||
+        !Number.isSafeInteger(parsed.securityGeneration) ||
+        parsed.securityGeneration! < 0
+      ) {
+        return invalidEmailSetup(userId);
       }
-      return null;
+      return parsed as EmailSetupState;
+    } catch {
+      return invalidEmailSetup(userId);
     }
-    return sessions.rotateAfterSecurityMutation(userId, securityGeneration, security.persistent);
   }
 
   async function authorizationState(userId: string): Promise<TwoFactorAuthorizationState | null> {
@@ -377,8 +385,8 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      const sessionRotation = await rotateCurrentSession(userId, security, securityGeneration);
-      return { response: { recoveryCodes }, sessionRotation };
+      await invalidateSessions(userId);
+      return { response: { recoveryCodes } };
     },
 
     async disableTotp(userId, code, ip, security) {
@@ -403,15 +411,18 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      const sessionRotation = await rotateCurrentSession(userId, security, securityGeneration);
-      return { response: undefined, sessionRotation };
+      await invalidateSessions(userId);
+      return { response: undefined };
     },
 
-    async startEmailEnrollment(userId, ip) {
+    async startEmailEnrollment(userId, ip, security) {
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
       const state = await twoFactorRepo.getState(userId);
-      if (state?.emailEnabled) {
+      if (!state) throw unauthorized();
+      const securityGeneration = security?.securityGeneration ?? state.securityGeneration;
+      if (state.securityGeneration !== securityGeneration) throw unauthorized();
+      if (state.emailEnabled) {
         throw badRequest(
           'Email two-factor authentication is already enabled.',
           'TWO_FACTOR_ALREADY_ENABLED',
@@ -431,9 +442,15 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       }
 
       const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+      const current = await twoFactorRepo.getState(userId);
+      if (!current || current.securityGeneration !== securityGeneration) throw unauthorized();
+      const setup: EmailSetupState = {
+        codeHash: hashToken(code),
+        securityGeneration,
+      };
       await redis.set(
         emailSetupKey(userId),
-        hashToken(code),
+        JSON.stringify(setup),
         'EX',
         EMAIL_SETUP_CODE_TTL_MINUTES * 60,
       );
@@ -466,8 +483,23 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         );
       }
 
-      const stored = await redis.get(emailSetupKey(userId));
-      if (!stored || hashToken(code.trim()) !== stored) {
+      const raw = await redis.get(emailSetupKey(userId));
+      if (!raw) {
+        throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
+      }
+      const setup = await parseEmailSetup(userId, raw);
+      const securityGeneration = security?.securityGeneration ?? state.securityGeneration;
+      if (state.securityGeneration !== securityGeneration) {
+        // Do not let an older in-flight request erase a newer setup record.
+        if (setup.securityGeneration !== state.securityGeneration) {
+          await redis.del(emailSetupKey(userId));
+        }
+        throw unauthorized();
+      }
+      if (setup.securityGeneration !== securityGeneration) {
+        return invalidEmailSetup(userId);
+      }
+      if (hashToken(code.trim()) !== setup.codeHash) {
         throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
       }
       await redis.del(emailSetupKey(userId));
@@ -476,13 +508,13 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       // provided them.
       const isFirstMethod = !state.enabled;
       const recovery = isFirstMethod ? recoveryCodeBatch() : null;
-      const securityGeneration = await twoFactorRepo.confirmEmail(
+      const committedGeneration = await twoFactorRepo.confirmEmail(
         userId,
         undefined,
         recovery?.hashes ?? null,
-        security?.securityGeneration ?? state.securityGeneration,
+        setup.securityGeneration,
       );
-      if (securityGeneration === null) throw unauthorized();
+      if (committedGeneration === null) throw unauthorized();
       const recoveryCodes = recovery?.codes ?? null;
       await audit.record({
         actorId: userId,
@@ -491,8 +523,8 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      const sessionRotation = await rotateCurrentSession(userId, security, securityGeneration);
-      return { response: { recoveryCodes }, sessionRotation };
+      await invalidateSessions(userId);
+      return { response: { recoveryCodes } };
     },
 
     async disableEmail(userId, ip, security) {
@@ -519,8 +551,8 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      const sessionRotation = await rotateCurrentSession(userId, security, securityGeneration);
-      return { response: undefined, sessionRotation };
+      await invalidateSessions(userId);
+      return { response: undefined };
     },
 
     async regenerateRecoveryCodes(userId, ip, security) {
@@ -541,10 +573,9 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         targetId: userId,
         ip,
       });
-      const sessionRotation = await rotateCurrentSession(userId, security, securityGeneration);
+      await invalidateSessions(userId);
       return {
         response: { recoveryCodes: recovery.codes },
-        sessionRotation,
       };
     },
 

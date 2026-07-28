@@ -202,7 +202,7 @@ describe('session rotation on login (PROJECTPLAN.md §6.1, §10)', () => {
 });
 
 describe('password change invalidates all sessions (PROJECTPLAN.md §6.1, §10)', () => {
-  it('kills a second concurrent session and keeps the changing one alive', async () => {
+  it('kills the changing session and every concurrent sibling', async () => {
     const admin = await harness.seedAdmin();
 
     const agentA = request.agent(harness.app);
@@ -224,8 +224,14 @@ describe('password change invalidates all sessions (PROJECTPLAN.md §6.1, §10)'
       .send({ currentPassword: admin.password, newPassword: 'admin-rotated-secret-2' });
     expect(changed.status).toBe(200);
 
-    // The other device is logged out instantly; the changing device continues.
+    // No cookie survives the transition, including the explicitly acting one.
     expect((await agentB.get('/api/v1/auth/me')).status).toBe(401);
-    expect((await agentA.get('/api/v1/auth/me')).status).toBe(200);
+    expect((await agentA.get('/api/v1/auth/me')).status).toBe(401);
+
+    const fresh = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: admin.email, password: 'admin-rotated-secret-2' });
+    expect(fresh.status).toBe(200);
   });
 });

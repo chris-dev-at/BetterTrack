@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request } from 'express';
 
 import {
   adminTwoFactorEmailStartRequestSchema,
@@ -14,38 +14,20 @@ import {
 } from '@bettertrack/contracts';
 
 import { unauthorized } from '../../errors';
-import type {
-  SecuritySessionRotation,
-  SessionSecurityContext,
-} from '../../services/sessions/sessionService';
+import type { SessionSecurityContext } from '../../services/sessions/sessionService';
 import type { AppContext } from '../context';
-import { setSessionCookie } from '../cookies';
+import { clearSessionCookie } from '../cookies';
 import { validateBody } from '../middleware/validate';
 import { toAdminSessionPolicy } from '../serializers';
 
 const sessionSecurityContextOf = (req: Request): SessionSecurityContext => {
-  if (
-    req.sessionId &&
-    req.sessionSecurityGeneration !== undefined &&
-    req.sessionPersistent !== undefined
-  ) {
+  if (req.sessionId && req.sessionSecurityGeneration !== undefined) {
     return {
       sessionId: req.sessionId,
       securityGeneration: req.sessionSecurityGeneration,
-      persistent: req.sessionPersistent,
     };
   }
   throw unauthorized();
-};
-
-const setSecurityRotationCookie = (
-  res: Response,
-  ctx: AppContext,
-  rotation: SecuritySessionRotation | null,
-): void => {
-  if (rotation) {
-    setSessionCookie(res, ctx.config, rotation.sessionId, rotation.persistent);
-  }
 };
 
 /**
@@ -66,7 +48,7 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
   // must stay side-effect free at mount time (checkOpenapiCoverage relies on it).
 
   router.get('/security/2fa/status', async (req, res) => {
-    res.json(await ctx.adminTwoFactor.status(req.authUser!.id));
+    res.json(await ctx.adminTwoFactor.status(req.authUser!.id, sessionSecurityContextOf(req)));
   });
 
   router.post('/security/2fa/totp/enroll', async (req, res) => {
@@ -86,7 +68,7 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
         req.ip,
         sessionSecurityContextOf(req),
       );
-      setSecurityRotationCookie(res, ctx, result.sessionRotation);
+      clearSessionCookie(res, ctx.config);
       res.json(result.response);
     },
   );
@@ -96,13 +78,13 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(twoFactorDisableRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorDisableRequest;
-      const result = await ctx.adminTwoFactor.disableTotp(
+      await ctx.adminTwoFactor.disableTotp(
         req.authUser!.id,
         code,
         req.ip,
         sessionSecurityContextOf(req),
       );
-      setSecurityRotationCookie(res, ctx, result.sessionRotation);
+      clearSessionCookie(res, ctx.config);
       res.status(204).end();
     },
   );
@@ -112,7 +94,13 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
     validateBody(adminTwoFactorEmailStartRequestSchema),
     async (req, res) => {
       const { email, proof } = req.valid?.body as AdminTwoFactorEmailStartRequest;
-      await ctx.adminTwoFactor.startEmailEnrollment(req.authUser!.id, email, proof, req.ip);
+      await ctx.adminTwoFactor.startEmailEnrollment(
+        req.authUser!.id,
+        email,
+        proof,
+        sessionSecurityContextOf(req),
+        req.ip,
+      );
       res.status(204).end();
     },
   );
@@ -128,18 +116,14 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
         req.ip,
         sessionSecurityContextOf(req),
       );
-      setSecurityRotationCookie(res, ctx, result.sessionRotation);
+      clearSessionCookie(res, ctx.config);
       res.json(result.response);
     },
   );
 
   router.post('/security/2fa/email/disable', async (req, res) => {
-    const result = await ctx.adminTwoFactor.disableEmail(
-      req.authUser!.id,
-      req.ip,
-      sessionSecurityContextOf(req),
-    );
-    setSecurityRotationCookie(res, ctx, result.sessionRotation);
+    await ctx.adminTwoFactor.disableEmail(req.authUser!.id, req.ip, sessionSecurityContextOf(req));
+    clearSessionCookie(res, ctx.config);
     res.status(204).end();
   });
 
@@ -149,7 +133,7 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
       req.ip,
       sessionSecurityContextOf(req),
     );
-    setSecurityRotationCookie(res, ctx, result.sessionRotation);
+    clearSessionCookie(res, ctx.config);
     res.json(result.response);
   });
 }

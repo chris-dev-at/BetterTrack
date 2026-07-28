@@ -69,7 +69,12 @@ describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
       .set(...XRW)
       .send({ currentPassword: created.body.tempPassword, newPassword: 'normal-strong-pass-7' });
 
-    const asUser = await userAgent.get('/api/v1/admin/users');
+    const authenticatedUser = await loginAgent(
+      harness.app,
+      'normal@test.dev',
+      'normal-strong-pass-7',
+    );
+    const asUser = await authenticatedUser.get('/api/v1/admin/users');
     expect(asUser.status).toBe(404);
 
     const anon = await request(harness.app).get('/api/v1/admin/users');
@@ -161,7 +166,9 @@ describe('admin creates user → forced password change (PROJECTPLAN.md §6.1)',
     expect(changed.status).toBe(200);
     expect(changed.body.mustChangePassword).toBe(false);
 
-    const me = await userAgent.get('/api/v1/auth/me');
+    expect((await userAgent.get('/api/v1/auth/me')).status).toBe(401);
+    const fresh = await loginAgent(harness.app, 'fresh@test.dev', 'fresh-strong-secret-99');
+    const me = await fresh.get('/api/v1/auth/me');
     expect(me.status).toBe(200);
   });
 

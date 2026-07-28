@@ -52,7 +52,18 @@ function lastEmailedCode(transport: { sent: OutgoingMail[] }): string {
 
 function setsSessionCookie(res: request.Response): boolean {
   const setCookie = (res.headers['set-cookie'] as unknown as string[] | undefined) ?? [];
-  return setCookie.some((c) => c.startsWith('bt_sid='));
+  return setCookie.some(
+    (cookie) =>
+      cookie.startsWith('bt_sid=') && !/expires=thu, 01 jan 1970 00:00:00 gmt/i.test(cookie),
+  );
+}
+
+function clearsSessionCookie(res: request.Response): boolean {
+  const setCookie = (res.headers['set-cookie'] as unknown as string[] | undefined) ?? [];
+  return setCookie.some(
+    (cookie) =>
+      cookie.startsWith('bt_sid=') && /expires=thu, 01 jan 1970 00:00:00 gmt/i.test(cookie),
+  );
 }
 
 function login(app: Application, identifier: string, password: string) {
@@ -85,7 +96,49 @@ async function loginAdminAgent(harness: TestHarness, admin: SeededAdmin, staySig
   return agent;
 }
 
-/** Take a fresh admin all the way through TOTP enrollment, then sign out. */
+/** Perform the fresh password + TOTP login required after an admin transition. */
+async function loginAdminWithTotp(harness: TestHarness, admin: SeededAdmin, secret: string) {
+  const agent = request.agent(harness.app);
+  const challenge = twoFactorChallengeResponseSchema.parse(
+    (
+      await agent
+        .post('/api/v1/auth/login')
+        .set(...XRW)
+        .send({ identifier: admin.email, password: admin.password })
+    ).body,
+  );
+  const verified = await agent
+    .post('/api/v1/auth/2fa/verify')
+    .set(...XRW)
+    .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) });
+  expect(verified.status).toBe(200);
+  return agent;
+}
+
+/** Perform the fresh password + emailed-code login for an email-only admin. */
+async function loginAdminWithEmail(
+  harness: TestHarness,
+  admin: SeededAdmin,
+  transport: { sent: OutgoingMail[] },
+) {
+  const agent = request.agent(harness.app);
+  const challenge = twoFactorChallengeResponseSchema.parse(
+    (
+      await agent
+        .post('/api/v1/auth/login')
+        .set(...XRW)
+        .send({ identifier: admin.email, password: admin.password })
+    ).body,
+  );
+  const verified = await agent
+    .post('/api/v1/auth/2fa/verify')
+    .set(...XRW)
+    .send({ pendingToken: challenge.pendingToken, code: lastEmailedCode(transport) });
+  expect(verified.status).toBe(200);
+  return agent;
+}
+
+/** Take a fresh admin through TOTP enrollment; confirmation logs it out. */
 async function enrollAdminTotp(harness: TestHarness, admin: SeededAdmin) {
   const agent = await loginAdminAgent(harness, admin);
   const { secret } = twoFactorEnrollResponseSchema.parse(
@@ -96,7 +149,7 @@ async function enrollAdminTotp(harness: TestHarness, admin: SeededAdmin) {
     .set(...XRW)
     .send({ code: generateTotpCode(secret) });
   const { recoveryCodes } = twoFactorMethodEnabledResponseSchema.parse(confirm.body);
-  await agent.post('/api/v1/auth/logout').set(...XRW);
+  expect(clearsSessionCookie(confirm)).toBe(true);
   return { secret, recoveryCodes: recoveryCodes! };
 }
 
@@ -152,7 +205,7 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     });
   });
 
-  it('completing enrollment lifts the gate and shows recovery codes exactly once', async () => {
+  it('completing enrollment logs out the acting device and a fresh login lifts the gate', async () => {
     const harness = await createTestApp();
     const admin = await harness.seedAdmin();
     const agent = await loginAdminAgent(harness, admin);
@@ -165,21 +218,25 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
     expect(confirm.status).toBe(200);
+    expect(clearsSessionCookie(confirm)).toBe(true);
+    expect(setsSessionCookie(confirm)).toBe(false);
     const { recoveryCodes } = twoFactorMethodEnabledResponseSchema.parse(confirm.body);
     expect(recoveryCodes).toHaveLength(10);
 
-    // The same enrollment session now reaches admin routes — no re-login (AC1).
-    expect((await agent.get('/api/v1/admin/users')).status).toBe(200);
+    // No session survives the factor transition, including the acting device.
+    expect((await agent.get('/api/v1/admin/users')).status).toBe(404);
 
+    const fresh = await loginAdminWithTotp(harness, admin, secret);
+    expect((await fresh.get('/api/v1/admin/users')).status).toBe(200);
     const status = adminTwoFactorStatusResponseSchema.parse(
-      (await agent.get('/api/v1/admin/security/2fa/status')).body,
+      (await fresh.get('/api/v1/admin/security/2fa/status')).body,
     );
     expect(status.setupRequired).toBe(false);
     expect(status.totpEnabled).toBe(true);
     expect(status.recoveryCodesRemaining).toBe(10);
   });
 
-  it('rotates only the confirming bootstrap session and rejects its sibling', async () => {
+  it('invalidates the confirming bootstrap session and every sibling', async () => {
     const harness = await createTestApp();
     const admin = await harness.seedAdmin();
     const current = await loginAdminAgent(harness, admin);
@@ -197,12 +254,15 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
       .send({ code: generateTotpCode(secret) });
     cleanup.mockRestore();
     expect(confirm.status).toBe(200);
+    expect(clearsSessionCookie(confirm)).toBe(true);
+    expect(setsSessionCookie(confirm)).toBe(false);
 
-    // The explicitly authenticated current device was rotated to generation 1.
-    expect((await current.get('/api/v1/admin/users')).status).toBe(200);
-    // Its pre-enrollment sibling remains at generation 0 and cannot inherit
-    // either admin authority or first-enrollment bootstrap.
+    // Eager cleanup failed, but both G0 cookies are rejected by the durable G1
+    // boundary and no G1 replacement was minted.
+    expect((await current.get('/api/v1/admin/users')).status).toBe(404);
     expect((await sibling.get('/api/v1/admin/security/2fa/status')).status).toBe(404);
+    const fresh = await loginAdminWithTotp(harness, admin, secret);
+    expect((await fresh.get('/api/v1/admin/users')).status).toBe(200);
   });
 
   it('rechecks the captured generation at the final bootstrap gate', async () => {
@@ -236,13 +296,14 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     const staleRequest = current.get('/api/v1/admin/users').then((response) => response);
     await gateEntered.promise;
 
-    // Request A commits first-factor enrollment at generation 1 and rotates the
-    // browser onto a distinct cookie before B is allowed to finish.
+    // Request A commits first-factor enrollment at generation 1 and logs out
+    // every cookie before B is allowed to finish.
     const confirm = await current
       .post('/api/v1/admin/security/2fa/totp/confirm')
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
     expect(confirm.status).toBe(200);
+    expect(clearsSessionCookie(confirm)).toBe(true);
 
     // B must compare its captured G0 with the factor-state read at G1 instead of
     // inheriting the newly enabled administrator assurance.
@@ -254,168 +315,72 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     expect(protectedHandler).not.toHaveBeenCalled();
     protectedHandler.mockRestore();
 
-    // B finishes last. It must emit no stale G0 Set-Cookie header that could
-    // overwrite A's G1 handoff in the shared browser cookie jar.
-    expect((await current.get('/api/v1/admin/users')).status).toBe(200);
+    // B finishes last and cannot restore the old cookie. Only a fresh explicit
+    // password + factor login establishes a new session.
+    expect((await current.get('/api/v1/admin/users')).status).toBe(404);
+    const fresh = await loginAdminWithTotp(harness, admin, secret);
+    expect((await fresh.get('/api/v1/admin/users')).status).toBe(200);
   });
 
-  it.each([
-    { label: 'before the new-session handoff', pauseHandoff: true },
-    { label: 'after the new-session handoff', pauseHandoff: false },
-  ])(
-    'keeps the rotated device valid when stale resolver cleanup lands $label',
-    async ({ pauseHandoff }) => {
-      const harness = await createTestApp();
-      const admin = await harness.seedAdmin();
-      const current = await loginAdminAgent(harness, admin, false);
-      const [currentRecord] = await sessionRecordsFor(harness, admin.id);
-      expect(currentRecord).toBeDefined();
-      await loginAdminAgent(harness, admin);
-      const siblingRecord = (await sessionRecordsFor(harness, admin.id)).find(
-        ({ sessionId }) => sessionId !== currentRecord!.sessionId,
-      );
-      expect(siblingRecord).toBeDefined();
-
-      const { secret } = twoFactorEnrollResponseSchema.parse(
-        (await current.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
-      );
-
-      // Cache the old G0 payload inside a resolver, but do not let it compare the
-      // freshly read user generation or run stale cleanup yet.
-      const staleRead = deferred();
-      const releaseStaleResolver = deferred();
-      const originalGet = harness.ctx.redis.get.bind(harness.ctx.redis) as (
-        key: string | Buffer,
-      ) => Promise<string | null>;
-      let pauseOldRead = true;
-      const getSpy = vi.spyOn(harness.ctx.redis, 'get').mockImplementation(async (key) => {
-        const value = await originalGet(key);
-        if (pauseOldRead && key.toString() === currentRecord!.key) {
-          pauseOldRead = false;
-          staleRead.resolve();
-          await releaseStaleResolver.promise;
-        }
-        return value;
-      });
-      const staleResolution = harness.ctx.auth.resolveSession(currentRecord!.sessionId);
-      await staleRead.promise;
-
-      const handoffReached = deferred();
-      const releaseHandoff = deferred();
-      const originalSet = harness.ctx.redis.set.bind(harness.ctx.redis) as (
-        ...args: unknown[]
-      ) => Promise<unknown>;
-      let pauseNewSession = pauseHandoff;
-      const setSpy = vi.spyOn(harness.ctx.redis, 'set').mockImplementation((async (
-        ...args: unknown[]
-      ) => {
-        const key = args[0];
-        if (
-          pauseNewSession &&
-          typeof key === 'string' &&
-          key.startsWith('sess:') &&
-          key !== currentRecord!.key &&
-          key !== siblingRecord!.key
-        ) {
-          pauseNewSession = false;
-          handoffReached.resolve();
-          await releaseHandoff.promise;
-        }
-        return originalSet(...args);
-      }) as never);
-
-      const confirmRequest = current
-        .post('/api/v1/admin/security/2fa/totp/confirm')
-        .set(...XRW)
-        .send({ code: generateTotpCode(secret) })
-        .then((response) => response);
-
-      let confirm: request.Response;
-      if (pauseHandoff) {
-        // The PostgreSQL transition is committed, but the distinct G1 session
-        // has not been written. Let stale cleanup delete the old id first.
-        await handoffReached.promise;
-        releaseStaleResolver.resolve();
-        expect(await staleResolution).toBeNull();
-        releaseHandoff.resolve();
-        confirm = await confirmRequest;
-      } else {
-        // Let the mutation mint/return its G1 session, then resume a resolver
-        // that still holds the old G0 payload and performs delayed cleanup.
-        confirm = await confirmRequest;
-        releaseStaleResolver.resolve();
-        expect(await staleResolution).toBeNull();
-      }
-      getSpy.mockRestore();
-      setSpy.mockRestore();
-
-      expect(confirm.status).toBe(200);
-      expect(setsSessionCookie(confirm)).toBe(true);
-      const records = await sessionRecordsFor(harness, admin.id);
-      expect(records).toHaveLength(1);
-      const [rotated] = records;
-      expect(rotated!.sessionId).not.toBe(currentRecord!.sessionId);
-      expect(rotated!.sessionId).not.toBe(siblingRecord!.sessionId);
-      expect(rotated!.data).toMatchObject({
-        securityGeneration: 1,
-        persistent: false,
-      });
-      expect(await harness.ctx.auth.resolveSession(currentRecord!.sessionId)).toBeNull();
-      expect(await harness.ctx.auth.resolveSession(siblingRecord!.sessionId)).toBeNull();
-      expect(await harness.ctx.auth.resolveSession(rotated!.sessionId)).toMatchObject({
-        securityGeneration: 1,
-        persistent: false,
-      });
-      expect((await current.get('/api/v1/admin/users')).status).toBe(200);
-    },
-  );
-
-  it('does not let a late stale-resolution response clear the rotated browser cookie', async () => {
+  it('rejects bootstrap status when break-glass advances the captured generation', async () => {
     const harness = await createTestApp();
     const admin = await harness.seedAdmin();
-    const current = await loginAdminAgent(harness, admin, false);
-    const [currentRecord] = await sessionRecordsFor(harness, admin.id);
-    expect(currentRecord).toBeDefined();
-    const { secret } = twoFactorEnrollResponseSchema.parse(
-      (await current.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
-    );
+    const agent = await loginAdminAgent(harness, admin);
+    const statusEntered = deferred();
+    const releaseStatus = deferred();
+    const status = harness.ctx.adminTwoFactor.status.bind(harness.ctx.adminTwoFactor);
+    const statusSpy = vi
+      .spyOn(harness.ctx.adminTwoFactor, 'status')
+      .mockImplementation(async (...args) => {
+        statusEntered.resolve();
+        await releaseStatus.promise;
+        return status(...args);
+      });
 
-    // Request B caches G0 in loadSession, but pauses before the durable user
-    // read that will discover the transition.
-    const staleRead = deferred();
-    const releaseStaleResolver = deferred();
-    const originalGet = harness.ctx.redis.get.bind(harness.ctx.redis) as (
-      key: string | Buffer,
-    ) => Promise<string | null>;
-    let pauseOldRead = true;
-    const getSpy = vi.spyOn(harness.ctx.redis, 'get').mockImplementation(async (key) => {
-      const value = await originalGet(key);
-      if (pauseOldRead && key.toString() === currentRecord!.key) {
-        pauseOldRead = false;
-        staleRead.resolve();
-        await releaseStaleResolver.promise;
-      }
-      return value;
-    });
-    const staleRequest = current.get('/api/v1/auth/me').then((response) => response);
-    await staleRead.promise;
+    // The route has already captured G0 before the service read is paused.
+    const staleStatus = agent.get('/api/v1/admin/security/2fa/status').then((response) => response);
+    await statusEntered.promise;
+    expect(await resetAdminTwoFactorEnrollment(harness.db, admin.email)).not.toBeNull();
+    releaseStatus.resolve();
 
-    // Request A commits G1 and the same browser accepts its distinct-id cookie.
-    const confirm = await current
-      .post('/api/v1/admin/security/2fa/totp/confirm')
+    const denied = await staleStatus;
+    statusSpy.mockRestore();
+    expect(denied.status).toBe(401);
+    expect(setsSessionCookie(denied)).toBe(false);
+  });
+
+  it('does not send or persist email setup after break-glass wins following factor proof', async () => {
+    const transport = recordingTransport();
+    const harness = await createTestApp({ env: SMTP_ENV, emailTransport: transport });
+    const admin = await harness.seedAdmin();
+    const { secret } = await enrollAdminTotp(harness, admin);
+    const agent = await loginAdminWithTotp(harness, admin, secret);
+    const proofChecked = deferred();
+    const releaseProof = deferred();
+    const verifyTotp = harness.ctx.twoFactor.verifyTotpCode.bind(harness.ctx.twoFactor);
+    const verifySpy = vi
+      .spyOn(harness.ctx.twoFactor, 'verifyTotpCode')
+      .mockImplementation(async (...args) => {
+        const valid = await verifyTotp(...args);
+        proofChecked.resolve();
+        await releaseProof.promise;
+        return valid;
+      });
+
+    const staleStart = agent
+      .post('/api/v1/admin/security/2fa/email/start')
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
-    expect(confirm.status).toBe(200);
-    expect(setsSessionCookie(confirm)).toBe(true);
+      .send({ email: 'stale@ops.test', proof: generateTotpCode(secret) })
+      .then((response) => response);
+    await proofChecked.promise;
+    expect(await resetAdminTwoFactorEnrollment(harness.db, admin.email)).not.toBeNull();
+    releaseProof.resolve();
 
-    // B finishes last, rejects its cached G0 authority, and must emit no
-    // clear-cookie header capable of deleting A's newer handoff.
-    releaseStaleResolver.resolve();
-    const stale = await staleRequest;
-    getSpy.mockRestore();
-    expect(stale.status).toBe(401);
-    expect(setsSessionCookie(stale)).toBe(false);
-    expect((await current.get('/api/v1/admin/users')).status).toBe(200);
+    const denied = await staleStart;
+    verifySpy.mockRestore();
+    expect(denied.status).toBe(401);
+    expect(transport.sent).toHaveLength(0);
+    expect(await harness.ctx.redis.get(`admin_2fa_email_setup:${admin.id}`)).toBeNull();
   });
 
   it('fails legacy, malformed, and mismatched bootstrap sessions closed', async () => {
@@ -538,13 +503,15 @@ describe('mandatory admin-login 2FA — email OTP to the 2FA email (§6.12, #400
       .set(...XRW)
       .send({ code: lastEmailedCode(transport) });
     expect(confirm.status).toBe(200);
+    expect(clearsSessionCookie(confirm)).toBe(true);
+    const authenticated = await loginAdminWithEmail(harness, admin, transport);
     const status = adminTwoFactorStatusResponseSchema.parse(
-      (await agent.get('/api/v1/admin/security/2fa/status')).body,
+      (await authenticated.get('/api/v1/admin/security/2fa/status')).body,
     );
     expect(status.emailEnabled).toBe(true);
     expect(status.twoFactorEmail).toBe(TWO_FA_EMAIL);
 
-    await agent.post('/api/v1/auth/logout').set(...XRW);
+    await authenticated.post('/api/v1/auth/logout').set(...XRW);
     transport.sent.length = 0;
 
     // Login now issues a challenge and auto-sends the code to the 2FA email.
@@ -563,6 +530,35 @@ describe('mandatory admin-login 2FA — email OTP to the 2FA email (§6.12, #400
       .send({ pendingToken: challenge.pendingToken, code: lastEmailedCode(transport) });
     expect(verify.status).toBe(200);
   });
+
+  it('rejects and deletes an admin email setup code after a generation transition', async () => {
+    const transport = recordingTransport();
+    const harness = await createTestApp({ env: SMTP_ENV, emailTransport: transport });
+    const admin = await harness.seedAdmin();
+    const stale = await loginAdminAgent(harness, admin);
+
+    const started = await stale
+      .post('/api/v1/admin/security/2fa/email/start')
+      .set(...XRW)
+      .send({ email: TWO_FA_EMAIL });
+    expect(started.status).toBe(204);
+    const staleCode = lastEmailedCode(transport);
+    expect(
+      JSON.parse((await harness.ctx.redis.get(`admin_2fa_email_setup:${admin.id}`))!),
+    ).toMatchObject({ securityGeneration: 0 });
+
+    expect(await resetAdminTwoFactorEnrollment(harness.db, admin.email)).not.toBeNull();
+    const fresh = await loginAdminAgent(harness, admin);
+    const rejected = await fresh
+      .post('/api/v1/admin/security/2fa/email/confirm')
+      .set(...XRW)
+      .send({ code: staleCode });
+
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error.code).toBe('TWO_FACTOR_INVALID_CODE');
+    expect(await harness.ctx.redis.get(`admin_2fa_email_setup:${admin.id}`)).toBeNull();
+    expect((await harness.ctx.twoFactor.getMethods(admin.id)).email).toBe(false);
+  });
 });
 
 describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§6.12, #400)', () => {
@@ -572,14 +568,16 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
     const admin = await harness.seedAdmin();
 
     // Enroll TOTP first, so the admin is enrolled and holds a TOTP proof.
-    const agent = await loginAdminAgent(harness, admin);
+    const bootstrap = await loginAdminAgent(harness, admin);
     const { secret } = twoFactorEnrollResponseSchema.parse(
-      (await agent.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
+      (await bootstrap.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
     );
-    await agent
+    const totpConfirm = await bootstrap
       .post('/api/v1/admin/security/2fa/totp/confirm')
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
+    expect(clearsSessionCookie(totpConfirm)).toBe(true);
+    let agent = await loginAdminWithTotp(harness, admin, secret);
 
     // Setting the 2FA email while already enrolled requires a fresh proof.
     const noProof = await agent
@@ -601,7 +599,9 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
       .set(...XRW)
       .send({ code: lastEmailedCode(transport) });
     expect(confirm.status).toBe(200);
+    expect(clearsSessionCookie(confirm)).toBe(true);
 
+    agent = await loginAdminWithTotp(harness, admin, secret);
     const firstStatus = adminTwoFactorStatusResponseSchema.parse(
       (await agent.get('/api/v1/admin/security/2fa/status')).body,
     );
@@ -637,7 +637,9 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
       .set(...XRW)
       .send({ code: lastEmailedCode(transport) });
     expect(changeConfirm.status).toBe(200);
+    expect(clearsSessionCookie(changeConfirm)).toBe(true);
 
+    agent = await loginAdminWithTotp(harness, admin, secret);
     const changedStatus = adminTwoFactorStatusResponseSchema.parse(
       (await agent.get('/api/v1/admin/security/2fa/status')).body,
     );
@@ -712,7 +714,7 @@ describe('mandatory admin-login 2FA — break-glass reset (§6.12, #400)', () =>
     expect(gated.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
   });
 
-  it('rejects a password-change session after DB-only break-glass until fresh login', async () => {
+  it('rejects a session captured before DB-only break-glass until fresh login', async () => {
     const harness = await createTestApp();
     const admin = await harness.seedAdmin();
     const stale = await loginAdminAgent(harness, admin);
@@ -723,12 +725,14 @@ describe('mandatory admin-login 2FA — break-glass reset (§6.12, #400)', () =>
       .set(...XRW)
       .send({ currentPassword: admin.password, newPassword });
     expect(changed.status).toBe(200);
+    expect(clearsSessionCookie(changed)).toBe(true);
 
+    const beforeReset = await loginAdminAgent(harness, { ...admin, password: newPassword });
     expect(await resetAdminTwoFactorEnrollment(harness.db, admin.email)).not.toBeNull();
 
     // The shell utility has no Redis connection, so this proves the durable
     // generation—not eager deletion—closes the bootstrap route.
-    expect((await stale.get('/api/v1/admin/security/2fa/status')).status).toBe(404);
+    expect((await beforeReset.get('/api/v1/admin/security/2fa/status')).status).toBe(404);
 
     const fresh = await loginAdminAgent(harness, { ...admin, password: newPassword });
     const status = await fresh.get('/api/v1/admin/security/2fa/status');

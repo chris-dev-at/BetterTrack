@@ -80,8 +80,8 @@ describe('session lifetime — stay signed in (V4-P2b, §399 §A)', () => {
       .set(...XRW)
       .send({ identifier: user.email, password: user.password, staySignedIn: false });
 
-    // Passive session loading must not emit an old cookie after a concurrent
-    // security handoff. The original browser-session cookie remains usable.
+    // Passive session loading never emits a cookie. Only explicit login,
+    // renewal, and logout/security-transition responses own cookie writes.
     const me = await agent.get('/api/v1/auth/me').set('User-Agent', CHROME);
     expect(me.status).toBe(200);
     expect(me.headers['set-cookie']).toBeUndefined();

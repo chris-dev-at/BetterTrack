@@ -175,7 +175,7 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     });
   });
 
-  it('returns a distinct same-persistence session handoff and revokes every sibling', async () => {
+  it('invalidates the acting session and every sibling without minting a replacement', async () => {
     const sessions = createSessionService(h.ctx.redis, 3600);
     const current = await sessions.create(userId, 0, false);
     const sibling = await sessions.create(userId, 0, true);
@@ -184,19 +184,12 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     const result = await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret), null, {
       sessionId: current,
       securityGeneration: 0,
-      persistent: false,
     });
 
     expect(result.response.recoveryCodes).not.toBeNull();
-    expect(result.sessionRotation).toMatchObject({ persistent: false });
-    expect(result.sessionRotation?.sessionId).not.toBe(current);
     expect(await sessions.get(current)).toBeNull();
     expect(await sessions.get(sibling)).toBeNull();
-    expect(await sessions.get(result.sessionRotation!.sessionId)).toMatchObject({
-      userId,
-      securityGeneration: 1,
-      persistent: false,
-    });
+    expect(await sessions.listForUser(userId, null)).toEqual([]);
   });
 
   it('stores recovery codes only as hashes, never plaintext', async () => {
@@ -389,6 +382,31 @@ describe('twoFactorService — email-code method (§6.1, #298)', () => {
       recoveryCodesRemaining: recoveryCodes!.length,
     });
     expect(await h.ctx.twoFactor.isEnabled(userId)).toBe(true);
+  });
+
+  it('rejects and deletes an email setup code issued at an older security generation', async () => {
+    const transport = recordingTransport();
+    await boot({ env: SMTP_ENV, emailTransport: transport });
+
+    await h.ctx.twoFactor.startEmailEnrollment(userId, null, { securityGeneration: 0 });
+    const staleCode = emailedCode(transport);
+    expect(JSON.parse((await h.ctx.redis.get(`2fa_email_setup:${userId}`))!)).toMatchObject({
+      securityGeneration: 0,
+    });
+
+    // Enabling another factor advances the durable generation. A fresh caller at
+    // G1 must not be able to reuse mailbox proof issued before that transition.
+    const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
+    await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret));
+    await expect(
+      h.ctx.twoFactor.confirmEmail(userId, staleCode, null, { securityGeneration: 1 }),
+    ).rejects.toMatchObject({ code: 'TWO_FACTOR_INVALID_CODE' });
+
+    expect(await h.ctx.redis.get(`2fa_email_setup:${userId}`)).toBeNull();
+    expect(await readUserTwoFactor()).toMatchObject({
+      emailEnabled: false,
+      securityGeneration: 1,
+    });
   });
 
   it('shares one recovery-code set across both methods and drops it only with the last', async () => {

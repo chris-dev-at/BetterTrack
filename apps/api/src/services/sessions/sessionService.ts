@@ -34,22 +34,15 @@ export interface BearerSecurityMutationContext {
 
 /**
  * Generation proof for a security mutation authenticated by a cookie session.
- * Persistence is captured when the request resolves so a post-commit rotation
- * never needs to reread the old session, which may already have been revoked.
+ * The raw session id identifies the explicitly authenticated cookie so mutation
+ * responses can clear it after invalidating every session.
  */
 export interface SessionSecurityContext {
   securityGeneration: number;
   sessionId: string;
-  persistent: boolean;
 }
 
 export type SecurityMutationContext = BearerSecurityMutationContext | SessionSecurityContext;
-
-/** Fresh cookie session minted after a durable account-security transition. */
-export interface SecuritySessionRotation {
-  sessionId: string;
-  persistent: boolean;
-}
 
 /** Back-compat default: a session with no marker is persistent (pre-V4-P2b). */
 export const isPersistent = (data: Pick<SessionData, 'persistent'>): boolean =>
@@ -97,20 +90,6 @@ export interface SessionService {
    */
   create(userId: string, securityGeneration: number, persistent?: boolean): Promise<string>;
   get(sessionId: string): Promise<SessionData | null>;
-  /**
-   * Reissue the authenticated device after a durable security transition.
-   *
-   * The new generation is always minted onto a distinct id before old sessions
-   * are cleaned up. A resolver that cached the old payload can therefore delete
-   * only that old id, regardless of whether its cleanup lands before or after
-   * this handoff. Sibling cleanup is best effort because the durable generation
-   * already makes every old cookie invalid.
-   */
-  rotateAfterSecurityMutation(
-    userId: string,
-    securityGeneration: number,
-    persistent: boolean,
-  ): Promise<SecuritySessionRotation>;
   /** Reset the session's window (login / PIN verify), honouring its persistence. False if already gone. */
   renew(sessionId: string): Promise<boolean>;
   /**
@@ -255,17 +234,6 @@ export function createSessionService(
         await redis.del(sessionKey(sessionId));
         return null;
       }
-    },
-
-    async rotateAfterSecurityMutation(userId, securityGeneration, persistent) {
-      const sessionId = await service.create(userId, securityGeneration, persistent);
-      try {
-        await service.revokeOthersForUser(userId, sessionId);
-      } catch {
-        // The committed generation already fences any old cookie that eager
-        // cleanup could not reach. Never discard the freshly minted handoff.
-      }
-      return { sessionId, persistent };
     },
 
     async renew(sessionId) {

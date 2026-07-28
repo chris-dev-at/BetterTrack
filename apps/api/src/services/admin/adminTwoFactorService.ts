@@ -16,11 +16,7 @@ import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
 import { generateRecoveryCodes, normalizeRecoveryCode } from '../auth/totp';
 import type { TwoFactorMutationResult, TwoFactorService } from '../auth/twoFactorService';
-import type {
-  SecuritySessionRotation,
-  SessionSecurityContext,
-  SessionService,
-} from '../sessions/sessionService';
+import type { SessionSecurityContext, SessionService } from '../sessions/sessionService';
 
 /**
  * Mandatory admin-login two-factor authentication (PROJECTPLAN.md §6.12, #400).
@@ -43,7 +39,7 @@ import type {
  */
 export interface AdminTwoFactorService {
   /** The admin's own 2FA methods + the mandatory-setup gate state. */
-  status(adminId: string): Promise<AdminTwoFactorStatusResponse>;
+  status(adminId: string, session: SessionSecurityContext): Promise<AdminTwoFactorStatusResponse>;
   /** Begin TOTP enrollment — provisional encrypted secret + provisioning URI. */
   enrollTotp(
     adminId: string,
@@ -74,6 +70,7 @@ export interface AdminTwoFactorService {
     adminId: string,
     email: string,
     proof: string | undefined,
+    session: SessionSecurityContext,
     ip?: string | null,
   ): Promise<void>;
   /** Confirm the emailed code — activates the email method on the new address. */
@@ -104,7 +101,7 @@ export interface AdminTwoFactorServiceDeps {
   audit: AuditService;
   redis: Redis;
   email: EmailService;
-  sessions: Pick<SessionService, 'rotateAfterSecurityMutation' | 'destroyAllForUser'>;
+  sessions: Pick<SessionService, 'destroyAllForUser'>;
 }
 
 // The admin email-method setup code (#400): a short-lived numeric code proving the
@@ -118,6 +115,7 @@ const emailSetupKey = (adminId: string) => `admin_2fa_email_setup:${adminId}`;
 interface EmailSetupState {
   email: string;
   codeHash: string;
+  securityGeneration: number;
 }
 
 export function createAdminTwoFactorService(
@@ -134,20 +132,35 @@ export function createAdminTwoFactorService(
     };
   }
 
-  async function rotateCurrentSession(
-    adminId: string,
-    session: SessionSecurityContext | undefined,
-    securityGeneration: number,
-  ): Promise<SecuritySessionRotation | null> {
-    if (!session) {
-      try {
-        await sessions.destroyAllForUser(adminId);
-      } catch {
-        // The committed generation already fences every cookie.
-      }
-      return null;
+  async function invalidateSessions(adminId: string): Promise<void> {
+    try {
+      await sessions.destroyAllForUser(adminId);
+    } catch {
+      // The committed generation rejects every old cookie even when eager
+      // Redis cleanup is unavailable.
     }
-    return sessions.rotateAfterSecurityMutation(adminId, securityGeneration, session.persistent);
+  }
+
+  async function invalidEmailSetup(adminId: string): Promise<never> {
+    await redis.del(emailSetupKey(adminId));
+    throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
+  }
+
+  async function parseEmailSetup(adminId: string, raw: string): Promise<EmailSetupState> {
+    try {
+      const parsed = JSON.parse(raw) as Partial<EmailSetupState>;
+      if (
+        typeof parsed.email !== 'string' ||
+        typeof parsed.codeHash !== 'string' ||
+        !Number.isSafeInteger(parsed.securityGeneration) ||
+        parsed.securityGeneration! < 0
+      ) {
+        return invalidEmailSetup(adminId);
+      }
+      return parsed as EmailSetupState;
+    } catch {
+      return invalidEmailSetup(adminId);
+    }
   }
 
   /**
@@ -164,17 +177,27 @@ export function createAdminTwoFactorService(
   }
 
   return {
-    async status(adminId) {
+    async status(adminId, session) {
       const state = await twoFactorRepo.getState(adminId);
-      if (!state) throw unauthorized();
+      if (!state || state.securityGeneration !== session.securityGeneration) {
+        throw unauthorized();
+      }
       const anyOn = state.enabled || state.emailEnabled;
+      const recoveryCodesRemaining = anyOn
+        ? await twoFactorRepo.countUnusedRecoveryCodes(adminId)
+        : 0;
+      const current = await twoFactorRepo.getState(adminId);
+      if (!current || current.securityGeneration !== session.securityGeneration) {
+        throw unauthorized();
+      }
+      const currentAnyOn = current.enabled || current.emailEnabled;
       return {
-        setupRequired: !anyOn,
-        totpEnabled: state.enabled,
-        totpPending: !state.enabled && state.secret !== null,
-        emailEnabled: state.emailEnabled,
-        twoFactorEmail: state.twoFactorEmail,
-        recoveryCodesRemaining: anyOn ? await twoFactorRepo.countUnusedRecoveryCodes(adminId) : 0,
+        setupRequired: !currentAnyOn,
+        totpEnabled: current.enabled,
+        totpPending: !current.enabled && current.secret !== null,
+        emailEnabled: current.emailEnabled,
+        twoFactorEmail: current.twoFactorEmail,
+        recoveryCodesRemaining: currentAnyOn ? recoveryCodesRemaining : 0,
       };
     },
 
@@ -194,9 +217,11 @@ export function createAdminTwoFactorService(
       return twoFactor.regenerateRecoveryCodes(adminId, ip, session);
     },
 
-    async startEmailEnrollment(adminId, address, proof, ip) {
+    async startEmailEnrollment(adminId, address, proof, session, ip) {
       const state = await twoFactorRepo.getState(adminId);
-      if (!state) throw unauthorized();
+      if (!state || state.securityGeneration !== session.securityGeneration) {
+        throw unauthorized();
+      }
 
       // Changing/setting the 2FA email once enrolled clears a fresh 2FA proof
       // (decision 3); the first-time set during forced enrollment does not.
@@ -222,7 +247,18 @@ export function createAdminTwoFactorService(
       }
 
       const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
-      const setup: EmailSetupState = { email: address, codeHash: hashToken(code) };
+      // Factor proof may have taken time. Re-read immediately before persisting
+      // or sending so a request admitted at G cannot create setup authority
+      // after a transition committed G+1.
+      const current = await twoFactorRepo.getState(adminId);
+      if (!current || current.securityGeneration !== session.securityGeneration) {
+        throw unauthorized();
+      }
+      const setup: EmailSetupState = {
+        email: address,
+        codeHash: hashToken(code),
+        securityGeneration: session.securityGeneration,
+      };
       await redis.set(
         emailSetupKey(adminId),
         JSON.stringify(setup),
@@ -255,12 +291,17 @@ export function createAdminTwoFactorService(
       if (!raw) {
         throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
       }
-      let setup: EmailSetupState;
-      try {
-        setup = JSON.parse(raw) as EmailSetupState;
-      } catch {
-        await redis.del(emailSetupKey(adminId));
-        throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
+      const setup = await parseEmailSetup(adminId, raw);
+      const securityGeneration = session?.securityGeneration ?? state.securityGeneration;
+      if (state.securityGeneration !== securityGeneration) {
+        // Preserve a newer setup if this is an older in-flight request.
+        if (setup.securityGeneration !== state.securityGeneration) {
+          await redis.del(emailSetupKey(adminId));
+        }
+        throw unauthorized();
+      }
+      if (setup.securityGeneration !== securityGeneration) {
+        return invalidEmailSetup(adminId);
       }
       if (hashToken(code.trim()) !== setup.codeHash) {
         throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
@@ -271,13 +312,13 @@ export function createAdminTwoFactorService(
       // leaves the existing set intact.
       const isFirstMethod = !state.enabled && !state.emailEnabled;
       const recovery = isFirstMethod ? recoveryCodeBatch() : null;
-      const securityGeneration = await twoFactorRepo.confirmEmail(
+      const committedGeneration = await twoFactorRepo.confirmEmail(
         adminId,
         setup.email,
         recovery?.hashes ?? null,
-        session?.securityGeneration ?? state.securityGeneration,
+        setup.securityGeneration,
       );
-      if (securityGeneration === null) throw unauthorized();
+      if (committedGeneration === null) throw unauthorized();
       const recoveryCodes = recovery?.codes ?? null;
       await audit.record({
         actorId: adminId,
@@ -286,8 +327,8 @@ export function createAdminTwoFactorService(
         targetId: adminId,
         ip,
       });
-      const sessionRotation = await rotateCurrentSession(adminId, session, securityGeneration);
-      return { response: { recoveryCodes }, sessionRotation };
+      await invalidateSessions(adminId);
+      return { response: { recoveryCodes } };
     },
 
     async disableEmail(adminId, ip, session) {
@@ -313,8 +354,8 @@ export function createAdminTwoFactorService(
         targetId: adminId,
         ip,
       });
-      const sessionRotation = await rotateCurrentSession(adminId, session, securityGeneration);
-      return { response: undefined, sessionRotation };
+      await invalidateSessions(adminId);
+      return { response: undefined };
     },
   };
 }

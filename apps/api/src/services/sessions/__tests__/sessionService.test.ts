@@ -40,36 +40,6 @@ describe('sessionService', () => {
     expect(data?.renewedAt).toBeGreaterThan(0);
   });
 
-  it.each(['before', 'after'] as const)(
-    'rotates onto a distinct id when stale cleanup lands %s the handoff',
-    async (cleanupOrder) => {
-      const sessions = createSessionService(redis, 100);
-      const old = await sessions.create('user-1', 3, false);
-      const sibling = await sessions.create('user-1', 3, true);
-
-      // A resolver has already cached the old generation-3 payload.
-      expect((await sessions.get(old))?.securityGeneration).toBe(3);
-      if (cleanupOrder === 'before') await sessions.destroy(old);
-
-      const rotation = await sessions.rotateAfterSecurityMutation('user-1', 4, false);
-
-      // A delayed stale resolver can still run its old-id cleanup after the
-      // rotation. Because the handoff has a distinct id, it cannot erase it.
-      if (cleanupOrder === 'after') await sessions.destroy(old);
-
-      expect(rotation.sessionId).not.toBe(old);
-      expect(rotation).toMatchObject({ persistent: false });
-      expect(await sessions.get(old)).toBeNull();
-      expect(await sessions.get(sibling)).toBeNull();
-      expect(await sessions.get(rotation.sessionId)).toMatchObject({
-        userId: 'user-1',
-        securityGeneration: 4,
-        persistent: false,
-      });
-      expect(await sessions.listForUser('user-1', rotation.sessionId)).toHaveLength(1);
-    },
-  );
-
   it('does NOT extend the window on get — the window is fixed, not rolling', async () => {
     const sessions = createSessionService(redis, 100);
     const id = await sessions.create('user-1', 0);

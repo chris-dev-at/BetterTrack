@@ -11,8 +11,8 @@ import { toAuthUser } from '../serializers';
  * routes still work. Deliberately does not mutate the response cookie: a request
  * that resolved an old session before a concurrent security rotation may finish
  * afterward, and its stale Set-Cookie/clear-cookie header must not overwrite the
- * freshly rotated cookie. Explicit login, renewal, rotation and logout handlers
- * own every session-cookie write.
+ * a concurrent transition response. Explicit login, renewal, security-transition
+ * clearing, and logout handlers own every session-cookie write.
  */
 export function loadSession(ctx: AppContext): RequestHandler {
   return async (req, _res, next) => {
@@ -37,8 +37,8 @@ export function loadSession(ctx: AppContext): RequestHandler {
       }
       req.sessionId = sessionId;
       req.sessionSecurityGeneration = resolved.securityGeneration;
-      // Carry the session's persistence (V4-P2b) so explicit renewal/rotation
-      // handlers re-issue the SAME cookie flavour (Max-Age for persistent,
+      // Carry the session's persistence (V4-P2b) so explicit renewal handlers
+      // re-issue the SAME cookie flavour (Max-Age for persistent,
       // browser-session for ephemeral) rather than silently upgrading it.
       req.sessionPersistent = resolved.persistent;
       req.authUser = toAuthUser(resolved.user);
