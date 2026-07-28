@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 
 import type { PortfolioSummary, StandingOrder } from '@bettertrack/contracts';
 
@@ -117,6 +117,13 @@ function StandingOrderRow({
   const t = useT();
   const queryClient = useQueryClient();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const rowId = useId();
+  const titleId = `${rowId}-title`;
+  const pauseResumeActionId = `${rowId}-pause-resume-action`;
+  const editActionId = `${rowId}-edit-action`;
+  const deleteActionId = `${rowId}-delete-action`;
+  const deleteConfirmYesActionId = `${rowId}-delete-confirm-yes-action`;
+  const deleteConfirmNoActionId = `${rowId}-delete-confirm-no-action`;
 
   const pauseMutation = useMutation({
     mutationFn: () => pauseStandingOrder(order.id),
@@ -139,7 +146,9 @@ function StandingOrderRow({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex flex-col gap-0.5">
           <span className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold text-neutral-100">{orderTitle(t, order)}</span>
+            <span id={titleId} className="text-sm font-semibold text-neutral-100">
+              {orderTitle(t, order)}
+            </span>
             <StatusBadge paused={paused} />
           </span>
           <span className="text-xs text-neutral-400">
@@ -164,9 +173,11 @@ function StandingOrderRow({
       <div className="flex flex-wrap items-center gap-3 pt-1 text-sm">
         {paused ? (
           <button
+            id={pauseResumeActionId}
             type="button"
             onClick={() => resumeMutation.mutate()}
             disabled={busy}
+            aria-labelledby={`${titleId} ${pauseResumeActionId}`}
             className="font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
           >
             {resumeMutation.isPending
@@ -175,9 +186,11 @@ function StandingOrderRow({
           </button>
         ) : (
           <button
+            id={pauseResumeActionId}
             type="button"
             onClick={() => pauseMutation.mutate()}
             disabled={busy}
+            aria-labelledby={`${titleId} ${pauseResumeActionId}`}
             className="font-medium text-amber-400 hover:text-amber-300 disabled:cursor-not-allowed disabled:text-neutral-600"
           >
             {pauseMutation.isPending
@@ -186,9 +199,11 @@ function StandingOrderRow({
           </button>
         )}
         <button
+          id={editActionId}
           type="button"
           onClick={() => onEdit(order)}
           disabled={busy}
+          aria-labelledby={`${titleId} ${editActionId}`}
           className="font-medium text-neutral-300 hover:text-neutral-100 disabled:cursor-not-allowed disabled:text-neutral-600"
         >
           {t('common.edit')}
@@ -199,17 +214,21 @@ function StandingOrderRow({
               {t('forecast.standingOrders.list.deleteConfirm')}
             </span>
             <button
+              id={deleteConfirmYesActionId}
               type="button"
               onClick={() => deleteMutation.mutate()}
               disabled={busy}
+              aria-labelledby={`${titleId} ${deleteConfirmYesActionId}`}
               className="font-medium text-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:text-neutral-600"
             >
               {deleteMutation.isPending ? t('common.saving') : t('common.yes')}
             </button>
             <button
+              id={deleteConfirmNoActionId}
               type="button"
               onClick={() => setConfirmingDelete(false)}
               disabled={busy}
+              aria-labelledby={`${titleId} ${deleteConfirmNoActionId}`}
               className="font-medium text-neutral-400 hover:text-neutral-200 disabled:cursor-not-allowed disabled:text-neutral-600"
             >
               {t('common.no')}
@@ -217,9 +236,11 @@ function StandingOrderRow({
           </span>
         ) : (
           <button
+            id={deleteActionId}
             type="button"
             onClick={() => setConfirmingDelete(true)}
             disabled={busy}
+            aria-labelledby={`${titleId} ${deleteActionId}`}
             className="font-medium text-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:text-neutral-600"
           >
             {t('common.delete')}
