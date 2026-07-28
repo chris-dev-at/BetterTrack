@@ -550,7 +550,7 @@ close_pr_idempotent(){ # $1=pr
 }
 
 triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked, 2=protocol
-  local n=$1 pr=$2 reloc=$3 sf current esc
+  local n=$1 pr=$2 reloc=$3 sf current esc prstate
   # The chain cap exists to stop relocate chains, not to deny a relocated issue
   # any triage at all. Blanket-failing here meant a split child's FIRST rejection
   # was terminal — no diagnosis, no escalated retry — which killed four children
@@ -584,8 +584,21 @@ triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked
   while :; do
     case "$TRIAGE_STAGE" in
       complete)
-        [ "$TRIAGE_OUTCOME" = enqueued ] && return 0
-        return 1;;
+        [ "$TRIAGE_OUTCOME" = enqueued ] || return 1
+        # "enqueued" is terminal only while that enqueue is still alive. The
+        # merger deletes the queue entry when the approved head goes stale
+        # (update-branch, conflict-fix) and expects a fresh review — so a
+        # resumed state whose entry is gone while the PR is still open must
+        # re-earn its approval at the current head, or every reassignment
+        # returns "done" untouched and the scheduler loops on the issue.
+        [ -n "$(find "$QUEUE" -maxdepth 1 -type f -name "*-pr$pr.json" -print -quit 2>/dev/null)" ] \
+          && return 0
+        prstate=$(gh pr view "$pr" --json state -q .state 2>/dev/null) || return 0
+        [ "$prstate" = OPEN ] || return 0
+        log "triage: enqueued outcome stale for PR #$pr (queue entry gone, PR open) — fresh review"
+        TRIAGE_STAGE=escalated-review-pending
+        triage_state_save "$sf" "$n" "$pr" "$TRIAGE_STAGE" || return 2
+        continue;;
       checker-running)
         # The process died with a checker in flight. Never issue a second checker:
         # exact recovery of an uncommitted remote side effect is impossible.
@@ -641,7 +654,7 @@ $LAST_CHECKER_BODY"; then
       escalated-review-pending)
         wstatus reviewing "$n" "$pr"
         run_reviewer "$n" "$pr" \
-          "$(diff_at_least "$TRIAGE_ESC_DIFF" "$(review_floor)")" \
+          "$(diff_at_least "${TRIAGE_ESC_DIFF:-$CYCLE_DIFF}" "$(review_floor)")" \
           || return 2
         if [ "$LAST_REVIEW_VERDICT" = "FACTORY-VERDICT: APPROVE" ]; then
           enqueue_merge "$pr" "$n" "$LAST_REVIEW_HEAD" reviewer "$LAST_REVIEW_COMMENT_ID" \

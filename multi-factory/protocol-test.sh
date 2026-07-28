@@ -1561,6 +1561,94 @@ check "relocation publication resumes without checker replay" 0 "$?"
 check "relocation retry never invokes checker" 0 "$CHECKER_CALLS"
 check "relocation publication retried idempotently" 2 "$RELOC_PUBLISH_CALLS"
 
+echo "— stale enqueued triage state revalidates instead of looping"
+# Merger invalidation (update-branch/conflict-fix) removes the queue entry and
+# the in-progress label and expects a fresh review; a durable complete/enqueued
+# state that keeps answering "done" makes the scheduler reassign the issue in
+# an infinite no-op loop (live: issues #865/#878, 2026-07-28).
+CHECKER_CALLS=0; ESC_FIXER_CALLS=0; ESC_REVIEW_CALLS=0; ESC_ENQUEUES=0; HUMANS=0
+run_checker(){ CHECKER_CALLS=$((CHECKER_CALLS+1)); return 1; }
+run_escalated_fixer_once(){ ESC_FIXER_CALLS=$((ESC_FIXER_CALLS+1)); return 1; }
+run_reviewer(){
+  ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1))
+  LAST_REVIEW_VERDICT="FACTORY-VERDICT: APPROVE"
+  LAST_REVIEW_HEAD=ghi
+  LAST_REVIEW_COMMENT_ID=99
+  return 0
+}
+enqueue_merge(){ ESC_ENQUEUES=$((ESC_ENQUEUES+1)); return 0; }
+mark_human(){ HUMANS=$((HUMANS+1)); }
+gh(){ [ "$1 $2" = "pr view" ] && echo OPEN; }
+LAST_CHECKER_VERDICT="FACTORY-TRIAGE: RETRY_ESCALATED"
+LAST_CHECKER_BODY="root cause"
+LAST_CHECKER_COMMENT_ID=91
+LAST_CHECKER_HEAD=abc
+LAST_CHECKER_NEW=""
+LAST_CHECKER_PR_DISPOSITION=""
+LAST_CHECKER_RUN_ID=checker-stale
+TRIAGE_ESC_DIFF=normal
+TRIAGE_FIXER_BASE_HEAD=abc
+TRIAGE_FIXER_HEAD=def
+TRIAGE_OUTCOME=enqueued
+CYCLE_DIFF=easy
+TRIAGE_FILE=$(triage_state_file 12 22)
+triage_state_save "$TRIAGE_FILE" 12 22 complete
+
+printf '%s\n' '{"pr":22}' >"$MFSTATE/merge-queue/5-pr22.json"
+triage 12 22 false
+check "live enqueue stays terminal" 0 "$?"
+check "live enqueue reviews nothing" 0 "$ESC_REVIEW_CALLS"
+
+rm -f "$MFSTATE/merge-queue/5-pr22.json"
+gh(){ [ "$1 $2" = "pr view" ] && echo MERGED; }
+triage 12 22 false
+check "consumed enqueue on a merged PR stays terminal" 0 "$?"
+check "merged PR reviews nothing" 0 "$ESC_REVIEW_CALLS"
+
+gh(){ [ "$1 $2" = "pr view" ] && echo OPEN; }
+triage 12 22 false
+check "stale enqueue re-earns approval at the current head" 0 "$?"
+check "stale enqueue runs exactly one fresh review" 1 "$ESC_REVIEW_CALLS"
+check "fresh approval re-enqueues once" 1 "$ESC_ENQUEUES"
+check "revalidation replays neither checker nor fixer" 0 "$((CHECKER_CALLS+ESC_FIXER_CALLS))"
+check "revalidated state is durable complete/enqueued" enqueued "$(jq -r .outcome "$TRIAGE_FILE")"
+
+run_reviewer(){
+  ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1))
+  LAST_REVIEW_VERDICT="FACTORY-VERDICT: REQUEST_CHANGES"
+  LAST_REVIEW_HEAD=jkl
+  LAST_REVIEW_COMMENT_ID=100
+  return 0
+}
+triage 12 22 false
+check "revalidation rejection routes to human with no appeal" 1 "$?"
+check "revalidation rejection marks human once" 1 "$HUMANS"
+triage 12 22 false
+check "human outcome is terminal on further resumes" 1 "$?"
+check "human outcome triggers no further review" 2 "$ESC_REVIEW_CALLS"
+
+# A relocate-MERGEABLE enqueue has no escalated difficulty on record: the
+# revalidating review must fall back to the cycle difficulty, floored.
+ESC_REVIEW_CALLS=0; ESC_REVIEW_DIFF=""
+run_reviewer(){
+  ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1)); ESC_REVIEW_DIFF=$3
+  LAST_REVIEW_VERDICT="FACTORY-VERDICT: APPROVE"
+  LAST_REVIEW_HEAD=mno
+  LAST_REVIEW_COMMENT_ID=101
+  return 0
+}
+LAST_CHECKER_VERDICT="FACTORY-TRIAGE: RELOCATE"
+LAST_CHECKER_PR_DISPOSITION=MERGEABLE
+LAST_CHECKER_NEW=502
+TRIAGE_ESC_DIFF=""
+TRIAGE_OUTCOME=enqueued
+CYCLE_DIFF=easy
+TRIAGE_FILE=$(triage_state_file 13 23)
+triage_state_save "$TRIAGE_FILE" 13 23 complete
+triage 13 23 false
+check "relocate enqueue also revalidates when stale" 0 "$?"
+check "empty escalated difficulty falls back to cycle difficulty floored" intermediate "$ESC_REVIEW_DIFF"
+
 echo "— queue write acknowledgement + CI-fix approval invalidation"
 # Restore production worker helpers after the stage-resume stubs above.
 . ./worker.sh
