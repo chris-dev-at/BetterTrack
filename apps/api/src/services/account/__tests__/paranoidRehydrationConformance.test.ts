@@ -346,6 +346,61 @@ async function arrangeScaleEightRoundingBatch(): Promise<{
 }
 
 describe('paranoid rehydration transaction-quantity differential conformance', () => {
+  it('rehydrates a solvent strict-v1 timeline whose valid timestamps omit milliseconds', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = '018f0000-0100-7000-8000-000000000111';
+    const assetId = '018f0000-0100-7000-8000-000000000112';
+    // UUIDv4 is contract-valid but cannot carry the UUIDv7 provenance required
+    // by the insolvent direct proof, so success also proves that branch stayed
+    // unnecessary for this solvent timeline.
+    const buyId = '018f0000-0100-4000-8000-000000000113';
+    const sellId = '018f0000-0100-4000-8000-000000000114';
+    await seedGlobalAsset(harness, assetId, 'SOLVENT-NO-MILLISECONDS');
+
+    const document = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: buyId,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '1.00000000',
+        executedAt: '2026-07-23T10:00:00Z',
+      }),
+      transactionEntity({
+        id: sellId,
+        portfolioId,
+        assetId,
+        side: 'sell',
+        quantity: '1.00000000',
+        executedAt: '2026-07-23T10:01:00Z',
+      }),
+    ]);
+    expect(quantityEntities(document).map((row) => row.data.executedAt)).toEqual([
+      '2026-07-23T10:00:00Z',
+      '2026-07-23T10:01:00Z',
+    ]);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrateReachableState(
+      harness,
+      user.id,
+      document,
+      FIRST_REHYDRATION_ID,
+      'solvent strict-v1 timeline without millisecond spelling',
+    );
+
+    const restored = await harness.db
+      .select({ id: transactions.id, quantity: transactions.quantity })
+      .from(transactions)
+      .where(eq(transactions.portfolioId, portfolioId));
+    expect(restored.sort((left, right) => left.id.localeCompare(right.id))).toEqual([
+      { id: buyId, quantity: '1.00000000' },
+      { id: sellId, quantity: '1.00000000' },
+    ]);
+  });
+
   it('round-trips an epsilon-valid normal batch after numeric(20,8) rounds its quantities apart', async () => {
     const arranged = await arrangeScaleEightRoundingBatch();
 

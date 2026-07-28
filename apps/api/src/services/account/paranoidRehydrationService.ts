@@ -77,9 +77,9 @@ type TestOnlyRejectPersistedTransactionQuantity = (input: {
 type TestOnlyObserveQuantityReachabilityOrder = (input: {
   /** Number of transaction rows routed through the fixed-width ordering proof. */
   transactionRows: number;
-  /** Fixed canonical-UUID key passes used to establish document write order. */
+  /** Fixed normalized-UUID key passes used to establish document write order. */
   writeOrderKeyPasses: number;
-  /** Fixed timestamp-plus-UUID key passes per chronological replay row. */
+  /** Fixed normalized-timestamp-plus-UUID passes per chronological replay row. */
   replayTimelineKeyPasses: number;
 }) => void;
 
@@ -224,6 +224,10 @@ interface QuantityReplayRow {
   quantity: bigint;
   readbackQuantity: number;
   normalInputQuantity: number | null;
+  /** Lowercase fixed-width UUID key used only by the bounded radix passes. */
+  uuidOrderKey: string;
+  /** Contract-valid execution time normalized once to UTC millisecond width. */
+  executedAtOrderKey: string;
   /** Immutable UUIDv7 write position within the whole strict document. */
   writeOrder: number;
   /**
@@ -281,11 +285,11 @@ function normalRowsCanReplay(
 const NORMAL_WRITE_BATCH_MAX_TRANSACTIONS = 500;
 
 /**
- * Canonical UUIDs and persisted JavaScript Date values have fixed shapes.
- * Normal writes use UUIDv7, while strict-v1 validation still accepts the
- * canonical UUID fixtures retained by older restore tests. Keeping those keys
- * fixed-width lets the snapshot proof establish both orders with radix
- * distribution passes, not a user-controlled comparator sort.
+ * UUIDs and JavaScript Date values normalize to fixed shapes. Normal writes use
+ * UUIDv7, while strict-v1 validation accepts every UUID/datetime spelling
+ * allowed by the contract. Keeping separate normalized keys lets the snapshot
+ * proof establish both orders with radix distribution passes without narrowing
+ * those public fields or invoking a user-controlled comparator sort.
  */
 const UUID_HEX_DIGIT_POSITIONS = [
   0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30,
@@ -339,87 +343,15 @@ function uuidHexDigitAt(value: string, position: number): number {
   return code <= 57 ? code - 48 : code - 87;
 }
 
-function isCanonicalUuid(value: string): boolean {
-  if (
-    value.length !== 36 ||
-    value.charCodeAt(8) !== 45 ||
-    value.charCodeAt(13) !== 45 ||
-    value.charCodeAt(18) !== 45 ||
-    value.charCodeAt(23) !== 45
-  ) {
-    return false;
-  }
-  const variant = value.charCodeAt(19);
-  if (variant < 56 || variant > 98 || (variant > 57 && variant < 97)) return false;
-  for (const position of UUID_HEX_DIGIT_POSITIONS) {
-    const code = value.charCodeAt(position);
-    if (!((code >= 48 && code <= 57) || (code >= 97 && code <= 102))) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function hasUuidV7WriteOrder(value: string): boolean {
   return value.charCodeAt(14) === 55;
 }
 
-function isCanonicalUtcMillisecondTimestamp(value: string): boolean {
-  if (
-    value.length !== 24 ||
-    value.charCodeAt(4) !== 45 ||
-    value.charCodeAt(7) !== 45 ||
-    value.charCodeAt(10) !== 84 ||
-    value.charCodeAt(13) !== 58 ||
-    value.charCodeAt(16) !== 58 ||
-    value.charCodeAt(19) !== 46 ||
-    value.charCodeAt(23) !== 90
-  ) {
-    return false;
-  }
-  for (const position of EXECUTED_AT_DIGIT_POSITIONS) {
-    const code = value.charCodeAt(position);
-    if (code < 48 || code > 57) return false;
-  }
-
-  const year =
-    decimalDigitAt(value, 0) * 1_000 +
-    decimalDigitAt(value, 1) * 100 +
-    decimalDigitAt(value, 2) * 10 +
-    decimalDigitAt(value, 3);
-  const month = decimalDigitAt(value, 5) * 10 + decimalDigitAt(value, 6);
-  const day = decimalDigitAt(value, 8) * 10 + decimalDigitAt(value, 9);
-  const hour = decimalDigitAt(value, 11) * 10 + decimalDigitAt(value, 12);
-  const minute = decimalDigitAt(value, 14) * 10 + decimalDigitAt(value, 15);
-  const second = decimalDigitAt(value, 17) * 10 + decimalDigitAt(value, 18);
-  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-  return (
-    year >= 1 &&
-    month >= 1 &&
-    month <= 12 &&
-    day >= 1 &&
-    day <= (daysInMonth[month - 1] ?? 0) &&
-    hour <= 23 &&
-    minute <= 59 &&
-    second <= 59
-  );
-}
-
-function assertBoundedQuantityOrderingFields(row: QuantityReplayRow): void {
-  if (!isCanonicalUuid(row.transaction.id)) {
-    throw quantityReachabilityError(
-      row,
-      'transaction quantity reachability requires a canonical UUID write key',
-    );
-  }
-  if (!isCanonicalUtcMillisecondTimestamp(row.transaction.data.executedAt)) {
-    throw quantityReachabilityError(
-      row,
-      'transaction quantity reachability requires a canonical UTC millisecond execution time',
-    );
-  }
+function normalizeExecutedAtOrderKey(value: string): string {
+  // The strict request schema has already accepted this datetime. Date is also
+  // the restore repository's precision boundary, so normalizing once preserves
+  // its chronological semantics while producing the 24-byte radix key.
+  return new Date(value).toISOString();
 }
 
 /**
@@ -470,7 +402,7 @@ function orderByUuidWriteHistory(
   return orderByFixedRadix(
     rows,
     UUID_HEX_DIGIT_POSITIONS,
-    (row, position) => uuidHexDigitAt(row.transaction.id, position),
+    (row, position) => uuidHexDigitAt(row.uuidOrderKey, position),
     onPass,
   );
 }
@@ -484,13 +416,13 @@ function orderByReplayTimeline(
   const byId = orderByFixedRadix(
     rows,
     UUID_HEX_DIGIT_POSITIONS,
-    (row, position) => uuidHexDigitAt(row.transaction.id, position),
+    (row, position) => uuidHexDigitAt(row.uuidOrderKey, position),
     onPass,
   );
   return orderByFixedRadix(
     byId,
     EXECUTED_AT_DIGIT_POSITIONS,
-    (row, position) => decimalDigitAt(row.transaction.data.executedAt, position),
+    (row, position) => decimalDigitAt(row.executedAtOrderKey, position),
     onPass,
   );
 }
@@ -846,11 +778,12 @@ function storageRoundingSellIdsFor(
       quantity,
       readbackQuantity: Number(fixedScaleDecimal(quantity, 8)),
       normalInputQuantity,
+      uuidOrderKey: transaction.id.toLowerCase(),
+      executedAtOrderKey: normalizeExecutedAtOrderKey(transaction.data.executedAt),
       writeOrder: -1,
       revisionCandidate: false,
     };
   });
-  for (const row of unorderedRows) assertBoundedQuantityOrderingFields(row);
 
   let writeOrderKeyPasses = 0;
   const rows = orderByUuidWriteHistory(
@@ -927,10 +860,10 @@ function storageRoundingSellIdsFor(
   if (persistedInsolventGroups.length === 0) return new Set();
 
   // Only a UUIDv7 key carries the creation-order provenance needed by the
-  // insolvent direct proof. Solvent legacy fixtures retain their canonical UUID
-  // compatibility above because this branch does not infer any write history.
+  // insolvent direct proof. Solvent strict-v1 rows return above without that
+  // provenance requirement.
   for (const row of rows) {
-    if (!hasUuidV7WriteOrder(row.transaction.id)) {
+    if (!hasUuidV7WriteOrder(row.uuidOrderKey)) {
       throw quantityReachabilityError(
         row,
         'transaction quantity reachability requires a UUIDv7 write key for the direct proof',
