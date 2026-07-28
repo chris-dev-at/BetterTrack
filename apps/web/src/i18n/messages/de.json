@@ -4016,7 +4016,12 @@
       "security": "Sicherheitseinstellungen",
       "aiInsights": "KI-Insights in der Analyse",
       "nlBuilder": "Blueprint-Builder",
-      "standingOrders": "Sparpläne in Prognosen"
+      "standingOrders": "Sparpläne in Prognosen",
+      "structure": "Struktur",
+      "events": "Ereignisse",
+      "health": "Datenqualität",
+      "rebalancePage": "Rebalancing",
+      "privateMarkets": "Private Märkte"
     },
     "portfolioPlan": {
       "title": "Plan",

@@ -4016,7 +4016,12 @@
       "security": "Security settings",
       "aiInsights": "AI insights in Analysis",
       "nlBuilder": "Blueprint builder",
-      "standingOrders": "Standing orders in Forecasts"
+      "standingOrders": "Standing orders in Forecasts",
+      "structure": "Structure",
+      "events": "Events",
+      "health": "Data health",
+      "rebalancePage": "Rebalance",
+      "privateMarkets": "Private markets"
     },
     "portfolioPlan": {
       "title": "Plan",

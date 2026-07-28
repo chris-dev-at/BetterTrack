@@ -20,7 +20,11 @@ export const PARKED_PAGES = {
   portfolioPlan: {
     key: 'portfolioPlan',
     pointCount: 4,
-    links: [{ to: '/workbench/forecasts', labelKey: 'parked.links.forecasts' }],
+    links: [
+      { to: '/workbench/forecasts', labelKey: 'parked.links.forecasts' },
+      { to: '/portfolio/rebalance', labelKey: 'parked.links.rebalancePage' },
+      { to: '/portfolio/private-markets', labelKey: 'parked.links.privateMarkets' },
+    ],
   },
   portfolioFiles: { key: 'portfolioFiles', pointCount: 3 },
   automate: {
@@ -36,7 +40,12 @@ export const PARKED_PAGES = {
   portfolioSettings: {
     key: 'portfolioSettings',
     pointCount: 3,
-    links: [{ to: '/settings/taxes', labelKey: 'parked.links.taxDefaults' }],
+    links: [
+      { to: '/settings/taxes', labelKey: 'parked.links.taxDefaults' },
+      { to: '/portfolio/structure', labelKey: 'parked.links.structure' },
+      { to: '/portfolio/events', labelKey: 'parked.links.events' },
+      { to: '/portfolio/health', labelKey: 'parked.links.health' },
+    ],
   },
   portfolioEvents: { key: 'portfolioEvents', pointCount: 3 },
   portfolioStructure: { key: 'portfolioStructure', pointCount: 3 },
