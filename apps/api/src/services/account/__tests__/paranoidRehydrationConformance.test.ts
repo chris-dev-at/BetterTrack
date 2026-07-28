@@ -785,6 +785,84 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     }
   });
 
+  it('rejects inverse-backdated funding outside the bounded CREATE witness before restore writes', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const assetId = '018f0000-0610-7000-8000-000000000611';
+    const fillerAssetId = '018f0000-0610-7000-8000-000000000612';
+    const fillerCount = 501;
+    await seedGlobalAsset(harness, assetId, 'INVERSE-BACKDATED-FUNDING');
+    await seedGlobalAsset(harness, fillerAssetId, 'INVERSE-BACKDATED-FILLER');
+
+    const writeIds = ['018f0000-0610-7000-8000-000000000613'];
+    for (let index = 1; index < fillerCount + 3; index += 1) {
+      writeIds.push(nextUuidV7WriteId(writeIds[index - 1]!));
+    }
+    const firstExecutedAt = Date.parse('2026-07-23T10:00:01.000Z');
+    const impossibleSell = transactionEntity({
+      id: writeIds[1]!,
+      portfolioId,
+      assetId,
+      side: 'sell',
+      quantity: '101.00000001',
+      executedAt: '2026-07-23T10:00:02.000Z',
+    });
+    const document = strictDocument([
+      portfolioEntity(user.id, portfolioId),
+      transactionEntity({
+        id: writeIds[0]!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '1.00000000',
+        executedAt: '2026-07-23T10:00:01.000Z',
+      }),
+      impossibleSell,
+      ...writeIds.slice(2, -1).map((id, index) =>
+        transactionEntity({
+          id,
+          portfolioId,
+          assetId: fillerAssetId,
+          side: 'buy',
+          quantity: '1.00000000',
+          executedAt: new Date(firstExecutedAt + index + 2_000).toISOString(),
+        }),
+      ),
+      // This buy is written only after the sell and more than 500 intervening
+      // rows, but its backdated execution time makes chronological replay visit
+      // it first. It cannot fund the earlier sell in any legal CREATE request.
+      transactionEntity({
+        id: writeIds.at(-1)!,
+        portfolioId,
+        assetId,
+        side: 'buy',
+        quantity: '100.00000000',
+        executedAt: '2026-07-23T10:00:00.000Z',
+      }),
+    ]);
+    expect(writeIds).toEqual([...writeIds].sort());
+    expect(writeIds).toHaveLength(fillerCount + 3);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    try {
+      await expect(
+        createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, {
+          rehydrationId: FIRST_REHYDRATION_ID,
+          document,
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_CASH_LEDGER',
+        message: expect.stringContaining(quantityField(impossibleSell)),
+      });
+      expect(mutationTransaction).not.toHaveBeenCalled();
+      expect(await harness.db.select().from(transactions)).toEqual([]);
+    } finally {
+      mutationTransaction.mockRestore();
+    }
+  });
+
   it('rejects cross-asset rounding windows that cannot share one legal create partition', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
