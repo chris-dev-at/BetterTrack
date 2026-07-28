@@ -77,7 +77,12 @@ export function createUnlockedVaultDriveRuntime(
     createServerBlobDataHome({
       retirementProofPublicKey: () => retirementProof.publicKey,
     });
-  const drive = options.drive ?? createDriveDataHome({ tokens });
+  const drive =
+    options.drive ??
+    createDriveDataHome({
+      accountId: options.userId,
+      tokens,
+    });
   const api: VaultMediaApi = options.api ?? {
     getState: getParanoidMediaState,
     transition: transitionParanoidMedia,

@@ -86,7 +86,7 @@ export function VaultRuntimeProvider({
   const runtimeRef = useRef<UnlockedVaultDriveRuntime | null>(null);
   const operationGenerationRef = useRef(0);
   const tokensRef = useRef<GoogleDriveTokenClient | null>(dependencies?.tokens ?? null);
-  const driveRef = useRef<DriveDataHome | null>(dependencies?.drive ?? null);
+  const driveRef = useRef<{ userId: string; home: DriveDataHome } | null>(null);
 
   const clientId =
     dependencies?.clientId === undefined
@@ -101,16 +101,26 @@ export function VaultRuntimeProvider({
     return tokensRef.current;
   }, [clientId]);
 
-  const drive = useCallback((): DriveDataHome => {
-    driveRef.current ??= createDriveDataHome({ tokens: tokens() });
-    return driveRef.current;
-  }, [tokens]);
+  const drive = useCallback(
+    (accountId: string): DriveDataHome => {
+      if (dependencies?.drive) return dependencies.drive;
+      if (driveRef.current?.userId !== accountId) {
+        driveRef.current = {
+          userId: accountId,
+          home: createDriveDataHome({ accountId, tokens: tokens() }),
+        };
+      }
+      return driveRef.current.home;
+    },
+    [dependencies?.drive, tokens],
+  );
 
   const lock = useCallback(async () => {
     operationGenerationRef.current += 1;
     setConnection(null);
     runtimeRef.current?.dispose();
     runtimeRef.current = null;
+    driveRef.current = null;
     tokensRef.current?.clear();
     await core.lock();
   }, [core]);
@@ -137,6 +147,7 @@ export function VaultRuntimeProvider({
       const operationGeneration = operationGenerationRef.current;
       const ownerId = userId;
       const tokenClient = tokens();
+      const driveHome = drive(ownerId);
       let installed: UnlockedVaultDriveRuntime | null = null;
       const requireCurrentOperation = () => {
         if (operationGenerationRef.current !== operationGeneration) {
@@ -155,7 +166,7 @@ export function VaultRuntimeProvider({
         }
 
         const envelope = unlockOptions.driveOnly
-          ? await readDriveEnvelope(drive(), requireCurrentOperation)
+          ? await readDriveEnvelope(driveHome, requireCurrentOperation)
           : await (
               dependencies?.readEnvelope ??
               ((accountId) =>
@@ -174,7 +185,7 @@ export function VaultRuntimeProvider({
             userId: ownerId,
             clientId,
             tokens: tokenClient,
-            drive: driveRef.current ?? undefined,
+            drive: driveHome,
             server: dependencies?.server,
           }),
         );

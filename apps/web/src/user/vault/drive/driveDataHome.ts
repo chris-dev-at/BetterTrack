@@ -18,8 +18,9 @@ const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 const FILE_FIELDS = 'id,name,size,modifiedTime,headRevisionId,appProperties';
 const DUPLICATE_SCAN_LIMIT = '100';
-
-export const DRIVE_VAULT_FILE_NAME = 'bettertrack-vault.btenc';
+const DRIVE_VAULT_FILE_CONTEXT = 'bettertrack-drive-vault-account-v1:';
+const DRIVE_VAULT_FILE_PREFIX = 'bettertrack-vault-';
+const DRIVE_VAULT_FILE_SUFFIX = '.btenc';
 
 interface DriveFile {
   id: string;
@@ -55,6 +56,8 @@ export interface DriveDataHome extends DataHome {
 }
 
 export interface DriveDataHomeOptions {
+  /** BetterTrack account id; hashed before it is used as a Drive selector. */
+  accountId: string;
   tokens: Pick<GoogleDriveTokenClient, 'getAccessToken' | 'markExpired'>;
   fetch?: typeof fetch;
   isOnline?: () => boolean;
@@ -66,11 +69,14 @@ export interface DriveDataHomeOptions {
  * this browser boundary; callers see only the generic encrypted `DataHome`.
  */
 export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHome {
+  const accountId = options.accountId.trim();
+  if (accountId.length === 0) throw new Error('A Drive vault account scope is required.');
   const request = options.fetch ?? globalThis.fetch;
   const isOnline =
     options.isOnline ??
     (() => (typeof navigator === 'undefined' ? true : navigator.onLine !== false));
   const boundary = options.boundary ?? (() => `bettertrack-${crypto.randomUUID()}`);
+  const fileNamePromise = driveVaultFileName(accountId);
 
   return {
     medium: 'drive',
@@ -180,9 +186,10 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
   };
 
   async function findFile(): Promise<DriveFileResult> {
+    const fileName = await fileNamePromise;
     const params = new URLSearchParams({
       spaces: 'appDataFolder',
-      q: `name = '${DRIVE_VAULT_FILE_NAME}' and trashed = false`,
+      q: `name = '${fileName}' and trashed = false`,
       fields: `files(${FILE_FIELDS})`,
       pageSize: DUPLICATE_SCAN_LIMIT,
     });
@@ -229,7 +236,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
 
     const validated: ValidDriveFile[] = [];
     for (const file of files) {
-      const result = validateFile(file);
+      const result = validateFile(file, fileName);
       if (result.status !== 'ok') return result;
       validated.push(result.file);
     }
@@ -264,6 +271,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
   }
 
   async function getFile(id: string): Promise<DriveFileResult> {
+    const fileName = await fileNamePromise;
     const response = await driveFetch(
       `${DRIVE_API}/files/${encodeURIComponent(id)}?fields=${encodeURIComponent(FILE_FIELDS)}`,
     );
@@ -276,7 +284,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       };
     }
     try {
-      return validateFile(await response.response.json());
+      return validateFile(await response.response.json(), fileName);
     } catch (cause) {
       return {
         status: 'failure',
@@ -319,9 +327,10 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     outgoing: DataHomeInfo,
     fileId: string | null,
   ): Promise<DataHomeWriteResult> {
+    const fileName = await fileNamePromise;
     const marker = boundary();
     const metadata = {
-      ...(fileId === null ? { name: DRIVE_VAULT_FILE_NAME, parents: ['appDataFolder'] } : {}),
+      ...(fileId === null ? { name: fileName, parents: ['appDataFolder'] } : {}),
       appProperties: {
         vaultVersion: String(outgoing.version),
         formatVersion: String(VAULT_FORMAT_VERSION),
@@ -356,7 +365,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
 
     let acknowledged: DriveFileResult;
     try {
-      acknowledged = validateFile(await uploaded.response.json());
+      acknowledged = validateFile(await uploaded.response.json(), fileName);
     } catch (cause) {
       return transport({
         code: 'api-failure',
@@ -501,7 +510,7 @@ function compareDriveFiles(left: ValidDriveFile, right: ValidDriveFile): number 
   return updated !== 0 ? updated : left.id.localeCompare(right.id);
 }
 
-function validateFile(value: unknown): DriveFileResult {
+function validateFile(value: unknown, expectedName: string): DriveFileResult {
   if (typeof value !== 'object' || value === null) {
     return malformedMetadata('Drive returned a non-object vault file.');
   }
@@ -512,7 +521,7 @@ function validateFile(value: unknown): DriveFileResult {
   if (
     typeof file.id !== 'string' ||
     file.id.length === 0 ||
-    file.name !== DRIVE_VAULT_FILE_NAME ||
+    file.name !== expectedName ||
     !Number.isInteger(version) ||
     version < 1 ||
     formatVersion !== VAULT_FORMAT_VERSION ||
@@ -537,6 +546,22 @@ function validateFile(value: unknown): DriveFileResult {
       headRevisionId: file.headRevisionId,
     },
   };
+}
+
+/** Stable, opaque selector within one Google principal's shared appDataFolder. */
+export async function driveVaultFileName(
+  accountId: string,
+  subtle: SubtleCrypto = globalThis.crypto.subtle,
+): Promise<string> {
+  const scoped = new TextEncoder().encode(`${DRIVE_VAULT_FILE_CONTEXT}${accountId}`);
+  const digest = new Uint8Array(await subtle.digest('SHA-256', scoped));
+  return `${DRIVE_VAULT_FILE_PREFIX}${base64url(digest)}${DRIVE_VAULT_FILE_SUFFIX}`;
+}
+
+function base64url(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 function malformedMetadata(message: string): DriveFileResult {

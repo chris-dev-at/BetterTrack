@@ -1,10 +1,19 @@
+import { webcrypto } from 'node:crypto';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { base64ToBytes } from '../bytes';
 import { decodeVaultEnvelope, encodeVaultEnvelope } from '../envelope';
 import { vaultInteroperabilityFixture } from '../vectors';
-import { createDriveDataHome, DRIVE_VAULT_FILE_NAME } from './driveDataHome';
+import {
+  createDriveDataHome,
+  driveVaultFileName,
+  type DriveDataHomeOptions,
+} from './driveDataHome';
 
+const ACCOUNT_A = '018f0000-0000-7000-8000-0000000000a1';
+const ACCOUNT_B = '018f0000-0000-7000-8000-0000000000b2';
+let accountFileName = '';
 const envelope = base64ToBytes(
   vaultInteroperabilityFixture.initial.envelopeBase64,
   'envelope-invalid',
@@ -36,13 +45,17 @@ function metadata(
 ) {
   return {
     id: 'drive-file-id',
-    name: DRIVE_VAULT_FILE_NAME,
+    name: accountFileName,
     size: String(envelope.byteLength),
     modifiedTime: '2026-07-27T10:00:00.000Z',
     headRevisionId: 'revision-1',
     appProperties: { vaultVersion: '1', formatVersion: '1' },
     ...overrides,
   };
+}
+
+function createTestDriveDataHome(options: Omit<DriveDataHomeOptions, 'accountId'>) {
+  return createDriveDataHome({ accountId: ACCOUNT_A, ...options });
 }
 
 function json(value: unknown, status = 200): Response {
@@ -218,8 +231,75 @@ class ConcurrentUpdateDrive {
   }
 }
 
+class SharedAccountAppDataFolder {
+  private readonly files = new Map<
+    string,
+    { metadata: ReturnType<typeof metadata>; envelope: Uint8Array }
+  >();
+  private nextId = 1;
+
+  fileNames(): string[] {
+    return [...this.files.values()].map((file) => file.metadata.name).sort();
+  }
+
+  fetchFor(outgoingEnvelope: Uint8Array): typeof globalThis.fetch {
+    return vi.fn((input, init) => this.handle(outgoingEnvelope, String(input), init));
+  }
+
+  private async handle(
+    outgoingEnvelope: Uint8Array,
+    url: string,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const method = init?.method ?? 'GET';
+    if (method === 'GET' && url.includes('/drive/v3/files?')) {
+      const query = new URL(url).searchParams.get('q') ?? '';
+      const selectedName = /^name = '([^']+)' and trashed = false$/.exec(query)?.[1];
+      return json({
+        files: [...this.files.values()]
+          .map((file) => file.metadata)
+          .filter((file) => file.name === selectedName),
+      });
+    }
+
+    if (method === 'POST' && url.includes('/upload/drive/v3/files?')) {
+      if (!(init?.body instanceof Blob)) throw new Error('Expected a multipart Drive upload.');
+      const body = await blobText(init.body);
+      const name = /"name":"([^"]+)"/.exec(body)?.[1];
+      if (!name) throw new Error('Expected an account-scoped Drive file name.');
+      const header = decodeVaultEnvelope(outgoingEnvelope).header;
+      const id = `shared-drive-file-${this.nextId++}`;
+      const file = metadata({
+        id,
+        name,
+        size: String(outgoingEnvelope.byteLength),
+        headRevisionId: `shared-revision-${id}`,
+        appProperties: {
+          vaultVersion: String(header.vaultVersion),
+          formatVersion: String(header.formatVersion),
+        },
+      });
+      this.files.set(id, { metadata: file, envelope: outgoingEnvelope.slice() });
+      return json(file);
+    }
+
+    const id = decodeURIComponent(url.match(/\/drive\/v3\/files\/([^?]+)/)?.[1] ?? '');
+    const file = this.files.get(id);
+    if (!file) return new Response(null, { status: 404 });
+    if (method === 'GET' && url.includes('alt=media')) {
+      return new Response(file.envelope.slice(), { status: 200 });
+    }
+    if (method === 'GET') return json(file.metadata);
+    throw new Error(`Unexpected shared Drive request: ${method} ${url}`);
+  }
+}
+
 describe('Drive appdata DataHome', () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(async () => {
+    vi.restoreAllMocks();
+    Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+    accountFileName = await driveVaultFileName(ACCOUNT_A);
+  });
 
   it('reads one appDataFolder file and validates app properties against opaque bytes', async () => {
     const tokens = tokenSource();
@@ -227,7 +307,7 @@ describe('Drive appdata DataHome', () => {
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(json({ files: [metadata()] }))
       .mockResolvedValueOnce(new Response(envelope.slice(), { status: 200 }));
-    const home = createDriveDataHome({ tokens, fetch });
+    const home = createTestDriveDataHome({ tokens, fetch });
 
     const result = await home.read();
     expect(result).toMatchObject({
@@ -249,7 +329,7 @@ describe('Drive appdata DataHome', () => {
       .mockResolvedValueOnce(json(metadata()))
       .mockResolvedValueOnce(json({ files: [metadata()] }))
       .mockResolvedValueOnce(new Response(envelope.slice(), { status: 200 }));
-    const home = createDriveDataHome({
+    const home = createTestDriveDataHome({
       tokens: tokenSource(),
       fetch,
       boundary: () => 'fixed-boundary',
@@ -268,13 +348,53 @@ describe('Drive appdata DataHome', () => {
     expect(text).not.toContain('revisions');
   });
 
+  it('isolates two BetterTrack accounts inside one shared appDataFolder', async () => {
+    const folder = new SharedAccountAppDataFolder();
+    const homeA = createDriveDataHome({
+      accountId: ACCOUNT_A,
+      tokens: tokenSource(),
+      fetch: folder.fetchFor(envelope),
+    });
+    const homeB = createDriveDataHome({
+      accountId: ACCOUNT_B,
+      tokens: tokenSource(),
+      fetch: folder.fetchFor(concurrentCreateEnvelope),
+    });
+
+    await expect(homeA.write(envelope, { ifVersion: null })).resolves.toMatchObject({
+      status: 'ok',
+      info: { version: 1 },
+    });
+    await expect(homeB.write(concurrentCreateEnvelope, { ifVersion: null })).resolves.toMatchObject(
+      {
+        status: 'ok',
+        info: { version: 1 },
+      },
+    );
+
+    const [nameA, nameB] = await Promise.all([
+      driveVaultFileName(ACCOUNT_A),
+      driveVaultFileName(ACCOUNT_B),
+    ]);
+    expect(nameA).not.toBe(nameB);
+    expect(nameA).not.toContain(ACCOUNT_A);
+    expect(nameB).not.toContain(ACCOUNT_B);
+    expect(folder.fileNames()).toEqual([nameA, nameB].sort());
+
+    const [readA, readB] = await Promise.all([homeA.read(), homeB.read()]);
+    expect(readA).toMatchObject({ status: 'ok', info: { version: 1 } });
+    expect(readB).toMatchObject({ status: 'ok', info: { version: 1 } });
+    if (readA.status === 'ok') expect(readA.envelope).toEqual(envelope);
+    if (readB.status === 'ok') expect(readB.envelope).toEqual(concurrentCreateEnvelope);
+  });
+
   it('reconciles two concurrent creates to one file and returns merge conflicts', async () => {
     const drive = new ConcurrentCreateDrive();
-    const homeA = createDriveDataHome({
+    const homeA = createTestDriveDataHome({
       tokens: tokenSource(),
       fetch: drive.fetchFor('a', envelope),
     });
-    const homeB = createDriveDataHome({
+    const homeB = createTestDriveDataHome({
       tokens: tokenSource(),
       fetch: drive.fetchFor('b', concurrentCreateEnvelope),
     });
@@ -291,11 +411,11 @@ describe('Drive appdata DataHome', () => {
 
   it('post-verifies concurrent updates and never acknowledges the overwritten writer', async () => {
     const drive = new ConcurrentUpdateDrive();
-    const homeA = createDriveDataHome({
+    const homeA = createTestDriveDataHome({
       tokens: tokenSource(),
       fetch: drive.fetchFor('a', envelopeV2),
     });
-    const homeB = createDriveDataHome({
+    const homeB = createTestDriveDataHome({
       tokens: tokenSource(),
       fetch: drive.fetchFor('b', concurrentUpdateEnvelope),
     });
@@ -317,7 +437,7 @@ describe('Drive appdata DataHome', () => {
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(json({ files: [metadata()] }))
       .mockResolvedValueOnce(json(metadata({ headRevisionId: 'revision-2' })));
-    const home = createDriveDataHome({ tokens: tokenSource(), fetch });
+    const home = createTestDriveDataHome({ tokens: tokenSource(), fetch });
 
     await expect(home.write(envelopeV2, { ifVersion: 1 })).resolves.toEqual({
       status: 'conflict',
@@ -327,7 +447,7 @@ describe('Drive appdata DataHome', () => {
   });
 
   it('keeps consent, expiry, offline, missing, malformed, corrupt, and API states distinct', async () => {
-    const consent = createDriveDataHome({
+    const consent = createTestDriveDataHome({
       tokens: {
         getAccessToken: () => ({ status: 'consent-required', message: 'consent' }),
         markExpired: vi.fn(),
@@ -339,7 +459,7 @@ describe('Drive appdata DataHome', () => {
       failure: { code: 'consent-required' },
     });
 
-    const gesture = createDriveDataHome({
+    const gesture = createTestDriveDataHome({
       tokens: {
         getAccessToken: () => ({ status: 'gesture-required', message: 'gesture' }),
         markExpired: vi.fn(),
@@ -351,7 +471,7 @@ describe('Drive appdata DataHome', () => {
       failure: { code: 'gesture-required' },
     });
 
-    const offline = createDriveDataHome({
+    const offline = createTestDriveDataHome({
       tokens: tokenSource(),
       fetch: vi.fn(),
       isOnline: () => false,
@@ -361,13 +481,13 @@ describe('Drive appdata DataHome', () => {
       failure: { code: 'offline' },
     });
 
-    const missing = createDriveDataHome({
+    const missing = createTestDriveDataHome({
       tokens: tokenSource(),
       fetch: vi.fn().mockResolvedValue(json({ files: [] })),
     });
     await expect(missing.read()).resolves.toEqual({ status: 'absent', medium: 'drive' });
 
-    const malformed = createDriveDataHome({
+    const malformed = createTestDriveDataHome({
       tokens: tokenSource(),
       fetch: vi.fn().mockResolvedValue(json({ files: [metadata({ headRevisionId: '' })] })),
     });
@@ -376,7 +496,7 @@ describe('Drive appdata DataHome', () => {
       reason: 'malformed-metadata',
     });
 
-    const corrupt = createDriveDataHome({
+    const corrupt = createTestDriveDataHome({
       tokens: tokenSource(),
       fetch: vi
         .fn()
@@ -389,7 +509,7 @@ describe('Drive appdata DataHome', () => {
     });
 
     const tokens = tokenSource();
-    const expired = createDriveDataHome({
+    const expired = createTestDriveDataHome({
       tokens,
       fetch: vi.fn().mockResolvedValue(new Response(null, { status: 401 })),
     });
@@ -399,7 +519,7 @@ describe('Drive appdata DataHome', () => {
     });
     expect(tokens.markExpired).toHaveBeenCalled();
 
-    const apiFailure = createDriveDataHome({
+    const apiFailure = createTestDriveDataHome({
       tokens: tokenSource(),
       fetch: vi.fn().mockResolvedValue(new Response(null, { status: 503 })),
     });

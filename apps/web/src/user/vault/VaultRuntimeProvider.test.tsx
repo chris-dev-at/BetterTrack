@@ -117,6 +117,71 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
     expect(tokens.clear).toHaveBeenCalled();
   });
 
+  it('recreates the account-scoped Drive adapter when the BetterTrack user changes', async () => {
+    const okToken: DriveAccessTokenResult = {
+      status: 'ok',
+      accessToken: 'memory-only',
+      expiresAt: Date.now() + 60_000,
+    };
+    const tokens: GoogleDriveTokenClient = {
+      state: 'connected',
+      getAccessToken: vi.fn(() => okToken),
+      subscribe: vi.fn(() => () => undefined),
+      authorize: vi.fn(async () => okToken),
+      clear: vi.fn(),
+      markExpired: vi.fn(),
+    };
+    const driveHomes: DriveDataHome[] = [];
+    const runtimeOwners: string[] = [];
+    const createRuntime: NonNullable<VaultRuntimeProviderDependencies['createRuntime']> = vi.fn(
+      (_vaultKey, _keyId, options): UnlockedVaultDriveRuntime => {
+        if (!options.drive) throw new Error('Expected an account-scoped Drive adapter.');
+        driveHomes.push(options.drive);
+        runtimeOwners.push(options.userId);
+        return {
+          controller: connection(),
+          ready: Promise.resolve(),
+          syncState: { status: 'synced', active: null, pending: null },
+          reconnect: vi.fn(async () => ({
+            status: 'synced' as const,
+            active: null,
+            pending: null,
+          })),
+          dispose: vi.fn(),
+        };
+      },
+    );
+    const dependencies: VaultRuntimeProviderDependencies = {
+      clientId: 'browser-client-id',
+      tokens,
+      readEnvelope: vi.fn(async () => envelope),
+      createRuntime,
+    };
+    const firstUser = '018f0000-0000-7000-8000-0000000000a1';
+    const secondUser = '018f0000-0000-7000-8000-0000000000b2';
+    const rendered = render(
+      <VaultRuntimeProvider authenticated userId={firstUser} dependencies={dependencies}>
+        <UnlockHarness driveOnly={false} />
+      </VaultRuntimeProvider>,
+    );
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'unlock' }));
+    await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(1));
+
+    rendered.rerender(
+      <VaultRuntimeProvider authenticated userId={secondUser} dependencies={dependencies}>
+        <UnlockHarness driveOnly={false} />
+      </VaultRuntimeProvider>,
+    );
+    await waitFor(() => expect(screen.getByText('no connection')).toBeInTheDocument());
+    await userEvent.setup().click(screen.getByRole('button', { name: 'unlocked' }));
+    await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(2));
+
+    expect(runtimeOwners).toEqual([firstUser, secondUser]);
+    expect(driveHomes).toHaveLength(2);
+    expect(driveHomes[1]).not.toBe(driveHomes[0]);
+  });
+
   it.each(['authorization', 'envelope read', 'runtime readiness'] as const)(
     'rejects a stale unlock after logout during deferred %s',
     async (stage) => {

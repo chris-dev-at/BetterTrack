@@ -4,8 +4,12 @@ import {
   VAULT_HISTORY_MEDIUM_HEADER,
   VAULT_HISTORY_PAGE_MAX,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
+  VAULT_DOCUMENT_VERSION,
+  vaultClientSecuritySchema,
+  vaultDocumentV2Schema,
   vaultHistoryListResponseSchema,
   vaultHistoryMetadataSchema,
+  type VaultClientSecurity,
   type VaultDocument,
   type VaultHistoryMetadata,
 } from '@bettertrack/contracts';
@@ -76,6 +80,11 @@ export interface RestoreOptions {
   vaultKey: VaultKeyMaterial;
   /** Exact current destination version previously observed by the caller. */
   activeVersion: number | null;
+  /**
+   * Proof material from the currently unlocked vault. Restore replaces
+   * portfolio state, never current key custody.
+   */
+  currentClientSecurity: VaultClientSecurity | null;
   encrypt(document: VaultDocument, vaultVersion: number): Promise<Uint8Array>;
   /** Runs only after the monotonic remote CAS succeeds. */
   activate(document: VaultDocument, envelope: Uint8Array, version: number): Promise<void> | void;
@@ -135,10 +144,26 @@ export function createRestorePicker(
         };
       }
 
+      let restoredDocument: VaultDocument;
+      try {
+        restoredDocument = prepareRestoreDocument(
+          decrypted.document,
+          options.currentClientSecurity,
+        );
+      } catch (cause) {
+        return {
+          status: 'invalid-selection',
+          reason:
+            cause instanceof Error
+              ? cause.message
+              : 'Candidate key custody could not be preserved.',
+        };
+      }
+
       const version = Math.max(decrypted.header.vaultVersion, options.activeVersion ?? 0) + 1;
       let envelope: Uint8Array;
       try {
-        envelope = await options.encrypt(decrypted.document, version);
+        envelope = await options.encrypt(restoredDocument, version);
       } catch (cause) {
         return {
           status: 'invalid-selection',
@@ -151,7 +176,7 @@ export function createRestorePicker(
       });
       switch (written.status) {
         case 'ok':
-          await options.activate(decrypted.document, envelope, version);
+          await options.activate(restoredDocument, envelope, version);
           return { status: 'restored', version };
         case 'conflict':
           return { status: 'conflict', currentVersion: written.currentVersion };
@@ -162,6 +187,38 @@ export function createRestorePicker(
       }
     },
   };
+}
+
+/**
+ * Historical documents contribute portfolio state only. The currently
+ * unlocked retirement proof remains authoritative across every activation.
+ */
+function prepareRestoreDocument(
+  document: VaultDocument,
+  currentClientSecurity: VaultClientSecurity | null,
+): VaultDocument {
+  if (currentClientSecurity == null) {
+    throw new Error('Current vault retirement proof material is required for restore.');
+  }
+  const clientSecurity = vaultClientSecuritySchema.parse(currentClientSecurity);
+  if (document.schemaVersion === VAULT_DOCUMENT_VERSION) {
+    const candidateProof = document.clientSecurity.retirementProof;
+    const currentProof = clientSecurity.retirementProof;
+    if (
+      candidateProof.publicKey !== currentProof.publicKey ||
+      candidateProof.privateKey !== currentProof.privateKey
+    ) {
+      throw new Error(
+        'Historical vault retirement proof material does not match the unlocked vault.',
+      );
+    }
+    return vaultDocumentV2Schema.parse(document);
+  }
+  return vaultDocumentV2Schema.parse({
+    ...document,
+    schemaVersion: VAULT_DOCUMENT_VERSION,
+    clientSecurity,
+  });
 }
 
 export function createQuarantinedRestoreCandidateSource(
