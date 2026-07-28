@@ -310,6 +310,11 @@ function DriveVaultSection({
         : 'connected'
       : 'disconnected';
   const retired = media.server.retired;
+  const canPurgeRetiredServer =
+    retired != null &&
+    media.server.disposition === 'retired' &&
+    !media.mediaSet.includes('server') &&
+    media.server.candidate == null;
   const purgeReady = retired != null && Date.now() >= Date.parse(retired.purgeAfter);
 
   async function refresh(): Promise<void> {
@@ -517,7 +522,7 @@ function DriveVaultSection({
           </div>
         </details>
       ) : null}
-      {retired ? (
+      {canPurgeRetiredServer ? (
         <details className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2">
           <summary className="cursor-pointer text-xs font-medium text-neutral-300">
             {t('settings.connections.drive.retired.title')}

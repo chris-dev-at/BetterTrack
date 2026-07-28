@@ -72,6 +72,12 @@ const DRIVE_ONLY_MEDIA: ParanoidMediaStateResponse = {
   mediaState: DRIVE_ONLY_STATE,
 };
 
+const RETIRED_SERVER = {
+  version: 4,
+  retiredAt: '2026-07-20T08:00:00.000Z',
+  purgeAfter: '2026-08-20T08:00:00.000Z',
+} as const;
+
 function controller(
   authorization: DriveConnectionController['authorization'] = 'connected',
 ): DriveConnectionController {
@@ -351,6 +357,24 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
     await user.click(await screen.findByText('Vault storage copies'));
     await user.click(screen.getByRole('button', { name: 'Add server copy' }));
     await waitFor(() => expect(drive.addServerCopy).toHaveBeenCalledTimes(1));
+  });
+
+  test('hides stale server-retirement purge controls after the server copy is active again', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: {
+        ...BOTH_STATE,
+        server: { ...BOTH_STATE.server, retired: RETIRED_SERVER },
+      },
+    });
+    renderPage('/settings/connections', {
+      driveConnection: controller(),
+      driveConfigured: true,
+    });
+
+    expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
+    expect(screen.queryByText('Retired server copy')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Purge retired copy' })).not.toBeInTheDocument();
   });
 
   test('unlocks from the user gesture before starting a storage transition', async () => {

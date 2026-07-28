@@ -36,6 +36,12 @@ export interface ReplicatedVaultDataHome extends DataHome {
    * path instead of being repaired by "highest version wins".
    */
   advanceReplicaObservation(): boolean;
+  /**
+   * Preserve any selected-medium failure that was not repaired by the
+   * coordinator pass. A healthy later replica must not mask missing,
+   * unreachable, or corrupt earlier media.
+   */
+  finalizeReconcileState(state: VaultSyncState): VaultSyncState;
 }
 
 export interface ReplicatedVaultDataHomeOptions {
@@ -96,6 +102,10 @@ export function createReplicatedVaultDataHome(
       if (cycle == null || cycle.selectedIndex + 1 >= cycle.observations.length) return false;
       cycle.selectedIndex += 1;
       return true;
+    },
+
+    finalizeReconcileState(state) {
+      return aggregateReplicaFailures(state, cycle?.observations ?? []);
     },
 
     async read(): Promise<DataHomeReadResult> {
@@ -238,9 +248,46 @@ export function createReplicaReconcileCoordinator(
       ) {
         state = await engine.reconnect();
       }
-      return state;
+      return primary.finalizeReconcileState(state);
     },
   };
+}
+
+function aggregateReplicaFailures(
+  state: VaultSyncState,
+  observations: readonly ReplicaObservation[],
+): VaultSyncState {
+  const failures = observations
+    .map(replicaFailureMessage)
+    .filter((message): message is string => message != null);
+  if (failures.length === 0) return state;
+
+  const lastFailure = [...new Set([state.lastFailure, ...failures].filter(Boolean))].join(' ');
+  if (state.status !== 'synced') {
+    return { ...state, lastFailure };
+  }
+  if (state.active == null) {
+    return { ...state, status: 'corrupt', lastFailure };
+  }
+  return {
+    ...state,
+    status: 'pending-offline',
+    pending: state.pending ?? state.active,
+    lastFailure,
+  };
+}
+
+function replicaFailureMessage(observation: ReplicaObservation): string | null {
+  switch (observation.result.status) {
+    case 'ok':
+      return null;
+    case 'absent':
+      return `The selected ${observation.medium} vault replica is absent.`;
+    case 'corrupt':
+      return observation.result.message;
+    case 'transport-failure':
+      return observation.result.failure.message;
+  }
 }
 
 function observedVersion(result: DataHomeReadResult): number | null | undefined {

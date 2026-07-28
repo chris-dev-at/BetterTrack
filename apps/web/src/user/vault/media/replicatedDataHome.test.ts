@@ -41,6 +41,7 @@ class MemoryRemote implements DataHome {
   readonly medium: VaultMedium;
   envelope: Uint8Array | null;
   failure = false;
+  corrupt = false;
 
   constructor(medium: VaultMedium, envelope: Uint8Array | null) {
     this.medium = medium;
@@ -53,6 +54,17 @@ class MemoryRemote implements DataHome {
         status: 'transport-failure',
         medium: this.medium,
         failure: { code: 'offline', message: `${this.medium} offline` },
+      };
+    }
+    if (this.corrupt) {
+      return {
+        status: 'corrupt',
+        medium: this.medium,
+        envelope: this.envelope?.slice(),
+        version: this.envelope ? version(this.envelope) : null,
+        updatedAt: null,
+        reason: 'corrupt-bytes',
+        message: `${this.medium} corrupt`,
       };
     }
     if (!this.envelope) return { status: 'absent', medium: this.medium };
@@ -196,6 +208,33 @@ describe('replicated DataHome through the PD5 coordinator', () => {
     expect(setup.server.envelope).toEqual(setup.drive.envelope);
     expect(version(setup.server.envelope!)).toBe(4);
   });
+
+  it.each(['absent', 'transport-failure', 'corrupt'] as const)(
+    'does not let a healthy final Drive observation mask a server-first %s',
+    async (failure) => {
+      const initial = await encrypted(document('018f0000-0000-7000-8000-0000000000a1'), 1, 0xa1);
+      const setup = coordinator(initial, initial);
+      if (failure === 'absent') setup.server.envelope = null;
+      if (failure === 'transport-failure') setup.server.failure = true;
+      if (failure === 'corrupt') setup.server.corrupt = true;
+
+      const state = await setup.coordinator.reconnect();
+
+      expect(state).toMatchObject({
+        status: 'pending-offline',
+        active: { header: { vaultVersion: 1 } },
+        pending: { header: { vaultVersion: 1 } },
+      });
+      expect(state.lastFailure).toContain(
+        failure === 'absent'
+          ? 'selected server vault replica is absent'
+          : failure === 'transport-failure'
+            ? 'server offline'
+            : 'server corrupt',
+      );
+      expect(setup.drive.envelope).toEqual(initial);
+    },
+  );
 });
 
 function coordinator(serverEnvelope: Uint8Array, driveEnvelope: Uint8Array) {
