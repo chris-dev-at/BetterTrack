@@ -10,6 +10,7 @@ import type {
 
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
+import { cx } from '../../lib/cx';
 import {
   EXPENSE_CATEGORIES_QUERY_KEY,
   EXPENSE_IMPORT_BANKS_QUERY_KEY,
@@ -20,7 +21,8 @@ import {
   previewExpenseImport,
 } from '../../lib/expensesApi';
 import { formatDate, formatMoney } from '../../lib/format';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert } from '../components/ui';
+import { Badge, Button, Panel, type BadgeTone } from '../../ui/origin';
 
 /**
  * Bank-statement CSV import (PROJECTPLAN.md §13.5 V5-P9, issue 2/3). Upload a bank
@@ -32,15 +34,13 @@ import { Alert, Button, cx } from '../components/ui';
  * Compact per the anti-bloat rule — the whole flow is two cards.
  */
 
-const selectClass = cx(
-  'rounded-md bg-neutral-950 px-2 py-1 text-xs text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
+/** Compact inline select sizing shared by the bank picker and per-row category picker. */
+const compactSelectStyle = { minHeight: 28, padding: '2px 26px 2px 8px', width: 'auto', fontSize: 12 } as const;
 
-const FLAG_TONE: Record<ExpenseImportRowFlag, string> = {
-  new: 'bg-emerald-950/60 text-emerald-300 ring-emerald-800',
-  duplicate: 'bg-amber-950/60 text-amber-300 ring-amber-800',
-  error: 'bg-red-950/60 text-red-300 ring-red-800',
+const FLAG_TONE: Record<ExpenseImportRowFlag, BadgeTone> = {
+  new: 'pos',
+  duplicate: 'gold',
+  error: 'neg',
 };
 
 export function ImportPage() {
@@ -117,13 +117,11 @@ export function ImportPage() {
 
   return (
     <section className="flex flex-col gap-6">
-      <p className="text-sm text-neutral-500">{t('expenses.import.subtitle')}</p>
+      <p className="bt-meta">{t('expenses.import.subtitle')}</p>
 
       {/* ── Step 1: pick a file (+ optional manual bank) ── */}
-      <div className="flex flex-col gap-3 rounded-lg border border-neutral-800 p-4">
-        <h2 className="text-sm font-semibold text-neutral-200">
-          {t('expenses.import.uploadTitle')}
-        </h2>
+      <Panel className="flex flex-col gap-3">
+        <h2 className="bt-h2">{t('expenses.import.uploadTitle')}</h2>
         <div className="flex flex-wrap items-center gap-3">
           <input
             ref={fileInputRef}
@@ -136,12 +134,13 @@ export function ImportPage() {
               setResult(null);
               setError(null);
             }}
-            className="text-sm text-neutral-300 file:mr-3 file:rounded-md file:border-0 file:bg-neutral-800 file:px-3 file:py-1.5 file:text-sm file:text-neutral-100 hover:file:bg-neutral-700"
+            className="bt-meta file:mr-3 file:rounded-md file:border-0 file:bg-[var(--bt-surface-strong)] file:px-3 file:py-1.5 file:text-[13px] file:text-[var(--bt-text)] hover:file:bg-[var(--bt-surface-hover)]"
           />
-          <label className="flex items-center gap-2 text-sm text-neutral-400">
+          <label className="bt-meta flex items-center gap-2">
             {t('expenses.import.bank')}
             <select
-              className={cx(selectClass, 'py-1.5')}
+              className="bt-select"
+              style={compactSelectStyle}
               value={bankId}
               onChange={(e) => setBankId(e.target.value)}
             >
@@ -165,14 +164,14 @@ export function ImportPage() {
               : t('expenses.import.preview')}
           </Button>
         </div>
-        <p className="text-xs text-neutral-600">{t('expenses.import.uploadHint')}</p>
-      </div>
+        <p className="bt-meta">{t('expenses.import.uploadHint')}</p>
+      </Panel>
 
       {error ? <Alert tone="error">{error}</Alert> : null}
 
       {/* ── Result summary (after apply) ── */}
       {result ? (
-        <div className="flex flex-col gap-3 rounded-lg border border-neutral-800 p-4">
+        <Panel className="flex flex-col gap-3">
           <Alert tone="success">
             {t('expenses.import.applied', {
               applied: result.applied,
@@ -181,21 +180,17 @@ export function ImportPage() {
             })}
           </Alert>
           <div>
-            <Button variant="secondary" onClick={reset}>
-              {t('expenses.import.importAnother')}
-            </Button>
+            <Button onClick={reset}>{t('expenses.import.importAnother')}</Button>
           </div>
-        </div>
+        </Panel>
       ) : null}
 
       {/* ── Step 2: staged preview + apply ── */}
       {preview ? (
-        <div className="flex flex-col gap-3 rounded-lg border border-neutral-800 p-4">
+        <Panel className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold text-neutral-200">
-              {t('expenses.import.previewTitle', { bank: preview.bankLabel })}
-            </h2>
-            <p className="text-xs text-neutral-500">
+            <h2 className="bt-h2">{t('expenses.import.previewTitle', { bank: preview.bankLabel })}</h2>
+            <p className="bt-meta">
               {t('expenses.import.counts', {
                 new: preview.counts.new,
                 duplicate: preview.counts.duplicate,
@@ -204,56 +199,40 @@ export function ImportPage() {
             </p>
           </div>
 
-          <div className="-mx-4 overflow-x-auto sm:mx-0">
-            <table className="w-full min-w-[36rem] text-sm">
+          <div className="bt-table-wrap">
+            <table className="bt-table min-w-[36rem]">
               <thead>
-                <tr className="border-b border-neutral-800 text-left text-xs text-neutral-500">
-                  <th className="px-4 py-2 font-medium sm:px-2">{t('expenses.import.colDate')}</th>
-                  <th className="px-4 py-2 font-medium sm:px-2">
-                    {t('expenses.import.colDescription')}
-                  </th>
-                  <th className="px-4 py-2 text-right font-medium sm:px-2">
+                <tr>
+                  <th scope="col">{t('expenses.import.colDate')}</th>
+                  <th scope="col">{t('expenses.import.colDescription')}</th>
+                  <th className="is-num" scope="col">
                     {t('expenses.import.colAmount')}
                   </th>
-                  <th className="px-4 py-2 font-medium sm:px-2">
-                    {t('expenses.import.colCategory')}
-                  </th>
+                  <th scope="col">{t('expenses.import.colCategory')}</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-neutral-900">
+              <tbody>
                 {preview.rows.map((row) => (
-                  <tr key={row.rowIndex} className={row.flag === 'error' ? 'text-neutral-600' : ''}>
-                    <td className="whitespace-nowrap px-4 py-2 text-neutral-400 sm:px-2">
+                  <tr key={row.rowIndex} className={row.flag === 'error' ? 'bt-muted' : undefined}>
+                    <td className="whitespace-nowrap bt-muted">
                       {row.bookedOn ? formatDate(row.bookedOn) : '—'}
                     </td>
-                    <td
-                      className="max-w-[16rem] truncate px-4 py-2 text-neutral-200 sm:px-2"
-                      title={row.raw}
-                    >
-                      <span
-                        className={cx(
-                          'mr-2 inline-block rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ring-1 ring-inset',
-                          FLAG_TONE[row.flag],
-                        )}
-                      >
+                    <td className="max-w-[16rem] truncate" title={row.raw}>
+                      <Badge className="mr-2" tone={FLAG_TONE[row.flag]}>
                         {t(`expenses.import.flag.${row.flag}`)}
-                      </span>
+                      </Badge>
                       {row.description ?? row.message ?? row.raw}
                     </td>
-                    <td
-                      className={cx(
-                        'whitespace-nowrap px-4 py-2 text-right tabular-nums sm:px-2',
-                        row.direction === 'income' ? 'text-emerald-400' : 'text-neutral-200',
-                      )}
-                    >
+                    <td className={cx('is-num whitespace-nowrap', row.direction === 'income' && 'bt-pos')}>
                       {row.amount !== null && row.direction
                         ? `${row.direction === 'income' ? '+' : '−'}${formatMoney(row.amount, row.currency ?? 'EUR')}`
                         : '—'}
                     </td>
-                    <td className="px-4 py-2 sm:px-2">
+                    <td>
                       {row.flag === 'new' ? (
                         <select
-                          className={selectClass}
+                          className="bt-select"
+                          style={compactSelectStyle}
                           aria-label={t('expenses.import.colCategory')}
                           value={selections[row.rowIndex] ?? ''}
                           onChange={(e) =>
@@ -268,7 +247,7 @@ export function ImportPage() {
                           ))}
                         </select>
                       ) : (
-                        <span className="text-xs text-neutral-600">—</span>
+                        <span className="bt-meta">—</span>
                       )}
                     </td>
                   </tr>
@@ -278,10 +257,11 @@ export function ImportPage() {
           </div>
 
           <div className="flex justify-end gap-2">
-            <Button variant="secondary" onClick={reset} disabled={applyMutation.isPending}>
+            <Button variant="quiet" onClick={reset} disabled={applyMutation.isPending}>
               {t('common.cancel')}
             </Button>
             <Button
+              variant="primary"
               onClick={() => applyMutation.mutate()}
               disabled={applyMutation.isPending || newCount === 0}
             >
@@ -290,7 +270,7 @@ export function ImportPage() {
                 : t('expenses.import.apply', { count: newCount })}
             </Button>
           </div>
-        </div>
+        </Panel>
       ) : null}
     </section>
   );

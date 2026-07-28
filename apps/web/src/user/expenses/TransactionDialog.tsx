@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import {
@@ -16,13 +16,8 @@ import {
   updateExpenseTransaction,
 } from '../../lib/expensesApi';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
-
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
+import { Alert } from '../components/ui';
+import { Button, Field, Seg } from '../../ui/origin';
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -45,6 +40,10 @@ export function TransactionDialog({ categories, existing, onClose }: Transaction
   const t = useT();
   const queryClient = useQueryClient();
   const isEdit = !!existing;
+  const amountFieldId = useId();
+  const dateFieldId = useId();
+  const descriptionFieldId = useId();
+  const categoryFieldId = useId();
 
   const [direction, setDirection] = useState<ExpenseDirection>(existing?.direction ?? 'expense');
   const [amount, setAmount] = useState(existing ? String(existing.amount) : '');
@@ -110,72 +109,51 @@ export function TransactionDialog({ categories, existing, onClose }: Transaction
       onClose={onClose}
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <div
-          className="flex gap-2"
-          role="group"
-          aria-label={t('expenses.transactions.dialog.direction')}
-        >
-          {EXPENSE_DIRECTIONS.map((d) => (
-            <button
-              key={d}
-              type="button"
-              onClick={() => setDirection(d)}
-              aria-pressed={direction === d}
-              className={cx(
-                'flex-1 rounded-md px-3 py-2 text-sm font-medium ring-1 ring-inset transition-colors',
-                direction === d
-                  ? 'bg-neutral-800 text-white ring-neutral-600'
-                  : 'text-neutral-400 ring-neutral-700 hover:text-neutral-200',
-              )}
-            >
-              {t(`expenses.direction.${d}`)}
-            </button>
-          ))}
-        </div>
+        <Seg
+          ariaLabel={t('expenses.transactions.dialog.direction')}
+          value={direction}
+          onChange={setDirection}
+          options={EXPENSE_DIRECTIONS.map((d) => ({
+            value: d,
+            label: t(`expenses.direction.${d}`),
+          }))}
+        />
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('expenses.transactions.dialog.amount')}
-          </span>
+        <Field label={t('expenses.transactions.dialog.amount')} htmlFor={amountFieldId}>
           <input
-            className={inputClass}
+            id={amountFieldId}
+            className="bt-input"
             inputMode="decimal"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             placeholder="0.00"
           />
-        </label>
+        </Field>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('expenses.transactions.dialog.date')}
-          </span>
+        <Field label={t('expenses.transactions.dialog.date')} htmlFor={dateFieldId}>
           <input
-            className={inputClass}
+            id={dateFieldId}
+            className="bt-input"
             type="date"
             value={bookedOn}
             onChange={(e) => setBookedOn(e.target.value)}
           />
-        </label>
+        </Field>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('expenses.transactions.dialog.description')}
-          </span>
+        <Field label={t('expenses.transactions.dialog.description')} htmlFor={descriptionFieldId}>
           <input
-            className={inputClass}
+            id={descriptionFieldId}
+            className="bt-input"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder={t('expenses.transactions.dialog.descriptionPlaceholder')}
           />
-        </label>
+        </Field>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('expenses.transactions.dialog.category')}
-          </span>
+        <Field label={t('expenses.transactions.dialog.category')} htmlFor={categoryFieldId}>
           <select
-            className={inputClass}
+            id={categoryFieldId}
+            className="bt-select"
             value={categoryId}
             onChange={(e) => setCategoryId(e.target.value)}
           >
@@ -186,7 +164,7 @@ export function TransactionDialog({ categories, existing, onClose }: Transaction
               </option>
             ))}
           </select>
-        </label>
+        </Field>
 
         {formError ? <Alert tone="error">{formError}</Alert> : null}
         {mutation.isError ? (
@@ -194,10 +172,10 @@ export function TransactionDialog({ categories, existing, onClose }: Transaction
         ) : null}
 
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose}>
+          <Button type="button" variant="quiet" onClick={onClose}>
             {t('common.cancel')}
           </Button>
-          <Button type="submit" disabled={mutation.isPending}>
+          <Button type="submit" variant="primary" disabled={mutation.isPending}>
             {mutation.isPending ? t('common.saving') : t('common.save')}
           </Button>
         </div>

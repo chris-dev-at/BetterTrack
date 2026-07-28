@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import type { ExpenseCategory, ExpenseTransaction } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
+import { cx } from '../../lib/cx';
 import { formatDate, formatMoney } from '../../lib/format';
 import {
   EXPENSE_CATEGORIES_QUERY_KEY,
@@ -14,7 +15,8 @@ import {
   recategorizeExpenseTransaction,
 } from '../../lib/expensesApi';
 import { EmptyState, Skeleton } from '../../ui';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert } from '../components/ui';
+import { Button } from '../../ui/origin';
 
 import { TransactionDialog } from './TransactionDialog';
 
@@ -77,8 +79,8 @@ export function TransactionsPage() {
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-neutral-500">{t('expenses.transactions.subtitle')}</p>
-        <Button onClick={() => setCreating(true)} disabled={!categoriesReady}>
+        <p className="bt-meta">{t('expenses.transactions.subtitle')}</p>
+        <Button onClick={() => setCreating(true)} disabled={!categoriesReady} variant="primary">
           {t('expenses.transactions.new')}
         </Button>
       </div>
@@ -92,9 +94,7 @@ export function TransactionsPage() {
       ) : transactionsQuery.isError ? (
         <div className="flex flex-wrap items-center gap-3">
           <Alert tone="error">{t('expenses.transactions.loadError')}</Alert>
-          <Button variant="secondary" onClick={retryTransactions}>
-            {t('common.retry')}
-          </Button>
+          <Button onClick={retryTransactions}>{t('common.retry')}</Button>
         </div>
       ) : transactions.length === 0 ? (
         <EmptyState
@@ -102,40 +102,30 @@ export function TransactionsPage() {
           title={t('expenses.transactions.emptyTitle')}
           description={t('expenses.transactions.emptyDescription')}
           cta={
-            <button
-              type="button"
-              onClick={() => setCreating(true)}
-              disabled={!categoriesReady}
-              className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            >
+            <Button variant="quiet" onClick={() => setCreating(true)} disabled={!categoriesReady}>
               {t('expenses.transactions.emptyCta')}
-            </button>
+            </Button>
           }
         />
       ) : (
-        <ul className="flex flex-col divide-y divide-neutral-800 rounded-lg border border-neutral-800">
+        <ul className="bt-band flex flex-col" style={{ borderBlock: '1px solid var(--bt-border)' }}>
           {transactions.map((tx) => {
             const category = tx.categoryId ? categoryById.get(tx.categoryId) : undefined;
             const isIncome = tx.direction === 'income';
             return (
-              <li key={tx.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+              <li key={tx.id} className="bt-band__row flex flex-wrap items-center gap-3">
                 <span
                   className="h-2.5 w-2.5 shrink-0 rounded-full"
                   style={{ backgroundColor: category?.color ?? '#3f3f46' }}
                   aria-hidden="true"
                 />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-neutral-200">{tx.description}</p>
-                  <p className="text-xs text-neutral-500">
+                  <p className="bt-row-title truncate">{tx.description}</p>
+                  <p className="bt-row-sub">
                     {formatDate(tx.bookedOn)} · {t(`expenses.direction.${tx.direction}`)}
                   </p>
                 </div>
-                <span
-                  className={cx(
-                    'shrink-0 text-sm font-semibold tabular-nums',
-                    isIncome ? 'text-emerald-400' : 'text-neutral-200',
-                  )}
-                >
+                <span className={cx('shrink-0 bt-num font-semibold', isIncome && 'bt-pos')}>
                   {isIncome ? '+' : '−'}
                   {formatMoney(tx.amount, tx.currency)}
                 </span>
@@ -152,7 +142,8 @@ export function TransactionsPage() {
                       categoryId: e.target.value === '' ? null : e.target.value,
                     })
                   }
-                  className="shrink-0 rounded-md bg-neutral-950 px-2 py-1 text-xs text-neutral-200 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  className="bt-select shrink-0"
+                  style={{ minHeight: 28, padding: '2px 26px 2px 8px', width: 'auto', fontSize: 12 }}
                 >
                   {categoriesReady ? (
                     <>
@@ -173,39 +164,31 @@ export function TransactionsPage() {
                 </select>
                 {confirmDeleteId === tx.id ? (
                   <span className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
+                    <Button
+                      variant="danger"
+                      size="sm"
                       onClick={() => remove.mutate(tx.id)}
                       disabled={remove.isPending}
-                      className="rounded px-2 py-1 text-xs font-medium text-red-400 hover:bg-red-950/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                     >
                       {t('common.confirm')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeleteId(null)}
-                      className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
-                    >
+                    </Button>
+                    <Button variant="quiet" size="sm" onClick={() => setConfirmDeleteId(null)}>
                       {t('common.cancel')}
-                    </button>
+                    </Button>
                   </span>
                 ) : (
                   <span className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
+                    <Button
+                      variant="quiet"
+                      size="sm"
                       onClick={() => setEditing(tx)}
                       disabled={!categoriesReady}
-                      className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
                     >
                       {t('common.edit')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeleteId(tx.id)}
-                      className="rounded px-2 py-1 text-xs text-neutral-500 hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-                    >
+                    </Button>
+                    <Button variant="danger" size="sm" onClick={() => setConfirmDeleteId(tx.id)}>
                       {t('common.delete')}
-                    </button>
+                    </Button>
                   </span>
                 )}
               </li>
@@ -217,9 +200,7 @@ export function TransactionsPage() {
       {transactionsQuery.isSuccess && categoriesQuery.isError ? (
         <div className="flex flex-wrap items-center gap-3">
           <Alert tone="error">{t('expenses.transactions.categoryLoadError')}</Alert>
-          <Button variant="secondary" onClick={retryCategories}>
-            {t('common.retry')}
-          </Button>
+          <Button onClick={retryCategories}>{t('common.retry')}</Button>
         </div>
       ) : null}
 

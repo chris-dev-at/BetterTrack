@@ -12,7 +12,8 @@ import {
   listExpenseRules,
 } from '../../lib/expensesApi';
 import { EmptyState, Skeleton } from '../../ui';
-import { Alert, Button } from '../components/ui';
+import { Alert } from '../components/ui';
+import { Badge, Button } from '../../ui/origin';
 
 import { RuleDialog } from './RuleDialog';
 
@@ -63,8 +64,8 @@ export function RulesPage() {
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-neutral-500">{t('expenses.rules.subtitle')}</p>
-        <Button onClick={() => setCreating(true)} disabled={categories.length === 0}>
+        <p className="bt-meta">{t('expenses.rules.subtitle')}</p>
+        <Button onClick={() => setCreating(true)} disabled={categories.length === 0} variant="primary">
           {t('expenses.rules.new')}
         </Button>
       </div>
@@ -79,7 +80,6 @@ export function RulesPage() {
           <Alert tone="error">{t('expenses.rules.loadError')}</Alert>
           <div>
             <Button
-              variant="secondary"
               onClick={retryPrerequisites}
               disabled={rulesQuery.isFetching || categoriesQuery.isFetching}
             >
@@ -93,24 +93,22 @@ export function RulesPage() {
           description={t('expenses.rules.emptyDescription')}
         />
       ) : (
-        <ul className="flex flex-col divide-y divide-neutral-800 rounded-lg border border-neutral-800">
+        <ul className="bt-band flex flex-col" style={{ borderBlock: '1px solid var(--bt-border)' }}>
           {rules.map((rule) => {
             const category = categoryById.get(rule.categoryId);
             return (
-              <li key={rule.id} className="flex items-center gap-3 px-4 py-2.5">
+              <li key={rule.id} className="bt-band__row flex items-center gap-3">
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm text-neutral-200">
-                    <span className="text-neutral-500">
+                  <p className="bt-row-title truncate">
+                    <span className="bt-muted">
                       {t(`expenses.rules.matchType.${rule.matchType}`)}
                     </span>{' '}
-                    <span className="font-medium">“{rule.pattern}”</span>
+                    <span>“{rule.pattern}”</span>
                     {!rule.enabled ? (
-                      <span className="ml-2 rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] font-medium uppercase text-neutral-400">
-                        {t('expenses.rules.disabled')}
-                      </span>
+                      <Badge className="ml-2">{t('expenses.rules.disabled')}</Badge>
                     ) : null}
                   </p>
-                  <p className="mt-0.5 flex items-center gap-1.5 text-xs text-neutral-500">
+                  <p className="bt-row-sub flex items-center gap-1.5">
                     <span aria-hidden="true">→</span>
                     <span
                       className="h-2.5 w-2.5 shrink-0 rounded-full"
@@ -122,38 +120,26 @@ export function RulesPage() {
                 </div>
                 {confirmDeleteId === rule.id ? (
                   <span className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
+                    <Button
+                      variant="danger"
+                      size="sm"
                       onClick={() => remove.mutate(rule.id)}
                       disabled={remove.isPending}
-                      className="rounded px-2 py-1 text-xs font-medium text-red-400 hover:bg-red-950/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                     >
                       {t('common.confirm')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeleteId(null)}
-                      className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
-                    >
+                    </Button>
+                    <Button variant="quiet" size="sm" onClick={() => setConfirmDeleteId(null)}>
                       {t('common.cancel')}
-                    </button>
+                    </Button>
                   </span>
                 ) : (
                   <span className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setEditing(rule)}
-                      className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
-                    >
+                    <Button variant="quiet" size="sm" onClick={() => setEditing(rule)}>
                       {t('common.edit')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeleteId(rule.id)}
-                      className="rounded px-2 py-1 text-xs text-neutral-500 hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-                    >
+                    </Button>
+                    <Button variant="danger" size="sm" onClick={() => setConfirmDeleteId(rule.id)}>
                       {t('common.delete')}
-                    </button>
+                    </Button>
                   </span>
                 )}
               </li>

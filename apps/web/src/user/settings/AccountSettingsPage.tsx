@@ -24,7 +24,8 @@ import {
 } from '../../lib/userApi';
 import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
-import { Alert, Button, TextField } from '../components/ui';
+import { Button, Field, Input, SectionHead, Select } from '../../ui/origin';
+import { Alert } from '../components/ui';
 
 const ME_KEY = ['auth', 'me'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
@@ -69,11 +70,11 @@ function changeErrorMessage(t: TranslateFn, err: unknown): string {
 }
 
 /** One labelled read-only row in the identity card. */
-function Field({ label, value }: { label: string; value: string }) {
+function IdentityField({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">{label}</span>
-      <span className="text-sm text-neutral-100">{value}</span>
+    <div className="flex flex-col gap-1">
+      <span className="bt-label">{label}</span>
+      <span className="bt-num">{value}</span>
     </div>
   );
 }
@@ -116,41 +117,60 @@ function ChangePasswordForm() {
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
-      <h3 className="text-sm font-semibold text-neutral-100">{t('settings.password.title')}</h3>
+      <h3 className="bt-h3">{t('settings.password.title')}</h3>
       {error ? <Alert tone="error">{error}</Alert> : null}
       {done ? <Alert tone="success">{t('settings.password.success')}</Alert> : null}
-      <TextField
+      <Field
+        className="max-w-sm"
+        htmlFor="currentPassword"
         label={t('settings.password.current')}
-        name="currentPassword"
-        type="password"
-        autoComplete="current-password"
-        value={currentPassword}
-        onChange={(e) => setCurrentPassword(e.target.value)}
-        required
-      />
-      <TextField
-        label={t('settings.password.new')}
-        name="newPassword"
-        type="password"
-        autoComplete="new-password"
-        value={newPassword}
-        onChange={(e) => setNewPassword(e.target.value)}
-        minLength={MIN_PASSWORD_LENGTH}
-        required
+      >
+        <Input
+          autoComplete="current-password"
+          id="currentPassword"
+          name="currentPassword"
+          onChange={(e) => setCurrentPassword(e.target.value)}
+          required
+          type="password"
+          value={currentPassword}
+        />
+      </Field>
+      <Field
+        className="max-w-sm"
         hint={t('settings.password.hint', { count: MIN_PASSWORD_LENGTH })}
-      />
-      <TextField
+        htmlFor="newPassword"
+        label={t('settings.password.new')}
+      >
+        <Input
+          autoComplete="new-password"
+          id="newPassword"
+          minLength={MIN_PASSWORD_LENGTH}
+          name="newPassword"
+          onChange={(e) => setNewPassword(e.target.value)}
+          required
+          type="password"
+          value={newPassword}
+        />
+      </Field>
+      <Field
+        className="max-w-sm"
+        htmlFor="confirmPassword"
         label={t('settings.password.confirm')}
-        name="confirmPassword"
-        type="password"
-        autoComplete="new-password"
-        value={confirmPassword}
-        onChange={(e) => setConfirmPassword(e.target.value)}
-        minLength={MIN_PASSWORD_LENGTH}
-        required
-      />
+      >
+        <Input
+          autoComplete="new-password"
+          id="confirmPassword"
+          minLength={MIN_PASSWORD_LENGTH}
+          name="confirmPassword"
+          onChange={(e) => setConfirmPassword(e.target.value)}
+          required
+          type="password"
+          value={confirmPassword}
+        />
+      </Field>
       <div>
-        <Button type="submit" disabled={mutation.isPending}>
+        {/* The page's single primary action; every other block stays quiet. */}
+        <Button disabled={mutation.isPending} type="submit" variant="primary">
           {mutation.isPending ? t('settings.password.submitting') : t('settings.password.submit')}
         </Button>
       </div>
@@ -182,26 +202,26 @@ function LanguageControl() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">{t('language.title')}</h3>
-        <p className="text-xs text-neutral-500">{t('language.description')}</p>
+        <h3 className="bt-h3">{t('language.title')}</h3>
+        <p className="bt-meta">{t('language.description')}</p>
       </div>
-      <select
+      <Select
         aria-label={t('language.label')}
-        value={locale}
         disabled={mutation.isPending}
         onChange={(e) => {
           const code = e.target.value;
           setLocale(code);
           mutation.mutate(code);
         }}
-        className="w-fit rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:cursor-not-allowed"
+        style={{ width: 'auto', maxWidth: 260 }}
+        value={locale}
       >
         {SUPPORTED_LOCALES.map((l) => (
           <option key={l.code} value={l.code}>
             {l.label}
           </option>
         ))}
-      </select>
+      </Select>
       {error ? <Alert tone="error">{t('language.saveError')}</Alert> : null}
     </div>
   );
@@ -240,27 +260,25 @@ function BaseCurrencyControl() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.baseCurrency.title')}
-        </h3>
-        <p className="text-xs text-neutral-500">{t('settings.baseCurrency.description')}</p>
+        <h3 className="bt-h3">{t('settings.baseCurrency.title')}</h3>
+        <p className="bt-meta">{t('settings.baseCurrency.description')}</p>
       </div>
       {query.isPending ? (
         <Skeleton height="h-10" width="w-40" />
       ) : (
-        <select
+        <Select
           aria-label={t('settings.baseCurrency.label')}
-          value={query.data?.baseCurrency ?? 'EUR'}
           disabled={mutation.isPending}
           onChange={(e) => mutation.mutate(e.target.value as BaseCurrency)}
-          className="w-fit rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:cursor-not-allowed"
+          style={{ width: 'auto', maxWidth: 260 }}
+          value={query.data?.baseCurrency ?? 'EUR'}
         >
           {BASE_CURRENCIES.map((code) => (
             <option key={code} value={code}>
               {t(`settings.baseCurrency.option.${code}`)}
             </option>
           ))}
-        </select>
+        </Select>
       )}
       {error ? <Alert tone="error">{t('settings.baseCurrency.saveError')}</Alert> : null}
     </div>
@@ -282,15 +300,10 @@ function SharingMovedNote() {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.sharingMoved.title')}
-        </h3>
-        <p className="text-xs text-neutral-500">{t('settings.sharingMoved.description')}</p>
+        <h3 className="bt-h3">{t('settings.sharingMoved.title')}</h3>
+        <p className="bt-meta">{t('settings.sharingMoved.description')}</p>
       </div>
-      <Link
-        to="/social/my-shared"
-        className="w-fit text-sm font-medium text-sky-400 hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-      >
+      <Link className="bt-link w-fit" to="/social/my-shared">
         {t('settings.sharingMoved.link')}
       </Link>
     </div>
@@ -357,8 +370,8 @@ function ExportDataSection() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">{t('settings.export.title')}</h3>
-        <p className="text-xs text-neutral-500">{t('settings.export.description')}</p>
+        <h3 className="bt-h3">{t('settings.export.title')}</h3>
+        <p className="bt-meta">{t('settings.export.description')}</p>
       </div>
 
       {error ? <Alert tone="error">{error}</Alert> : null}
@@ -370,10 +383,7 @@ function ExportDataSection() {
               ? t('settings.export.readyUntil', { date: formatDate(current.expiresAt) })
               : t('settings.export.ready')}
           </Alert>
-          <a
-            href={dataExportDownloadUrl(tokenForJob)}
-            className="w-fit rounded-md bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-          >
+          <a className="bt-btn w-fit" href={dataExportDownloadUrl(tokenForJob)}>
             {t('settings.export.download')}
           </a>
         </div>
@@ -387,18 +397,24 @@ function ExportDataSection() {
 
       {!isPending ? (
         <form onSubmit={onSubmit} className="flex flex-col gap-3">
-          <TextField
-            label={t('settings.export.password')}
-            name="exportPassword"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
+          <Field
+            className="max-w-sm"
             hint={t('settings.export.passwordHint')}
-          />
+            htmlFor="exportPassword"
+            label={t('settings.export.password')}
+          >
+            <Input
+              autoComplete="current-password"
+              id="exportPassword"
+              name="exportPassword"
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              type="password"
+              value={password}
+            />
+          </Field>
           <div>
-            <Button type="submit" disabled={mutation.isPending}>
+            <Button disabled={mutation.isPending} type="submit">
               {mutation.isPending
                 ? t('settings.export.submitting')
                 : isReady || current?.status === 'expired' || current?.status === 'failed'
@@ -428,13 +444,11 @@ export function AccountSettingsPage() {
   });
 
   return (
-    <div className="flex flex-col gap-8">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">{t('settings.account.title')}</h2>
-        <p className="text-sm text-neutral-500">{t('settings.account.subtitle')}</p>
-      </div>
+    <div className="flex flex-col gap-7">
+      <SectionHead sub={t('settings.account.subtitle')} title={t('settings.account.title')} />
 
-      <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+      {/* Identity reads as a stat strip, not a card: values first, labels quiet. */}
+      <section>
         {me.isPending ? (
           <div className="flex flex-col gap-3">
             <Skeleton height="h-6" />
@@ -446,10 +460,13 @@ export function AccountSettingsPage() {
             description={t('settings.account.loadError.description')}
           />
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label={t('settings.account.field.username')} value={me.data.username} />
-            <Field label={t('settings.account.field.email')} value={me.data.email} />
-            <Field
+          <div
+            className="bt-t-rule bt-b-rule grid grid-cols-1 gap-5 sm:grid-cols-3"
+            style={{ padding: '15px 0' }}
+          >
+            <IdentityField label={t('settings.account.field.username')} value={me.data.username} />
+            <IdentityField label={t('settings.account.field.email')} value={me.data.email} />
+            <IdentityField
               label={t('settings.account.field.memberSince')}
               value={formatDate(me.data.createdAt)}
             />
@@ -457,27 +474,33 @@ export function AccountSettingsPage() {
         )}
       </section>
 
-      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        <LanguageControl />
-      </section>
+      {/* One ruled band of settings blocks — no card-in-card, one hairline each. */}
+      <div className="bt-panel bt-band">
+        <section className="bt-band__row">
+          <LanguageControl />
+        </section>
 
-      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        <BaseCurrencyControl />
-      </section>
+        <section className="bt-band__row">
+          <BaseCurrencyControl />
+        </section>
 
-      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        <ChangePasswordForm />
-      </section>
+        <section className="bt-band__row">
+          <ChangePasswordForm />
+        </section>
 
-      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        <SharingMovedNote />
-      </section>
+        <section className="bt-band__row">
+          <SharingMovedNote />
+        </section>
 
-      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        <ExportDataSection />
-      </section>
+        <section className="bt-band__row">
+          <ExportDataSection />
+        </section>
+      </div>
 
-      <section className="rounded-md border border-red-900/60 bg-neutral-900 p-5">
+      <section
+        className="bt-panel"
+        style={{ borderColor: 'rgba(251, 113, 133, 0.28)', padding: '16px 20px' }}
+      >
         <DangerZone />
       </section>
     </div>
@@ -495,13 +518,10 @@ function DangerZone() {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-red-400">{t('settings.dangerZone.title')}</h3>
-        <p className="text-xs text-neutral-500">{t('settings.dangerZone.description')}</p>
+        <h3 className="bt-h3 bt-neg">{t('settings.dangerZone.title')}</h3>
+        <p className="bt-meta">{t('settings.dangerZone.description')}</p>
       </div>
-      <Link
-        to="/account/delete"
-        className="w-fit text-sm font-medium text-red-400 hover:text-red-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-      >
+      <Link className="bt-btn bt-btn--danger bt-btn--sm w-fit" to="/account/delete">
         {t('settings.dangerZone.link')}
       </Link>
     </div>
