@@ -2364,13 +2364,20 @@ function taxSettingsFromData(
 }
 
 function taxModeField(data: Record<string, unknown> | null): VaultTaxMode | null {
-  const mode = data?.mode;
-  return mode === 'none' ||
+  return nullableTaxMode(data?.mode);
+}
+
+function nullableTaxMode(mode: unknown): VaultTaxMode | null {
+  if (mode == null) return null;
+  if (
+    mode === 'none' ||
     mode === 'manual_per_trade' ||
     mode === 'country_specific' ||
     mode === 'custom'
-    ? mode
-    : null;
+  ) {
+    return mode;
+  }
+  throw new VaultCryptoError('update-required', 'This vault was written by a newer app version.');
 }
 
 function taxEngineOpenFromYear(mode: VaultTaxMode, now: string): number | null {
@@ -2437,13 +2444,7 @@ function hasNonzeroFrozenTaxAmount(entity: VaultEntity): boolean {
 function frozenTransactionTaxMode(
   entity: VaultEntity,
 ): 'none' | 'manual_per_trade' | 'country_specific' | 'custom' | null {
-  const mode = entity.data.taxMode;
-  return mode === 'none' ||
-    mode === 'manual_per_trade' ||
-    mode === 'country_specific' ||
-    mode === 'custom'
-    ? mode
-    : null;
+  return nullableTaxMode(entity.data.taxMode);
 }
 
 function taxOperationUnavailable(): VaultPortfolioStoreError {
