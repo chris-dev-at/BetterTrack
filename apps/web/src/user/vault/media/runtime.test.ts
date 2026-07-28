@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   ParanoidMediaStateResponse,
   VaultDocument,
+  VaultEntity,
   VaultEnvelopeHeader,
   VaultMedium,
 } from '@bettertrack/contracts';
@@ -19,12 +20,16 @@ import type {
   DataHomeWriteOptions,
   DataHomeWriteResult,
 } from '../dataHome';
+import { decryptVaultDocument, encryptVaultDocument } from '../crypto';
 import type { DriveDataHome, DriveDeleteResult, GoogleDriveTokenClient } from '../drive';
 import { inspectVaultEnvelope } from '../envelope';
 import type { VaultSyncCandidate, VaultSyncState } from '../sync';
 import fixture from '../vectors.fixture.json';
 import type { VaultMediaApi } from './mediaSwitcher';
-import type { VaultRetirementProofManager } from './retirementProof';
+import {
+  createVaultRetirementProofManager,
+  type VaultRetirementProofManager,
+} from './retirementProof';
 import { createUnlockedVaultDriveRuntime, type VaultDriveSyncCoordinator } from './runtime';
 
 const baseDocument: VaultDocument = { schemaVersion: 1, entities: {}, mergeLog: [] };
@@ -59,6 +64,107 @@ describe('unlocked Drive runtime', () => {
     expect(sync.mutate).toHaveBeenCalledTimes(1);
     expect(proof.ensure).toHaveBeenCalledTimes(2);
     expect(proof.publicKey).toBe('public-proof');
+  });
+
+  it('adds proof material to the document refreshed after a concurrent transaction', async () => {
+    const vaultKey = base64ToBytes(fixture.vaultKeyBase64, 'envelope-invalid');
+    const initial = base64ToBytes(fixture.initial.envelopeBase64, 'envelope-invalid');
+    const initialHeader = fixture.initial.header as VaultEnvelopeHeader;
+    const opened = await decryptVaultDocument(initial, vaultKey);
+    const transaction = concurrentTransaction();
+    const concurrentDocument: VaultDocument = {
+      ...opened.document,
+      entities: {
+        ...opened.document.entities,
+        portfolio: [...(opened.document.entities.portfolio ?? []), concurrentPortfolio()],
+        transaction: [...(opened.document.entities.transaction ?? []), transaction],
+      },
+    };
+    const concurrent = (
+      await encryptVaultDocument({
+        document: concurrentDocument,
+        vaultKey,
+        header: {
+          keyId: initialHeader.keyId,
+          wrappedKeys: initialHeader.wrappedKeys,
+          vaultVersion: 2,
+          deviceId: '018f0000-0000-7000-8000-000000000046',
+          writeId: '018f0000-0000-7000-8000-000000000047',
+          writtenAt: '2026-07-28T10:00:01.000Z',
+        },
+      })
+    ).envelope;
+    const server = new RuntimeRemote('server', initial);
+    const drive = new RuntimeDrive(initial);
+    const ensureStarted = deferred<void>();
+    const resumeEnsure = deferred<void>();
+    const proofDelegate = createVaultRetirementProofManager(
+      webcrypto.subtle as unknown as SubtleCrypto,
+    );
+    const proof: VaultRetirementProofManager = {
+      get publicKey() {
+        return proofDelegate.publicKey;
+      },
+      ensure: vi.fn(async (document) => {
+        ensureStarted.resolve(undefined);
+        await resumeEnsure.promise;
+        return proofDelegate.ensure(document);
+      }),
+      sign: vi.fn((input) => proofDelegate.sign(input)),
+      clear: vi.fn(() => proofDelegate.clear()),
+    };
+    const runtime = createUnlockedVaultDriveRuntime(vaultKey, fixture.initial.header.keyId, {
+      userId: crypto.randomUUID(),
+      clientId: 'browser-client-id',
+      tokens: tokenClient(),
+      server,
+      drive,
+      api: replicatedApi(version(initial)),
+      retirementProof: proof,
+    });
+
+    const ready = runtime.ready;
+    await ensureStarted.promise;
+    server.envelope = concurrent.slice();
+    drive.envelope = concurrent.slice();
+    resumeEnsure.resolve(undefined);
+    await expect(ready).resolves.toBeUndefined();
+
+    expect(server.envelope).toEqual(drive.envelope);
+    const committed = await decryptVaultDocument(server.envelope!, vaultKey);
+    expect(committed.document).toMatchObject({
+      schemaVersion: 2,
+      clientSecurity: { retirementProof: {} },
+    });
+    expect(committed.document.entities.transaction).toEqual(expect.arrayContaining([transaction]));
+    runtime.dispose();
+  });
+
+  it('fails closed when another device enrolls different proof material first', async () => {
+    const concurrentDocument: VaultDocument = {
+      ...securedDocument,
+      clientSecurity: {
+        retirementProof: {
+          publicKey: 'other-public-proof',
+          privateKey: 'other-private-proof',
+        },
+      },
+    };
+    const sync = coordinator('synced');
+    vi.mocked(sync.mutate).mockImplementationOnce(async (mutator) => {
+      const document = mutator({ document: concurrentDocument, currentVersion: 2 });
+      return syncState('synced', document);
+    });
+    const runtime = createUnlockedVaultDriveRuntime(
+      new Uint8Array(32).fill(1),
+      fixture.initial.header.keyId,
+      dependencies(sync, proofManager()),
+    );
+
+    await expect(runtime.ready).rejects.toMatchObject({
+      code: 'document-invalid',
+      message: expect.stringMatching(/changed during enrollment/i),
+    });
   });
 
   it('fails closed when proof material remains pending on a selected medium', async () => {
@@ -252,6 +358,51 @@ function candidate(document: VaultDocument): VaultSyncCandidate {
     envelope: new Uint8Array([1]),
     header: fixture.initial.header as VaultEnvelopeHeader,
     document,
+  };
+}
+
+function concurrentTransaction(): VaultEntity {
+  return {
+    id: '018f0000-0000-7000-8000-000000000042',
+    rev: 0,
+    editedAt: '2026-07-28T10:00:00.000Z',
+    editedBy: '018f0000-0000-7000-8000-000000000043',
+    deletedAt: null,
+    data: {
+      portfolioId: '018f0000-0000-7000-8000-000000000044',
+      assetId: '018f0000-0000-7000-8000-000000000045',
+      side: 'buy',
+      quantity: '1',
+      price: '10',
+      fee: '0',
+      executedAt: '2026-07-28T10:00:00.000Z',
+      note: null,
+      taxMode: null,
+      taxCountry: null,
+      taxAmountEur: null,
+      taxParams: null,
+      allowUncovered: false,
+      uncoveredEntryPrice: null,
+      source: 'manual',
+    },
+  };
+}
+
+function concurrentPortfolio(): VaultEntity {
+  return {
+    id: '018f0000-0000-7000-8000-000000000044',
+    rev: 0,
+    editedAt: '2026-07-28T10:00:00.000Z',
+    editedBy: '018f0000-0000-7000-8000-000000000043',
+    deletedAt: null,
+    data: {
+      userId: '018f0000-0000-7000-8000-000000000048',
+      name: 'Concurrent portfolio',
+      visibility: 'private',
+      sortOrder: 0,
+      defaultPayFromCash: false,
+      archivedAt: null,
+    },
   };
 }
 

@@ -1,3 +1,5 @@
+import { VAULT_DOCUMENT_VERSION, type VaultDocument } from '@bettertrack/contracts';
+
 import {
   getParanoidMediaState,
   purgeRetiredParanoidServer,
@@ -19,6 +21,7 @@ import { createIndexedDbVaultQuarantineStore } from '../quarantine';
 import { createServerBlobDataHome } from '../serverBlobDataHome';
 import { createVaultSyncEngine, type VaultSyncEngine, type VaultSyncState } from '../sync';
 import { reconcilePortfolioDocument } from '../vaultPortfolioStore';
+import { VaultCryptoError } from '../errors';
 import { createDriveConnectionController, type DriveConnectionController } from './driveConnection';
 import { createVaultMediaSwitcher, type VaultMediaApi } from './mediaSwitcher';
 import {
@@ -119,7 +122,9 @@ export function createUnlockedVaultDriveRuntime(
     const ensured = await retirementProof.ensure(state.active.document);
     requireActive();
     if (ensured.changed) {
-      const committed = await sync.mutate(() => ensured.document);
+      const committed = await sync.mutate(({ document }) =>
+        applyRetirementProofMaterial(document, ensured.document),
+      );
       requireActive();
       if (committed.status !== 'synced' || committed.active == null || committed.pending != null) {
         throw new Error('Vault retirement proof material was not durably synchronized.');
@@ -171,6 +176,37 @@ export function createUnlockedVaultDriveRuntime(
       retirementProof.clear();
       tokens.clear();
     },
+  };
+}
+
+function applyRetirementProofMaterial(
+  current: VaultDocument,
+  prepared: VaultDocument,
+): VaultDocument {
+  if (prepared.schemaVersion !== VAULT_DOCUMENT_VERSION) {
+    throw new VaultCryptoError(
+      'document-invalid',
+      'Prepared vault retirement proof material is missing.',
+    );
+  }
+  if (current.schemaVersion === VAULT_DOCUMENT_VERSION) {
+    const currentProof = current.clientSecurity.retirementProof;
+    const preparedProof = prepared.clientSecurity.retirementProof;
+    if (
+      currentProof.publicKey !== preparedProof.publicKey ||
+      currentProof.privateKey !== preparedProof.privateKey
+    ) {
+      throw new VaultCryptoError(
+        'document-invalid',
+        'Vault retirement proof material changed during enrollment.',
+      );
+    }
+    return current;
+  }
+  return {
+    ...current,
+    schemaVersion: VAULT_DOCUMENT_VERSION,
+    clientSecurity: prepared.clientSecurity,
   };
 }
 
