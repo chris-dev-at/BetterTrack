@@ -3401,6 +3401,68 @@
       "list": "Announcements"
     }
   },
+  "vaultExports": {
+    "tax": {
+      "title": "Tax report",
+      "section": "Section",
+      "summary": "Summary",
+      "germany": "Germany (Abgeltungsteuer)",
+      "positions": "Positions",
+      "sells": "Sells",
+      "dividends": "Dividends",
+      "empty": "No sells or dividends in this year.",
+      "year": "Year",
+      "realized": "Realized P/L",
+      "realizedEur": "Realized P/L (EUR)",
+      "dividendsGross": "Dividends gross",
+      "dividendsGrossEur": "Dividends gross (EUR)",
+      "withheld": "Tax withheld",
+      "withheldEur": "Tax withheld (EUR)",
+      "refunded": "Tax refunded",
+      "refundedEur": "Tax refunded (EUR)",
+      "net": "Net tax",
+      "netEur": "Net tax (EUR)",
+      "tax": "Tax",
+      "taxEur": "Tax (EUR)",
+      "date": "Date",
+      "quantity": "Quantity",
+      "proceeds": "Proceeds",
+      "proceedsEur": "Proceeds (EUR)",
+      "costBasis": "Cost basis",
+      "costBasisEur": "Cost basis (EUR)",
+      "gross": "Gross",
+      "grossEur": "Gross (EUR)",
+      "allowance": "Allowance used / remaining",
+      "allowanceUsedEur": "Allowance used (EUR)",
+      "allowanceRemainingEur": "Allowance remaining (EUR)",
+      "shareLossPot": "Share-loss pot in / out",
+      "shareLossPotInEur": "Share-loss pot in (EUR)",
+      "shareLossPotOutEur": "Share-loss pot out (EUR)",
+      "otherLossPot": "Other-loss pot in / out",
+      "otherLossPotInEur": "Other-loss pot in (EUR)",
+      "otherLossPotOutEur": "Other-loss pot out (EUR)",
+      "kapest": "KapESt",
+      "kapestEur": "KapESt (EUR)",
+      "soli": "Soli",
+      "soliEur": "Soli (EUR)",
+      "symbol": "Symbol",
+      "name": "Name",
+      "taxMode": "Tax mode",
+      "disclaimerLabel": "Disclaimer",
+      "disclaimer": "Estimates for your personal overview only — not tax advice, no guarantee of correctness, not a filing document."
+    },
+    "cleartext": {
+      "readme": "BetterTrack — client cleartext export\n\nThis archive was built locally from your unlocked encrypted vault. It contains\nsource entities as JSON plus spreadsheet-friendly transaction, cash-movement,\nand holdings CSV files. Vault keys, passphrases, recovery material, ciphertext,\nsync metadata, quarantined blobs, and derived caches are not included.\n",
+      "skipped": {
+        "importBatches": "Import staging bookkeeping; applied rows are exported in their final entities.",
+        "importRows": "Import staging bookkeeping; applied rows are exported in their final entities.",
+        "portfolioSnapshots": "Derived valuation cache; rebuilt from source rows and market data.",
+        "snapshotState": "Derived snapshot invalidation bookkeeping.",
+        "standingOrderRuns": "Idempotency bookkeeping; materialized rows and definitions are exported.",
+        "expenseBudgetFires": "Derived alert-delivery bookkeeping."
+      }
+    }
+  },
   "admin": {
     "nav": {
       "security": "Security",
@@ -3747,6 +3809,25 @@
         "imports": "Imports",
         "settings": "Settings"
       }
+    },
+    "emailLog": {
+      "loading": "Loading email log…",
+      "empty": "No emails sent yet.",
+      "emptyForUser": "No emails sent to {{email}} yet.",
+      "headers": {
+        "when": "When",
+        "recipient": "Recipient",
+        "template": "Template",
+        "subject": "Subject",
+        "status": "Status"
+      },
+      "status": {
+        "sent": "Sent",
+        "failed": "Failed",
+        "suppressed": "Suppressed"
+      },
+      "loadMore": "Load more",
+      "loadingMore": "Loading…"
     }
   }
 }

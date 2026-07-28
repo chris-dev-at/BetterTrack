@@ -1468,6 +1468,9 @@ check "malformed checker artifacts cause no GitHub mutation" 0 "$MUTATIONS"
 
 echo "— durable checker/escalated stage resume"
 rm -rf "$MFSTATE/triage"; mkdir -p "$MFSTATE/triage"
+# The review stage now short-circuits on a live queue entry; earlier sections
+# leave entries behind, so this battery starts from an empty queue.
+rm -f "$MFSTATE"/merge-queue/*.json
 CHECKER_CALLS=0; ESC_FIXER_CALLS=0; ESC_REVIEW_CALLS=0; ESC_ENQUEUES=0
 run_checker(){ CHECKER_CALLS=$((CHECKER_CALLS+1)); return 1; }
 run_escalated_fixer_once(){
@@ -1560,6 +1563,255 @@ triage 11 21 false
 check "relocation publication resumes without checker replay" 0 "$?"
 check "relocation retry never invokes checker" 0 "$CHECKER_CALLS"
 check "relocation publication retried idempotently" 2 "$RELOC_PUBLISH_CALLS"
+
+echo "— stale enqueued triage state revalidates instead of looping"
+# Merger invalidation (update-branch/conflict-fix) removes the queue entry and
+# the in-progress label and expects a fresh review; a durable complete/enqueued
+# state that keeps answering "done" makes the scheduler reassign the issue in
+# an infinite no-op loop (live: issues #865/#878, 2026-07-28).
+CHECKER_CALLS=0; ESC_FIXER_CALLS=0; ESC_REVIEW_CALLS=0; ESC_ENQUEUES=0; HUMANS=0
+run_checker(){ CHECKER_CALLS=$((CHECKER_CALLS+1)); return 1; }
+run_escalated_fixer_once(){ ESC_FIXER_CALLS=$((ESC_FIXER_CALLS+1)); return 1; }
+run_reviewer(){
+  ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1))
+  LAST_REVIEW_VERDICT="FACTORY-VERDICT: APPROVE"
+  LAST_REVIEW_HEAD=ghi
+  LAST_REVIEW_COMMENT_ID=99
+  return 0
+}
+enqueue_merge(){ ESC_ENQUEUES=$((ESC_ENQUEUES+1)); return 0; }
+mark_human(){ HUMANS=$((HUMANS+1)); }
+gh(){ [ "$1 $2" = "pr view" ] && echo OPEN; }
+LAST_CHECKER_VERDICT="FACTORY-TRIAGE: RETRY_ESCALATED"
+LAST_CHECKER_BODY="root cause"
+LAST_CHECKER_COMMENT_ID=91
+LAST_CHECKER_HEAD=abc
+LAST_CHECKER_NEW=""
+LAST_CHECKER_PR_DISPOSITION=""
+LAST_CHECKER_RUN_ID=checker-stale
+TRIAGE_ESC_DIFF=normal
+TRIAGE_FIXER_BASE_HEAD=abc
+TRIAGE_FIXER_HEAD=def
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+CYCLE_DIFF=easy
+TRIAGE_FILE=$(triage_state_file 12 22)
+triage_state_save "$TRIAGE_FILE" 12 22 complete
+
+printf '%s\n' '{"pr":22}' >"$MFSTATE/merge-queue/5-pr22.json"
+triage 12 22 false
+check "live enqueue stays terminal" 0 "$?"
+check "live enqueue reviews nothing" 0 "$ESC_REVIEW_CALLS"
+
+rm -f "$MFSTATE/merge-queue/5-pr22.json"
+gh(){ [ "$1 $2" = "pr view" ] && echo MERGED; }
+triage 12 22 false
+check "consumed enqueue on a merged PR stays terminal" 0 "$?"
+check "merged PR reviews nothing" 0 "$ESC_REVIEW_CALLS"
+
+gh(){ [ "$1 $2" = "pr view" ] && echo OPEN; }
+triage 12 22 false
+check "stale enqueue re-earns approval at the current head" 0 "$?"
+check "stale enqueue runs exactly one fresh review" 1 "$ESC_REVIEW_CALLS"
+check "fresh approval re-enqueues once" 1 "$ESC_ENQUEUES"
+check "revalidation replays neither checker nor fixer" 0 "$((CHECKER_CALLS+ESC_FIXER_CALLS))"
+check "revalidated state is durable complete/enqueued" enqueued "$(jq -r .outcome "$TRIAGE_FILE")"
+
+run_reviewer(){
+  ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1))
+  LAST_REVIEW_VERDICT="FACTORY-VERDICT: REQUEST_CHANGES"
+  LAST_REVIEW_HEAD=jkl
+  LAST_REVIEW_COMMENT_ID=100
+  return 0
+}
+triage 12 22 false
+check "revalidation rejection routes to human with no appeal" 1 "$?"
+check "revalidation rejection marks human once" 1 "$HUMANS"
+triage 12 22 false
+check "human outcome is terminal on further resumes" 1 "$?"
+check "human outcome triggers no further review" 2 "$ESC_REVIEW_CALLS"
+check "human outcome re-asserts the park" 2 "$HUMANS"
+
+# A relocate-MERGEABLE enqueue has no escalated difficulty on record: the
+# revalidating review must fall back to the cycle difficulty, floored.
+ESC_REVIEW_CALLS=0; ESC_REVIEW_DIFF=""
+run_reviewer(){
+  ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1)); ESC_REVIEW_DIFF=$3
+  LAST_REVIEW_VERDICT="FACTORY-VERDICT: APPROVE"
+  LAST_REVIEW_HEAD=mno
+  LAST_REVIEW_COMMENT_ID=101
+  return 0
+}
+LAST_CHECKER_VERDICT="FACTORY-TRIAGE: RELOCATE"
+LAST_CHECKER_PR_DISPOSITION=MERGEABLE
+LAST_CHECKER_NEW=502
+TRIAGE_ESC_DIFF=""
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+CYCLE_DIFF=easy
+TRIAGE_FILE=$(triage_state_file 13 23)
+triage_state_save "$TRIAGE_FILE" 13 23 complete
+triage 13 23 false
+check "relocate enqueue also revalidates when stale" 0 "$?"
+check "empty escalated difficulty falls back to cycle difficulty floored" intermediate "$ESC_REVIEW_DIFF"
+
+# Unverifiable reads stay terminal and consume neither reviews nor budget.
+ESC_REVIEW_CALLS=0
+LAST_CHECKER_VERDICT="FACTORY-TRIAGE: RETRY_ESCALATED"
+LAST_CHECKER_PR_DISPOSITION=""
+LAST_CHECKER_NEW=""
+TRIAGE_ESC_DIFF=normal
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+TRIAGE_FILE=$(triage_state_file 14 24)
+triage_state_save "$TRIAGE_FILE" 14 24 complete
+gh(){ return 1; }
+triage 14 24 false
+check "failed PR-state read stays terminal" 0 "$?"
+gh(){ [ "$1 $2" = "pr view" ] && echo CLOSED; }
+triage 14 24 false
+check "closed unmerged PR stays terminal" 0 "$?"
+gh(){ [ "$1 $2" = "pr view" ] && echo BANANA; }
+triage 14 24 false
+check "garbage PR state stays terminal" 0 "$?"
+gh(){ [ "$1 $2" = "pr view" ] && echo OPEN; }
+QUEUE_REAL=$QUEUE; QUEUE=$MFSTATE/queue-gone
+triage 14 24 false
+check "unreadable queue directory stays terminal" 0 "$?"
+QUEUE=$QUEUE_REAL
+check "no review is paid for any unverifiable read" 0 "$ESC_REVIEW_CALLS"
+check "unverifiable reads consume no revalidation budget" 0 "$(jq -r .revalidations "$TRIAGE_FILE")"
+
+# The durable revalidation budget parks the issue instead of reviewing forever.
+ESC_REVIEW_CALLS=0; HUMANS=0
+run_reviewer(){
+  ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1))
+  LAST_REVIEW_VERDICT="FACTORY-VERDICT: APPROVE"
+  LAST_REVIEW_HEAD=pqr
+  LAST_REVIEW_COMMENT_ID=102
+  return 0
+}
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+TRIAGE_FILE=$(triage_state_file 15 25)
+triage_state_save "$TRIAGE_FILE" 15 25 complete
+triage 15 25 false; triage 15 25 false; triage 15 25 false
+check "invalidations within budget still revalidate" 3 "$ESC_REVIEW_CALLS"
+check "revalidation count is durable" 3 "$(jq -r .revalidations "$TRIAGE_FILE")"
+triage 15 25 false
+check "budget exhaustion parks instead of reviewing" 1 "$?"
+check "budget exhaustion pays for no further review" 3 "$ESC_REVIEW_CALLS"
+check "budget exhaustion marks human" 1 "$HUMANS"
+check "budget exhaustion is a durable human outcome" human "$(jq -r .outcome "$TRIAGE_FILE")"
+
+# A live queue entry short-circuits the review stage itself (salvage case).
+ESC_REVIEW_CALLS=0
+TRIAGE_OUTCOME=""
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+TRIAGE_FILE=$(triage_state_file 16 26)
+triage_state_save "$TRIAGE_FILE" 16 26 escalated-review-pending
+printf '%s\n' '{"pr":26}' >"$MFSTATE/merge-queue/7-pr26.json"
+triage 16 26 false
+check "salvaged queue entry skips the paid review" 0 "$?"
+check "salvaged queue entry reviews nothing" 0 "$ESC_REVIEW_CALLS"
+check "salvaged queue entry lands terminal enqueued" enqueued "$(jq -r .outcome "$TRIAGE_FILE")"
+rm -f "$MFSTATE/merge-queue/7-pr26.json"
+
+# An entry appearing between probe and write is a salvage, not a protocol loop.
+enqueue_merge(){ printf '%s\n' '{"pr":27}' >"$MFSTATE/merge-queue/8-pr27.json"; return 1; }
+TRIAGE_OUTCOME=""
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+TRIAGE_FILE=$(triage_state_file 17 27)
+triage_state_save "$TRIAGE_FILE" 17 27 escalated-review-pending
+triage 17 27 false
+check "enqueue mismatch with a live entry is terminal enqueued" 0 "$?"
+check "enqueue mismatch outcome is durable" enqueued "$(jq -r .outcome "$TRIAGE_FILE")"
+rm -f "$MFSTATE/merge-queue/8-pr27.json"
+
+# A genuine queue write failure still requeues the protocol.
+enqueue_merge(){ return 1; }
+TRIAGE_OUTCOME=""
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+TRIAGE_FILE=$(triage_state_file 18 28)
+triage_state_save "$TRIAGE_FILE" 18 28 escalated-review-pending
+triage 18 28 false
+check "true queue write failure requeues protocol" 2 "$?"
+
+check "invalid difficulty normalizes to the floor" intermediate "$(diff_at_least banana intermediate)"
+
+# The review budget is spent at the spend site: a latched review stage
+# (deterministic reviewer artifact failure → return 2 → resume) cannot buy
+# reviews past MF_REVALIDATE_MAX+1 while the transition counter sits frozen.
+ESC_REVIEW_CALLS=0; HUMANS=0
+run_reviewer(){ ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1)); return 1; }
+enqueue_merge(){ return 0; }
+TRIAGE_ESC_DIFF=normal
+TRIAGE_OUTCOME=""
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+TRIAGE_FILE=$(triage_state_file 19 29)
+triage_state_save "$TRIAGE_FILE" 19 29 escalated-review-pending
+for tick in 1 2 3 4; do triage 19 29 false; done
+check "latched review stage keeps requeueing under budget" 2 "$?"
+check "latched review stage spends up to the cap" 4 "$ESC_REVIEW_CALLS"
+triage 19 29 false
+check "review budget exhaustion parks" 1 "$?"
+check "review budget exhaustion pays nothing further" 4 "$ESC_REVIEW_CALLS"
+check "review budget exhaustion marks human" 1 "$HUMANS"
+check "spent reviews are durable" 5 "$(jq -r .reviews_spent "$TRIAGE_FILE")"
+
+# Probe failures are bounded and park loudly instead of spinning silently.
+ESC_REVIEW_CALLS=0; HUMANS=0
+MF_QUEUE_PROBE_MAX_SAVE=${MF_QUEUE_PROBE_MAX:-40}; MF_QUEUE_PROBE_MAX=2
+gh(){ [ "$1 $2" = "pr view" ] && echo OPEN; }
+run_reviewer(){
+  ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1))
+  LAST_REVIEW_VERDICT="FACTORY-VERDICT: APPROVE"
+  LAST_REVIEW_HEAD=stu
+  LAST_REVIEW_COMMENT_ID=103
+  return 0
+}
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+TRIAGE_FILE=$(triage_state_file 20 30)
+triage_state_save "$TRIAGE_FILE" 20 30 complete
+QUEUE_REAL=$QUEUE; QUEUE=$MFSTATE/queue-gone
+triage 20 30 false; triage 20 30 false
+check "probe failures under the cap stay terminal" 0 "$?"
+check "probe failure count is durable" 2 "$(jq -r .probe_failures "$TRIAGE_FILE")"
+triage 20 30 false
+check "probe failure cap parks loudly" 1 "$?"
+check "probe failure park marks human" 1 "$HUMANS"
+check "probe failures never buy reviews" 0 "$ESC_REVIEW_CALLS"
+QUEUE=$QUEUE_REAL; MF_QUEUE_PROBE_MAX=$MF_QUEUE_PROBE_MAX_SAVE
+
+# A recovered probe resets the failure count before it can drift to a park.
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=1
+TRIAGE_FILE=$(triage_state_file 21 31)
+triage_state_save "$TRIAGE_FILE" 21 31 complete
+printf '%s\n' '{"pr":31}' >"$MFSTATE/merge-queue/9-pr31.json"
+triage 21 31 false
+check "recovered probe stays terminal" 0 "$?"
+check "recovered probe resets the failure count" 0 "$(jq -r .probe_failures "$TRIAGE_FILE")"
+rm -f "$MFSTATE/merge-queue/9-pr31.json"
+
+# Dotfile markers in the queue are never live entries.
+ESC_REVIEW_CALLS=0
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0; TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
+TRIAGE_FILE=$(triage_state_file 22 32)
+triage_state_save "$TRIAGE_FILE" 22 32 complete
+printf '%s\n' '{}' >"$MFSTATE/merge-queue/.marker-pr32.json"
+triage 22 32 false
+check "dotfile marker is not a live queue entry" 0 "$?"
+check "dotfile marker still triggers the revalidation review" 1 "$ESC_REVIEW_CALLS"
+rm -f "$MFSTATE/merge-queue/.marker-pr32.json"
+
+# Non-numeric or leading-zero budget knobs normalize at source time.
+check "non-numeric revalidation knob falls back to default" 3 \
+  "$( (MF_REVALIDATE_MAX=off; . ./worker.sh >/dev/null 2>&1; printf %s "$MF_REVALIDATE_MAX") )"
+check "leading-zero revalidation knob normalizes decimal" 7 \
+  "$( (MF_REVALIDATE_MAX=07; . ./worker.sh >/dev/null 2>&1; printf %s "$MF_REVALIDATE_MAX") )"
 
 echo "— queue write acknowledgement + CI-fix approval invalidation"
 # Restore production worker helpers after the stage-resume stubs above.

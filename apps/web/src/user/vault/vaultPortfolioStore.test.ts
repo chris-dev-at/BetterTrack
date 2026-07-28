@@ -184,6 +184,41 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     ]);
   });
 
+  it('provisions the Main cash source on first implicit cash touch like the server', async () => {
+    const document = initialDocument();
+    document.entities.cashSource = [];
+    const engine = createMutableEngine(document);
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    await expect(store.depositCash(PORTFOLIO_ID, { amountEur: 100 })).resolves.toMatchObject({
+      sourceBalanceEur: 100,
+      balanceEur: 100,
+    });
+
+    const sources = (engine.state.active?.document.entities.cashSource ?? []).filter(
+      (entity) => entity.deletedAt === null,
+    );
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.data).toMatchObject({
+      portfolioId: PORTFOLIO_ID,
+      name: 'Main',
+      type: 'cash',
+      isMain: true,
+      archivedAt: null,
+    });
+    expect(engine.state.active?.document.entities.cashMovement).toMatchObject([
+      { data: { amountEur: '100', sourceId: sources[0]!.id } },
+    ]);
+
+    // Only the implicit Main provisions; an explicit unknown source still fails.
+    await expect(
+      store.depositCash(PORTFOLIO_ID, { amountEur: 1, sourceId: REMOTE_DEVICE_ID }),
+    ).rejects.toMatchObject({ code: 'VAULT_ENTITY_NOT_FOUND' });
+  });
+
   it('tombstones a deleted portfolio and all of its portfolio-scoped children', async () => {
     const secondaryId = GENERATED_IDS[0];
     const transactionId = GENERATED_IDS[1];
