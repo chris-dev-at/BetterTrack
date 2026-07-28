@@ -847,9 +847,16 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw unauthorized('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
       }
 
-      // Verified: burn the pending state + email code, clear the throttles, and
-      // mint the real session (rotating out any pre-login id).
-      await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
+      // Claim the verified challenge atomically before minting a session. Two
+      // requests may both load the same state and validate the same live TOTP;
+      // Redis DEL elects exactly one winner, while expiry or a concurrent
+      // verifier makes every other request fail closed.
+      const claimed = (await redis.del(pendingKey(pendingToken))) === 1;
+      if (!claimed) {
+        await redis.del(emailCodeKey(pendingToken));
+        throw pendingInvalid();
+      }
+      await redis.del(emailCodeKey(pendingToken));
       await twoFactorThrottle.reset(userId);
       await clearFailures(userId);
       if (state.priorSessionId) {
@@ -860,7 +867,11 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const persistent = state.persistent ?? true;
       const sessionId = await sessions.create(userId, state.securityGeneration, persistent, {
         method:
-          authenticationMethodOf({ authenticationMethod: state.authenticationMethod }) ?? 'unknown',
+          authenticationMethodOf({ authenticationMethod: state.authenticationMethod }) ??
+          // Legacy pending states carried no provenance marker. They are
+          // short-lived, so preserve their pre-deploy password-session behavior
+          // across a rolling deploy instead of minting an unusable session.
+          'password',
         mfaAssurance: { method: mfaMethod, verifiedAt: Date.now() },
       });
 

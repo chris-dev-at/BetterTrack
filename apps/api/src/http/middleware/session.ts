@@ -155,6 +155,10 @@ export function requireAdminTwoFactor(
         !resolved ||
         resolved.user.id !== req.authUser.id ||
         resolved.user.role !== 'admin' ||
+        // A reset proves mailbox control and may mint an ordinary user session,
+        // but administrator authority still requires a fresh password login.
+        // Thus `password_reset` deliberately fails here until the admin signs
+        // in once with the newly chosen password.
         resolved.authenticationMethod !== 'password' ||
         !authorization ||
         req.sessionSecurityGeneration === undefined ||
