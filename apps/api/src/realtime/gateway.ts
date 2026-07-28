@@ -628,8 +628,10 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     expiresAtMs: number;
   };
   type WatchStartWorkLease = {
+    disconnect(): Promise<void>;
     release(): Promise<void>;
   };
+  const gatewayWatchStartWorkLeases = new Set<WatchStartWorkLease>();
   const liveAssetsOf = (socket: Socket): Map<string, LiveWatchEntry> =>
     (socket.data.liveAssets as Map<string, LiveWatchEntry> | undefined) ??
     (socket.data.liveAssets = new Map<string, LiveWatchEntry>());
@@ -809,11 +811,22 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     void task.finally(() => socketCleanupTasks.delete(task));
   }
 
-  function releaseWatchStartWorkLeases(socket: Socket): Promise<void> {
-    // `release()` fences and detaches synchronously before its Redis await.
-    // Starting every bounded release before awaiting any one of them prevents
-    // one delayed command from leaving another lease's renewal timer alive.
-    const releases = [...watchStartWorkLeasesOf(socket)].map((lease) => lease.release());
+  function disconnectWatchStartWorkLeases(socket: Socket): Promise<void> {
+    // Acquisitions which have not entered provider work can be fenced and
+    // released immediately. Work already in progress retains and renews its
+    // exact semaphore seat until it settles: releasing that seat on disconnect
+    // would let reconnect cycling grow actual history work beyond the global
+    // bound. `disconnect()` makes this decision synchronously before any Redis
+    // await, and the handler's finally remains the idempotent terminal release.
+    const disconnects = [...watchStartWorkLeasesOf(socket)].map((lease) => lease.disconnect());
+    return Promise.all(disconnects).then(() => undefined);
+  }
+
+  function releaseAllWatchStartWorkLeases(): Promise<void> {
+    // Gateway close is process shutdown, not an ordinary client disconnect:
+    // stop every renewal and relinquish its distributed seat even when provider
+    // teardown is stuck, so this stopped process cannot leave capacity pinned.
+    const releases = [...gatewayWatchStartWorkLeases].map((lease) => lease.release());
     return Promise.all(releases).then(() => undefined);
   }
 
@@ -837,16 +850,18 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   }
 
   /**
-   * A locally rate-limited cleanup cannot enqueue one operation per spam frame.
-   * Coalesce it per eligible asset; its generation watermark is retained so a
-   * watch queued behind this drain is still canceled only when the unwatch was
-   * observed after that watch submission.
+   * Cleanup never joins the serialized watch-start queue: one stalled backfill
+   * must not let admitted unwatch frames grow an unbounded promise chain. A
+   * held entry is identity-fenced and safe to release immediately; a pending
+   * first watch is canceled by its generation watermark when it settles.
+   * Coalescing per eligible asset bounds this side path by held + pending
+   * watches even when either command bucket rejects the frame.
    */
-  function enqueueRateLimitedLiveCleanup(socket: Socket, assetId: string): void {
+  function scheduleLiveCleanup(socket: Socket, assetId: string): void {
     const queued = queuedLiveCleanupsOf(socket);
     if (queued.has(assetId)) return;
     queued.add(assetId);
-    void enqueueLiveOp(socket, async () => {
+    void (async () => {
       try {
         const entry = liveAssetsOf(socket).get(assetId);
         if (entry) await releaseLiveWatch(socket, assetId, entry, true);
@@ -854,8 +869,8 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         queued.delete(assetId);
         pruneLiveIntent(socket, assetId);
       }
-    }).catch((err) => {
-      logger.warn({ err, assetId }, 'rate-limited live unwatch cleanup failed');
+    })().catch((err) => {
+      logger.warn({ err, assetId }, 'live unwatch cleanup failed');
     });
   }
 
@@ -877,6 +892,8 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     let renewTimer: ReturnType<typeof setInterval> | null = null;
     let renewRunning = false;
     let released = false;
+    let socketClosed = false;
+    let workRunning = false;
     let releasePromise: Promise<void> | null = null;
     let expiresAtMs = 0;
     const releaseSemaphore = (): Promise<void> => {
@@ -890,12 +907,21 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       return releasePromise;
     };
     const workLease: WatchStartWorkLease = {
+      async disconnect(): Promise<void> {
+        socketClosed = true;
+        // Once provider-facing work has begun, its semaphore seat is the
+        // enforceable accounting. Keep it renewed until the handler settles;
+        // before that boundary, token-scoped release safely fences acquisition.
+        if (workRunning) return;
+        await workLease.release();
+      },
       async release(): Promise<void> {
         if (!released) {
           released = true;
           if (renewTimer) clearInterval(renewTimer);
           renewTimer = null;
           socketWorkLeases.delete(workLease);
+          gatewayWatchStartWorkLeases.delete(workLease);
         }
         await releaseSemaphore();
       },
@@ -904,8 +930,9 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     // is bounded by REALTIME_MAX_PENDING_WATCH_STARTS_PER_SOCKET (and live ops
     // are serialized), so hostile clients cannot grow socket-owned cleanup.
     socketWorkLeases.add(workLease);
+    gatewayWatchStartWorkLeases.add(workLease);
     try {
-      if (socket.disconnected) {
+      if (socketClosed || socket.disconnected) {
         respondError(ack, 'GONE');
         return;
       }
@@ -928,13 +955,13 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         respondError(ack, 'UNAVAILABLE');
         return;
       }
-      if (socket.disconnected) {
+      if (socketClosed || socket.disconnected) {
         respondError(ack, 'GONE');
         return;
       }
       renewTimer = setInterval(() => {
         if (released || renewRunning) return;
-        if (socket.disconnected) {
+        if ((socketClosed || socket.disconnected) && !workRunning) {
           void workLease.release().catch((err) => {
             logger.warn({ err, userId: principal.userId }, 'live work lease release failed');
           });
@@ -944,7 +971,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         void renewBeforeDeadline(expiresAtMs, () => admission.renewWatchStart(leaseId))
           .then((renewal) => {
             if (released) return;
-            if (socket.disconnected) {
+            if ((socketClosed || socket.disconnected) && !workRunning) {
               void workLease.release().catch((err) => {
                 logger.warn({ err, userId: principal.userId }, 'live work lease release failed');
               });
@@ -977,11 +1004,13 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           });
       }, admissionRenewIntervalMs);
       renewTimer.unref?.();
+      workRunning = true;
       await handleLiveWatch(socket, principal, payload, ack);
     } catch (err) {
       logger.warn({ err, userId: principal.userId }, 'live watch work admission failed');
       respondError(ack, 'UNAVAILABLE');
     } finally {
+      workRunning = false;
       await workLease.release().catch((err) => {
         logger.warn({ err, userId: principal.userId }, 'live work lease release failed');
       });
@@ -1193,7 +1222,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     held.clear();
   }
 
-  async function handleLiveUnwatch(socket: Socket, payload: unknown, ack: unknown): Promise<void> {
+  function acknowledgeLiveUnwatch(payload: unknown, ack: unknown): void {
     const respond = (result: RealtimeRoomAck): void => {
       if (typeof ack === 'function') (ack as (result: RealtimeRoomAck) => void)(result);
     };
@@ -1202,13 +1231,6 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       respond({ ok: false, error: 'BAD_REQUEST' });
       return;
     }
-    const { assetId } = parsed.data;
-    // Idempotent: only a held watch releases its registration (and room seat).
-    const entry = liveAssetsOf(socket).get(assetId);
-    if (entry) {
-      await releaseLiveWatch(socket, assetId, entry, true);
-    }
-    pruneLiveIntent(socket, assetId);
     respond({ ok: true });
   }
 
@@ -1613,7 +1635,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           const cleanup = Promise.allSettled([
             clearPresence(socket, userId),
             releaseConnectionLease(socket),
-            releaseWatchStartWorkLeases(socket),
+            disconnectWatchStartWorkLeases(socket),
             (async () => {
               for (const [assetId, entry] of [...liveAssetsOf(socket)]) {
                 await releaseLiveWatch(socket, assetId, entry, false);
@@ -1701,29 +1723,24 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           const cleanupIntent =
             parsed.success && markLiveCleanupIntent(socket, parsed.data.assetId);
           const socketAdmitted = admitSocketCommand(socket, ack);
-          // A cleanup frame is charged and may still report RATE_LIMITED, but an
-          // exhausted bucket must never turn a held OR pending watch into a
-          // renewable leak. Locally-rejected cleanup is coalesced per eligible
-          // asset, keeping hostile spam from growing the ordered queue.
+          // A cleanup frame is charged and may still report RATE_LIMITED, but
+          // admission never controls release. Every eligible cleanup takes the
+          // same bounded per-asset path outside the serialized watch queue.
+          if (cleanupIntent && parsed.success) {
+            scheduleLiveCleanup(socket, parsed.data.assetId);
+          }
           if (!socketAdmitted) {
-            if (cleanupIntent && parsed.success) {
-              enqueueRateLimitedLiveCleanup(socket, parsed.data.assetId);
-            }
             return;
           }
-          const userAdmission = admitUserCommand(principal, ack);
-          let commandAdmitted = false;
-          void enqueueLiveOp(socket, async () => {
-            commandAdmitted = await userAdmission;
-            // Pass no ack after either bucket has already answered with an
-            // error; cleanup remains idempotent and sees starts that were pending
-            // (and absent from the socket map) when this frame first arrived.
-            if (commandAdmitted || cleanupIntent) {
-              await handleLiveUnwatch(socket, payload, commandAdmitted ? ack : undefined);
-            }
-          }).catch((err) => {
+          void (async () => {
+            if (!(await admitUserCommand(principal, ack))) return;
+            // Cleanup was fixed to event-time state above. A delayed Redis
+            // bucket decision must never release a newer watch that arrived
+            // after this unwatch frame.
+            acknowledgeLiveUnwatch(payload, ack);
+          })().catch((err) => {
             logger.warn({ err, userId }, 'live unwatch failed');
-            if (commandAdmitted) respondError(ack, 'UNAVAILABLE');
+            respondError(ack, 'UNAVAILABLE');
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.presenceEnter, (payload: unknown, ack: unknown) => {
@@ -1789,7 +1806,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       // Force-disconnect live websockets first — they are not "idle" HTTP
       // connections, so a plain server.close() would wait on them forever.
       server.disconnectSockets(true);
-      await Promise.allSettled([...socketCleanupTasks]);
+      await Promise.allSettled([releaseAllWatchStartWorkLeases(), ...socketCleanupTasks]);
       await new Promise<void>((resolve) => {
         // Also closes the underlying HTTP server; the bootstrap's own
         // server.close() tolerates an already-closed server.
