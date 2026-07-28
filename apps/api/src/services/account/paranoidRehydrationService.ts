@@ -575,14 +575,16 @@ function updateReadbackEpoch(
 /**
  * Stream each chronological asset group once. A one-quantum persisted sell can
  * be admitted only when its post-cutoff CREATE epoch replays from public inputs
- * seeded by a prior repository-readback holding whose active funding buys all
- * precede the witness in UUID write order. Strict-prefix rows are never raw
+ * seeded by a prior repository-readback holding whose active quantity mutations
+ * all precede the witness in UUID write order. Strict-prefix rows are never raw
  * CREATE inputs, even when a deliberately backdated row places them inside the
  * epoch's chronological timeline. A later normal buy starts a new local epoch:
  * the buy's upper public preimage together with the sell's lower preimage
  * accounts for the one stored quantum, while proven-earlier normal history
- * remains repository readback. That gives a direct bounded CREATE witness
- * without treating an arbitrary non-flat history as one request or searching
+ * remains repository readback. A future-written backdated sell cannot be
+ * omitted from that seed: the existing epoch is retained so the bounded UUID
+ * span must include it. That gives a direct bounded CREATE witness without
+ * treating an arbitrary non-flat history as one request or searching
  * alternative spans.
  */
 function collectNormalCreateWitnesses(
@@ -594,10 +596,10 @@ function collectNormalCreateWitnesses(
 
   for (const group of groups) {
     let readbackHeld = 0;
-    let readbackFundingMaxWriteOrder = -1;
+    let readbackStateMaxWriteOrder = -1;
     let rawHeld = 0;
     let rawEpochCanReplay = true;
-    let rawSeedFundingMaxWriteOrder = -1;
+    let rawSeedStateMaxWriteOrder = -1;
     let epochStart = -1;
     let epochEnd = -1;
 
@@ -606,23 +608,26 @@ function collectNormalCreateWitnesses(
       epochStart = row.writeOrder;
       epochEnd = row.writeOrder;
       rawHeld = readbackHeld;
-      rawSeedFundingMaxWriteOrder = readbackFundingMaxWriteOrder;
+      rawSeedStateMaxWriteOrder = readbackStateMaxWriteOrder;
       // Chronological replay may already have visited a deliberately
-      // backdated buy whose UUID says it was written only after this candidate
-      // batch. Such a row cannot fund the batch through repository readback.
-      // Sells are safe to omit here because doing so can only increase the
-      // entering holding, so tracking the newest active buy is conservative.
-      rawEpochCanReplay = rawSeedFundingMaxWriteOrder < epochStart;
+      // backdated row whose UUID says it was written only after this candidate
+      // batch. Neither its funding nor its reduction can be borrowed through
+      // repository readback before that later write has itself been admitted.
+      rawEpochCanReplay = rawSeedStateMaxWriteOrder < epochStart;
     };
     const extendEpoch = (row: QuantityReplayRow): void => {
       // A one-quantum persisted oversell needs a later raw buy as well as the
       // raw sell. Restart at each post-cutoff buy so the local candidate is
       // seeded from every preceding normal request's repository readback,
       // rather than forcing all non-flat post-cutoff history into this batch.
-      startEpoch(row, row.transaction.data.side === 'buy');
+      // When a future-written backdated row affects that seed, retain the
+      // current epoch so the candidate must include that row in its UUID span.
+      const canRestartFromReadback =
+        row.transaction.data.side === 'buy' && readbackStateMaxWriteOrder < row.writeOrder;
+      startEpoch(row, canRestartFromReadback);
       epochStart = Math.min(epochStart, row.writeOrder);
       epochEnd = Math.max(epochEnd, row.writeOrder);
-      rawEpochCanReplay &&= rawSeedFundingMaxWriteOrder < epochStart;
+      rawEpochCanReplay &&= rawSeedStateMaxWriteOrder < epochStart;
       const raw = updateRawEpoch(row, rawHeld);
       rawHeld = raw.held;
       rawEpochCanReplay &&= raw.canReplay;
@@ -630,7 +635,7 @@ function collectNormalCreateWitnesses(
     const resetEpoch = (): void => {
       rawHeld = 0;
       rawEpochCanReplay = true;
-      rawSeedFundingMaxWriteOrder = -1;
+      rawSeedStateMaxWriteOrder = -1;
       epochStart = -1;
       epochEnd = -1;
     };
@@ -650,14 +655,14 @@ function collectNormalCreateWitnesses(
       const quantity = row.readbackQuantity;
       if (row.transaction.data.side === 'buy') {
         readbackHeld += quantity;
-        readbackFundingMaxWriteOrder = Math.max(readbackFundingMaxWriteOrder, row.writeOrder);
+        readbackStateMaxWriteOrder = Math.max(readbackStateMaxWriteOrder, row.writeOrder);
         continue;
       }
 
       if (quantity > readbackHeld + QTY_EPSILON) {
         if (row.transaction.data.allowUncovered) {
           readbackHeld = 0;
-          readbackFundingMaxWriteOrder = -1;
+          readbackStateMaxWriteOrder = -1;
           resetEpoch();
           continue;
         }
@@ -675,7 +680,7 @@ function collectNormalCreateWitnesses(
         }
         witnesses.push({ start: epochStart, end: epochEnd, sell: row });
         readbackHeld = 0;
-        readbackFundingMaxWriteOrder = -1;
+        readbackStateMaxWriteOrder = -1;
         resetEpoch();
         continue;
       }
@@ -683,12 +688,14 @@ function collectNormalCreateWitnesses(
       readbackHeld -= quantity;
       if (Math.abs(readbackHeld) <= QTY_EPSILON) {
         readbackHeld = 0;
-        readbackFundingMaxWriteOrder = -1;
+        readbackStateMaxWriteOrder = -1;
         // Storage can flatten a pair whose public-number replay still carries
         // a meaningful epsilon-valid residual. Keep that raw CREATE epoch
         // alive until its own replay is flat so a following one-quantum stored
         // sell can use the same bounded normal-write witness.
         if (rawHeld === 0) resetEpoch();
+      } else {
+        readbackStateMaxWriteOrder = Math.max(readbackStateMaxWriteOrder, row.writeOrder);
       }
     }
   }
