@@ -67,11 +67,22 @@ export function createAssetRepository(db: Database) {
      * caller's own custom asset. Another user's custom asset returns null — same
      * as a missing id, so no existence is leaked (§10).
      */
-    async findByIdForUser(id: string, userId: string): Promise<AssetRow | null> {
+    async findByIdForUser(
+      id: string,
+      userId: string,
+      options?: { includeCustomAssets?: boolean },
+    ): Promise<AssetRow | null> {
       const rows = await db
         .select()
         .from(assets)
-        .where(and(eq(assets.id, id), or(isNull(assets.ownerId), eq(assets.ownerId, userId))))
+        .where(
+          and(
+            eq(assets.id, id),
+            options?.includeCustomAssets === false
+              ? isNull(assets.ownerId)
+              : or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
+          ),
+        )
         .limit(1);
       return rows[0] ?? null;
     },

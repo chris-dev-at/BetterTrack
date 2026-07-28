@@ -168,7 +168,7 @@ export interface BacktestServiceDeps {
     conglomerateId: string,
   ) => Promise<{ ownerId: string } | undefined>;
   /** Hold viewer and shared-item owner through authorization and response construction. */
-  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany'>;
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany' | 'runAllowedWithOptional'>;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
 }
@@ -254,6 +254,7 @@ export function backtestPreviewCacheKey(
   userId: string,
   input: BacktestPreviewInput,
   baseCurrency: string,
+  scope?: { globalOnly?: boolean },
 ): string {
   const canonical = JSON.stringify({
     positions: input.positions.map((p) => ({ assetId: p.assetId, weight: p.weight })),
@@ -262,6 +263,7 @@ export function backtestPreviewCacheKey(
     mode: input.mode ?? 'clip',
     rebalance: input.rebalance ?? 'none',
     baseCurrency,
+    ...(scope?.globalOnly ? { globalOnly: true } : {}),
   });
   const hash = createHash('sha256').update(canonical).digest('hex');
   return `backtest:preview:${userId}:${hash}`;
@@ -279,6 +281,7 @@ export function backtestComparisonCacheKey(
   userId: string,
   input: BacktestComparisonInput,
   baseCurrency: string,
+  scope?: { globalOnly?: boolean },
 ): string {
   const canonical = JSON.stringify({
     conglomerateIds: input.conglomerateIds,
@@ -286,6 +289,7 @@ export function backtestComparisonCacheKey(
     mode: input.mode ?? 'clip',
     rebalance: input.rebalance ?? 'none',
     baseCurrency,
+    ...(scope?.globalOnly ? { globalOnly: true } : {}),
   });
   const hash = createHash('sha256').update(canonical).digest('hex');
   return `backtest:compare:${userId}:${hash}`;
@@ -330,9 +334,11 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     userId: string,
     assetId: string,
     providerRange: HistoryRange,
-    opts?: { globalOnly?: boolean; redactIdentity?: boolean },
+    opts?: { globalOnly?: boolean; redactIdentity?: boolean; hidePrivateAsset?: boolean },
   ): Promise<BacktestAsset> {
-    const row = await assetRepo.findByIdForUser(assetId, userId);
+    const row = await assetRepo.findByIdForUser(assetId, userId, {
+      includeCustomAssets: opts?.hidePrivateAsset !== true,
+    });
     if (!row) {
       if (opts?.redactIdentity) throw sharedSandboxUnavailable();
       throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
@@ -377,15 +383,20 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     userId: string,
     conglomerateId: string,
     providerRange: HistoryRange,
+    globalOnly = false,
   ): Promise<ResolvedConglomerateBasket> {
-    const detail = await conglomerateRepo.findByIdForOwner(userId, conglomerateId);
+    const detail = await conglomerateRepo.findByIdForOwner(userId, conglomerateId, {
+      globalAssetMetadataOnly: globalOnly,
+    });
     if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
     const flat = await flattenConglomerate(
       // The root is already loaded — reuse it; children load owner-scoped.
       (id) =>
         id === conglomerateId
           ? Promise.resolve(detail)
-          : conglomerateRepo.findByIdForOwner(userId, id),
+          : conglomerateRepo.findByIdForOwner(userId, id, {
+              globalAssetMetadataOnly: globalOnly,
+            }),
       conglomerateId,
     );
     if (!flat || flat.positions.length === 0) {
@@ -396,7 +407,12 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     }
     const assets: BacktestAsset[] = [];
     for (const pos of flat.positions) {
-      assets.push(await loadBasketAsset(userId, pos.assetId, providerRange));
+      assets.push(
+        await loadBasketAsset(userId, pos.assetId, providerRange, {
+          globalOnly,
+          hidePrivateAsset: globalOnly,
+        }),
+      );
     }
     return {
       id: detail.id,
@@ -421,9 +437,15 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     userId: string,
     choice: BacktestBenchmarkInput,
     providerRange: HistoryRange,
+    globalOnly = false,
   ): Promise<ResolvedBenchmark> {
     if ('conglomerateId' in choice) {
-      const basket = await resolveConglomerateBasket(userId, choice.conglomerateId, providerRange);
+      const basket = await resolveConglomerateBasket(
+        userId,
+        choice.conglomerateId,
+        providerRange,
+        globalOnly,
+      );
       return {
         kind: 'conglomerate',
         refId: basket.id,
@@ -434,7 +456,10 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     }
 
     if ('assetId' in choice) {
-      const asset = await loadBasketAsset(userId, choice.assetId, providerRange);
+      const asset = await loadBasketAsset(userId, choice.assetId, providerRange, {
+        globalOnly,
+        hidePrivateAsset: globalOnly,
+      });
       return {
         kind: 'asset',
         refId: asset.assetId,
@@ -468,13 +493,28 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     };
   }
 
-  return {
-    async runPreview(userId, input, opts) {
+  type ScopedBacktestService = Omit<BacktestService, 'runPreview' | 'runComparison'> & {
+    runPreview(
+      userId: string,
+      input: BacktestPreviewInput,
+      opts: { baseCurrency?: string } | undefined,
+      globalOnly: boolean,
+    ): Promise<BacktestResponse>;
+    runComparison(
+      userId: string,
+      input: BacktestComparisonInput,
+      opts: { baseCurrency?: string } | undefined,
+      globalOnly: boolean,
+    ): Promise<BacktestComparisonResponse>;
+  };
+
+  const scoped: ScopedBacktestService = {
+    async runPreview(userId, input, opts, globalOnly) {
       const fx =
         opts?.baseCurrency === undefined
           ? currencyService
           : currencyService.withBase(opts.baseCurrency);
-      const key = backtestPreviewCacheKey(userId, input, fx.baseCurrency);
+      const key = backtestPreviewCacheKey(userId, input, fx.baseCurrency, { globalOnly });
       const cached = await redis.get(key);
       if (cached) {
         try {
@@ -490,14 +530,19 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       //    ownership-scoped path, see loadBasketAsset).
       const assets: BacktestAsset[] = [];
       for (const pos of input.positions) {
-        assets.push(await loadBasketAsset(userId, pos.assetId, providerRange));
+        assets.push(
+          await loadBasketAsset(userId, pos.assetId, providerRange, {
+            globalOnly,
+            hidePrivateAsset: globalOnly,
+          }),
+        );
       }
 
       // 2. Optional benchmark (V4-P7): resolve the choice — preset, catalog
       //    asset, or one of the caller's own conglomerates — into a second
       //    basket that will run through the same engine below.
       const resolvedBenchmark = input.benchmark
-        ? await resolveBenchmark(userId, input.benchmark, providerRange)
+        ? await resolveBenchmark(userId, input.benchmark, providerRange, globalOnly)
         : null;
 
       // 3. Requested window. The end is today; a finite range starts N years back
@@ -584,7 +629,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       return response;
     },
 
-    async runComparison(userId, input, opts) {
+    async runComparison(userId, input, opts, globalOnly) {
       const fx =
         opts?.baseCurrency === undefined
           ? currencyService
@@ -598,7 +643,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       // The per-series backtests are baseline-independent, so they memoise under
       // a key WITHOUT the baseline: re-picking the baseline hits this core and
       // only the cheap delta math re-runs.
-      const key = backtestComparisonCacheKey(userId, input, fx.baseCurrency);
+      const key = backtestComparisonCacheKey(userId, input, fx.baseCurrency, { globalOnly });
       let core: ComparisonCore | null = null;
       const cached = await redis.get(key);
       if (cached) {
@@ -609,7 +654,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         }
       }
       if (core === null) {
-        core = await computeComparisonCore(userId, input, fx, mode, rebalance);
+        core = await computeComparisonCore(userId, input, fx, mode, rebalance, globalOnly);
         await redis.set(key, JSON.stringify(core), 'EX', PREVIEW_TTL_SECONDS);
       }
 
@@ -792,6 +837,29 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     },
   };
 
+  const withHypotheticalAssetScope = <T>(
+    userId: string,
+    action: (globalOnly: boolean) => Promise<T>,
+  ): Promise<T> => {
+    if (!deps.paranoid) return action(false);
+    return deps.paranoid.runAllowedWithOptional([], [userId], 'portfolioServer', (normalUserIds) =>
+      action(!normalUserIds.has(userId)),
+    );
+  };
+
+  return {
+    runPreview: (userId, input, opts) =>
+      withHypotheticalAssetScope(userId, (globalOnly) =>
+        scoped.runPreview(userId, input, opts, globalOnly),
+      ),
+    runComparison: (userId, input, opts) =>
+      withHypotheticalAssetScope(userId, (globalOnly) =>
+        scoped.runComparison(userId, input, opts, globalOnly),
+      ),
+    runSharedSandboxPreview: (viewerId, input, opts) =>
+      scoped.runSharedSandboxPreview(viewerId, input, opts),
+  };
+
   /**
    * Run the baseline-independent core of a comparison: resolve every
    * conglomerate (ownership-scoped, in request order), run the FIRST as the
@@ -807,12 +875,13 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     fx: CurrencyService,
     mode: BacktestMode,
     rebalance: RebalanceFrequency,
+    globalOnly: boolean,
   ): Promise<ComparisonCore> {
     const providerRange = PROVIDER_RANGE[input.range];
 
     const baskets: ResolvedConglomerateBasket[] = [];
     for (const id of input.conglomerateIds) {
-      baskets.push(await resolveConglomerateBasket(userId, id, providerRange));
+      baskets.push(await resolveConglomerateBasket(userId, id, providerRange, globalOnly));
     }
 
     const end = todayIso();

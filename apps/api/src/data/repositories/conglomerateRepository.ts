@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { assets, conglomeratePositions, conglomerates } from '../schema';
@@ -125,7 +125,11 @@ export function createConglomerateRepository(db: Database) {
      * is unknown *or* belongs to another user. Positions are joined to their
      * asset identity and ordered by `sortOrder`.
      */
-    async findByIdForOwner(ownerId: string, id: string): Promise<ConglomerateDetailRow | null> {
+    async findByIdForOwner(
+      ownerId: string,
+      id: string,
+      options?: { globalAssetMetadataOnly?: boolean },
+    ): Promise<ConglomerateDetailRow | null> {
       const headRows = await db
         .select({
           id: conglomerates.id,
@@ -154,7 +158,13 @@ export function createConglomerateRepository(db: Database) {
           type: assets.type,
         })
         .from(conglomeratePositions)
-        .leftJoin(assets, eq(conglomeratePositions.assetId, assets.id))
+        .leftJoin(
+          assets,
+          and(
+            eq(conglomeratePositions.assetId, assets.id),
+            options?.globalAssetMetadataOnly ? isNull(assets.ownerId) : undefined,
+          ),
+        )
         .where(eq(conglomeratePositions.conglomerateId, id))
         .orderBy(asc(conglomeratePositions.sortOrder));
 
@@ -196,15 +206,19 @@ export function createConglomerateRepository(db: Database) {
             sortOrder: r.sortOrder,
             child,
           });
-        } else if (r.assetId !== null && r.symbol !== null) {
+        } else if (r.assetId !== null) {
           positions.push({
             kind: 'asset',
             assetId: r.assetId,
             weightPct: Number(r.weightPct),
             sortOrder: r.sortOrder,
             asset: {
-              symbol: r.symbol,
-              name: r.name ?? r.symbol,
+              // Structure-only paranoid backtests deliberately retain the id/
+              // weight edge while refusing to select custom-asset metadata.
+              // The global-only asset lookup then turns that edge into the
+              // established opaque ASSET_NOT_FOUND before provider history.
+              symbol: r.symbol ?? '',
+              name: r.name ?? r.symbol ?? '',
               currency: r.currency ?? 'EUR',
               type: r.type ?? 'stock',
             },

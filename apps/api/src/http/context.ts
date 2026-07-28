@@ -1136,6 +1136,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const workboardRepo = createWorkboardRepository(db);
   const workboard = createWorkboardService({
     repo: workboardRepo,
+    assetRepo,
     referenceBackfill,
     audience,
     profile: profileRepo,

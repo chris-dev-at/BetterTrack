@@ -26,11 +26,17 @@ export interface ParanoidRouteRule {
 
 export type ParanoidServiceSubject =
   | 'userIdFirst'
+  | 'userIdFirstAndDynamicPrincipals'
   | 'userIdField'
   | 'portfolioIdFirst'
   | 'portfolioIdFirstAllowMissing'
   | 'assetIdFirst'
   | 'paranoidWebhookSubjects'
+  /**
+   * The service performs identity-only discovery and holds every dynamically
+   * discovered required/optional principal through its own complete action.
+   */
+  | 'dynamicPrincipals'
   /**
    * The method itself resolves a live audience/profile predicate and returns a
    * uniform 404 when the target is not currently public.
@@ -47,13 +53,28 @@ export interface ParanoidServiceBinding {
   readonly subject: ParanoidServiceSubject;
   /** Portfolio webhook events are suppressed rather than surfaced as errors. */
   readonly action?: 'throw' | 'skip';
+  /** Semantic proof obligation exercised by the matrix for internally guarded branches. */
+  readonly coverage?: readonly ParanoidSemanticCoverage[];
 }
 
-export interface ParanoidServiceExemption {
-  readonly service: string;
-  readonly methods: readonly string[];
-  readonly handling: 'kept' | 'internallyFiltered';
-}
+export type ParanoidSemanticCoverage =
+  | 'accountMode'
+  | 'dynamicPrincipals'
+  | 'ownedAssetProvenance'
+  | 'queuedPrincipals';
+
+export type ParanoidServiceExemption =
+  | {
+      readonly service: string;
+      readonly methods: readonly string[];
+      readonly handling: 'kept';
+    }
+  | {
+      readonly service: string;
+      readonly methods: readonly string[];
+      readonly handling: 'internallyFiltered' | 'dynamicPrincipals';
+      readonly coverage: readonly [ParanoidSemanticCoverage, ...ParanoidSemanticCoverage[]];
+    };
 
 const serviceBinding = (
   capability: ParanoidKilledCapability,
@@ -61,12 +82,14 @@ const serviceBinding = (
   subject: ParanoidServiceSubject,
   methods: readonly string[],
   action?: 'throw' | 'skip',
+  coverage?: readonly ParanoidSemanticCoverage[],
 ): ParanoidServiceBinding => ({
   capability,
   service,
   subject,
   methods,
   ...(action ? { action } : {}),
+  ...(coverage ? { coverage } : {}),
 });
 
 /**
@@ -109,20 +132,36 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'convertToChain',
     'createChain',
     'convertChain',
-    'listChainsForUser',
-    'getMemberList',
-    'getActivity',
-    'listInvites',
     'declineInvite',
     'revokeInvite',
-    'setMemberRole',
-    'transferOwnership',
-    'removeMember',
-    'leaveChain',
-    'renameChain',
-    'dissolveChain',
-    'submit*',
   ]),
+  serviceBinding(
+    'mirrorchain',
+    'mirror',
+    'dynamicPrincipals',
+    [
+      'listChainsForUser',
+      'getMemberList',
+      'getActivity',
+      'listInvites',
+      'setMemberRole',
+      'transferOwnership',
+      'removeMember',
+      'leaveChain',
+      'renameChain',
+      'dissolveChain',
+    ],
+    undefined,
+    ['dynamicPrincipals'],
+  ),
+  serviceBinding(
+    'mirrorchain',
+    'mirror',
+    'userIdFirstAndDynamicPrincipals',
+    ['submit*'],
+    undefined,
+    ['dynamicPrincipals'],
+  ),
   serviceBinding('mirrorchain', 'mirror', 'portfolioIdFirstAllowMissing', [
     'syncedMembership',
     'overlayForPortfolio',
@@ -209,23 +248,20 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
   },
   {
     service: 'workboard',
-    methods: [
-      'list',
-      'listInWatchlist',
-      'addItem',
-      'removeItem',
-      'reorder',
-      'listWatchlists',
-      'createWatchlist',
-      'renameWatchlist',
-      'deleteWatchlist',
-    ],
+    methods: ['removeItem', 'reorder', 'createWatchlist', 'deleteWatchlist'],
     handling: 'kept',
+  },
+  {
+    service: 'workboard',
+    methods: ['list', 'listInWatchlist', 'listWatchlists', 'addItem', 'renameWatchlist'],
+    handling: 'internallyFiltered',
+    coverage: ['accountMode', 'ownedAssetProvenance'],
   },
   {
     service: 'workboard',
     methods: ['itemsForSharedView'],
     handling: 'internallyFiltered',
+    coverage: ['dynamicPrincipals', 'ownedAssetProvenance'],
   },
   {
     service: 'ideas',
@@ -235,7 +271,8 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
   {
     service: 'backtest',
     methods: ['runPreview', 'runComparison'],
-    handling: 'kept',
+    handling: 'internallyFiltered',
+    coverage: ['accountMode', 'ownedAssetProvenance'],
   },
   {
     service: 'social',
@@ -259,6 +296,7 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
       'updateProfileSettings',
     ],
     handling: 'internallyFiltered',
+    coverage: ['dynamicPrincipals'],
   },
   {
     service: 'mirror',
@@ -271,17 +309,20 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
       'handleAccountDeletion',
       'runConsistencySweep',
     ],
-    handling: 'internallyFiltered',
+    handling: 'dynamicPrincipals',
+    coverage: ['dynamicPrincipals', 'queuedPrincipals'],
   },
   {
     service: 'assets',
     methods: ['*'],
     handling: 'internallyFiltered',
+    coverage: ['accountMode', 'ownedAssetProvenance'],
   },
   {
     service: 'search',
     methods: ['search', 'searchWithFreshness', 'catalogFreshness'],
     handling: 'internallyFiltered',
+    coverage: ['accountMode', 'ownedAssetProvenance'],
   },
   {
     service: 'search',
@@ -292,11 +333,13 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     service: 'marketIntel',
     methods: ['capabilities', 'dividends', 'earnings', 'news', 'splits'],
     handling: 'internallyFiltered',
+    coverage: ['accountMode', 'ownedAssetProvenance'],
   },
   {
     service: 'marketIntel',
     methods: ['earningsCalendar'],
     handling: 'internallyFiltered',
+    coverage: ['accountMode', 'ownedAssetProvenance'],
   },
   {
     service: 'chat',
@@ -307,6 +350,7 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     service: 'chat',
     methods: ['getThread', 'sendMessage'],
     handling: 'internallyFiltered',
+    coverage: ['dynamicPrincipals', 'ownedAssetProvenance'],
   },
   {
     service: 'aiFeatures',
@@ -317,6 +361,7 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     service: 'snapshots',
     methods: ['recomputeAll'],
     handling: 'internallyFiltered',
+    coverage: ['accountMode'],
   },
   {
     service: 'imports',
@@ -330,18 +375,20 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
   },
   {
     service: 'alerts',
-    methods: ['list', 'update', 'rearm', 'remove'],
+    methods: ['remove'],
     handling: 'kept',
   },
   {
     service: 'alerts',
-    methods: ['create'],
+    methods: ['list', 'create', 'update', 'rearm'],
     handling: 'internallyFiltered',
+    coverage: ['accountMode', 'ownedAssetProvenance', 'dynamicPrincipals'],
   },
   {
     service: 'standingOrders',
     methods: ['processDueOrders'],
     handling: 'internallyFiltered',
+    coverage: ['accountMode'],
   },
 ] as const;
 
@@ -899,7 +946,7 @@ async function invokeServiceSubject<T>(
   resolvers: ParanoidServiceGuardResolvers,
   invoke: () => Promise<T>,
 ): Promise<T | undefined> {
-  if (binding.subject === 'intrinsic') return invoke();
+  if (binding.subject === 'intrinsic' || binding.subject === 'dynamicPrincipals') return invoke();
 
   if (binding.subject === 'paranoidWebhookSubjects') {
     const event = args[0];
@@ -935,7 +982,7 @@ async function invokeServiceSubject<T>(
   if (typeof subjectId !== 'string') {
     throw new Error(`paranoid guard ${binding.service} requires a string subject id`);
   }
-  if (binding.subject === 'userIdFirst') {
+  if (binding.subject === 'userIdFirst' || binding.subject === 'userIdFirstAndDynamicPrincipals') {
     return guard.runAllowed(subjectId, binding.capability, invoke);
   }
 

@@ -56,6 +56,7 @@ import {
 
 import type {
   AppendOpInput,
+  MirrorChainDisplayRow,
   MirrorInviteDetailRow,
   MirrorMemberDetailRow,
   MirrorchainRepository,
@@ -196,7 +197,7 @@ export interface MirrorServiceDeps {
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
   /** Defense in depth: paranoid accounts cannot create, join, or mutate chains. */
-  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'runAllowedMany'>;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'runAllowedMany' | 'runAllowedWithOptional'>;
 }
 
 export interface ReplicateChainResult {
@@ -515,6 +516,19 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     action: () => Promise<T>,
   ): Promise<T> =>
     deps.paranoid ? deps.paranoid.runAllowedMany(userIds, 'mirrorchain', action) : action();
+  const runMirrorAllowedWithOptional = <T>(
+    requiredUserIds: readonly string[],
+    optionalUserIds: readonly string[],
+    action: (allowedOptionalUserIds: ReadonlySet<string>) => Promise<T>,
+  ): Promise<T> =>
+    deps.paranoid
+      ? deps.paranoid.runAllowedWithOptional(
+          requiredUserIds,
+          optionalUserIds,
+          'mirrorchain',
+          action,
+        )
+      : action(new Set(optionalUserIds));
   const runMirrorIfAllowedMany = async (
     userIds: readonly string[],
     action: () => Promise<void>,
@@ -1540,7 +1554,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
 
   function summaryOf(
     member: MirrorChainMemberRow,
-    chain: MirrorChainRow,
+    chain: MirrorChainDisplayRow,
     memberCount: number,
   ): MirrorChainSummary {
     return {
@@ -1711,6 +1725,44 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     );
   }
 
+  interface DynamicReadPrincipalSnapshot {
+    requiredUserIds: string[];
+    optionalUserIds: string[];
+    /** Stable identity-only fingerprint; no name/content fields are permitted. */
+    version: string;
+  }
+
+  /**
+   * Multi-principal reads discover ids before touching chain/profile/content
+   * fields, lock every required and optional account together, then repeat the
+   * identity-only discovery. A membership/owner/invite/op change that won in
+   * between retries before enrichment. Optional paranoid principals are handed
+   * to the reader as unavailable and filtered while their locks remain held.
+   */
+  async function withDynamicReadPrincipalGuards<T>(
+    discover: () => Promise<DynamicReadPrincipalSnapshot>,
+    read: (allowedOptionalUserIds: ReadonlySet<string>) => Promise<T>,
+  ): Promise<T> {
+    for (let attempt = 0; attempt < PRINCIPAL_GUARD_RETRY_LIMIT; attempt += 1) {
+      const discovered = await discover();
+      const result = await runMirrorAllowedWithOptional(
+        discovered.requiredUserIds,
+        discovered.optionalUserIds,
+        async (allowedOptionalUserIds): Promise<{ retry: true } | { retry: false; value: T }> => {
+          const current = await discover();
+          if (current.version !== discovered.version) return { retry: true };
+          return { retry: false, value: await read(allowedOptionalUserIds) };
+        },
+      );
+      if (!result.retry) return result.value;
+    }
+    throw new ApiError(
+      503,
+      'MIRROR_BUSY',
+      'This group portfolio is busy applying another change. Try again shortly.',
+    );
+  }
+
   /**
    * A synced ledger submit changes one logical portfolio, so every active copy
    * owner is an affected principal even though only the origin copy is written
@@ -1874,34 +1926,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       default:
         return `${actor} made a change`;
     }
-  }
-
-  /**
-   * Run a membership mutation under the per-chain lock with the actor's role
-   * re-read INSIDE the lock, so a role change and a membership op the design's
-   * §5 race describes resolve by append order: whichever acquires the lock first
-   * wins, and the loser re-reads the now-stale role and is refused. `check`
-   * throws {@link mirrorForbidden} when the freshly-read role is insufficient.
-   */
-  async function withAuthorizedMember<T>(
-    chainId: string,
-    actorId: string,
-    check: (member: MirrorChainMemberRow, members: MirrorChainMemberRow[]) => void,
-    fn: (ctx: {
-      chain: MirrorChainRow;
-      actor: MirrorChainMemberRow;
-      members: MirrorChainMemberRow[];
-    }) => Promise<T>,
-  ): Promise<T> {
-    return withChainLock(chainId, async () => {
-      const chain = await repo.getChain(chainId);
-      if (!chain || chain.status !== 'active') throw chainNotFound();
-      const members = await repo.listActiveMembers(chainId);
-      const actor = members.find((m) => m.userId === actorId);
-      if (!actor) throw forbidden('You are not a member of this group portfolio.');
-      check(actor, members);
-      return fn({ chain, actor, members });
-    });
   }
 
   /** Append a chain/membership op as the authorized actor (already role-checked). */
@@ -2405,69 +2429,244 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async listChainsForUser(userId) {
-      await assertMirrorAllowed(userId);
-      const memberships = await repo.listActiveMembershipsForUser(userId);
-      const summaries: MirrorChainSummary[] = [];
-      for (const member of memberships) {
-        const chain = await repo.getChain(member.chainId);
-        if (!chain) continue;
-        const memberCount = await repo.countActiveMembers(member.chainId);
-        summaries.push(summaryOf(member, chain, memberCount));
-      }
-      return summaries;
+      const discover = async (): Promise<DynamicReadPrincipalSnapshot> => {
+        const memberships = await repo.listActiveMembershipPrincipalsForUser(userId);
+        const membersByChain = await Promise.all(
+          memberships.map(async (membership) => ({
+            chainId: membership.chainId,
+            members: await repo.listActiveMemberPrincipals(membership.chainId),
+          })),
+        );
+        const ownerIds = membersByChain
+          .map(({ members }) => members.find((member) => member.role === 'owner')?.userId ?? null)
+          .filter((ownerId): ownerId is string => ownerId !== null && ownerId !== userId);
+        return {
+          requiredUserIds: [userId],
+          optionalUserIds: [...new Set(ownerIds)],
+          version: JSON.stringify({
+            memberships: memberships.map(({ id, chainId }) => [id, chainId]),
+            owners: membersByChain.map(({ chainId, members }) => [
+              chainId,
+              members.find((member) => member.role === 'owner')?.userId ?? null,
+            ]),
+          }),
+        };
+      };
+
+      return withDynamicReadPrincipalGuards(discover, async (allowedOwnerIds) => {
+        const memberships = await repo.listActiveMembershipsForUser(userId);
+        const summaries: MirrorChainSummary[] = [];
+        for (const member of memberships) {
+          const principals = await repo.listActiveMemberPrincipals(member.chainId);
+          const ownerId =
+            principals.find((principal) => principal.role === 'owner')?.userId ?? null;
+          if (!ownerId || (ownerId !== userId && !allowedOwnerIds.has(ownerId))) continue;
+          const chain = await repo.getChainDisplay(member.chainId);
+          if (!chain) continue;
+          summaries.push(summaryOf(member, chain, principals.length));
+        }
+        return summaries;
+      });
     },
 
     async getMemberList(userId, chainId) {
-      await assertMirrorAllowed(userId);
-      const chain = await repo.getChain(chainId);
-      if (!chain) throw chainNotFound();
-      // Severed members lose chain access (design §6): a non-active membership
-      // (or none) 404s the member sheet.
-      const caller = await repo.findActiveMembership(chainId, userId);
-      if (!caller) throw chainNotFound();
-      const rows = await repo.listMembersDetailed(chainId);
-      return {
-        chainId: chain.id,
-        name: chain.name,
-        status: chain.status,
-        role: caller.role,
-        memberCap: maxMembers,
-        members: rows.map((r) => toMirrorMember(r, userId, chain.lastSeq)),
+      const discover = async (): Promise<DynamicReadPrincipalSnapshot> => {
+        const principals = await repo.listActiveMemberPrincipals(chainId);
+        const caller = principals.find((principal) => principal.userId === userId);
+        if (!caller) {
+          return {
+            requiredUserIds: [userId],
+            optionalUserIds: [],
+            version: JSON.stringify({ caller: null }),
+          };
+        }
+        const ownerId = principals.find((principal) => principal.role === 'owner')?.userId ?? null;
+        const requiredUserIds = [
+          ...new Set([userId, ownerId].filter((id): id is string => id !== null)),
+        ];
+        return {
+          requiredUserIds,
+          optionalUserIds: [
+            ...new Set(
+              principals
+                .map((principal) => principal.userId)
+                .filter((id): id is string => id !== null && !requiredUserIds.includes(id)),
+            ),
+          ],
+          version: JSON.stringify(
+            principals.map(({ id, userId: principalUserId, role }) => [id, principalUserId, role]),
+          ),
+        };
       };
+
+      return withDynamicReadPrincipalGuards(discover, async (allowedMemberIds) => {
+        const chain = await repo.getChainDisplay(chainId);
+        if (!chain) throw chainNotFound();
+        // Severed members lose chain access (design §6): a non-active membership
+        // (or none) 404s the member sheet.
+        const caller = await repo.findActiveMembership(chainId, userId);
+        if (!caller) throw chainNotFound();
+        const principals = await repo.listActiveMemberPrincipals(chainId);
+        const ownerId = principals.find((principal) => principal.role === 'owner')?.userId ?? null;
+        const allowedUserIds = [
+          ...new Set(
+            [userId, ownerId, ...allowedMemberIds].filter((id): id is string => id !== null),
+          ),
+        ];
+        const rows = await repo.listMembersDetailed(chainId, { allowedUserIds });
+        return {
+          chainId: chain.id,
+          name: chain.name,
+          status: chain.status,
+          role: caller.role,
+          memberCap: maxMembers,
+          members: rows
+            .filter(
+              (row) =>
+                row.userId === null ||
+                row.userId === userId ||
+                row.userId === ownerId ||
+                allowedMemberIds.has(row.userId),
+            )
+            .map((row) => toMirrorMember(row, userId, chain.lastSeq)),
+        };
+      });
     },
 
     async getActivity(userId, chainId, opts) {
-      await assertMirrorAllowed(userId);
-      const chain = await repo.getChain(chainId);
-      if (!chain) throw chainNotFound();
-      const caller = await repo.findActiveMembership(chainId, userId);
-      if (!caller) throw chainNotFound(); // severed access (§6)
-      const { limit } = opts;
-      const ops = await repo.listActivity(chainId, { before: opts.before, limit });
-      const entries: MirrorActivityEntry[] = ops.map((op) => ({
-        seq: op.seq,
-        kind: op.kind as MirrorOpKind,
-        actorUsername: op.actorUsername,
-        summary: activitySummary(op),
-        createdAt: op.createdAt.toISOString(),
-      }));
-      const nextCursor = ops.length === limit ? (ops[ops.length - 1]?.seq ?? null) : null;
-      return { entries, nextCursor };
+      const discover = async (): Promise<DynamicReadPrincipalSnapshot> => {
+        const members = await repo.listActiveMemberPrincipals(chainId);
+        const caller = members.find((member) => member.userId === userId);
+        if (!caller) {
+          return {
+            requiredUserIds: [userId],
+            optionalUserIds: [],
+            version: JSON.stringify({ caller: null }),
+          };
+        }
+        const ownerId = members.find((member) => member.role === 'owner')?.userId ?? null;
+        const ops = await repo.listActivityPrincipals(chainId, opts);
+        const requiredUserIds = [
+          ...new Set([userId, ownerId].filter((id): id is string => id !== null)),
+        ];
+        return {
+          requiredUserIds,
+          optionalUserIds: [
+            ...new Set(
+              ops
+                .map((op) => op.actorUserId)
+                .filter((id): id is string => id !== null && !requiredUserIds.includes(id)),
+            ),
+          ],
+          version: JSON.stringify({
+            members: members.map(({ id, userId: memberUserId, role }) => [id, memberUserId, role]),
+            ops: ops.map(({ seq, actorUserId }) => [seq, actorUserId]),
+          }),
+        };
+      };
+
+      return withDynamicReadPrincipalGuards(discover, async (allowedActorIds) => {
+        const chain = await repo.getChainDisplay(chainId);
+        if (!chain) throw chainNotFound();
+        const caller = await repo.findActiveMembership(chainId, userId);
+        if (!caller) throw chainNotFound(); // severed access (§6)
+        const members = await repo.listActiveMemberPrincipals(chainId);
+        const ownerId = members.find((member) => member.role === 'owner')?.userId ?? null;
+        const { limit } = opts;
+        const allowedActorUserIds = [
+          ...new Set(
+            [userId, ownerId, ...allowedActorIds].filter((id): id is string => id !== null),
+          ),
+        ];
+        const ops = await repo.listActivity(chainId, {
+          before: opts.before,
+          limit,
+          allowedActorUserIds,
+        });
+        const entries: MirrorActivityEntry[] = ops.map((op) => ({
+          seq: op.seq,
+          kind: op.kind as MirrorOpKind,
+          actorUsername: op.actorUsername,
+          summary: activitySummary(op),
+          createdAt: op.createdAt.toISOString(),
+        }));
+        const nextCursor = ops.length === limit ? (ops[ops.length - 1]?.seq ?? null) : null;
+        return { entries, nextCursor };
+      });
     },
 
     async listInvites(userId) {
-      await assertMirrorAllowed(userId);
-      const rows = await repo.listInvitesForUserDetailed(userId);
-      const incoming: MirrorInvite[] = [];
-      const outgoing: MirrorInvite[] = [];
-      for (const row of rows) {
-        // Stale (expired) invites are hidden until the daily sweep retires them
-        // (design §4) — they are never acceptable and never block a re-invite.
-        if (inviteExpired(row)) continue;
-        const dto = toInviteDto(row, userId);
-        (dto.direction === 'incoming' ? incoming : outgoing).push(dto);
-      }
-      return { incoming, outgoing };
+      const discover = async (): Promise<DynamicReadPrincipalSnapshot> => {
+        const invites = await repo.listInvitePrincipalsForUser(userId);
+        const ownerByChain = await Promise.all(
+          [...new Set(invites.map((invite) => invite.chainId))].map(async (chainId) => ({
+            chainId,
+            ownerId:
+              (await repo.listActiveMemberPrincipals(chainId)).find(
+                (member) => member.role === 'owner',
+              )?.userId ?? null,
+          })),
+        );
+        const relatedIds = [
+          ...invites.flatMap((invite) => [invite.fromUser, invite.toUser]),
+          ...ownerByChain.map(({ ownerId }) => ownerId),
+        ].filter((id): id is string => id !== null && id !== userId);
+        return {
+          requiredUserIds: [userId],
+          optionalUserIds: [...new Set(relatedIds)],
+          version: JSON.stringify({
+            invites: invites.map(({ id, chainId, fromUser, toUser, createdAt }) => [
+              id,
+              chainId,
+              fromUser,
+              toUser,
+              createdAt.toISOString(),
+            ]),
+            owners: ownerByChain.map(({ chainId, ownerId }) => [chainId, ownerId]),
+          }),
+        };
+      };
+
+      return withDynamicReadPrincipalGuards(discover, async (allowedPrincipalIds) => {
+        const identities = await repo.listInvitePrincipalsForUser(userId);
+        const identityById = new Map(identities.map((identity) => [identity.id, identity]));
+        const ownerByChain = new Map(
+          await Promise.all(
+            [...new Set(identities.map((invite) => invite.chainId))].map(
+              async (inviteChainId) =>
+                [
+                  inviteChainId,
+                  (await repo.listActiveMemberPrincipals(inviteChainId)).find(
+                    (member) => member.role === 'owner',
+                  )?.userId ?? null,
+                ] as const,
+            ),
+          ),
+        );
+        const allowedInviteIds = identities
+          .filter((identity) => {
+            const ownerId = ownerByChain.get(identity.chainId) ?? null;
+            if (!ownerId || inviteExpired(identity)) return false;
+            const relatedIds = [identity.fromUser, identity.toUser, ownerId].filter(
+              (id): id is string => id !== null && id !== userId,
+            );
+            return relatedIds.every((id) => allowedPrincipalIds.has(id));
+          })
+          .map((identity) => identity.id);
+        const rows = await repo.listInvitesForUserDetailed(userId, { allowedInviteIds });
+        const incoming: MirrorInvite[] = [];
+        const outgoing: MirrorInvite[] = [];
+        for (const row of rows) {
+          const identity = identityById.get(row.id);
+          if (!identity) continue;
+          // Stale (expired) invites are hidden until the daily sweep retires them
+          // (design §4) — they are never acceptable and never block a re-invite.
+          if (inviteExpired(row)) continue;
+          const dto = toInviteDto(row, userId);
+          (dto.direction === 'incoming' ? incoming : outgoing).push(dto);
+        }
+        return { incoming, outgoing };
+      });
     },
 
     async inviteMember(actorId, chainId, inviteeId) {
@@ -2912,32 +3111,26 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async renameChain(actorId, chainId, name) {
-      await assertMirrorAllowed(actorId);
       const trimmed = name.trim();
-      await withAuthorizedMember(
-        chainId,
-        actorId,
-        (actor) => {
-          if (!roleCan(actor.role, 'rename')) throw mirrorForbidden();
-        },
-        async ({ actor }) => {
-          // The name is authoritative on the chain row (design §1); the chain UI
-          // renders it. Log a chain.rename op for the activity feed.
-          await repo.renameChain(chainId, trimmed);
-          await appendMembershipOp(
-            chainId,
-            { userId: actorId, username: actor.username },
-            { opVersion: MIRROR_OP_VERSION, kind: 'chain.rename', name: trimmed },
-          );
-        },
-      );
-      const updated = (await repo.getChain(chainId))!;
-      const member = (await repo.findActiveMembership(chainId, actorId))!;
-      const memberCount = await repo.countActiveMembers(chainId);
-      // The chain.rename op bumped last_seq — replicate so every copy skip-acks
-      // it and the sync-state read models settle to 100% (design §11).
-      await scheduleReplicate(chainId);
-      return summaryOf(member, updated, memberCount);
+      return withLifecyclePrincipalGuards(chainId, [actorId], async ({ members }) => {
+        const actor = members.find((member) => member.userId === actorId);
+        if (!actor) throw forbidden('You are not a member of this group portfolio.');
+        if (!roleCan(actor.role, 'rename')) throw mirrorForbidden();
+        // The name is authoritative on the chain row (design §1); the chain UI
+        // renders it. Log a chain.rename op for the activity feed.
+        await repo.renameChain(chainId, trimmed);
+        await appendMembershipOp(
+          chainId,
+          { userId: actorId, username: actor.username },
+          { opVersion: MIRROR_OP_VERSION, kind: 'chain.rename', name: trimmed },
+        );
+        const updated = await repo.getChainDisplay(chainId);
+        if (!updated) throw chainNotFound();
+        // The chain.rename op bumped last_seq — replicate so every copy skip-acks
+        // it and the sync-state read models settle to 100% (design §11).
+        await scheduleReplicate(chainId);
+        return summaryOf(actor, updated, members.length);
+      });
     },
 
     async dissolveChain(actorId, chainId) {

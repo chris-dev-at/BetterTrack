@@ -91,6 +91,38 @@ async function mirrorAuditRows(portfolioId: string) {
   return rows.filter((r) => (r.meta as { portfolioId?: string })?.portfolioId === portfolioId);
 }
 
+async function startWinningParanoidTransition(userId: string): Promise<{
+  finish(): Promise<void>;
+}> {
+  let releaseTransition!: () => void;
+  let transitionLocked!: () => void;
+  const release = new Promise<void>((resolve) => {
+    releaseTransition = resolve;
+  });
+  const locked = new Promise<void>((resolve) => {
+    transitionLocked = resolve;
+  });
+  const transition = withExclusiveParanoidTransitionTestLock(harness.db, userId, async () => {
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(schema.users.id, userId));
+    transitionLocked();
+    await release;
+  });
+  await locked;
+  return {
+    async finish() {
+      releaseTransition();
+      await transition;
+    },
+  };
+}
+
 describe('mirrorchain M2 — replication core', () => {
   it("a member's buy appears in every copy, attributed and tagged (HTTP; non-chain portfolios untouched)", async () => {
     const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
@@ -724,6 +756,27 @@ describe('mirrorchain M2 — replication core', () => {
     // And the concurrent submit itself succeeded + replicated to Alice.
     const aliceMoves = await createCashMovementRepository(harness.db).listForPortfolio(aPid);
     expect(aliceMoves.filter((m) => m.kind === 'deposit' && m.amountEur === 10)).toHaveLength(1);
+  });
+
+  it('does not rename a chain when a non-actor member transition wins first', async () => {
+    const { alice, bob, chain } = await setupChain();
+    const opCountBefore = (await mirrorRepo.listActivity(chain.id, { limit: 100 })).length;
+
+    const transition = await startWinningParanoidTransition(bob.id);
+    const rename = harness.ctx.mirror.renameChain(alice.id, chain.id, 'Must not land');
+    let settled = false;
+    void rename
+      .finally(() => {
+        settled = true;
+      })
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    await transition.finish();
+    await expect(rename).rejects.toMatchObject({ code: 'PARANOID_MODE' });
+    expect((await mirrorRepo.getChain(chain.id))?.name).toBe('Family');
+    expect(await mirrorRepo.listActivity(chain.id, { limit: 100 })).toHaveLength(opCountBefore);
   });
 
   it('skips a stale queued op when its author entered paranoid mode before replay', async () => {

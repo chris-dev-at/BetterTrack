@@ -9,6 +9,7 @@ import {
 } from '../../../data/repositories/paranoidEnforcementRepository';
 import {
   assets,
+  alerts,
   portfolioCashMovements,
   conglomerates,
   friendGroupMembers,
@@ -224,6 +225,16 @@ describe('paranoid kill registry', () => {
         serviceRails.push(`${binding.service}.${method}`);
         const executable = (service as Record<string, (...args: unknown[]) => unknown>)[method];
         expect(typeof executable, `${binding.service}.${method} resolves`).toBe('function');
+        if (
+          binding.subject === 'dynamicPrincipals' ||
+          binding.subject === 'userIdFirstAndDynamicPrincipals'
+        ) {
+          expect(
+            binding.coverage,
+            `${binding.service}.${method} must declare its semantic principal coverage`,
+          ).toContain('dynamicPrincipals');
+          continue;
+        }
         const args: unknown[] =
           binding.subject === 'intrinsic'
             ? method === 'getByPublicLink'
@@ -278,6 +289,51 @@ describe('paranoid kill registry', () => {
       expect(classified.sort(), `${serviceName} must classify every real method`).toEqual(
         serviceMethodNames(service).sort(),
       );
+    }
+
+    for (const exemption of PARANOID_SERVICE_EXEMPTIONS) {
+      if (exemption.handling === 'kept') continue;
+      expect(
+        exemption.coverage.length,
+        `${exemption.service}.${exemption.methods.join(',')} needs semantic coverage`,
+      ).toBeGreaterThan(0);
+    }
+
+    const semanticCoverageFor = (serviceName: string, method: string) => {
+      const binding = PARANOID_SERVICE_BINDINGS.find(
+        (candidate) =>
+          candidate.service === serviceName &&
+          registeredServiceMethods(context[serviceName]!, candidate).includes(method),
+      );
+      if (binding) return binding.coverage ?? [];
+      const exemption = PARANOID_SERVICE_EXEMPTIONS.find(
+        (candidate) =>
+          candidate.service === serviceName &&
+          registeredServiceMethods(context[serviceName]!, candidate).includes(method),
+      );
+      return exemption?.handling === 'kept' ? [] : (exemption?.coverage ?? []);
+    };
+    for (const method of [
+      'listChainsForUser',
+      'getMemberList',
+      'getActivity',
+      'listInvites',
+      'renameChain',
+    ]) {
+      expect(semanticCoverageFor('mirror', method), `mirror.${method}`).toContain(
+        'dynamicPrincipals',
+      );
+    }
+    for (const [serviceName, methods] of [
+      ['workboard', ['list', 'listInWatchlist', 'addItem']],
+      ['alerts', ['list', 'create', 'update', 'rearm']],
+      ['backtest', ['runPreview', 'runComparison']],
+    ] as const) {
+      for (const method of methods) {
+        expect(semanticCoverageFor(serviceName, method), `${serviceName}.${method}`).toContain(
+          'ownedAssetProvenance',
+        );
+      }
     }
 
     for (const scope of PARANOID_KILL_REGISTRY.flatMap((entry) => entry.scopes)) {
@@ -721,6 +777,120 @@ describe('paranoid kill registry', () => {
         .from(portfolios)
         .where(eq(portfolios.userId, recipient.id)),
     ).toHaveLength(portfoliosBefore.length);
+  });
+
+  it('filters a chain switcher row when the owner transition wins before enrichment', async () => {
+    const owner = await harness.seedUser({
+      email: 'mirror-read-owner@bettertrack.test',
+      username: 'mirror_read_owner',
+    });
+    const viewer = await harness.seedUser({
+      email: 'mirror-read-viewer@bettertrack.test',
+      username: 'mirror_read_viewer',
+    });
+    const ownerPortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
+    const { chain } = await harness.ctx.mirror.convertToChain(owner.id, ownerPortfolioId, {
+      name: 'Owner-derived name',
+    });
+    await harness.ctx.mirror.attachMemberCopy(chain.id, viewer.id);
+
+    const transition = await startWinningParanoidTransition(owner.id);
+    const read = harness.ctx.mirror.listChainsForUser(viewer.id);
+    let settled = false;
+    void read.finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    await transition.finish();
+    await expect(read).resolves.toEqual([]);
+  });
+
+  it('filters a member sheet row when that member transition wins before profile enrichment', async () => {
+    const owner = await harness.seedUser({
+      email: 'mirror-roster-owner@bettertrack.test',
+      username: 'mirror_roster_owner',
+    });
+    const member = await harness.seedUser({
+      email: 'mirror-roster-member@bettertrack.test',
+      username: 'mirror_roster_member',
+    });
+    const ownerPortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
+    const { chain } = await harness.ctx.mirror.convertToChain(owner.id, ownerPortfolioId);
+    await harness.ctx.mirror.attachMemberCopy(chain.id, member.id);
+
+    const transition = await startWinningParanoidTransition(member.id);
+    const read = harness.ctx.mirror.getMemberList(owner.id, chain.id);
+    let settled = false;
+    void read.finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    await transition.finish();
+    const result = await read;
+    expect(result.members.map((row) => row.userId)).toEqual([owner.id]);
+    expect(JSON.stringify(result)).not.toContain(member.username);
+  });
+
+  it('filters activity authored by an actor whose transition wins before rendering', async () => {
+    const owner = await harness.seedUser({
+      email: 'mirror-activity-owner@bettertrack.test',
+      username: 'mirror_activity_owner',
+    });
+    const actor = await harness.seedUser({
+      email: 'mirror-activity-actor@bettertrack.test',
+      username: 'mirror_activity_actor',
+    });
+    const ownerPortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
+    const { chain } = await harness.ctx.mirror.convertToChain(owner.id, ownerPortfolioId);
+    await harness.ctx.mirror.attachMemberCopy(chain.id, actor.id);
+
+    const transition = await startWinningParanoidTransition(actor.id);
+    const read = harness.ctx.mirror.getActivity(owner.id, chain.id, { limit: 50 });
+    let settled = false;
+    void read.finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    await transition.finish();
+    const result = await read;
+    expect(result.entries.some((entry) => entry.actorUsername === actor.username)).toBe(false);
+    expect(result.entries.some((entry) => entry.actorUsername === owner.username)).toBe(true);
+  });
+
+  it('filters an invite when its inviter transition wins before chain/user enrichment', async () => {
+    const inviter = await harness.seedUser({
+      email: 'mirror-invite-read-owner@bettertrack.test',
+      username: 'mirror_invite_read_owner',
+    });
+    const invitee = await harness.seedUser({
+      email: 'mirror-invite-read-viewer@bettertrack.test',
+      username: 'mirror_invite_read_viewer',
+    });
+    const [userA, userB] = [inviter.id, invitee.id].sort();
+    await harness.db.insert(friendships).values({ userA: userA!, userB: userB! });
+    const ownerPortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(inviter.id);
+    const { chain } = await harness.ctx.mirror.convertToChain(inviter.id, ownerPortfolioId, {
+      name: 'Hidden invite chain',
+    });
+    await harness.ctx.mirror.inviteMember(inviter.id, chain.id, invitee.id);
+
+    const transition = await startWinningParanoidTransition(inviter.id);
+    const read = harness.ctx.mirror.listInvites(invitee.id);
+    let settled = false;
+    void read.finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    await transition.finish();
+    await expect(read).resolves.toEqual({ incoming: [], outgoing: [] });
   });
 
   it('serializes every member lifecycle mutation against a winning affected-account transition', async () => {
@@ -1357,6 +1527,304 @@ describe('paranoid kill registry', () => {
     expect((await harness.ctx.assets.getDetail(user.id, globalAsset!.id)).asset.symbol).toBe(
       'GLOBAL',
     );
+  });
+
+  it('keeps mixed workboard, alert, preview, and compare rails global-only across a winning transition', async () => {
+    const now = Date.now();
+    const marketData = createStubMarketData({
+      history: () => ({
+        value: [
+          { time: new Date(now - 2 * 86_400_000).toISOString(), close: 100 },
+          { time: new Date(now - 86_400_000).toISOString(), close: 110 },
+        ],
+        stale: false,
+        asOf: now,
+      }),
+    });
+    harness = await createTestApp({ marketData });
+    const user = await harness.seedUser({
+      email: 'mixed-provenance-race@bettertrack.test',
+      username: 'mixed_provenance_race',
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const [globalA, globalB, customExisting, customBlocked] = await harness.db
+      .insert(assets)
+      .values([
+        {
+          providerId: 'yahoo',
+          providerRef: 'MIXED-GLOBAL-A',
+          type: 'stock',
+          symbol: 'GLOBAL-A',
+          name: 'Global A',
+          currency: 'EUR',
+        },
+        {
+          providerId: 'yahoo',
+          providerRef: 'MIXED-GLOBAL-B',
+          type: 'stock',
+          symbol: 'GLOBAL-B',
+          name: 'Global B',
+          currency: 'EUR',
+        },
+        {
+          providerId: 'manual',
+          providerRef: `mixed-existing:${user.id}`,
+          ownerId: user.id,
+          type: 'custom',
+          symbol: 'PRIVATE-EXISTING',
+          name: 'Private Existing',
+          currency: 'EUR',
+        },
+        {
+          providerId: 'manual',
+          providerRef: `mixed-blocked:${user.id}`,
+          ownerId: user.id,
+          type: 'custom',
+          symbol: 'PRIVATE-BLOCKED',
+          name: 'Private Blocked',
+          currency: 'EUR',
+        },
+      ])
+      .returning();
+    const [defaultWatchlist] = await harness.db
+      .insert(watchlists)
+      .values({ userId: user.id, name: 'General', isDefault: true })
+      .returning();
+    await harness.db.insert(workboardItems).values([
+      {
+        userId: user.id,
+        watchlistId: defaultWatchlist!.id,
+        assetId: globalA!.id,
+        sortOrder: 0,
+      },
+      {
+        userId: user.id,
+        watchlistId: defaultWatchlist!.id,
+        assetId: customExisting!.id,
+        sortOrder: 1,
+      },
+    ]);
+    await harness.ctx.social.setAudience(user.id, 'watchlist', defaultWatchlist!.id, {
+      audience: 'all_friends',
+    });
+    const [globalAlert, customAlert] = await harness.db
+      .insert(alerts)
+      .values([
+        {
+          userId: user.id,
+          assetId: globalA!.id,
+          kind: 'price_above',
+          threshold: '150',
+          refPrice: null,
+          repeat: false,
+          status: 'active',
+        },
+        {
+          userId: user.id,
+          assetId: customExisting!.id,
+          kind: 'price_above',
+          threshold: '160',
+          refPrice: null,
+          repeat: false,
+          status: 'active',
+        },
+      ])
+      .returning();
+    const globalOne = await harness.ctx.conglomerate.create(user.id, { name: 'Global one' });
+    const globalTwo = await harness.ctx.conglomerate.create(user.id, { name: 'Global two' });
+    const privateOne = await harness.ctx.conglomerate.create(user.id, { name: 'Private one' });
+    await harness.ctx.conglomerate.replacePositions(user.id, globalOne.id, [
+      { assetId: globalA!.id, weightPct: 100 },
+    ]);
+    await harness.ctx.conglomerate.replacePositions(user.id, globalTwo.id, [
+      { assetId: globalB!.id, weightPct: 100 },
+    ]);
+    await harness.ctx.conglomerate.replacePositions(user.id, privateOne.id, [
+      { assetId: customExisting!.id, weightPct: 100 },
+    ]);
+
+    const previewInput = {
+      positions: [{ assetId: customExisting!.id, weight: 100 }],
+      range: 'MAX' as const,
+    };
+    const compareInput = {
+      conglomerateIds: [privateOne.id, globalOne.id],
+      range: 'MAX' as const,
+    };
+    const expectPending = async (pending: Array<PromiseLike<unknown>>) => {
+      let settled = 0;
+      for (const promise of pending) {
+        void Promise.resolve(promise)
+          .finally(() => {
+            settled += 1;
+          })
+          .catch(() => undefined);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(settled).toBe(0);
+    };
+    const resetNormal = async () => {
+      await harness.db
+        .update(users)
+        .set({
+          privacyMode: 'normal',
+          paranoidMediaSet: null,
+          paranoidDriveAttestedVersion: null,
+        })
+        .where(eq(users.id, user.id));
+    };
+
+    const workboardTransition = await startWinningParanoidTransition(user.id);
+    const directWorkboard = harness.ctx.workboard.list(user.id);
+    const directWatchlist = harness.ctx.workboard.listInWatchlist(user.id, defaultWatchlist!.id);
+    const routeWorkboard = agent.get('/api/v1/workboard').then((response) => response);
+    const directWatchlists = harness.ctx.workboard.listWatchlists(user.id);
+    const routeWatchlists = agent.get('/api/v1/workboard/watchlists').then((response) => response);
+    const directWorkboardAdd = harness.ctx.workboard.addItem(user.id, customBlocked!.id);
+    const routeWorkboardAdd = agent
+      .post('/api/v1/workboard')
+      .set(...XRW)
+      .send({ assetId: customBlocked!.id })
+      .then((response) => response);
+    await expectPending([
+      directWorkboard,
+      directWatchlist,
+      routeWorkboard,
+      directWatchlists,
+      routeWatchlists,
+      directWorkboardAdd,
+      routeWorkboardAdd,
+    ]);
+    await workboardTransition.finish();
+    for (const result of [await directWorkboard, await directWatchlist]) {
+      expect(result.map((item) => item.asset.symbol)).toEqual(['GLOBAL-A']);
+    }
+    expect((await routeWorkboard).status).toBe(200);
+    expect(
+      (await routeWorkboard).body.items.map(
+        (item: { asset: { symbol: string } }) => item.asset.symbol,
+      ),
+    ).toEqual(['GLOBAL-A']);
+    expect(await directWatchlists).toEqual([
+      expect.objectContaining({ id: defaultWatchlist!.id, itemCount: 1, audience: 'private' }),
+    ]);
+    expect((await routeWatchlists).body).toEqual({
+      watchlists: [
+        expect.objectContaining({ id: defaultWatchlist!.id, itemCount: 1, audience: 'private' }),
+      ],
+    });
+    await expect(directWorkboardAdd).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'ASSET_NOT_FOUND',
+    });
+    expect((await routeWorkboardAdd).status).toBe(404);
+
+    await resetNormal();
+    const alertTransition = await startWinningParanoidTransition(user.id);
+    const directAlertList = harness.ctx.alerts.list(user.id);
+    const routeAlertList = agent.get('/api/v1/alerts').then((response) => response);
+    const directAlertCreate = harness.ctx.alerts.create(user.id, {
+      assetId: customBlocked!.id,
+      kind: 'price_above',
+      threshold: 170,
+    });
+    const routeAlertCreate = agent
+      .post('/api/v1/alerts')
+      .set(...XRW)
+      .send({ assetId: customBlocked!.id, kind: 'price_above', threshold: 170 })
+      .then((response) => response);
+    const directAlertUpdate = harness.ctx.alerts.update(user.id, customAlert!.id, {
+      threshold: 999,
+    });
+    const routeAlertRearm = agent
+      .post(`/api/v1/alerts/${customAlert!.id}/rearm`)
+      .set(...XRW)
+      .then((response) => response);
+    await expectPending([
+      directAlertList,
+      routeAlertList,
+      directAlertCreate,
+      routeAlertCreate,
+      directAlertUpdate,
+      routeAlertRearm,
+    ]);
+    await alertTransition.finish();
+    expect((await directAlertList).map((alert) => alert.id)).toEqual([globalAlert!.id]);
+    const alertListResponse = await routeAlertList;
+    expect(alertListResponse.status).toBe(200);
+    expect(alertListResponse.body.items.map((alert: { id: string }) => alert.id)).toEqual([
+      globalAlert!.id,
+    ]);
+    await expect(directAlertCreate).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'ASSET_NOT_FOUND',
+    });
+    expect((await routeAlertCreate).status).toBe(404);
+    await expect(directAlertUpdate).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'ALERT_NOT_FOUND',
+    });
+    expect((await routeAlertRearm).status).toBe(404);
+
+    await resetNormal();
+    const backtestTransition = await startWinningParanoidTransition(user.id);
+    const directPreview = harness.ctx.backtest.runPreview(user.id, previewInput);
+    const routePreview = agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send(previewInput)
+      .then((response) => response);
+    const directCompare = harness.ctx.backtest.runComparison(user.id, compareInput);
+    const routeCompare = agent
+      .post('/api/v1/backtest/compare')
+      .set(...XRW)
+      .send(compareInput)
+      .then((response) => response);
+    await expectPending([directPreview, routePreview, directCompare, routeCompare]);
+    await backtestTransition.finish();
+    for (const blocked of [directPreview, directCompare]) {
+      await expect(blocked).rejects.toMatchObject({
+        statusCode: 404,
+        code: 'ASSET_NOT_FOUND',
+      });
+    }
+    expect((await routePreview).status).toBe(404);
+    expect((await routeCompare).status).toBe(404);
+    expect(marketData.calls.history).toBe(0);
+    expect(
+      (
+        await harness.db
+          .select()
+          .from(workboardItems)
+          .where(eq(workboardItems.assetId, customBlocked!.id))
+      ).length,
+    ).toBe(0);
+    expect(
+      (await harness.db.select().from(alerts).where(eq(alerts.assetId, customBlocked!.id))).length,
+    ).toBe(0);
+    expect(
+      (await harness.db.select().from(alerts).where(eq(alerts.id, customAlert!.id)))[0]?.threshold,
+    ).toBe('160');
+
+    await expect(harness.ctx.workboard.addItem(user.id, globalB!.id)).resolves.toMatchObject({
+      asset: { symbol: 'GLOBAL-B' },
+    });
+    const globalAlertCreate = await agent
+      .post('/api/v1/alerts')
+      .set(...XRW)
+      .send({ assetId: globalB!.id, kind: 'price_above', threshold: 180 });
+    expect(globalAlertCreate.status).toBe(201);
+    await expect(
+      harness.ctx.backtest.runPreview(user.id, {
+        positions: [{ assetId: globalA!.id, weight: 100 }],
+        range: 'MAX',
+      }),
+    ).resolves.toMatchObject({ benchmark: null });
+    const globalCompare = await agent
+      .post('/api/v1/backtest/compare')
+      .set(...XRW)
+      .send({ conglomerateIds: [globalOne.id, globalTwo.id], range: 'MAX' });
+    expect(globalCompare.status).toBe(200);
   });
 
   it('serializes owner-derived public, shared-sandbox, and followed-item reads', async () => {

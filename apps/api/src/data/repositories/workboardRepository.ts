@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, max, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, max, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { assets, watchlists, workboardItems } from '../schema';
@@ -21,6 +21,11 @@ export interface WatchlistRow {
   isDefault: boolean;
   sortOrder: number;
   itemCount: number;
+}
+
+export interface WorkboardAssetVisibilityOptions {
+  /** False restricts item joins to global market assets before metadata is selected. */
+  includeCustomAssets?: boolean;
 }
 
 /** The item-select shape, shared by the list/find mappers. */
@@ -80,17 +85,26 @@ export function createWorkboardRepository(db: Database) {
     // ── Named watchlists ────────────────────────────────────────────────────
 
     /** The caller's lists (General first, then by name) with item counts. */
-    async listWatchlists(userId: string): Promise<WatchlistRow[]> {
+    async listWatchlists(
+      userId: string,
+      options?: WorkboardAssetVisibilityOptions,
+    ): Promise<WatchlistRow[]> {
+      const visibleAsset =
+        options?.includeCustomAssets === false
+          ? isNull(assets.ownerId)
+          : or(isNull(assets.ownerId), eq(assets.ownerId, userId));
       const rows = await db
         .select({
           id: watchlists.id,
           name: watchlists.name,
           isDefault: watchlists.isDefault,
           sortOrder: watchlists.sortOrder,
-          itemCount: sql<number>`count(${workboardItems.id})`.mapWith(Number),
+          itemCount:
+            sql<number>`count(${workboardItems.id}) filter (where ${visibleAsset})`.mapWith(Number),
         })
         .from(watchlists)
         .leftJoin(workboardItems, eq(workboardItems.watchlistId, watchlists.id))
+        .leftJoin(assets, eq(workboardItems.assetId, assets.id))
         .where(eq(watchlists.userId, userId))
         .groupBy(watchlists.id)
         .orderBy(sql`${watchlists.isDefault} desc`, asc(watchlists.name));
@@ -194,12 +208,22 @@ export function createWorkboardRepository(db: Database) {
     // ── Items ───────────────────────────────────────────────────────────────
 
     /** All items across the caller's lists (owner view + membership set). */
-    async list(userId: string): Promise<WorkboardItemWithAsset[]> {
+    async list(
+      userId: string,
+      options?: WorkboardAssetVisibilityOptions,
+    ): Promise<WorkboardItemWithAsset[]> {
       const rows = await db
         .select(ITEM_COLUMNS)
         .from(workboardItems)
         .innerJoin(assets, eq(workboardItems.assetId, assets.id))
-        .where(eq(workboardItems.userId, userId))
+        .where(
+          and(
+            eq(workboardItems.userId, userId),
+            options?.includeCustomAssets === false
+              ? isNull(assets.ownerId)
+              : or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
+          ),
+        )
         .orderBy(workboardItems.sortOrder);
       return rows.map(toItem);
     },
@@ -208,34 +232,46 @@ export function createWorkboardRepository(db: Database) {
     async listByWatchlistForUser(
       userId: string,
       watchlistId: string,
+      options?: WorkboardAssetVisibilityOptions,
     ): Promise<WorkboardItemWithAsset[]> {
       const rows = await db
         .select(ITEM_COLUMNS)
         .from(workboardItems)
         .innerJoin(assets, eq(workboardItems.assetId, assets.id))
-        .where(and(eq(workboardItems.userId, userId), eq(workboardItems.watchlistId, watchlistId)))
+        .where(
+          and(
+            eq(workboardItems.userId, userId),
+            eq(workboardItems.watchlistId, watchlistId),
+            options?.includeCustomAssets === false
+              ? isNull(assets.ownerId)
+              : or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
+          ),
+        )
         .orderBy(workboardItems.sortOrder);
       return rows.map(toItem);
     },
 
-    async findOneWithAsset(userId: string, itemId: string): Promise<WorkboardItemWithAsset | null> {
+    async findOneWithAsset(
+      userId: string,
+      itemId: string,
+      options?: WorkboardAssetVisibilityOptions,
+    ): Promise<WorkboardItemWithAsset | null> {
       const rows = await db
         .select(ITEM_COLUMNS)
         .from(workboardItems)
         .innerJoin(assets, eq(workboardItems.assetId, assets.id))
-        .where(and(eq(workboardItems.id, itemId), eq(workboardItems.userId, userId)))
+        .where(
+          and(
+            eq(workboardItems.id, itemId),
+            eq(workboardItems.userId, userId),
+            options?.includeCustomAssets === false
+              ? isNull(assets.ownerId)
+              : or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
+          ),
+        )
         .limit(1);
       const row = rows[0];
       return row ? toItem(row) : null;
-    },
-
-    async assetExists(assetId: string): Promise<boolean> {
-      const rows = await db
-        .select({ id: assets.id })
-        .from(assets)
-        .where(eq(assets.id, assetId))
-        .limit(1);
-      return rows.length > 0;
     },
 
     /**

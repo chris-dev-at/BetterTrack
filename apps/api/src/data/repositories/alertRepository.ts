@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 
 import type { AlertKind, AlertStatus } from '@bettertrack/contracts';
 
@@ -78,6 +78,11 @@ export interface CreateAlertInput {
   repeat: boolean;
 }
 
+export interface AlertAssetVisibilityOptions {
+  /** False restricts CRUD joins to global market assets before identity is selected. */
+  includeCustomAssets?: boolean;
+}
+
 const CRUD_COLUMNS = {
   id: alerts.id,
   userId: alerts.userId,
@@ -154,23 +159,41 @@ export function createAlertRepository(db: Database) {
     },
 
     /** The caller's alerts, newest first, each with its asset identity. */
-    async listForUser(userId: string): Promise<AlertRecord[]> {
+    async listForUser(
+      userId: string,
+      options?: AlertAssetVisibilityOptions,
+    ): Promise<AlertRecord[]> {
       const rows = await db
         .select(CRUD_COLUMNS)
         .from(alerts)
         .innerJoin(assets, eq(alerts.assetId, assets.id))
-        .where(eq(alerts.userId, userId))
+        .where(
+          and(
+            eq(alerts.userId, userId),
+            options?.includeCustomAssets === false ? isNull(assets.ownerId) : undefined,
+          ),
+        )
         .orderBy(alerts.id);
       return rows.map((r) => toRecord(r as CrudRow)).reverse();
     },
 
     /** One owned alert, or null when the id is missing or another user's (§10). */
-    async findByIdForUser(userId: string, id: string): Promise<AlertRecord | null> {
+    async findByIdForUser(
+      userId: string,
+      id: string,
+      options?: AlertAssetVisibilityOptions,
+    ): Promise<AlertRecord | null> {
       const [row] = await db
         .select(CRUD_COLUMNS)
         .from(alerts)
         .innerJoin(assets, eq(alerts.assetId, assets.id))
-        .where(and(eq(alerts.id, id), eq(alerts.userId, userId)))
+        .where(
+          and(
+            eq(alerts.id, id),
+            eq(alerts.userId, userId),
+            options?.includeCustomAssets === false ? isNull(assets.ownerId) : undefined,
+          ),
+        )
         .limit(1);
       return row ? toRecord(row as CrudRow) : null;
     },
@@ -184,7 +207,9 @@ export function createAlertRepository(db: Database) {
       userId: string,
       id: string,
       patch: { threshold?: number; repeat?: boolean },
+      options?: AlertAssetVisibilityOptions,
     ): Promise<AlertRecord | null> {
+      if (!(await this.findByIdForUser(userId, id, options))) return null;
       const set: { threshold?: string; repeat?: boolean } = {};
       if (patch.threshold !== undefined) set.threshold = String(patch.threshold);
       if (patch.repeat !== undefined) set.repeat = patch.repeat;
@@ -196,18 +221,23 @@ export function createAlertRepository(db: Database) {
           .returning({ id: alerts.id });
         if (updated.length === 0) return null;
       }
-      return this.findByIdForUser(userId, id);
+      return this.findByIdForUser(userId, id, options);
     },
 
     /** Re-arm an owned alert: reset it to `active`. Returns null if not the caller's. */
-    async rearm(userId: string, id: string): Promise<AlertRecord | null> {
+    async rearm(
+      userId: string,
+      id: string,
+      options?: AlertAssetVisibilityOptions,
+    ): Promise<AlertRecord | null> {
+      if (!(await this.findByIdForUser(userId, id, options))) return null;
       const updated = await db
         .update(alerts)
         .set({ status: 'active' })
         .where(and(eq(alerts.id, id), eq(alerts.userId, userId)))
         .returning({ id: alerts.id });
       if (updated.length === 0) return null;
-      return this.findByIdForUser(userId, id);
+      return this.findByIdForUser(userId, id, options);
     },
 
     /** Delete an owned alert. Returns false when the id is not the caller's. */
