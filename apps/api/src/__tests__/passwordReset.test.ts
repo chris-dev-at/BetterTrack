@@ -2,7 +2,11 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { meResponseSchema, twoFactorEnrollResponseSchema } from '@bettertrack/contracts';
+import {
+  meResponseSchema,
+  twoFactorChallengeResponseSchema,
+  twoFactorEnrollResponseSchema,
+} from '@bettertrack/contracts';
 
 import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -12,9 +16,9 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * §6.1, §13.2 V2-P4). Covers: an idempotent re-reset after a lost token, an
  * admin-account reset-and-recover (no user-panel-rejects-admin loop), a forced
  * change that resolves the target from the login credential (no admin-session
- * context leakage), and completing a reset without re-entering the just-set
- * password (item 7). Voluntary changes from Settings still re-verify the
- * current password.
+ * context leakage), and completing a reset without re-entering the temporary
+ * password in the mutation itself (item 7). Every credential transition still
+ * requires a fresh explicit login afterward.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -99,23 +103,41 @@ describe('password reset — an admin account is recoverable (#248 item 6)', () 
     expect(me.role).toBe('admin');
     expect(me.mustChangePassword).toBe(false);
 
+    expect((await targetAgent.get('/api/v1/admin/users')).status).toBe(404);
+    const recovered = await loginAgent(harness.app, target.email, 'ops-recovered-strong-9');
+
     // The password loop is gone — but mandatory admin 2FA (#400) now gates the
-    // panel with the setup wizard (not a bounce) until the reset admin enrolls.
-    const stillGated = await targetAgent.get('/api/v1/admin/users');
+    // freshly authenticated panel until the reset admin enrolls.
+    const stillGated = await recovered.get('/api/v1/admin/users');
     expect(stillGated.status).toBe(403);
     expect(stillGated.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
 
-    // Enrolling 2FA on the very same session opens the panel — recovery complete.
+    // Enrollment is another security transition and therefore logs this device
+    // out too. A final explicit password + TOTP login completes recovery.
     const { secret } = twoFactorEnrollResponseSchema.parse(
-      (await targetAgent.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
+      (await recovered.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
     );
-    await targetAgent
+    await recovered
       .post('/api/v1/admin/security/2fa/totp/confirm')
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
-    expect((await targetAgent.get('/api/v1/admin/users')).status).toBe(200);
-    // And the new password is accepted at login (now issuing the 2FA challenge).
-    expect((await login(harness.app, target.email, 'ops-recovered-strong-9')).status).toBe(200);
+    expect((await recovered.get('/api/v1/admin/users')).status).toBe(404);
+
+    const authenticated = request.agent(harness.app);
+    const challenge = twoFactorChallengeResponseSchema.parse(
+      (
+        await authenticated
+          .post('/api/v1/auth/login')
+          .set(...XRW)
+          .send({ identifier: target.email, password: 'ops-recovered-strong-9' })
+      ).body,
+    );
+    const verified = await authenticated
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) });
+    expect(verified.status).toBe(200);
+    expect((await authenticated.get('/api/v1/admin/users')).status).toBe(200);
   });
 });
 
@@ -150,8 +172,8 @@ describe('password reset — outcome is independent of any admin session elsewhe
   });
 });
 
-describe('password reset — no redundant password re-entry (#248 item 7)', () => {
-  it('completing a reset with only the new password logs the user straight in', async () => {
+describe('password reset — no redundant password in the mutation (#248 item 7)', () => {
+  it('accepts only the new password, then requires a fresh explicit login', async () => {
     const admin = await harness.seedAdmin();
     const user = await harness.seedUser();
     const adminAgent = await harness.loginAdmin(admin);
@@ -165,8 +187,9 @@ describe('password reset — no redundant password re-entry (#248 item 7)', () =
       .send({ newPassword: 'set-once-strong-secret-3' });
     expect(changed.status).toBe(200);
 
-    // Same session, no second password prompt: the user is authenticated.
-    const me = await userAgent.get('/api/v1/auth/me');
+    expect((await userAgent.get('/api/v1/auth/me')).status).toBe(401);
+    const fresh = await loginAgent(harness.app, user.email, 'set-once-strong-secret-3');
+    const me = await fresh.get('/api/v1/auth/me');
     expect(me.status).toBe(200);
     expect(me.body.mustChangePassword).toBe(false);
   });

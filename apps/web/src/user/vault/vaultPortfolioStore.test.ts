@@ -163,6 +163,27 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     });
   });
 
+  it('floors summed cash response balances to cents without changing stored movements', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    await store.depositCash(PORTFOLIO_ID, { amountEur: 0.1, sourceId: CASH_SOURCE_ID });
+    const response = await store.depositCash(PORTFOLIO_ID, {
+      amountEur: 0.2,
+      sourceId: CASH_SOURCE_ID,
+    });
+
+    expect(response.sourceBalanceEur).toBe(0.3);
+    expect(response.balanceEur).toBe(0.3);
+    expect(engine.state.active?.document.entities.cashMovement).toMatchObject([
+      { data: { amountEur: '0.1' } },
+      { data: { amountEur: '0.2' } },
+    ]);
+  });
+
   it('tombstones a deleted portfolio and all of its portfolio-scoped children', async () => {
     const secondaryId = GENERATED_IDS[0];
     const transactionId = GENERATED_IDS[1];
@@ -1203,6 +1224,122 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     );
     expect(first.state.active?.document.entities.transaction).toEqual(
       second.state.active?.document.entities.transaction,
+    );
+  });
+
+  it('preserves an unobserved cash edit that races a rejected deletion compensation', async () => {
+    const transactionId = GENERATED_IDS[0];
+    const depositId = GENERATED_IDS[1];
+    const buyMovementId = GENERATED_IDS[2];
+    const document = initialDocument();
+    document.entities.transaction = [
+      transactionEntity(transactionId, {
+        side: 'buy',
+        quantity: 1,
+        price: 10,
+        executedAt: '2026-07-25T09:00:00.000Z',
+      }),
+    ];
+    document.entities.cashMovement = [
+      vaultEntity(depositId, {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'deposit',
+        amountEur: '20',
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-25T08:00:00.000Z',
+        note: null,
+        source: 'manual',
+        createdAt: '2026-07-25T08:00:00.000Z',
+      }),
+      vaultEntity(buyMovementId, {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'buy',
+        amountEur: '-10',
+        transactionId,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-25T09:00:00.000Z',
+        note: null,
+        source: 'manual',
+        createdAt: '2026-07-25T09:00:00.000Z',
+      }),
+    ];
+    const { first, second, remote } = await createConcurrentSyncEngines(
+      document,
+      'portfolio-store-compensation-cas-race',
+    );
+    const editingStore = createVaultPortfolioStore(first, { now: () => COMPETING_AT });
+    const deletingStore = createVaultPortfolioStore(second, { now: () => AT });
+
+    await expect(
+      editingStore.updateTransaction(PORTFOLIO_ID, transactionId, {
+        note: 'Durable transaction edit',
+      }),
+    ).resolves.toMatchObject({ note: 'Durable transaction edit' });
+
+    let subjectWriteAttempts = 0;
+    let interleaved = false;
+    remote.setBeforeWrite(async (envelope) => {
+      const header = vaultEnvelopeHeaderSchema.parse(decodeVaultEnvelope(envelope).header);
+      if (header.deviceId !== REMOTE_DEVICE_ID) return;
+      subjectWriteAttempts += 1;
+      if (subjectWriteAttempts !== 2) return;
+
+      remote.setBeforeWrite(null);
+      interleaved = true;
+      await expect(
+        first.mutate(({ document: current }) => ({
+          ...current,
+          entities: {
+            ...current.entities,
+            cashMovement: (current.entities.cashMovement ?? []).map((entity) =>
+              entity.id === buyMovementId
+                ? {
+                    ...entity,
+                    rev: entity.rev + 1,
+                    editedAt: COMPETING_AT,
+                    editedBy: first.deviceId,
+                    data: { ...entity.data, note: 'Concurrent cash edit' },
+                  }
+                : entity,
+            ),
+          },
+        })),
+      ).resolves.toMatchObject({ status: 'synced' });
+    });
+
+    await expect(
+      deletingStore.deleteTransaction(PORTFOLIO_ID, transactionId),
+    ).rejects.toMatchObject({
+      code: 'VAULT_DATA_UNAVAILABLE',
+    });
+
+    expect(interleaved).toBe(true);
+    expect(subjectWriteAttempts).toBe(2);
+    expect(
+      second.state.active?.document.entities.cashMovement?.find(
+        (movement) => movement.id === buyMovementId,
+      ),
+    ).toMatchObject({
+      deletedAt: null,
+      rev: 2,
+      data: expect.objectContaining({ note: 'Concurrent cash edit' }),
+    });
+
+    await first.reconnect();
+    expect(first.state.active?.document.entities.transaction).toEqual(
+      second.state.active?.document.entities.transaction,
+    );
+    expect(first.state.active?.document.entities.cashMovement).toEqual(
+      second.state.active?.document.entities.cashMovement,
     );
   });
 

@@ -54,7 +54,12 @@ describe('GET /admin/settings (PROJECTPLAN.md §6.12, §8)', () => {
       .set(...XRW)
       .send({ currentPassword: created.body.tempPassword, newPassword: 'normal-strong-pass-7' });
 
-    const asUser = await userAgent.get('/api/v1/admin/settings');
+    const authenticatedUser = await loginAgent(
+      harness.app,
+      'normal@test.dev',
+      'normal-strong-pass-7',
+    );
+    const asUser = await authenticatedUser.get('/api/v1/admin/settings');
     expect(asUser.status).toBe(404);
 
     const anon = await request(harness.app).get('/api/v1/admin/settings');

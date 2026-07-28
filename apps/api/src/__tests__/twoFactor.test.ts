@@ -3,6 +3,7 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  twoFactorChallengeResponseSchema,
   twoFactorEnrollResponseSchema,
   twoFactorMethodEnabledResponseSchema,
   twoFactorStatusResponseSchema,
@@ -58,6 +59,50 @@ async function loginAgent(email: string, password: string) {
   return agent;
 }
 
+async function loginWithTotp(email: string, password: string, secret: string) {
+  const agent = request.agent(harness.app);
+  const challenge = twoFactorChallengeResponseSchema.parse(
+    (
+      await agent
+        .post('/api/v1/auth/login')
+        .set(...XRW)
+        .send({ identifier: email, password })
+    ).body,
+  );
+  const verified = await agent
+    .post('/api/v1/auth/2fa/verify')
+    .set(...XRW)
+    .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) });
+  expect(verified.status).toBe(200);
+  return agent;
+}
+
+function lastEmailedCode(transport: { sent: OutgoingMail[] }): string {
+  return transport.sent.at(-1)!.text.match(/\b(\d{6})\b/)![1]!;
+}
+
+async function loginWithEmail(
+  email: string,
+  password: string,
+  transport: { sent: OutgoingMail[] },
+) {
+  const agent = request.agent(harness.app);
+  const challenge = twoFactorChallengeResponseSchema.parse(
+    (
+      await agent
+        .post('/api/v1/auth/login')
+        .set(...XRW)
+        .send({ identifier: email, password })
+    ).body,
+  );
+  const verified = await agent
+    .post('/api/v1/auth/2fa/verify')
+    .set(...XRW)
+    .send({ pendingToken: challenge.pendingToken, code: lastEmailedCode(transport) });
+  expect(verified.status).toBe(200);
+  return agent;
+}
+
 async function auditCount(userId: string, action: string): Promise<number> {
   const rows = await harness.db
     .select({ id: auditLog.id })
@@ -99,7 +144,11 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
     const { recoveryCodes } = twoFactorMethodEnabledResponseSchema.parse(confirm.body);
     expect(recoveryCodes).not.toBeNull();
 
-    status = twoFactorStatusResponseSchema.parse((await agent.get('/api/v1/auth/2fa/status')).body);
+    expect((await agent.get('/api/v1/auth/2fa/status')).status).toBe(401);
+    const enrolledAgent = await loginWithTotp(user.email, user.password, secret);
+    status = twoFactorStatusResponseSchema.parse(
+      (await enrolledAgent.get('/api/v1/auth/2fa/status')).body,
+    );
     expect(status).toMatchObject({
       totpEnabled: true,
       totpPending: false,
@@ -107,13 +156,17 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
     });
 
     // Disable with a valid TOTP code clears it.
-    const disable = await agent
+    const disable = await enrolledAgent
       .post('/api/v1/auth/2fa/disable')
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
     expect(disable.status).toBe(200);
 
-    status = twoFactorStatusResponseSchema.parse((await agent.get('/api/v1/auth/2fa/status')).body);
+    expect((await enrolledAgent.get('/api/v1/auth/2fa/status')).status).toBe(401);
+    const disabledAgent = await loginAgent(user.email, user.password);
+    status = twoFactorStatusResponseSchema.parse(
+      (await disabledAgent.get('/api/v1/auth/2fa/status')).body,
+    );
     expect(status).toMatchObject({
       totpEnabled: false,
       totpPending: false,
@@ -169,13 +222,14 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
       .send({ code: generateTotpCode(secret) });
     expect(confirm.status).toBe(200);
 
-    const cancel = await agent.delete('/api/v1/auth/2fa/enroll').set(...XRW);
+    const enrolledAgent = await loginWithTotp(user.email, user.password, secret);
+    const cancel = await enrolledAgent.delete('/api/v1/auth/2fa/enroll').set(...XRW);
     expect(cancel.status).toBe(409);
     expect(cancel.body.error.code).toBe('TWO_FACTOR_ALREADY_ENABLED');
 
     // Armed TOTP is still on.
     const status = twoFactorStatusResponseSchema.parse(
-      (await agent.get('/api/v1/auth/2fa/status')).body,
+      (await enrolledAgent.get('/api/v1/auth/2fa/status')).body,
     );
     expect(status).toMatchObject({ totpEnabled: true, totpPending: false });
   });
@@ -196,11 +250,13 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
       ).body,
     ).recoveryCodes;
 
-    const regen = await agent.post('/api/v1/auth/2fa/recovery-codes').set(...XRW);
+    const enrolledAgent = await loginWithTotp(user.email, user.password, secret);
+    const regen = await enrolledAgent.post('/api/v1/auth/2fa/recovery-codes').set(...XRW);
     expect(regen.status).toBe(200);
     const second = twoFactorMethodEnabledResponseSchema.parse(regen.body).recoveryCodes;
     expect(second).not.toBeNull();
     expect(second).not.toEqual(first);
+    expect((await enrolledAgent.get('/api/v1/auth/2fa/status')).status).toBe(401);
     expect(await auditCount(user.id, 'two_factor.recovery_regenerated')).toBe(1);
   });
 
@@ -237,7 +293,7 @@ describe('2FA endpoints — email-code method (§6.1, #298)', () => {
 
     // The setup code is delivered (and logged to email_log — see login2fa test).
     expect(transport.sent).toHaveLength(1);
-    const code = transport.sent[0]!.text.match(/\b(\d{6})\b/)![1]!;
+    const code = lastEmailedCode(transport);
 
     const confirm = await agent
       .post('/api/v1/auth/2fa/email/confirm')
@@ -247,21 +303,57 @@ describe('2FA endpoints — email-code method (§6.1, #298)', () => {
     const { recoveryCodes } = twoFactorMethodEnabledResponseSchema.parse(confirm.body);
     expect(recoveryCodes).not.toBeNull();
 
+    expect((await agent.get('/api/v1/auth/2fa/status')).status).toBe(401);
+    const enrolledAgent = await loginWithEmail(user.email, user.password, transport);
     const status = twoFactorStatusResponseSchema.parse(
-      (await agent.get('/api/v1/auth/2fa/status')).body,
+      (await enrolledAgent.get('/api/v1/auth/2fa/status')).body,
     );
     expect(status).toMatchObject({ totpEnabled: false, emailEnabled: true });
 
     // Disable turns just the email method off.
-    const disable = await agent.post('/api/v1/auth/2fa/email/disable').set(...XRW);
+    const disable = await enrolledAgent.post('/api/v1/auth/2fa/email/disable').set(...XRW);
     expect(disable.status).toBe(200);
+    expect((await enrolledAgent.get('/api/v1/auth/2fa/status')).status).toBe(401);
+    const disabledAgent = await loginAgent(user.email, user.password);
     const after = twoFactorStatusResponseSchema.parse(
-      (await agent.get('/api/v1/auth/2fa/status')).body,
+      (await disabledAgent.get('/api/v1/auth/2fa/status')).body,
     );
     expect(after).toMatchObject({ emailEnabled: false, recoveryCodesRemaining: 0 });
 
     expect(await auditCount(user.id, 'two_factor.email_enabled')).toBe(1);
     expect(await auditCount(user.id, 'two_factor.email_disabled')).toBe(1);
+  });
+
+  it('rejects an email setup code after a password transition and fresh login', async () => {
+    const transport = recordingTransport();
+    await boot({ env: SMTP_ENV, emailTransport: transport });
+    const user = await harness.seedUser();
+    const stale = await loginAgent(user.email, user.password);
+
+    const enroll = await stale.post('/api/v1/auth/2fa/email/enroll').set(...XRW);
+    expect(enroll.status).toBe(200);
+    const staleCode = lastEmailedCode(transport);
+
+    const newPassword = 'email-setup-transition-pass-2';
+    const changed = await stale
+      .post('/api/v1/auth/change-password')
+      .set(...XRW)
+      .send({ currentPassword: user.password, newPassword });
+    expect(changed.status).toBe(200);
+
+    const fresh = await loginAgent(user.email, newPassword);
+    const rejected = await fresh
+      .post('/api/v1/auth/2fa/email/confirm')
+      .set(...XRW)
+      .send({ code: staleCode });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error.code).toBe('TWO_FACTOR_INVALID_CODE');
+    expect(await harness.ctx.redis.get(`2fa_email_setup:${user.id}`)).toBeNull();
+
+    const status = twoFactorStatusResponseSchema.parse(
+      (await fresh.get('/api/v1/auth/2fa/status')).body,
+    );
+    expect(status.emailEnabled).toBe(false);
   });
 
   it('rejects enabling email 2FA as the only method when SMTP is unconfigured', async () => {

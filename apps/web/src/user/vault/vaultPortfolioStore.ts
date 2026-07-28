@@ -661,12 +661,13 @@ async function createCashMovement(
   projectCashLedgerBySource(movements);
   const balances = cashBalancesBySource(movements);
   const sourceId = stringField(committed.data, 'sourceId');
-  const balanceEur = [...balances.values()].reduce((sum, value) => sum + value, 0);
+  const sourceBalanceEur = floorCents(balances.get(sourceId) ?? 0);
+  const balanceEur = floorCents([...balances.values()].reduce((sum, value) => sum + value, 0));
   return parseVaultData(
     () =>
       cashMovementResponseSchema.parse({
         movement: cashMovementFromEntity(committed),
-        sourceBalanceEur: balances.get(sourceId) ?? 0,
+        sourceBalanceEur,
         balanceEur,
       }),
     'The committed cash movement does not match the cash response contract.',
@@ -891,6 +892,7 @@ interface ReconcileChange extends VaultMutationEntityDelta {
 interface ReconcileGroup {
   sequence: number;
   changes: ReconcileChange[];
+  compensation: boolean;
 }
 
 class VaultAggregateConflictError extends Error {
@@ -925,13 +927,17 @@ export function reconcilePortfolioDocument(
   const rebasedMutations: VaultAtomicMutation[] = [];
   for (const group of groups) {
     const beforeGroup = reconciled;
-    const completeGroupWon = group.changes.every(
-      (change) =>
-        !rejectedEntityKeys.has(entityRefKey(change.kind, change.id)) &&
-        sameOptionalVaultEntity(findEntity(document, change.kind, change.id), change.local),
-    );
+    let rebasedAsCompensation = group.compensation;
+    const completeGroupWon =
+      !group.compensation &&
+      group.changes.every(
+        (change) =>
+          !rejectedEntityKeys.has(entityRefKey(change.kind, change.id)) &&
+          sameOptionalVaultEntity(findEntity(document, change.kind, change.id), change.local),
+      );
     if (!completeGroupWon) {
       reconciled = compensateRejectedGroup(reconciled, group, context);
+      rebasedAsCompensation = true;
       for (const change of group.changes) {
         rejectedEntityKeys.add(entityRefKey(change.kind, change.id));
       }
@@ -948,13 +954,14 @@ export function reconcilePortfolioDocument(
       } catch (cause) {
         if (!isAggregateConflict(cause)) throw cause;
         reconciled = compensateRejectedGroup(reconciled, group, context);
+        rebasedAsCompensation = true;
         for (const change of group.changes) {
           rejectedEntityKeys.add(entityRefKey(change.kind, change.id));
         }
       }
     }
 
-    const rebased = rebaseReconcileGroup(group, beforeGroup, reconciled);
+    const rebased = rebaseReconcileGroup(group, beforeGroup, reconciled, rebasedAsCompensation);
     if (rebased != null) rebasedMutations.push(rebased);
   }
 
@@ -971,6 +978,7 @@ function reconcileGroups(
     .map(
       (mutation): ReconcileGroup => ({
         sequence: mutation.sequence,
+        compensation: mutation.compensation === true,
         changes: [...mutation.changes]
           .sort((left, right) =>
             entityRefKey(left.kind, left.id).localeCompare(entityRefKey(right.kind, right.id)),
@@ -998,6 +1006,7 @@ function rebaseReconcileGroup(
   group: ReconcileGroup,
   before: VaultDocumentV1,
   after: VaultDocumentV1,
+  compensation: boolean,
 ): VaultAtomicMutation | null {
   const refs = new Map<string, VaultEntityRef>();
   for (const change of group.changes) {
@@ -1030,7 +1039,7 @@ function rebaseReconcileGroup(
       }),
     );
   return changes.some((change) => !sameOptionalVaultEntity(change.before, change.after))
-    ? { sequence: group.sequence, changes }
+    ? { sequence: group.sequence, changes, compensation }
     : null;
 }
 
@@ -1047,7 +1056,7 @@ function compensateRejectedGroup(
       compensated,
       change.kind,
       change.id,
-      compensationEntity(change.local, desired, context),
+      compensationEntity(change.local, desired, context, group.compensation),
     );
   }
   compensated = enforceDeletionCascades(compensated, context);
@@ -1112,10 +1121,21 @@ function compensationEntity(
   rejected: VaultEntity | undefined,
   desired: VaultEntity | undefined,
   context: VaultDocumentReconcileContext,
+  refresh: boolean,
 ): VaultEntity | undefined {
   if (rejected == null) return desired;
   if (desired == null) {
-    return tombstoneEntity(rejected, context.deviceId, context.reconciledAt);
+    return refresh ? rejected : tombstoneEntity(rejected, context.deviceId, context.reconciledAt);
+  }
+  if (refresh) {
+    if (desired.rev >= rejected.rev) return desired;
+    return {
+      ...desired,
+      rev: rejected.rev,
+      editedAt: rejected.editedAt,
+      editedBy: rejected.editedBy,
+      deletedAt: desired.deletedAt === null ? null : (rejected.deletedAt ?? context.reconciledAt),
+    };
   }
   return {
     ...desired,

@@ -193,8 +193,8 @@ describe('worker entry registers the durable notification consumer + bridge (gua
   it('registers the notifications.dispatch consumer with the fully-built dispatcher + webhook bridge', () => {
     // V5-P10 (#648): the durable dispatch consumer also fans events out to the
     // webhook bridge — the ONE place every user-scoped event converges.
-    expect(workerEntry).toContain(
-      'createNotificationsDispatchJob({ dispatcher, webhooks: webhookBridge })',
+    expect(workerEntry).toMatch(
+      /createNotificationsDispatchJob\(\{\s*dispatcher,\s*webhooks: webhookBridge,\s*\}\)/,
     );
     expect(workerEntry).toContain('createNotificationDispatcher(');
   });
@@ -203,8 +203,11 @@ describe('worker entry registers the durable notification consumer + bridge (gua
     expect(workerEntry).toContain("registry.enqueue('notifications.dispatch', { event })");
   });
 
-  it('hands the center to the scheduled jobs so the alert evaluator emits durably', () => {
+  it('hands the center to the registered jobs so the alert evaluator emits durably', () => {
     expect(workerEntry).toContain('createNotificationCenter(');
-    expect(workerEntry).toMatch(/createJobDefinitions\(\{[\s\S]*?\bnotify\b[\s\S]*?\}\)/);
+    expect(workerEntry).toContain('assembleRegisteredJobDefinitions({');
+    expect(workerEntry).toMatch(
+      /const coreJobDeps = \{[\s\S]*?\bnotify,[\s\S]*?\};[\s\S]*?createAlertsEvaluateJob\(coreJobDeps\)/,
+    );
   });
 });
