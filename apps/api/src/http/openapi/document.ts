@@ -41,6 +41,14 @@ const componentSchemas = {
   HealthResponse: contracts.healthResponseSchema,
   VersionResponse: contracts.versionResponseSchema,
   VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
+  ParanoidMediaStateResponse: contracts.paranoidMediaStateResponseSchema,
+  ParanoidMediaTransitionRequest: contracts.paranoidMediaTransitionRequestSchema,
+  ParanoidMediaTransitionResponse: contracts.paranoidMediaTransitionResponseSchema,
+  ParanoidServerCandidateMetadata: contracts.paranoidServerCandidateMetadataSchema,
+  RetiredServerPurgeChallengeRequest: contracts.retiredServerPurgeChallengeRequestSchema,
+  RetiredServerPurgeChallengeResponse: contracts.retiredServerPurgeChallengeResponseSchema,
+  RetiredServerPurgeRequest: contracts.retiredServerPurgeRequestSchema,
+  RetiredServerPurgeResponse: contracts.retiredServerPurgeResponseSchema,
 
   // Auth (§6.1)
   LoginRequest: contracts.loginRequestSchema,
@@ -3820,6 +3828,75 @@ const endpoints: EndpointDef[] = [
       description: 'Opaque AES-256-GCM vault envelope bytes (never interpreted server-side).',
     }),
     responseContentType: 'application/octet-stream',
+  },
+  {
+    method: 'get',
+    path: '/vault/media',
+    tag: 'Vault',
+    summary:
+      'Read the owner’s durable paranoid media selection and active/inactive-candidate/retired server disposition. The JSON contains no ciphertext.',
+    status: 200,
+    response: R.ParanoidMediaStateResponse,
+  },
+  {
+    method: 'patch',
+    path: '/vault/media',
+    tag: 'Vault',
+    summary:
+      'Move exactly one paranoid storage medium. Removing server retires opaque bytes; it never purges them.',
+    body: R.ParanoidMediaTransitionRequest,
+    status: 200,
+    response: R.ParanoidMediaTransitionResponse,
+  },
+  {
+    method: 'put',
+    path: '/vault/media/server-candidate',
+    tag: 'Vault',
+    summary:
+      'Stage a Drive-source opaque envelope outside the active server vault. The browser must read it back and authenticate it before promotion.',
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque candidate vault envelope bytes.',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 200,
+    response: R.ParanoidServerCandidateMetadata,
+  },
+  {
+    method: 'get',
+    path: '/vault/media/server-candidate/{candidateId}',
+    tag: 'Vault',
+    summary:
+      'Read one owner-scoped inactive candidate as opaque bytes and receive the short-lived read-back receipt needed for promotion.',
+    params: contracts.paranoidServerCandidateParamSchema,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque inactive candidate vault envelope bytes.',
+    }),
+    responseContentType: 'application/octet-stream',
+  },
+  {
+    method: 'post',
+    path: '/vault/media/retired/purge/challenge',
+    tag: 'Vault',
+    summary:
+      'Issue a short-lived browser-session challenge for an explicit retired server set. It does not purge anything.',
+    body: R.RetiredServerPurgeChallengeRequest,
+    status: 200,
+    response: R.RetiredServerPurgeChallengeResponse,
+  },
+  {
+    method: 'post',
+    path: '/vault/media/retired/purge',
+    tag: 'Vault',
+    summary:
+      'After the minimum recovery retention, purge retired server bytes only with a fresh signature from the client-decrypted vault key.',
+    body: R.RetiredServerPurgeRequest,
+    status: 200,
+    response: R.RetiredServerPurgeResponse,
   },
   {
     method: 'put',

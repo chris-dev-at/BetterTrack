@@ -25,6 +25,8 @@ import type { RegistrationTokenRepository } from '../../data/repositories/regist
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
 import { accountDisabled, badRequest, conflict, tooManyRequests, unauthorized } from '../../errors';
+import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
+import type { Logger } from '../../logger';
 import { applyAccountDefaultsAtRegistration } from '../account/accountDefaults';
 import type { AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
@@ -67,6 +69,9 @@ export interface AuthServiceDeps {
   /** Per-(channel, type) override seeding for the V4-P0d account-defaults matrix. */
   notificationRepo: Pick<NotificationRepository, 'upsertChannelConfig'>;
   sessions: SessionService;
+  /** Best-effort lifecycle fan-out to disconnect already-open session sockets. */
+  events?: Pick<EventBus, 'publish'>;
+  logger?: Pick<Logger, 'warn'>;
   audit: AuditService;
   passwordHasher: PasswordHasher;
   email: EmailService;
@@ -386,6 +391,8 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     portfolioRepo,
     notificationRepo,
     sessions,
+    events,
+    logger,
     audit,
     passwordHasher,
     email,
@@ -417,6 +424,52 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     PIN_TOKEN_ACCOUNT_NAMESPACE,
     config.rateLimits.loginAccount,
   );
+
+  async function publishSessionInvalidation(
+    event: Omit<RealtimePrincipalInvalidatedEvent, 'type' | 'kind' | 'occurredAt'>,
+  ): Promise<void> {
+    if (!events) return;
+    try {
+      await events.publish({
+        type: 'realtime.principal.invalidated',
+        kind: 'session',
+        ...event,
+        occurredAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      // Session deletion already succeeded. The gateway's periodic principal
+      // revalidation is the fail-closed backstop for a missed pub/sub signal.
+      logger?.warn({ err, userId: event.userId }, 'session realtime invalidation publish failed');
+    }
+  }
+
+  const invalidateSession = (userId: string, sessionId: string): Promise<void> =>
+    publishSessionInvalidation({
+      userId,
+      credentialId: sha256Base64Url(sessionId),
+      exceptCredentialId: null,
+    });
+
+  const invalidateAllSessions = (
+    userId: string,
+    exceptSessionId: string | null = null,
+  ): Promise<void> =>
+    publishSessionInvalidation({
+      userId,
+      credentialId: null,
+      exceptCredentialId: exceptSessionId ? sha256Base64Url(exceptSessionId) : null,
+    });
+
+  /**
+   * Destroy a session and notify the socket owner that actually held it. Login
+   * rotation can intentionally switch accounts, so the caller being signed in
+   * is not necessarily the owner of the cookie being replaced.
+   */
+  async function destroySessionAndInvalidate(sessionId: string): Promise<void> {
+    const priorSession = await sessions.get(sessionId);
+    await sessions.destroy(sessionId);
+    if (priorSession) await invalidateSession(priorSession.userId, sessionId);
+  }
 
   /** Load and parse a pending-2FA state; null when missing/expired/corrupt. */
   async function loadPending(token: string): Promise<Pending2faState | null> {
@@ -666,7 +719,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       }
 
       // Session rotation: drop any pre-login session before minting a new id.
-      if (currentSessionId) await sessions.destroy(currentSessionId);
+      if (currentSessionId) {
+        await destroySessionAndInvalidate(currentSessionId);
+      }
       const sessionId = await sessions.create(user.id, user.securityGeneration, persistent);
 
       const now = new Date();
@@ -768,7 +823,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
       await twoFactorThrottle.reset(userId);
       await clearFailures(userId);
-      if (state.priorSessionId) await sessions.destroy(state.priorSessionId);
+      if (state.priorSessionId) {
+        await destroySessionAndInvalidate(state.priorSessionId);
+      }
       // Honour the persistence choice made at the password step (V4-P2b); a
       // reset-originated challenge carries none → persistent, today's behavior.
       const persistent = state.persistent ?? true;
@@ -816,7 +873,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     },
 
     async logout(sessionId) {
+      const session = await sessions.get(sessionId);
       await sessions.destroy(sessionId);
+      if (session) await invalidateSession(session.userId, sessionId);
     },
 
     async resolveSession(sessionId, userAgent) {
@@ -826,6 +885,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (!user || user.status !== 'active') {
         // Disabled/deleted out from under a live session → terminate it.
         await destroySessionBestEffort(sessionId);
+        await invalidateSession(data.userId, sessionId);
         return null;
       }
       // The equality check happens only after the fresh durable user read. Thus
@@ -838,6 +898,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         data.securityGeneration !== user.securityGeneration
       ) {
         await destroySessionBestEffort(sessionId);
+        await invalidateSession(data.userId, sessionId);
         return null;
       }
       // Admin session policy (§13.5 V5-P13c): admin sessions carry an ABSOLUTE
@@ -850,6 +911,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         const lifetimeMs = (await appSettings.getAdminSessionLifetimeHours()) * 60 * 60 * 1000;
         if (Date.now() - data.createdAt >= lifetimeMs) {
           await destroySessionBestEffort(sessionId);
+          await invalidateSession(data.userId, sessionId);
           return null;
         }
       }
@@ -902,8 +964,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Cleanup is best effort: even a Redis failure leaves every prior cookie
       // fenced by the committed generation. Security transitions deliberately
       // retain no session, including the acting cookie; every device must log in
-      // again explicitly at the committed generation.
+      // again explicitly at the committed generation. No session survives, so
+      // the realtime invalidation carries no exception.
       await destroyAllSessionsBestEffort(user.id);
+      await invalidateAllSessions(user.id);
 
       await audit.record({
         actorId: user.id,
@@ -1067,6 +1131,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       // A password change kills all sessions (§6.1).
       await destroyAllSessionsBestEffort(user.id);
+      await invalidateAllSessions(user.id);
 
       await audit.record({
         actorId: user.id,
@@ -1264,6 +1329,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // The session guard already resolved this user, but re-check the account.
       if (!user || user.status !== 'active') {
         await sessions.destroy(sessionId);
+        await invalidateSession(userId, sessionId);
         throw unauthorized();
       }
       if (!user.pinEnabled || !user.pinHash) {
@@ -1290,6 +1356,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           // full password login (§6.1). Clear the tally with the session.
           await redis.del(pinFailCountKey(user.id));
           await sessions.destroy(sessionId);
+          await invalidateSession(user.id, sessionId);
           throw unauthorized(
             'Too many incorrect PIN attempts. Please sign in with your password.',
             'PIN_FALLBACK_LOGIN',
@@ -1563,11 +1630,20 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const wasCurrent =
         currentSessionId !== null && sha256Base64Url(currentSessionId) === publicId;
       const revoked = await sessions.revokeForUser(userId, publicId);
+      if (revoked) {
+        await publishSessionInvalidation({
+          userId,
+          credentialId: publicId,
+          exceptCredentialId: null,
+        });
+      }
       return { revoked, wasCurrent };
     },
 
     async revokeOtherSessions(userId, currentSessionId) {
-      return sessions.revokeOthersForUser(userId, currentSessionId);
+      const revoked = await sessions.revokeOthersForUser(userId, currentSessionId);
+      if (revoked > 0) await invalidateAllSessions(userId, currentSessionId);
+      return revoked;
     },
   };
 }

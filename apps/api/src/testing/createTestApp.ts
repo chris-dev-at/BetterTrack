@@ -202,6 +202,8 @@ export interface CreateTestAppOptions {
   passkeyEngine?: PasskeyWebAuthnEngine;
   /** Fast poll cadence / small ring for Live Mode tests (V3-P7b). */
   liveModeOptions?: LiveModeServiceOptions;
+  /** Controlled process-local realtime command-bucket clock. */
+  realtimeCommandNow?: () => number;
   /**
    * Notification-center transport override (#368): e.g. a recording queue that
    * nothing consumes, to model a dispatcher outage. Defaults to synchronous
@@ -282,6 +284,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     passwordHasher: options.passwordHasher ?? testPasswordHasher,
     passkeyEngine: options.passkeyEngine,
     liveModeOptions: options.liveModeOptions,
+    realtimeCommandNow: options.realtimeCommandNow,
     notificationEnqueue: options.notificationEnqueue,
     notificationNow: options.notificationNow,
     taxNow: options.taxNow,

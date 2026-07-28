@@ -204,6 +204,10 @@ function resolvePolicy(path: string): PathPolicy {
   if (path === '/settings/webhooks' || path.startsWith('/settings/webhooks/')) {
     return { kind: 'session-only' };
   }
+  // Client-encrypted vault media is strictly browser-cookie-session only. A
+  // personal API key or delegated OAuth bearer never gets to stage, retire,
+  // recover, or purge opaque vault bytes — even with account:security.
+  if (path === '/vault' || path.startsWith('/vault/')) return { kind: 'session-only' };
   // Notification preferences live under /settings but belong to the notifications
   // scope (#361), checked before the coarse `/settings` → social catch-all.
   if (path === '/settings/notifications' || path.startsWith('/settings/notifications/')) {

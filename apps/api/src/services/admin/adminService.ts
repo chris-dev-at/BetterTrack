@@ -28,6 +28,8 @@ import type { RegistrationTokenRepository } from '../../data/repositories/regist
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { InviteRow, RegistrationTokenRow, UserRow } from '../../data/schema';
 import { badRequest, conflict, notFound } from '../../errors';
+import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
+import type { Logger } from '../../logger';
 import { applyAccountDefaultsAtRegistration } from '../account/accountDefaults';
 import type {
   AdminSessionPolicy,
@@ -63,6 +65,9 @@ export interface AdminServiceDeps {
   /** Suspension cleanup for delegated OAuth credentials. */
   oauth: Pick<OAuthService, 'revokeAllForUser'>;
   sessions: SessionService;
+  /** Best-effort lifecycle fan-out to terminate any connected principal. */
+  events?: Pick<EventBus, 'publish'>;
+  logger?: Pick<Logger, 'warn'>;
   audit: AuditService;
   passwordHasher: PasswordHasher;
   email: EmailService;
@@ -99,6 +104,8 @@ export function createAdminService(deps: AdminServiceDeps) {
     apiKeys,
     oauth,
     sessions,
+    events,
+    logger,
     audit,
     passwordHasher,
     email,
@@ -120,6 +127,24 @@ export function createAdminService(deps: AdminServiceDeps) {
     } catch {
       // Role/password commits already advanced the durable generation. Cleanup
       // must not be promoted back into the authorization boundary.
+    }
+  }
+
+  async function invalidateAllRealtimePrincipals(userId: string): Promise<void> {
+    if (!events) return;
+    try {
+      await events.publish({
+        type: 'realtime.principal.invalidated',
+        userId,
+        kind: 'all',
+        credentialId: null,
+        exceptCredentialId: null,
+        occurredAt: new Date().toISOString(),
+      } satisfies RealtimePrincipalInvalidatedEvent);
+    } catch (err) {
+      // The status/credential mutation has completed; gateway revalidation is
+      // deliberately the fail-closed fallback when pub/sub delivery is down.
+      logger?.warn({ err, userId }, 'admin realtime invalidation publish failed');
     }
   }
 
@@ -162,6 +187,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     }
     await revokeBearerCredentials(target.id);
     await sessions.destroyAllForUser(target.id);
+    await invalidateAllRealtimePrincipals(target.id);
     if (changedStatus) {
       await audit.record({
         actorId: actor.id,
@@ -179,6 +205,10 @@ export function createAdminService(deps: AdminServiceDeps) {
     // the status gate. Finish the same invalidation before making them reachable
     // again; revocation is idempotent for already-revoked rows.
     await revokeBearerCredentials(target.id);
+    // A prior disable can have failed after setting status but before session
+    // cleanup. Never restore `active` while that old cookie could reconnect.
+    await sessions.destroyAllForUser(target.id);
+    await invalidateAllRealtimePrincipals(target.id);
     await userRepo.setStatus(target.id, 'active');
     // Re-enabling must let the user back in immediately — drop any failed-login
     // / lockout state accrued before they were disabled.
@@ -403,6 +433,7 @@ export function createAdminService(deps: AdminServiceDeps) {
       const securityGeneration = await userRepo.updatePassword(target.id, passwordHash, true);
       if (securityGeneration === null) throw notFound('User not found.', 'USER_NOT_FOUND');
       await destroySessionsBestEffort(target.id);
+      await invalidateAllRealtimePrincipals(target.id);
       // Clear lockout so the user can sign in with the new temp password now.
       await clearLoginThrottle(redis, target.id);
       await audit.record({
@@ -444,6 +475,7 @@ export function createAdminService(deps: AdminServiceDeps) {
       }
       await ensureNotLastActiveAdmin(target);
       await sessions.destroyAllForUser(target.id);
+      await invalidateAllRealtimePrincipals(target.id);
       // MIRRORCHAIN §7: hand off any group portfolios the target owns BEFORE the
       // row delete cascades their copy away (V5-P7 M4), so the chain survives.
       await mirror.handleAccountDeletion(target.id);

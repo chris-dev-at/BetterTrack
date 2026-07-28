@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { AdminHealthResponse, MeResponse } from '@bettertrack/contracts';
@@ -73,6 +73,16 @@ function renderPage() {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 beforeEach(() => {
   vi.mocked(api.getMe).mockResolvedValue(admin);
   vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
@@ -86,10 +96,23 @@ beforeEach(() => {
 });
 
 test('renders every component status once loaded', async () => {
-  vi.mocked(api.getAdminHealth).mockResolvedValue(health);
+  const initialLoad = deferred<AdminHealthResponse>();
+  vi.mocked(api.getAdminHealth).mockReturnValueOnce(initialLoad.promise);
   renderPage();
 
+  expect(screen.getByRole('region', { name: 'System health' })).toHaveAttribute(
+    'aria-busy',
+    'true',
+  );
+  expect(screen.getByRole('button', { name: 'Refresh' })).toBeDisabled();
+
+  initialLoad.resolve(health);
   await waitFor(() => expect(screen.getByText('Database')).toBeInTheDocument());
+  expect(screen.getByRole('region', { name: 'System health' })).toHaveAttribute(
+    'aria-busy',
+    'false',
+  );
+  expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
   expect(screen.getByText('Redis')).toBeInTheDocument();
   expect(screen.getByText('Market data')).toBeInTheDocument();
   expect(screen.getByText('Job queues')).toBeInTheDocument();
@@ -123,5 +146,56 @@ test('shows an error state when the health fetch fails', async () => {
 
   await waitFor(() =>
     expect(screen.getByText("Couldn't load the health status.")).toBeInTheDocument(),
+  );
+});
+
+test('keeps stale health visible and announces reload progress while a refresh is pending', async () => {
+  const successfulReload = deferred<AdminHealthResponse>();
+  const failedReload = deferred<AdminHealthResponse>();
+  vi.mocked(api.getAdminHealth)
+    .mockResolvedValueOnce(health)
+    .mockReturnValueOnce(successfulReload.promise)
+    .mockReturnValueOnce(failedReload.promise);
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Database')).toBeInTheDocument());
+
+  const callsBeforeReload = vi.mocked(api.getAdminHealth).mock.calls.length;
+  const refresh = screen.getByRole('button', { name: 'Refresh' });
+  fireEvent.click(refresh);
+
+  await waitFor(() => expect(refresh).toBeDisabled());
+  expect(api.getAdminHealth).toHaveBeenCalledTimes(callsBeforeReload + 1);
+  expect(screen.getByText('Database')).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'System health' })).toHaveAttribute(
+    'aria-busy',
+    'true',
+  );
+  const progress = screen.getByRole('status', { name: 'Loading…' });
+  expect(progress).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'System health' })).not.toContainElement(progress);
+
+  fireEvent.click(refresh);
+  expect(api.getAdminHealth).toHaveBeenCalledTimes(callsBeforeReload + 1);
+
+  successfulReload.resolve(health);
+  await waitFor(() => expect(refresh).toBeEnabled());
+  expect(screen.getByRole('region', { name: 'System health' })).toHaveAttribute(
+    'aria-busy',
+    'false',
+  );
+  expect(screen.queryByRole('status', { name: 'Loading…' })).not.toBeInTheDocument();
+
+  fireEvent.click(refresh);
+  await waitFor(() => expect(refresh).toBeDisabled());
+  failedReload.reject(new Error('boom'));
+
+  await waitFor(() =>
+    expect(screen.getByText("Couldn't load the health status.")).toBeInTheDocument(),
+  );
+  expect(refresh).toBeEnabled();
+  expect(screen.getByRole('region', { name: 'System health' })).toHaveAttribute(
+    'aria-busy',
+    'false',
   );
 });
