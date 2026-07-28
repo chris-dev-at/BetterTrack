@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { and, desc, eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   alertListResponseSchema,
@@ -19,7 +19,10 @@ import {
   sendChatMessageResponseSchema,
 } from '@bettertrack/contracts';
 
+import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
+import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
+import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -68,9 +71,14 @@ async function loginAgent(app: Application, identifier: string, password: string
 }
 
 /** Seed a fresh user and mint a personal key with the given scopes. */
-async function mintKey(
-  scopes: string[],
-): Promise<{ token: string; id: string; userId: string; email: string; username: string }> {
+async function mintKey(scopes: string[]): Promise<{
+  token: string;
+  id: string;
+  userId: string;
+  email: string;
+  username: string;
+  password: string;
+}> {
   const user = await seedFreshUser();
   const agent = await loginAgent(harness.app, user.email, user.password);
   const res = await agent
@@ -85,6 +93,7 @@ async function mintKey(
     userId: user.id,
     email: user.email,
     username: user.username,
+    password: user.password,
   };
 }
 
@@ -159,6 +168,14 @@ async function mintOAuthToken(
 }
 
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 describe('#361 bearer-callable identity — GET /auth/me', () => {
   it('returns the caller’s own identity under a personal key', async () => {
@@ -334,6 +351,163 @@ describe('#361 route × scope matrix', () => {
     const res = await request(harness.app).get('/api/v1/settings/api-keys').set(bearer(token));
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
+  });
+
+  it('changes a password with account:security without minting a cookie session', async () => {
+    const { token, email, password } = await mintKey(['account:security']);
+    const sibling = await loginAgent(harness.app, email, password);
+    const newPassword = 'Bearer-New-Str0ng-Pass!';
+
+    const changed = await request(harness.app)
+      .post('/api/v1/auth/change-password')
+      .set(bearer(token))
+      .send({ currentPassword: password, newPassword });
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    expect(meResponseSchema.parse(changed.body).email).toBe(email);
+    expect(changed.headers['set-cookie']).toBeUndefined();
+
+    // The durable generation invalidates existing cookie sessions, while the
+    // bearer caller receives no replacement cookie.
+    expect((await sibling.get('/api/v1/auth/me')).status).toBe(401);
+    const oldLogin = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: email, password });
+    expect(oldLogin.status).toBe(401);
+
+    const fresh = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: email, password: newPassword });
+    expect(fresh.status).toBe(200);
+    expect(meResponseSchema.safeParse(fresh.body).success).toBe(true);
+  });
+});
+
+describe('#888 bearer 2FA generation interleavings', () => {
+  it('rejects a first-factor confirmation admitted before promotion', async () => {
+    const { token, userId } = await mintKey(['account:security']);
+    const { secret } = await harness.ctx.twoFactor.enrollTotp(userId);
+    const admitted = deferred();
+    const release = deferred();
+    const authenticate = harness.ctx.apiKeys.authenticate.bind(harness.ctx.apiKeys);
+    const authSpy = vi
+      .spyOn(harness.ctx.apiKeys, 'authenticate')
+      .mockImplementation(async (rawToken) => {
+        const principal = await authenticate(rawToken);
+        if (rawToken === token) {
+          admitted.resolve();
+          await release.promise;
+        }
+        return principal;
+      });
+
+    const confirmation = request(harness.app)
+      .post('/api/v1/auth/2fa/confirm')
+      .set(bearer(token))
+      .send({ code: generateTotpCode(secret) })
+      .then((response) => response);
+    await admitted.promise;
+
+    // Bearer authentication observed a user at generation zero. Promotion then
+    // advances role + generation before the factor write reaches its CAS.
+    const userRepo = createUserRepository(harness.db);
+    expect(await userRepo.setRole(userId, 'admin')).toBe(1);
+    release.resolve();
+
+    const response = await confirmation;
+    authSpy.mockRestore();
+    expect(response.status).toBe(401);
+    const [state] = await harness.db
+      .select({
+        role: schema.users.role,
+        totpEnabled: schema.users.twoFactorEnabled,
+        generation: schema.users.securityGeneration,
+      })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId));
+    expect(state).toEqual({ role: 'admin', totpEnabled: false, generation: 1 });
+    expect(
+      await harness.db
+        .select({ id: schema.twoFactorRecoveryCodes.id })
+        .from(schema.twoFactorRecoveryCodes)
+        .where(eq(schema.twoFactorRecoveryCodes.userId, userId)),
+    ).toHaveLength(0);
+  });
+
+  it('allows only one of two bearer factor mutations admitted at the same generation', async () => {
+    const { token, userId } = await mintKey(['account:security']);
+    const { secret } = await harness.ctx.twoFactor.enrollTotp(userId);
+    const { recoveryCodes } = (
+      await harness.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret))
+    ).response;
+    expect(recoveryCodes).not.toBeNull();
+
+    const twoFactorRepo = createTwoFactorRepository(harness.db);
+    const afterTotp = await twoFactorRepo.getState(userId);
+    expect(afterTotp).toBeDefined();
+    expect(
+      await twoFactorRepo.confirmEmail(userId, undefined, null, afterTotp!.securityGeneration),
+    ).toBe(afterTotp!.securityGeneration + 1);
+
+    const admitted = [deferred(), deferred()];
+    const releases = [deferred(), deferred()];
+    const authenticate = harness.ctx.apiKeys.authenticate.bind(harness.ctx.apiKeys);
+    let targetCalls = 0;
+    const authSpy = vi
+      .spyOn(harness.ctx.apiKeys, 'authenticate')
+      .mockImplementation(async (rawToken) => {
+        const principal = await authenticate(rawToken);
+        if (rawToken === token && targetCalls < admitted.length) {
+          const call = targetCalls;
+          targetCalls += 1;
+          admitted[call]!.resolve();
+          await releases[call]!.promise;
+        }
+        return principal;
+      });
+
+    const disableTotp = request(harness.app)
+      .post('/api/v1/auth/2fa/disable')
+      .set(bearer(token))
+      .send({ code: generateTotpCode(secret) })
+      .then((response) => response);
+    await admitted[0]!.promise;
+    const disableEmail = request(harness.app)
+      .post('/api/v1/auth/2fa/email/disable')
+      .set(bearer(token))
+      .then((response) => response);
+    await admitted[1]!.promise;
+
+    // Both tokens were authorized at the same generation. The first mutation
+    // wins; the second must not adopt the post-transition state and turn off
+    // the remaining method or clear its shared recovery set.
+    releases[0]!.resolve();
+    expect((await disableTotp).status).toBe(200);
+    releases[1]!.resolve();
+    const staleDisable = await disableEmail;
+    authSpy.mockRestore();
+    expect(staleDisable.status).toBe(401);
+
+    const [state] = await harness.db
+      .select({
+        totpEnabled: schema.users.twoFactorEnabled,
+        emailEnabled: schema.users.twoFactorEmailEnabled,
+        generation: schema.users.securityGeneration,
+      })
+      .from(schema.users)
+      .where(eq(schema.users.id, userId));
+    expect(state).toEqual({
+      totpEnabled: false,
+      emailEnabled: true,
+      generation: afterTotp!.securityGeneration + 2,
+    });
+    expect(
+      await harness.db
+        .select({ id: schema.twoFactorRecoveryCodes.id })
+        .from(schema.twoFactorRecoveryCodes)
+        .where(eq(schema.twoFactorRecoveryCodes.userId, userId)),
+    ).toHaveLength(recoveryCodes!.length);
   });
 });
 

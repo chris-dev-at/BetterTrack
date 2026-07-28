@@ -46,14 +46,13 @@ export async function resetAdminTwoFactorEnrollment(
   const audit = createAuditService(createAuditRepository(db));
 
   const user = await userRepo.findByIdentifier(identifier);
-  if (!user || user.role !== 'admin') return null;
+  if (!user) return null;
 
-  // Clear both methods + the 2FA email, then drop every recovery code. Order is
-  // not load-bearing — the account simply ends with no 2FA state at all.
-  await twoFactorRepo.clearTotpSecret(user.id);
-  await twoFactorRepo.setEmailEnabled(user.id, false);
-  await twoFactorRepo.setTwoFactorEmail(user.id, null);
-  await twoFactorRepo.clearRecoveryCodes(user.id);
+  // DB-only correctness boundary (#888): all factor columns, recovery codes,
+  // the security-generation increment, and the admin-kind recheck commit
+  // together. Every extant Redis cookie is stale even though this shell path
+  // deliberately has no Redis.
+  if ((await twoFactorRepo.resetAllFactorsForAdmin(user.id)) === null) return null;
 
   // Security trail (§10): actorId is null — this ran from a shell, not a session.
   await audit.record({
