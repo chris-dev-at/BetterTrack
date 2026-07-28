@@ -224,6 +224,31 @@ mf_new_canonical_comment(){ # $1=before comments JSON $2=after JSON $3=kind $4=h
     <<<"$MF_COMMENT_BODY")
 }
 
+# Does the PR thread already carry ANY canonical reviewer verdict (any head)?
+# Used only for per-role model routing: the FIRST review on a PR runs the
+# reviewer1 slot, every later review runs the completion slot. The answer is
+# derived purely from the durable GitHub comment thread — no local state file —
+# so resuming a PR after a restart lands on the same slot. Each candidate is
+# validated with the full canonical contract against the head the comment
+# itself declares; prose merely quoting the marker never counts.
+mf_has_canonical_review(){ # $1=comments JSON
+  local comments=$1 obj body head
+  while IFS= read -r obj; do
+    [ -n "$obj" ] || continue
+    body=$(jq -r '.body // ""' <<<"$obj")
+    head=$(sed -n 's/^FACTORY-REVIEW-HEAD: //p' <<<"$body" | head -1)
+    [ -n "$head" ] || continue
+    # The head here comes from the UNTRUSTED comment body (every other caller
+    # passes one from GitHub) and is interpolated into a grep pattern — accept
+    # only plain commit-SHA shapes so `.*`-style bodies cannot self-validate.
+    printf '%s' "$head" | grep -qE '^[0-9a-fA-F]{7,40}$' || continue
+    if mf_comment_marker_valid review "$head" "$body"; then
+      return 0
+    fi
+  done < <(jq -c '.[]?' <<<"$comments" 2>/dev/null)
+  return 1
+}
+
 mf_comment_by_id_valid(){ # $1=comments JSON $2=id $3=kind $4=head
   local comments=$1 id=$2 kind=$3 head=$4 body
   body=$(jq -r --arg id "$id" '.[] | select((.id|tostring)==$id) | .body' <<<"$comments")
