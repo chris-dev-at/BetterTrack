@@ -48,19 +48,22 @@ function surfaceName(surface: ParanoidSurface): string {
  * The production mounted route table comes from `createApp` itself, not from a
  * mirrored route list in this test. A new `app.use`/router endpoint therefore
  * becomes a candidate as soon as the existing OpenAPI coverage walker sees it.
+ * API endpoints retain the inventory's API-relative paths; origin-root routes
+ * remain root-relative so public endpoints cannot disappear behind a prefix
+ * filter.
  */
 function mountedRouteSurfaces(
   routes: readonly { method: string; path: string }[] = buildRouteTable(),
   source = PARANOID_ROUTE_TABLE_SOURCE,
 ): ParanoidRouteSurface[] {
-  return routes
-    .filter((route) => route.path.startsWith(API_PREFIX))
-    .map((route) => ({
-      kind: 'route' as const,
-      source,
-      method: route.method,
-      path: route.path.slice(API_PREFIX.length) || '/',
-    }));
+  return routes.map((route) => ({
+    kind: 'route' as const,
+    source,
+    method: route.method,
+    path: route.path.startsWith(API_PREFIX)
+      ? route.path.slice(API_PREFIX.length) || '/'
+      : route.path,
+  }));
 }
 
 /**
@@ -253,15 +256,25 @@ describe('paranoid enforcement completeness', () => {
     ]);
   });
 
-  it('names a newly mounted direct application route when no classification exists', () => {
+  it('keeps origin-root public documentation routes as explicit exemptions', () => {
+    const documentationRoutes = mountedRouteSurfaces().filter(
+      (route) =>
+        route.method === 'GET' && (route.path === '/docs' || route.path === '/openapi.json'),
+    );
+
+    expect(documentationRoutes).toHaveLength(2);
+    expect(classificationProblems(documentationRoutes)).toEqual([]);
+  });
+
+  it('names a newly mounted origin-root application route when no classification exists', () => {
     // This direct app.get fixture is absent from the app.use mount list. It
-    // proves the walker sees a newly added direct endpoint rather than relying
-    // on a hand-authored route-table entry in this test.
+    // proves the walker sees a newly added origin-root endpoint rather than
+    // relying on a hand-authored route-table entry or an API-prefix filter.
     const fixturePath = '/paranoid-enforcement-fixture';
     const throwawayRoute = mountedRouteSurfaces(
       buildRouteTable((ctx) => {
         const app = createApp(ctx);
-        app.get(`${API_PREFIX}${fixturePath}`, (_request, response) => {
+        app.get(fixturePath, (_request, response) => {
           response.sendStatus(204);
         });
         return app;

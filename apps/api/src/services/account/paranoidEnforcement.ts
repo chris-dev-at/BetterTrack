@@ -28,7 +28,10 @@ export interface ParanoidRouteSurface {
   readonly kind: 'route';
   readonly source: ParanoidSurfaceSource;
   readonly method: string;
-  /** API-relative path, for example `/portfolios/{portfolioId}`. */
+  /**
+   * API-relative under `/api/v1` (for example `/portfolios/{portfolioId}`),
+   * or root-relative for endpoints mounted outside that prefix.
+   */
   readonly path: string;
 }
 
@@ -1026,6 +1029,10 @@ const keptRoutes = (
  * families so a newly mounted endpoint cannot fall through to an implicit allow.
  */
 export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
+  ...keptRoutes('Public self-documenting API documentation contains no account data.', [
+    { method: 'GET', exact: '/docs' },
+    { method: 'GET', exact: '/openapi.json' },
+  ]),
   ...keptRoutes('Public deployment metadata contains no account data.', [
     { exact: '/version' },
     { exact: '/health' },
