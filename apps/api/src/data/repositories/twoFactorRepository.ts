@@ -153,6 +153,7 @@ export function createTwoFactorRepository(db: Database) {
      */
     async confirmTotp(
       userId: string,
+      expectedEncryptedSecret: string,
       when: Date,
       recoveryCodeHashes: string[] | null,
       expectedSecurityGeneration?: number,
@@ -170,7 +171,7 @@ export function createTwoFactorRepository(db: Database) {
             and(
               securityFence(userId, expectedSecurityGeneration),
               eq(users.twoFactorEnabled, false),
-              isNotNull(users.twoFactorSecret),
+              eq(users.twoFactorSecret, expectedEncryptedSecret),
             ),
           )
           .returning({ securityGeneration: users.securityGeneration });

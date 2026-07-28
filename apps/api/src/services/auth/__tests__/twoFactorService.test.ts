@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConfig } from '../../../config/env';
 import { createTwoFactorRepository } from '../../../data/repositories/twoFactorRepository';
@@ -60,6 +60,7 @@ async function readUserTwoFactor() {
       enabled: users.twoFactorEnabled,
       confirmedAt: users.twoFactorConfirmedAt,
       emailEnabled: users.twoFactorEmailEnabled,
+      securityGeneration: users.securityGeneration,
     })
     .from(users)
     .where(eq(users.id, userId));
@@ -80,6 +81,14 @@ function emailedCode(transport: { sent: OutgoingMail[] }): string {
   const match = mail.text.match(/\b(\d{6})\b/);
   expect(match).not.toBeNull();
   return match![1]!;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)', () => {
@@ -125,6 +134,45 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     expect(status.totpEnabled).toBe(true);
     expect(status.totpPending).toBe(false);
     expect(status.recoveryCodesRemaining).toBe(recoveryCodes!.length);
+  });
+
+  it('cannot enable a replacement provisional secret after verifying the previous one', async () => {
+    const first = await h.ctx.twoFactor.enrollTotp(userId);
+    const firstEncryptedSecret = (await readUserTwoFactor()).secret;
+    const transactionEntered = deferred();
+    const releaseTransaction = deferred();
+    const transaction = h.db.transaction.bind(h.db);
+    const transactionSpy = vi
+      .spyOn(h.db, 'transaction')
+      .mockImplementationOnce(async (callback, config) => {
+        transactionEntered.resolve();
+        await releaseTransaction.promise;
+        return transaction(callback, config);
+      });
+
+    const confirmation = h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(first.secret));
+    await transactionEntered.promise;
+
+    const replacement = await h.ctx.twoFactor.enrollTotp(userId);
+    const replacementEncryptedSecret = (await readUserTwoFactor()).secret;
+    expect(replacementEncryptedSecret).not.toBe(firstEncryptedSecret);
+
+    releaseTransaction.resolve();
+    await expect(confirmation).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    transactionSpy.mockRestore();
+
+    expect(await readUserTwoFactor()).toMatchObject({
+      secret: replacementEncryptedSecret,
+      enabled: false,
+      confirmedAt: null,
+      securityGeneration: 0,
+    });
+    expect(await recoveryCodeCount()).toBe(0);
+    await expect(
+      h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(replacement.secret)),
+    ).resolves.toMatchObject({
+      response: { recoveryCodes: expect.any(Array) },
+    });
   });
 
   it('returns a distinct same-persistence session handoff and revokes every sibling', async () => {
@@ -244,8 +292,9 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     const oldCookieSecret = 'old-cookie-secret-value';
     const legacyKey = createHash('sha256').update(`bt-2fa:${oldCookieSecret}`).digest();
     const repo = createTwoFactorRepository(h.db);
-    await repo.setProvisionalSecret(userId, encryptSecret(secret, legacyKey));
-    await repo.confirmTotp(userId, new Date(), null);
+    const encryptedSecret = encryptSecret(secret, legacyKey);
+    await repo.setProvisionalSecret(userId, encryptedSecret);
+    await repo.confirmTotp(userId, encryptedSecret, new Date(), null);
 
     h.ctx.config.recordEncryption = loadConfig({
       NODE_ENV: 'test',
@@ -262,8 +311,9 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     const historicalSessionSecret = 'new-cookie-secret-value,old-cookie-secret-value';
     const legacyKey = createHash('sha256').update(`bt-2fa:${historicalSessionSecret}`).digest();
     const repo = createTwoFactorRepository(h.db);
-    await repo.setProvisionalSecret(userId, encryptSecret(secret, legacyKey));
-    await repo.confirmTotp(userId, new Date(), null);
+    const encryptedSecret = encryptSecret(secret, legacyKey);
+    await repo.setProvisionalSecret(userId, encryptedSecret);
+    await repo.confirmTotp(userId, encryptedSecret, new Date(), null);
 
     h.ctx.config.recordEncryption = loadConfig({
       NODE_ENV: 'test',

@@ -57,7 +57,13 @@ describe('account security generation repositories (#888)', () => {
     // The code hash is globally unique. Duplicating it makes the child insert
     // fail after the users-row update, proving both writes share one transaction.
     await expect(
-      repo.confirmTotp(seeded.id, new Date(), ['duplicate-hash', 'duplicate-hash'], 0),
+      repo.confirmTotp(
+        seeded.id,
+        'encrypted-fixture',
+        new Date(),
+        ['duplicate-hash', 'duplicate-hash'],
+        0,
+      ),
     ).rejects.toThrow();
 
     const [afterFailure] = await harness.db
@@ -75,7 +81,9 @@ describe('account security generation repositories (#888)', () => {
         .where(eq(twoFactorRecoveryCodes.userId, seeded.id)),
     ).toHaveLength(0);
 
-    expect(await repo.confirmTotp(seeded.id, new Date(), ['one', 'two'], 0)).toBe(1);
+    expect(
+      await repo.confirmTotp(seeded.id, 'encrypted-fixture', new Date(), ['one', 'two'], 0),
+    ).toBe(1);
     expect(await repo.regenerateRecoveryCodes(seeded.id, ['three', 'four'], 1)).toBe(2);
     expect(await repo.disableTotp(seeded.id, true, 2)).toBe(3);
     expect(

@@ -343,9 +343,10 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         );
       }
 
+      const encryptedSecret = state.secret;
       let secret: string;
       try {
-        secret = decryptSecret(state.secret, config.recordEncryption);
+        secret = decryptSecret(encryptedSecret, config.recordEncryption);
       } catch {
         throw badRequest(
           'Two-factor enrollment is invalid; start again.',
@@ -362,6 +363,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       const recovery = isFirstMethod ? recoveryCodeBatch() : null;
       const securityGeneration = await twoFactorRepo.confirmTotp(
         userId,
+        encryptedSecret,
         new Date(),
         recovery?.hashes ?? null,
         security?.securityGeneration ?? state.securityGeneration,
