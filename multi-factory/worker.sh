@@ -19,6 +19,7 @@ HB=$STATUS/worker-$WORKER_ID.hb
 : "${MF_PROTOCOL_ATTEMPTS:=2}"; : "${MF_PROTOCOL_RETRY_SLEEP:=20}"
 : "${MF_GH_READ_ATTEMPTS:=3}"; : "${MF_GH_READ_RETRY_SLEEP:=10}"
 : "${MF_COMMENT_DISCOVERY_ATTEMPTS:=4}"; : "${MF_COMMENT_DISCOVERY_SLEEP:=5}"
+: "${MF_REVALIDATE_MAX:=3}"
 export LOG_TAG="[w$WORKER_ID]"
 export MF_EVENTLOG=$LOGS/events.log
 export WORKER_ID
@@ -107,7 +108,7 @@ hb_stop(){
 enqueue_merge(){ # $1=pr $2=issue $3=approved head $4=reviewer|checker $5=comment id
   local pr=$1 issue=$2 approved_head=$3 approval_kind=$4 approval_comment_id=$5
   local existing touches payload
-  existing=$(find "$QUEUE" -maxdepth 1 -type f -name "*-pr$pr.json" -print -quit 2>/dev/null)
+  existing=$(find "$QUEUE" -maxdepth 1 -type f -name "[0-9]*-pr$pr.json" -print -quit 2>/dev/null)
   if [ -n "$existing" ]; then
     jq -e --arg h "$approved_head" --arg k "$approval_kind" --arg id "$approval_comment_id" \
       '.approved_head==$h and .approval_kind==$k and (.approval_comment_id|tostring)==$id' \
@@ -483,12 +484,13 @@ triage_state_save(){ # $1=file $2=issue $3=pr $4=stage
     --arg run_id "${LAST_CHECKER_RUN_ID:-}" --arg difficulty "${TRIAGE_ESC_DIFF:-}" \
     --arg fixer_base_head "${TRIAGE_FIXER_BASE_HEAD:-}" \
     --arg fixer_head "${TRIAGE_FIXER_HEAD:-}" --arg outcome "${TRIAGE_OUTCOME:-}" \
+    --argjson revalidations "${TRIAGE_REVALIDATIONS:-0}" \
     --arg at "$(date -Is)" \
     '{issue:$issue,pr:$pr,stage:$stage,
       checker:{verdict:$verdict,body:$body,comment_id:$comment_id,head:$head,
         new_issue:$new_issue,disposition:$disposition,run_id:$run_id},
       escalated:{difficulty:$difficulty,fixer_base_head:$fixer_base_head,fixer_head:$fixer_head},
-      outcome:$outcome,updated_at:$at}')"
+      outcome:$outcome,revalidations:$revalidations,updated_at:$at}')"
 }
 
 triage_state_load(){ # $1=file
@@ -505,6 +507,8 @@ triage_state_load(){ # $1=file
   TRIAGE_FIXER_BASE_HEAD=$(jq -r '.escalated.fixer_base_head // ""' "$f")
   TRIAGE_FIXER_HEAD=$(jq -r '.escalated.fixer_head // ""' "$f")
   TRIAGE_OUTCOME=$(jq -r '.outcome // ""' "$f")
+  TRIAGE_REVALIDATIONS=$(jq -r '.revalidations // 0' "$f")
+  case "$TRIAGE_REVALIDATIONS" in *[!0-9]*|"") TRIAGE_REVALIDATIONS=0;; esac
 }
 
 triage_accept_checkpoint(){ # $1=state file $2=issue $3=pr
@@ -550,7 +554,7 @@ close_pr_idempotent(){ # $1=pr
 }
 
 triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked, 2=protocol
-  local n=$1 pr=$2 reloc=$3 sf current esc prstate
+  local n=$1 pr=$2 reloc=$3 sf current esc prstate qentry
   # The chain cap exists to stop relocate chains, not to deny a relocated issue
   # any triage at all. Blanket-failing here meant a split child's FIRST rejection
   # was terminal — no diagnosis, no escalated retry — which killed four children
@@ -568,7 +572,7 @@ triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked
     LAST_CHECKER_VERDICT=""; LAST_CHECKER_BODY=""; LAST_CHECKER_COMMENT_ID=""
     LAST_CHECKER_HEAD=""; LAST_CHECKER_NEW=""; LAST_CHECKER_PR_DISPOSITION=""
     LAST_CHECKER_RUN_ID=""; TRIAGE_ESC_DIFF=""; TRIAGE_FIXER_BASE_HEAD=""
-    TRIAGE_FIXER_HEAD=""; TRIAGE_OUTCOME=""
+    TRIAGE_FIXER_HEAD=""; TRIAGE_OUTCOME=""; TRIAGE_REVALIDATIONS=0
     triage_state_save "$sf" "$n" "$pr" checker-running || return 2
     if ! run_checker "$n" "$pr" "$sf"; then
       TRIAGE_OUTCOME=human
@@ -584,18 +588,35 @@ triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked
   while :; do
     case "$TRIAGE_STAGE" in
       complete)
-        [ "$TRIAGE_OUTCOME" = enqueued ] || return 1
+        if [ "$TRIAGE_OUTCOME" != enqueued ]; then
+          # Re-assert the park: an owner re-arm that skips archiving this
+          # state file would otherwise respin the scheduler loop for free.
+          [ "$TRIAGE_OUTCOME" = human ] && mark_human "$n" \
+            "triage already terminal for PR #$pr — re-arm requires archiving its state/triage file"
+          return 1
+        fi
         # "enqueued" is terminal only while that enqueue is still alive. The
         # merger deletes the queue entry when the approved head goes stale
         # (update-branch, conflict-fix) and expects a fresh review — so a
         # resumed state whose entry is gone while the PR is still open must
         # re-earn its approval at the current head, or every reassignment
         # returns "done" untouched and the scheduler loops on the issue.
-        [ -n "$(find "$QUEUE" -maxdepth 1 -type f -name "*-pr$pr.json" -print -quit 2>/dev/null)" ] \
-          && return 0
+        # Every unverifiable read stays terminal (no spend); the durable
+        # revalidation budget stops merger-side deletion loops (e.g. an
+        # exhausted CI-fix entry) from buying reviews forever.
+        qentry=$(find "$QUEUE" -maxdepth 1 -type f -name "[0-9]*-pr$pr.json" -print -quit 2>/dev/null) \
+          || return 0
+        [ -n "$qentry" ] && return 0
         prstate=$(gh pr view "$pr" --json state -q .state 2>/dev/null) || return 0
         [ "$prstate" = OPEN ] || return 0
-        log "triage: enqueued outcome stale for PR #$pr (queue entry gone, PR open) — fresh review"
+        TRIAGE_REVALIDATIONS=$((TRIAGE_REVALIDATIONS+1))
+        if [ "$TRIAGE_REVALIDATIONS" -gt "$MF_REVALIDATE_MAX" ]; then
+          TRIAGE_OUTCOME=human
+          mark_human "$n" "queued approval invalidated $TRIAGE_REVALIDATIONS times without merging"
+          triage_state_save "$sf" "$n" "$pr" complete || return 2
+          return 1
+        fi
+        log "triage: enqueued outcome stale for PR #$pr (queue entry gone, PR open) — fresh review ($TRIAGE_REVALIDATIONS/$MF_REVALIDATE_MAX)"
         TRIAGE_STAGE=escalated-review-pending
         triage_state_save "$sf" "$n" "$pr" "$TRIAGE_STAGE" || return 2
         continue;;
@@ -652,19 +673,35 @@ $LAST_CHECKER_BODY"; then
         triage_state_save "$sf" "$n" "$pr" complete || return 2
         return 1;;
       escalated-review-pending)
+        # A live queue entry means the merger already owns an approval for
+        # this PR (stalled-worker salvage, a prior revalidation's enqueue):
+        # never pay for a review under it. Probe failure requeues unspent.
+        qentry=$(find "$QUEUE" -maxdepth 1 -type f -name "[0-9]*-pr$pr.json" -print -quit 2>/dev/null) \
+          || return 2
+        if [ -n "$qentry" ]; then
+          TRIAGE_OUTCOME=enqueued
+          triage_state_save "$sf" "$n" "$pr" complete || return 2
+          return 0
+        fi
         wstatus reviewing "$n" "$pr"
         run_reviewer "$n" "$pr" \
           "$(diff_at_least "${TRIAGE_ESC_DIFF:-$CYCLE_DIFF}" "$(review_floor)")" \
           || return 2
         if [ "$LAST_REVIEW_VERDICT" = "FACTORY-VERDICT: APPROVE" ]; then
-          enqueue_merge "$pr" "$n" "$LAST_REVIEW_HEAD" reviewer "$LAST_REVIEW_COMMENT_ID" \
-            || return 2
+          if ! enqueue_merge "$pr" "$n" "$LAST_REVIEW_HEAD" reviewer "$LAST_REVIEW_COMMENT_ID"; then
+            # An entry that appeared between the probe and this write is a
+            # concurrent salvage, not a protocol failure: the merger owns it,
+            # and it validates approvals canonically before merging.
+            qentry=$(find "$QUEUE" -maxdepth 1 -type f -name "[0-9]*-pr$pr.json" -print -quit 2>/dev/null)
+            [ -n "$qentry" ] || return 2
+            log "triage: PR #$pr already queued under a different approval — merger owns it"
+          fi
           TRIAGE_OUTCOME=enqueued
           triage_state_save "$sf" "$n" "$pr" complete || return 2
           return 0
         fi
         TRIAGE_OUTCOME=human
-        mark_human "$n" "review not clean after escalated retry (no appeal)"
+        mark_human "$n" "review not clean after retry (no appeal)"
         triage_state_save "$sf" "$n" "$pr" complete || return 2
         return 1;;
       relocate-publish-pending)

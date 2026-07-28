@@ -1468,6 +1468,9 @@ check "malformed checker artifacts cause no GitHub mutation" 0 "$MUTATIONS"
 
 echo "— durable checker/escalated stage resume"
 rm -rf "$MFSTATE/triage"; mkdir -p "$MFSTATE/triage"
+# The review stage now short-circuits on a live queue entry; earlier sections
+# leave entries behind, so this battery starts from an empty queue.
+rm -f "$MFSTATE"/merge-queue/*.json
 CHECKER_CALLS=0; ESC_FIXER_CALLS=0; ESC_REVIEW_CALLS=0; ESC_ENQUEUES=0
 run_checker(){ CHECKER_CALLS=$((CHECKER_CALLS+1)); return 1; }
 run_escalated_fixer_once(){
@@ -1626,6 +1629,7 @@ check "revalidation rejection marks human once" 1 "$HUMANS"
 triage 12 22 false
 check "human outcome is terminal on further resumes" 1 "$?"
 check "human outcome triggers no further review" 2 "$ESC_REVIEW_CALLS"
+check "human outcome re-asserts the park" 2 "$HUMANS"
 
 # A relocate-MERGEABLE enqueue has no escalated difficulty on record: the
 # revalidating review must fall back to the cycle difficulty, floored.
@@ -1648,6 +1652,87 @@ triage_state_save "$TRIAGE_FILE" 13 23 complete
 triage 13 23 false
 check "relocate enqueue also revalidates when stale" 0 "$?"
 check "empty escalated difficulty falls back to cycle difficulty floored" intermediate "$ESC_REVIEW_DIFF"
+
+# Unverifiable reads stay terminal and consume neither reviews nor budget.
+ESC_REVIEW_CALLS=0
+LAST_CHECKER_VERDICT="FACTORY-TRIAGE: RETRY_ESCALATED"
+LAST_CHECKER_PR_DISPOSITION=""
+LAST_CHECKER_NEW=""
+TRIAGE_ESC_DIFF=normal
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0
+TRIAGE_FILE=$(triage_state_file 14 24)
+triage_state_save "$TRIAGE_FILE" 14 24 complete
+gh(){ return 1; }
+triage 14 24 false
+check "failed PR-state read stays terminal" 0 "$?"
+gh(){ [ "$1 $2" = "pr view" ] && echo CLOSED; }
+triage 14 24 false
+check "closed unmerged PR stays terminal" 0 "$?"
+gh(){ [ "$1 $2" = "pr view" ] && echo BANANA; }
+triage 14 24 false
+check "garbage PR state stays terminal" 0 "$?"
+gh(){ [ "$1 $2" = "pr view" ] && echo OPEN; }
+QUEUE_REAL=$QUEUE; QUEUE=$MFSTATE/queue-gone
+triage 14 24 false
+check "unreadable queue directory stays terminal" 0 "$?"
+QUEUE=$QUEUE_REAL
+check "no review is paid for any unverifiable read" 0 "$ESC_REVIEW_CALLS"
+check "unverifiable reads consume no revalidation budget" 0 "$(jq -r .revalidations "$TRIAGE_FILE")"
+
+# The durable revalidation budget parks the issue instead of reviewing forever.
+ESC_REVIEW_CALLS=0; HUMANS=0
+run_reviewer(){
+  ESC_REVIEW_CALLS=$((ESC_REVIEW_CALLS+1))
+  LAST_REVIEW_VERDICT="FACTORY-VERDICT: APPROVE"
+  LAST_REVIEW_HEAD=pqr
+  LAST_REVIEW_COMMENT_ID=102
+  return 0
+}
+TRIAGE_OUTCOME=enqueued
+TRIAGE_REVALIDATIONS=0
+TRIAGE_FILE=$(triage_state_file 15 25)
+triage_state_save "$TRIAGE_FILE" 15 25 complete
+triage 15 25 false; triage 15 25 false; triage 15 25 false
+check "invalidations within budget still revalidate" 3 "$ESC_REVIEW_CALLS"
+check "revalidation count is durable" 3 "$(jq -r .revalidations "$TRIAGE_FILE")"
+triage 15 25 false
+check "budget exhaustion parks instead of reviewing" 1 "$?"
+check "budget exhaustion pays for no further review" 3 "$ESC_REVIEW_CALLS"
+check "budget exhaustion marks human" 1 "$HUMANS"
+check "budget exhaustion is a durable human outcome" human "$(jq -r .outcome "$TRIAGE_FILE")"
+
+# A live queue entry short-circuits the review stage itself (salvage case).
+ESC_REVIEW_CALLS=0
+TRIAGE_OUTCOME=""
+TRIAGE_FILE=$(triage_state_file 16 26)
+triage_state_save "$TRIAGE_FILE" 16 26 escalated-review-pending
+printf '%s\n' '{"pr":26}' >"$MFSTATE/merge-queue/7-pr26.json"
+triage 16 26 false
+check "salvaged queue entry skips the paid review" 0 "$?"
+check "salvaged queue entry reviews nothing" 0 "$ESC_REVIEW_CALLS"
+check "salvaged queue entry lands terminal enqueued" enqueued "$(jq -r .outcome "$TRIAGE_FILE")"
+rm -f "$MFSTATE/merge-queue/7-pr26.json"
+
+# An entry appearing between probe and write is a salvage, not a protocol loop.
+enqueue_merge(){ printf '%s\n' '{"pr":27}' >"$MFSTATE/merge-queue/8-pr27.json"; return 1; }
+TRIAGE_OUTCOME=""
+TRIAGE_FILE=$(triage_state_file 17 27)
+triage_state_save "$TRIAGE_FILE" 17 27 escalated-review-pending
+triage 17 27 false
+check "enqueue mismatch with a live entry is terminal enqueued" 0 "$?"
+check "enqueue mismatch outcome is durable" enqueued "$(jq -r .outcome "$TRIAGE_FILE")"
+rm -f "$MFSTATE/merge-queue/8-pr27.json"
+
+# A genuine queue write failure still requeues the protocol.
+enqueue_merge(){ return 1; }
+TRIAGE_OUTCOME=""
+TRIAGE_FILE=$(triage_state_file 18 28)
+triage_state_save "$TRIAGE_FILE" 18 28 escalated-review-pending
+triage 18 28 false
+check "true queue write failure requeues protocol" 2 "$?"
+
+check "invalid difficulty normalizes to the floor" intermediate "$(diff_at_least banana intermediate)"
 
 echo "— queue write acknowledgement + CI-fix approval invalidation"
 # Restore production worker helpers after the stage-resume stubs above.

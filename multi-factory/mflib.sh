@@ -97,7 +97,8 @@ diff_next(){ # one difficulty harder; max stays max
   esac
 }
 
-diff_at_least(){ # $1=diff $2=floor → the harder of the two
+diff_at_least(){ # $1=diff $2=floor → the harder of the two; invalid diff takes the floor
+  diff_valid "$1" || { echo "$2"; return; }
   if [ "$(diff_index "$1")" -ge "$(diff_index "$2")" ]; then echo "$1"; else echo "$2"; fi
 }
 
