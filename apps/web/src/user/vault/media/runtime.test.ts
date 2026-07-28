@@ -188,6 +188,7 @@ describe('unlocked Drive runtime', () => {
       let current = synced;
       let reconnects = 0;
       const sync: VaultDriveSyncCoordinator = {
+        deviceId: 'test-device',
         get state() {
           return current;
         },
@@ -239,6 +240,7 @@ describe('unlocked Drive runtime', () => {
     let current = synced;
     let reconnects = 0;
     const sync: VaultDriveSyncCoordinator = {
+      deviceId: 'test-device',
       get state() {
         return current;
       },
@@ -426,6 +428,7 @@ function coordinator(
 ): VaultDriveSyncCoordinator {
   let state = syncState(reconnectStatus, baseDocument);
   const sync: VaultDriveSyncCoordinator = {
+    deviceId: 'test-device',
     get state() {
       return state;
     },

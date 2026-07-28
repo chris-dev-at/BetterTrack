@@ -1,14 +1,35 @@
+import { webcrypto } from 'node:crypto';
+
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { PortfolioAsset, TaxYearReportResponse, TaxYearSummary } from '@bettertrack/contracts';
+import type {
+  ParanoidMediaStateResponse,
+  PortfolioAsset,
+  TaxYearReportResponse,
+  TaxYearSummary,
+} from '@bettertrack/contracts';
 
 vi.mock('../../lib/portfolioApi');
+vi.mock('../../lib/userApi');
+vi.mock('../vault/export/deliver', () => ({
+  deliverClientDownload: vi.fn(),
+  printClientDocument: vi.fn(),
+}));
 
 import * as portfolioApi from '../../lib/portfolioApi';
+import * as userApi from '../../lib/userApi';
+import {
+  createClientMoneyMarket,
+  createMutableTestSync,
+  decryptClientMoneyFixture,
+  withTaxSettings,
+} from '../vault/engine/clientMoney.testSupport';
+import { VaultMoneyEngineProvider } from '../vault/engine/VaultMoneyEngineProvider';
+import { deliverClientDownload, printClientDocument } from '../vault/export/deliver';
 import { TaxReportPage } from './TaxReportPage';
 
 // This portfolio's effective tax view (issue #636): the report reads the mode
@@ -66,8 +87,21 @@ function renderPage() {
   );
 }
 
+const PARANOID_MEDIA: ParanoidMediaStateResponse = {
+  privacyMode: 'paranoid',
+  mediaState: {
+    mediaSet: ['server'],
+    driveAttestedVersion: null,
+    server: { disposition: 'active', candidate: null, retired: null },
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(userApi.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   vi.mocked(portfolioApi.listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue(AT_TAX_VIEW);
   vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({ years: [YEAR_2026] });
@@ -353,5 +387,79 @@ describe('TaxReportPage', () => {
 
     const print = screen.getByRole('link', { name: /Print \/ PDF/i });
     expect(print).toHaveAttribute('href', '/portfolio/tax/print?portfolio=p1&year=2026');
+  });
+});
+
+describe('TaxReportPage — paranoid mode (PD7)', () => {
+  beforeEach(() => {
+    Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+    vi.mocked(userApi.getParanoidMediaState).mockResolvedValue(PARANOID_MEDIA);
+  });
+
+  async function renderParanoidUnlocked() {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withTaxSettings(fixture.document, 'country_specific', 'AT', null);
+    const sync = createMutableTestSync(document, fixture.header, fixture.envelope);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <VaultMoneyEngineProvider
+            dependencies={{ sync, market: createClientMoneyMarket().market }}
+          >
+            <TaxReportPage />
+          </VaultMoneyEngineProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return sync;
+  }
+
+  test('derives the year table from the decrypted vault without any server portfolio/tax read', async () => {
+    await renderParanoidUnlocked();
+
+    expect(await screen.findByRole('button', { name: /Show 2026 details/i })).toBeInTheDocument();
+
+    expect(portfolioApi.listPortfolios).not.toHaveBeenCalled();
+    expect(portfolioApi.getPortfolioTaxSettings).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
+  });
+
+  test('client CSV and printable document come from the same derived in-memory report', async () => {
+    const user = userEvent.setup();
+    await renderParanoidUnlocked();
+
+    await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
+    await user.click(await screen.findByRole('button', { name: 'Export CSV' }));
+
+    await waitFor(() => expect(deliverClientDownload).toHaveBeenCalledTimes(1));
+    const [text, mediaType, filename] = vi.mocked(deliverClientDownload).mock.calls[0]!;
+    expect(mediaType).toBe('text/csv;charset=utf-8');
+    expect(filename).toBe('tax-report-2026.csv');
+    expect(String(text)).toContain('2026');
+
+    await user.click(screen.getByRole('button', { name: 'Print / PDF' }));
+    await waitFor(() => expect(printClientDocument).toHaveBeenCalledTimes(1));
+    expect(String(vi.mocked(printClientDocument).mock.calls[0]![0])).toContain('2026');
+
+    // Both artifacts were generated in the browser — the server saw nothing.
+    expect(portfolioApi.taxYearReportCsvUrl).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
+  });
+
+  test('a locked vault shows the unlock prompt and never a figure or server fallback', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <TaxReportPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText('Unlock your vault')).toBeInTheDocument();
+    expect(portfolioApi.listPortfolios).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
   });
 });

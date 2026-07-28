@@ -8,7 +8,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { base64ToBytes } from './bytes';
 import type { DataHomeReadResult } from './dataHome';
 import type { DriveAccessTokenResult, DriveDataHome, GoogleDriveTokenClient } from './drive';
-import type { DriveConnectionController, UnlockedVaultDriveRuntime } from './media';
+import type {
+  DriveConnectionController,
+  UnlockedVaultDriveRuntime,
+  VaultDriveSyncCoordinator,
+} from './media';
 import {
   useVaultRuntime,
   VaultRuntimeProvider,
@@ -17,6 +21,15 @@ import {
 import fixture from './vectors.fixture.json';
 
 const envelope = base64ToBytes(fixture.initial.envelopeBase64, 'envelope-invalid');
+
+function testSyncCoordinator(): VaultDriveSyncCoordinator {
+  return {
+    deviceId: 'test-device',
+    state: { status: 'synced', active: null, pending: null },
+    reconnect: async () => ({ status: 'synced' as const, active: null, pending: null }),
+    mutate: async () => ({ status: 'synced' as const, active: null, pending: null }),
+  };
+}
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
@@ -87,6 +100,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
         expect(keyId).toBe(fixture.initial.header.keyId);
         return {
           controller,
+          sync: testSyncCoordinator(),
           ready: Promise.resolve(),
           syncState: { status: 'synced', active: null, pending: null },
           reconnect: vi.fn(async () => ({
@@ -150,6 +164,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
         runtimeOwners.push(options.userId);
         return {
           controller: connection(),
+          sync: testSyncCoordinator(),
           ready: Promise.resolve(),
           syncState: { status: 'synced', active: null, pending: null },
           reconnect: vi.fn(async () => ({
@@ -220,6 +235,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
       const createRuntime: NonNullable<VaultRuntimeProviderDependencies['createRuntime']> = vi.fn(
         (): UnlockedVaultDriveRuntime => ({
           controller: connection(),
+          sync: testSyncCoordinator(),
           ready: stage === 'runtime readiness' ? runtimeReady.promise : Promise.resolve(),
           syncState: { status: 'synced', active: null, pending: null },
           reconnect: vi.fn(async () => ({

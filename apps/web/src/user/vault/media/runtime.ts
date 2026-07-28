@@ -35,6 +35,7 @@ import {
 import { createVaultEnvelopeAuthenticator } from './verification';
 
 export interface VaultDriveSyncCoordinator {
+  readonly deviceId: string;
   readonly state: VaultSyncState;
   reconnect(): Promise<VaultSyncState>;
   mutate: VaultSyncEngine['mutate'];
@@ -53,6 +54,8 @@ export interface UnlockedVaultDriveRuntimeOptions {
 
 export interface UnlockedVaultDriveRuntime {
   readonly controller: DriveConnectionController;
+  /** The PD5 sync seam of this unlocked session — the PD7 money engine's read/write surface. */
+  readonly sync: VaultDriveSyncCoordinator;
   readonly ready: Promise<void>;
   readonly syncState: VaultSyncState;
   reconnect(): Promise<VaultSyncState>;
@@ -164,6 +167,7 @@ export function createUnlockedVaultDriveRuntime(
 
   return {
     controller,
+    sync,
     get ready() {
       return ready();
     },
@@ -237,7 +241,14 @@ function createDefaultSyncCoordinator(options: {
     requiresCompleteMutationProvenance: true,
   });
   const replicaCoordinator = createReplicaReconcileCoordinator(engine, primary);
-  return replicaCoordinator;
+  return {
+    deviceId: engine.deviceId,
+    get state() {
+      return replicaCoordinator.state;
+    },
+    reconnect: () => replicaCoordinator.reconnect(),
+    mutate: (mutator) => replicaCoordinator.mutate(mutator),
+  };
 }
 
 function browserVaultDeviceId(userId: string, keyId: string): string {

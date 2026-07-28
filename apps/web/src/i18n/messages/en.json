@@ -1375,7 +1375,14 @@
       "currentWrong": "Your password is incorrect.",
       "codeWrong": "That two-factor code is incorrect or has expired.",
       "rateLimited": "You can request a data export once per day. Please try again later.",
-      "requestFailed": "Could not start your export. Please try again."
+      "requestFailed": "Could not start your export. Please try again.",
+      "cleartext": {
+        "title": "Cleartext export (this device)",
+        "description": "Builds a readable JSON + CSV archive of your portfolio data in this browser from your unlocked vault. It never touches the server and contains no keys or encrypted material.",
+        "button": "Build cleartext export",
+        "generating": "Building…",
+        "locked": "Unlock your vault to build a cleartext export on this device."
+      }
     },
     "dangerZone": {
       "title": "Danger zone",
@@ -1772,7 +1779,16 @@
         "print": "Print",
         "back": "Back to report",
         "missingParams": "Choose a portfolio and year to print.",
-        "loadError": "Couldn’t load the report for printing."
+        "loadError": "Couldn’t load the report for printing.",
+        "paranoidHint": "This account computes tax reports on-device from the encrypted vault. Use the Print / PDF action on the tax report page instead — this view has no access to your unlocked vault."
+      },
+      "paranoid": {
+        "locked": {
+          "title": "Unlock your vault",
+          "description": "Tax figures for a paranoid account are computed on this device from your encrypted vault. Unlock the vault to see them."
+        },
+        "retry": "Try again",
+        "disabledDescription": "No tax mode is active for this portfolio in your vault, so there is nothing to compute."
       }
     },
     "section": {
@@ -3809,6 +3825,19 @@
         "imports": "Imports",
         "settings": "Settings"
       }
+    }
+  },
+  "vaultMoney": {
+    "error": {
+      "locked": "Your vault is locked. Unlock it to continue.",
+      "corrupt": "The decrypted vault data could not be processed safely.",
+      "unavailable": "Your vault data is not available right now. Try again once sync has settled.",
+      "unsupported": "This vault contains data this app version does not support.",
+      "portfolioNotFound": "This portfolio does not exist in your vault.",
+      "marketData": "Market data needed for this calculation is unavailable. Nothing was estimated — try again later.",
+      "tax": "The tax settings or tax data in your vault could not be applied.",
+      "aborted": "The operation was interrupted before completion.",
+      "generic": "The operation could not be completed."
     }
   }
 }
