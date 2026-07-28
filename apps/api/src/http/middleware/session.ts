@@ -4,16 +4,18 @@ import { ADMIN_2FA_SETUP_REQUIRED } from '@bettertrack/contracts';
 
 import { adminAccountKind, forbidden, notFound, unauthorized } from '../../errors';
 import type { AppContext } from '../context';
-import { clearSessionCookie, setSessionCookie } from '../cookies';
 import { toAuthUser } from '../serializers';
 
 /**
  * Resolves the session cookie into `req.authUser` without rejecting — public
- * routes still work. Invalid/expired sessions are cleared; valid ones get a
- * rolling cookie + Redis TTL refresh.
+ * routes still work. Deliberately does not mutate the response cookie: a request
+ * that resolved an old session before a concurrent security rotation may finish
+ * afterward, and its stale Set-Cookie/clear-cookie header must not overwrite the
+ * freshly rotated cookie. Explicit login, renewal, rotation and logout handlers
+ * own every session-cookie write.
  */
 export function loadSession(ctx: AppContext): RequestHandler {
-  return async (req, res, next) => {
+  return async (req, _res, next) => {
     try {
       // A bearer (API-key) request already resolved its principal upstream and
       // carries no session — never let a stray cookie override it (§6.13).
@@ -30,19 +32,16 @@ export function loadSession(ctx: AppContext): RequestHandler {
       // last-seen (throttled) and capture the device on first-seen (V3-P11a).
       const resolved = await ctx.auth.resolveSession(sessionId, req.get('user-agent') ?? null);
       if (!resolved) {
-        clearSessionCookie(res, ctx.config);
         next();
         return;
       }
       req.sessionId = sessionId;
       req.sessionSecurityGeneration = resolved.securityGeneration;
-      // Carry the session's persistence (V4-P2b) so the rolling cookie refresh
-      // below — and the PIN-verify handler — re-issue the SAME cookie flavour
-      // (Max-Age for persistent, browser-session for ephemeral) rather than
-      // silently upgrading an ephemeral session to a persistent cookie.
+      // Carry the session's persistence (V4-P2b) so explicit renewal/rotation
+      // handlers re-issue the SAME cookie flavour (Max-Age for persistent,
+      // browser-session for ephemeral) rather than silently upgrading it.
       req.sessionPersistent = resolved.persistent;
       req.authUser = toAuthUser(resolved.user);
-      setSessionCookie(res, ctx.config, sessionId, resolved.persistent);
       next();
     } catch (err) {
       next(err);

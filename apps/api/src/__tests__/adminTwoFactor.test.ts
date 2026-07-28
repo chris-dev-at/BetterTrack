@@ -12,6 +12,8 @@ import {
 } from '@bettertrack/contracts';
 
 import { auditLog, users } from '../data/schema';
+import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
+import { createUserRepository } from '../data/repositories/userRepository';
 import { generateTotpCode } from '../services/auth/totp';
 import {
   parseIdentifier,
@@ -207,7 +209,6 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     const harness = await createTestApp();
     const admin = await harness.seedAdmin();
     const current = await loginAdminAgent(harness, admin);
-    const sibling = await loginAdminAgent(harness, admin);
     const { secret } = twoFactorEnrollResponseSchema.parse(
       (await current.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
     );
@@ -230,11 +231,13 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
       });
     const protectedHandler = vi.spyOn(harness.ctx.admin, 'listUsers');
 
-    // Sibling B resolves its generation-0 session, then stops at the last gate.
-    const staleRequest = sibling.get('/api/v1/admin/users').then((response) => response);
+    // Request B on the same browser resolves its generation-0 session, then
+    // stops at the last gate.
+    const staleRequest = current.get('/api/v1/admin/users').then((response) => response);
     await gateEntered.promise;
 
-    // Sibling A commits first-factor enrollment at generation 1.
+    // Request A commits first-factor enrollment at generation 1 and rotates the
+    // browser onto a distinct cookie before B is allowed to finish.
     const confirm = await current
       .post('/api/v1/admin/security/2fa/totp/confirm')
       .set(...XRW)
@@ -247,8 +250,13 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     const denied = await staleRequest;
     authorizationSpy.mockRestore();
     expect(denied.status).toBe(401);
+    expect(setsSessionCookie(denied)).toBe(false);
     expect(protectedHandler).not.toHaveBeenCalled();
     protectedHandler.mockRestore();
+
+    // B finishes last. It must emit no stale G0 Set-Cookie header that could
+    // overwrite A's G1 handoff in the shared browser cookie jar.
+    expect((await current.get('/api/v1/admin/users')).status).toBe(200);
   });
 
   it.each([
@@ -361,6 +369,54 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
       expect((await current.get('/api/v1/admin/users')).status).toBe(200);
     },
   );
+
+  it('does not let a late stale-resolution response clear the rotated browser cookie', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    const current = await loginAdminAgent(harness, admin, false);
+    const [currentRecord] = await sessionRecordsFor(harness, admin.id);
+    expect(currentRecord).toBeDefined();
+    const { secret } = twoFactorEnrollResponseSchema.parse(
+      (await current.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
+    );
+
+    // Request B caches G0 in loadSession, but pauses before the durable user
+    // read that will discover the transition.
+    const staleRead = deferred();
+    const releaseStaleResolver = deferred();
+    const originalGet = harness.ctx.redis.get.bind(harness.ctx.redis) as (
+      key: string | Buffer,
+    ) => Promise<string | null>;
+    let pauseOldRead = true;
+    const getSpy = vi.spyOn(harness.ctx.redis, 'get').mockImplementation(async (key) => {
+      const value = await originalGet(key);
+      if (pauseOldRead && key.toString() === currentRecord!.key) {
+        pauseOldRead = false;
+        staleRead.resolve();
+        await releaseStaleResolver.promise;
+      }
+      return value;
+    });
+    const staleRequest = current.get('/api/v1/auth/me').then((response) => response);
+    await staleRead.promise;
+
+    // Request A commits G1 and the same browser accepts its distinct-id cookie.
+    const confirm = await current
+      .post('/api/v1/admin/security/2fa/totp/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    expect(confirm.status).toBe(200);
+    expect(setsSessionCookie(confirm)).toBe(true);
+
+    // B finishes last, rejects its cached G0 authority, and must emit no
+    // clear-cookie header capable of deleting A's newer handoff.
+    releaseStaleResolver.resolve();
+    const stale = await staleRequest;
+    getSpy.mockRestore();
+    expect(stale.status).toBe(401);
+    expect(setsSessionCookie(stale)).toBe(false);
+    expect((await current.get('/api/v1/admin/users')).status).toBe(200);
+  });
 
   it('fails legacy, malformed, and mismatched bootstrap sessions closed', async () => {
     const harness = await createTestApp();
@@ -684,6 +740,32 @@ describe('mandatory admin-login 2FA — break-glass reset (§6.12, #400)', () =>
     const harness = await createTestApp();
     const user = await harness.seedUser();
     expect(await resetAdminTwoFactorEnrollment(harness.db, user.email)).toBeNull();
+  });
+
+  it('leaves factors intact when demotion wins after the admin lookup', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    await enrollAdminTotp(harness, admin);
+
+    const usersRepo = createUserRepository(harness.db);
+    const factorsRepo = createTwoFactorRepository(harness.db);
+
+    // Model the shell command's stale pre-transaction observation, then let a
+    // concurrent demotion linearize before the factor-reset update.
+    const observed = await usersRepo.findByIdentifier(admin.email);
+    expect(observed?.role).toBe('admin');
+    expect(await usersRepo.setRole(admin.id, 'user')).toBe(2);
+
+    // The reset statement rechecks admin-kind under the transaction. It cannot
+    // clear factors or advance the generation on the now-user account.
+    expect(await factorsRepo.resetAllFactorsForAdmin(observed!.id)).toBeNull();
+    expect(await resetAdminTwoFactorEnrollment(harness.db, admin.email)).toBeNull();
+    expect(await factorsRepo.getState(admin.id)).toMatchObject({
+      enabled: true,
+      securityGeneration: 2,
+    });
+    expect(await factorsRepo.countUnusedRecoveryCodes(admin.id)).toBe(10);
+    expect(await auditCount(harness, admin.id, 'admin.two_factor_reset')).toBe(0);
   });
 
   it('parseIdentifier requires an identifier argument', () => {

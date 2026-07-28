@@ -324,10 +324,13 @@ export function createTwoFactorRepository(db: Database) {
     },
 
     /**
-     * Shell break-glass primitive: all factors, their admin email, recovery
-     * codes, and the generation move in one PostgreSQL transaction.
+     * Shell break-glass primitive: while the target is still admin-kind, all
+     * factors, their admin email, recovery codes, and the generation move in one
+     * PostgreSQL transaction. The role predicate is the linearization point with
+     * concurrent demotion; a stale pre-transaction admin lookup cannot strip a
+     * now-user account's factors.
      */
-    async resetAllFactors(userId: string): Promise<number | null> {
+    async resetAllFactorsForAdmin(userId: string): Promise<number | null> {
       return db.transaction(async (tx) => {
         const [updated] = await tx
           .update(users)
@@ -340,7 +343,7 @@ export function createTwoFactorRepository(db: Database) {
             securityGeneration: sql`${users.securityGeneration} + 1`,
             updatedAt: new Date(),
           })
-          .where(eq(users.id, userId))
+          .where(and(eq(users.id, userId), eq(users.role, 'admin')))
           .returning({ securityGeneration: users.securityGeneration });
         if (!updated) return null;
         await tx.delete(twoFactorRecoveryCodes).where(eq(twoFactorRecoveryCodes.userId, userId));

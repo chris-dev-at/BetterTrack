@@ -46,12 +46,13 @@ export async function resetAdminTwoFactorEnrollment(
   const audit = createAuditService(createAuditRepository(db));
 
   const user = await userRepo.findByIdentifier(identifier);
-  if (!user || user.role !== 'admin') return null;
+  if (!user) return null;
 
   // DB-only correctness boundary (#888): all factor columns, recovery codes,
-  // and the security-generation increment commit together. Every extant Redis
-  // cookie is stale even though this shell path deliberately has no Redis.
-  if ((await twoFactorRepo.resetAllFactors(user.id)) === null) return null;
+  // the security-generation increment, and the admin-kind recheck commit
+  // together. Every extant Redis cookie is stale even though this shell path
+  // deliberately has no Redis.
+  if ((await twoFactorRepo.resetAllFactorsForAdmin(user.id)) === null) return null;
 
   // Security trail (§10): actorId is null — this ran from a shell, not a session.
   await audit.record({

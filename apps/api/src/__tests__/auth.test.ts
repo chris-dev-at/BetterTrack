@@ -158,9 +158,7 @@ describe('POST /api/v1/auth/logout', () => {
 });
 
 // Pulls the raw `bt_sid=...` cookie pair out of a Set-Cookie header so an old
-// session id can be replayed after rotation. A single response can carry two
-// (loadSession's rolling refresh, then the handler's rotated id) — the last one
-// written wins, matching what the browser would store.
+// session id can be replayed after rotation.
 function sessionCookie(res: request.Response): string {
   const setCookie = res.headers['set-cookie'] as unknown as string[] | undefined;
   const headers = (setCookie ?? []).filter((c) => c.startsWith('bt_sid='));

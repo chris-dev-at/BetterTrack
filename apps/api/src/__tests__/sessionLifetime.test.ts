@@ -72,7 +72,7 @@ describe('session lifetime — stay signed in (V4-P2b, §399 §A)', () => {
     expect((await request(harness.app).get('/api/v1/auth/me').set('Cookie', sid)).status).toBe(200);
   });
 
-  it('the rolling cookie refresh keeps an ephemeral session ephemeral (no silent upgrade)', async () => {
+  it('ordinary authenticated reads do not rewrite the session cookie', async () => {
     const user = await harness.seedUser();
     const agent = request.agent(harness.app);
     await agent
@@ -80,11 +80,11 @@ describe('session lifetime — stay signed in (V4-P2b, §399 §A)', () => {
       .set(...XRW)
       .send({ identifier: user.email, password: user.password, staySignedIn: false });
 
-    // loadSession re-issues the cookie on every request — it must stay a
-    // browser-session cookie, not silently gain a Max-Age.
+    // Passive session loading must not emit an old cookie after a concurrent
+    // security handoff. The original browser-session cookie remains usable.
     const me = await agent.get('/api/v1/auth/me').set('User-Agent', CHROME);
     expect(me.status).toBe(200);
-    expect(isPersistentCookie(sidSetCookie(me))).toBe(false);
+    expect(me.headers['set-cookie']).toBeUndefined();
   });
 
   it('the session manager marks each session persistent vs ephemeral, and ephemeral is revocable', async () => {

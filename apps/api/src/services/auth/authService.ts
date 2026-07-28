@@ -192,7 +192,7 @@ export interface AuthService {
    * (V3-P11a) — a throttled write to a side key that never touches the fixed
    * 30-day window (§6.1). `userAgent` comes from the request; omit it off the
    * request path. Returns the resolved user together with the session's
-   * persistence marker (V4-P2b) so the caller can re-issue the matching cookie.
+   * persistence marker (V4-P2b) for explicit renewal/security-rotation handlers.
    */
   resolveSession(
     sessionId: string,
