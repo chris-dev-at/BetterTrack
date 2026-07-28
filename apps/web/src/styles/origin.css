@@ -1561,6 +1561,33 @@
   }
 }
 
+/* Visibility helpers. Origin.css loads after Tailwind, so Tailwind's display
+   utilities (`hidden`, `sm:flex`, …) lose the cascade against bt-* component
+   display rules — bt-* markup uses these hide-only helpers instead. */
+@media (max-width: 639.98px) {
+  .bt-hide-below-sm {
+    display: none !important;
+  }
+}
+
+@media (min-width: 640px) {
+  .bt-hide-above-sm {
+    display: none !important;
+  }
+}
+
+@media (max-width: 759.98px) {
+  .bt-hide-below-md {
+    display: none !important;
+  }
+}
+
+@media (min-width: 760px) {
+  .bt-hide-above-md {
+    display: none !important;
+  }
+}
+
 @media print {
   .bt-rail,
   .bt-topbar,

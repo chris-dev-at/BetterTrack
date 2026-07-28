@@ -3898,6 +3898,18 @@
       "researchSub": "Search, watchlists, news",
       "people": "Work with people",
       "peopleSub": "Sharing, chat, shared items"
+    },
+    "defaultPortfolio": "Default",
+    "attention": {
+      "title": "Needs attention",
+      "review": "Open Review",
+      "clear": "All clear — nothing needs you right now."
+    },
+    "upcoming": {
+      "title": "Upcoming",
+      "manage": "Manage in Forecasts",
+      "empty": "Nothing scheduled. Standing orders appear here once created.",
+      "order": "Standing order"
     }
   },
   "cashflow": {

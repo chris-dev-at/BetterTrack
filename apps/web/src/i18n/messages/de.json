@@ -3898,6 +3898,18 @@
       "researchSub": "Suche, Watchlists, News",
       "people": "Mit Personen arbeiten",
       "peopleSub": "Teilen, Chat, geteilte Inhalte"
+    },
+    "defaultPortfolio": "Standard",
+    "attention": {
+      "title": "Braucht Aufmerksamkeit",
+      "review": "Review öffnen",
+      "clear": "Alles erledigt — gerade braucht dich nichts."
+    },
+    "upcoming": {
+      "title": "Anstehend",
+      "manage": "In Prognosen verwalten",
+      "empty": "Nichts geplant. Sparpläne erscheinen hier, sobald sie angelegt sind.",
+      "order": "Sparplan"
     }
   },
   "cashflow": {

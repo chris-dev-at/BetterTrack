@@ -364,21 +364,21 @@ export function OriginShell() {
           <header className="bt-topbar">
             <Button
               aria-label={collapsed ? t('nav.expandRail') : t('nav.collapseRail')}
-              className="hidden md:inline-flex"
+              className="bt-hide-below-md"
               icon="collapse"
               iconOnly
               onClick={toggleRail}
               size="sm"
               variant="quiet"
             />
-            <span className="md:hidden">
+            <span className="bt-hide-above-md">
               <RailBrand />
             </span>
             {portfolioScoped ? <PortfolioSwitcher /> : null}
             <div className="bt-topbar__spacer" />
             <button
               aria-label={t('nav.openSearch')}
-              className="bt-btn bt-btn--sm hidden sm:inline-flex"
+              className="bt-btn bt-btn--sm bt-hide-below-sm"
               onClick={openPalette}
               type="button"
             >
@@ -388,7 +388,7 @@ export function OriginShell() {
             </button>
             <Button
               aria-label={t('nav.openSearch')}
-              className="sm:hidden"
+              className="bt-hide-above-sm"
               icon="search"
               iconOnly
               onClick={openPalette}
