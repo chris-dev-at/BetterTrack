@@ -505,10 +505,56 @@
     },
     "connections": {
       "title": "Verbindungen",
-      "subtitle": "Alles, was BetterTrack mit der Außenwelt verbindet — dein Google-Login und die bald verfügbaren Connectors.",
+      "subtitle": "Alles, was BetterTrack mit der Außenwelt verbindet — Anmeldung, verschlüsselter Speicher und kompakte Connector-Steuerung.",
       "comingSoon": "Bald verfügbar",
       "slotsTitle": "Connectors",
       "slotsSubtitle": "Synchronisiere deine Daten mit externen Diensten. Sie sind in Arbeit — noch nichts einzurichten.",
+      "drive": {
+        "title": "Google Drive-App-Daten",
+        "description": "Speichere deinen verschlüsselten Paranoid-Tresor im privaten App-Daten-Ordner von Drive. BetterTrack kann keine normalen Drive-Dateien sehen.",
+        "status": {
+          "connected": "Verbunden",
+          "needsSignIn": "Anmeldung nötig",
+          "disconnected": "Nicht verbunden",
+          "working": "In Arbeit"
+        },
+        "connect": "Drive verbinden",
+        "disconnect": "Drive trennen",
+        "signIn": "Bei Google anmelden, um zu synchronisieren",
+        "unlockRequired": "Entsperre deinen verschlüsselten Tresor, um den Speicher zu ändern.",
+        "unlockPrompt": "Gib deine Tresor-Passphrase ein. Drive-Autorisierung und Migration werden mit dieser Aktion fortgesetzt.",
+        "passphraseLabel": "Tresor-Passphrase",
+        "unlockAndContinue": "Entsperren und fortfahren",
+        "unlockError": "Der Tresor konnte nicht aus einer authentifizierten verschlüsselten Kopie entsperrt werden.",
+        "configMissing": "Google Drive-App-Datenspeicher ist in dieser Installation nicht eingerichtet.",
+        "lastMedium": "Drive ist dein einziges Tresor-Medium und kann daher nicht getrennt werden.",
+        "connectedNotice": "Google Drive-App-Datenspeicher verbunden.",
+        "disconnectedNotice": "Google Drive-App-Datenspeicher getrennt.",
+        "leftover": "Drive wurde getrennt, aber Google konnte den verbliebenen Geheimtext nicht löschen. Er liegt nur noch in deinem eigenen App-Daten-Ordner.",
+        "leftoverSyncPending": "Drive wurde getrennt und die Speicherwahl gespeichert. Google konnte den verbliebenen Geheimtext jedoch nicht löschen und die Synchronisierung benötigt noch Aufmerksamkeit.",
+        "syncPending": "Die Speicherwahl wurde gespeichert, aber die Synchronisierung benötigt noch Aufmerksamkeit. BetterTrack versucht es erneut mit der verschlüsselten ausstehenden Kopie.",
+        "actionError": "Die Speicheränderung wurde abgebrochen, weil keine verifizierte Kopie abgeschlossen werden konnte.",
+        "syncRequired": "Deine neuesten verschlüsselten Änderungen liegen noch nicht auf jedem ausgewählten Medium, daher wurde die Speicherwahl nicht geändert. Versuche es erneut, sobald die Synchronisierung abgeschlossen ist.",
+        "unreadableLeftover": "Eine Google-Drive-Kopie deines Tresors konnte mit diesem Tresorschlüssel nicht entschlüsselt werden. BetterTrack löscht niemals Geheimtext, den es nicht verifizieren kann — entferne die BetterTrack-App-Daten in deinem Google-Konto und versuche es dann erneut.",
+        "loadError": "Der Drive-Speicherstatus konnte nicht geladen werden.",
+        "purgedNotice": "Die aufbewahrte Server-Wiederherstellungskopie wurde gelöscht.",
+        "purgeError": "Die aufbewahrte Serverkopie wurde nicht gelöscht. Das Wiederherstellungsfenster oder der Read-back-Nachweis ist möglicherweise noch nicht bereit.",
+        "storage": {
+          "title": "Tresor-Speicherkopien",
+          "both": "Dein verschlüsselter Tresor liegt auf dem BetterTrack-Server und in Drive.",
+          "driveOnly": "Drive ist das einzige aktive Tresor-Medium. BetterTrack hält keinen aktiven Portfolio-Geheimtext.",
+          "useDriveOnly": "Nur Drive verwenden",
+          "addServer": "Serverkopie hinzufügen",
+          "driveOnlyNotice": "Nur-Drive-Speicherung aktiviert. Die Server-Wiederherstellungskopie bleibt erhalten, bis du sie ausdrücklich löschst.",
+          "serverAddedNotice": "Eine authentifizierte Serverkopie wurde hinzugefügt."
+        },
+        "retired": {
+          "title": "Aufbewahrte Server-Wiederherstellungskopie",
+          "wait": "Sie bleibt mindestens bis {{date}} wiederherstellbar.",
+          "ready": "Das Wiederherstellungsfenster endete am {{date}}. Vor dem Löschen ist ein frischer authentifizierter Drive-Read-back nötig.",
+          "purge": "Aufbewahrte Serverkopie löschen"
+        }
+      },
       "sync": {
         "oneTime": "Einmaliger Import — läuft einmal beim Verbinden.",
         "stayConnected": "Bleibt verbunden — synchronisiert automatisch."
@@ -3332,6 +3378,17 @@
       "tooMany": "Zu viele Versuche. Bitte warte kurz und versuche es erneut."
     }
   },
+  "vault": {
+    "sync": {
+      "synced": "Verschlüsselter Tresor synchronisiert",
+      "syncing": "Verschlüsselte Änderungen warten auf Synchronisierung",
+      "offline": "Verschlüsselte Änderungen sind offline lokal gespeichert",
+      "needsAttention": "Tresor-Synchronisierung benötigt Aufmerksamkeit",
+      "drive": {
+        "signIn": "Bei Google anmelden, um zu synchronisieren"
+      }
+    }
+  },
   "announcements": {
     "dismiss": "Ausblenden",
     "dismissing": "Wird ausgeblendet…",
@@ -3342,6 +3399,68 @@
     },
     "aria": {
       "list": "Ankündigungen"
+    }
+  },
+  "vaultExports": {
+    "tax": {
+      "title": "Steuerbericht",
+      "section": "Abschnitt",
+      "summary": "Zusammenfassung",
+      "germany": "Deutschland (Abgeltungsteuer)",
+      "positions": "Positionen",
+      "sells": "Verkäufe",
+      "dividends": "Dividenden",
+      "empty": "Keine Verkäufe oder Dividenden in diesem Jahr.",
+      "year": "Jahr",
+      "realized": "Realisierter G/V",
+      "realizedEur": "Realisierter G/V (EUR)",
+      "dividendsGross": "Dividenden brutto",
+      "dividendsGrossEur": "Dividenden brutto (EUR)",
+      "withheld": "Einbehaltene Steuer",
+      "withheldEur": "Einbehaltene Steuer (EUR)",
+      "refunded": "Erstattete Steuer",
+      "refundedEur": "Erstattete Steuer (EUR)",
+      "net": "Netto-Steuer",
+      "netEur": "Netto-Steuer (EUR)",
+      "tax": "Steuer",
+      "taxEur": "Steuer (EUR)",
+      "date": "Datum",
+      "quantity": "Anzahl",
+      "proceeds": "Erlös",
+      "proceedsEur": "Erlös (EUR)",
+      "costBasis": "Einstand",
+      "costBasisEur": "Einstand (EUR)",
+      "gross": "Brutto",
+      "grossEur": "Brutto (EUR)",
+      "allowance": "Pauschbetrag genutzt / verbleibend",
+      "allowanceUsedEur": "Genutzter Pauschbetrag (EUR)",
+      "allowanceRemainingEur": "Verbleibender Pauschbetrag (EUR)",
+      "shareLossPot": "Aktien-Verlusttopf ein / aus",
+      "shareLossPotInEur": "Aktien-Verlusttopf ein (EUR)",
+      "shareLossPotOutEur": "Aktien-Verlusttopf aus (EUR)",
+      "otherLossPot": "Sonstiger Verlusttopf ein / aus",
+      "otherLossPotInEur": "Sonstiger Verlusttopf ein (EUR)",
+      "otherLossPotOutEur": "Sonstiger Verlusttopf aus (EUR)",
+      "kapest": "KapESt",
+      "kapestEur": "KapESt (EUR)",
+      "soli": "Soli",
+      "soliEur": "Soli (EUR)",
+      "symbol": "Symbol",
+      "name": "Name",
+      "taxMode": "Steuermodus",
+      "disclaimerLabel": "Haftungsausschluss",
+      "disclaimer": "Schätzwerte nur für deine persönliche Übersicht — keine Steuerberatung, keine Gewähr für Richtigkeit, kein Dokument für die Steuererklärung."
+    },
+    "cleartext": {
+      "readme": "BetterTrack — lokaler Klartext-Export\n\nDieses Archiv wurde lokal aus deinem entsperrten verschlüsselten Tresor erstellt.\nEs enthält Quelldaten als JSON sowie CSV-Dateien für Transaktionen,\nGeldbewegungen und Bestände. Tresorschlüssel, Passphrasen,\nWiederherstellungsdaten, Chiffretext, Sync-Metadaten, Quarantäne-Blobs und\nabgeleitete Caches sind nicht enthalten.\n",
+      "skipped": {
+        "importBatches": "Import-Zwischenspeicher; übernommene Zeilen werden in ihren endgültigen Datensätzen exportiert.",
+        "importRows": "Import-Zwischenspeicher; übernommene Zeilen werden in ihren endgültigen Datensätzen exportiert.",
+        "portfolioSnapshots": "Abgeleiteter Bewertungscache; wird aus Quelldaten und Marktdaten neu erstellt.",
+        "snapshotState": "Abgeleitete Buchführung zur Snapshot-Invalidierung.",
+        "standingOrderRuns": "Idempotenz-Buchführung; gebuchte Zeilen und Definitionen werden exportiert.",
+        "expenseBudgetFires": "Abgeleitete Buchführung für Alarmzustellungen."
+      }
     }
   },
   "admin": {
@@ -3690,6 +3809,25 @@
         "imports": "Importe",
         "settings": "Einstellungen"
       }
+    },
+    "emailLog": {
+      "loading": "E-Mail-Protokoll wird geladen…",
+      "empty": "Noch keine E-Mails gesendet.",
+      "emptyForUser": "Noch keine E-Mails an {{email}} gesendet.",
+      "headers": {
+        "when": "Zeitpunkt",
+        "recipient": "Empfänger",
+        "template": "Vorlage",
+        "subject": "Betreff",
+        "status": "Status"
+      },
+      "status": {
+        "sent": "Gesendet",
+        "failed": "Fehlgeschlagen",
+        "suppressed": "Unterdrückt"
+      },
+      "loadMore": "Mehr laden",
+      "loadingMore": "Wird geladen…"
     }
   }
 }

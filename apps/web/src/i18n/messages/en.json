@@ -505,10 +505,56 @@
     },
     "connections": {
       "title": "Connections",
-      "subtitle": "Everything linking BetterTrack to the outside — your Google sign-in, and the connectors coming soon.",
+      "subtitle": "Everything linking BetterTrack to the outside — sign-in, encrypted storage, and compact connector controls.",
       "comingSoon": "Coming soon",
       "slotsTitle": "Connectors",
       "slotsSubtitle": "Sync your data with outside services. These are on the way — nothing to set up yet.",
+      "drive": {
+        "title": "Google Drive app data",
+        "description": "Keep your encrypted paranoid vault in your private Drive app-data folder. BetterTrack cannot access ordinary Drive files.",
+        "status": {
+          "connected": "Connected",
+          "needsSignIn": "Needs sign-in",
+          "disconnected": "Disconnected",
+          "working": "Working"
+        },
+        "connect": "Connect Drive",
+        "disconnect": "Disconnect Drive",
+        "signIn": "Sign in to Google to sync",
+        "unlockRequired": "Unlock your encrypted vault to change its storage.",
+        "unlockPrompt": "Enter your vault passphrase. Drive authorization and migration continue from this gesture.",
+        "passphraseLabel": "Vault passphrase",
+        "unlockAndContinue": "Unlock and continue",
+        "unlockError": "The vault could not be unlocked from an authenticated encrypted copy.",
+        "configMissing": "Google Drive app-data storage is not configured on this deployment.",
+        "lastMedium": "Drive is your only vault medium, so it cannot be disconnected.",
+        "connectedNotice": "Google Drive app-data storage connected.",
+        "disconnectedNotice": "Google Drive app-data storage disconnected.",
+        "leftover": "Drive was disconnected, but Google could not delete the leftover ciphertext. It remains only in your own app-data folder.",
+        "leftoverSyncPending": "Drive was disconnected and the storage choice was saved, but Google could not delete the leftover ciphertext and synchronization still needs attention.",
+        "syncPending": "The storage choice was saved, but synchronization still needs attention. BetterTrack will retry from the encrypted pending copy.",
+        "actionError": "The storage change was cancelled because a verified copy could not be completed.",
+        "syncRequired": "Your latest encrypted changes are not on every selected medium yet, so the storage choice was left unchanged. Try again once synchronization has finished.",
+        "unreadableLeftover": "A Google Drive copy of your vault could not be decrypted with this vault key. BetterTrack never deletes ciphertext it cannot verify — remove the BetterTrack app data in your Google account, then try again.",
+        "loadError": "Drive storage status could not be loaded.",
+        "purgedNotice": "The retained server recovery copy was deleted.",
+        "purgeError": "The retained server copy was not deleted. The recovery window or read-back proof may not be ready.",
+        "storage": {
+          "title": "Vault storage copies",
+          "both": "Your encrypted vault is stored on the BetterTrack server and in Drive.",
+          "driveOnly": "Drive is the only active vault medium. BetterTrack holds no active portfolio ciphertext.",
+          "useDriveOnly": "Use Drive only",
+          "addServer": "Add server copy",
+          "driveOnlyNotice": "Drive-only storage activated. The server recovery copy remains retained until you explicitly delete it.",
+          "serverAddedNotice": "An authenticated server copy was added."
+        },
+        "retired": {
+          "title": "Retained server recovery copy",
+          "wait": "It remains recoverable until at least {{date}}.",
+          "ready": "The recovery window ended on {{date}}. A fresh authenticated Drive read is required before deletion.",
+          "purge": "Delete retained server copy"
+        }
+      },
       "sync": {
         "oneTime": "One-time import — runs once when you connect.",
         "stayConnected": "Stays connected — syncs automatically."
@@ -3332,6 +3378,17 @@
       "tooMany": "Too many attempts. Please wait a moment and try again."
     }
   },
+  "vault": {
+    "sync": {
+      "synced": "Encrypted vault synced",
+      "syncing": "Encrypted changes are waiting to sync",
+      "offline": "Encrypted changes are saved locally while offline",
+      "needsAttention": "Vault sync needs attention",
+      "drive": {
+        "signIn": "Sign in to Google to sync"
+      }
+    }
+  },
   "announcements": {
     "dismiss": "Dismiss",
     "dismissing": "Dismissing…",
@@ -3342,6 +3399,68 @@
     },
     "aria": {
       "list": "Announcements"
+    }
+  },
+  "vaultExports": {
+    "tax": {
+      "title": "Tax report",
+      "section": "Section",
+      "summary": "Summary",
+      "germany": "Germany (Abgeltungsteuer)",
+      "positions": "Positions",
+      "sells": "Sells",
+      "dividends": "Dividends",
+      "empty": "No sells or dividends in this year.",
+      "year": "Year",
+      "realized": "Realized P/L",
+      "realizedEur": "Realized P/L (EUR)",
+      "dividendsGross": "Dividends gross",
+      "dividendsGrossEur": "Dividends gross (EUR)",
+      "withheld": "Tax withheld",
+      "withheldEur": "Tax withheld (EUR)",
+      "refunded": "Tax refunded",
+      "refundedEur": "Tax refunded (EUR)",
+      "net": "Net tax",
+      "netEur": "Net tax (EUR)",
+      "tax": "Tax",
+      "taxEur": "Tax (EUR)",
+      "date": "Date",
+      "quantity": "Quantity",
+      "proceeds": "Proceeds",
+      "proceedsEur": "Proceeds (EUR)",
+      "costBasis": "Cost basis",
+      "costBasisEur": "Cost basis (EUR)",
+      "gross": "Gross",
+      "grossEur": "Gross (EUR)",
+      "allowance": "Allowance used / remaining",
+      "allowanceUsedEur": "Allowance used (EUR)",
+      "allowanceRemainingEur": "Allowance remaining (EUR)",
+      "shareLossPot": "Share-loss pot in / out",
+      "shareLossPotInEur": "Share-loss pot in (EUR)",
+      "shareLossPotOutEur": "Share-loss pot out (EUR)",
+      "otherLossPot": "Other-loss pot in / out",
+      "otherLossPotInEur": "Other-loss pot in (EUR)",
+      "otherLossPotOutEur": "Other-loss pot out (EUR)",
+      "kapest": "KapESt",
+      "kapestEur": "KapESt (EUR)",
+      "soli": "Soli",
+      "soliEur": "Soli (EUR)",
+      "symbol": "Symbol",
+      "name": "Name",
+      "taxMode": "Tax mode",
+      "disclaimerLabel": "Disclaimer",
+      "disclaimer": "Estimates for your personal overview only — not tax advice, no guarantee of correctness, not a filing document."
+    },
+    "cleartext": {
+      "readme": "BetterTrack — client cleartext export\n\nThis archive was built locally from your unlocked encrypted vault. It contains\nsource entities as JSON plus spreadsheet-friendly transaction, cash-movement,\nand holdings CSV files. Vault keys, passphrases, recovery material, ciphertext,\nsync metadata, quarantined blobs, and derived caches are not included.\n",
+      "skipped": {
+        "importBatches": "Import staging bookkeeping; applied rows are exported in their final entities.",
+        "importRows": "Import staging bookkeeping; applied rows are exported in their final entities.",
+        "portfolioSnapshots": "Derived valuation cache; rebuilt from source rows and market data.",
+        "snapshotState": "Derived snapshot invalidation bookkeeping.",
+        "standingOrderRuns": "Idempotency bookkeeping; materialized rows and definitions are exported.",
+        "expenseBudgetFires": "Derived alert-delivery bookkeeping."
+      }
     }
   },
   "admin": {
@@ -3690,6 +3809,25 @@
         "imports": "Imports",
         "settings": "Settings"
       }
+    },
+    "emailLog": {
+      "loading": "Loading email log…",
+      "empty": "No emails sent yet.",
+      "emptyForUser": "No emails sent to {{email}} yet.",
+      "headers": {
+        "when": "When",
+        "recipient": "Recipient",
+        "template": "Template",
+        "subject": "Subject",
+        "status": "Status"
+      },
+      "status": {
+        "sent": "Sent",
+        "failed": "Failed",
+        "suppressed": "Suppressed"
+      },
+      "loadMore": "Load more",
+      "loadingMore": "Loading…"
     }
   }
 }

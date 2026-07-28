@@ -6,6 +6,7 @@ import type { AdminUser, AuditLogEntry, ResetPasswordResponse } from '@bettertra
 
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
+import { useT } from '../../i18n';
 import { isAdminTwoFactorSetupRequired, useAuth } from '../AuthContext';
 import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
@@ -332,12 +333,13 @@ function ProfileSection({
 
 /** One user's email send log, reusing the shared paginated table. */
 function UserEmailLog({ userId, email }: { userId: string; email: string }) {
+  const t = useT();
   const load = useCallback(
     (params: { cursor?: string }, signal?: AbortSignal) =>
       api.listUserEmails(userId, params, signal),
     [userId],
   );
-  return <EmailLogTable load={load} emptyLabel={`No emails sent to ${email} yet.`} />;
+  return <EmailLogTable load={load} emptyLabel={t('admin.emailLog.emptyForUser', { email })} />;
 }
 
 /** Compact per-user audit history, cursor-paged newest-first (§6.12). */

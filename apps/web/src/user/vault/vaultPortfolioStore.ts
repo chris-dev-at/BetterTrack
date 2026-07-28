@@ -7,6 +7,7 @@ import {
   portfolioAssetSchema,
   portfolioListResponseSchema,
   portfolioSummarySchema,
+  SOURCE_TAG_STANDING_ORDER,
   transactionInputSchema,
   transactionListQuerySchema,
   transactionListResponseSchema,
@@ -26,7 +27,7 @@ import {
   type TransactionListResponse,
   type UpdatePortfolioRequest,
   type UpdateTransactionRequest,
-  type VaultDocumentV1,
+  type VaultDocument,
   type VaultEntity,
   type VaultEntityKind,
 } from '@bettertrack/contracts';
@@ -42,6 +43,8 @@ import { viennaYearOf } from '@bettertrack/domain/tax';
 import { uuidv7 } from 'uuidv7';
 
 import { VaultCryptoError } from './errors';
+import { standingOrderOccurrenceId } from './standingOrders/occurrenceId';
+import { calendarDayInTimezone, dueStandingOrderOccurrence } from './standingOrders/schedule';
 import type {
   VaultAtomicMutation,
   VaultDocumentReconcileContext,
@@ -51,11 +54,15 @@ import type {
   VaultSyncState,
 } from './sync';
 
+/** The server stores transaction prices as numeric(20,6) (schema.ts). */
+const TRANSACTION_PRICE_SCALE = 6;
+
 export const VAULT_PORTFOLIO_STORE_ERROR_CODES = [
   'VAULT_LOCKED',
   'VAULT_CORRUPT',
   'VAULT_DATA_UNAVAILABLE',
   'VAULT_ENTITY_NOT_FOUND',
+  'VAULT_OPERATION_ABORTED',
   'VAULT_OPERATION_UNAVAILABLE',
   'VAULT_DATA_INVALID',
   'VAULT_LAST_ACTIVE_PORTFOLIO',
@@ -78,6 +85,36 @@ export class VaultPortfolioStoreError extends Error {
 export interface VaultPortfolioStoreOptions {
   now?: () => string;
   newId?: () => string;
+}
+
+export interface VaultStandingOrderOccurrenceInput {
+  /** Deterministic UUID derived from `(orderId, dueDate)`. */
+  occurrenceId: string;
+  orderId: string;
+  /** ISO `YYYY-MM-DD` schedule occurrence. */
+  dueDate: string;
+  /** The schedule's timezone-resolved calendar day at execution. */
+  calendarDay: string;
+  timezone: string;
+  /** The authenticated client's wall-clock booking time. */
+  executedAt: string;
+  /** Authenticated candidate from which the due occurrence and quote were selected. */
+  expectedCandidate: {
+    vaultVersion: number;
+    vaultKeyId: string;
+    writeId: string;
+  };
+  /** Required exactly for `buy-asset`, in the standing order's native currency. */
+  price?: number;
+  quoteCurrency?: string;
+}
+
+export interface VaultStandingOrderOccurrenceResult {
+  occurrenceId: string;
+  orderId: string;
+  dueDate: string;
+  rowKind: 'transaction' | 'cashMovement';
+  status: 'created' | 'existing';
 }
 
 /**
@@ -110,6 +147,10 @@ export interface VaultPortfolioStore {
   ): Promise<void>;
   depositCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
   withdrawCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
+  materializeStandingOrderOccurrence(
+    input: VaultStandingOrderOccurrenceInput,
+    signal?: AbortSignal,
+  ): Promise<VaultStandingOrderOccurrenceResult>;
 }
 
 interface StoreContext {
@@ -376,13 +417,17 @@ export function createVaultPortfolioStore(
     async withdrawCash(portfolioId, body) {
       return createCashMovement(context, portfolioId, body, 'withdrawal');
     },
+
+    async materializeStandingOrderOccurrence(input, signal) {
+      return materializeStandingOrderOccurrence(context, input, signal);
+    },
   };
 }
 
 /** Public name used by the architecture note. */
 export const vaultPortfolioStore = createVaultPortfolioStore;
 
-function requireDocument(engine: VaultSyncEngine): VaultDocumentV1 {
+function requireDocument(engine: VaultSyncEngine): VaultDocument {
   const state = engine.state;
   if (state.status === 'locked') {
     throw storeError('VAULT_LOCKED', 'The vault must be unlocked before portfolio data is read.');
@@ -393,13 +438,19 @@ function requireDocument(engine: VaultSyncEngine): VaultDocumentV1 {
       'Corrupt vault data cannot be exposed to portfolio features.',
     );
   }
+  if (state.status === 'conflict' || state.status === 'unresolved') {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      `Vault sync is ${state.status}; portfolio reads and writes are unavailable.`,
+    );
+  }
   if (state.active == null) {
     throw storeError('VAULT_DATA_UNAVAILABLE', 'No authenticated vault document is available.');
   }
   return state.active.document;
 }
 
-function requirePortfolio(document: VaultDocumentV1, portfolioId: string): VaultEntity {
+function requirePortfolio(document: VaultDocument, portfolioId: string): VaultEntity {
   const portfolio = findLiveEntity(document, 'portfolio', portfolioId);
   if (portfolio == null) {
     throw storeError('VAULT_ENTITY_NOT_FOUND', 'Portfolio not found in the active vault document.');
@@ -408,7 +459,7 @@ function requirePortfolio(document: VaultDocumentV1, portfolioId: string): Vault
 }
 
 function requireOwnedEntity(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   kind: VaultEntityKind,
   id: string,
   portfolioId: string,
@@ -423,7 +474,7 @@ function requireOwnedEntity(
 async function appendEntity(
   context: StoreContext,
   kind: VaultEntityKind,
-  build: (document: VaultDocumentV1, id: string, timestamp: string) => VaultEntity,
+  build: (document: VaultDocument, id: string, timestamp: string) => VaultEntity,
 ): Promise<VaultEntity> {
   requireDocument(context.engine);
   let id: string | null = null;
@@ -450,10 +501,10 @@ async function updateEntity(
   id: string,
   mutateData: (
     data: Record<string, unknown>,
-    document: VaultDocumentV1,
+    document: VaultDocument,
     entity: VaultEntity,
   ) => Record<string, unknown>,
-  validateDocument?: (document: VaultDocumentV1) => void,
+  validateDocument?: (document: VaultDocument) => void,
 ): Promise<VaultEntity> {
   requireDocument(context.engine);
   let expected: VaultEntity | null = null;
@@ -578,11 +629,11 @@ async function deleteTransactionTree(
 }
 
 function tombstoneTransactionTree(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   transaction: VaultEntity,
   deviceId: string,
   timestamp: string,
-): VaultDocumentV1 {
+): VaultDocument {
   let next = replaceEntity(
     document,
     'transaction',
@@ -610,8 +661,15 @@ async function createCashMovement(
 
   const mutationState = await context.engine.mutate(({ document }) => {
     requirePortfolio(document, portfolioId);
-    const sourceId = resolveCashSourceId(document, portfolioId, parsedBody.sourceId);
     const timestamp = context.now();
+    const resolved = ensureCashSource(
+      context,
+      document,
+      portfolioId,
+      parsedBody.sourceId,
+      timestamp,
+    );
+    const sourceId = resolved.sourceId;
     const id = safeNewId(context);
     const entity = entityRecord(
       id,
@@ -634,12 +692,12 @@ async function createCashMovement(
       }),
     );
     projectCashLedgerBySource([
-      ...domainCashMovements(document, portfolioId),
+      ...domainCashMovements(resolved.document, portfolioId),
       domainCashMovement(entity),
     ]);
     createdId = id;
     expected = entity;
-    return appendEntities(document, 'cashMovement', [entity]);
+    return appendEntities(resolved.document, 'cashMovement', [entity]);
   });
 
   if (createdId == null || expected == null) {
@@ -674,11 +732,443 @@ async function createCashMovement(
   );
 }
 
+async function materializeStandingOrderOccurrence(
+  context: StoreContext,
+  input: VaultStandingOrderOccurrenceInput,
+  signal?: AbortSignal,
+): Promise<VaultStandingOrderOccurrenceResult> {
+  signal?.throwIfAborted();
+  assertStandingOrderOccurrenceInput(input);
+  if (input.occurrenceId !== (await standingOrderOccurrenceId(input.orderId, input.dueDate))) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'The standing-order occurrence id is not derived from its order and due date.',
+    );
+  }
+  const current = requireDocument(context.engine);
+  assertStandingOrderCandidate(context.engine, current, undefined, input.expectedCandidate);
+  assertStandingOrderDefinition(current, requireLiveStandingOrder(current, input.orderId), input);
+  const alreadyCommitted = existingStandingOrderOccurrence(current, input);
+  if (alreadyCommitted != null) return alreadyCommitted;
+
+  let created = false;
+  const mutationState = await context.engine.mutate(({ document, currentVersion }) => {
+    signal?.throwIfAborted();
+    assertStandingOrderCandidate(context.engine, document, currentVersion, input.expectedCandidate);
+    const concurrent = existingStandingOrderOccurrence(document, input);
+    if (concurrent != null) return document;
+
+    const order = requireLiveStandingOrder(document, input.orderId);
+    assertStandingOrderDefinition(document, order, input);
+    assertStandingOrderDue(order, input);
+    const timestamp = input.executedAt;
+    const rowKind = standingOrderRowKind(order);
+    let ledgerEntity: VaultEntity;
+    let nextDocument: VaultDocument;
+
+    if (rowKind === 'transaction') {
+      const assetId = stringField(order.data, 'assetId');
+      const asset = resolveTransactionAsset(document, assetId);
+      const orderCurrency = stringField(order.data, 'currency');
+      if (input.quoteCurrency !== orderCurrency || asset.currency !== orderCurrency) {
+        throw storeError(
+          'VAULT_DATA_INVALID',
+          'The standing-order quote currency does not match the local asset snapshot.',
+        );
+      }
+      const price = input.price;
+      if (price == null || !Number.isFinite(price) || price <= 0) {
+        throw storeError(
+          'VAULT_DATA_INVALID',
+          'A positive current quote is required for a buy standing order.',
+        );
+      }
+      ledgerEntity = entityRecord(
+        input.occurrenceId,
+        context.engine.deviceId,
+        timestamp,
+        parseVaultData(
+          () =>
+            VAULT_ENTITY_ROW_SCHEMAS.transaction.parse({
+              portfolioId: stringField(order.data, 'portfolioId'),
+              assetId,
+              side: 'buy',
+              quantity: stringField(order.data, 'amount'),
+              price: decimalStringAtScale(price, TRANSACTION_PRICE_SCALE),
+              fee: '0',
+              executedAt: timestamp,
+              note: nullableStringField(order.data, 'label'),
+              taxMode: null,
+              taxCountry: null,
+              taxAmountEur: null,
+              taxParams: null,
+              allowUncovered: false,
+              uncoveredEntryPrice: null,
+              source: SOURCE_TAG_STANDING_ORDER,
+            }),
+          'A standing-order transaction does not match the strict restore contract.',
+        ),
+      );
+      nextDocument = appendEntities(document, 'transaction', [ledgerEntity]);
+      assertProspectiveAssetTimelines(nextDocument, stringField(order.data, 'portfolioId'), [
+        assetId,
+      ]);
+    } else {
+      const portfolioId = stringField(order.data, 'portfolioId');
+      const resolved = ensureCashSource(context, document, portfolioId, undefined, timestamp);
+      const sourceId = resolved.sourceId;
+      const magnitude = floorCents(numberField(order.data, 'amount'));
+      const kind = stringField(order.data, 'kind');
+      ledgerEntity = entityRecord(
+        input.occurrenceId,
+        context.engine.deviceId,
+        timestamp,
+        strictCashMovementData({
+          portfolioId,
+          sourceId,
+          kind: kind === 'cash-add' ? 'deposit' : 'withdrawal',
+          amountEur: decimalStringFromNumber(kind === 'cash-add' ? magnitude : -magnitude),
+          transactionId: null,
+          transferId: null,
+          counterpartSourceId: null,
+          dividendId: null,
+          taxYear: null,
+          executedAt: timestamp,
+          note: nullableStringField(order.data, 'label'),
+          source: SOURCE_TAG_STANDING_ORDER,
+          createdAt: timestamp,
+        }),
+      );
+      nextDocument = appendEntities(resolved.document, 'cashMovement', [ledgerEntity]);
+      projectCashLedgerBySource(domainCashMovements(nextDocument, portfolioId));
+    }
+
+    const run = entityRecord(
+      input.occurrenceId,
+      context.engine.deviceId,
+      timestamp,
+      parseVaultData(
+        () =>
+          VAULT_ENTITY_ROW_SCHEMAS.standingOrderRun.parse({
+            standingOrderId: input.orderId,
+            periodKey: input.dueDate,
+            bookedAt: timestamp,
+          }),
+        'A standing-order run does not match the strict restore contract.',
+      ),
+    );
+    const updatedOrder: VaultEntity = {
+      ...order,
+      rev: order.rev + 1,
+      editedAt: timestamp,
+      editedBy: context.engine.deviceId,
+      data: parseVaultData(
+        () =>
+          VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse({
+            ...order.data,
+            lastRunAt: timestamp,
+            lastPeriodKey: input.dueDate,
+            updatedAt: timestamp,
+          }),
+        'A standing order does not match the strict restore contract.',
+      ),
+    };
+    created = true;
+    return appendEntities(
+      replaceEntity(nextDocument, 'standingOrder', updatedOrder),
+      'standingOrderRun',
+      [run],
+    );
+  });
+
+  signal?.throwIfAborted();
+  const committedDocument = mutationState.active?.document;
+  if (committedDocument == null) {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      'The standing-order occurrence was not committed locally.',
+    );
+  }
+  const committed = existingStandingOrderOccurrence(committedDocument, input);
+  if (committed == null) {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      'The standing-order occurrence did not survive commit and reconciliation.',
+    );
+  }
+  return { ...committed, status: created ? 'created' : 'existing' };
+}
+
+function assertStandingOrderOccurrenceInput(input: VaultStandingOrderOccurrenceInput): void {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const day = /^\d{4}-\d{2}-\d{2}$/;
+  if (
+    !uuid.test(input.occurrenceId) ||
+    !uuid.test(input.orderId) ||
+    !day.test(input.dueDate) ||
+    !day.test(input.calendarDay) ||
+    input.timezone.trim().length === 0 ||
+    !Number.isFinite(Date.parse(input.executedAt)) ||
+    !Number.isSafeInteger(input.expectedCandidate.vaultVersion) ||
+    input.expectedCandidate.vaultVersion < 0 ||
+    !uuid.test(input.expectedCandidate.vaultKeyId) ||
+    !uuid.test(input.expectedCandidate.writeId)
+  ) {
+    throw storeError('VAULT_DATA_INVALID', 'The standing-order occurrence identity is invalid.');
+  }
+}
+
+function assertStandingOrderCandidate(
+  engine: VaultSyncEngine,
+  document: VaultDocument,
+  currentVersion: number | undefined,
+  expected: VaultStandingOrderOccurrenceInput['expectedCandidate'],
+): void {
+  const active = engine.state.active;
+  if (
+    active === null ||
+    active.document !== document ||
+    (currentVersion !== undefined && currentVersion !== expected.vaultVersion) ||
+    active.header.vaultVersion !== expected.vaultVersion ||
+    active.header.keyId !== expected.vaultKeyId ||
+    active.header.writeId !== expected.writeId
+  ) {
+    throw storeError(
+      'VAULT_OPERATION_ABORTED',
+      'The authenticated vault candidate changed before the standing order could be committed.',
+    );
+  }
+}
+
+function requireLiveStandingOrder(document: VaultDocument, orderId: string): VaultEntity {
+  const order = findLiveEntity(document, 'standingOrder', orderId);
+  if (order == null) {
+    throw storeError('VAULT_ENTITY_NOT_FOUND', 'Standing order not found in the active vault.');
+  }
+  parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse(order.data),
+    'A standing order does not match the strict restore contract.',
+  );
+  return order;
+}
+
+function assertStandingOrderDefinition(
+  document: VaultDocument,
+  order: VaultEntity,
+  input: VaultStandingOrderOccurrenceInput,
+): void {
+  const portfolio = requirePortfolio(document, stringField(order.data, 'portfolioId'));
+  if (stringField(order.data, 'userId') !== stringField(portfolio.data, 'userId')) {
+    throw storeError('VAULT_DATA_INVALID', 'The standing order and portfolio owners do not match.');
+  }
+  const isBuy = stringField(order.data, 'kind') === 'buy-asset';
+  const assetId = nullableStringField(order.data, 'assetId');
+  if (isBuy !== (assetId !== null)) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing-order asset is required exactly for an asset buy.',
+    );
+  }
+  if (
+    !isBuy &&
+    (stringField(order.data, 'currency') !== 'EUR' ||
+      input.price !== undefined ||
+      input.quoteCurrency !== undefined)
+  ) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'Cash standing orders must use EUR and cannot carry quote data.',
+    );
+  }
+  const lastRunAt = nullableStringField(order.data, 'lastRunAt');
+  const lastPeriodKey = nullableStringField(order.data, 'lastPeriodKey');
+  if ((lastRunAt === null) !== (lastPeriodKey === null)) {
+    throw storeError('VAULT_DATA_INVALID', 'A standing-order run watermark is incomplete.');
+  }
+}
+
+function assertStandingOrderDue(
+  order: VaultEntity,
+  input: VaultStandingOrderOccurrenceInput,
+): void {
+  const status = stringField(order.data, 'status');
+  const startDate = stringField(order.data, 'startDate');
+  const endDate = nullableStringField(order.data, 'endDate');
+  const lastPeriodKey = nullableStringField(order.data, 'lastPeriodKey');
+  let actualCalendarDay: string;
+  try {
+    actualCalendarDay = calendarDayInTimezone(new Date(input.executedAt), input.timezone);
+  } catch (cause) {
+    throw storeError('VAULT_DATA_INVALID', 'The standing-order timezone is invalid.', cause);
+  }
+  let expectedDue: string | null;
+  try {
+    expectedDue = dueStandingOrderOccurrence(
+      {
+        cadence: stringField(order.data, 'cadence') as 'daily' | 'monthly',
+        anchorDay: typeof order.data.anchorDay === 'number' ? order.data.anchorDay : null,
+        startDate,
+        endDate,
+      },
+      input.calendarDay,
+    );
+  } catch (cause) {
+    throw storeError('VAULT_DATA_INVALID', 'The standing-order schedule is invalid.', cause);
+  }
+  if (status !== 'active') {
+    throw storeError('VAULT_OPERATION_UNAVAILABLE', 'A paused standing order cannot be booked.');
+  }
+  if (
+    input.dueDate < startDate ||
+    (endDate != null && input.dueDate > endDate) ||
+    input.dueDate > input.calendarDay ||
+    input.calendarDay !== actualCalendarDay ||
+    input.dueDate !== expectedDue
+  ) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'The standing-order occurrence is outside its schedule.',
+    );
+  }
+  if (lastPeriodKey != null && lastPeriodKey >= input.dueDate) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing order is marked booked without its deterministic occurrence rows.',
+    );
+  }
+}
+
+function standingOrderRowKind(order: VaultEntity): 'transaction' | 'cashMovement' {
+  return stringField(order.data, 'kind') === 'buy-asset' ? 'transaction' : 'cashMovement';
+}
+
+export function existingStandingOrderOccurrence(
+  document: VaultDocument,
+  input: VaultStandingOrderOccurrenceInput,
+): VaultStandingOrderOccurrenceResult | null {
+  const order = findLiveEntity(document, 'standingOrder', input.orderId);
+  const runById = findLiveEntity(document, 'standingOrderRun', input.occurrenceId);
+  const semanticRuns = liveEntities(document, 'standingOrderRun').filter(
+    (candidate) =>
+      stringField(candidate.data, 'standingOrderId') === input.orderId &&
+      stringField(candidate.data, 'periodKey') === input.dueDate,
+  );
+  if (semanticRuns.length > 1) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing-order period has more than one durable claim.',
+    );
+  }
+  const semanticRun = semanticRuns[0];
+  if (runById != null && semanticRun !== runById) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing-order occurrence id conflicts with another period claim.',
+    );
+  }
+  const run = runById ?? semanticRun;
+  const transaction = findLiveEntity(document, 'transaction', input.occurrenceId);
+  const cashMovement = findLiveEntity(document, 'cashMovement', input.occurrenceId);
+  const ledgerRows = [transaction, cashMovement].filter((entity) => entity != null);
+
+  /*
+   * Cleartext server execution predates deterministic client ids. Its
+   * `(standingOrderId, periodKey)` run row is the at-most-once claim, while the
+   * booked ledger row has a separate random id. A claim can intentionally have
+   * no ledger row when server booking failed after the claim. Preserve either
+   * legacy shape as an existing occurrence; only deterministic client claims
+   * promise the atomic run + ledger + watermark aggregate validated below.
+   */
+  if (run != null && run.id !== input.occurrenceId) {
+    if (order == null || ledgerRows.length !== 0) {
+      throw storeError(
+        'VAULT_DATA_INVALID',
+        'A legacy standing-order claim conflicts with deterministic occurrence rows.',
+      );
+    }
+    parseVaultData(
+      () => VAULT_ENTITY_ROW_SCHEMAS.standingOrderRun.parse(run.data),
+      'A standing-order run does not match the strict restore contract.',
+    );
+    return {
+      occurrenceId: input.occurrenceId,
+      orderId: input.orderId,
+      dueDate: input.dueDate,
+      rowKind: standingOrderRowKind(order),
+      status: 'existing',
+    };
+  }
+
+  if (run == null && ledgerRows.length === 0) {
+    const lastPeriodKey = order == null ? null : nullableStringField(order.data, 'lastPeriodKey');
+    if (order != null && lastPeriodKey != null && lastPeriodKey >= input.dueDate) {
+      /*
+       * Server semantics: a watermark at or past the due period means "already
+       * satisfied — skip" (processDueOrders). A LATER watermark backed by its
+       * own durable claim is a legal state (e.g. endDate shrunk below an
+       * already-booked period) and must skip, never fail. Only a watermark
+       * whose claimed period has no durable run row is corrupt.
+       */
+      const durableClaim = liveEntities(document, 'standingOrderRun').some(
+        (candidate) =>
+          stringField(candidate.data, 'standingOrderId') === input.orderId &&
+          stringField(candidate.data, 'periodKey') === lastPeriodKey,
+      );
+      if (!durableClaim) {
+        throw storeError(
+          'VAULT_DATA_INVALID',
+          'A standing order is marked booked without its deterministic occurrence rows.',
+        );
+      }
+      return {
+        occurrenceId: input.occurrenceId,
+        orderId: input.orderId,
+        dueDate: input.dueDate,
+        rowKind: standingOrderRowKind(order),
+        status: 'existing',
+      };
+    }
+    return null;
+  }
+  if (order == null || run == null || ledgerRows.length !== 1) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing-order occurrence is incomplete or has conflicting ledger rows.',
+    );
+  }
+  const runData = parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.standingOrderRun.parse(run.data),
+    'A standing-order run does not match the strict restore contract.',
+  );
+  const rowKind = standingOrderRowKind(order);
+  const ledger = rowKind === 'transaction' ? transaction : cashMovement;
+  if (
+    ledger == null ||
+    runData.standingOrderId !== input.orderId ||
+    runData.periodKey !== input.dueDate ||
+    nullableStringField(order.data, 'lastPeriodKey') == null ||
+    nullableStringField(order.data, 'lastPeriodKey')! < input.dueDate ||
+    stringField(ledger.data, 'source') !== SOURCE_TAG_STANDING_ORDER
+  ) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A standing-order occurrence does not match its deterministic identity.',
+    );
+  }
+  return {
+    occurrenceId: input.occurrenceId,
+    orderId: input.orderId,
+    dueDate: input.dueDate,
+    rowKind,
+    status: 'existing',
+  };
+}
+
 function appendEntities(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   kind: VaultEntityKind,
   entities: VaultEntity[],
-): VaultDocumentV1 {
+): VaultDocument {
   return {
     ...document,
     entities: {
@@ -689,10 +1179,10 @@ function appendEntities(
 }
 
 function replaceEntity(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   kind: VaultEntityKind,
   replacement: VaultEntity,
-): VaultDocumentV1 {
+): VaultDocument {
   return {
     ...document,
     entities: {
@@ -759,12 +1249,12 @@ function tombstoneEntity(entity: VaultEntity, deviceId: string, timestamp: strin
   };
 }
 
-function liveEntities(document: VaultDocumentV1, kind: VaultEntityKind): VaultEntity[] {
+function liveEntities(document: VaultDocument, kind: VaultEntityKind): VaultEntity[] {
   return (document.entities[kind] ?? []).filter((entity) => entity.deletedAt === null);
 }
 
 function liveCascadeDescendants(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   rootKind: VaultEntityKind,
   rootId: string,
 ): VaultEntityRef[] {
@@ -801,7 +1291,7 @@ function entityRefKey(kind: VaultEntityKind, id: string): string {
 }
 
 function findEntity(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   kind: VaultEntityKind,
   id: string,
 ): VaultEntity | undefined {
@@ -809,7 +1299,7 @@ function findEntity(
 }
 
 function findLiveEntity(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   kind: VaultEntityKind,
   id: string,
 ): VaultEntity | undefined {
@@ -822,7 +1312,7 @@ function requireCommittedMutationEntity(
   kind: VaultEntityKind,
   id: string,
   expected: VaultEntity | null,
-): { document: VaultDocumentV1; entity: VaultEntity } {
+): { document: VaultDocument; entity: VaultEntity } {
   const document = state.active?.document;
   if (document == null || expected == null) {
     throw storeError(
@@ -911,7 +1401,7 @@ class VaultAggregateConflictError extends Error {
  * winning subset can reappear on a later reconnect.
  */
 export function reconcilePortfolioDocument(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   context: VaultDocumentReconcileContext,
 ): VaultDocumentReconcileResult {
   const groups = reconcileGroups(context.mutations, context);
@@ -1004,8 +1494,8 @@ function reconcileGroups(
 
 function rebaseReconcileGroup(
   group: ReconcileGroup,
-  before: VaultDocumentV1,
-  after: VaultDocumentV1,
+  before: VaultDocument,
+  after: VaultDocument,
   compensation: boolean,
 ): VaultAtomicMutation | null {
   const refs = new Map<string, VaultEntityRef>();
@@ -1044,10 +1534,10 @@ function rebaseReconcileGroup(
 }
 
 function compensateRejectedGroup(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   group: ReconcileGroup,
   context: VaultDocumentReconcileContext,
-): VaultDocumentV1 {
+): VaultDocument {
   let compensated = document;
   for (const change of group.changes) {
     const desired = findEntity(compensated, change.kind, change.id);
@@ -1065,11 +1555,11 @@ function compensateRejectedGroup(
 }
 
 function setEntity(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   kind: VaultEntityKind,
   id: string,
   entity: VaultEntity | undefined,
-): VaultDocumentV1 {
+): VaultDocument {
   const existing = document.entities[kind] ?? [];
   const next =
     entity == null
@@ -1087,9 +1577,9 @@ function setEntity(
 }
 
 function enforceDeletionCascades(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   context: VaultDocumentReconcileContext,
-): VaultDocumentV1 {
+): VaultDocument {
   let next = document;
   let changed: boolean;
   do {
@@ -1147,8 +1637,8 @@ function compensationEntity(
 }
 
 function assertPortfolioDocumentInvariants(
-  document: VaultDocumentV1,
-  durableBaseline: VaultDocumentV1,
+  document: VaultDocument,
+  durableBaseline: VaultDocument,
 ): void {
   assertCascadeReferences(document);
 
@@ -1199,7 +1689,7 @@ function assertPortfolioDocumentInvariants(
   }
 }
 
-function assertCascadeReferences(document: VaultDocumentV1): void {
+function assertCascadeReferences(document: VaultDocument): void {
   for (const relation of VAULT_PORTFOLIO_CASCADE_RELATIONS) {
     for (const child of liveEntities(document, relation.childKind)) {
       const parentId = cascadeReference(child, relation);
@@ -1220,8 +1710,59 @@ function isAggregateConflict(cause: unknown): boolean {
   );
 }
 
+/** The server's cashSourceRepository.MAIN_CASH_SOURCE_NAME. */
+const MAIN_CASH_SOURCE_NAME = 'Main';
+
+/**
+ * Resolve the target cash source like the server: an explicit id must exist
+ * and be active, while the implicit Main source is provisioned on first touch
+ * (cashSourceRepository.getOrCreateMain) — a vault captured before any cash
+ * activity must book cash work, not fail it. Call inside a serialized
+ * mutation; the returned document carries the provisioned source when one was
+ * created.
+ */
+function ensureCashSource(
+  context: StoreContext,
+  document: VaultDocument,
+  portfolioId: string,
+  requestedSourceId: string | undefined,
+  timestamp: string,
+): { document: VaultDocument; sourceId: string } {
+  if (requestedSourceId != null) {
+    return { document, sourceId: resolveCashSourceId(document, portfolioId, requestedSourceId) };
+  }
+  const existing = liveEntities(document, 'cashSource')
+    .filter(
+      (entity) =>
+        stringField(entity.data, 'portfolioId') === portfolioId &&
+        nullableStringField(entity.data, 'archivedAt') === null &&
+        booleanField(entity.data, 'isMain', false),
+    )
+    .sort((left, right) => left.id.localeCompare(right.id))[0];
+  if (existing != null) return { document, sourceId: existing.id };
+  requirePortfolio(document, portfolioId);
+  const entity = entityRecord(
+    safeNewId(context),
+    context.engine.deviceId,
+    timestamp,
+    parseVaultData(
+      () =>
+        VAULT_ENTITY_ROW_SCHEMAS.cashSource.parse({
+          portfolioId,
+          name: MAIN_CASH_SOURCE_NAME,
+          type: 'cash',
+          isMain: true,
+          archivedAt: null,
+          createdAt: timestamp,
+        }),
+      'A provisioned Main cash source does not match the strict restore contract.',
+    ),
+  );
+  return { document: appendEntities(document, 'cashSource', [entity]), sourceId: entity.id };
+}
+
 function resolveCashSourceId(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   portfolioId: string,
   requestedSourceId: string | undefined,
 ): string {
@@ -1244,13 +1785,13 @@ function resolveCashSourceId(
   return source.id;
 }
 
-function portfolioSummariesFromDocument(document: VaultDocumentV1): PortfolioSummary[] {
+function portfolioSummariesFromDocument(document: VaultDocument): PortfolioSummary[] {
   const portfolios = liveEntities(document, 'portfolio');
   const defaultId = defaultPortfolioId(portfolios);
   return portfolios.map((entity) => portfolioSummaryFromEntity(entity, entity.id === defaultId));
 }
 
-function portfolioSummaryForId(document: VaultDocumentV1, portfolioId: string): PortfolioSummary {
+function portfolioSummaryForId(document: VaultDocument, portfolioId: string): PortfolioSummary {
   requirePortfolio(document, portfolioId);
   const summary = portfolioSummariesFromDocument(document).find(
     (candidate) => candidate.id === portfolioId,
@@ -1277,7 +1818,7 @@ function defaultPortfolioId(portfolios: readonly VaultEntity[]): string | null {
   return best?.id ?? null;
 }
 
-function portfolioOwnerUserId(document: VaultDocumentV1): string {
+function portfolioOwnerUserId(document: VaultDocument): string {
   const owner = liveEntities(document, 'portfolio')[0];
   if (owner == null) {
     throw storeError(
@@ -1318,7 +1859,7 @@ function strictCashMovementData(data: Record<string, unknown>): Record<string, u
   );
 }
 
-function resolveTransactionAsset(document: VaultDocumentV1, assetId: string): PortfolioAsset {
+function resolveTransactionAsset(document: VaultDocument, assetId: string): PortfolioAsset {
   const asset = findLiveEntity(document, 'customAsset', assetId);
   if (asset == null) {
     throw storeError(
@@ -1362,7 +1903,7 @@ function portfolioAssetFromEntity(entity: VaultEntity): PortfolioAsset {
   );
 }
 
-function transactionFromEntity(document: VaultDocumentV1, entity: VaultEntity): Transaction {
+function transactionFromEntity(document: VaultDocument, entity: VaultEntity): Transaction {
   const assetId = stringField(entity.data, 'assetId');
   const assetEntity = findLiveEntity(document, 'customAsset', assetId);
   const embeddedAsset = recordField(entity.data, 'asset');
@@ -1438,11 +1979,11 @@ interface TransactionCreateCandidate {
 }
 
 function appendTransactionCandidates(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   candidates: readonly TransactionCreateCandidate[],
   deviceId: string,
   timestamp: string,
-): { document: VaultDocumentV1; entities: VaultEntity[] } {
+): { document: VaultDocument; entities: VaultEntity[] } {
   const entities = candidates.map(({ id, input, data }) => {
     resolveTransactionAsset(document, input.assetId);
     return entityRecord(id, deviceId, timestamp, data);
@@ -1461,6 +2002,28 @@ function transactionPatchForStorage(patch: TransactionDataPatch): Record<string,
     ...(patch.price === undefined ? {} : { price: decimalStringFromNumber(patch.price) }),
     ...(patch.fee === undefined ? {} : { fee: decimalStringFromNumber(patch.fee) }),
   };
+}
+
+/**
+ * Quantize to the server column's numeric scale with PostgreSQL's
+ * round-half-away-from-zero, then trim trailing fraction zeros. Quote-derived
+ * float prices carry binary noise (175.33999633789062) the server's
+ * numeric(20,6) can never store; persisting them raw breaks #894 parity.
+ */
+function decimalStringAtScale(value: number, scale: number): string {
+  const source = decimalStringFromNumber(value);
+  const negative = source.startsWith('-');
+  const unsigned = negative ? source.slice(1) : source;
+  const [whole = '0', fraction = ''] = unsigned.split('.');
+  if (fraction.length <= scale) return source;
+  const kept = fraction.slice(0, scale);
+  let digits = BigInt(`${whole}${kept}`);
+  if (fraction.charCodeAt(scale) >= 0x35) digits += 1n;
+  const padded = digits.toString().padStart(scale + 1, '0');
+  const integer = padded.slice(0, padded.length - scale);
+  const rounded = padded.slice(padded.length - scale).replace(/0+$/, '');
+  const magnitude = rounded.length === 0 ? integer : `${integer}.${rounded}`;
+  return negative && !/^0(?:\.0*)?$/.test(magnitude) ? `-${magnitude}` : magnitude;
 }
 
 /** Expand JavaScript's exponential notation into the strict decimal grammar. */
@@ -1510,10 +2073,7 @@ function cashMovementFromEntity(entity: VaultEntity): CashMovementResponse['move
   );
 }
 
-function domainCashMovements(
-  document: VaultDocumentV1,
-  portfolioId: string,
-): SourcedCashMovement[] {
+function domainCashMovements(document: VaultDocument, portfolioId: string): SourcedCashMovement[] {
   return liveEntities(document, 'cashMovement')
     .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
     .map(domainCashMovement);
@@ -1530,7 +2090,7 @@ function domainCashMovement(entity: VaultEntity): SourcedCashMovement {
 }
 
 function assertValidAssetTimeline(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   portfolioId: string,
   assetId: string,
 ): void {
@@ -1553,7 +2113,7 @@ function assertValidAssetTimeline(
 }
 
 function assertProspectiveAssetTimelines(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   portfolioId: string,
   assetIds: readonly string[],
 ): void {
@@ -1584,12 +2144,12 @@ function transactionExecutedAtMs(entity: VaultEntity): number {
 }
 
 function sameAssetTimeline(
-  left: VaultDocumentV1,
-  right: VaultDocumentV1,
+  left: VaultDocument,
+  right: VaultDocument,
   portfolioId: string,
   assetId: string,
 ): boolean {
-  const timeline = (document: VaultDocumentV1) =>
+  const timeline = (document: VaultDocument) =>
     liveEntities(document, 'transaction')
       .filter(
         (entity) =>
@@ -1636,7 +2196,7 @@ function definedFields<T extends Record<string, unknown>>(
 }
 
 function assertLocallySupportedTransactions(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   portfolioId: string,
   candidates: {
     id: string;
@@ -1679,7 +2239,7 @@ function assertLocallySupportedTransactions(
 }
 
 function assertTransactionUpdateTaxSupported(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   portfolioId: string,
   transaction: VaultEntity,
   patch: TransactionDataPatch,
@@ -1726,7 +2286,7 @@ function assertTransactionUpdateTaxSupported(
 }
 
 function assertTransactionDeleteTaxSupported(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   portfolioId: string,
   transaction: VaultEntity,
   now: string,
@@ -1756,7 +2316,7 @@ function assertTransactionDeleteTaxSupported(
 }
 
 function effectivePortfolioTaxSettings(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   portfolioId: string,
 ): EffectivePortfolioTaxSettings {
   const override = liveEntities(document, 'portfolioSetting').find(

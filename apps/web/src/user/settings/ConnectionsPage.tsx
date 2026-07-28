@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
@@ -7,11 +7,26 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { formatDateTime } from '../../lib/format';
-import { getGoogleLinkStatus, googleStartUrl, unlinkGoogle } from '../../lib/userApi';
+import {
+  getGoogleLinkStatus,
+  getParanoidMediaState,
+  googleStartUrl,
+  unlinkGoogle,
+} from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert, Button, TextField, cx } from '../components/ui';
+import type {
+  DriveConnectionActionResult,
+  DriveConnectionController,
+  VaultRetiredPurgeResult,
+} from '../vault/media';
+import {
+  useOptionalVaultRuntime,
+  type VaultDriveUnlockOptions,
+} from '../vault/VaultRuntimeProvider';
 
 const GOOGLE_KEY = ['auth', 'google', 'link-status'] as const;
+const VAULT_MEDIA_KEY = ['vault', 'media'] as const;
 
 /**
  * Map a Settings-connect failure the callback bounced back as `?error=google_*`
@@ -218,6 +233,368 @@ function GoogleSection() {
   );
 }
 
+type DriveCardAction = 'connect' | 'disconnect' | 'drive-only' | 'add-server' | 'purge';
+
+function useDriveAuthorization(connection: DriveConnectionController | null) {
+  const subscribe = useCallback(
+    (listener: () => void) => connection?.subscribeAuthorization(listener) ?? (() => undefined),
+    [connection],
+  );
+  const getSnapshot = useCallback(() => connection?.authorization ?? null, [connection]);
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+function DriveVaultSection({
+  connection,
+  configured,
+  unlock,
+}: {
+  connection: DriveConnectionController | null;
+  configured: boolean;
+  unlock:
+    | ((passphrase: string, options: VaultDriveUnlockOptions) => Promise<DriveConnectionController>)
+    | null;
+}) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [working, setWorking] = useState(false);
+  const [message, setMessage] = useState<{
+    tone: 'error' | 'success' | 'info';
+    key: string;
+  } | null>(null);
+  const [unlockAction, setUnlockAction] = useState<DriveCardAction | null>(null);
+  const [passphrase, setPassphrase] = useState('');
+  const authorization = useDriveAuthorization(connection);
+  const query = useQuery({
+    queryKey: VAULT_MEDIA_KEY,
+    queryFn: ({ signal }) => getParanoidMediaState(signal),
+    retry: false,
+    staleTime: 15_000,
+  });
+
+  if (query.isError) {
+    return (
+      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.connections.drive.title')}
+        </h3>
+        <EmptyState
+          title={t('settings.connections.drive.loadError')}
+          description={t('settings.retryHint')}
+        />
+      </section>
+    );
+  }
+  if (query.isPending) {
+    return (
+      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.connections.drive.title')}
+        </h3>
+        <Skeleton height="h-6" />
+      </section>
+    );
+  }
+
+  if (query.data.privacyMode !== 'paranoid' || query.data.mediaState == null) return null;
+  const media = query.data.mediaState;
+  const selected = media.mediaSet.includes('drive');
+  if (!configured && !selected) return null;
+
+  const needsSignIn = selected && authorization !== 'connected';
+  const statusKey = working
+    ? 'working'
+    : selected
+      ? needsSignIn
+        ? 'needsSignIn'
+        : 'connected'
+      : 'disconnected';
+  const retired = media.server.retired;
+  const canPurgeRetiredServer =
+    retired != null &&
+    media.server.disposition === 'retired' &&
+    !media.mediaSet.includes('server') &&
+    media.server.candidate == null;
+  const purgeReady = retired != null && Date.now() >= Date.parse(retired.purgeAfter);
+
+  async function refresh(): Promise<void> {
+    await queryClient.invalidateQueries({ queryKey: VAULT_MEDIA_KEY });
+  }
+
+  function requireUnlocked(action: DriveCardAction): boolean {
+    if (connection) return false;
+    if (configured && unlock) {
+      setMessage(null);
+      setUnlockAction(action);
+      return true;
+    }
+    setMessage({
+      tone: 'info',
+      key: configured
+        ? 'settings.connections.drive.unlockRequired'
+        : 'settings.connections.drive.configMissing',
+    });
+    return true;
+  }
+
+  function actionFailed(result: DriveConnectionActionResult | VaultRetiredPurgeResult): boolean {
+    return (
+      result.status === 'authorization-required' ||
+      result.status === 'failed' ||
+      result.status === 'last-medium'
+    );
+  }
+
+  function failureKey(result: DriveConnectionActionResult): string {
+    if (result.status === 'last-medium') return 'settings.connections.drive.lastMedium';
+    if (result.status === 'failed') {
+      if (result.stage === 'preflight-sync') return 'settings.connections.drive.syncRequired';
+      if (result.stage === 'authenticate-drive') {
+        return 'settings.connections.drive.unreadableLeftover';
+      }
+    }
+    return 'settings.connections.drive.actionError';
+  }
+
+  async function perform(
+    action: DriveCardAction,
+    activeConnection: DriveConnectionController,
+  ): Promise<void> {
+    if (action === 'purge') {
+      const result = await activeConnection.purgeRetiredServer();
+      if (result.status === 'ok') {
+        setMessage({ tone: 'success', key: 'settings.connections.drive.purgedNotice' });
+        await refresh();
+      } else {
+        setMessage({ tone: 'error', key: 'settings.connections.drive.purgeError' });
+      }
+      return;
+    }
+
+    const result =
+      action === 'connect'
+        ? await activeConnection.connect()
+        : action === 'disconnect'
+          ? await activeConnection.disconnect()
+          : action === 'drive-only'
+            ? await activeConnection.useDriveOnly()
+            : await activeConnection.addServerCopy();
+    if (!actionFailed(result)) {
+      const synchronizationPending =
+        result.status !== 'authorization-required' && result.synchronization?.status === 'pending';
+      if (result.status === 'drive-leftover') {
+        setMessage({
+          tone: 'info',
+          key: synchronizationPending
+            ? 'settings.connections.drive.leftoverSyncPending'
+            : 'settings.connections.drive.leftover',
+        });
+      } else if (synchronizationPending) {
+        setMessage({ tone: 'info', key: 'settings.connections.drive.syncPending' });
+      } else {
+        setMessage({
+          tone: 'success',
+          key:
+            action === 'connect'
+              ? 'settings.connections.drive.connectedNotice'
+              : action === 'disconnect'
+                ? 'settings.connections.drive.disconnectedNotice'
+                : action === 'drive-only'
+                  ? 'settings.connections.drive.storage.driveOnlyNotice'
+                  : 'settings.connections.drive.storage.serverAddedNotice',
+        });
+      }
+      await refresh();
+    } else {
+      setMessage({ tone: 'error', key: failureKey(result) });
+    }
+  }
+
+  async function run(action: DriveCardAction): Promise<void> {
+    if (requireUnlocked(action)) return;
+    setWorking(true);
+    setMessage(null);
+    try {
+      await perform(action, connection!);
+    } catch {
+      setMessage({
+        tone: 'error',
+        key:
+          action === 'purge'
+            ? 'settings.connections.drive.purgeError'
+            : 'settings.connections.drive.actionError',
+      });
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function unlockAndContinue(): Promise<void> {
+    if (!unlock || !unlockAction || passphrase.length === 0) return;
+    setWorking(true);
+    setMessage(null);
+    let activeConnection: DriveConnectionController;
+    try {
+      activeConnection = await unlock(passphrase, {
+        authorizeDrive: true,
+        driveOnly: media.mediaSet.length === 1 && media.mediaSet[0] === 'drive',
+      });
+    } catch {
+      setMessage({ tone: 'error', key: 'settings.connections.drive.unlockError' });
+      setWorking(false);
+      return;
+    }
+    const action = unlockAction;
+    setPassphrase('');
+    setUnlockAction(null);
+    try {
+      await perform(action, activeConnection);
+    } catch {
+      setMessage({ tone: 'error', key: 'settings.connections.drive.actionError' });
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.connections.drive.title')}
+        </h3>
+        <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-neutral-300">
+          {t(`settings.connections.drive.status.${statusKey}`)}
+        </span>
+      </div>
+      <p className="text-xs text-neutral-500">{t('settings.connections.drive.description')}</p>
+      {message ? <Alert tone={message.tone}>{t(message.key)}</Alert> : null}
+      {!configured ? (
+        <Alert tone="info">{t('settings.connections.drive.configMissing')}</Alert>
+      ) : null}
+      {unlockAction ? (
+        <form
+          className="flex max-w-sm flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void unlockAndContinue();
+          }}
+        >
+          <p className="text-xs text-neutral-400">{t('settings.connections.drive.unlockPrompt')}</p>
+          <TextField
+            id="drive-vault-passphrase"
+            type="password"
+            autoComplete="current-password"
+            label={t('settings.connections.drive.passphraseLabel')}
+            value={passphrase}
+            onChange={(event) => setPassphrase(event.target.value)}
+            disabled={working}
+            required
+            autoFocus
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button type="submit" disabled={working || passphrase.length === 0}>
+              {t('settings.connections.drive.unlockAndContinue')}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={working}
+              onClick={() => {
+                setUnlockAction(null);
+                setPassphrase('');
+              }}
+            >
+              {t('common.cancel')}
+            </Button>
+          </div>
+        </form>
+      ) : null}
+      {selected && media.mediaSet.length === 1 ? (
+        <Alert tone="info">{t('settings.connections.drive.lastMedium')}</Alert>
+      ) : null}
+      {selected ? (
+        <details className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2">
+          <summary className="cursor-pointer text-xs font-medium text-neutral-300">
+            {t('settings.connections.drive.storage.title')}
+          </summary>
+          <div className="mt-2 flex flex-col items-start gap-2">
+            <p className="text-xs text-neutral-500">
+              {t(
+                media.mediaSet.includes('server')
+                  ? 'settings.connections.drive.storage.both'
+                  : 'settings.connections.drive.storage.driveOnly',
+              )}
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={working || !configured}
+              onClick={() =>
+                void run(media.mediaSet.includes('server') ? 'drive-only' : 'add-server')
+              }
+            >
+              {t(
+                media.mediaSet.includes('server')
+                  ? 'settings.connections.drive.storage.useDriveOnly'
+                  : 'settings.connections.drive.storage.addServer',
+              )}
+            </Button>
+          </div>
+        </details>
+      ) : null}
+      {canPurgeRetiredServer ? (
+        <details className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2">
+          <summary className="cursor-pointer text-xs font-medium text-neutral-300">
+            {t('settings.connections.drive.retired.title')}
+          </summary>
+          <div className="mt-2 flex flex-col gap-2">
+            <p className="text-xs text-neutral-500">
+              {t(
+                purgeReady
+                  ? 'settings.connections.drive.retired.ready'
+                  : 'settings.connections.drive.retired.wait',
+                { date: formatDateTime(retired.purgeAfter) },
+              )}
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={working || !purgeReady || !configured}
+              onClick={() => void run('purge')}
+            >
+              {t('settings.connections.drive.retired.purge')}
+            </Button>
+          </div>
+        </details>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        {configured && (!selected || needsSignIn) ? (
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={working}
+            onClick={() => void run('connect')}
+          >
+            {t(
+              selected ? 'settings.connections.drive.signIn' : 'settings.connections.drive.connect',
+            )}
+          </Button>
+        ) : null}
+        {configured && selected && media.mediaSet.length > 1 ? (
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={working}
+            onClick={() => void run('disconnect')}
+          >
+            {t('settings.connections.drive.disconnect')}
+          </Button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 /**
  * The v6 connectors, as designed-but-inert slots (V5-P0c). Each names itself,
  * says what it does in one line, states its sync semantics (a one-time import
@@ -226,7 +603,6 @@ function GoogleSection() {
  * collapsed `<details>` so the live Google identity stays the visible thing.
  */
 const CONNECTOR_SLOTS = [
-  { key: 'drive', sync: 'stayConnected' },
   { key: 'bankCash', sync: 'stayConnected' },
   { key: 'parqet', sync: 'oneTime' },
 ] as const;
@@ -295,8 +671,23 @@ function ConnectorSlots() {
  * (moved here from Security, behaviour unchanged) sits up top as the live thing,
  * and the future connectors fold away below as compact designed placeholders.
  */
-export function ConnectionsPage() {
+export function ConnectionsPage({
+  driveConnection,
+  driveUnlock,
+  driveConfigured = Boolean(import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID),
+}: {
+  driveConnection?: DriveConnectionController | null;
+  driveUnlock?:
+    | ((passphrase: string, options: VaultDriveUnlockOptions) => Promise<DriveConnectionController>)
+    | null;
+  driveConfigured?: boolean;
+} = {}) {
   const t = useT();
+  const runtime = useOptionalVaultRuntime();
+  const resolvedDriveConnection =
+    driveConnection === undefined ? (runtime?.connection ?? null) : driveConnection;
+  const resolvedDriveUnlock =
+    driveUnlock === undefined ? (runtime?.unlockWithPassphrase ?? null) : driveUnlock;
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-1">
@@ -307,6 +698,12 @@ export function ConnectionsPage() {
       </div>
 
       <GoogleSection />
+
+      <DriveVaultSection
+        connection={resolvedDriveConnection}
+        configured={driveConfigured}
+        unlock={resolvedDriveUnlock}
+      />
 
       <ConnectorSlots />
     </div>

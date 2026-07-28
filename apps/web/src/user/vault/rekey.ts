@@ -1,5 +1,5 @@
 import {
-  type VaultDocumentV1,
+  type VaultDocument,
   type VaultEnvelopeHeader,
   type VaultWrappedKey,
 } from '@bettertrack/contracts';
@@ -50,7 +50,7 @@ export type VaultKeyIdGenerator = () => string;
 export interface RekeyResult {
   envelope: Uint8Array;
   header: VaultEnvelopeHeader;
-  document: VaultDocumentV1;
+  document: VaultDocument;
   vaultKey: Uint8Array;
 }
 
@@ -195,7 +195,7 @@ function assertFreshRekeyMetadata(
 }
 
 async function reencrypt(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   vaultKey: Uint8Array,
   priorHeader: VaultEnvelopeHeader,
   wrappedKeys: VaultWrappedKey[],

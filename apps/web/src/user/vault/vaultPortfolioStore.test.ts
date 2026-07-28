@@ -22,7 +22,7 @@ import {
   vaultStrictDocumentV1Schema,
   type PortfolioAsset,
   type PortfolioSummary,
-  type VaultDocumentV1,
+  type VaultDocument,
   type VaultEntity,
   type VaultEnvelopeHeader,
 } from '@bettertrack/contracts';
@@ -182,6 +182,41 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       { data: { amountEur: '0.1' } },
       { data: { amountEur: '0.2' } },
     ]);
+  });
+
+  it('provisions the Main cash source on first implicit cash touch like the server', async () => {
+    const document = initialDocument();
+    document.entities.cashSource = [];
+    const engine = createMutableEngine(document);
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    await expect(store.depositCash(PORTFOLIO_ID, { amountEur: 100 })).resolves.toMatchObject({
+      sourceBalanceEur: 100,
+      balanceEur: 100,
+    });
+
+    const sources = (engine.state.active?.document.entities.cashSource ?? []).filter(
+      (entity) => entity.deletedAt === null,
+    );
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.data).toMatchObject({
+      portfolioId: PORTFOLIO_ID,
+      name: 'Main',
+      type: 'cash',
+      isMain: true,
+      archivedAt: null,
+    });
+    expect(engine.state.active?.document.entities.cashMovement).toMatchObject([
+      { data: { amountEur: '100', sourceId: sources[0]!.id } },
+    ]);
+
+    // Only the implicit Main provisions; an explicit unknown source still fails.
+    await expect(
+      store.depositCash(PORTFOLIO_ID, { amountEur: 1, sourceId: REMOTE_DEVICE_ID }),
+    ).rejects.toMatchObject({ code: 'VAULT_ENTITY_NOT_FOUND' });
   });
 
   it('tombstones a deleted portfolio and all of its portfolio-scoped children', async () => {
@@ -520,7 +555,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     it.each([
       [
         'an inherited manual amount default',
-        (document: VaultDocumentV1) => {
+        (document: VaultDocument) => {
           document.entities.taxSetting = [
             vaultEntity(GENERATED_IDS[6], {
               userId: USER_ID,
@@ -536,7 +571,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       ],
       [
         'a portfolio manual rate default',
-        (document: VaultDocumentV1) => {
+        (document: VaultDocument) => {
           document.entities.portfolioSetting = [
             vaultEntity(GENERATED_IDS[6], {
               portfolioId: PORTFOLIO_ID,
@@ -1725,7 +1760,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       side: 'buy',
       executedAt: 'not-an-instant',
     });
-    const local: VaultDocumentV1 = {
+    const local: VaultDocument = {
       ...remote,
       entities: {
         ...remote.entities,
@@ -1984,7 +2019,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
   });
 });
 
-function initialDocument(): VaultDocumentV1 {
+function initialDocument(): VaultDocument {
   return {
     schemaVersion: 1,
     entities: {
@@ -2027,7 +2062,7 @@ function initialDocument(): VaultDocumentV1 {
   };
 }
 
-function strictDocumentFrom(document: VaultDocumentV1) {
+function strictDocumentFrom(document: VaultDocument) {
   return vaultStrictDocumentV1Schema.parse({
     schemaVersion: document.schemaVersion,
     entities: Object.entries(document.entities).flatMap(([kind, entities]) =>
@@ -2039,8 +2074,8 @@ function strictDocumentFrom(document: VaultDocumentV1) {
 
 function documentFromStrictDocument(
   strict: ReturnType<typeof vaultStrictDocumentV1Schema.parse>,
-): VaultDocumentV1 {
-  const entities: VaultDocumentV1['entities'] = {};
+): VaultDocument {
+  const entities: VaultDocument['entities'] = {};
   for (const strictEntity of strict.entities) {
     const { kind, ...entity } = strictEntity;
     entities[kind] = [...(entities[kind] ?? []), entity];
@@ -2093,7 +2128,7 @@ function fixtureDecimal(value: unknown): unknown {
 }
 
 function configureEffectiveEngineTaxMode(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   mode: 'country_specific' | 'custom',
 ): void {
   if (mode === 'country_specific') {
@@ -2131,7 +2166,7 @@ function configureEffectiveEngineTaxMode(
   ];
 }
 
-function createMutableEngine(document: VaultDocumentV1, commit = true): VaultSyncEngine {
+function createMutableEngine(document: VaultDocument, commit = true): VaultSyncEngine {
   const home = inertHome();
   let version = 1;
   let state: VaultSyncState = {
@@ -2223,7 +2258,7 @@ function fullHeader(version: number): VaultEnvelopeHeader {
   };
 }
 
-async function encrypted(document: VaultDocumentV1, version: number): Promise<Uint8Array> {
+async function encrypted(document: VaultDocument, version: number): Promise<Uint8Array> {
   return (
     await encryptVaultDocument({
       document,
@@ -2335,7 +2370,7 @@ function memoryRemote(initial: Uint8Array, initialVersion: number): MemoryRemote
 }
 
 async function createConcurrentSyncEngines(
-  document: VaultDocumentV1,
+  document: VaultDocument,
   scope: string,
 ): Promise<{
   first: VaultSyncEngine;

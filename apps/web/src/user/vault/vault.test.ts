@@ -309,13 +309,15 @@ describe('BTVAULT1 envelope and content crypto', () => {
     expect(bytesToBase64(decodeContractEnvelope(updateRequiredEnvelope).headerBytes)).toBe(
       vector.updateRequired.headerBytesBase64,
     );
-    expect(inspectVaultEnvelope(updateRequiredEnvelope)).toEqual({
-      status: vector.updateRequired.expectedStatus,
-      formatVersion: vector.updateRequired.formatVersion,
-      schemaVersion: vector.updateRequired.schemaVersion,
-    });
+    // This historical fixture represented "future v2" while v1 was current.
+    // V2 is now understood, so its intentionally unknown header member is
+    // rejected structurally instead of being treated as a future opaque shape.
+    expect(vector.updateRequired.schemaVersion).toBe(VAULT_DOCUMENT_VERSION);
+    expect(() => inspectVaultEnvelope(updateRequiredEnvelope)).toThrow(
+      expect.objectContaining({ code: 'envelope-invalid' }),
+    );
     expect(() => decodeVaultEnvelope(updateRequiredEnvelope)).toThrow(
-      expect.objectContaining({ code: 'update-required' }),
+      expect.objectContaining({ code: 'envelope-invalid' }),
     );
 
     const passphraseChanged = await changeVaultPassphrase({

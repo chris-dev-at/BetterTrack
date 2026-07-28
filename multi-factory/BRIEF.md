@@ -203,6 +203,19 @@ PR comment ending in exactly one of:
 Hard rule: at most one checker pass and at most one escalated retry per issue.
 `needs-human` must mean "only a human can answer this", not "the factory gave up".
 
+Triage state is durable in `state/triage/issue-<n>-pr<m>.json`. An `enqueued`
+outcome whose merge-queue entry the merger invalidated (branch update,
+conflict-fix) is revalidated with a fresh review at the current head — at most
+`MF_REVALIDATE_MAX` (default 3) times, and at most `MF_REVALIDATE_MAX + 1`
+paid review attempts in total per state, then the issue parks `needs-human`.
+
+**Re-arming a `needs-human` issue whose triage state completed:** archive the
+state file first, then relabel —
+`mkdir -p state/rearm-archive && mv state/triage/issue-<n>-pr<m>.json state/rearm-archive/issue-<n>-pr<m>-r-<UTCstamp>` and
+`gh issue edit <n> --add-label autopilot --remove-label needs-human`.
+A `complete/human` state left in place re-parks the issue on the next tick by
+design; relabeling alone is not a re-arm.
+
 ## 8. The merger (single, sequential — kills BEHIND races)
 
 One merger, inside the master loop, processing `state/merge-queue/` FIFO:

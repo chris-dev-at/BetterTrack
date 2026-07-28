@@ -50,8 +50,10 @@ export const VAULT_MAGIC = 'BTVAULT1';
 export const VAULT_HEADER_LENGTH_PREFIX_BYTES = 4;
 /** Envelope layout version (`formatVersion` in the header). */
 export const VAULT_FORMAT_VERSION = 1;
-/** Payload document version (`schemaVersion` in the header + document). */
-export const VAULT_DOCUMENT_VERSION = 1;
+/** First payload document version, retained for legacy encrypted vaults. */
+export const VAULT_DOCUMENT_V1_VERSION = 1;
+/** Latest payload document version (`schemaVersion` in the header + document). */
+export const VAULT_DOCUMENT_VERSION = 2;
 /** Content cipher — WebCrypto AES-256-GCM (native on every target platform). */
 export const VAULT_CONTENT_CIPHER = 'A256GCM';
 /** KEK derivation — Argon2id (the server's own argon2id cost family). */
@@ -153,6 +155,11 @@ const ED25519_SPKI_DER_PREFIX = new Uint8Array([
 ]);
 const ED25519_SPKI_DER_BYTES = 44;
 const ED25519_SPKI_BASE64URL_CHARS = 59;
+const ED25519_PKCS8_DER_PREFIX = new Uint8Array([
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+]);
+const ED25519_PKCS8_DER_BYTES = 48;
+const ED25519_PKCS8_BASE64URL_CHARS = 64;
 
 /**
  * Decode unpadded base64url without relying on Node's Buffer so this contract
@@ -203,6 +210,13 @@ function isEd25519SpkiBase64url(value: string): boolean {
   return ED25519_SPKI_DER_PREFIX.every((byte, index) => der[index] === byte);
 }
 
+function isEd25519Pkcs8Base64url(value: string): boolean {
+  if (value.length !== ED25519_PKCS8_BASE64URL_CHARS) return false;
+  const der = decodeBase64url(value);
+  if (!der || der.length !== ED25519_PKCS8_DER_BYTES) return false;
+  return ED25519_PKCS8_DER_PREFIX.every((byte, index) => der[index] === byte);
+}
+
 /**
  * Public verifier for an Ed25519 key whose private half remains only inside the
  * client-decrypted vault. It is canonical DER SPKI encoded as base64url; it is
@@ -214,6 +228,34 @@ export const vaultRetirementProofPublicKeySchema = z
   .length(ED25519_SPKI_BASE64URL_CHARS, 'must encode a 44-byte DER SPKI key')
   .refine(isEd25519SpkiBase64url, 'must be a DER SPKI encoded Ed25519 public key');
 export type VaultRetirementProofPublicKey = z.infer<typeof vaultRetirementProofPublicKeySchema>;
+
+/**
+ * The matching Ed25519 private key, encoded as canonical PKCS#8 and held only
+ * inside the encrypted client document. It is never part of a server DTO.
+ */
+export const vaultRetirementProofPrivateKeySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]+$/, 'must be base64url')
+  .length(ED25519_PKCS8_BASE64URL_CHARS, 'must encode a 48-byte DER PKCS#8 key')
+  .refine(isEd25519Pkcs8Base64url, 'must be a DER PKCS#8 encoded Ed25519 private key');
+export type VaultRetirementProofPrivateKey = z.infer<typeof vaultRetirementProofPrivateKeySchema>;
+
+/**
+ * Client-only security material encrypted with the rest of the vault. The
+ * server may receive the public verifier header, but never this object or its
+ * private key.
+ */
+export const vaultClientSecuritySchema = z
+  .object({
+    retirementProof: z
+      .object({
+        publicKey: vaultRetirementProofPublicKeySchema,
+        privateKey: vaultRetirementProofPrivateKeySchema,
+      })
+      .strict(),
+  })
+  .strict();
+export type VaultClientSecurity = z.infer<typeof vaultClientSecuritySchema>;
 
 /** Portfolio-free receipt for an inactive server candidate. */
 export const paranoidServerCandidateMetadataSchema = z
@@ -983,7 +1025,7 @@ export type VaultMergeRecord = z.infer<typeof vaultMergeRecordSchema>;
 /** Strict v1 restore payload; newer versions are rejected without coercion. */
 export const vaultStrictDocumentV1Schema = z
   .object({
-    schemaVersion: z.literal(VAULT_DOCUMENT_VERSION),
+    schemaVersion: z.literal(VAULT_DOCUMENT_V1_VERSION),
     entities: z.array(vaultStrictEntitySchema),
     mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
   })
@@ -991,17 +1033,42 @@ export const vaultStrictDocumentV1Schema = z
 export type VaultStrictDocumentV1 = z.infer<typeof vaultStrictDocumentV1Schema>;
 
 /**
- * The decrypted vault document, version 1 (`§2`). A per-kind map of sync-tracked
- * entities plus a bounded merge log. Clients migrate older documents forward
- * with pure `v(n)→v(n+1)` functions and write back at the current version; a
- * client meeting a newer version than it knows goes read-only, never destructive.
+ * The original decrypted vault document (`§2`). A per-kind map of sync-tracked
+ * entities plus a bounded merge log. It remains readable so a client can
+ * provision the v2 retirement proof during its unlocked initialization.
  */
 export const vaultDocumentV1Schema = z.object({
-  schemaVersion: z.literal(VAULT_DOCUMENT_VERSION),
+  schemaVersion: z.literal(VAULT_DOCUMENT_V1_VERSION),
   entities: z.record(vaultEntityKindSchema, z.array(vaultEntitySchema)),
   mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
 });
 export type VaultDocumentV1 = z.infer<typeof vaultDocumentV1Schema>;
+
+/**
+ * Version 2 binds the client-held retirement private key to a payload/header
+ * version that v1 clients reject before parsing. `clientSecurity` is required:
+ * a v2 writer can never silently downgrade a verifier-backed vault to a
+ * headerless/keyless document.
+ */
+export const vaultDocumentV2Schema = z.object({
+  schemaVersion: z.literal(VAULT_DOCUMENT_VERSION),
+  entities: z.record(vaultEntityKindSchema, z.array(vaultEntitySchema)),
+  mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
+  /**
+   * Browser-only proof material. The unlocked client provisions it before
+   * activating or retiring server media. It is deliberately absent from the
+   * rehydration DTO above.
+   */
+  clientSecurity: vaultClientSecuritySchema,
+});
+export type VaultDocumentV2 = z.infer<typeof vaultDocumentV2Schema>;
+
+/** Every payload version this client can read without destructive coercion. */
+export const vaultDocumentSchema = z.discriminatedUnion('schemaVersion', [
+  vaultDocumentV1Schema,
+  vaultDocumentV2Schema,
+]);
+export type VaultDocument = z.infer<typeof vaultDocumentSchema>;
 
 // ── Internal disable / rehydration DTOs ──────────────────────────────────────
 
