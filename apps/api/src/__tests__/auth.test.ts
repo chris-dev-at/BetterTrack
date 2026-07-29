@@ -1,5 +1,6 @@
+import { and, eq, gt, isNull } from 'drizzle-orm';
 import request from 'supertest';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   healthResponseSchema,
@@ -8,9 +9,50 @@ import {
 } from '@bettertrack/contracts';
 
 import { createUserRepository } from '../data/repositories/userRepository';
+import { emailLog, passwordResetTokens, users } from '../data/schema';
+import type { MailTransport, OutgoingMail } from '../services/email/transport';
+import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+
+const SMTP_ENV = {
+  SMTP_HOST: 'smtp.test.local',
+  SMTP_PORT: '587',
+  SMTP_USER: 'mailer',
+  SMTP_PASS: 'super-secret-smtp-pass',
+  SMTP_FROM: 'BetterTrack <no-reply@test.local>',
+} satisfies Partial<NodeJS.ProcessEnv>;
+
+function recordingTransport(): MailTransport & { sent: OutgoingMail[] } {
+  const sent: OutgoingMail[] = [];
+  return {
+    sent,
+    async send(mail) {
+      sent.push(mail);
+    },
+  };
+}
+
+function requestPasswordReset(target: TestHarness, email: string) {
+  return request(target.app)
+    .post('/api/v1/auth/password-reset/request')
+    .set(...XRW)
+    .send({ email });
+}
+
+function completePasswordReset(target: TestHarness, token: string, newPassword: string) {
+  return request(target.app)
+    .post('/api/v1/auth/password-reset/complete')
+    .set(...XRW)
+    .send({ token, newPassword });
+}
+
+function tokenFromMail(mail: OutgoingMail): string {
+  const token = mail.text.split('/reset/')[1]?.split(/\s/)[0];
+  if (!token) throw new Error('reset URL not found in email');
+  return token;
+}
 
 let harness: TestHarness;
 
@@ -233,5 +275,132 @@ describe('password change invalidates all sessions (PROJECTPLAN.md §6.1, §10)'
       .set(...XRW)
       .send({ identifier: admin.email, password: 'admin-rotated-secret-2' });
     expect(fresh.status).toBe(200);
+  });
+});
+
+describe('self-service password-reset concurrency', () => {
+  it('lets exactly one concurrent completion consume a token before hashing or minting a session', async () => {
+    const transport = recordingTransport();
+    const baseHasher = createPasswordHasher({ memoryCost: 4096, timeCost: 1 });
+    const hashedPasswords: string[] = [];
+    const countingHasher: PasswordHasher = {
+      async hash(password) {
+        hashedPasswords.push(password);
+        return baseHasher.hash(password);
+      },
+      verify: baseHasher.verify,
+    };
+    harness = await createTestApp({
+      env: SMTP_ENV,
+      emailTransport: transport,
+      passwordHasher: countingHasher,
+    });
+    const user = await harness.seedUser();
+
+    expect((await requestPasswordReset(harness, user.email)).body).toEqual({ ok: true });
+    const token = tokenFromMail(transport.sent[0]!);
+    const redisSet = vi.spyOn(harness.ctx.redis, 'set');
+    const candidates = ['concurrent-reset-winner-a1', 'concurrent-reset-winner-b2'] as const;
+
+    const responses = await Promise.all(
+      candidates.map((newPassword) => completePasswordReset(harness, token, newPassword)),
+    );
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 400]);
+    expect(
+      responses.filter((response) => response.status === 400).map((response) => response.body),
+    ).toEqual([
+      expect.objectContaining({ error: expect.objectContaining({ code: 'INVALID_RESET' }) }),
+    ]);
+    expect(hashedPasswords).toHaveLength(1);
+    expect(candidates).toContain(hashedPasswords[0]);
+
+    const [stored] = await harness.db
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, user.id));
+    expect(await baseHasher.verify(stored!.passwordHash, hashedPasswords[0]!)).toBe(true);
+    expect(redisSet.mock.calls.filter(([key]) => String(key).startsWith('sess:'))).toHaveLength(1);
+    expect(await harness.ctx.redis.scard(`user_sessions:${user.id}`)).toBe(1);
+  });
+
+  it('serializes concurrent issues so exactly one live token remains for the user', async () => {
+    const transport = recordingTransport();
+    harness = await createTestApp({ env: SMTP_ENV, emailTransport: transport });
+    const user = await harness.seedUser();
+
+    const responses = await Promise.all([
+      requestPasswordReset(harness, user.email),
+      requestPasswordReset(harness, user.email),
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(responses.map((response) => response.body)).toEqual([{ ok: true }, { ok: true }]);
+
+    const now = new Date();
+    const live = await harness.db
+      .select()
+      .from(passwordResetTokens)
+      .where(
+        and(
+          eq(passwordResetTokens.userId, user.id),
+          isNull(passwordResetTokens.usedAt),
+          gt(passwordResetTokens.expiresAt, now),
+        ),
+      );
+    expect(live).toHaveLength(1);
+    expect(
+      await harness.db
+        .select()
+        .from(passwordResetTokens)
+        .where(eq(passwordResetTokens.userId, user.id)),
+    ).toHaveLength(1);
+  });
+
+  it('returns the uniform acknowledgement without waiting for a slow email transport', async () => {
+    let signalSendStarted!: () => void;
+    let releaseSend!: () => void;
+    const sendStarted = new Promise<void>((resolve) => {
+      signalSendStarted = resolve;
+    });
+    const sendGate = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    const slowTransport: MailTransport = {
+      async send() {
+        signalSendStarted();
+        await sendGate;
+      },
+    };
+    harness = await createTestApp({ env: SMTP_ENV, emailTransport: slowTransport });
+    const user = await harness.seedUser();
+
+    const knownRequest = requestPasswordReset(harness, user.email).then((response) => response);
+    await sendStarted;
+    let timeout: NodeJS.Timeout | undefined;
+    const first = await Promise.race([
+      knownRequest.then(() => 'response' as const),
+      new Promise<'timeout'>((resolve) => {
+        timeout = setTimeout(() => resolve('timeout'), 250);
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+    releaseSend();
+
+    const known = await knownRequest;
+    const unknown = await requestPasswordReset(harness, 'nobody-here@test.dev');
+    expect(first).toBe('response');
+    expect(known.status).toBe(200);
+    expect(known.body).toEqual({ ok: true });
+    expect(unknown.body).toEqual(known.body);
+
+    await vi.waitFor(
+      async () => {
+        const rows = await harness.db
+          .select()
+          .from(emailLog)
+          .where(eq(emailLog.recipient, user.email));
+        expect(rows).toEqual([expect.objectContaining({ status: 'sent' })]);
+      },
+      { timeout: 1_000 },
+    );
   });
 });
