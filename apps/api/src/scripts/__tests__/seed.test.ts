@@ -110,6 +110,24 @@ function options(overrides: Partial<SeedOptions> = {}): SeedOptions {
 }
 
 describe('seed command credential gates', () => {
+  it('rejects the published Grafana <strong> placeholder before hashing or writing', async () => {
+    const test = harness();
+    const result = await runSeedCommand(
+      options({ adminPassword: '<strong>' }),
+      test.dependencies,
+      test.output,
+    );
+
+    expect(result).toBe(1);
+    expect(test.created).toEqual([]);
+    expect(test.hashedPasswords).toEqual([]);
+    expect(test.portfolioOwners).toEqual([]);
+    expect(test.catalogCalls).toBe(0);
+    expect(test.oauthCalls).toBe(0);
+    expect(test.errors.join('\n')).toContain('known published placeholder');
+    expect(test.errors.join('\n')).not.toContain('<strong>');
+  });
+
   it('rejects every maintained published placeholder before creating anything in production', async () => {
     const placeholders = new Set([
       ...KNOWN_SECRET_PLACEHOLDERS,

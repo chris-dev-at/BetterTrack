@@ -5,6 +5,7 @@
  */
 export const KNOWN_SECRET_PLACEHOLDERS: ReadonlySet<string> = new Set([
   '<openssl rand -hex 64>',
+  '<strong>',
   '<strong password>',
   'change_me_immediately_after_first_login',
   'change_me_strong_password',
