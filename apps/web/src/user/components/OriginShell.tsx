@@ -139,7 +139,6 @@ function RailGroup({
   collapsed,
   expanded,
   label,
-  onExpand,
   onToggle,
 }: {
   item: SuiteItem;
@@ -148,7 +147,6 @@ function RailGroup({
   collapsed: boolean;
   expanded: boolean;
   label: string;
-  onExpand: () => void;
   onToggle: () => void;
 }) {
   const { t } = useI18n();
@@ -160,10 +158,12 @@ function RailGroup({
   const active = isDestinationActive(item, pathname);
   const childActive =
     !collapsed && SECTION_NAV[section].children.some((child) => isChildActive(child, pathname));
-  // Clicking the row usually navigates + opens; when it would navigate NOWHERE
-  // (already at the section root) it toggles the dropdown instead (owner), and
-  // the route-sync effect can't fight it because the pathname doesn't change.
-  const atRoot = pathname === item.to;
+  // Clicking the row of the ALREADY-SELECTED section toggles its dropdown;
+  // clicking any other row just navigates there, tree closed (owner: "default
+  // state is closed when item is freshly selected").
+  const onRowClick = () => {
+    if (active) onToggle();
+  };
   const panelId = `bt-rail-group-${section}`;
 
   return (
@@ -175,7 +175,7 @@ function RailGroup({
         <Link
           aria-current={active && !childActive ? 'page' : undefined}
           className="bt-rail-item__link"
-          onClick={atRoot ? onToggle : onExpand}
+          onClick={onRowClick}
           title={collapsed ? label : undefined}
           to={item.to}
         >
@@ -446,20 +446,19 @@ export function OriginShell() {
       return false;
     }
   });
-  // The open tree FOLLOWS the route (owner): inside a section exactly that
-  // section's dropdown is open; on Home/Control/etc. everything minimizes.
-  // The chevron can still open/close trees freely until the next navigation
-  // re-syncs — so no persistence: the route is the source of truth.
-  const [openGroup, setOpenGroup] = useState<SectionKey | null>(() => activeSection(pathname));
+  // Dropdowns are CLOSED by default (owner): navigation never auto-opens a
+  // tree — opening is explicit (double-click on the row, or the chevron).
+  // Leaving the open tree's section closes it, so at most the active
+  // section's tree can be open and Home always shows everything minimized.
+  const [openGroup, setOpenGroup] = useState<SectionKey | null>(null);
 
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   const closePalette = useCallback(() => setPaletteOpen(false), []);
 
   useEffect(() => {
-    setOpenGroup(activeSection(pathname));
+    const section = activeSection(pathname);
+    setOpenGroup((previous) => (previous === section ? previous : null));
   }, [pathname]);
-
-  const expandGroup = useCallback((section: SectionKey) => setOpenGroup(section), []);
 
   const toggleGroup = useCallback(
     (section: SectionKey) => setOpenGroup((previous) => (previous === section ? null : section)),
@@ -518,7 +517,6 @@ export function OriginShell() {
                   item={item}
                   key={item.to}
                   label={t(item.labelKey)}
-                  onExpand={() => expandGroup(section)}
                   onToggle={() => toggleGroup(section)}
                   pathname={pathname}
                   section={section}

@@ -146,36 +146,42 @@ test('the rail tree is the vital subset of the full in-page strip', async () => 
   expect(stripChildren).toEqual(expect.arrayContaining(['Custom assets', 'Analysis', 'Tax']));
 });
 
-test('the group of the active section opens itself', async () => {
+test('trees start closed; clicking the selected section row toggles its tree', async () => {
+  const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  expect(await screen.findByRole('button', { name: 'Collapse Workbench' })).toHaveAttribute(
+  // Navigation never auto-opens a dropdown — not even the active section's.
+  const rail = await findRail();
+  for (const section of ['Portfolio', 'Workbench', 'Assets', 'People']) {
+    expect(screen.getByRole('button', { name: `Expand ${section}` })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  }
+
+  // Workbench is the selected item — clicking it toggles the dropdown open.
+  await user.click(within(rail).getByRole('link', { name: 'Workbench' }));
+  expect(screen.getByRole('button', { name: 'Collapse Workbench' })).toHaveAttribute(
     'aria-expanded',
     'true',
   );
-  // Sections the user is not in stay as they were — closed by default.
-  expect(screen.getByRole('button', { name: 'Expand Assets' })).toHaveAttribute(
-    'aria-expanded',
-    'false',
-  );
 });
 
-test('the chevron toggles without navigating; leaving the sections minimizes all', async () => {
+test('the chevron toggles without navigating; leaving the section closes the tree', async () => {
   const user = userEvent.setup();
   renderAt('/assets/search');
 
-  const collapse = await screen.findByRole('button', { name: 'Collapse Assets' });
-  await user.click(collapse);
+  const expand = await screen.findByRole('button', { name: 'Expand Assets' });
+  await user.click(expand);
 
   // Toggling is navigation-free: the Assets page is still mounted.
-  expect(screen.getByRole('button', { name: 'Expand Assets' })).toHaveAttribute(
+  expect(screen.getByRole('button', { name: 'Collapse Assets' })).toHaveAttribute(
     'aria-expanded',
-    'false',
+    'true',
   );
   expect(screen.getByRole('searchbox', { name: 'Search assets' })).toBeInTheDocument();
 
-  // Navigating OUT of the sections (Home) minimizes every tree: the open
-  // dropdown follows the route, it is not a remembered preference.
+  // Navigating OUT of the section (Home) closes the open tree again.
   await user.click(within(await findRail()).getByRole('link', { name: 'Home' }));
   for (const section of ['Portfolio', 'Workbench', 'Assets', 'People']) {
     expect(screen.getByRole('button', { name: `Expand ${section}` })).toHaveAttribute(
@@ -185,29 +191,30 @@ test('the chevron toggles without navigating; leaving the sections minimizes all
   }
 });
 
-test('clicking the open section row toggles its dropdown when already at the root', async () => {
+test('a freshly selected section starts closed; re-clicks toggle open and shut', async () => {
   const user = userEvent.setup();
   renderAt('/portfolio');
 
   const rail = await findRail();
-  const row = within(rail).getByRole('link', { name: 'Portfolio' });
-  expect(screen.getByRole('button', { name: 'Collapse Portfolio' })).toHaveAttribute(
-    'aria-expanded',
-    'true',
-  );
 
-  // Already at /portfolio: the click navigates nowhere, so it collapses…
-  await user.click(row);
-  expect(screen.getByRole('button', { name: 'Expand Portfolio' })).toHaveAttribute(
+  // From Portfolio, selecting Workbench navigates — freshly selected = closed.
+  await user.click(within(rail).getByRole('link', { name: 'Workbench' }));
+  expect(screen.getByRole('button', { name: 'Expand Workbench' })).toHaveAttribute(
     'aria-expanded',
     'false',
   );
 
-  // …and the next one opens again.
+  // Clicking the now-selected item again toggles it open, then shut.
+  const row = within(rail).getByRole('link', { name: 'Workbench' });
   await user.click(row);
-  expect(screen.getByRole('button', { name: 'Collapse Portfolio' })).toHaveAttribute(
+  expect(screen.getByRole('button', { name: 'Collapse Workbench' })).toHaveAttribute(
     'aria-expanded',
     'true',
+  );
+  await user.click(row);
+  expect(screen.getByRole('button', { name: 'Expand Workbench' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
   );
 });
 
@@ -215,7 +222,8 @@ test('the rail is an accordion — expanding one group closes the other', async 
   const user = userEvent.setup();
   renderAt('/portfolio');
 
-  expect(await screen.findByRole('button', { name: 'Collapse Portfolio' })).toHaveAttribute(
+  await user.click(await screen.findByRole('button', { name: 'Expand Portfolio' }));
+  expect(screen.getByRole('button', { name: 'Collapse Portfolio' })).toHaveAttribute(
     'aria-expanded',
     'true',
   );
