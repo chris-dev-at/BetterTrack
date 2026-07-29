@@ -22,7 +22,7 @@ test('admin chat ban: a banned user sees the neutral notice and cannot send', as
   await befriend(sender, recipient);
 
   // Open the conversation BEFORE the ban so history stays reachable to read.
-  await sender.page.goto('/social/chat');
+  await sender.page.goto('/people/chat');
   await sender.page.getByRole('button', { name: 'New message' }).click();
   const newChat = sender.page.getByRole('dialog', { name: 'New message' });
   await newChat.getByRole('button', { name: recipient.username }).click();

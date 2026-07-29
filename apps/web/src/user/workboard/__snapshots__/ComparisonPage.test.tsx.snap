@@ -1,53 +1,53 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`ComparisonPage > three conglomerates compare on one chart with a full stats grid (snapshot) 1`] = `
+exports[`ComparisonPage > three blueprints compare on one chart with a full stats grid (snapshot) 1`] = `
 <table
-  aria-label="Conglomerate comparison statistics"
-  class="w-full min-w-[36rem] text-sm"
+  aria-label="Blueprint comparison statistics"
+  class="bt-table"
+  style="min-width: 36rem;"
 >
   <thead>
-    <tr
-      class="border-b border-neutral-800 text-xs uppercase tracking-wide text-neutral-500"
-    >
+    <tr>
       <th
-        class="px-3 py-2 text-left font-medium"
         scope="col"
       >
         Metric
       </th>
       <th
-        class="px-3 py-2 text-right font-medium bg-sky-950/40"
+        class="is-num"
         scope="col"
+        style="background: var(--bt-blue-soft);"
       >
         <span
           class="inline-flex items-center justify-end gap-1.5"
         >
           <span
             aria-hidden="true"
-            class="inline-block size-2 rounded-full"
-            style="background-color: rgb(56, 189, 248);"
+            class="bt-dot"
+            style="background: rgb(56, 189, 248);"
           />
           <span
-            class="normal-case text-neutral-200"
+            class="bt-soft"
           >
             Alpha
           </span>
         </span>
         <label
-          class="mt-1 flex items-center justify-end gap-1 text-[0.65rem] font-normal normal-case text-neutral-400"
+          class="bt-meta mt-1 flex items-center justify-end gap-1"
         >
           <input
             aria-label="Use Alpha as the baseline"
             checked=""
-            class="size-3 accent-sky-600"
+            class="size-3"
             name="comparison-baseline"
+            style="accent-color: var(--bt-gold);"
             type="radio"
           />
           Baseline
         </label>
       </th>
       <th
-        class="px-3 py-2 text-right font-medium"
+        class="is-num"
         scope="col"
       >
         <span
@@ -55,29 +55,30 @@ exports[`ComparisonPage > three conglomerates compare on one chart with a full s
         >
           <span
             aria-hidden="true"
-            class="inline-block size-2 rounded-full"
-            style="background-color: rgb(251, 191, 36);"
+            class="bt-dot"
+            style="background: rgb(57, 135, 229);"
           />
           <span
-            class="normal-case text-neutral-200"
+            class="bt-soft"
           >
             Beta
           </span>
         </span>
         <label
-          class="mt-1 flex items-center justify-end gap-1 text-[0.65rem] font-normal normal-case text-neutral-400"
+          class="bt-meta mt-1 flex items-center justify-end gap-1"
         >
           <input
             aria-label="Use Beta as the baseline"
-            class="size-3 accent-sky-600"
+            class="size-3"
             name="comparison-baseline"
+            style="accent-color: var(--bt-gold);"
             type="radio"
           />
           Baseline
         </label>
       </th>
       <th
-        class="px-3 py-2 text-right font-medium"
+        class="is-num"
         scope="col"
       >
         <span
@@ -85,22 +86,23 @@ exports[`ComparisonPage > three conglomerates compare on one chart with a full s
         >
           <span
             aria-hidden="true"
-            class="inline-block size-2 rounded-full"
-            style="background-color: rgb(52, 211, 153);"
+            class="bt-dot"
+            style="background: rgb(217, 89, 38);"
           />
           <span
-            class="normal-case text-neutral-200"
+            class="bt-soft"
           >
             Gamma
           </span>
         </span>
         <label
-          class="mt-1 flex items-center justify-end gap-1 text-[0.65rem] font-normal normal-case text-neutral-400"
+          class="bt-meta mt-1 flex items-center justify-end gap-1"
         >
           <input
             aria-label="Use Gamma as the baseline"
-            class="size-3 accent-sky-600"
+            class="size-3"
             name="comparison-baseline"
+            style="accent-color: var(--bt-gold);"
             type="radio"
           />
           Baseline
@@ -109,241 +111,229 @@ exports[`ComparisonPage > three conglomerates compare on one chart with a full s
     </tr>
   </thead>
   <tbody>
-    <tr
-      class="border-b border-neutral-800/60 last:border-b-0"
-    >
+    <tr>
       <th
-        class="px-3 py-2 text-left font-medium text-neutral-400"
         scope="row"
       >
         Total return
       </th>
       <td
-        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+        class="is-num"
+        style="background: var(--bt-blue-soft);"
       >
         +10,00 %
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         +25,00 %
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           +15,00 %
         </span>
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         +5,00 %
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           -5,00 %
         </span>
       </td>
     </tr>
-    <tr
-      class="border-b border-neutral-800/60 last:border-b-0"
-    >
+    <tr>
       <th
-        class="px-3 py-2 text-left font-medium text-neutral-400"
         scope="row"
       >
         CAGR
       </th>
       <td
-        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+        class="is-num"
+        style="background: var(--bt-blue-soft);"
       >
         +8,00 %
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         +15,00 %
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           +7,00 %
         </span>
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         +4,00 %
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           -4,00 %
         </span>
       </td>
     </tr>
-    <tr
-      class="border-b border-neutral-800/60 last:border-b-0"
-    >
+    <tr>
       <th
-        class="px-3 py-2 text-left font-medium text-neutral-400"
         scope="row"
       >
         Max drawdown
       </th>
       <td
-        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+        class="is-num"
+        style="background: var(--bt-blue-soft);"
       >
         -5,00 %
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         -9,00 %
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           -4,00 %
         </span>
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         -3,00 %
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           +2,00 %
         </span>
       </td>
     </tr>
-    <tr
-      class="border-b border-neutral-800/60 last:border-b-0"
-    >
+    <tr>
       <th
-        class="px-3 py-2 text-left font-medium text-neutral-400"
         scope="row"
       >
         Volatility (ann.)
       </th>
       <td
-        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+        class="is-num"
+        style="background: var(--bt-blue-soft);"
       >
         12,00 %
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         18,00 %
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           +6,00 %
         </span>
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         9,00 %
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           -3,00 %
         </span>
       </td>
     </tr>
-    <tr
-      class="border-b border-neutral-800/60 last:border-b-0"
-    >
+    <tr>
       <th
-        class="px-3 py-2 text-left font-medium text-neutral-400"
         scope="row"
       >
         Best day
       </th>
       <td
-        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+        class="is-num"
+        style="background: var(--bt-blue-soft);"
       >
         +3,00 %
         <span
-          class="block text-xs text-neutral-500"
+          class="bt-meta block"
         >
           01.03.2022
         </span>
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         +5,00 %
         <span
-          class="block text-xs text-neutral-500"
+          class="bt-meta block"
         >
           01.03.2022
         </span>
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           +2,00 %
         </span>
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         +2,00 %
         <span
-          class="block text-xs text-neutral-500"
+          class="bt-meta block"
         >
           01.03.2022
         </span>
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           -1,00 %
         </span>
       </td>
     </tr>
-    <tr
-      class="border-b border-neutral-800/60 last:border-b-0"
-    >
+    <tr>
       <th
-        class="px-3 py-2 text-left font-medium text-neutral-400"
         scope="row"
       >
         Worst day
       </th>
       <td
-        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+        class="is-num"
+        style="background: var(--bt-blue-soft);"
       >
         -4,00 %
         <span
-          class="block text-xs text-neutral-500"
+          class="bt-meta block"
         >
           02.03.2022
         </span>
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         -7,00 %
         <span
-          class="block text-xs text-neutral-500"
+          class="bt-meta block"
         >
           02.03.2022
         </span>
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           -3,00 %
         </span>
       </td>
       <td
-        class="px-3 py-2 text-right text-neutral-100"
+        class="is-num"
       >
         -2,00 %
         <span
-          class="block text-xs text-neutral-500"
+          class="bt-meta block"
         >
           02.03.2022
         </span>
         <span
-          class="block text-xs text-neutral-400"
+          class="bt-meta block"
         >
           +2,00 %
         </span>

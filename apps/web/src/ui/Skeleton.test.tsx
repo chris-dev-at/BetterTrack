@@ -38,8 +38,8 @@ describe('Skeleton', () => {
     expect(el).not.toHaveClass('h-4');
   });
 
-  test('animates via animate-pulse', () => {
+  test('animates via the Origin skeleton shimmer', () => {
     render(<Skeleton />);
-    expect(screen.getByRole('status', { name: 'Loading' })).toHaveClass('animate-pulse');
+    expect(screen.getByRole('status', { name: 'Loading' })).toHaveClass('bt-skeleton');
   });
 });

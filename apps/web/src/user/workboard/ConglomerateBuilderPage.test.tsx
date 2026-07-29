@@ -71,7 +71,7 @@ function detail(positions: Array<{ id: string; symbol: string; weightPct: number
   };
 }
 
-/** One of the user's other conglomerates, offered by the nest picker (V5-P6). */
+/** One of the user's other blueprints, offered by the nest picker (V5-P6). */
 function summary(id: string, name: string, positionCount = 2) {
   return {
     id,
@@ -106,10 +106,10 @@ function renderBuilder(initialPath: string) {
     <QueryClientProvider client={makeQueryClient()}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
-          <Route path="/workboard/conglomerates" element={<div>Conglomerates list</div>} />
-          <Route path="/workboard/conglomerates/new" element={<ConglomerateBuilderPage />} />
-          <Route path="/workboard/conglomerates/:id" element={<div>Detail view</div>} />
-          <Route path="/workboard/conglomerates/:id/edit" element={<ConglomerateBuilderPage />} />
+          <Route path="/workbench/blueprints" element={<div>Conglomerates list</div>} />
+          <Route path="/workbench/blueprints/new" element={<ConglomerateBuilderPage />} />
+          <Route path="/workbench/blueprints/:id" element={<div>Detail view</div>} />
+          <Route path="/workbench/blueprints/:id/edit" element={<ConglomerateBuilderPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -121,7 +121,7 @@ async function renderEdit(positions: Array<{ id: string; symbol: string; weightP
   vi.mocked(getConglomerate).mockResolvedValue(detail(positions));
   vi.mocked(updateConglomerate).mockResolvedValue(detail(positions));
   vi.mocked(replaceConglomeratePositions).mockResolvedValue(detail(positions));
-  renderBuilder(`/workboard/conglomerates/${CONGLOMERATE_ID}/edit`);
+  renderBuilder(`/workbench/blueprints/${CONGLOMERATE_ID}/edit`);
   for (const p of positions) {
     await screen.findByLabelText(`Weight for ${p.symbol}`);
   }
@@ -147,7 +147,7 @@ describe('ConglomerateBuilderPage', () => {
     vi.mocked(createConglomerate).mockResolvedValue(detail([]));
     vi.mocked(replaceConglomeratePositions).mockResolvedValue(detail([]));
     const user = userEvent.setup();
-    renderBuilder('/workboard/conglomerates/new');
+    renderBuilder('/workbench/blueprints/new');
 
     await user.type(screen.getByRole('searchbox', { name: /search assets/i }), 'AAPL');
     const select = await screen.findByRole('button', { name: /select aapl/i });
@@ -158,14 +158,14 @@ describe('ConglomerateBuilderPage', () => {
     expect(screen.getByLabelText('Weight slider for AAPL')).toHaveValue('0');
   });
 
-  test('the nest picker lists other own conglomerates (never itself) and adds one as a constituent (V5-P6)', async () => {
+  test('the nest picker lists other own blueprints (never itself) and adds one as a constituent (V5-P6)', async () => {
     vi.mocked(listConglomerates).mockResolvedValue({
       conglomerates: [summary(CONGLOMERATE_ID, 'My Basket'), summary('c2', 'Tech Mix')],
     });
     await renderEdit([{ id: 'a1', symbol: 'AAPL', weightPct: 60 }]);
     const user = userEvent.setup();
 
-    await user.click(screen.getByText('Nest a conglomerate'));
+    await user.click(screen.getByText('Nest a blueprint'));
     // The basket being edited is excluded from the picker.
     const addTechMix = await screen.findByRole('button', {
       name: 'Add Tech Mix as a constituent',

@@ -15,20 +15,12 @@ export interface AllocationDonutProps {
   title?: string;
 }
 
-// Categorical palette for segments without an explicit colour. Distinct hues,
-// readable on the dark shell.
-const PALETTE = [
-  '#38bdf8', // sky-400
-  '#34d399', // emerald-400
-  '#a78bfa', // violet-400
-  '#fbbf24', // amber-400
-  '#f472b6', // pink-400
-  '#22d3ee', // cyan-400
-  '#f87171', // red-400
-  '#a3e635', // lime-400
-  '#c084fc', // purple-400
-  '#fb923c', // orange-400
-];
+import { CATEGORICAL_SERIES } from './palette';
+
+// Fixed-order categorical palette (ui/charts/palette.ts) — validated with the
+// dataviz six-checks script; the slice gaps + the labelled legend carry
+// identity alongside colour.
+const PALETTE = CATEGORICAL_SERIES;
 
 /**
  * Recharts donut for weighted/segment data with an accessible legend
@@ -50,11 +42,8 @@ export function AllocationDonut({ data, size = 200, className, title }: Allocati
     return (
       <div
         role="status"
-        className={cx(
-          'grid place-items-center rounded-md bg-neutral-900/40 text-sm text-neutral-500',
-          className,
-        )}
-        style={{ minHeight: size }}
+        className={cx('grid place-items-center rounded-md text-sm', className)}
+        style={{ minHeight: size, background: 'var(--bt-surface-soft)', color: 'var(--bt-muted)' }}
       >
         {t('common.charts.noAllocationData')}
       </div>
@@ -96,11 +85,11 @@ export function AllocationDonut({ data, size = 200, className, title }: Allocati
                 return [`${formatShare(v / total)} (${rawLabel})`, String(name)];
               }}
               contentStyle={{
-                background: '#18181b',
-                border: '1px solid #3f3f46',
+                background: 'var(--bt-surface-strong)',
+                border: '1px solid var(--bt-border-strong)',
                 borderRadius: 6,
                 fontSize: 12,
-                color: '#e4e4e7',
+                color: 'var(--bt-text)',
               }}
             />
           </PieChart>
@@ -115,8 +104,8 @@ export function AllocationDonut({ data, size = 200, className, title }: Allocati
               className="h-2.5 w-2.5 shrink-0 rounded-sm"
               style={{ backgroundColor: s.color }}
             />
-            <span className="min-w-0 flex-1 truncate text-neutral-300">{s.label}</span>
-            <span className="tabular-nums text-neutral-400">{formatShare(s.value / total)}</span>
+            <span className="bt-soft min-w-0 flex-1 truncate">{s.label}</span>
+            <span className="bt-muted tabular-nums">{formatShare(s.value / total)}</span>
           </li>
         ))}
       </ul>

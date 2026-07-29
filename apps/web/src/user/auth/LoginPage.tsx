@@ -17,7 +17,15 @@ import {
 } from '../../lib/passkeys';
 import * as userApi from '../../lib/userApi';
 import { AdminAccountError, useAuth } from '../AuthContext';
-import { Alert, AuthCard, Button, Spinner, TextField, cx } from '../components/ui';
+import {
+  Alert,
+  AuthCard,
+  Button,
+  CHECKBOX_STYLE,
+  OrDivider,
+  Spinner,
+  TextField,
+} from '../components/ui';
 import { GoogleButton } from './GoogleButton';
 import { OAuthAccountChooser } from './OAuthAccountChooser';
 import {
@@ -145,7 +153,7 @@ export function LoginPage() {
 
   if (status === 'loading') {
     return (
-      <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
+      <div className="bt-app grid place-items-center">
         <Spinner label={t('auth.common.checkingSession')} />
       </div>
     );
@@ -338,7 +346,7 @@ export function LoginPage() {
           Google configured (so existing Google-linked users can sign in even in
           `closed` mode), but never inside the OAuth-authorize flow. */}
       {googleEnabled && !oauthContext ? (
-        <div className="mb-4">
+        <div className="mb-2.5">
           <GoogleButton />
         </div>
       ) : null}
@@ -346,7 +354,7 @@ export function LoginPage() {
           the browser supports WebAuthn — and, like Google, hidden in the
           OAuth-authorize flow. A passwordless alternative to the form below. */}
       {supportsPasskey && !oauthContext ? (
-        <div className="mb-4">
+        <div className="mb-5">
           <Button
             type="button"
             variant="secondary"
@@ -359,10 +367,7 @@ export function LoginPage() {
         </div>
       ) : null}
       {/* (2) Password login form. */}
-      <form
-        onSubmit={onSubmit}
-        className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
-      >
+      <form onSubmit={onSubmit} className="flex flex-col gap-4">
         {error ? <Alert tone="error">{error}</Alert> : null}
         <TextField
           label={t('auth.login.identifierLabel')}
@@ -391,18 +396,16 @@ export function LoginPage() {
               name="staySignedIn"
               checked={staySignedIn}
               onChange={(e) => setStaySignedIn(e.target.checked)}
-              className="h-4 w-4 rounded border-neutral-600 bg-neutral-950 text-sky-500 focus:ring-sky-500"
+              className="h-4 w-4"
+              style={CHECKBOX_STYLE}
             />
-            <span className="text-sm text-neutral-300">{t('auth.login.staySignedIn')}</span>
+            <span className="bt-soft text-sm">{t('auth.login.staySignedIn')}</span>
           </label>
         )}
         <Button type="submit" disabled={submitting}>
           {submitting ? t('auth.login.submitting') : t('auth.login.submit')}
         </Button>
-        <Link
-          to="/forgot-password"
-          className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
-        >
+        <Link to="/forgot-password" className="bt-link text-center text-sm font-medium">
           {t('auth.login.forgotPassword')}
         </Link>
       </form>
@@ -410,27 +413,11 @@ export function LoginPage() {
           stand-out card, at the very bottom with an OR divider above it. Shown
           only when the instance allows registration and never in the OAuth flow. */}
       {!oauthContext && registrationMode && registrationMode !== 'closed' ? (
-        <div className="mt-4 flex flex-col gap-3">
-          <div className="flex items-center gap-3">
-            <span className="h-px flex-1 bg-neutral-800" />
-            <span className="text-xs uppercase tracking-wide text-neutral-600">
-              {t('common.or')}
-            </span>
-            <span className="h-px flex-1 bg-neutral-800" />
-          </div>
-          <div className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
-            <p className="text-center text-xs font-medium uppercase tracking-wide text-neutral-500">
-              {t('auth.login.newHere')}
-            </p>
-            <Link
-              to="/register"
-              className={cx(
-                'inline-flex w-full items-center justify-center rounded-md px-3 py-2 text-sm font-semibold',
-                'border border-sky-700 bg-neutral-950 text-sky-300 transition-colors',
-                'hover:border-sky-500 hover:bg-neutral-900 hover:text-sky-200',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              )}
-            >
+        <div className="mt-5 flex flex-col gap-4">
+          <OrDivider label={t('common.or')} />
+          <div className="bt-panel bt-panel--soft flex flex-col gap-3 p-4">
+            <p className="bt-label text-center">{t('auth.login.newHere')}</p>
+            <Link to="/register" className="bt-btn w-full">
               {t('auth.login.signUp')}
             </Link>
           </div>
@@ -528,13 +515,10 @@ export function TwoFactorStep({
 
   return (
     <AuthCard subtitle={t('auth.twoFactor.subtitle')}>
-      <form
-        onSubmit={onSubmit}
-        className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
-      >
+      <form onSubmit={onSubmit} className="flex flex-col gap-4">
         {error ? <Alert tone="error">{error}</Alert> : null}
         {info ? <Alert tone="info">{info}</Alert> : null}
-        <p className="text-sm text-neutral-400">
+        <p className="bt-muted text-sm">
           {useRecovery ? t('auth.twoFactor.recoveryPrompt') : codePrompt}
         </p>
         <TextField
@@ -562,7 +546,7 @@ export function TwoFactorStep({
         {recoveryAvailable ? (
           <button
             type="button"
-            className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
+            className="bt-link text-center text-sm font-medium"
             onClick={() => {
               setUseRecovery((v) => !v);
               setValue('');
@@ -575,11 +559,7 @@ export function TwoFactorStep({
               : t('auth.twoFactor.useRecoveryCode')}
           </button>
         ) : null}
-        <button
-          type="button"
-          className="text-center text-sm font-medium text-neutral-400 hover:text-neutral-200"
-          onClick={onCancel}
-        >
+        <button type="button" className="bt-btn bt-btn--quiet" onClick={onCancel}>
           {resolvedCancelLabel}
         </button>
       </form>
@@ -628,22 +608,21 @@ function OAuthStaySignedInStep({
 
   return (
     <AuthCard subtitle={t('auth.oauthStay.subtitle')}>
-      <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+      <div className="flex flex-col gap-4">
         {error ? <Alert tone="error">{error}</Alert> : null}
-        <p className="text-sm text-neutral-400">{t('auth.oauthStay.description')}</p>
+        <p className="bt-muted text-sm">{t('auth.oauthStay.description')}</p>
         <label className="flex items-start gap-2.5">
           <input
             type="checkbox"
             name="staySignedIn"
             checked={stay}
             onChange={(e) => setStay(e.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded border-neutral-600 bg-neutral-950 text-sky-500 focus:ring-sky-500"
+            className="mt-0.5 h-4 w-4"
+            style={CHECKBOX_STYLE}
           />
-          <span className="text-sm text-neutral-300">
+          <span className="bt-soft text-sm">
             {t('auth.oauthStay.checkboxLabel')}
-            <span className="block text-xs text-neutral-500">
-              {t('auth.oauthStay.checkboxHint')}
-            </span>
+            <span className="bt-muted block text-xs">{t('auth.oauthStay.checkboxHint')}</span>
           </span>
         </label>
         {showRemember ? (
@@ -653,13 +632,12 @@ function OAuthStaySignedInStep({
               name="rememberDevice"
               checked={remember}
               onChange={(e) => setRemember(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-neutral-600 bg-neutral-950 text-sky-500 focus:ring-sky-500"
+              className="mt-0.5 h-4 w-4"
+              style={CHECKBOX_STYLE}
             />
-            <span className="text-sm text-neutral-300">
+            <span className="bt-soft text-sm">
               {t('auth.oauthRemember.checkboxLabel')}
-              <span className="block text-xs text-neutral-500">
-                {t('auth.oauthRemember.checkboxHint')}
-              </span>
+              <span className="bt-muted block text-xs">{t('auth.oauthRemember.checkboxHint')}</span>
             </span>
           </label>
         ) : null}

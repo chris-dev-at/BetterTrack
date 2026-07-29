@@ -92,7 +92,7 @@ async function inviteFriendFromMemberSheet(
 }
 
 async function acceptMirrorInviteThroughUi(user: E2EUser, chainName: string): Promise<void> {
-  await user.page.goto('/social/friends');
+  await user.page.goto('/people');
   const invitation = user.page.getByRole('listitem').filter({ hasText: chainName });
   await expect(invitation).toBeVisible({ timeout: 20_000 });
   await invitation.getByRole('button', { name: 'Review', exact: true }).click();

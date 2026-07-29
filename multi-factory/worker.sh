@@ -791,8 +791,11 @@ $LAST_CHECKER_BODY"; then
         [ "$LAST_CHECKER_PR_DISPOSITION" = BLOCKED ] || return 2
         log "triage: RELOCATE, PR blocked on #$LAST_CHECKER_NEW"
         add_dep_to_issue "$n" "$LAST_CHECKER_NEW" || return 2
-        gh label create "blocked-by:#$LAST_CHECKER_NEW" --color D93F0B >/dev/null 2>&1 || true
-        gh issue edit "$n" --add-label "blocked-by:#$LAST_CHECKER_NEW" >/dev/null 2>&1 || return 2
+        # One static label as the human-visible breadcrumb; the machine truth
+        # is the body-level dep written by add_dep_to_issue above. Per-blocker
+        # labels (blocked-by:#N) polluted the repo label namespace.
+        gh label create blocked --color D93F0B >/dev/null 2>&1 || true
+        gh issue edit "$n" --add-label blocked >/dev/null 2>&1 || return 2
         close_pr_idempotent "$pr" || return 2
         gh issue edit "$n" --remove-label "in-progress,mf:worker-$WORKER_ID" >/dev/null 2>&1 || true
         TRIAGE_OUTCOME=blocked
@@ -929,6 +932,9 @@ run_cycle(){ # $1=issue $2=relocated
   hb_ensure
   wstatus writing "$n"
   log "=== issue #$n [diff:$CYCLE_DIFF] ==="
+  # An assignment means the scheduler saw every body-level dep closed, so the
+  # cosmetic blocked breadcrumb (if any) is stale now — self-clean it.
+  gh issue edit "$n" --remove-label blocked >/dev/null 2>&1 || true
 
   if [ "$MF_DRY_RUN" = 1 ]; then
     log "DRY: would write/review issue #$n"

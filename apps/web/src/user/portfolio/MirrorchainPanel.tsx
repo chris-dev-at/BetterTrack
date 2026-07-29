@@ -262,7 +262,7 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
               <Button
                 variant="secondary"
                 onClick={() => setConfirmKind({ kind: 'dissolve' })}
-                className="border-red-700 text-red-300 hover:bg-red-900/40"
+                className="bt-btn--danger"
               >
                 {t('mirrorchain.actions.dissolve')}
               </Button>
@@ -396,11 +396,7 @@ function MemberRow({
           </Button>
         ) : null}
         {canKick ? (
-          <Button
-            variant="secondary"
-            className="border-red-700 text-red-300 hover:bg-red-900/40"
-            onClick={() => onAction('kick')}
-          >
+          <Button variant="secondary" className="bt-btn--danger" onClick={() => onAction('kick')}>
             {t('mirrorchain.actions.kick')}
           </Button>
         ) : null}

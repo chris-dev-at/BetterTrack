@@ -22,7 +22,7 @@ test('watchlists: add an asset to a second list via the caret menu', async ({ br
   const page = owner.page;
 
   // Create a second watchlist beside the locked default "General".
-  await page.goto('/workboard/watchlist');
+  await page.goto('/assets/watchlists');
   await page.getByLabel('New watchlist').fill('Tech');
   await page.getByRole('button', { name: 'New watchlist' }).click();
   const techRow = page.getByRole('listitem').filter({ hasText: 'Tech' });
@@ -42,7 +42,7 @@ test('watchlists: add an asset to a second list via the caret menu', async ({ br
 
   // Verify per-list membership on the manage-lists surface: Tech has the item,
   // General stayed empty (proving the list choice was honoured).
-  await page.goto('/workboard/watchlist');
+  await page.goto('/assets/watchlists');
   await expect(page.getByRole('listitem').filter({ hasText: 'Tech' })).toContainText('1 item', {
     timeout: 15_000,
   });

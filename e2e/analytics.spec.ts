@@ -41,7 +41,7 @@ test('analytics: compare vs an index/asset shows side-by-side stats and the cont
   // Seed a holding with history: one SAP.DE buy well inside the default 1Y range.
   await recordSapTrade(page, { side: 'buy', quantity: '5', price: '100', date: isoDaysAgo(200) });
 
-  await page.goto('/portfolio/analytics');
+  await page.goto('/portfolio/analysis');
   await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible();
 
   // The portfolio stats block proves the analytics series endpoint answered.

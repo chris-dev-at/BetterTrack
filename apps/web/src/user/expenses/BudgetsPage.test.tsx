@@ -184,11 +184,11 @@ describe('BudgetsPage', () => {
     const over = screen.getByRole('progressbar', { name: 'Over target' });
 
     expect(under).toHaveAttribute('aria-valuenow', '60');
-    expect(under.firstElementChild).toHaveClass('bg-emerald-500');
+    expect(under.firstElementChild).toHaveStyle({ background: 'var(--bt-blue)' });
     expect(close).toHaveAttribute('aria-valuenow', '80');
-    expect(close.firstElementChild).toHaveClass('bg-amber-500');
+    expect(close.firstElementChild).toHaveStyle({ background: 'var(--bt-blue)' });
     expect(over).toHaveAttribute('aria-valuenow', '100');
-    expect(over.firstElementChild).toHaveClass('bg-red-500');
+    expect(over.firstElementChild).toHaveStyle({ background: 'var(--bt-neg)' });
     expect(screen.getByText('40.00 € left')).toBeInTheDocument();
     expect(screen.getByText('20.00 € over')).toBeInTheDocument();
   });

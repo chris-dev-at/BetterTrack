@@ -107,12 +107,10 @@ function renderPage() {
 /**
  * The `<tr>` for a source, found via its bold name cell. Names can collide with
  * a type label or the "Main" badge, so match the name span carrying the row's
- * name styling rather than any occurrence.
+ * name styling (Origin's `bt-row-title`) rather than any occurrence.
  */
 function rowFor(name: string): HTMLElement {
-  const cell = screen
-    .getAllByText(name)
-    .find((el) => el.className.includes('font-medium text-neutral-100'));
+  const cell = screen.getAllByText(name).find((el) => el.className.includes('bt-row-title'));
   const row = cell?.closest('tr');
   if (!row) throw new Error(`no row for ${name}`);
   return row as HTMLElement;

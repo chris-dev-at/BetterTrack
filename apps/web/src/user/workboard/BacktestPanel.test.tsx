@@ -270,7 +270,7 @@ describe('BacktestPanel', () => {
     );
   });
 
-  test('a conglomerate benchmark renders two full stat columns + delta (V4-P7 snapshot)', async () => {
+  test('a blueprint benchmark renders two full stat columns + delta (V4-P7 snapshot)', async () => {
     vi.mocked(previewBacktest).mockImplementation(async (params) =>
       params.benchmark ? { ...RESPONSE, benchmark: BENCHMARK_RESULT } : RESPONSE,
     );
@@ -278,9 +278,9 @@ describe('BacktestPanel', () => {
     const user = userEvent.setup();
     renderPanel();
 
-    await user.click(screen.getByRole('button', { name: 'My conglomerates…' }));
+    await user.click(screen.getByRole('button', { name: 'My blueprints…' }));
     await user.selectOptions(
-      await screen.findByRole('combobox', { name: 'Benchmark conglomerate' }),
+      await screen.findByRole('combobox', { name: 'Benchmark blueprint' }),
       'cong-1',
     );
 

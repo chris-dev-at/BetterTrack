@@ -31,7 +31,7 @@ function renderPage() {
       <MemoryRouter initialEntries={[`/social/shared-with-me/ideas/${IDEA_ID}`]}>
         <Routes>
           <Route path="/social/shared-with-me/ideas/:ideaId" element={<SharedIdeaPage />} />
-          <Route path="/workboard/ideas/:ideaId" element={<div>Cloned idea open</div>} />
+          <Route path="/workbench/ideas/:ideaId" element={<div>Cloned idea open</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,

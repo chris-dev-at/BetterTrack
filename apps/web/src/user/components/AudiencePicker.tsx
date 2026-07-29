@@ -1,13 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { SHARE_AUDIENCES, type ShareAudience, type ShareKind } from '@bettertrack/contracts';
 
 import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
 import { useT } from '../../i18n';
+import { Button, Icon, Input } from '../../ui/origin';
 import { Avatar } from './Avatar';
 import { Dialog } from './Dialog';
-import { Alert, Button, cx } from './ui';
+import { Alert } from './ui';
 
 /**
  * The ONE reusable sharing control (PROJECTPLAN.md §13.3 V3-P5/P6, §16), used by
@@ -101,20 +102,37 @@ function TierIcon({ audience, className }: { audience: ShareAudience; className?
   }
 }
 
-function CheckIcon({ className }: { className?: string }) {
+/**
+ * Selection chrome, Origin-style. This dialog is the one place gold carries a
+ * *decision*: the chosen tier (and each chosen friend/group) takes the accent
+ * rule plus its soft wash, everything else stays on quiet neutral borders. That
+ * keeps the privacy choice unmistakable without flooding the sheet with gold.
+ */
+function selectedSurface(active: boolean): CSSProperties {
+  return {
+    background: active ? 'var(--bt-gold-soft)' : 'none',
+    border: `1px solid ${active ? 'var(--bt-gold)' : 'var(--bt-border)'}`,
+    borderRadius: 8,
+    transition: 'background var(--bt-t-fast), border-color var(--bt-t-fast)',
+  };
+}
+
+/** The round/square "chosen" marker at the end of each selectable row. */
+function CheckMark({ active, square = false }: { active: boolean; square?: boolean }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2.25}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <span
+      className="flex shrink-0 items-center justify-center"
+      style={{
+        background: active ? 'var(--bt-gold)' : 'none',
+        border: `1px solid ${active ? 'var(--bt-gold)' : 'var(--bt-border-strong)'}`,
+        borderRadius: square ? 5 : '50%',
+        color: active ? 'var(--bt-gold-ink)' : 'transparent',
+        height: 20,
+        width: 20,
+      }}
     >
-      <path d="M5 12.5l4.5 4.5L19 7.5" />
-    </svg>
+      <Icon name="check" size={12} />
+    </span>
   );
 }
 
@@ -231,20 +249,18 @@ export function AudiencePicker({
         <div className="flex flex-col gap-3">
           <Alert tone="success">{t('sharing.publicLinkReady')}</Alert>
           <div className="flex items-center gap-2">
-            <code className="flex-1 overflow-x-auto rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-200">
-              {mintedUrl}
-            </code>
-            <Button variant="secondary" onClick={copyLink}>
+            <code className="bt-input min-w-0 flex-1 overflow-x-auto">{mintedUrl}</code>
+            {/* Copying the freshly minted link is the whole point of this
+                state — it takes the gold; Close stays quiet. */}
+            <Button onClick={copyLink} variant="primary">
               {copied ? t('sharing.copied') : t('sharing.copy')}
             </Button>
-            {canNativeShare ? (
-              <Button variant="secondary" onClick={shareLink}>
-                {t('sharing.share')}
-              </Button>
-            ) : null}
+            {canNativeShare ? <Button onClick={shareLink}>{t('sharing.share')}</Button> : null}
           </div>
           <div className="flex justify-end">
-            <Button onClick={onClose}>{t('common.close')}</Button>
+            <Button onClick={onClose} variant="quiet">
+              {t('common.close')}
+            </Button>
           </div>
         </div>
       </Dialog>
@@ -262,7 +278,7 @@ export function AudiencePicker({
       <div className="flex flex-col gap-4">
         {mirrorSyncedCopy ? <Alert tone="info">{t('mirrorchain.share.syncedNotice')}</Alert> : null}
         <fieldset className="flex flex-col gap-2">
-          <legend className="mb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+          <legend className="bt-label" style={{ marginBottom: 4 }}>
             {t('sharing.audienceLabel')}
           </legend>
           {SHARE_AUDIENCES.map((value) => {
@@ -270,12 +286,8 @@ export function AudiencePicker({
             return (
               <label
                 key={value}
-                className={cx(
-                  'group flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition-colors',
-                  active
-                    ? 'border-sky-500 bg-sky-500/10 ring-1 ring-inset ring-sky-500/40'
-                    : 'border-neutral-800 hover:border-neutral-700 hover:bg-neutral-800/40',
-                )}
+                className="flex cursor-pointer items-center gap-3"
+                style={{ ...selectedSurface(active), padding: 12 }}
               >
                 <input
                   type="radio"
@@ -289,33 +301,22 @@ export function AudiencePicker({
                   }}
                 />
                 <span
-                  className={cx(
-                    'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg',
-                    active
-                      ? 'bg-sky-500/20 text-sky-300'
-                      : 'bg-neutral-800 text-neutral-400 group-hover:text-neutral-300',
-                  )}
+                  className="flex shrink-0 items-center justify-center"
+                  style={{
+                    background: active ? 'none' : 'var(--bt-surface-strong)',
+                    borderRadius: 6,
+                    color: active ? 'var(--bt-gold)' : 'var(--bt-muted)',
+                    height: 34,
+                    width: 34,
+                  }}
                 >
                   <TierIcon audience={value} className="h-5 w-5" />
                 </span>
                 <span className="flex flex-1 flex-col">
-                  <span className="text-sm font-medium text-neutral-100">
-                    {t(`sharing.options.${value}.label`)}
-                  </span>
-                  <span className="text-xs text-neutral-500">
-                    {t(`sharing.options.${value}.desc`)}
-                  </span>
+                  <span className="bt-row-title">{t(`sharing.options.${value}.label`)}</span>
+                  <span className="bt-row-sub">{t(`sharing.options.${value}.desc`)}</span>
                 </span>
-                <span
-                  className={cx(
-                    'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border',
-                    active
-                      ? 'border-sky-400 bg-sky-500 text-white'
-                      : 'border-neutral-700 text-transparent',
-                  )}
-                >
-                  <CheckIcon className="h-3 w-3" />
-                </span>
+                <CheckMark active={active} />
               </label>
             );
           })}
@@ -324,24 +325,24 @@ export function AudiencePicker({
         {audience === 'specific_friends' ? (
           <div className="flex flex-col gap-2">
             {friends.length === 0 ? (
-              <p className="text-sm text-neutral-500">{t('sharing.friendsNone')}</p>
+              <p className="bt-meta">{t('sharing.friendsNone')}</p>
             ) : (
               <>
                 <div className="flex items-center justify-between gap-2">
-                  <input
+                  <Input
                     type="search"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     placeholder={t('sharing.friendsSearchPlaceholder')}
                     aria-label={t('sharing.friendsSearchPlaceholder')}
-                    className="min-w-0 flex-1 rounded-md bg-neutral-950 px-3 py-1.5 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    className="min-w-0 flex-1"
                   />
-                  <span className="shrink-0 text-xs text-neutral-500">
+                  <span className="bt-meta shrink-0">
                     {t('sharing.friendsSelectedCount', { count: selectedCount })}
                   </span>
                 </div>
                 {filteredFriends.length === 0 ? (
-                  <p className="px-1 py-2 text-sm text-neutral-500">
+                  <p className="bt-meta" style={{ padding: '8px 4px' }}>
                     {t('sharing.friendsNoMatch', { query: search.trim() })}
                   </p>
                 ) : (
@@ -351,12 +352,8 @@ export function AudiencePicker({
                       return (
                         <li key={f.user.id}>
                           <label
-                            className={cx(
-                              'flex cursor-pointer items-center gap-3 rounded-lg border p-2 transition-colors',
-                              checked
-                                ? 'border-sky-500/60 bg-sky-500/10'
-                                : 'border-transparent hover:bg-neutral-800',
-                            )}
+                            className="flex cursor-pointer items-center gap-3"
+                            style={{ ...selectedSurface(checked), padding: 8 }}
                           >
                             <input
                               type="checkbox"
@@ -365,19 +362,8 @@ export function AudiencePicker({
                               onChange={() => toggleFriend(f.user.id)}
                             />
                             <Avatar name={f.user.username} iconId={f.user.profileIcon} size="sm" />
-                            <span className="flex-1 truncate text-sm text-neutral-200">
-                              {f.user.username}
-                            </span>
-                            <span
-                              className={cx(
-                                'flex h-5 w-5 shrink-0 items-center justify-center rounded-md border',
-                                checked
-                                  ? 'border-sky-400 bg-sky-500 text-white'
-                                  : 'border-neutral-600 text-transparent',
-                              )}
-                            >
-                              <CheckIcon className="h-3 w-3" />
-                            </span>
+                            <span className="bt-soft flex-1 truncate">{f.user.username}</span>
+                            <CheckMark active={checked} square />
                           </label>
                         </li>
                       );
@@ -392,7 +378,7 @@ export function AudiencePicker({
         {audience === 'group' ? (
           <div className="flex flex-col gap-2">
             {groups.length === 0 ? (
-              <p className="text-sm text-neutral-500">{t('sharing.groupsNone')}</p>
+              <p className="bt-meta">{t('sharing.groupsNone')}</p>
             ) : (
               <>
                 <ul className="flex max-h-56 flex-col gap-1 overflow-y-auto pr-1">
@@ -401,12 +387,8 @@ export function AudiencePicker({
                     return (
                       <li key={g.id}>
                         <label
-                          className={cx(
-                            'flex cursor-pointer items-center gap-3 rounded-lg border p-2 transition-colors',
-                            checked
-                              ? 'border-sky-500/60 bg-sky-500/10'
-                              : 'border-transparent hover:bg-neutral-800',
-                          )}
+                          className="flex cursor-pointer items-center gap-3"
+                          style={{ ...selectedSurface(checked), padding: 8 }}
                         >
                           <input
                             type="radio"
@@ -415,20 +397,11 @@ export function AudiencePicker({
                             checked={checked}
                             onChange={() => setGroupId(g.id)}
                           />
-                          <span className="flex-1 truncate text-sm text-neutral-200">{g.name}</span>
-                          <span className="shrink-0 text-xs text-neutral-500">
+                          <span className="bt-soft flex-1 truncate">{g.name}</span>
+                          <span className="bt-meta shrink-0">
                             {t('sharing.groupMemberCount', { count: g.memberCount })}
                           </span>
-                          <span
-                            className={cx(
-                              'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border',
-                              checked
-                                ? 'border-sky-400 bg-sky-500 text-white'
-                                : 'border-neutral-600 text-transparent',
-                            )}
-                          >
-                            <CheckIcon className="h-3 w-3" />
-                          </span>
+                          <CheckMark active={checked} />
                         </label>
                       </li>
                     );
@@ -445,14 +418,27 @@ export function AudiencePicker({
         ) : null}
 
         {audience === 'public_link' ? (
-          <div className="flex flex-col gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
-            <p className="text-sm font-medium text-amber-200">{t('sharing.publicWarning')}</p>
-            <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-200">
+          // §16 friction ladder, top rung: the strongest emphasis this dialog
+          // has — the accent rule and its wash, with the warning line in gold.
+          <div
+            className="flex flex-col gap-2"
+            style={{
+              background: 'var(--bt-gold-soft)',
+              border: '1px solid var(--bt-border-accent)',
+              borderRadius: 8,
+              padding: 12,
+            }}
+          >
+            <p className="bt-gold" style={{ fontWeight: 600 }}>
+              {t('sharing.publicWarning')}
+            </p>
+            <label className="bt-soft flex cursor-pointer items-start gap-2">
               <input
                 type="checkbox"
                 className="mt-0.5"
                 checked={acknowledged}
                 onChange={(e) => setAcknowledged(e.target.checked)}
+                style={{ accentColor: 'var(--bt-gold)' }}
               />
               <span>{t('sharing.publicAcknowledge')}</span>
             </label>
@@ -462,10 +448,10 @@ export function AudiencePicker({
         {mutation.isError ? <Alert tone="error">{t('sharing.error')}</Alert> : null}
 
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
+          <Button onClick={onClose} variant="quiet">
             {t('sharing.cancel')}
           </Button>
-          <Button onClick={() => mutation.mutate()} disabled={!canSubmit}>
+          <Button disabled={!canSubmit} onClick={() => mutation.mutate()} variant="primary">
             {mutation.isPending ? t('sharing.saving') : t('sharing.save')}
           </Button>
         </div>

@@ -59,7 +59,7 @@ type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 /**
  * The Conglomerate **Builder** (PROJECTPLAN.md §6.5, §7.2) — the full-screen
- * create/edit experience mounted at `/workboard/conglomerates/new` and
+ * create/edit experience mounted at `/workbench/blueprints/new` and
  * `…/:id/edit`. `/new` starts from a blank basket; `/:id/edit` loads the draft
  * (or active) Conglomerate first, then hands its positions to the same Builder.
  */
@@ -91,7 +91,7 @@ function EditBuilderLoader({ id }: { id: string }) {
       <BuilderFrame>
         <div className="mx-auto flex max-w-md flex-col gap-4 px-4 py-16">
           <Alert tone="error">{t('workboard.detail.loadError')}</Alert>
-          <Link to="/workboard/conglomerates" className="text-sm text-sky-400 hover:underline">
+          <Link to="/workbench/blueprints" className="text-sm bt-link">
             {t('workboard.detail.backToConglomeratesError')}
           </Link>
         </div>
@@ -365,7 +365,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
       setStatus(detail.status);
       void queryClient.invalidateQueries({ queryKey: ['conglomerates'] });
       void queryClient.invalidateQueries({ queryKey: ['conglomerate', id] });
-      navigate(`/workboard/conglomerates/${id}`);
+      navigate(`/workbench/blueprints/${id}`);
     } catch (err) {
       setActivateError(
         err instanceof ApiError ? err.message : t('workboard.builder.activateError'),
@@ -424,7 +424,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
 // ─── Frame + header ──────────────────────────────────────────────────────────
 
 function BuilderFrame({ children }: { children: React.ReactNode }) {
-  return <div className="flex min-h-screen flex-col bg-[#0b0e14] text-neutral-100">{children}</div>;
+  return <div className="flex min-h-screen flex-col bg-[#0b0e14]">{children}</div>;
 }
 
 function BuilderHeader({
@@ -448,13 +448,13 @@ function BuilderHeader({
 }) {
   const t = useT();
   return (
-    <header className="border-b border-neutral-800 bg-neutral-900/70">
+    <header className="bt-b-rule" style={{ background: 'var(--bt-bg-raised)' }}>
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <Link
-            to="/workboard/conglomerates"
+            to="/workbench/blueprints"
             aria-label={t('workboard.builder.closeAriaLabel')}
-            className="shrink-0 rounded px-2 py-1 text-sm text-neutral-500 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            className="shrink-0 rounded px-2 py-1 text-sm bt-muted hover:bt-soft"
           >
             ✕
           </Link>
@@ -464,7 +464,8 @@ function BuilderHeader({
             onChange={(e) => onNameChange(e.target.value)}
             placeholder={t('workboard.builder.defaultName')}
             aria-label={t('workboard.builder.nameAriaLabel')}
-            className="min-w-0 flex-1 rounded-md bg-transparent px-2 py-1.5 text-lg font-semibold text-neutral-100 ring-1 ring-inset ring-transparent placeholder:text-neutral-600 hover:ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            className="bt-input min-w-0 flex-1 text-lg font-semibold"
+            style={{ background: 'transparent', borderColor: 'transparent' }}
           />
         </div>
         <div className="flex shrink-0 items-center gap-3">
@@ -497,34 +498,23 @@ function SavePill({ state, error }: { state: SaveState; error: string | null }) 
   const base =
     'inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset';
   if (state === 'saving') {
-    return (
-      <span className={cx(base, 'bg-neutral-800 text-neutral-300 ring-neutral-700')}>
-        {t('workboard.builder.saving')}
-      </span>
-    );
+    return <span className={cx(base, 'bt-badge')}>{t('workboard.builder.saving')}</span>;
   }
   if (state === 'error') {
     return (
-      <span
-        className={cx(base, 'bg-red-950/60 text-red-300 ring-red-800')}
-        title={error ?? undefined}
-      >
+      <span className={cx(base, 'bt-badge bt-badge--neg')} title={error ?? undefined}>
         {t('workboard.builder.saveFailed')}
       </span>
     );
   }
   if (state === 'saved') {
     return (
-      <span className={cx(base, 'bg-emerald-950/60 text-emerald-300 ring-emerald-800')}>
+      <span className={cx(base, 'bt-badge bt-badge--pos')}>
         {t('workboard.builder.draftSaved')}
       </span>
     );
   }
-  return (
-    <span className={cx(base, 'bg-neutral-800 text-neutral-500 ring-neutral-700')}>
-      {t('workboard.builder.draftIdle')}
-    </span>
-  );
+  return <span className={cx(base, 'bt-badge')}>{t('workboard.builder.draftIdle')}</span>;
 }
 
 // ─── Left: add assets ────────────────────────────────────────────────────────
@@ -549,11 +539,11 @@ function AddAssetsPanel({
     <section aria-labelledby="add-assets-heading" className="flex flex-col gap-3">
       <h2
         id="add-assets-heading"
-        className="text-sm font-semibold uppercase tracking-wide text-neutral-400"
+        className="text-sm font-semibold uppercase tracking-wide bt-muted"
       >
         {t('workboard.builder.addAssetsHeading')}
       </h2>
-      <p className="text-xs text-neutral-500">{t('workboard.builder.addAssetsHint')}</p>
+      <p className="text-xs bt-muted">{t('workboard.builder.addAssetsHint')}</p>
       {notice ? <Alert tone="error">{notice}</Alert> : null}
       <AssetSearchBox onSelect={onSelect} placeholder={t('workboard.builder.searchPlaceholder')} />
       <NlBuilderPanel onApply={onApplyDraft} />
@@ -587,18 +577,18 @@ function NestConglomeratePanel({
   const candidates = (data?.conglomerates ?? []).filter((c) => c.id !== ownId && !nested.has(c.id));
 
   return (
-    <details className="rounded-lg border border-neutral-800 bg-neutral-900/30">
-      <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-neutral-300 hover:text-neutral-100">
+    <details className="bt-panel bt-panel--soft">
+      <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium bt-soft hover:">
         {t('workboard.builder.nestConglomerateHeading')}
       </summary>
-      <div className="flex flex-col gap-2 border-t border-neutral-800 p-3">
-        <p className="text-xs text-neutral-500">{t('workboard.builder.nestConglomerateHint')}</p>
+      <div className="flex flex-col gap-2 bt-t-rule p-3">
+        <p className="text-xs bt-muted">{t('workboard.builder.nestConglomerateHint')}</p>
         {isLoading ? (
           <Spinner label={t('workboard.builder.loading')} />
         ) : isError ? (
           <Alert tone="error">{t('workboard.builder.nestConglomerateLoadError')}</Alert>
         ) : candidates.length === 0 ? (
-          <p className="text-xs text-neutral-500">{t('workboard.builder.nestConglomerateEmpty')}</p>
+          <p className="text-xs bt-muted">{t('workboard.builder.nestConglomerateEmpty')}</p>
         ) : (
           <ul
             className="flex flex-col gap-1"
@@ -612,12 +602,12 @@ function NestConglomeratePanel({
                   aria-label={t('workboard.builder.nestConglomerateAddAriaLabel', {
                     name: c.name,
                   })}
-                  className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm text-neutral-200 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                  className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm bt-soft"
                 >
                   <span className="min-w-0 truncate" title={c.name}>
                     {c.name}
                   </span>
-                  <span className="shrink-0 text-xs text-neutral-500">
+                  <span className="shrink-0 text-xs bt-muted">
                     {c.positionCount === 1
                       ? t('workboard.conglomerates.positionCountOne', { count: c.positionCount })
                       : t('workboard.conglomerates.positionCountOther', {
@@ -657,7 +647,7 @@ function PositionsPanel({
       <div className="flex items-center justify-between gap-2">
         <h2
           id="positions-heading"
-          className="text-sm font-semibold uppercase tracking-wide text-neutral-400"
+          className="text-sm font-semibold uppercase tracking-wide bt-muted"
         >
           {t('workboard.builder.positionsHeading')}
         </h2>
@@ -672,7 +662,13 @@ function PositionsPanel({
       </div>
 
       {positions.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-neutral-800 bg-neutral-900/30 p-8 text-center text-sm text-neutral-500">
+        <div
+          className="rounded-lg p-8 text-center text-sm bt-muted"
+          style={{
+            border: '1px dashed var(--bt-border-strong)',
+            background: 'var(--bt-surface-soft)',
+          }}
+        >
           {t('workboard.builder.noPositionsMessage')}
         </div>
       ) : (
@@ -725,15 +721,13 @@ export function WeightRow({
   }, [weightPct, draft]);
 
   return (
-    <li className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 p-3 sm:flex-row sm:items-center sm:gap-4">
+    <li className="flex flex-col gap-2 bt-panel p-3 sm:flex-row sm:items-center sm:gap-4">
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center gap-2">
-          <span className="truncate font-mono text-sm font-semibold text-neutral-100">
-            {symbol}
-          </span>
+          <span className="truncate font-mono text-sm font-semibold">{symbol}</span>
           {position.kind === 'conglomerate' ? <NestedBadge /> : null}
         </span>
-        <span className="truncate text-xs text-neutral-500" title={name}>
+        <span className="truncate text-xs bt-muted" title={name}>
           {name}
         </span>
       </div>
@@ -747,7 +741,8 @@ export function WeightRow({
           value={weightPct}
           onChange={(e) => onWeight(Number(e.target.value))}
           aria-label={t('workboard.builder.weightSliderAriaLabel', { symbol })}
-          className="min-w-0 flex-1 accent-sky-500"
+          className="min-w-0 flex-1"
+          style={{ accentColor: 'var(--bt-gold)' }}
         />
         <div className="flex items-center gap-1">
           <input
@@ -764,9 +759,9 @@ export function WeightRow({
               if (Number.isFinite(parsed)) onWeight(parsed);
             }}
             aria-label={t('workboard.builder.weightAriaLabel', { symbol })}
-            className="w-20 rounded-md bg-neutral-950 px-2 py-1.5 text-right text-sm tabular-nums text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            className="bt-input w-20 text-right tabular-nums"
           />
-          <span aria-hidden="true" className="text-sm text-neutral-500">
+          <span aria-hidden="true" className="text-sm bt-muted">
             %
           </span>
         </div>
@@ -784,10 +779,8 @@ export function WeightRow({
           }
           title={locked ? t('workboard.builder.lockedTitle') : t('workboard.builder.lockTitle')}
           className={cx(
-            'rounded px-2 py-1 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-            locked
-              ? 'bg-amber-950/60 text-amber-300 ring-1 ring-inset ring-amber-800'
-              : 'text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200',
+            'rounded px-2 py-1 text-sm transition-colors ',
+            locked ? 'bt-badge bt-badge--gold' : 'bt-muted  hover:bt-soft',
           )}
         >
           {locked ? '🔒' : '🔓'}
@@ -796,7 +789,7 @@ export function WeightRow({
           type="button"
           onClick={onRemove}
           aria-label={t('workboard.builder.removeAriaLabel', { symbol })}
-          className="rounded px-2 py-1 text-sm text-neutral-500 hover:bg-neutral-800 hover:text-red-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          className="rounded px-2 py-1 text-sm bt-muted hover:bt-neg"
         >
           ✕
         </button>
@@ -808,8 +801,8 @@ export function WeightRow({
 function PositionsFooter({ positions }: { positions: BuilderPosition[] }) {
   const t = useT();
   return (
-    <div className="flex items-center justify-between rounded-lg border border-neutral-800 bg-neutral-900/60 px-4 py-3">
-      <span className="text-xs text-neutral-500">
+    <div className="flex items-center justify-between bt-panel px-4 py-3">
+      <span className="text-xs bt-muted">
         {t('workboard.builder.positionsCount', { count: positions.length, max: MAX_POSITIONS })}
       </span>
       <SumPill positions={positions} />
@@ -829,10 +822,7 @@ export function SumPill({ positions }: { positions: BuilderPosition[] }) {
 
   if (valid) {
     return (
-      <span
-        role="status"
-        className="inline-flex items-center rounded-full bg-emerald-950/60 px-3 py-1 text-sm font-semibold text-emerald-300 ring-1 ring-inset ring-emerald-800"
-      >
+      <span role="status" className="bt-badge bt-badge--pos px-3 py-1 text-sm font-semibold">
         {formatPercent(ACTIVE_SUM)}
       </span>
     );
@@ -843,10 +833,7 @@ export function SumPill({ positions }: { positions: BuilderPosition[] }) {
       ? t('workboard.builder.sumRemainingLeft', { value: formatPercent(remaining) })
       : t('workboard.builder.sumRemainingOver', { value: formatPercent(Math.abs(remaining)) });
   return (
-    <span
-      role="status"
-      className="inline-flex items-center rounded-full bg-amber-950/60 px-3 py-1 text-sm font-semibold text-amber-300 ring-1 ring-inset ring-amber-800"
-    >
+    <span role="status" className="bt-badge bt-badge--gold px-3 py-1 text-sm font-semibold">
       {formatPercent(sum)} — {tail}
     </span>
   );
@@ -868,14 +855,11 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
 
   return (
     <section aria-labelledby="preview-heading" className="flex flex-col gap-3">
-      <h2
-        id="preview-heading"
-        className="text-sm font-semibold uppercase tracking-wide text-neutral-400"
-      >
+      <h2 id="preview-heading" className="text-sm font-semibold uppercase tracking-wide bt-muted">
         {t('workboard.builder.livePreviewHeading')}
       </h2>
 
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+      <div className="bt-panel bt-panel--pad">
         <AllocationDonut
           data={donutData}
           size={180}
@@ -894,7 +878,11 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
 
       <div
         aria-label={t('workboard.builder.backtestPreviewAriaLabel')}
-        className="rounded-lg border border-dashed border-neutral-800 bg-neutral-900/30 p-6 text-center text-sm text-neutral-500"
+        className="rounded-lg p-6 text-center text-sm bt-muted"
+        style={{
+          border: '1px dashed var(--bt-border-strong)',
+          background: 'var(--bt-surface-soft)',
+        }}
       >
         {t('workboard.builder.backtestPreviewText')}
       </div>
@@ -937,9 +925,9 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-3">
-      <dt className="text-xs text-neutral-500">{label}</dt>
-      <dd className="mt-0.5 truncate text-sm font-semibold text-neutral-100" title={value}>
+    <div className="bt-panel p-3">
+      <dt className="text-xs bt-muted">{label}</dt>
+      <dd className="mt-0.5 truncate text-sm font-semibold" title={value}>
         {value}
       </dd>
     </div>
