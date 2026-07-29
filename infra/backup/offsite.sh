@@ -54,20 +54,32 @@ if [ ! -d "${BACKUP_DIR}" ] || [ ! -r "${BACKUP_DIR}" ] || [ ! -x "${BACKUP_DIR}
     exit 3
 fi
 
-mapfile -d '' -t local_dumps < <(
-    find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'bettertrack-*.sql.gz' -print0 \
-        | LC_ALL=C sort -zr
-)
+work_dir="$(mktemp -d)"
+trap 'rm -rf -- "${work_dir}"' EXIT
+
+local_listing="${work_dir}/local-dumps"
+if ! find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'bettertrack-*.sql.gz' -print0 \
+    | LC_ALL=C sort -zr > "${local_listing}"; then
+    log "ERROR: could not enumerate local dumps in ${BACKUP_DIR}"
+    exit 3
+fi
+mapfile -d '' -t local_dumps < "${local_listing}"
 
 if [ ${#local_dumps[@]} -eq 0 ]; then
     log "no local dump found in ${BACKUP_DIR} — nothing to upload"
     exit 0
 fi
 
-work_dir="$(mktemp -d)"
-trap 'rm -rf -- "${work_dir}"' EXIT
-
 # ─── find remote artifacts already uploaded ──────────────────────────────────
+# Ensure a freshly configured destination is usable before listing it: `rclone
+# lsf` alone treats a missing directory as an error even though `copy` creates
+# it on first upload.
+log "ensuring remote backup directory exists: ${RCLONE_REMOTE}"
+if ! rclone mkdir "${RCLONE_REMOTE}"; then
+    log "ERROR: rclone could not create or access the remote backup directory"
+    exit 4
+fi
+
 # `rclone lsf` lists the direct contents of the configured backup folder. The
 # local script writes there too, so each remote path is the encrypted basename.
 remote_listing="${work_dir}/remote-artifacts"
@@ -107,6 +119,7 @@ for local_dump in "${local_dumps[@]}"; do
     fi
     uploaded=$((uploaded + 1))
     log "upload ok: ${artifact}"
+    rm -f -- "${encrypted}"
 done
 
 if [ "${uploaded}" -eq 0 ]; then

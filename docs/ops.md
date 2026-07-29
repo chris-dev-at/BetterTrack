@@ -215,23 +215,24 @@ docker compose -f docker-compose.yml \
 
 ## Environment reference
 
-| Variable                            | Layer      | Default    | Notes                                                                                   |
-| ----------------------------------- | ---------- | ---------- | --------------------------------------------------------------------------------------- |
-| `BACKUP_RETENTION_DAYS`             | local      | `14`       | Days of local `.sql.gz` dumps kept in the `pgbackups` volume                            |
-| `BT_BACKUP_AGE_RECIPIENT_HOST_FILE` | offsite    | (unset)    | Host path to age recipient file; bind-mounted into the sidecar. Unset ⇒ offsite skipped |
-| `BT_BACKUP_RCLONE_CONFIG_HOST_FILE` | offsite    | (unset)    | Host path to `rclone.conf` (Drive tokens); bind-mounted read-only                       |
-| `BT_BACKUP_RCLONE_REMOTE`           | offsite    | (unset)    | Rclone remote target, e.g. `gdrive:bettertrack-backups`. Unset ⇒ offsite skipped        |
-| `BT_BACKUP_REMOTE_RETENTION_DAYS`   | offsite    | `30`       | Days of encrypted artifacts kept on the remote (per V4-P6 arc-b acceptance)             |
-| `BT_BACKUP_AGE_RECIPIENT_FILE`      | (internal) | (fixed)    | In-container path — set by the compose override to `/etc/bettertrack/age-recipient`     |
-| `BT_BACKUP_SOURCE_DIR`              | (internal) | `/backups` | In-container path to the shared `pgbackups` mount — do not change                       |
+| Variable                            | Layer      | Default    | Notes                                                                                                                                             |
+| ----------------------------------- | ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BACKUP_RETENTION_DAYS`             | local      | `14`       | Days of local `.sql.gz` dumps kept in the `pgbackups` volume                                                                                      |
+| `BT_BACKUP_AGE_RECIPIENT_HOST_FILE` | offsite    | (unset)    | Host path to age recipient file; bind-mounted into the sidecar. Unset ⇒ offsite skipped                                                           |
+| `BT_BACKUP_RCLONE_CONFIG_HOST_FILE` | offsite    | (unset)    | Host path to `rclone.conf` (Drive tokens); bind-mounted read-only                                                                                 |
+| `BT_BACKUP_RCLONE_REMOTE`           | offsite    | (unset)    | Rclone remote target, e.g. `gdrive:bettertrack-backups`. Unset ⇒ offsite skipped                                                                  |
+| `BT_BACKUP_REMOTE_RETENTION_DAYS`   | offsite    | `30`       | Days of encrypted artifacts kept on the remote; keep it at least `BACKUP_RETENTION_DAYS` to avoid re-uploading artifacts the remote prune removes |
+| `BT_BACKUP_AGE_RECIPIENT_FILE`      | (internal) | (fixed)    | In-container path — set by the compose override to `/etc/bettertrack/age-recipient`                                                               |
+| `BT_BACKUP_SOURCE_DIR`              | (internal) | `/backups` | In-container path to the shared `pgbackups` mount — do not change                                                                                 |
 
 ### Retention contract
 
 - **Local:** every run of `backup.sh` deletes local dumps older than
   `BACKUP_RETENTION_DAYS`. Default 14 days.
-- **Remote:** every successful run of `offsite.sh` deletes remote objects
-  matching `bettertrack-*.sql.gz.age` that are older than
-  `BT_BACKUP_REMOTE_RETENTION_DAYS`. Default 30 days.
+- **Remote:** after a successful eligible-dump scan/upload pass, `offsite.sh`
+  deletes remote objects matching `bettertrack-*.sql.gz.age` that are older
+  than `BT_BACKUP_REMOTE_RETENTION_DAYS`. This includes a pass where every
+  eligible artifact was already present remotely. Default 30 days.
 - The two windows are independent; changing one does not affect the other.
 - A failed upload does NOT trigger a prune — retention stays at whatever
   the last successful run set it to.
@@ -435,7 +436,8 @@ the local dump is preserved on any offsite failure. Inspect
 `/var/log/bettertrack-backup.log`; the next run scans every eligible local
 dump, skips artifacts already on the remote, and retries every missing one.
 
-**Drive fills up despite the 30-day retention** — the prune step runs only
-after a SUCCESSFUL upload. If uploads have been failing (see above),
-retention stops advancing. Fix the upload path first, then the next
-success will prune the backlog.
+**Drive fills up despite the 30-day retention** — the prune step runs after a
+successful eligible-dump scan/upload pass, including one where every eligible
+artifact was already present remotely. If uploads have been failing (see
+above), the pass stops before prune and retention stops advancing. Fix the
+upload path first, then the next successful pass will prune the backlog.
