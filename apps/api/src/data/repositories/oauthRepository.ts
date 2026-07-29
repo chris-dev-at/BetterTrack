@@ -132,6 +132,23 @@ export interface OAuthAuthorizationCodeExchange {
   }): Promise<OAuthRefreshTokenRow>;
 }
 
+export interface RotateOAuthRefreshTokenInput {
+  tokenId: string;
+  grantId: string;
+  rotatedAt: Date;
+  accessToken: {
+    tokenHash: string;
+    scopes: string[];
+    expiresAt: Date;
+  };
+  refreshToken: {
+    tokenHash: string;
+    expiresAt: Date;
+  };
+}
+
+export type OAuthRefreshTokenRotation = 'rotated' | 'replayed';
+
 function createAuthorizationCodeExchange(
   executor: Pick<Database, 'select' | 'insert' | 'update'>,
   code: OAuthAuthCodeRow,
@@ -558,14 +575,55 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
-    /** Atomically consume (rotate) a refresh token; undefined if already used. */
-    async consumeRefreshToken(id: string): Promise<OAuthRefreshTokenRow | undefined> {
-      const [row] = await db
-        .update(oauthRefreshTokens)
-        .set({ consumedAt: new Date() })
-        .where(and(eq(oauthRefreshTokens.id, id), isNull(oauthRefreshTokens.consumedAt)))
-        .returning();
-      return row;
+    /**
+     * Consume one refresh token and insert its replacement pair in the same
+     * transaction. A concurrent caller that loses the atomic consume revokes
+     * the whole grant before returning, so the winner's just-issued pair is
+     * already unusable once both exchanges settle.
+     */
+    async rotateRefreshToken(
+      input: RotateOAuthRefreshTokenInput,
+    ): Promise<OAuthRefreshTokenRotation> {
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const [consumed] = await executor
+          .update(oauthRefreshTokens)
+          .set({ consumedAt: input.rotatedAt })
+          .where(
+            and(
+              eq(oauthRefreshTokens.id, input.tokenId),
+              eq(oauthRefreshTokens.grantId, input.grantId),
+              isNull(oauthRefreshTokens.consumedAt),
+            ),
+          )
+          .returning({ id: oauthRefreshTokens.id });
+
+        if (!consumed) {
+          await executor
+            .update(oauthGrants)
+            .set({ revokedAt: input.rotatedAt })
+            .where(and(eq(oauthGrants.id, input.grantId), isNull(oauthGrants.revokedAt)));
+          return 'replayed';
+        }
+
+        const [accessToken] = await executor
+          .insert(oauthAccessTokens)
+          .values({ grantId: input.grantId, ...input.accessToken })
+          .returning({ id: oauthAccessTokens.id });
+        if (!accessToken) throw new Error('Failed to insert OAuth access token');
+
+        const [refreshToken] = await executor
+          .insert(oauthRefreshTokens)
+          .values({ grantId: input.grantId, ...input.refreshToken })
+          .returning({ id: oauthRefreshTokens.id });
+        if (!refreshToken) throw new Error('Failed to insert OAuth refresh token');
+
+        await executor
+          .update(oauthGrants)
+          .set({ lastUsedAt: input.rotatedAt })
+          .where(eq(oauthGrants.id, input.grantId));
+        return 'rotated';
+      });
     },
   };
 }
