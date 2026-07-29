@@ -34,6 +34,14 @@ else
     API_ORIGIN="${SCHEME}://${DOMAIN}:${BT_PORT_API:-3000}"
 fi
 API_ORIGIN="${API_ORIGIN%/}"
+case "$API_ORIGIN" in
+    https://*) WS_ORIGIN="wss://${API_ORIGIN#https://}" ;;
+    http://*) WS_ORIGIN="ws://${API_ORIGIN#http://}" ;;
+    *)
+        echo "bettertrack-web: BT_API_ORIGIN must use http:// or https://" >&2
+        exit 1
+        ;;
+esac
 
 export BT_DOMAIN="$DOMAIN"
 export BT_SUB_API="${BT_SUB_API:-api}"
@@ -50,7 +58,7 @@ export API_UPSTREAM="${API_UPSTREAM:-api:3000}"
 # (§13.3 V3-P12). The apex origin serves its product page, `mobile.` serves the
 # mobile placeholder — both proxied to this upstream over the internal network.
 export LANDING_UPSTREAM="${LANDING_UPSTREAM:-landing:80}"
-export API_ORIGIN
+export API_ORIGIN WS_ORIGIN
 
 TEMPLATE="/etc/nginx/bt-templates/${MODE}.conf.template"
 if [ ! -f "$TEMPLATE" ]; then
@@ -59,7 +67,7 @@ if [ ! -f "$TEMPLATE" ]; then
 fi
 
 # Restrict envsubst to OUR vars so nginx runtime vars ($host, $uri, …) survive.
-VARS='${BT_DOMAIN} ${BT_SUB_API} ${BT_SUB_WEB} ${BT_SUB_ADMIN} ${BT_SUB_MOBILE} ${BT_PORT_API} ${BT_PORT_WEB} ${BT_PORT_ADMIN} ${BT_PORT_PRODUCT} ${BT_PORT_MOBILE} ${API_UPSTREAM} ${LANDING_UPSTREAM} ${API_ORIGIN}'
+VARS='${BT_DOMAIN} ${BT_SUB_API} ${BT_SUB_WEB} ${BT_SUB_ADMIN} ${BT_SUB_MOBILE} ${BT_PORT_API} ${BT_PORT_WEB} ${BT_PORT_ADMIN} ${BT_PORT_PRODUCT} ${BT_PORT_MOBILE} ${API_UPSTREAM} ${LANDING_UPSTREAM} ${API_ORIGIN} ${WS_ORIGIN}'
 INCLUDE_DIR="/etc/nginx/bt-includes"
 mkdir -p "$INCLUDE_DIR"
 envsubst "$VARS" \

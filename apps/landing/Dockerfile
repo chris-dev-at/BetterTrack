@@ -2,7 +2,7 @@
 #
 # A pure static site — no SPA framework, no build step, no API dependency. Served
 # straight from nginx:alpine. The only start-time work is rendering env.js from
-# its template so the web-app links follow the deployed origin (env, not baked in).
+# its template so web/API origins follow the deployed topology (env, not baked in).
 #
 # Build from the repo root so the compose `context: ..` resolves this path:
 #   docker build -f apps/landing/Dockerfile -t bettertrack-landing .

@@ -1,5 +1,7 @@
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -41,6 +43,75 @@ function render(raw: string, env: Record<string, string>): string {
   return raw.replace(/\$\{(\w+)\}/g, (match, name: string) => env[name] ?? match);
 }
 
+function composeLandingEnvironment(hostEnv: Record<string, string>): Record<string, string> {
+  const compose = readInfra('docker-compose.yml');
+  const landingStart = compose.indexOf('\n  landing:\n');
+  const apiStart = compose.indexOf('\n  api:\n', landingStart);
+  if (landingStart < 0 || apiStart < 0) throw new Error('landing Compose service not found');
+
+  const landingService = compose.slice(landingStart, apiStart);
+  const entries = [...landingService.matchAll(/^      ([A-Z][A-Z0-9_]*): '([^']*)'$/gm)];
+  return Object.fromEntries(
+    entries.map((entry) => {
+      const name = entry[1];
+      const rawValue = entry[2];
+      if (name === undefined || rawValue === undefined) {
+        throw new Error('invalid landing Compose environment entry');
+      }
+      return [
+        name,
+        rawValue.replace(
+          /\$\{([A-Z][A-Z0-9_]*):-(.*?)\}/g,
+          (_match, variable: string, fallback: string) => hostEnv[variable] || fallback,
+        ),
+      ];
+    }),
+  );
+}
+
+function renderLandingEntrypoint(env: Record<string, string>): string {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'bettertrack-landing-topology-'));
+  const htmlRoot = resolve(temporaryRoot, 'html');
+  const binRoot = resolve(temporaryRoot, 'bin');
+  const fakeEnvsubst = resolve(binRoot, 'envsubst');
+  mkdirSync(htmlRoot);
+  mkdirSync(binRoot);
+  writeFileSync(
+    resolve(htmlRoot, 'env.js.template'),
+    readFileSync(resolve(repoDir, 'apps/landing/site/env.js.template'), 'utf8'),
+  );
+  writeFileSync(
+    fakeEnvsubst,
+    [
+      '#!/usr/bin/env node',
+      "let input = '';",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => { input += chunk; });",
+      "process.stdin.on('end', () => {",
+      "  input = input.replaceAll('${BT_WEB_ORIGIN}', process.env.BT_WEB_ORIGIN || '');",
+      "  input = input.replaceAll('${BT_API_ORIGIN}', process.env.BT_API_ORIGIN || '');",
+      '  process.stdout.write(input);',
+      '});',
+      '',
+    ].join('\n'),
+  );
+  chmodSync(fakeEnvsubst, 0o755);
+
+  try {
+    execFileSync('sh', [resolve(repoDir, 'apps/landing/docker-entrypoint.sh')], {
+      env: {
+        ...process.env,
+        ...env,
+        BT_LANDING_HTML_ROOT: htmlRoot,
+        PATH: `${binRoot}:${process.env.PATH ?? ''}`,
+      },
+    });
+    return readFileSync(resolve(htmlRoot, 'env.js'), 'utf8');
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
 const SECURITY_INCLUDE = 'include /etc/nginx/bt-includes/static-security-headers.conf;';
 const CONDITIONAL_HSTS_INCLUDE = 'include /etc/nginx/bt-includes/static-hsts.conf;';
 
@@ -53,6 +124,7 @@ const SUBDOMAINS_ENV: Record<string, string> = {
   API_UPSTREAM: 'api:3000',
   LANDING_UPSTREAM: 'landing:80',
   API_ORIGIN: 'https://api.track.example.at',
+  WS_ORIGIN: 'wss://api.track.example.at',
 };
 
 const PORTS_ENV: Record<string, string> = {
@@ -64,6 +136,7 @@ const PORTS_ENV: Record<string, string> = {
   API_UPSTREAM: 'api:3000',
   LANDING_UPSTREAM: 'landing:80',
   API_ORIGIN: 'http://track.example.at:3000',
+  WS_ORIGIN: 'ws://track.example.at:3000',
 };
 
 describe('subdomains template', () => {
@@ -87,8 +160,8 @@ describe('subdomains template', () => {
     expect(out).toContain('proxy_pass http://landing:80/mobile.html;');
   });
 
-  it('substitutes every whitelisted var (no ${BT_/LANDING/API_ORIGIN} left)', () => {
-    expect(out).not.toMatch(/\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN)/);
+  it('substitutes every whitelisted var (no topology value left)', () => {
+    expect(out).not.toMatch(/\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN|WS_ORIGIN)/);
   });
 
   it('applies the shared policy and conditional HSTS to every static response path', () => {
@@ -116,7 +189,7 @@ describe('ports template', () => {
   });
 
   it('substitutes every whitelisted var', () => {
-    expect(out).not.toMatch(/\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN)/);
+    expect(out).not.toMatch(/\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN|WS_ORIGIN)/);
   });
 
   it('applies the shared policy to every static response path without literal HSTS', () => {
@@ -138,7 +211,14 @@ describe('static browser security policy', () => {
 
   it('ships the required baseline with a frame-ancestors deny-all policy', () => {
     expect(csp).toContain("frame-ancestors 'none'");
-    expect(csp).toContain("connect-src 'self' https://api.track.example.at ws: wss:");
+    expect(csp).toContain(
+      "connect-src 'self' https://api.track.example.at wss://api.track.example.at",
+    );
+    expect(csp).not.toMatch(/\b(?:ws|wss):(?:\s|;)/);
+    expect(csp).toContain(
+      "frame-src 'self' https://api.track.example.at https://accounts.google.com",
+    );
+    expect(csp).not.toMatch(/frame-src[^;]*\shttps:(?:\s|;|$)/);
     expect(renderedPolicy).toContain('add_header X-Content-Type-Options "nosniff" always;');
     expect(renderedPolicy).toContain(
       'add_header Referrer-Policy "strict-origin-when-cross-origin" always;',
@@ -152,7 +232,7 @@ describe('static browser security policy', () => {
     expect(scriptSrc).toBeDefined();
     expect(scriptSrc).not.toContain("'unsafe-inline'");
     expect(scriptSrc).not.toContain("'unsafe-eval'");
-    expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+    expect(csp).toContain("style-src 'self' 'unsafe-inline' https://accounts.google.com");
     expect(rawPolicy).toContain('inline style attributes');
   });
 
@@ -185,5 +265,52 @@ describe('static browser security policy', () => {
       expect(scripts.every((tag) => /\bsrc=/.test(tag))).toBe(true);
       expect(html).toContain('<script src="/landing.js"></script>');
     }
+  });
+});
+
+describe('shipped landing Compose topology', () => {
+  it('derives custom subdomain origins that match the front proxy CSP', () => {
+    const rendered = renderLandingEntrypoint(
+      composeLandingEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'money.example.net',
+        BT_SUB_API: 'gateway',
+        BT_SUB_WEB: 'app',
+      }),
+    );
+
+    expect(rendered).toBe(
+      "window.__BT_LANDING__ = { webOrigin: 'https://app.money.example.net', apiOrigin: 'https://gateway.money.example.net' };\n",
+    );
+  });
+
+  it('derives plain-HTTP ports origins from the shipped Compose environment', () => {
+    const rendered = renderLandingEntrypoint(
+      composeLandingEnvironment({
+        BT_MODE: 'ports',
+        BT_DOMAIN: 'track.lan',
+        BT_PORT_API: '4300',
+        BT_PORT_WEB: '4800',
+      }),
+    );
+
+    expect(rendered).toBe(
+      "window.__BT_LANDING__ = { webOrigin: 'http://track.lan:4800', apiOrigin: 'http://track.lan:4300' };\n",
+    );
+  });
+
+  it('honors the same explicit Compose origin overrides as the front proxy', () => {
+    const rendered = renderLandingEntrypoint(
+      composeLandingEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'internal.example.net',
+        BT_API_ORIGIN: 'https://public-api.example.net/',
+        BT_WEB_ORIGIN: 'https://public-app.example.net/',
+      }),
+    );
+
+    expect(rendered).toBe(
+      "window.__BT_LANDING__ = { webOrigin: 'https://public-app.example.net', apiOrigin: 'https://public-api.example.net' };\n",
+    );
   });
 });
