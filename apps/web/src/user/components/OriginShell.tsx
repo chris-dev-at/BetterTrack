@@ -18,6 +18,7 @@ import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { Avatar } from './Avatar';
+import { ChatDock, ChatDockToggle } from './chatdock';
 import { CmdKPalette } from './CmdKPalette';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
@@ -601,6 +602,7 @@ export function OriginShell() {
               variant="quiet"
             />
             <CreateMenu />
+            <ChatDockToggle />
             <NotificationBell />
           </header>
 
@@ -654,6 +656,10 @@ export function OriginShell() {
           );
         })}
       </nav>
+
+      {/* Non-modal right-side dock: mounted at the shell root so it overlays the
+          canvas without the page losing interactivity (see ChatDock). */}
+      <ChatDock />
 
       <CmdKPalette isOpen={paletteOpen} onClose={closePalette} />
     </div>
