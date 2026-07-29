@@ -178,6 +178,18 @@ describe('account data export', () => {
 
   it('the collector produces exactly the classified entity set', async () => {
     const user = await harness.seedUser();
+    await harness.db.insert(schema.oauthClients).values({
+      userId: user.id,
+      clientId: 'btc_export_client',
+      name: 'Export client',
+      clientSecretHash: 'secret-hash',
+      redirectUris: ['https://client.example/callback'],
+      scopes: ['portfolio:read'],
+      isPublic: false,
+      logoUrl: 'https://client.example/logo.png',
+      logoBytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      logoContentType: 'image/png',
+    });
     const collected = await collectUserExport(harness.db, user.id);
     expect(Object.keys(collected.entities).sort()).toEqual([...EXPORTED_ENTITY_NAMES]);
     // The account entity always carries the user's own sanitized row, with no
@@ -186,6 +198,16 @@ describe('account data export', () => {
     expect(account.length).toBe(1);
     expect(account[0]).not.toHaveProperty('passwordHash');
     expect(account[0]).not.toHaveProperty('securityGeneration');
+    // Cached raster bytes have no account-export value and can expand into a
+    // multi-megabyte JSON byte array. Keep the source metadata, not the blob.
+    const oauthClients = collected.entities.oauthClients as Record<string, unknown>[];
+    expect(oauthClients).toHaveLength(1);
+    expect(oauthClients[0]).not.toHaveProperty('clientSecretHash');
+    expect(oauthClients[0]).not.toHaveProperty('logoBytes');
+    expect(oauthClients[0]).toMatchObject({
+      logoUrl: 'https://client.example/logo.png',
+      logoContentType: 'image/png',
+    });
   });
 
   it('rejects a wrong re-auth without creating a job', async () => {

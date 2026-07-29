@@ -6,7 +6,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 
 import { Wordmark } from '../../components/Wordmark';
 import { useT } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
+import { ApiError, apiAssetUrl } from '../../lib/apiClient';
 import {
   approveAuthorization,
   getAuthorizationDetails,
@@ -89,18 +89,20 @@ function ConsentShell({ children }: { children: ReactNode }) {
 /**
  * The requesting app's identity on the consent screen: a first-party (official)
  * app shows the BetterTrack mark + an "Official app" badge; a third-party app
- * shows its own logo (when set) or a lettered placeholder.
+ * shows its server-cached logo (when set) or a lettered placeholder.
  */
 function AppIdentity({
   name,
-  logoUrl,
+  logoPath,
   firstParty,
 }: {
   name: string;
-  logoUrl: string | null;
+  logoPath: string | null;
   firstParty: boolean;
 }) {
   const t = useT();
+  const [logoFailed, setLogoFailed] = useState(false);
+  const logoUrl = logoPath && !logoFailed ? apiAssetUrl(logoPath) : null;
   return (
     <div className="flex items-center gap-3">
       {firstParty ? (
@@ -120,6 +122,7 @@ function AppIdentity({
           alt=""
           className="h-12 w-12 shrink-0 rounded-lg object-cover"
           style={{ border: '1px solid var(--bt-border-strong)' }}
+          onError={() => setLogoFailed(true)}
         />
       ) : (
         <div
@@ -258,7 +261,7 @@ export function ConsentPage() {
       <ConsentShell>
         <div className="flex flex-col gap-5">
           {approveError ? <Alert tone="error">{approveError}</Alert> : null}
-          <AppIdentity name={details.client.name} logoUrl={null} firstParty />
+          <AppIdentity name={details.client.name} logoPath={null} firstParty />
           <p className="bt-muted text-sm">{signedInAs}</p>
           <div className="flex flex-col gap-2 sm:flex-row-reverse">
             <Button
@@ -296,7 +299,7 @@ export function ConsentPage() {
         {approveError ? <Alert tone="error">{approveError}</Alert> : null}
         <AppIdentity
           name={details.client.name}
-          logoUrl={details.client.logoUrl}
+          logoPath={details.client.logoPath}
           firstParty={false}
         />
         <p className="bt-muted text-sm">{signedInAs}</p>

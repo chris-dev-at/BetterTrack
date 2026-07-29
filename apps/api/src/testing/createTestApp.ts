@@ -31,6 +31,7 @@ import type { MailTransport } from '../services/email/transport';
 import type { LiveModeServiceOptions } from '../services/liveMode';
 import type { GoogleTokenVerifier } from '../services/auth/googleVerifier';
 import type { PasskeyWebAuthnEngine } from '../services/auth/passkeyService';
+import type { OAuthLogoFetcher } from '../services/oauth/oauthLogo';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import type { WebhookTransport } from '../services/webhooks';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
@@ -241,6 +242,8 @@ export interface CreateTestAppOptions {
    * the model only ever reaches the configured local endpoint.
    */
   aiFetch?: typeof fetch;
+  /** Save-time OAuth client-logo fetcher; avoids network in logo-flow tests. */
+  oauthLogoFetcher?: OAuthLogoFetcher;
   /**
    * Force `rateLimits.enabled` on (default: off under `NODE_ENV=test`). Set on
    * the specific tests that need to exercise the HTTP limiter end-to-end
@@ -294,6 +297,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     budgetNow: options.budgetNow,
     webhookTransport: options.webhookTransport,
     aiFetch: options.aiFetch,
+    oauthLogoFetcher: options.oauthLogoFetcher,
   });
   const app = createApp(ctx);
 

@@ -3774,6 +3774,22 @@ const endpoints: EndpointDef[] = [
   // OAuth 2.0 flow (§6.13, V2-P12).
   {
     method: 'get',
+    path: '/oauth/client-logos/{clientId}',
+    tag: 'OAuth',
+    summary:
+      'Serve immutable, save-time-cached OAuth client logo bytes from BetterTrack (never the registered remote URL).',
+    public: true,
+    params: contracts.oauthClientLogoParamsSchema,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Validated PNG, JPEG, GIF or WebP logo bytes.',
+    }),
+    responseContentType: 'image/*',
+  },
+  {
+    method: 'get',
     path: '/oauth/authorization-details',
     tag: 'OAuth',
     summary: 'Consent-screen data for an authorize request (app + plain-language scopes).',
