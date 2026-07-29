@@ -3422,6 +3422,16 @@
   max-width: none;
   max-height: none;
   animation: bt-rise 300ms cubic-bezier(0.32, 0.72, 0.22, 1) both;
+  /* The faintest possible lift off the page (owner: "just the most smallest
+     thing possible"): the overlay shadow, a wide soft ambient one, and a
+     hairline ring. Shadows rather than a scrim or a backdrop element — a scrim
+     would read as modal, and any pseudo-element here would be clipped by the
+     panel's own `overflow: hidden`. Nothing intercepts pointer events, so the
+     page behind stays live and a click-away still closes an unpinned panel. */
+  box-shadow:
+    var(--bt-shadow-overlay),
+    0 30px 80px -30px rgb(0 0 0 / 45%),
+    0 0 0 1px rgb(0 0 0 / 22%);
 }
 
 .bt-askdock__title {
