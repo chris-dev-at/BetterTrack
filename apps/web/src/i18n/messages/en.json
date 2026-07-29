@@ -505,6 +505,10 @@
     "collapseSection": "Collapse {{section}}"
   },
   "askdock": {
+    "pin": "Keep open",
+    "unpin": "Stop keeping open",
+    "maximize": "Maximize",
+    "restore": "Restore size",
     "close": "Close Ask BetterTrack",
     "composerPlaceholder": "Ask about your portfolios",
     "send": "Send",

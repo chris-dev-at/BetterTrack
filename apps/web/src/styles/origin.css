@@ -3405,6 +3405,25 @@
   border-bottom: 1px solid var(--bt-border);
 }
 
+/* Maximized: the Control Center's own popup geometry (min(960px, 94vw) ×
+   min(660px, 90vh), centered, 10px corners) so the two large surfaces feel like
+   one system. It is NOT modal, though — it stays at z-index 45 under the modal
+   layer, and centering by translate rather than a full-viewport grid wrapper
+   means only the panel's own box takes pointer events, so the page around it
+   keeps working and the click-away rule still reaches it. */
+.bt-askdock--max {
+  top: 50%;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  translate: -50% -50%;
+  width: min(960px, 94vw);
+  height: min(660px, 90vh);
+  max-width: none;
+  max-height: none;
+  animation: bt-rise 300ms cubic-bezier(0.32, 0.72, 0.22, 1) both;
+}
+
 .bt-askdock__title {
   display: inline-flex;
   align-items: center;
@@ -3412,6 +3431,56 @@
   color: var(--bt-text);
   font-size: 13px;
   font-weight: 600;
+}
+
+.bt-askdock__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Pin + maximize: quiet icon buttons whose engaged state is background and ink,
+   never an edge bar. The glyph itself also changes (the pin tilts, the brackets
+   reverse), so the state never rests on colour alone. */
+.bt-askdock__mode {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--bt-muted);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast),
+    border-color var(--bt-t-fast);
+}
+
+.bt-askdock__mode > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.bt-askdock__mode:hover {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text-soft);
+}
+
+.bt-askdock__mode.is-on {
+  background: var(--bt-surface-strong);
+  border-color: var(--bt-border-strong);
+  color: var(--bt-text);
+}
+
+/* Engaged pin reads as driven in: tilted, so shape carries the state too. */
+.bt-askdock__mode.is-on .bt-askdock__pin-glyph {
+  rotate: 45deg;
+}
+
+.bt-askdock__pin-glyph {
+  transition: rotate var(--bt-t-fast);
 }
 
 .bt-askdock__scroll {
@@ -3486,8 +3555,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bt-askdock {
+  .bt-askdock,
+  .bt-askdock--max {
     animation: none;
+  }
+
+  .bt-askdock__mode,
+  .bt-askdock__pin-glyph {
+    transition: none;
   }
 }
 

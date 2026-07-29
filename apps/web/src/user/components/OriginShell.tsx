@@ -18,7 +18,13 @@ import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { Avatar } from './Avatar';
-import { ASK_DOCK_ID, AskDock, toggleAskDock, useAskDockEligible, useAskDockOpen } from './askdock';
+import {
+  ASK_DOCK_ID,
+  AskDock,
+  toggleAskDock,
+  useAskDockEligible,
+  useAskDockState,
+} from './askdock';
 import { CmdKPalette } from './CmdKPalette';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
@@ -152,7 +158,7 @@ function RailAskToggle({
   collapsed: boolean;
   label: string;
 }) {
-  const open = useAskDockOpen();
+  const { open } = useAskDockState();
   const eligible = useAskDockEligible();
 
   if (!eligible) {
