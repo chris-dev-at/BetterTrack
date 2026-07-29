@@ -486,7 +486,9 @@
     "utilities": "Utilities",
     "myProfile": "My profile",
     "expandRail": "Expand navigation",
-    "collapseRail": "Collapse navigation"
+    "collapseRail": "Collapse navigation",
+    "expandSection": "Expand {{section}}",
+    "collapseSection": "Collapse {{section}}"
   },
   "footer": {
     "legal": "Legal",
