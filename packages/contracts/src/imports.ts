@@ -162,6 +162,13 @@ export const IMPORT_MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const IMPORT_MAX_ROWS = 5000;
 
 /**
+ * Distinct market instruments per broker file. A normal statement repeats a
+ * small holding set across many rows; 150 leaves ample headroom while bounding
+ * the catalog/provider resolution work far below {@link IMPORT_MAX_ROWS}.
+ */
+export const IMPORT_MAX_DISTINCT_INSTRUMENTS = 150;
+
+/**
  * The non-file multipart fields of `POST /imports` (the CSV itself travels as
  * the `file` part). `brokerId` overrides autodetection; omitted → the server
  * detects the broker (400 `IMPORT_BROKER_UNRECOGNIZED` when it cannot).

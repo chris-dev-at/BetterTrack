@@ -84,9 +84,20 @@ export function createExpensesRouter(ctx: AppContext): Router {
 
   // In-memory multipart parsing for the one CSV part of a bank-statement import —
   // files are capped well below anything worth streaming to disk (§13.5 V5-P9).
+  // Multipart budget: two text fields (bankId + optional overrides), one file,
+  // a parts-limit sentinel of four (Busboy emits at equality, so this admits
+  // exactly the three allowed parts), 1,000,000 bytes per field (the overrides
+  // contract maximum), and 32 header pairs per part (normally just 1–2).
   const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: IMPORT_MAX_FILE_BYTES, files: 1 },
+    limits: {
+      fileSize: IMPORT_MAX_FILE_BYTES,
+      files: 1,
+      fields: 2,
+      parts: 4,
+      fieldSize: 1_000_000,
+      headerPairs: 32,
+    },
   });
 
   /** `upload.single('file')` with Multer's errors mapped onto the §8 envelope. */

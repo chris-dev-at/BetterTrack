@@ -280,6 +280,22 @@ describe('preview-time category overrides', () => {
 });
 
 describe('import guards', () => {
+  it('maps an over-limit multipart field count to the expense-import contract error', async () => {
+    const { agent } = await setup();
+    const res = await agent
+      .post('/api/v1/expenses/import/preview')
+      .set(...XRW)
+      .field('bankId', 'n26')
+      .field('unexpected-one', 'amplification')
+      .field('unexpected-two', 'amplification')
+      .attach('file', Buffer.from(N26, 'utf8'), 'statement.csv');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'EXPENSE_IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
   it('rejects an unrecognized file, then accepts it with a manual bank pick', async () => {
     const { agent } = await setup();
     const generic = 'Foo,Bar,Baz\n1,2,3';

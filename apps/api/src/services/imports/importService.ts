@@ -11,7 +11,11 @@ import type {
   SearchResultItem,
   TransactionInput,
 } from '@bettertrack/contracts';
-import { IMPORT_MAX_ROWS, importSourceTag } from '@bettertrack/contracts';
+import {
+  IMPORT_MAX_DISTINCT_INSTRUMENTS,
+  IMPORT_MAX_ROWS,
+  importSourceTag,
+} from '@bettertrack/contracts';
 
 import { ApiError, badRequest, conflict, notFound } from '../../errors';
 import type {
@@ -23,6 +27,7 @@ import type { CashSourceRepository } from '../../data/repositories/cashSourceRep
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { TransactionRepository } from '../../data/repositories/transactionRepository';
 import type { Logger } from '../../logger';
+import { createRequestQueue, type RequestQueue } from '../../providers/requestQueue';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { SearchService } from '../search/searchService';
 import type { TaxService } from '../tax/taxService';
@@ -62,6 +67,11 @@ export interface ImportServiceDeps {
   tax: TaxService;
   mappers: readonly BrokerMapper[];
   logger?: Logger;
+  /**
+   * Shared process-local budget for import-driven catalog/provider resolution.
+   * Tests may inject a recording queue; production uses the serialized default.
+   */
+  resolutionQueue?: RequestQueue;
 }
 
 export interface CreateImportBatchInput {
@@ -105,6 +115,16 @@ function rawInstrumentKey(row: NormalizedImportRow): string | null {
 
 const needsInstrument = (kind: NormalizedImportRow['kind']): boolean =>
   kind === 'buy' || kind === 'sell' || kind === 'dividend';
+
+/**
+ * One import may wait this long in total for background provider enrichment.
+ * Local catalog reads do not spend this budget.
+ */
+export const IMPORT_ENRICHMENT_WAIT_BUDGET_MS = 5_000;
+
+interface EnrichmentWaitBudget {
+  remainingMs: number;
+}
 
 /**
  * The COMPLETE staging boundary. Every normalized field a mapper emits is
@@ -163,6 +183,12 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
   const { importRepo, portfolioRepo, transactionRepo, cashSourceRepo, search, portfolio, tax } =
     deps;
   const registry = createMapperRegistry(deps.mappers);
+  // One queue per service instance is shared by every concurrent import request.
+  // Provider clients use the same RequestQueue primitive for their own outbound
+  // concurrency/spacing/backoff policy; this outer queue serializes whole
+  // import-driven resolution chains and never retries business/search failures.
+  const resolutionQueue =
+    deps.resolutionQueue ?? createRequestQueue({ concurrency: 1, minSpacingMs: 0, maxRetries: 0 });
 
   async function requireOwnedPortfolio(userId: string, portfolioId: string): Promise<void> {
     const owned = await portfolioRepo.findByIdForUser(userId, portfolioId);
@@ -181,6 +207,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
   async function resolveInstrument(
     userId: string,
     key: { isin: string | null; symbol: string | null; name: string | null },
+    enrichmentBudget: EnrichmentWaitBudget,
   ): Promise<SearchResultItem | null> {
     const attempts: Array<{ query: string; matches: (r: SearchResultItem) => boolean }> = [];
     if (key.symbol) {
@@ -199,7 +226,27 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       let result = await search.search(userId, attempt.query);
       let hit = result.results.find(attempt.matches);
       if (!hit && result.enriching) {
-        await search.enrichmentSettled();
+        const waitMs = enrichmentBudget.remainingMs;
+        if (waitMs <= 0) return null;
+
+        const startedAt = Date.now();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const settled = await Promise.race([
+          search.enrichmentSettled().then(() => true),
+          new Promise<false>((resolve) => {
+            timer = setTimeout(() => resolve(false), waitMs);
+          }),
+        ]).finally(() => {
+          if (timer !== undefined) clearTimeout(timer);
+        });
+        enrichmentBudget.remainingMs = Math.max(
+          0,
+          enrichmentBudget.remainingMs - Math.max(0, Date.now() - startedAt),
+        );
+        if (!settled) {
+          enrichmentBudget.remainingMs = 0;
+          return null;
+        }
         result = await search.search(userId, attempt.query);
         hit = result.results.find(attempt.matches);
       }
@@ -350,13 +397,32 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
 
       const mapped = mapper.map(csv).map(guardStagedRow);
 
-      // Resolve each distinct instrument identity once (files repeat them a lot).
-      const resolutions = new Map<string, SearchResultItem | null>();
+      // Collect before resolving so an over-cap file is rejected without doing
+      // any catalog/provider work. Files repeat instruments heavily, so the raw
+      // identity key is resolved exactly once for the whole batch.
+      const instruments = new Map<string, NormalizedImportRow>();
       for (const line of mapped) {
         if (!line.ok || !needsInstrument(line.row.kind)) continue;
         const key = rawInstrumentKey(line.row);
-        if (key === null || resolutions.has(key)) continue;
-        resolutions.set(key, await resolveInstrument(userId, line.row));
+        if (key !== null && !instruments.has(key)) instruments.set(key, line.row);
+      }
+      if (instruments.size > IMPORT_MAX_DISTINCT_INSTRUMENTS) {
+        throw badRequest(
+          `The file contains more than ${IMPORT_MAX_DISTINCT_INSTRUMENTS} distinct instruments — split it into files with at most ${IMPORT_MAX_DISTINCT_INSTRUMENTS} instruments each.`,
+          'IMPORT_TOO_MANY_INSTRUMENTS',
+        );
+      }
+
+      const resolutions = new Map<string, SearchResultItem | null>();
+      const enrichmentBudget: EnrichmentWaitBudget = {
+        remainingMs: IMPORT_ENRICHMENT_WAIT_BUDGET_MS,
+      };
+      for (const [key, row] of instruments) {
+        if (enrichmentBudget.remainingMs <= 0) break;
+        resolutions.set(
+          key,
+          await resolutionQueue.run(() => resolveInstrument(userId, row, enrichmentBudget)),
+        );
       }
 
       const existing = await collectExistingHashes(userId, input.portfolioId);

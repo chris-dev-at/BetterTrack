@@ -4,12 +4,14 @@ import { fileURLToPath } from 'node:url';
 
 import request from 'supertest';
 import type { Application } from 'express';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   applyImportResponseSchema,
+  IMPORT_MAX_DISTINCT_INSTRUMENTS,
   importBrokerListResponseSchema,
   importPreviewResponseSchema,
+  type AssetSearchResult,
   type ApplyImportResponse,
   type ImportPreviewResponse,
 } from '@bettertrack/contracts';
@@ -21,7 +23,8 @@ import { createPortfolioRepository } from '../../../data/repositories/portfolioR
 import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
-import { createImportService } from '../importService';
+import { createImportService, IMPORT_ENRICHMENT_WAIT_BUDGET_MS } from '../importService';
+import type { SearchService } from '../../search/searchService';
 import type { BrokerMapper } from '../types';
 
 /**
@@ -52,7 +55,19 @@ beforeEach(async () => {
   harness = await createTestApp({ marketData: createStubMarketData() });
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 type Agent = ReturnType<typeof request.agent>;
+
+function deferred<T>() {
+  let resolvePromise!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
+}
 
 async function loginAgent(app: Application, identifier: string, password: string): Promise<Agent> {
   const agent = request.agent(app);
@@ -220,6 +235,145 @@ describe('POST /imports — staged preview', () => {
       .field('portfolioId', pid);
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('IMPORT_FILE_REQUIRED');
+  });
+
+  it('maps an over-limit multipart field count to the import contract error', async () => {
+    const { agent, pid } = await setup();
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .field('portfolioId', pid)
+      .field('brokerId', 'trade_republic')
+      .field('unexpected', 'amplification')
+      .attach('file', Buffer.from(FIXTURE, 'utf8'), 'export.csv');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
+  it('accepts the distinct-instrument cap and rejects cap+1 before queued resolution', async () => {
+    const { user, pid } = await setup();
+    const mapper: BrokerMapper = {
+      id: 'instrument_cap',
+      label: 'Instrument cap',
+      detect: () => 1,
+      map: (csv) =>
+        csv.records.map((record, index) => ({
+          line: record.line,
+          raw: record.raw,
+          ok: true,
+          row: {
+            kind: 'buy',
+            executedAt: new Date('2024-01-02T12:00:00.000Z'),
+            isin: null,
+            symbol: `ASSET-${index}`,
+            name: null,
+            quantity: 1,
+            price: 10,
+            fee: 0,
+            amountEur: null,
+            currency: 'EUR',
+            note: null,
+          },
+        })),
+    };
+    const searchCatalog = vi.fn(async () => ({ results: [], enriching: false }));
+    const search: SearchService = {
+      search: searchCatalog,
+      catalogFreshness: async () => null,
+      enrichmentSettled: async () => {},
+    };
+    let queuedResolutions = 0;
+    const imports = createImportService({
+      importRepo: createImportRepository(harness.db),
+      portfolioRepo: createPortfolioRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      search,
+      portfolio: harness.ctx.portfolio,
+      tax: harness.ctx.tax,
+      mappers: [mapper],
+      resolutionQueue: {
+        async run<T>(fn: () => Promise<T>): Promise<T> {
+          queuedResolutions += 1;
+          return fn();
+        },
+      },
+    });
+    const content = (count: number) =>
+      ['instrument', ...Array.from({ length: count }, (_, index) => `row-${index}`)].join('\n');
+
+    const atCap = await imports.createBatch(user.id, {
+      portfolioId: pid,
+      filename: 'at-cap.csv',
+      content: content(IMPORT_MAX_DISTINCT_INSTRUMENTS),
+      brokerId: mapper.id,
+    });
+    expect(atCap.batch.counts).toEqual({
+      total: IMPORT_MAX_DISTINCT_INSTRUMENTS,
+      mapped: 0,
+      unmapped: IMPORT_MAX_DISTINCT_INSTRUMENTS,
+      duplicate: 0,
+      error: 0,
+    });
+    expect(searchCatalog).toHaveBeenCalledTimes(IMPORT_MAX_DISTINCT_INSTRUMENTS);
+    expect(queuedResolutions).toBe(IMPORT_MAX_DISTINCT_INSTRUMENTS);
+
+    await expect(
+      imports.createBatch(user.id, {
+        portfolioId: pid,
+        filename: 'over-cap.csv',
+        content: content(IMPORT_MAX_DISTINCT_INSTRUMENTS + 1),
+        brokerId: mapper.id,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      code: 'IMPORT_TOO_MANY_INSTRUMENTS',
+      message: expect.stringContaining(`at most ${IMPORT_MAX_DISTINCT_INSTRUMENTS} instruments`),
+    });
+    expect(searchCatalog).toHaveBeenCalledTimes(IMPORT_MAX_DISTINCT_INSTRUMENTS);
+    expect(queuedResolutions).toBe(IMPORT_MAX_DISTINCT_INSTRUMENTS);
+  });
+
+  it('bounds the whole batch enrichment wait when the provider stays slow', async () => {
+    const providerStarted = deferred<void>();
+    const providerResult = deferred<AssetSearchResult[]>();
+    const marketData = createStubMarketData({
+      search: () => {
+        providerStarted.resolve();
+        return providerResult.promise;
+      },
+    });
+    harness = await createTestApp({ marketData });
+    const { user, pid } = await setup();
+    const csv = [
+      HEADER,
+      '2024-01-15;Kauf;Slow One AG;ZZ0000000001;1;10,00;0;-10,00;EUR',
+      '2024-01-16;Kauf;Slow Two AG;ZZ0000000002;1;10,00;0;-10,00;EUR',
+    ].join('\n');
+
+    vi.useFakeTimers();
+    try {
+      const pending = harness.ctx.imports.createBatch(user.id, {
+        portfolioId: pid,
+        filename: 'slow-provider.csv',
+        content: csv,
+        brokerId: 'trade_republic',
+      });
+      await providerStarted.promise;
+      await vi.advanceTimersByTimeAsync(IMPORT_ENRICHMENT_WAIT_BUDGET_MS);
+
+      const preview = await pending;
+      expect(preview.rows.map((row) => row.flag)).toEqual(['unmapped', 'unmapped']);
+      // The timeout stops the batch before the second distinct identity can
+      // schedule another background provider search.
+      expect(marketData.calls.search).toBe(1);
+    } finally {
+      providerResult.resolve([]);
+      await harness.ctx.search.enrichmentSettled();
+    }
   });
 
   it('flags unresolvable instruments unmapped — never a silent match', async () => {
