@@ -3315,3 +3315,293 @@
 .bt-portfolio-actions > .bt-menu-item:hover > svg {
   color: var(--bt-text-soft);
 }
+
+/* ===== R2: palette =========================================================
+   Universal ⌘K search: one faux-input trigger in the topbar, one overlay with
+   ONE row grammar for everything it can reach — icon chip · primary · quiet
+   meta · optional badge/dot · chevron. Commands and assets are the same kind of
+   row under different ruled headers, so nothing reads as pasted in. Active and
+   hover state is background + ink only; no edge bars anywhere.
+   ========================================================================= */
+
+/* ── Topbar trigger: a search field you click, not a button ───────────────── */
+
+.bt-searchfield {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: clamp(260px, 24vw, 340px);
+  min-height: 34px;
+  padding: 0 8px 0 11px;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 6px;
+  background: var(--bt-bg-raised);
+  color: var(--bt-faint);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: text;
+  transition:
+    border-color var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-searchfield:hover {
+  border-color: var(--bt-border-accent);
+  color: var(--bt-muted);
+}
+
+.bt-searchfield:focus-visible {
+  outline: none;
+  border-color: var(--bt-gold);
+  box-shadow: 0 0 0 1px var(--bt-gold);
+}
+
+/* The placeholder stand-in: muted like a real one, and it yields the row so the
+   ⌘K chip stays pinned right. */
+.bt-searchfield__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Overlay + panel ─────────────────────────────────────────────────────── */
+
+.bt-palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 76;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: min(12vh, 96px) 16px 16px;
+  background: var(--bt-scrim);
+  backdrop-filter: blur(4px);
+  animation: bt-fade var(--bt-t-fast) both;
+}
+
+.bt-palette {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: min(72vh, 620px);
+  overflow: hidden;
+  background: var(--bt-bg-raised);
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 10px;
+  box-shadow: var(--bt-shadow-overlay);
+  animation: bt-rise var(--bt-t-panel) both;
+}
+
+/* ── The real input ──────────────────────────────────────────────────────── */
+
+.bt-palette__field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  min-height: 52px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--bt-border);
+  color: var(--bt-muted);
+}
+
+.bt-palette__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: none;
+  color: var(--bt-text);
+  font: inherit;
+  font-size: 14.5px;
+  outline: none;
+}
+
+.bt-palette__input::placeholder {
+  color: var(--bt-faint);
+}
+
+/* ── Body: ruled sections of identical rows ──────────────────────────────── */
+
+.bt-palette__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.bt-palette__group {
+  padding: 8px 8px 10px;
+}
+
+/* The one clear separation between commands and assets — and between command
+   sections — is a rule, not a card. */
+.bt-palette__group + .bt-palette__group {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-palette__label {
+  padding: 2px 9px 6px;
+  color: var(--bt-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.bt-palette__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.bt-palette__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  color: var(--bt-text-soft);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.bt-palette__row:hover,
+.bt-palette__row[aria-selected='true'] {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-palette__chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--bt-surface);
+  color: var(--bt-muted);
+}
+
+.bt-palette__row:hover > .bt-palette__chip,
+.bt-palette__row[aria-selected='true'] > .bt-palette__chip {
+  background: var(--bt-surface-soft);
+  color: var(--bt-gold);
+}
+
+.bt-palette__primary {
+  flex: 0 1 auto;
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 540;
+}
+
+.bt-palette__primary.is-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+}
+
+.bt-palette__meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--bt-faint);
+  font-size: 12px;
+}
+
+.bt-palette__badge {
+  flex: none;
+  min-height: 18px;
+  padding: 0 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--bt-muted);
+}
+
+/* Row-shaped, non-interactive line inside a section (loading / nothing found).
+   Aligned with the row text column so a filling section never shifts. */
+.bt-palette__note {
+  padding: 7px 9px 7px 45px;
+  color: var(--bt-faint);
+  font-size: 12px;
+}
+
+/* ── Default-state hint, empty state, key legend ─────────────────────────── */
+
+.bt-palette__hint,
+.bt-palette__empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 10px 16px;
+  border-top: 1px solid var(--bt-border);
+  color: var(--bt-faint);
+  font-size: 12px;
+}
+
+.bt-palette__foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: none;
+  min-height: 34px;
+  padding: 0 14px;
+  border-top: 1px solid var(--bt-border);
+  background: var(--bt-surface-soft);
+  color: var(--bt-faint);
+  font-size: 11.5px;
+}
+
+.bt-palette__foot > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+@media (max-width: 639.98px) {
+  .bt-palette-overlay {
+    padding: 8vh 10px 10px;
+  }
+
+  .bt-palette__meta {
+    display: none;
+  }
+
+  .bt-palette__primary {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  .bt-palette__foot {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-palette-overlay,
+  .bt-palette {
+    animation: none;
+  }
+
+  .bt-searchfield {
+    transition: none;
+  }
+}

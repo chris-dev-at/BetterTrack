@@ -582,14 +582,18 @@ export function OriginShell() {
             </span>
             {portfolioScoped ? <PortfolioSwitcher /> : null}
             <div className="bt-topbar__spacer" />
+            {/* Reads as the search field it stands in for (owner: "looks like an
+                input instead of a button"). Semantically still a button —
+                the real typing happens in the palette it opens. */}
             <button
+              aria-keyshortcuts="Meta+K Control+K"
               aria-label={t('nav.openSearch')}
-              className="bt-btn bt-btn--sm bt-hide-below-sm"
+              className="bt-searchfield bt-hide-below-sm"
               onClick={openPalette}
               type="button"
             >
-              <Icon name="search" size={14} />
-              {t('common.search')}
+              <Icon name="search" size={15} />
+              <span className="bt-searchfield__text">{t('palette.triggerLabel')}</span>
               <kbd className="bt-kbd">⌘K</kbd>
             </button>
             <Button

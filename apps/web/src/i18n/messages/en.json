@@ -4348,10 +4348,34 @@
     }
   },
   "palette": {
-    "goTo": "Go to",
-    "create": "Create",
-    "control": "Control Center",
-    "commandsAria": "Commands"
+    "triggerLabel": "Search…",
+    "inputAria": "Search BetterTrack",
+    "placeholder": "Search pages, actions, settings and assets…",
+    "resultsAria": "Search results",
+    "hint": "Pages, actions, settings and market assets — all from here.",
+    "noResults": "Nothing matched “{{query}}”. Try a symbol, a page or a setting.",
+    "assetsLoading": "Searching assets…",
+    "assetsEmpty": "No assets matched.",
+    "group": {
+      "suggested": "Suggested",
+      "actions": "Actions",
+      "goTo": "Go to",
+      "settings": "Settings",
+      "assets": "Assets"
+    },
+    "keys": {
+      "navigate": "Navigate",
+      "open": "Open"
+    },
+    "assetType": {
+      "stock": "Stock",
+      "etf": "ETF",
+      "index": "Index",
+      "fx": "FX",
+      "commodity": "Commodity",
+      "crypto": "Crypto",
+      "other": "Other"
+    }
   },
   "firstrun": {
     "stepOf": "Step {{current}} of {{total}}",
