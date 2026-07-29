@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -17,7 +17,7 @@ import { formatDate, setMoneyCurrency } from '../../lib/format';
 import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
 import {
   changePassword,
-  dataExportDownloadUrl,
+  downloadDataExport,
   getDataExportStatus,
   getMe,
   requestDataExport,
@@ -31,31 +31,15 @@ const ME_KEY = ['auth', 'me'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
 const EXPORT_STATUS_KEY = ['settings', 'export'] as const;
 
-// The raw download token is delivered once (in the request response) and only
-// its hash is stored server-side, so the SPA keeps it in localStorage — keyed by
-// job id — to survive a reload until the export is downloaded or expires.
-const EXPORT_TOKEN_STORAGE_KEY = 'bt.export.token';
+// #951 removes the old durable token cache. Clear it synchronously on mount so
+// upgrades cannot leave a previously persisted credential behind.
+const LEGACY_EXPORT_TOKEN_STORAGE_KEY = 'bt.export.token';
 
-function readStoredExportToken(): { jobId: string; token: string } | null {
+function clearLegacyExportToken(): void {
   try {
-    const raw = localStorage.getItem(EXPORT_TOKEN_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { jobId?: unknown; token?: unknown };
-    if (typeof parsed.jobId === 'string' && typeof parsed.token === 'string') {
-      return { jobId: parsed.jobId, token: parsed.token };
-    }
+    localStorage.removeItem(LEGACY_EXPORT_TOKEN_STORAGE_KEY);
   } catch {
-    // Corrupt/blocked storage — treat as no stored token.
-  }
-  return null;
-}
-
-function writeStoredExportToken(value: { jobId: string; token: string } | null): void {
-  try {
-    if (value) localStorage.setItem(EXPORT_TOKEN_STORAGE_KEY, JSON.stringify(value));
-    else localStorage.removeItem(EXPORT_TOKEN_STORAGE_KEY);
-  } catch {
-    // Storage unavailable — the token simply won't persist across reloads.
+    // Storage may be blocked; there is no durable-token fallback.
   }
 }
 
@@ -317,15 +301,18 @@ function exportErrorMessage(t: TranslateFn, err: unknown): string {
 /**
  * Account data export (§13.4 V4-P6a, #494): "Export my data" → re-auth →
  * async zip build → expiring, token-gated download. The raw download token is
- * kept in localStorage (see helpers above) since the server stores only its
- * hash; the status poll drives the pending/ready/expired states.
+ * held only in component memory since the server stores only its hash; the
+ * status poll drives the pending/ready/expired states.
  */
 function ExportDataSection() {
   const t = useT();
   const queryClient = useQueryClient();
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [stored, setStored] = useState(() => readStoredExportToken());
+  const [held, setHeld] = useState<{ jobId: string; token: string } | null>(() => {
+    clearLegacyExportToken();
+    return null;
+  });
 
   const status = useQuery({
     queryKey: EXPORT_STATUS_KEY,
@@ -338,8 +325,7 @@ function ExportDataSection() {
     mutationFn: () => requestDataExport({ password }),
     onSuccess: (res) => {
       const next = { jobId: res.jobId, token: res.downloadToken };
-      writeStoredExportToken(next);
-      setStored(next);
+      setHeld(next);
       setPassword('');
       setError(null);
       void queryClient.invalidateQueries({ queryKey: EXPORT_STATUS_KEY });
@@ -348,10 +334,47 @@ function ExportDataSection() {
   });
 
   const current = status.data;
-  // The stored token only unlocks the CURRENT ready job (job ids must match).
-  const tokenForJob = current?.jobId && stored?.jobId === current.jobId ? stored.token : null;
+  // The in-memory token only unlocks the CURRENT ready job (job ids must match).
+  const tokenForJob = current?.jobId && held?.jobId === current.jobId ? held.token : null;
   const isReady = current?.status === 'ready';
   const isPending = current?.status === 'pending';
+
+  const downloadMutation = useMutation({
+    mutationFn: async () => {
+      if (!tokenForJob) throw new Error('No export download token is available');
+      await downloadDataExport({ token: tokenForJob });
+    },
+    onSuccess: () => {
+      // The server-side exchange is one-time. Drop the only client-held copy as
+      // soon as the browser has accepted the download.
+      setHeld(null);
+      setError(null);
+    },
+    onError: (err) => {
+      if (err instanceof ApiError && err.code === 'EXPORT_NOT_FOUND') setHeld(null);
+      setError(t('settings.export.downloadFailed'));
+    },
+  });
+
+  // A ready response includes the authoritative server expiry. Remove the
+  // in-memory credential at that instant and refresh the status so a page left
+  // open naturally moves to the request-again state.
+  useEffect(() => {
+    if (current?.status !== 'ready' || !current.expiresAt) return;
+    const expiresAt = Date.parse(current.expiresAt);
+    if (!Number.isFinite(expiresAt)) return;
+    const expire = () => {
+      setHeld(null);
+      void status.refetch();
+    };
+    const delay = expiresAt - Date.now();
+    if (delay <= 0) {
+      expire();
+      return;
+    }
+    const timer = window.setTimeout(expire, delay);
+    return () => window.clearTimeout(timer);
+  }, [current?.expiresAt, current?.status, status.refetch]);
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -375,9 +398,16 @@ function ExportDataSection() {
               ? t('settings.export.readyUntil', { date: formatDate(current.expiresAt) })
               : t('settings.export.ready')}
           </Alert>
-          <a className="bt-btn w-fit" href={dataExportDownloadUrl(tokenForJob)}>
+          <Button
+            disabled={downloadMutation.isPending}
+            onClick={() => {
+              setError(null);
+              downloadMutation.mutate();
+            }}
+            type="button"
+          >
             {t('settings.export.download')}
-          </a>
+          </Button>
         </div>
       ) : isReady && !tokenForJob ? (
         <Alert tone="info">{t('settings.export.readyNoToken')}</Alert>
