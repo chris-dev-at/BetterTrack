@@ -6,17 +6,17 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { ParanoidMediaStateResponse, ParanoidVaultMediaState } from '@bettertrack/contracts';
 
-vi.mock('../../lib/userApi', () => ({
+vi.mock('../../../lib/userApi', () => ({
   getGoogleLinkStatus: vi.fn(),
   getParanoidMediaState: vi.fn(),
   unlinkGoogle: vi.fn(),
   googleStartUrl: vi.fn(() => 'http://api.test/api/v1/auth/google/start'),
 }));
 
-import { ApiError } from '../../lib/apiClient';
-import { getGoogleLinkStatus, getParanoidMediaState, unlinkGoogle } from '../../lib/userApi';
-import type { DriveConnectionController } from '../vault/media';
-import { ConnectionsPage } from './ConnectionsPage';
+import { ApiError } from '../../../lib/apiClient';
+import { getGoogleLinkStatus, getParanoidMediaState, unlinkGoogle } from '../../../lib/userApi';
+import type { DriveConnectionController } from '../../vault/media';
+import { ConnectionsPanel } from './ConnectionsPanel';
 
 const GOOGLE_OFF = {
   enabled: false,
@@ -135,15 +135,15 @@ function expiringController(delayMs: number): DriveConnectionController {
   };
 }
 
-function renderPage(
+function renderPanel(
   initialEntry = '/settings/connections',
-  props: React.ComponentProps<typeof ConnectionsPage> = {},
+  props: React.ComponentProps<typeof ConnectionsPanel> = {},
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={client}>
-        <ConnectionsPage {...props} />
+        <ConnectionsPanel {...props} />
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -157,11 +157,11 @@ beforeEach(() => {
   vi.mocked(unlinkGoogle).mockResolvedValue(undefined);
 });
 
-describe('ConnectionsPage — connector slots (V5-P0c)', () => {
+describe('ConnectionsPanel — connector slots (V5-P0c)', () => {
   test('renders the compact, non-functional connector slots with sync semantics', async () => {
-    renderPage();
+    renderPanel();
 
-    // The page shell renders even while Google is off.
+    // The panel head renders even while Google is off.
     expect(await screen.findByRole('heading', { name: 'Connections' })).toBeInTheDocument();
 
     // Each designed slot is present with a "coming soon" chip and no dead button.
@@ -176,9 +176,9 @@ describe('ConnectionsPage — connector slots (V5-P0c)', () => {
   });
 });
 
-describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security)', () => {
+describe('ConnectionsPanel — Google account (§13.4 V4-P4b, moved from Security)', () => {
   test('the section is hidden when Google is not configured (routes 404 / disabled)', async () => {
-    renderPage();
+    renderPanel();
     // The connectors still render; the Google section resolves to nothing once
     // the disabled status arrives (a transient skeleton clears on settle).
     expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
@@ -188,7 +188,7 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
   test('shows the linked identity and unlinks after a password re-auth', async () => {
     vi.mocked(getGoogleLinkStatus).mockResolvedValue(LINKED);
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     expect(await screen.findByText('Linked as me@example.com')).toBeInTheDocument();
 
@@ -204,7 +204,7 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
     vi.mocked(getGoogleLinkStatus).mockResolvedValue(LINKED);
     vi.mocked(unlinkGoogle).mockRejectedValue(new ApiError(401, 'INVALID_CREDENTIALS', 'nope'));
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Unlink' }));
     await user.type(await screen.findByLabelText('Password'), 'wrong');
@@ -215,7 +215,7 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
 
   test('Google as the only sign-in method: unlink is withheld with a hint', async () => {
     vi.mocked(getGoogleLinkStatus).mockResolvedValue({ ...LINKED, canUnlink: false });
-    renderPage();
+    renderPanel();
 
     expect(await screen.findByText('Linked as me@example.com')).toBeInTheDocument();
     expect(screen.getByText(/only way to sign in/i)).toBeInTheDocument();
@@ -230,7 +230,7 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
       linkedAt: null,
       canUnlink: false,
     });
-    renderPage();
+    renderPanel();
 
     expect(await screen.findByText('No Google account is linked.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Connect Google' })).toBeInTheDocument();
@@ -238,7 +238,7 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
 
   test('announces a just-completed link from the ?google=linked callback marker', async () => {
     vi.mocked(getGoogleLinkStatus).mockResolvedValue(LINKED);
-    renderPage('/settings/connections?google=linked');
+    renderPanel('/settings/connections?google=linked');
 
     expect(await screen.findByText('Google account linked.')).toBeInTheDocument();
   });
@@ -253,7 +253,7 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
       linkedAt: null,
       canUnlink: false,
     });
-    renderPage('/settings/connections?error=google_email_mismatch');
+    renderPanel('/settings/connections?error=google_email_mismatch');
 
     expect(await screen.findByText(/doesn't match your account email/i)).toBeInTheDocument();
     // The connect affordance is still offered — nothing was linked.
@@ -261,12 +261,12 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
   });
 });
 
-describe('ConnectionsPage — paranoid Google Drive app data', () => {
+describe('ConnectionsPanel — paranoid Google Drive app data', () => {
   test('connects a server-only vault through the verified media flow', async () => {
     vi.mocked(getParanoidMediaState).mockResolvedValue(SERVER_MEDIA);
     const drive = controller();
     const user = userEvent.setup();
-    renderPage('/settings/connections', {
+    renderPanel('/settings/connections', {
       driveConnection: drive,
       driveConfigured: true,
     });
@@ -291,7 +291,7 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
       synchronization: { status: 'pending', cause: new Error('reconnect failed') },
     });
     const user = userEvent.setup();
-    renderPage('/settings/connections', {
+    renderPanel('/settings/connections', {
       driveConnection: drive,
       driveConfigured: true,
     });
@@ -324,7 +324,7 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
       synchronization: { status: 'pending' },
     });
     const user = userEvent.setup();
-    renderPage('/settings/connections', {
+    renderPanel('/settings/connections', {
       driveConnection: drive,
       driveConfigured: true,
     });
@@ -355,7 +355,7 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
     vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
     const drive = controller('token-expired');
     const user = userEvent.setup();
-    renderPage('/settings/connections', {
+    renderPanel('/settings/connections', {
       driveConnection: drive,
       driveConfigured: true,
     });
@@ -370,7 +370,7 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
     try {
       vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
       const drive = expiringController(1_000);
-      renderPage('/settings/connections', {
+      renderPanel('/settings/connections', {
         driveConnection: drive,
         driveConfigured: true,
       });
@@ -392,7 +392,7 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
     const drive = controller();
     const user = userEvent.setup();
     vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
-    const rendered = renderPage('/settings/connections', {
+    const rendered = renderPanel('/settings/connections', {
       driveConnection: drive,
       driveConfigured: true,
     });
@@ -402,7 +402,7 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
 
     rendered.unmount();
     vi.mocked(getParanoidMediaState).mockResolvedValue(DRIVE_ONLY_MEDIA);
-    renderPage('/settings/connections', {
+    renderPanel('/settings/connections', {
       driveConnection: drive,
       driveConfigured: true,
     });
@@ -414,7 +414,7 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
     const drive = controller();
     const user = userEvent.setup();
     vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
-    const rendered = renderPage('/settings/connections', {
+    const rendered = renderPanel('/settings/connections', {
       driveConnection: drive,
       driveConfigured: true,
     });
@@ -425,7 +425,7 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
 
     rendered.unmount();
     vi.mocked(getParanoidMediaState).mockResolvedValue(DRIVE_ONLY_MEDIA);
-    renderPage('/settings/connections', {
+    renderPanel('/settings/connections', {
       driveConnection: drive,
       driveConfigured: true,
     });
@@ -442,7 +442,7 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
         server: { ...BOTH_STATE.server, retired: RETIRED_SERVER },
       },
     });
-    renderPage('/settings/connections', {
+    renderPanel('/settings/connections', {
       driveConnection: controller(),
       driveConfigured: true,
     });
@@ -459,7 +459,7 @@ describe('ConnectionsPage — paranoid Google Drive app data', () => {
     const drive = controller();
     const unlock = vi.fn(async () => drive);
     const user = userEvent.setup();
-    renderPage('/settings/connections', {
+    renderPanel('/settings/connections', {
       driveConnection: null,
       driveUnlock: unlock,
       driveConfigured: true,

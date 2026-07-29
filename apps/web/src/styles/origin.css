@@ -2927,49 +2927,6 @@
   padding: 22px 26px 30px;
 }
 
-/* Compaction: panels mount their existing page components untouched, so the
-   overlay quiets their page/section heads from here instead. */
-.bt-cc .bt-page-head {
-  margin-bottom: 14px;
-}
-
-.bt-cc .bt-page-title {
-  font-size: 19px;
-}
-
-.bt-cc .bt-h2 {
-  font-size: 15px;
-}
-
-.bt-cc .bt-section__head {
-  margin-bottom: 10px;
-}
-
-.bt-cc .bt-section {
-  margin-top: 24px;
-}
-
-/* Delete account is a standalone gate screen elsewhere (`/account/delete`, the
-   public Play-listing URL) — inside the popup it flattens into a plain panel.
-   That page is its own `.bt-app` canvas, so the paint is stripped here too. */
-.bt-cc .bt-gate {
-  min-height: 0;
-  display: block;
-  padding: 0;
-  background: none;
-}
-
-.bt-cc .bt-gate__card {
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-}
-
-.bt-cc .bt-gate__brand {
-  display: none;
-}
-
 @keyframes bt-cc-open {
   from {
     opacity: 0;
@@ -3011,6 +2968,240 @@
 
   .bt-cc__content {
     padding: 18px 16px 28px;
+  }
+}
+
+/* ── Popup-native panel content ───────────────────────────────────────────────
+ *
+ * The panels are no longer full-canvas pages mounted in a popup: each one is
+ * built for the 960×660 surface. The grammar is deliberately tiny — a compact
+ * head, a labelled group, and a ruled row (label · one-line hint · control) —
+ * so a panel is a stack of rows, never a stack of cards. No nested panels, no
+ * page-sized title stacks, no paragraph under every control.
+ */
+
+.bt-cc-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* One head per panel: the panel's name. No subtitle restating it. */
+.bt-cc-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bt-cc-panel__title {
+  font-size: 15px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  color: var(--bt-text);
+}
+
+/* A labelled group of rows. The label is a real heading, styled small — the
+   document outline survives, the visual weight does not. */
+.bt-cc-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.bt-cc-group + .bt-cc-group {
+  margin-top: 20px;
+}
+
+.bt-cc-group__label {
+  margin-bottom: 8px;
+  color: var(--bt-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+/* The rows themselves: hairline-separated, no container. */
+.bt-cc-rows {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-cc-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+/* Rows whose control is a form or a list sit under their label instead of
+   beside it — same rule, same rhythm, just stacked. */
+.bt-cc-row--stack {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.bt-cc-row__text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.bt-cc-row__label {
+  color: var(--bt-text);
+  font-size: 13px;
+  font-weight: 570;
+}
+
+.bt-cc-row__hint {
+  color: var(--bt-muted);
+  font-size: 11.5px;
+}
+
+.bt-cc-row__control {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Controls stay narrow: a popup is not a canvas. */
+.bt-cc-row__control .bt-input,
+.bt-cc-row__control .bt-select {
+  min-height: 30px;
+  font-size: 12.5px;
+}
+
+.bt-cc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 420px;
+}
+
+.bt-cc-form .bt-input,
+.bt-cc-form .bt-select,
+.bt-cc-form .bt-textarea {
+  min-height: 30px;
+  font-size: 12.5px;
+}
+
+.bt-cc-form .bt-field > label {
+  font-size: 12px;
+}
+
+/* A one-line constraint the user genuinely needs (inheritance semantics, a
+   show-once secret, what a lost key costs). Not a place for narration. */
+.bt-cc-note {
+  color: var(--bt-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.bt-cc-note--warn {
+  color: var(--bt-gold);
+}
+
+/* Dense object rows (sessions, keys, apps, webhooks, connectors): title line
+   left with its metadata beneath, inline actions right. */
+.bt-cc-list {
+  border-top: 1px solid var(--bt-border);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* A list opening a group would draw its own top rule against the group's, so
+   the two hairlines would read as one 2px seam. The group already ruled it. */
+.bt-cc-rows > .bt-cc-list {
+  border-top: 0;
+}
+
+.bt-cc-list__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-cc-list__main {
+  min-width: 0;
+  flex: 1 1 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bt-cc-list__actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* A third rank inside an object row — one step quieter than the hint, for
+   metadata that must not compete (a connector's sync semantics, say). */
+.bt-cc-list__meta {
+  color: var(--bt-faint);
+  font-size: 11.5px;
+}
+
+/* Monospace surfaces (tokens, client ids, URLs) shrink in the popup. */
+.bt-cc-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+/* Disclosures stay the popup's way to fold a long block away. */
+.bt-cc-fold {
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-cc-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  color: var(--bt-text);
+  font-size: 13px;
+  font-weight: 570;
+  cursor: pointer;
+  list-style: none;
+}
+
+.bt-cc-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.bt-cc-fold > summary::after {
+  content: '▸';
+  margin-left: auto;
+  color: var(--bt-faint);
+  font-size: 11px;
+  transition: transform var(--bt-t-fast);
+}
+
+.bt-cc-fold[open] > summary::after {
+  transform: rotate(90deg);
+}
+
+.bt-cc-fold__body {
+  padding: 2px 0 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-cc-fold > summary::after {
+    transition: none;
   }
 }
 

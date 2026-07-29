@@ -61,9 +61,12 @@ test('notifications: bell deep-link + read archives it into the Archived view', 
   await recipient.page.getByRole('button', { name: 'Notifications', exact: true }).click();
   await expect(recipient.page.getByRole('link', { name: /New friend request/ })).toHaveCount(0);
 
-  // …and it is retained under the Archived view on the full notifications page.
-  await recipient.page.goto('/settings/notifications');
-  await recipient.page.getByRole('button', { name: 'Archived' }).click();
+  // …and it is retained under the Archived view in the notification log (the
+  // inbox split out of the notification PREFERENCES panel in R2).
+  await recipient.page.goto('/control/notification-log');
+  // The view filter is a tablist (`role="tab"`), so an explicit `button` role
+  // never matched it — this locator was wrong before the split too.
+  await recipient.page.getByRole('tab', { name: 'Archived' }).click();
   await expect(recipient.page.getByText('New friend request').first()).toBeVisible({
     timeout: 15_000,
   });

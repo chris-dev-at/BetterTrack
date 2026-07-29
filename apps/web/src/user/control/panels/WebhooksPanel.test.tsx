@@ -8,7 +8,7 @@ import type {
   WebhookSubscriptionListResponse,
 } from '@bettertrack/contracts';
 
-vi.mock('../../lib/webhooksApi', () => ({
+vi.mock('../../../lib/webhooksApi', () => ({
   listWebhooks: vi.fn(),
   createWebhook: vi.fn(),
   updateWebhook: vi.fn(),
@@ -16,8 +16,8 @@ vi.mock('../../lib/webhooksApi', () => ({
   listWebhookDeliveries: vi.fn(),
 }));
 
-import { createWebhook, listWebhooks } from '../../lib/webhooksApi';
-import { WebhooksSection } from './WebhooksSection';
+import { createWebhook, listWebhooks } from '../../../lib/webhooksApi';
+import { WebhooksPanel } from './WebhooksPanel';
 
 const EMPTY: WebhookSubscriptionListResponse = { subscriptions: [] };
 
@@ -56,11 +56,11 @@ const CREATED: CreateWebhookSubscriptionResponse = {
   secret: 'whsec_shown_once_secret',
 };
 
-function renderSection() {
+function renderPanel() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
     <QueryClientProvider client={client}>
-      <WebhooksSection />
+      <WebhooksPanel />
     </QueryClientProvider>,
   );
 }
@@ -70,16 +70,14 @@ beforeEach(() => {
   vi.mocked(listWebhooks).mockResolvedValue(EMPTY);
 });
 
-describe('WebhooksSection', () => {
-  test('is collapsed by default and loads nothing until expanded (anti-bloat)', async () => {
-    renderSection();
-    // No create form and no list request while collapsed.
-    expect(screen.queryByLabelText('Payload URL')).not.toBeInTheDocument();
-    expect(listWebhooks).not.toHaveBeenCalled();
+describe('WebhooksPanel', () => {
+  // R2: the outer collapse is retired (the section IS the panel now), so the
+  // create form renders immediately and the list query is unconditional. What
+  // this case still asserts — the empty state, the form, exactly one fetch — is
+  // unchanged; only the "collapsed until clicked" assertions are gone.
+  test('renders expanded and loads the list on mount', async () => {
+    renderPanel();
 
-    await userEvent.setup().click(screen.getByRole('button', { name: /webhooks/i }));
-
-    // Expanding loads the (empty) list and reveals the create form.
     expect(await screen.findByText(/no webhooks yet/i)).toBeInTheDocument();
     expect(screen.getByLabelText('Payload URL')).toBeInTheDocument();
     expect(listWebhooks).toHaveBeenCalledTimes(1);
@@ -88,9 +86,8 @@ describe('WebhooksSection', () => {
   test('creates a webhook and shows the signing secret exactly once', async () => {
     vi.mocked(createWebhook).mockResolvedValue(CREATED);
     const user = userEvent.setup();
-    renderSection();
+    renderPanel();
 
-    await user.click(screen.getByRole('button', { name: /webhooks/i }));
     await user.type(await screen.findByLabelText('Payload URL'), 'https://example.com/webhooks');
     await user.click(screen.getByRole('checkbox', { name: /price alert triggered/i }));
     await user.click(screen.getByRole('button', { name: 'Add webhook' }));
@@ -110,9 +107,8 @@ describe('WebhooksSection', () => {
 
   test('blocks creation with no event selected', async () => {
     const user = userEvent.setup();
-    renderSection();
+    renderPanel();
 
-    await user.click(screen.getByRole('button', { name: /webhooks/i }));
     await user.type(await screen.findByLabelText('Payload URL'), 'https://example.com/webhooks');
     await user.click(screen.getByRole('button', { name: 'Add webhook' }));
 
@@ -122,10 +118,8 @@ describe('WebhooksSection', () => {
 
   test('lists an existing subscription with its active status', async () => {
     vi.mocked(listWebhooks).mockResolvedValue(ONE);
-    const user = userEvent.setup();
-    renderSection();
+    renderPanel();
 
-    await user.click(screen.getByRole('button', { name: /webhooks/i }));
     expect(await screen.findByText('https://receiver.test/hook')).toBeInTheDocument();
     expect(screen.getByText('Active')).toBeInTheDocument();
   });

@@ -6,24 +6,41 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useT, type TranslateFn } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { Button, Icon, Input, type IconName } from '../../ui/origin';
-import { PrivacyPanel } from '../hub/HubPages';
-import { AccountSettingsPage } from '../settings/AccountSettingsPage';
-import { ApiAccessPage } from '../settings/ApiAccessPage';
-import { ConnectionsPage } from '../settings/ConnectionsPage';
-import { DeleteAccountPage } from '../settings/DeleteAccountPage';
-import { NewPortfolioDefaultsPage } from '../settings/NewPortfolioDefaultsPage';
-import { SecuritySettingsPage } from '../settings/SecuritySettingsPage';
-import { NotificationSettingsPage } from '../settings/SettingsSection';
-import { WebhooksSection } from '../settings/WebhooksSection';
+import { AccountPanel } from './panels/AccountPanel';
+import { ApiKeysPanel } from './panels/ApiKeysPanel';
+import { AuthorizedAppsPanel } from './panels/AuthorizedAppsPanel';
+import { ConnectionsPanel } from './panels/ConnectionsPanel';
+import { DefaultsPanel } from './panels/DefaultsPanel';
+import { DeleteAccountPanel } from './panels/DeleteAccountPanel';
+import { NotificationLogPanel } from './panels/NotificationLogPanel';
+import { NotificationsPanel } from './panels/NotificationsPanel';
+import { OAuthAppsPanel } from './panels/OAuthAppsPanel';
+import { PrivacyPanel } from './panels/PrivacyPanel';
+import { ProfilePanel } from './panels/ProfilePanel';
+import { SessionsPanel } from './panels/SessionsPanel';
+import { SignInPanel } from './panels/SignInPanel';
+import { WebhooksPanel } from './panels/WebhooksPanel';
 
 /**
  * The Control Center overlay (R2): the settings-absorbing popup that replaced
  * the old page of links and the standalone `/settings` shell. `/control` and
  * `/control/:panel` render one large modal over the (dimmed) app shell — left
- * pane a filterable, grouped panel nav, right pane the ACTIVE panel's existing
- * page component mounted in place. Nothing was moved: each panel is the very
- * component the retired `/settings/*` routes rendered, so their standalone
- * tests keep passing and every legacy path redirects onto its panel.
+ * pane a filterable, grouped panel nav, right pane the ACTIVE panel.
+ *
+ * The panels are no longer the old `/settings/*` PAGE components mounted in
+ * place: they were built for a full canvas (page-sized title stacks, stacked
+ * cards, a paragraph under every control) and the popup had to claw the size
+ * back with CSS. Each panel is now a popup-native component under `./panels/`
+ * built on one grammar (`./panels/panelKit.tsx`) — same hooks, same endpoints,
+ * same query keys, same confirmations, rebuilt as dense rows.
+ *
+ * The structure is grouped by what the user is DOING, not by which file exists,
+ * and every panel answers ONE question:
+ *   Account            — who am I, and how does the app render for me?
+ *   Security           — how do I prove it's me? where am I signed in?
+ *   Preferences        — how does the app behave for me?
+ *   Connections & API  — what is plugged into my account?
+ *   Danger zone        — the one irreversible action, on its own.
  *
  * Surfaces that are genuinely their own page — the Developer platform, the
  * Review inbox, Data management — stay pages and appear as clearly marked
@@ -57,19 +74,19 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
   {
     titleKey: 'control.groups.account',
     panels: [
-      { id: 'account', labelKey: 'control.account', icon: 'user', Component: AccountSettingsPage },
+      { id: 'account', labelKey: 'control.account', icon: 'user', Component: AccountPanel },
+      { id: 'profile', labelKey: 'control.profile', icon: 'globe', Component: ProfilePanel },
+    ],
+  },
+  {
+    titleKey: 'control.groups.security',
+    panels: [
+      { id: 'sign-in', labelKey: 'control.signIn', icon: 'shield', Component: SignInPanel },
       {
-        id: 'connections',
-        labelKey: 'control.connections',
-        icon: 'link',
-        Component: ConnectionsPage,
-      },
-      {
-        id: 'delete-account',
-        labelKey: 'control.deleteAccount',
-        icon: 'trash',
-        Component: DeleteAccountPage,
-        danger: true,
+        id: 'sessions',
+        labelKey: 'control.sessions',
+        icon: 'user-lock',
+        Component: SessionsPanel,
       },
     ],
   },
@@ -77,44 +94,77 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
     titleKey: 'control.groups.preferences',
     panels: [
       {
-        id: 'portfolio-defaults',
+        id: 'defaults',
         labelKey: 'control.portfolioDefaults',
         icon: 'percent',
-        Component: NewPortfolioDefaultsPage,
+        Component: DefaultsPanel,
       },
       {
         id: 'notifications',
         labelKey: 'control.notifications',
         icon: 'bell',
-        Component: NotificationSettingsPage,
+        Component: NotificationsPanel,
+      },
+      {
+        id: 'notification-log',
+        labelKey: 'control.notificationLog',
+        icon: 'inbox',
+        Component: NotificationLogPanel,
       },
       { id: 'privacy', labelKey: 'control.privacy', icon: 'lock', Component: PrivacyPanel },
     ],
   },
   {
-    titleKey: 'control.groups.security',
+    titleKey: 'control.groups.integrations',
     panels: [
       {
-        id: 'security',
-        labelKey: 'control.security',
-        icon: 'shield',
-        Component: SecuritySettingsPage,
+        id: 'connections',
+        labelKey: 'control.connections',
+        icon: 'link',
+        Component: ConnectionsPanel,
       },
+      { id: 'api', labelKey: 'control.apiKeys', icon: 'key', Component: ApiKeysPanel },
+      {
+        id: 'oauth-apps',
+        labelKey: 'control.oauthApps',
+        icon: 'terminal',
+        Component: OAuthAppsPanel,
+      },
+      {
+        id: 'authorized-apps',
+        labelKey: 'control.authorizedApps',
+        icon: 'share',
+        Component: AuthorizedAppsPanel,
+      },
+      { id: 'webhooks', labelKey: 'control.webhooks', icon: 'webhook', Component: WebhooksPanel },
     ],
   },
   {
-    titleKey: 'control.groups.automation',
+    // The one irreversible action never shares a group with routine settings.
+    titleKey: 'control.groups.danger',
     panels: [
-      { id: 'api', labelKey: 'control.apiKeys', icon: 'key', Component: ApiAccessPage },
       {
-        id: 'webhooks',
-        labelKey: 'control.webhooks',
-        icon: 'webhook',
-        Component: WebhooksSection,
+        id: 'delete-account',
+        labelKey: 'control.deleteAccount',
+        icon: 'trash',
+        Component: DeleteAccountPanel,
+        danger: true,
       },
     ],
   },
 ];
+
+/**
+ * Panel ids this restructure renamed. An unknown id falls back to the DEFAULT
+ * panel, which would silently land an old deep link (or an old bookmark) on
+ * Account — so retired ids resolve explicitly instead.
+ */
+const PANEL_ALIASES: Readonly<Record<string, string>> = {
+  security: 'sign-in',
+  'portfolio-defaults': 'defaults',
+  'api-keys': 'api',
+  taxes: 'defaults',
+};
 
 /** Rows that leave the popup for a full page (marked with the ↗ affordance). */
 export const CONTROL_LINKS: readonly ControlLink[] = [
@@ -125,6 +175,12 @@ export const CONTROL_LINKS: readonly ControlLink[] = [
 
 /** Flat lookup; the first entry (Account) is what a bare `/control` opens on. */
 const PANELS: readonly ControlPanel[] = CONTROL_GROUPS.flatMap((group) => group.panels);
+
+function findPanel(id: string | undefined): ControlPanel {
+  if (id === undefined) return PANELS[0]!;
+  const resolved = PANEL_ALIASES[id] ?? id;
+  return PANELS.find((panel) => panel.id === resolved) ?? PANELS[0]!;
+}
 
 /** Elements the Tab trap cycles through — the panel itself is the fallback. */
 const FOCUSABLE =
@@ -159,7 +215,7 @@ export function ControlCenterOverlay() {
   const panelRef = useRef<HTMLDivElement>(null);
   const [filter, setFilter] = useState('');
 
-  const active = PANELS.find((panel) => panel.id === params.panel) ?? PANELS[0]!;
+  const active = findPanel(params.panel);
 
   /** Esc / ✕ / scrim: back where the user came from, else the Home canvas. */
   const close = useCallback(() => {

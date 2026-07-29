@@ -4,35 +4,50 @@ import { createElement } from 'react';
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-// The overlay mounts the EXISTING settings pages in place; this suite is about
-// the overlay itself (nav, filter, focus, Escape), so every panel is stubbed to
-// a bare marker. Their real behavior stays covered by their own suites.
-vi.mock('../settings/AccountSettingsPage', () => ({
-  AccountSettingsPage: () => createElement('p', null, 'account-panel'),
+// This suite is about the overlay itself (taxonomy, nav, filter, focus, Escape),
+// so every panel is stubbed to a bare marker. Their real behaviour stays covered
+// by their own suites under `./panels/`.
+vi.mock('./panels/AccountPanel', () => ({
+  AccountPanel: () => createElement('p', null, 'account-panel'),
 }));
-vi.mock('../settings/ApiAccessPage', () => ({
-  ApiAccessPage: () => createElement('p', null, 'api-panel'),
+vi.mock('./panels/ProfilePanel', () => ({
+  ProfilePanel: () => createElement('p', null, 'profile-panel'),
 }));
-vi.mock('../settings/ConnectionsPage', () => ({
-  ConnectionsPage: () => createElement('p', null, 'connections-panel'),
+vi.mock('./panels/SignInPanel', () => ({
+  SignInPanel: () => createElement('p', null, 'sign-in-panel'),
 }));
-vi.mock('../settings/DeleteAccountPage', () => ({
-  DeleteAccountPage: () => createElement('p', null, 'delete-account-panel'),
+vi.mock('./panels/SessionsPanel', () => ({
+  SessionsPanel: () => createElement('p', null, 'sessions-panel'),
 }));
-vi.mock('../settings/NewPortfolioDefaultsPage', () => ({
-  NewPortfolioDefaultsPage: () => createElement('p', null, 'portfolio-defaults-panel'),
+vi.mock('./panels/DefaultsPanel', () => ({
+  DefaultsPanel: () => createElement('p', null, 'defaults-panel'),
 }));
-vi.mock('../settings/SecuritySettingsPage', () => ({
-  SecuritySettingsPage: () => createElement('p', null, 'security-panel'),
+vi.mock('./panels/NotificationsPanel', () => ({
+  NotificationsPanel: () => createElement('p', null, 'notifications-panel'),
 }));
-vi.mock('../settings/SettingsSection', () => ({
-  NotificationSettingsPage: () => createElement('p', null, 'notifications-panel'),
+vi.mock('./panels/NotificationLogPanel', () => ({
+  NotificationLogPanel: () => createElement('p', null, 'notification-log-panel'),
 }));
-vi.mock('../settings/WebhooksSection', () => ({
-  WebhooksSection: () => createElement('p', null, 'webhooks-panel'),
+vi.mock('./panels/ConnectionsPanel', () => ({
+  ConnectionsPanel: () => createElement('p', null, 'connections-panel'),
 }));
-// The webhooks panel stands in for "a panel that opens a nested modal".
-vi.mock('../hub/HubPages', () => ({
+vi.mock('./panels/ApiKeysPanel', () => ({
+  ApiKeysPanel: () => createElement('p', null, 'api-panel'),
+}));
+vi.mock('./panels/OAuthAppsPanel', () => ({
+  OAuthAppsPanel: () => createElement('p', null, 'oauth-apps-panel'),
+}));
+vi.mock('./panels/AuthorizedAppsPanel', () => ({
+  AuthorizedAppsPanel: () => createElement('p', null, 'authorized-apps-panel'),
+}));
+vi.mock('./panels/WebhooksPanel', () => ({
+  WebhooksPanel: () => createElement('p', null, 'webhooks-panel'),
+}));
+vi.mock('./panels/DeleteAccountPanel', () => ({
+  DeleteAccountPanel: () => createElement('p', null, 'delete-account-panel'),
+}));
+// The privacy panel stands in for "a panel that opens a nested modal".
+vi.mock('./panels/PrivacyPanel', () => ({
   PrivacyPanel: () =>
     createElement(
       'div',
@@ -42,7 +57,7 @@ vi.mock('../hub/HubPages', () => ({
 }));
 
 import { I18nProvider } from '../../i18n';
-import { ControlCenterOverlay } from './ControlCenterOverlay';
+import { CONTROL_GROUPS, ControlCenterOverlay } from './ControlCenterOverlay';
 
 /** A shell-level control that stays mounted, so focus restore is observable. */
 function Opener() {
@@ -101,11 +116,16 @@ describe('ControlCenterOverlay', () => {
   });
 
   test.each([
-    ['/control/security', 'security-panel', 'Security'],
-    ['/control/connections', 'connections-panel', 'Connections'],
-    ['/control/portfolio-defaults', 'portfolio-defaults-panel', 'Portfolio defaults'],
+    ['/control/profile', 'profile-panel', 'Public profile'],
+    ['/control/sign-in', 'sign-in-panel', 'Sign-in'],
+    ['/control/sessions', 'sessions-panel', 'Sessions'],
+    ['/control/defaults', 'defaults-panel', 'Portfolio defaults'],
     ['/control/notifications', 'notifications-panel', 'Notifications'],
+    ['/control/notification-log', 'notification-log-panel', 'Notification log'],
+    ['/control/connections', 'connections-panel', 'Connections'],
     ['/control/api', 'api-panel', 'API keys'],
+    ['/control/oauth-apps', 'oauth-apps-panel', 'OAuth apps'],
+    ['/control/authorized-apps', 'authorized-apps-panel', 'Authorized apps'],
     ['/control/webhooks', 'webhooks-panel', 'Webhooks'],
     ['/control/delete-account', 'delete-account-panel', 'Delete account'],
   ])('%s deep-links its panel', (path, marker, label) => {
@@ -115,19 +135,48 @@ describe('ControlCenterOverlay', () => {
     expect(within(popup()).getByRole('link', { name: label, current: 'page' })).toBeVisible();
   });
 
+  test('every declared panel id renders its own panel', () => {
+    const ids = CONTROL_GROUPS.flatMap((group) => group.panels.map((panel) => panel.id));
+    // The taxonomy and the deep-link table above must not drift apart (the
+    // table covers all but `privacy`, whose stub is the nested-modal fixture).
+    expect(ids).toHaveLength(14);
+    for (const id of ids) {
+      const view = renderAt(`/control/${id}`);
+      expect(
+        within(popup()).getByRole('link', { current: 'page' }),
+        `panel "${id}" did not mark its nav row current`,
+      ).toBeVisible();
+      view.unmount();
+    }
+  });
+
   test('an unknown panel id falls back to the default panel instead of blanking', () => {
     renderAt('/control/nope');
 
     expect(within(popup()).getByText('account-panel')).toBeInTheDocument();
   });
 
+  // Ids this restructure renamed must resolve to their NEW panel, not silently
+  // fall back to Account — old bookmarks and deep links stay honest.
+  test.each([
+    ['/control/security', 'sign-in-panel'],
+    ['/control/portfolio-defaults', 'defaults-panel'],
+    ['/control/taxes', 'defaults-panel'],
+    ['/control/api-keys', 'api-panel'],
+  ])('%s resolves through the alias map', (path, marker) => {
+    renderAt(path);
+
+    expect(within(popup()).getByText(marker)).toBeInTheDocument();
+    expect(within(popup()).queryByText('account-panel')).not.toBeInTheDocument();
+  });
+
   test('clicking a nav row switches the panel without leaving the popup', async () => {
     const user = userEvent.setup();
     renderAt('/control/account');
 
-    await user.click(within(popup()).getByRole('link', { name: 'Security' }));
+    await user.click(within(popup()).getByRole('link', { name: 'Sign-in' }));
 
-    expect(within(popup()).getByText('security-panel')).toBeInTheDocument();
+    expect(within(popup()).getByText('sign-in-panel')).toBeInTheDocument();
     expect(within(popup()).queryByText('account-panel')).not.toBeInTheDocument();
     expect(within(popup()).getByRole('link', { name: 'Account' })).not.toHaveAttribute(
       'aria-current',
@@ -138,9 +187,9 @@ describe('ControlCenterOverlay', () => {
     const user = userEvent.setup();
     renderAt('/control/account');
 
-    await user.type(within(popup()).getByRole('searchbox', { name: 'Filter panels' }), 'secu');
+    await user.type(within(popup()).getByRole('searchbox', { name: 'Filter panels' }), 'sess');
 
-    expect(within(popup()).getByRole('link', { name: 'Security' })).toBeInTheDocument();
+    expect(within(popup()).getByRole('link', { name: 'Sessions' })).toBeInTheDocument();
     expect(within(popup()).queryByRole('link', { name: 'Account' })).not.toBeInTheDocument();
     // Filtering never unmounts the active panel — only the nav narrows.
     expect(within(popup()).getByText('account-panel')).toBeInTheDocument();
@@ -180,11 +229,9 @@ describe('ControlCenterOverlay', () => {
     const filter = within(popup()).getByRole('searchbox', { name: 'Filter panels' });
     await user.type(filter, 'e');
 
-    await user.click(within(popup()).getByRole('link', { name: 'Security' }));
-    expect(await screen.findByText('security-panel')).toBeInTheDocument();
-    expect(
-      within(popup()).getByRole('searchbox', { name: 'Filter panels' }),
-    ).toHaveValue('e');
+    await user.click(within(popup()).getByRole('link', { name: 'Sessions' }));
+    expect(await screen.findByText('sessions-panel')).toBeInTheDocument();
+    expect(within(popup()).getByRole('searchbox', { name: 'Filter panels' })).toHaveValue('e');
 
     await user.click(within(popup()).getByRole('link', { name: 'Webhooks' }));
     expect(await screen.findByText('webhooks-panel')).toBeInTheDocument();
@@ -277,6 +324,17 @@ describe('ControlCenterOverlay', () => {
     const row = within(popup()).getByRole('link', { name: 'Delete account', current: 'page' });
     expect(row).toHaveClass('is-danger');
     expect(row.className).not.toMatch(/gold/);
+  });
+
+  // The one irreversible action never shares a group with routine settings.
+  test('delete account sits alone in its own trailing group', () => {
+    const last = CONTROL_GROUPS[CONTROL_GROUPS.length - 1]!;
+    expect(last.titleKey).toBe('control.groups.danger');
+    expect(last.panels.map((panel) => panel.id)).toEqual(['delete-account']);
+    // …and no other group carries a destructive panel.
+    for (const group of CONTROL_GROUPS.slice(0, -1)) {
+      expect(group.panels.some((panel) => panel.danger)).toBe(false);
+    }
   });
 
   test('body scroll is locked while the popup owns the screen and released after', () => {

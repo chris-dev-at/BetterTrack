@@ -522,7 +522,6 @@
   },
   "language": {
     "title": "Language",
-    "description": "The language BetterTrack uses across the app and in your emails.",
     "label": "Display language",
     "saveError": "Couldn't save your language. Please try again."
   },
@@ -541,11 +540,9 @@
       "description": "Broker CSV imports (Trade Republic, George, …) and full account-data export."
     },
     "connections": {
-      "title": "Connections",
       "subtitle": "Everything linking BetterTrack to the outside — sign-in, encrypted storage, and compact connector controls.",
       "comingSoon": "Coming soon",
       "slotsTitle": "Connectors",
-      "slotsSubtitle": "Sync your data with outside services. These are on the way — nothing to set up yet.",
       "drive": {
         "title": "Google Drive app data",
         "description": "Keep your encrypted paranoid vault in your private Drive app-data folder. BetterTrack cannot access ordinary Drive files.",
@@ -616,110 +613,84 @@
     },
     "notifications": {
       "title": "Notifications",
-      "subtitle": "Route each kind of activity to the channels you want — in-app bell, email, phone push, browser push — or mute everything at once.",
       "loadError": {
         "title": "Couldn't load your notification settings"
       },
       "types": {
         "friendRequest": {
-          "label": "Friend requests",
-          "description": "When someone sends you a friend request."
+          "label": "Friend requests"
         },
         "friendAccepted": {
-          "label": "Accepted friend requests",
-          "description": "When someone accepts your friend request."
+          "label": "Accepted friend requests"
         },
         "portfolioShared": {
-          "label": "Shared portfolios",
-          "description": "When a friend shares a portfolio with you."
+          "label": "Shared portfolios"
         },
         "accountInvite": {
-          "label": "Account invites",
-          "description": "When you're invited to BetterTrack."
+          "label": "Account invites"
         },
         "tempPassword": {
-          "label": "Temporary passwords",
-          "description": "When an admin issues you a temporary password."
+          "label": "Temporary passwords"
         },
         "dataExport": {
-          "label": "Data exports",
-          "description": "When a data export you requested is ready to download."
+          "label": "Data exports"
         },
         "alertTriggered": {
-          "label": "Price alerts",
-          "description": "When one of your price alerts fires."
+          "label": "Price alerts"
         },
         "earningsReminder": {
-          "label": "Earnings reminders",
-          "description": "Ahead of an earnings report for an asset you hold or watch. Off by default."
+          "label": "Earnings reminders"
         },
         "chatMessage": {
-          "label": "Chat messages",
-          "description": "When a friend sends you a message."
+          "label": "Chat messages"
         },
         "watchlistShared": {
-          "label": "Shared watchlists",
-          "description": "When a friend shares a watchlist with you."
+          "label": "Shared watchlists"
         },
         "conglomerateShared": {
-          "label": "Shared blueprints",
-          "description": "When a friend shares a blueprint with you."
+          "label": "Shared blueprints"
         },
         "friendActivity": {
-          "label": "Friend activity",
-          "description": "Buys, sells and watchlist additions on shared items you follow."
+          "label": "Friend activity"
         },
         "followPublished": {
-          "label": "New from people you follow",
-          "description": "When someone you follow makes a portfolio, watchlist or blueprint public."
+          "label": "New from people you follow"
         },
         "followAlertCreated": {
-          "label": "New alerts from people you follow",
-          "description": "When someone you follow creates a price alert (only people whose alert news you opted into)."
+          "label": "New alerts from people you follow"
         },
         "followAlertFired": {
-          "label": "Fired alerts from people you follow",
-          "description": "When a price alert of someone you follow triggers (only people whose alert news you opted into)."
+          "label": "Fired alerts from people you follow"
         },
         "dividendEvent": {
-          "label": "Dividend reminders",
-          "description": "When a stock you hold is about to go ex-dividend. Off by default."
+          "label": "Dividend reminders"
         },
         "budgetExceeded": {
-          "label": "Budget alerts",
-          "description": "When your spending in a category blows its monthly budget."
+          "label": "Budget alerts"
         },
         "mirrorInvite": {
-          "label": "Group portfolio invites",
-          "description": "When a friend invites you to a group portfolio."
+          "label": "Group portfolio invites"
         },
         "mirrorMemberJoined": {
-          "label": "Member joined",
-          "description": "When someone joins a group portfolio you own."
+          "label": "Member joined"
         },
         "mirrorMemberLeft": {
-          "label": "Member left",
-          "description": "When a member leaves one of your group portfolios."
+          "label": "Member left"
         },
         "mirrorMemberRemoved": {
-          "label": "Member removed",
-          "description": "When a member is removed from your group portfolio."
+          "label": "Member removed"
         },
         "mirrorRemoved": {
-          "label": "Removed from a group portfolio",
-          "description": "When you are removed from a group portfolio."
+          "label": "Removed from a group portfolio"
         },
         "mirrorOwnershipTransferred": {
-          "label": "Ownership transferred",
-          "description": "When ownership of a group portfolio you are in changes."
+          "label": "Ownership transferred"
         },
         "mirrorChainDissolved": {
-          "label": "Group portfolio dissolved",
-          "description": "When a group portfolio you are in is dissolved."
+          "label": "Group portfolio dissolved"
         },
         "mirrorSyncStalled": {
-          "label": "Sync problems",
-          "description": "When a group portfolio can't finish syncing."
+          "label": "Sync problems"
         }
       },
       "routing": {
@@ -831,7 +802,6 @@
       },
       "telegram": {
         "title": "Telegram",
-        "description": "Receive notifications through the BetterTrack Telegram bot. Link your chat once, unlink any time.",
         "startLink": "Start Telegram link",
         "openBot": "Open Telegram bot",
         "codeHint": "Send /start {{code}} to the bot to finish linking.",
@@ -864,10 +834,15 @@
         "removeError": "Couldn't remove the webhook. Please try again."
       },
       "loadErrorTitle": "Couldn't load notifications",
-      "loadErrorDescription": "Please try again in a moment."
+      "loadErrorDescription": "Please try again in a moment.",
+      "groups": {
+        "general": "General",
+        "channels": "Channels",
+        "routing": "Routing",
+        "timing": "Timing"
+      }
     },
     "security": {
-      "title": "Security",
       "subtitle": "Your session, PIN, and two-factor options.",
       "loadError": {
         "title": "Couldn't load your security settings"
@@ -911,7 +886,6 @@
         "windowError": "Could not update the unlock window. Please try again.",
         "lockAfterInactivity": "Lock after inactivity",
         "lockDescription": "While you're actively using BetterTrack it stays unlocked — reloads and new tabs included. The PIN is asked again only after this long with no activity.",
-        "idleForLabel": "Lock after being idle for",
         "unlockWindowAriaLabel": "Unlock window",
         "disabledNotice": "Your PIN has been turned off.",
         "title": "PIN",
@@ -925,7 +899,6 @@
       },
       "twoFactor": {
         "title": "Two-factor authentication",
-        "description": "Add a second step at sign-in. Turn on either method — or both.",
         "loadError": {
           "title": "Couldn't load your two-factor status"
         },
@@ -970,7 +943,6 @@
           "done": "I've saved these codes",
           "regenerateError": "Could not regenerate recovery codes. Please try again.",
           "cardTitle": "Recovery codes",
-          "cardDescription": "One-time codes to sign in if you lose access to your other factors.",
           "remainingOne": "{{count}} recovery code remaining.",
           "remainingOther": "{{count}} recovery codes remaining.",
           "regenerating": "Regenerating…",
@@ -979,14 +951,12 @@
       },
       "google": {
         "title": "Google account",
-        "description": "Sign in with Google, or manage the linked account.",
         "linkedAs": "Linked as {{email}}",
         "linkedOn": "Linked {{date}}",
         "notLinked": "No Google account is linked.",
         "connectButton": "Connect Google",
         "unlinkButton": "Unlink",
         "unlinkTitle": "Unlink Google",
-        "unlinkPrompt": "Enter your password to confirm you want to unlink Google.",
         "passwordLabel": "Password",
         "confirmUnlink": "Unlink Google",
         "cancel": "Cancel",
@@ -1032,10 +1002,6 @@
       }
     },
     "api": {
-      "title": "API Access",
-      "introBefore": "Personal API keys authenticate scripts and integrations as you, scoped to what they may read or change. Send a key as ",
-      "introMiddle": ". See the API docs at ",
-      "introAfter": ".",
       "copied": "Copied",
       "copy": "Copy",
       "done": "Done",
@@ -1045,7 +1011,6 @@
       "scopeRequired": "Select at least one scope.",
       "scopesLegend": "Scopes",
       "webhooks": {
-        "sectionTitle": "Webhooks",
         "sectionDescription": "Send a signed HTTP POST to your own URL whenever one of your events happens. Every delivery is HMAC-signed so you can verify it came from BetterTrack.",
         "createTitle": "Add a webhook",
         "urlLabel": "Payload URL",
@@ -1063,8 +1028,7 @@
           "title": "Couldn't load your webhooks"
         },
         "empty": {
-          "title": "No webhooks yet",
-          "description": "Add one above to receive signed event deliveries."
+          "title": "No webhooks yet"
         },
         "status": {
           "active": "Active",
@@ -1203,20 +1167,16 @@
           "title": "Couldn't load your API keys"
         },
         "empty": {
-          "title": "No API keys yet",
-          "description": "Create a key above to start using the API."
+          "title": "No API keys yet"
         }
       },
       "oauth": {
-        "sectionTitle": "OAuth apps",
-        "sectionDescription": "Register a third-party app to request scoped, revocable access to BetterTrack accounts via OAuth 2.0 (authorization code + PKCE). Users approve it on a consent screen and never share their password.",
         "yourApps": "Your apps",
         "loadError": {
           "title": "Couldn't load your apps"
         },
         "empty": {
-          "title": "No OAuth apps yet",
-          "description": "Register an app above to integrate with the OAuth flow."
+          "title": "No OAuth apps yet"
         },
         "credentialsModal": {
           "title": "Your new OAuth app",
@@ -1254,27 +1214,25 @@
         "registeredOn": "Registered {{createdAt}}"
       },
       "grants": {
-        "sectionTitle": "Authorized apps",
         "sectionDescription": "Third-party apps you've allowed to access your account. Revoking an app immediately kills its tokens — it must be re-authorized to regain access.",
         "loadError": {
           "title": "Couldn't load your authorized apps"
         },
         "empty": {
-          "title": "No authorized apps",
-          "description": "Apps you approve on the OAuth consent screen appear here."
+          "title": "No authorized apps"
         },
         "canAccess": "{{appName}} can:",
         "authorizedLastUsed": "Authorized {{createdAt}} · last used {{lastUsedAt}}",
         "authorizedNeverUsed": "Authorized {{createdAt}} · never used",
         "revokeAccess": "Revoke access"
-      }
+      },
+      "hint": "Send a key as “Authorization: Bearer …”. Reference at /docs."
     },
     "account": {
       "title": "Account",
       "subtitle": "Your identity, password, and sharing preferences.",
       "loadError": {
-        "title": "Couldn't load your account",
-        "description": "Please try again in a moment."
+        "title": "Couldn't load your account"
       },
       "portfolioError": {
         "title": "Couldn't load your portfolio",
@@ -1284,11 +1242,13 @@
         "username": "Username",
         "email": "Email",
         "memberSince": "Member since"
-      }
+      },
+      "identity": "Identity",
+      "display": "Display",
+      "yourData": "Your data"
     },
     "baseCurrency": {
       "title": "Base currency",
-      "description": "The currency every valuation, chart and report is shown in. Amounts stay stored in each asset’s native currency — only the display conversion changes.",
       "label": "Base currency",
       "saveError": "Couldn’t save your base currency. Please try again.",
       "option": {
@@ -1296,12 +1256,11 @@
         "USD": "USD — US Dollar ($)",
         "CHF": "CHF — Swiss Franc",
         "GBP": "GBP — British Pound (£)"
-      }
+      },
+      "hint": "Display only — amounts stay stored in each asset’s own currency."
     },
     "newPortfolioDefaults": {
       "navLabel": "New portfolio defaults",
-      "title": "Defaults for new portfolios",
-      "subtitle": "What a newly-created portfolio inherits. Existing portfolios keep tracking these unless you override them individually.",
       "tax": {
         "hint": "Applied to new portfolios and to any portfolio that hasn’t set its own. Override or reset it per portfolio on that portfolio’s tax report."
       }
@@ -1390,16 +1349,9 @@
       "currentWrong": "Your current password is incorrect.",
       "changeFailed": "Could not change your password. Please try again."
     },
-    "sharingMoved": {
-      "title": "Portfolio sharing",
-      "description": "Sharing lives in the Social tab now. Choose who can see each of your portfolios there — every portfolio stays private until you share it.",
-      "link": "Manage sharing in Social →"
-    },
     "export": {
       "title": "Export my data",
-      "description": "Download a copy of your account data as a zip (JSON for every kind of data you own, plus CSVs for transactions, cash movements and holdings). You can request one export per day.",
       "password": "Confirm your password",
-      "passwordHint": "Re-enter your password to start an export.",
       "request": "Export my data",
       "requestAgain": "Request a new export",
       "submitting": "Requesting…",
@@ -1412,10 +1364,10 @@
       "currentWrong": "Your password is incorrect.",
       "codeWrong": "That two-factor code is incorrect or has expired.",
       "rateLimited": "You can request a data export once per day. Please try again later.",
-      "requestFailed": "Could not start your export. Please try again."
+      "requestFailed": "Could not start your export. Please try again.",
+      "hint": "One export per day. The download link expires."
     },
     "dangerZone": {
-      "title": "Danger zone",
       "description": "Deleting your account permanently removes all of your data. This cannot be undone.",
       "link": "Delete my account…"
     }
@@ -3276,7 +3228,6 @@
   },
   "profile": {
     "title": "My Public Profile",
-    "subtitle": "An optional public page others can view — it shows only the items you've shared with a public link.",
     "error": "Could not load your profile settings. Please refresh the page.",
     "toggleLabel": "Make my profile public",
     "publicItemCount": "{{count}} of your items are currently public.",
@@ -3317,6 +3268,9 @@
         "compass": "Compass",
         "anchor": "Anchor"
       }
+    },
+    "groups": {
+      "page": "Public page"
     }
   },
   "mirrorchain": {
@@ -4176,8 +4130,9 @@
       "developer": "Developer platform",
       "preferences": "Preferences",
       "security": "Security",
-      "automation": "Data & automation",
-      "links": "Pages"
+      "links": "Pages",
+      "integrations": "Connections & API",
+      "danger": "Danger zone"
     },
     "account": "Account",
     "accountSub": "Profile, email, language, password",
@@ -4215,10 +4170,14 @@
     "filterAria": "Filter panels",
     "filterPlaceholder": "Filter…",
     "noMatches": "No panel matches.",
-    "leavesPopup": "Opens as its own page"
+    "leavesPopup": "Opens as its own page",
+    "signIn": "Sign-in",
+    "sessions": "Sessions",
+    "notificationLog": "Notification log",
+    "profile": "Public profile",
+    "authorizedApps": "Authorized apps"
   },
   "privacy": {
-    "title": "Privacy modes",
     "subtitle": "Control what the screen shows and where your data lives.",
     "discreet": {
       "title": "Discreet mode",

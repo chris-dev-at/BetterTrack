@@ -10,24 +10,30 @@ import {
   type WebhookSubscription,
 } from '@bettertrack/contracts';
 
-import { useT } from '../../i18n';
-import { formatDate } from '../../lib/format';
+import { useT } from '../../../i18n';
+import { formatDate } from '../../../lib/format';
 import {
   createWebhook,
   deleteWebhook,
   listWebhookDeliveries,
   listWebhooks,
   updateWebhook,
-} from '../../lib/webhooksApi';
-import { EmptyState, Skeleton } from '../../ui';
-import { Badge, Button, Field, Input, type BadgeTone } from '../../ui/origin';
-import { Dialog } from '../components/Dialog';
-import { Alert } from '../components/ui';
+} from '../../../lib/webhooksApi';
+import { Skeleton } from '../../../ui';
+import { Badge, Button, Field, Input, type BadgeTone } from '../../../ui/origin';
+import { Dialog } from '../../components/Dialog';
+import { Alert } from '../../components/ui';
+import {
+  PanelForm,
+  PanelGroup,
+  PanelHead,
+  PanelList,
+  PanelListItem,
+  PanelNote,
+  Row,
+} from './panelKit';
 
 const WEBHOOKS_KEY = ['settings', 'webhooks'] as const;
-
-/** Monospace surface for the show-once secret, URLs and event ids. */
-const MONO_FONT = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 const deliveriesKey = (id: string) => ['settings', 'webhooks', id, 'deliveries'] as const;
 
 /** Maps each catalog event type to its i18n label subkey (camelCase of the type). */
@@ -58,7 +64,11 @@ const EVENT_LABEL_KEY: Record<WebhookEventType, string> = {
   'mirror.sync_stalled': 'mirrorSyncStalled',
 };
 
-/** The one-time secret modal — the plaintext is available here and never again. */
+/**
+ * The one-time secret modal — the plaintext is available here and never again.
+ * Stays a {@link Dialog} (`role="dialog" aria-modal="true"`): the Control
+ * Center's Escape handler defers to nested modals via exactly that selector.
+ */
 function SecretModal({
   result,
   onClose,
@@ -87,18 +97,18 @@ function SecretModal({
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-2">
           <code
-            className="bt-panel bt-panel--soft bt-num flex-1 overflow-x-auto"
-            style={{ fontFamily: MONO_FONT, padding: '8px 11px', color: 'var(--bt-pos)' }}
+            className="bt-panel bt-panel--soft bt-cc-mono flex-1"
+            style={{ padding: '8px 11px', color: 'var(--bt-pos)' }}
           >
             {result.secret}
           </code>
-          <Button onClick={copy}>
+          <Button onClick={copy} size="sm">
             {copied ? t('settings.api.copied') : t('settings.api.copy')}
           </Button>
         </div>
         <Alert tone="info">{t('settings.api.webhooks.secretModal.storeWarning')}</Alert>
         <div className="flex justify-end">
-          <Button onClick={onClose} variant="primary">
+          <Button onClick={onClose} size="sm" variant="primary">
             {t('settings.api.done')}
           </Button>
         </div>
@@ -107,7 +117,12 @@ function SecretModal({
   );
 }
 
-/** Create-webhook form: a URL, an optional label, and ≥1 event type. */
+/**
+ * Create-webhook form: a URL, an optional label, and ≥1 of the 24 event types.
+ * The two text fields sit in the popup's narrow form column; the event catalog
+ * needs the whole pane, so its grid is a full-width sibling INSIDE the form
+ * (a fieldset outside the form would lose its form association).
+ */
 function CreateWebhookForm({
   onCreated,
 }: {
@@ -160,59 +175,64 @@ function CreateWebhookForm({
   }
 
   return (
-    <form onSubmit={onSubmit} className="flex flex-col gap-4">
-      <h3 className="bt-h3">{t('settings.api.webhooks.createTitle')}</h3>
+    <form className="flex flex-col gap-3" onSubmit={onSubmit}>
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <Field className="max-w-xl" htmlFor="webhook-url" label={t('settings.api.webhooks.urlLabel')}>
-        <Input
-          id="webhook-url"
-          maxLength={2048}
-          name="webhook-url"
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder={t('settings.api.webhooks.urlPlaceholder')}
-          required
-          type="url"
-          value={url}
-        />
-      </Field>
-      <Field
-        className="max-w-sm"
-        htmlFor="webhook-description"
-        label={t('settings.api.webhooks.descriptionLabel')}
-      >
-        <Input
-          id="webhook-description"
-          maxLength={200}
-          name="webhook-description"
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder={t('settings.api.webhooks.descriptionPlaceholder')}
-          value={description}
-        />
-      </Field>
-      <fieldset className="flex flex-col gap-2">
+      <PanelForm>
+        <Field htmlFor="webhook-url" label={t('settings.api.webhooks.urlLabel')}>
+          <Input
+            id="webhook-url"
+            maxLength={2048}
+            name="webhook-url"
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder={t('settings.api.webhooks.urlPlaceholder')}
+            required
+            type="url"
+            value={url}
+          />
+        </Field>
+        <Field htmlFor="webhook-description" label={t('settings.api.webhooks.descriptionLabel')}>
+          <Input
+            id="webhook-description"
+            maxLength={200}
+            name="webhook-description"
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder={t('settings.api.webhooks.descriptionPlaceholder')}
+            value={description}
+          />
+        </Field>
+      </PanelForm>
+      <fieldset className="flex flex-col gap-1.5">
         <legend className="bt-label">{t('settings.api.webhooks.eventsLegend')}</legend>
-        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-2">
           {WEBHOOK_EVENT_TYPES.map((type) => (
-            <label key={type} className="bt-soft flex cursor-pointer items-center gap-2 py-1">
+            <label
+              className="bt-soft flex cursor-pointer items-center gap-2 text-[12.5px]"
+              key={type}
+            >
               <input
-                type="checkbox"
                 checked={events.has(type)}
-                onChange={() => toggle(type)}
                 className="h-4 w-4"
+                onChange={() => toggle(type)}
                 style={{ accentColor: 'var(--bt-gold)' }}
+                type="checkbox"
               />
               <span>{t(`settings.api.webhooks.event.${EVENT_LABEL_KEY[type]}`)}</span>
             </label>
           ))}
         </div>
       </fieldset>
-      <div>
-        <Button disabled={mutation.isPending} type="submit">
-          {mutation.isPending
-            ? t('settings.api.webhooks.creating')
-            : t('settings.api.webhooks.create')}
-        </Button>
-      </div>
+      {/* The panel's single primary action. */}
+      <Button
+        className="self-start"
+        disabled={mutation.isPending}
+        size="sm"
+        type="submit"
+        variant="primary"
+      >
+        {mutation.isPending
+          ? t('settings.api.webhooks.creating')
+          : t('settings.api.webhooks.create')}
+      </Button>
     </form>
   );
 }
@@ -226,24 +246,24 @@ function DeliveriesList({ id }: { id: string }) {
     staleTime: 5_000,
   });
 
-  if (query.isPending) return <Skeleton height="h-16" />;
+  if (query.isPending) return <Skeleton height="h-12" />;
   if (query.isError)
     return <p className="bt-field__error">{t('settings.api.webhooks.deliveries.loadError')}</p>;
 
   const deliveries = query.data?.deliveries ?? [];
   if (deliveries.length === 0)
-    return <p className="bt-meta">{t('settings.api.webhooks.deliveries.empty')}</p>;
+    return <PanelNote>{t('settings.api.webhooks.deliveries.empty')}</PanelNote>;
 
   return (
-    <ul className="flex flex-col gap-1.5">
+    <ul className="flex flex-col gap-1">
       {deliveries.map((d) => (
-        <li key={d.id} className="bt-row-sub flex flex-wrap items-center gap-2">
+        <li className="bt-cc-row__hint flex flex-wrap items-center gap-2" key={d.id}>
           <Badge tone={d.status === 'success' ? 'pos' : 'neg'}>
             {d.status === 'success'
               ? t('settings.api.webhooks.deliveries.success')
               : t('settings.api.webhooks.deliveries.failed')}
           </Badge>
-          <span style={{ fontFamily: MONO_FONT }}>{d.eventType}</span>
+          <span className="bt-cc-mono">{d.eventType}</span>
           {d.responseStatus != null ? <span className="bt-num">· {d.responseStatus}</span> : null}
           <span style={{ color: 'var(--bt-faint)' }}>· {formatDate(d.createdAt)}</span>
         </li>
@@ -281,45 +301,9 @@ function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
     : { text: t('settings.api.webhooks.status.active'), tone: 'pos' };
 
   return (
-    <li className="bt-band__row flex flex-col gap-2">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 flex-col gap-1">
-          <span className="flex items-center gap-2">
-            <Badge tone={statusBadge.tone}>{statusBadge.text}</Badge>
-            <span className="bt-row-title truncate" style={{ fontFamily: MONO_FONT }}>
-              {subscription.url}
-            </span>
-          </span>
-          {subscription.description ? (
-            <span className="bt-row-sub">{subscription.description}</span>
-          ) : null}
-          <span className="flex flex-wrap gap-1">
-            {subscription.eventTypes.map((type) => (
-              <Badge
-                key={type}
-                outline
-                style={{ fontFamily: MONO_FONT, fontSize: 11, minHeight: 18 }}
-              >
-                {type}
-              </Badge>
-            ))}
-          </span>
-          {!subscription.enabled && subscription.disabledReason === 'auto' ? (
-            <span className="bt-field__error">
-              {t('settings.api.webhooks.disabledAutoHint', {
-                count: subscription.consecutiveFailures,
-              })}
-            </span>
-          ) : null}
-          <span className="bt-row-sub">
-            {subscription.lastDeliveryAt
-              ? t('settings.api.webhooks.lastDelivery', {
-                  at: formatDate(subscription.lastDeliveryAt),
-                })
-              : t('settings.api.webhooks.neverDelivered')}
-          </span>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
+    <PanelListItem
+      actions={
+        <>
           {error ? <span className="bt-field__error">{error}</span> : null}
           <Button onClick={() => setShowDeliveries((v) => !v)} size="sm" variant="quiet">
             {showDeliveries
@@ -365,86 +349,108 @@ function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
               {t('settings.api.webhooks.delete')}
             </Button>
           )}
-        </div>
-      </div>
+        </>
+      }
+      main={
+        <>
+          <span className="flex min-w-0 items-center gap-2">
+            <Badge tone={statusBadge.tone}>{statusBadge.text}</Badge>
+            <span className="bt-cc-mono truncate">{subscription.url}</span>
+          </span>
+          {subscription.description ? (
+            <span className="bt-cc-row__hint">{subscription.description}</span>
+          ) : null}
+          <span className="flex flex-wrap gap-1">
+            {subscription.eventTypes.map((type) => (
+              <Badge className="bt-cc-mono" key={type} outline>
+                {type}
+              </Badge>
+            ))}
+          </span>
+          {/* A real constraint: repeated failures switch delivery off for good
+              until the user re-enables it. */}
+          {!subscription.enabled && subscription.disabledReason === 'auto' ? (
+            <span className="bt-field__error">
+              {t('settings.api.webhooks.disabledAutoHint', {
+                count: subscription.consecutiveFailures,
+              })}
+            </span>
+          ) : null}
+          <span className="bt-cc-row__hint">
+            {subscription.lastDeliveryAt
+              ? t('settings.api.webhooks.lastDelivery', {
+                  at: formatDate(subscription.lastDeliveryAt),
+                })
+              : t('settings.api.webhooks.neverDelivered')}
+          </span>
+        </>
+      }
+    >
       {showDeliveries ? (
-        <div className="bt-panel bt-panel--soft" style={{ padding: 12 }}>
+        <div className="w-full pt-2">
           <DeliveriesList id={subscription.id} />
         </div>
       ) : null}
-    </li>
+    </PanelListItem>
   );
 }
 
 /**
- * "Webhooks" — Settings → API Access (§13.5 V5-P10). Subscribe URLs to your own
- * events; every delivery is HMAC-signed. Collapsed by default per the anti-bloat
- * rule, and its list only loads once opened, so it costs nothing when unused.
+ * Control Center → Webhooks (§13.5 V5-P10; R2). Subscribe your own URLs to your
+ * events; every delivery is HMAC-signed, the signing secret is shown ONCE, and a
+ * receiver that keeps failing is auto-disabled until you re-enable it.
+ *
+ * R2 behaviour change (the only one): the outer collapse is GONE. It existed
+ * because this section was nested inside the API-access page and paid for itself
+ * by not fetching until opened; it is now the whole panel, so it renders
+ * expanded and the list query is unconditional (no `enabled` gate).
  */
-export function WebhooksSection() {
+export function WebhooksPanel() {
   const t = useT();
-  const [expanded, setExpanded] = useState(false);
   const [minted, setMinted] = useState<CreateWebhookSubscriptionResponse | null>(null);
 
   const query = useQuery({
     queryKey: WEBHOOKS_KEY,
     queryFn: ({ signal }) => listWebhooks(signal),
-    enabled: expanded,
     staleTime: 15_000,
   });
   const subscriptions = query.data?.subscriptions ?? [];
 
   return (
-    <div className="flex flex-col gap-5">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        className="flex items-center justify-between gap-2 text-left"
-        style={{ background: 'none', border: 0, padding: 0, color: 'inherit', cursor: 'pointer' }}
-      >
-        <span className="flex flex-col gap-1">
-          <span className="bt-h2">{t('settings.api.webhooks.sectionTitle')}</span>
-          <span className="bt-meta">{t('settings.api.webhooks.sectionDescription')}</span>
-        </span>
-        <span aria-hidden style={{ color: 'var(--bt-faint)' }}>
-          {expanded ? '▲' : '▼'}
-        </span>
-      </button>
+    <div className="bt-cc-panel">
+      <PanelHead title={t('control.webhooks')} />
+      {/* Kept prose: every delivery is HMAC-signed, so a receiver can verify it. */}
+      <PanelNote>{t('settings.api.webhooks.sectionDescription')}</PanelNote>
 
-      {expanded ? (
-        <>
-          <section className="bt-panel bt-panel--pad">
-            <CreateWebhookForm onCreated={setMinted} />
-          </section>
+      <PanelGroup label={t('settings.api.webhooks.createTitle')}>
+        <Row stack>
+          <CreateWebhookForm onCreated={setMinted} />
+        </Row>
+      </PanelGroup>
 
-          <section className="flex flex-col gap-3">
-            <h3 className="bt-h3">{t('settings.api.webhooks.listTitle')}</h3>
-            {query.isPending ? (
-              <Skeleton height="h-20" />
-            ) : query.isError ? (
-              <EmptyState
-                title={t('settings.api.webhooks.loadError.title')}
-                description={t('settings.retryHint')}
-              />
-            ) : subscriptions.length === 0 ? (
-              <EmptyState
-                icon="🪝"
-                title={t('settings.api.webhooks.empty.title')}
-                description={t('settings.api.webhooks.empty.description')}
-              />
-            ) : (
-              <ul className="bt-panel bt-band">
-                {subscriptions.map((subscription) => (
-                  <WebhookRow key={subscription.id} subscription={subscription} />
-                ))}
-              </ul>
-            )}
-          </section>
-        </>
-      ) : null}
+      <PanelGroup label={t('settings.api.webhooks.listTitle')}>
+        {query.isPending ? (
+          <Row stack>
+            <Skeleton height="h-16" />
+          </Row>
+        ) : query.isError ? (
+          <Row stack>
+            <Alert tone="error">{t('settings.api.webhooks.loadError.title')}</Alert>
+          </Row>
+        ) : subscriptions.length === 0 ? (
+          <Row stack>
+            <PanelNote>{t('settings.api.webhooks.empty.title')}</PanelNote>
+          </Row>
+        ) : (
+          <PanelList>
+            {subscriptions.map((subscription) => (
+              <WebhookRow key={subscription.id} subscription={subscription} />
+            ))}
+          </PanelList>
+        )}
+      </PanelGroup>
 
-      {minted ? <SecretModal result={minted} onClose={() => setMinted(null)} /> : null}
+      {minted ? <SecretModal onClose={() => setMinted(null)} result={minted} /> : null}
     </div>
   );
 }

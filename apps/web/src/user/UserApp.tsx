@@ -61,7 +61,6 @@ import { MySharedItemsPage } from './social/MySharedItemsPage';
 import { SharedIdeaPage } from './social/SharedIdeaPage';
 import { PublicSharePage } from './social/PublicSharePage';
 import { PublicProfileViewPage } from './social/PublicProfileViewPage';
-import { ProfileSettingsPage } from './social/ProfileSettingsPage';
 import { ChatPage } from './social/ChatPage';
 import { ChatWindowPage } from './social/ChatWindowPage';
 import { HomePage } from './home/HomePage';
@@ -244,7 +243,11 @@ function UserShell() {
             <Route path="shared/watchlists/:watchlistId" element={<SharedWatchlistPage />} />
             <Route path="shared/ideas/:ideaId" element={<SharedIdeaPage />} />
             <Route path="shared/:portfolioId" element={<SharedPortfolioPage />} />
-            <Route path="profile" element={<ProfileSettingsPage />} />
+            {/* Public-profile SETTINGS moved into the Control Center (owner
+                order). The path stays alive — the account menu, the People
+                rail tab, ⌘K and MySharedItemsPage all point at it — and the
+                public profile VIEW is still `/u/:username`. */}
+            <Route path="profile" element={<LegacyRedirect to="/control/profile" />} />
             <Route path="teams" element={<ParkedPage page="teams" />} />
             <Route path="approvals" element={<ParkedPage page="approvals" />} />
           </Route>
@@ -280,16 +283,17 @@ function UserShell() {
             path="settings/notifications"
             element={<LegacyRedirect to="/control/notifications" />}
           />
-          <Route path="settings/security" element={<LegacyRedirect to="/control/security" />} />
-          <Route
-            path="settings/taxes"
-            element={<LegacyRedirect to="/control/portfolio-defaults" />}
-          />
+          {/* Security split into Sign-in (credentials) + Sessions (devices +
+              app lock); the legacy path lands on the credentials half. */}
+          <Route path="settings/security" element={<LegacyRedirect to="/control/sign-in" />} />
+          <Route path="settings/taxes" element={<LegacyRedirect to="/control/defaults" />} />
           <Route
             path="settings/connections"
             element={<LegacyRedirect to="/control/connections" />}
           />
           <Route path="settings/api" element={<LegacyRedirect to="/control/api" />} />
+          {/* Public profile moved into the Control Center (owner order). */}
+          <Route path="settings/profile" element={<LegacyRedirect to="/control/profile" />} />
           {/* Imports/exports and backups were Coming-Soon stubs; the parked
               Data management page is the surface that now covers them. */}
           <Route path="settings/imports" element={<LegacyRedirect to="/control/data" />} />
