@@ -20,7 +20,12 @@ import {
   listPortfolios,
   restorePortfolio,
 } from '../../lib/portfolioApi';
-import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from './PortfolioSwitcher';
+import {
+  ACTIVE_PORTFOLIO_PARAM,
+  PortfolioSwitcher,
+  rememberActivePortfolio,
+  resolveActivePortfolio,
+} from './PortfolioSwitcher';
 
 type Summary = {
   id: string;
@@ -66,6 +71,30 @@ function renderSwitcher() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionStorage.clear();
+});
+
+describe('resolveActivePortfolio session stickiness', () => {
+  test('with no param, the portfolio remembered for the session wins over the default', () => {
+    rememberActivePortfolio(TRADING.id);
+    expect(resolveActivePortfolio([MAIN, TRADING], null)).toBe(TRADING);
+  });
+
+  test('an explicit param beats the remembered portfolio', () => {
+    rememberActivePortfolio(TRADING.id);
+    expect(resolveActivePortfolio([MAIN, TRADING], MAIN.id)).toBe(MAIN);
+  });
+
+  test('a remembered portfolio that no longer exists falls back to the default', () => {
+    rememberActivePortfolio('gone');
+    expect(resolveActivePortfolio([MAIN, TRADING], null)).toBe(MAIN);
+  });
+
+  test('forgetting (null) restores the default resolution', () => {
+    rememberActivePortfolio(TRADING.id);
+    rememberActivePortfolio(null);
+    expect(resolveActivePortfolio([MAIN, TRADING], null)).toBe(MAIN);
+  });
 });
 
 describe('PortfolioSwitcher', () => {

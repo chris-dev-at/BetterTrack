@@ -30,23 +30,49 @@ import { CreateChainDialog, MirrorInviteStepDialog } from './MirrorchainPanel';
  *
  * The active portfolio lives in the URL, not in component state, so it survives
  * navigation across the section subnav and is shared with {@link PortfolioPage}
- * through {@link resolveActivePortfolio} reading the same param.
+ * through {@link resolveActivePortfolio} reading the same param. On top of the
+ * URL, the last selection is remembered per browser session, so leaving the
+ * portfolio area (Home, Workbench, …) and coming back without a param restores
+ * the portfolio the user was on instead of snapping back to the default.
  */
 
 /** The `?portfolio=<id>` search-param key that names the active portfolio. */
 export const ACTIVE_PORTFOLIO_PARAM = 'portfolio';
 
+/** sessionStorage key for the last active portfolio — session-scoped on purpose. */
+const LAST_ACTIVE_STORAGE_KEY = 'bt.portfolio.last';
+
+/** Remember (or with null, forget) the last active portfolio for this session. */
+export function rememberActivePortfolio(id: string | null) {
+  try {
+    if (id === null) sessionStorage.removeItem(LAST_ACTIVE_STORAGE_KEY);
+    else sessionStorage.setItem(LAST_ACTIVE_STORAGE_KEY, id);
+  } catch {
+    // Best-effort convenience; without it the view falls back to the default.
+  }
+}
+
+function recallActivePortfolio(): string | null {
+  try {
+    return sessionStorage.getItem(LAST_ACTIVE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Resolve which portfolio is active from the routing param and the active list:
- * the param'd portfolio when it is still active, else the default, else the
- * first, else null. Kept here so the switcher and the page agree exactly.
+ * the param'd portfolio when it is still active, else the one remembered for
+ * this session, else the default, else the first, else null. Kept here so the
+ * switcher and every scoped page agree exactly.
  */
 export function resolveActivePortfolio(
   portfolios: readonly PortfolioSummary[],
   param: string | null,
 ): PortfolioSummary | null {
+  const wanted = param ?? recallActivePortfolio();
   return (
-    (param ? portfolios.find((p) => p.id === param) : undefined) ??
+    (wanted ? portfolios.find((p) => p.id === wanted) : undefined) ??
     portfolios.find((p) => p.isDefault) ??
     portfolios[0] ??
     null
@@ -130,7 +156,15 @@ export function PortfolioSwitcher() {
   });
   const archived = (archivedQuery.data?.portfolios ?? []).filter((p) => p.archivedAt !== null);
 
+  // Any explicit selection — a click here or a param'd deep link (⌘K, Home
+  // shortcuts) — becomes the session's remembered portfolio, so coming back to
+  // the portfolio area without a param lands where the user left off.
+  useEffect(() => {
+    if (param && active?.id === param) rememberActivePortfolio(param);
+  }, [param, active?.id]);
+
   function setActive(id: string) {
+    rememberActivePortfolio(id);
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -142,6 +176,7 @@ export function PortfolioSwitcher() {
   }
 
   function clearActive() {
+    rememberActivePortfolio(null);
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
