@@ -5,6 +5,48 @@ truth for the backup + restore procedure (PROJECTPLAN.md §10, §13.4 V4-P6).
 Deploy topology lives in `README.md`; app-level config lives in
 `infra/.env.production.example`.
 
+## Container health and account exports
+
+The production Compose stack separates process liveness from dependency
+readiness:
+
+- `GET /api/v1/health` is the API process liveness probe. It performs no
+  Postgres or Redis work and remains useful while either dependency is down.
+- `GET /api/v1/health/ready` probes Postgres and Redis concurrently, with a
+  1.5-second budget for each. It returns `200` only when both answer and `503`
+  with the same typed readiness body otherwise. The `api` container healthcheck
+  uses this route, so Compose's `service_healthy` condition means both required
+  dependencies are answering.
+- The `worker` container runs
+  `node dist/scripts/workerHealth.js`. The probe reads the existing
+  `system:heartbeat:last` marker from Redis and succeeds only while it is at
+  most three heartbeat intervals (three minutes) old. Compose grants a
+  three-minute `start_period`; worker startup also enqueues an immediate
+  heartbeat proof, and the scheduled job refreshes it every minute. A worker
+  whose BullMQ loop never consumes the proof becomes unhealthy.
+- The admin **Health** page uses the same freshness window. A heartbeat that was
+  never created is tolerated during startup grace, then appears as degraded
+  instead of remaining green indefinitely.
+
+Account-export archives use the named `exportdata` volume. Compose sets
+`BT_EXPORT_DIR=/var/lib/bettertrack/exports` and mounts that identical path in
+both `api` and `worker`. The worker can therefore assemble a ZIP and store its
+path in Postgres; the API resolves that path to the same file when the owner
+downloads it. The image prepares the directory for the non-root `bettertrack`
+user. Ready exports still expire through the existing 24-hour cleanup job; the
+volume only makes their short lifetime survive process/container boundaries.
+As with every named volume, `docker compose down -v` deletes it.
+
+Validate the stock and overlaid production topology after editing Compose:
+
+```bash
+docker compose -f infra/docker-compose.yml config -q
+docker compose -f infra/docker-compose.yml \
+  -f infra/docker-compose.subdomains.yml config -q
+docker compose -f infra/docker-compose.yml \
+  -f infra/docker-compose.ports.yml config -q
+```
+
 ## Backup architecture
 
 Two independent layers, both env-gated. The offsite layer is OPTIONAL — the

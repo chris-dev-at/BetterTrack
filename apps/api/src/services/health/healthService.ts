@@ -48,6 +48,8 @@ export interface HealthService {
 
 /** A heartbeat older than this is treated as stale (a soft, degraded signal). */
 const HEARTBEAT_STALE_MS = HEARTBEAT_INTERVAL_MS * 3;
+/** A new API process tolerates one stale window for the worker's first proof. */
+export const WORKER_HEARTBEAT_STARTUP_GRACE_MS = HEARTBEAT_STALE_MS;
 
 const errorDetail = (err: unknown): string =>
   err instanceof Error ? err.name || err.message : 'error';
@@ -55,6 +57,7 @@ const errorDetail = (err: unknown): string =>
 export function createHealthService(deps: HealthServiceDeps): HealthService {
   const { config, db, redis, marketData, queues, gateway } = deps;
   const now = deps.now ?? Date.now;
+  const startedAtMs = now();
 
   async function checkDatabase(): Promise<AdminHealthComponent> {
     const started = now();
@@ -117,11 +120,19 @@ export function createHealthService(deps: HealthServiceDeps): HealthService {
     if (!redisReachable) return { status: 'ok', ageSeconds: null };
     try {
       const last = await redis.get(HEARTBEAT_LAST_KEY);
-      // No key yet: a fresh deploy where the worker hasn't ticked — not a fault
-      // in itself (age unknown), so it stays `ok` rather than perpetually
-      // degrading the page before the first heartbeat lands.
-      if (!last) return { status: 'ok', ageSeconds: null };
-      const ageMs = Math.max(0, now() - Date.parse(last));
+      // A fresh deploy gets one bounded grace window for its first scheduled
+      // proof. Once that expires, a worker which never created the key must be
+      // visible instead of remaining permanently healthy.
+      if (!last) {
+        const startupAgeMs = Math.max(0, now() - startedAtMs);
+        return {
+          status: startupAgeMs > WORKER_HEARTBEAT_STARTUP_GRACE_MS ? 'degraded' : 'ok',
+          ageSeconds: null,
+        };
+      }
+      const parsed = Date.parse(last);
+      if (!Number.isFinite(parsed)) return { status: 'degraded', ageSeconds: null };
+      const ageMs = Math.max(0, now() - parsed);
       const ageSeconds = Math.round(ageMs / 1000);
       // A heartbeat that WAS seen but has gone stale means the worker stalled —
       // a soft, degraded signal.
