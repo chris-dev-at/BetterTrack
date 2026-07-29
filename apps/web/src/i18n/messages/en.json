@@ -3880,16 +3880,7 @@
   },
   "home": {
     "greeting": "Welcome back",
-    "subtitle": "Your wealth at a glance — what changed, what needs you, where to go next.",
-    "netWorth": "Net worth",
-    "invested": "Invested",
-    "cash": "Cash",
-    "dayChange": "Today's change",
-    "today": "today",
-    "portfolios": "Portfolios",
-    "acrossPortfolios": "across {{count}} portfolios",
     "go": {
-      "title": "Jump in",
       "portfolio": "Open portfolio",
       "portfolioSub": "Holdings, activity, analysis",
       "workbench": "Plan in the Workbench",
@@ -3901,15 +3892,124 @@
     },
     "defaultPortfolio": "Default",
     "attention": {
-      "title": "Needs attention",
       "review": "Open Review",
       "clear": "All clear — nothing needs you right now."
     },
     "upcoming": {
-      "title": "Upcoming",
       "manage": "Manage in Forecasts",
       "empty": "Nothing scheduled. Standing orders appear here once created.",
       "order": "Standing order"
+    },
+    "builder": {
+      "customize": "Customize",
+      "done": "Done",
+      "add": "Add widget",
+      "addTitle": "Add a widget",
+      "reset": "Reset to default",
+      "emptyBoard": "Your home is empty",
+      "dragHandle": "Reorder {{title}}",
+      "moveUp": "Move {{title}} up",
+      "moveDown": "Move {{title}} down",
+      "remove": "Remove {{title}}",
+      "settings": "{{title}} settings",
+      "sizeAriaLabel": "{{title}} size",
+      "size": {
+        "s": "S",
+        "m": "M",
+        "l": "L"
+      },
+      "scopeLabel": "Portfolio",
+      "scopeAll": "All portfolios",
+      "rangeLabel": "Range",
+      "group": {
+        "overview": "Overview",
+        "charts": "Charts",
+        "lists": "Lists"
+      }
+    },
+    "widgets": {
+      "range": {
+        "1D": "1D",
+        "1W": "1W",
+        "1M": "1M",
+        "3M": "3M",
+        "6M": "6M",
+        "12M": "12M",
+        "1Y": "1Y",
+        "5Y": "5Y",
+        "Max": "Max"
+      },
+      "netWorth": {
+        "title": "Net worth",
+        "description": "Total value with today's change",
+        "changeTitle": "Today's change",
+        "investedWord": "invested",
+        "cashWord": "cash"
+      },
+      "todayChange": {
+        "title": "Today",
+        "description": "Today's move as a compact stat",
+        "label": "Today's change",
+        "totalLabel": "Total value"
+      },
+      "performanceChart": {
+        "title": "Performance",
+        "description": "One portfolio's value over time",
+        "empty": "No portfolio to chart yet.",
+        "ariaLabel": "Value over time for {{name}}"
+      },
+      "cashflowChart": {
+        "title": "Cash flow",
+        "description": "Money in minus money out, by month",
+        "empty": "No cash-flow data yet.",
+        "ariaLabel": "Net cash flow by month",
+        "incomeWord": "in",
+        "spentWord": "out"
+      },
+      "allocation": {
+        "title": "Allocation",
+        "description": "What the money sits in",
+        "chartTitle": "Allocation by position",
+        "other": "Other",
+        "cash": "Cash",
+        "empty": "Nothing allocated yet."
+      },
+      "topMovers": {
+        "title": "Movers",
+        "description": "Biggest climbers and fallers",
+        "climbers": "Climbers",
+        "fallers": "Fallers",
+        "none": "Nothing here.",
+        "empty": "No price moves to rank yet.",
+        "metricAriaLabel": "Ranking metric",
+        "dayMetric": "Today",
+        "totalMetric": "Total"
+      },
+      "portfolioCards": {
+        "title": "Portfolios",
+        "description": "Every portfolio with value and trend",
+        "empty": "No portfolios yet.",
+        "sparkAriaLabel": "One-month trend for {{name}}"
+      },
+      "news": {
+        "title": "News",
+        "description": "Headlines on the assets you hold",
+        "empty": "No headlines for your holdings right now.",
+        "unavailable": "News is not available."
+      },
+      "attention": {
+        "title": "Needs attention",
+        "description": "Unread notifications"
+      },
+      "upcoming": {
+        "title": "Upcoming",
+        "description": "Scheduled standing orders",
+        "units": "{{count}} ×"
+      },
+      "shortcuts": {
+        "title": "Jump in",
+        "description": "Links to the main sections"
+      }
     }
   },
   "cashflow": {

@@ -3880,16 +3880,7 @@
   },
   "home": {
     "greeting": "Willkommen zurück",
-    "subtitle": "Dein Vermögen auf einen Blick — was sich geändert hat, was dich braucht, wohin als Nächstes.",
-    "netWorth": "Nettovermögen",
-    "invested": "Investiert",
-    "cash": "Cash",
-    "dayChange": "Veränderung heute",
-    "today": "heute",
-    "portfolios": "Portfolios",
-    "acrossPortfolios": "über {{count}} Portfolios",
     "go": {
-      "title": "Direkt loslegen",
       "portfolio": "Portfolio öffnen",
       "portfolioSub": "Bestände, Aktivität, Analyse",
       "workbench": "In der Workbench planen",
@@ -3901,15 +3892,124 @@
     },
     "defaultPortfolio": "Standard",
     "attention": {
-      "title": "Braucht Aufmerksamkeit",
       "review": "Review öffnen",
       "clear": "Alles erledigt — gerade braucht dich nichts."
     },
     "upcoming": {
-      "title": "Anstehend",
       "manage": "In Prognosen verwalten",
       "empty": "Nichts geplant. Sparpläne erscheinen hier, sobald sie angelegt sind.",
       "order": "Sparplan"
+    },
+    "builder": {
+      "customize": "Anpassen",
+      "done": "Fertig",
+      "add": "Widget hinzufügen",
+      "addTitle": "Widget hinzufügen",
+      "reset": "Auf Standard zurücksetzen",
+      "emptyBoard": "Deine Startseite ist leer",
+      "dragHandle": "{{title}} umsortieren",
+      "moveUp": "{{title}} nach oben schieben",
+      "moveDown": "{{title}} nach unten schieben",
+      "remove": "{{title}} entfernen",
+      "settings": "Einstellungen für {{title}}",
+      "sizeAriaLabel": "Größe von {{title}}",
+      "size": {
+        "s": "S",
+        "m": "M",
+        "l": "L"
+      },
+      "scopeLabel": "Portfolio",
+      "scopeAll": "Alle Portfolios",
+      "rangeLabel": "Zeitraum",
+      "group": {
+        "overview": "Überblick",
+        "charts": "Charts",
+        "lists": "Listen"
+      }
+    },
+    "widgets": {
+      "range": {
+        "1D": "1D",
+        "1W": "1W",
+        "1M": "1M",
+        "3M": "3M",
+        "6M": "6M",
+        "12M": "12M",
+        "1Y": "1Y",
+        "5Y": "5Y",
+        "Max": "Max"
+      },
+      "netWorth": {
+        "title": "Nettovermögen",
+        "description": "Gesamtwert mit der Veränderung von heute",
+        "changeTitle": "Veränderung heute",
+        "investedWord": "investiert",
+        "cashWord": "Cash"
+      },
+      "todayChange": {
+        "title": "Heute",
+        "description": "Die heutige Bewegung als kompakte Kennzahl",
+        "label": "Veränderung heute",
+        "totalLabel": "Gesamtwert"
+      },
+      "performanceChart": {
+        "title": "Performance",
+        "description": "Der Wertverlauf eines Portfolios",
+        "empty": "Noch kein Portfolio zum Anzeigen.",
+        "ariaLabel": "Wertverlauf von {{name}}"
+      },
+      "cashflowChart": {
+        "title": "Cashflow",
+        "description": "Einnahmen minus Ausgaben, pro Monat",
+        "empty": "Noch keine Cashflow-Daten.",
+        "ariaLabel": "Netto-Cashflow pro Monat",
+        "incomeWord": "rein",
+        "spentWord": "raus"
+      },
+      "allocation": {
+        "title": "Aufteilung",
+        "description": "Worin dein Geld steckt",
+        "chartTitle": "Aufteilung nach Position",
+        "other": "Sonstige",
+        "cash": "Cash",
+        "empty": "Noch nichts investiert."
+      },
+      "topMovers": {
+        "title": "Bewegungen",
+        "description": "Die größten Gewinner und Verlierer",
+        "climbers": "Gewinner",
+        "fallers": "Verlierer",
+        "none": "Nichts dabei.",
+        "empty": "Noch keine Kursbewegungen zum Sortieren.",
+        "metricAriaLabel": "Sortierung",
+        "dayMetric": "Heute",
+        "totalMetric": "Gesamt"
+      },
+      "portfolioCards": {
+        "title": "Portfolios",
+        "description": "Alle Portfolios mit Wert und Verlauf",
+        "empty": "Noch keine Portfolios.",
+        "sparkAriaLabel": "Verlauf von {{name}} über einen Monat"
+      },
+      "news": {
+        "title": "News",
+        "description": "Schlagzeilen zu deinen Beständen",
+        "empty": "Gerade keine Schlagzeilen zu deinen Beständen.",
+        "unavailable": "News sind nicht verfügbar."
+      },
+      "attention": {
+        "title": "Braucht Aufmerksamkeit",
+        "description": "Ungelesene Benachrichtigungen"
+      },
+      "upcoming": {
+        "title": "Anstehend",
+        "description": "Geplante Sparpläne",
+        "units": "{{count}} ×"
+      },
+      "shortcuts": {
+        "title": "Direkt loslegen",
+        "description": "Links zu den Hauptbereichen"
+      }
     }
   },
   "cashflow": {

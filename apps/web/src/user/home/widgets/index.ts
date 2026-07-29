@@ -1,0 +1,174 @@
+import { WIDGET_SIZE_RULES, WIDGET_TYPES, type WidgetType } from '../config';
+import { AllocationWidget } from './AllocationWidget';
+import { AttentionWidget } from './AttentionWidget';
+import { CASHFLOW_MONTHS, CashflowChartWidget } from './CashflowChartWidget';
+import { NetWorthWidget } from './NetWorthWidget';
+import { NewsWidget } from './NewsWidget';
+import { PERFORMANCE_RANGES, PerformanceChartWidget } from './PerformanceChartWidget';
+import { PortfolioCardsWidget } from './PortfolioCardsWidget';
+import { ShortcutsWidget } from './ShortcutsWidget';
+import { TodayChangeWidget } from './TodayChangeWidget';
+import { TopMoversWidget } from './TopMoversWidget';
+import { UpcomingWidget } from './UpcomingWidget';
+import type { WidgetDefinition, WidgetGroup } from './types';
+
+/**
+ * The Home widget catalog. One entry per {@link WidgetType}; the board, the
+ * builder chrome and the "Add widget" drawer all read this and nothing else, so
+ * a new widget is one module plus one row here.
+ *
+ * `satisfies Record<WidgetType, …>` is the guard: adding a type to
+ * `WIDGET_TYPES` without registering its module fails the type-check rather
+ * than rendering an empty slot at runtime.
+ */
+export const WIDGET_REGISTRY = {
+  'net-worth': {
+    type: 'net-worth',
+    icon: 'wallet',
+    labelKey: 'home.widgets.netWorth.title',
+    descriptionKey: 'home.widgets.netWorth.description',
+    group: 'overview',
+    allowedSizes: WIDGET_SIZE_RULES['net-worth'].allowed,
+    defaultSettings: { scope: 'all' },
+    supportsScope: true,
+    Component: NetWorthWidget,
+  },
+  'today-change': {
+    type: 'today-change',
+    icon: 'pulse',
+    labelKey: 'home.widgets.todayChange.title',
+    descriptionKey: 'home.widgets.todayChange.description',
+    group: 'overview',
+    allowedSizes: WIDGET_SIZE_RULES['today-change'].allowed,
+    defaultSettings: { scope: 'all' },
+    supportsScope: true,
+    Component: TodayChangeWidget,
+  },
+  'portfolio-cards': {
+    type: 'portfolio-cards',
+    icon: 'portfolios',
+    labelKey: 'home.widgets.portfolioCards.title',
+    descriptionKey: 'home.widgets.portfolioCards.description',
+    group: 'overview',
+    allowedSizes: WIDGET_SIZE_RULES['portfolio-cards'].allowed,
+    defaultSettings: {},
+    // The widget IS the all-portfolios overview; scoping it to one would be a
+    // worse version of the net-worth widget.
+    supportsScope: false,
+    Component: PortfolioCardsWidget,
+  },
+  'performance-chart': {
+    type: 'performance-chart',
+    icon: 'trending-up',
+    labelKey: 'home.widgets.performanceChart.title',
+    descriptionKey: 'home.widgets.performanceChart.description',
+    group: 'charts',
+    allowedSizes: WIDGET_SIZE_RULES['performance-chart'].allowed,
+    defaultSettings: { range: '1M' },
+    supportsScope: true,
+    scopeAllowsAll: false,
+    rangeOptions: PERFORMANCE_RANGES.map((range) => ({
+      value: range,
+      labelKey: `home.widgets.range.${range}`,
+    })),
+    Component: PerformanceChartWidget,
+  },
+  'cashflow-chart': {
+    type: 'cashflow-chart',
+    icon: 'cash',
+    labelKey: 'home.widgets.cashflowChart.title',
+    descriptionKey: 'home.widgets.cashflowChart.description',
+    group: 'charts',
+    allowedSizes: WIDGET_SIZE_RULES['cashflow-chart'].allowed,
+    defaultSettings: { range: '6M' },
+    // The expense ledger has no portfolio dimension — see CashflowChartWidget.
+    supportsScope: false,
+    rangeOptions: Object.keys(CASHFLOW_MONTHS).map((range) => ({
+      value: range,
+      labelKey: `home.widgets.range.${range}`,
+    })),
+    Component: CashflowChartWidget,
+  },
+  allocation: {
+    type: 'allocation',
+    icon: 'pie',
+    labelKey: 'home.widgets.allocation.title',
+    descriptionKey: 'home.widgets.allocation.description',
+    group: 'charts',
+    allowedSizes: WIDGET_SIZE_RULES.allocation.allowed,
+    defaultSettings: { scope: 'all' },
+    supportsScope: true,
+    Component: AllocationWidget,
+  },
+  'top-movers': {
+    type: 'top-movers',
+    icon: 'trending-up',
+    labelKey: 'home.widgets.topMovers.title',
+    descriptionKey: 'home.widgets.topMovers.description',
+    group: 'lists',
+    allowedSizes: WIDGET_SIZE_RULES['top-movers'].allowed,
+    defaultSettings: { scope: 'all', metric: 'day' },
+    supportsScope: true,
+    Component: TopMoversWidget,
+  },
+  news: {
+    type: 'news',
+    icon: 'inbox',
+    labelKey: 'home.widgets.news.title',
+    descriptionKey: 'home.widgets.news.description',
+    group: 'lists',
+    allowedSizes: WIDGET_SIZE_RULES.news.allowed,
+    defaultSettings: {},
+    // The digest endpoint spans every held asset, not one portfolio.
+    supportsScope: false,
+    Component: NewsWidget,
+  },
+  attention: {
+    type: 'attention',
+    icon: 'bell',
+    labelKey: 'home.widgets.attention.title',
+    descriptionKey: 'home.widgets.attention.description',
+    group: 'lists',
+    allowedSizes: WIDGET_SIZE_RULES.attention.allowed,
+    defaultSettings: {},
+    supportsScope: false,
+    Component: AttentionWidget,
+  },
+  upcoming: {
+    type: 'upcoming',
+    icon: 'calendar',
+    labelKey: 'home.widgets.upcoming.title',
+    descriptionKey: 'home.widgets.upcoming.description',
+    group: 'lists',
+    allowedSizes: WIDGET_SIZE_RULES.upcoming.allowed,
+    defaultSettings: {},
+    supportsScope: false,
+    Component: UpcomingWidget,
+  },
+  shortcuts: {
+    type: 'shortcuts',
+    icon: 'bolt',
+    labelKey: 'home.widgets.shortcuts.title',
+    descriptionKey: 'home.widgets.shortcuts.description',
+    group: 'overview',
+    allowedSizes: WIDGET_SIZE_RULES.shortcuts.allowed,
+    defaultSettings: {},
+    supportsScope: false,
+    Component: ShortcutsWidget,
+  },
+} satisfies Record<WidgetType, WidgetDefinition>;
+
+export function widgetDefinition(type: WidgetType): WidgetDefinition {
+  return WIDGET_REGISTRY[type];
+}
+
+/** The catalog in a stable order, for the "Add widget" drawer. */
+export const WIDGET_CATALOG: readonly WidgetDefinition[] = WIDGET_TYPES.map(widgetDefinition);
+
+/** The catalog entries of one group, in catalog order. */
+export function widgetsInGroup(group: WidgetGroup): WidgetDefinition[] {
+  return WIDGET_CATALOG.filter((definition) => definition.group === group);
+}
+
+export type { WidgetDefinition, WidgetGroup, WidgetProps } from './types';
+export { WIDGET_GROUPS } from './types';
