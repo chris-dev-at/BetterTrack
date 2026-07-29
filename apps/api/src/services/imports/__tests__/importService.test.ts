@@ -14,6 +14,7 @@ import {
   type AssetSearchResult,
   type ApplyImportResponse,
   type ImportPreviewResponse,
+  type SearchResultItem,
 } from '@bettertrack/contracts';
 
 import * as schema from '../../../data/schema';
@@ -381,15 +382,19 @@ describe('POST /imports — staged preview', () => {
       duplicate: 0,
       error: 0,
     });
-    expect(searchCatalog).toHaveBeenCalledTimes(
-      IMPORT_MAX_DISTINCT_INSTRUMENTS + IMPORT_ENRICHMENT_QUERY_BUDGET,
-    );
+    // The bound that matters is provider-facing: enrichment-capable queries are
+    // capped exactly. Catalog-only reads never touch a provider, and the phases
+    // that produce them (local pass + pre-admission re-check + post-enrichment
+    // sweep) are each bounded by the distinct-instrument cap.
     expect(
       searchCatalog.mock.calls.filter(([, , options]) => options?.allowEnrichment !== false),
     ).toHaveLength(IMPORT_ENRICHMENT_QUERY_BUDGET);
-    expect(queuedResolutions).toBe(
-      IMPORT_MAX_DISTINCT_INSTRUMENTS + IMPORT_ENRICHMENT_QUERY_BUDGET,
-    );
+    expect(
+      searchCatalog.mock.calls.filter(([, , options]) => options?.allowEnrichment === false).length,
+    ).toBeLessThanOrEqual(IMPORT_MAX_DISTINCT_INSTRUMENTS * 2 + IMPORT_ENRICHMENT_QUERY_BUDGET);
+    // Every resolution chain — local or enrichment — is admitted through the queue.
+    expect(queuedResolutions).toBe(searchCatalog.mock.calls.length);
+    const admittedAtCap = queuedResolutions;
 
     await expect(
       imports.createBatch(user.id, {
@@ -403,12 +408,115 @@ describe('POST /imports — staged preview', () => {
       code: 'IMPORT_TOO_MANY_INSTRUMENTS',
       message: expect.stringContaining(`at most ${IMPORT_MAX_DISTINCT_INSTRUMENTS} instruments`),
     });
-    expect(searchCatalog).toHaveBeenCalledTimes(
-      IMPORT_MAX_DISTINCT_INSTRUMENTS + IMPORT_ENRICHMENT_QUERY_BUDGET,
+    // The over-cap file is rejected before any catalog or provider work.
+    expect(searchCatalog).toHaveBeenCalledTimes(admittedAtCap);
+    expect(queuedResolutions).toBe(admittedAtCap);
+  });
+
+  /**
+   * The two constraints that must hold in ONE run: enrichment admissions stay
+   * capped, AND an identity the budget never admits still maps when a sibling
+   * query put its asset in the catalog mid-batch. `CatalogEnrichment.run()`
+   * upserts EVERY hit of a query, so the phase-1 catalog read is stale for the
+   * un-admitted tail — the stub below reproduces exactly that side effect.
+   */
+  it('maps an identity a sibling enrichment catalogued beyond the query budget', async () => {
+    const { user, pid } = await setup();
+    const identities = Array.from(
+      { length: IMPORT_ENRICHMENT_QUERY_BUDGET + 1 },
+      (_, index) => `TAIL${index}.DE`,
     );
-    expect(queuedResolutions).toBe(
-      IMPORT_MAX_DISTINCT_INSTRUMENTS + IMPORT_ENRICHMENT_QUERY_BUDGET,
+    const firstSymbol = identities[0]!;
+    const lastSymbol = identities.at(-1)!;
+    const firstAsset = await seedAsset(firstSymbol, 'Tail First AG');
+    const lastAsset = await seedAsset(lastSymbol, 'Tail Last AG');
+
+    const mapper: BrokerMapper = {
+      id: 'tail_upsert',
+      label: 'Tail upsert',
+      detect: () => 1,
+      map: (csv) =>
+        csv.records.map((record, index) => ({
+          line: record.line,
+          raw: record.raw,
+          ok: true,
+          row: {
+            kind: 'buy',
+            executedAt: new Date('2024-01-02T12:00:00.000Z'),
+            isin: null,
+            symbol: identities[index] ?? `MISS-${index}`,
+            name: null,
+            quantity: 1,
+            price: 10,
+            fee: 0,
+            amountEur: null,
+            currency: 'EUR',
+            note: null,
+          },
+        })),
+    };
+
+    // The visible catalog, empty until the first admitted provider query — which
+    // then reveals its own asset AND the last identity's, mirroring the
+    // upsert-every-hit behavior of the real enrichment.
+    const catalog = new Map<string, SearchResultItem>();
+    const item = (asset: { id: string; symbol: string; name: string }): SearchResultItem => ({
+      id: asset.id,
+      symbol: asset.symbol,
+      name: asset.name,
+      type: 'stock',
+      exchange: 'XETRA',
+      currency: 'EUR',
+      providerId: 'yahoo',
+      providerRef: asset.symbol,
+      isCustom: false,
+    });
+    const searchCatalog = vi.fn(
+      async (_userId: string, query: string, options?: { allowEnrichment?: boolean }) => {
+        const enrichmentCapable = options?.allowEnrichment !== false;
+        const known = catalog.get(query.toUpperCase());
+        if (known) return { results: [known], enriching: false };
+        if (!enrichmentCapable) return { results: [], enriching: false };
+        // The first enrichment-capable miss "runs" a provider search.
+        catalog.set(firstSymbol.toUpperCase(), item(firstAsset));
+        catalog.set(lastSymbol.toUpperCase(), item(lastAsset));
+        return { results: [], enriching: true };
+      },
     );
+    const search: SearchService = {
+      search: searchCatalog,
+      catalogFreshness: async () => null,
+      enrichmentSettled: async () => {},
+    };
+    const imports = createImportService({
+      importRepo: createImportRepository(harness.db),
+      portfolioRepo: createPortfolioRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      search,
+      portfolio: harness.ctx.portfolio,
+      tax: harness.ctx.tax,
+      mappers: [mapper],
+    });
+
+    const preview = await imports.createBatch(user.id, {
+      portfolioId: pid,
+      filename: 'tail-upsert.csv',
+      content: ['instrument', ...identities.map((_, index) => `row-${index}`)].join('\n'),
+      brokerId: mapper.id,
+    });
+
+    // The triggering identity resolves through its own settled enrichment…
+    expect(preview.rows[0]?.flag).toBe('mapped');
+    expect(preview.rows[0]?.asset?.id).toBe(firstAsset.id);
+    // …and the LAST identity — never admitted, because the budget ran out before
+    // its turn — still maps from the catalog row that query created.
+    expect(preview.rows.at(-1)?.flag).toBe('mapped');
+    expect(preview.rows.at(-1)?.asset?.id).toBe(lastAsset.id);
+    // Without the provider bound this would be one query per remaining identity.
+    expect(
+      searchCatalog.mock.calls.filter(([, , options]) => options?.allowEnrichment !== false).length,
+    ).toBeLessThanOrEqual(IMPORT_ENRICHMENT_QUERY_BUDGET);
   });
 
   it('bounds the whole batch enrichment wait while resolving later local identities', async () => {

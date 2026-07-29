@@ -455,9 +455,13 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         );
       }
 
-      // Complete the bounded local pass before admitting any provider work.
-      // This keeps every existing catalog hit resolvable even if a slow first
-      // miss consumes the entire enrichment budget.
+      // Resolution runs in three phases. The catalog MUTATES mid-batch —
+      // `CatalogEnrichment.run()` upserts every hit of a query, not just the
+      // identity that triggered it — so a read taken before enrichment is stale
+      // for every identity that never gets its own admission. Hence phase 3.
+
+      // Phase 1 — the complete local pass, before any provider work is admitted,
+      // so an already-catalogued instrument never depends on the budget.
       const resolutions = new Map<string, SearchResultItem | null>();
       const unresolved: Array<[key: string, row: NormalizedImportRow]> = [];
       for (const [key, row] of instruments) {
@@ -466,18 +470,44 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         if (local === null) unresolved.push([key, row]);
       }
 
+      // Phase 2 — bounded enrichment for the misses, in file order.
       const enrichmentBudget: EnrichmentBudget = {
         remainingWaitMs: IMPORT_ENRICHMENT_WAIT_BUDGET_MS,
         remainingQueries: IMPORT_ENRICHMENT_QUERY_BUDGET,
       };
+      let enrichmentStarted = false;
       for (const [key, row] of unresolved) {
         if (enrichmentBudget.remainingQueries <= 0 || enrichmentBudget.remainingWaitMs <= 0) {
           break;
         }
+        // A sibling admission may already have upserted this identity. Re-reading
+        // is catalog-only, so it costs no slot and keeps one for a genuine miss.
+        if (enrichmentStarted) {
+          const appeared = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+          if (appeared !== null) {
+            resolutions.set(key, appeared);
+            continue;
+          }
+        }
+        enrichmentStarted = true;
         const enriched = await resolutionQueue.run(() =>
           enrichInstrument(userId, row, enrichmentBudget),
         );
         if (enriched !== null) resolutions.set(key, enriched);
+      }
+
+      // Phase 3 — the post-enrichment sweep. Every identity the budget never
+      // admitted still holds its phase-1 read, which is stale for any row a
+      // sibling query upserted meanwhile; without this pass a valid file stages
+      // `unmapped` rows whose asset is already sitting in Postgres. The sweep is
+      // catalog-only (`allowEnrichment: false`), so it can neither spend a query
+      // slot nor wait — it cannot re-open the provider amplification.
+      if (enrichmentStarted) {
+        for (const [key, row] of unresolved) {
+          if (resolutions.get(key) !== null) continue;
+          const local = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+          if (local !== null) resolutions.set(key, local);
+        }
       }
 
       const existing = await collectExistingHashes(userId, input.portfolioId);
