@@ -13,8 +13,11 @@ const BLOCKED_LITERALS = [
   ['IPv4 private 172.16/12', 'https://172.31.255.254/push'],
   ['IPv4 private 192.168/16', 'https://192.168.1.2/push'],
   ['IPv4 link-local', 'https://169.254.169.254/push'],
+  ['IPv4 6to4 relay anycast', 'https://192.88.99.1/push'],
   ['IPv4 multicast', 'https://239.1.2.3/push'],
   ['IPv6 loopback', 'https://[::1]/push'],
+  ['IPv6 NAT64 transition range', 'https://[64:ff9b::a00:1]/push'],
+  ['IPv6 6to4 transition range', 'https://[2002:a00:1::]/push'],
   ['IPv6 unique-local fc00::/7', 'https://[fc00::1]/push'],
   ['IPv6 unique-local fd00::/8', 'https://[fd12:3456::1]/push'],
   ['IPv6 link-local', 'https://[fe80::1]/push'],
@@ -65,6 +68,17 @@ describe('outbound URL guard', () => {
     await expect(
       assertSafeOutboundUrl('https://push.example.com/subscription', { resolver }),
     ).rejects.toMatchObject({ code: OUTBOUND_URL_BLOCKED });
+  });
+
+  it('classifies an empty DNS answer as a permanent unsafe destination', async () => {
+    const resolver: OutboundUrlResolver = async () => [];
+
+    await expect(
+      assertSafeOutboundUrl('https://push.example.com/subscription', { resolver }),
+    ).rejects.toMatchObject({
+      code: OUTBOUND_URL_BLOCKED,
+      reason: 'invalid_resolved_address',
+    });
   });
 
   it('allows legitimate public HTTPS literals and fully-public DNS answers', async () => {

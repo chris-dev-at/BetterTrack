@@ -1,5 +1,7 @@
 import { lookup } from 'node:dns/promises';
+import { Agent as HttpsAgent } from 'node:https';
 import { BlockList, isIP } from 'node:net';
+import type { LookupFunction } from 'node:net';
 
 export const OUTBOUND_URL_BLOCKED = 'OUTBOUND_URL_BLOCKED';
 
@@ -17,6 +19,12 @@ export interface OutboundUrlAddress {
 }
 
 export type OutboundUrlResolver = (hostname: string) => Promise<readonly OutboundUrlAddress[]>;
+
+export interface ResolvedOutboundUrl {
+  url: URL;
+  /** Public addresses vetted by the guard; family is derived from the address. */
+  addresses: readonly OutboundUrlAddress[];
+}
 
 export interface OutboundUrlGuardOptions {
   /**
@@ -57,6 +65,7 @@ const BLOCKED_IPV4_SUBNETS = [
   ['172.16.0.0', 12],
   ['192.0.0.0', 24],
   ['192.0.2.0', 24],
+  ['192.88.99.0', 24], // deprecated 6to4 relay anycast
   ['192.168.0.0', 16],
   ['198.18.0.0', 15],
   ['198.51.100.0', 24],
@@ -70,7 +79,9 @@ const BLOCKED_IPV6_SUBNETS = [
   ['::1', 128],
   ['::ffff:0:0', 96], // IPv4-mapped IPv6, including mapped private IPv4
   ['100::', 64], // discard-only
+  ['64:ff9b::', 96], // NAT64 can encode private IPv4 destinations
   ['2001:db8::', 32], // documentation-only
+  ['2002::', 16], // 6to4 can encode private IPv4 destinations
   ['fc00::', 7], // unique-local
   ['fe80::', 10], // link-local
   ['fec0::', 10], // deprecated site-local
@@ -102,7 +113,10 @@ function isLocalhostName(hostname: string): boolean {
   );
 }
 
-function assertPublicAddress(address: string, invalidReason: OutboundUrlBlockReason): void {
+function assertPublicAddress(
+  address: string,
+  invalidReason: OutboundUrlBlockReason,
+): OutboundUrlAddress {
   const family = isIP(address);
   if (family === 0) throw new UnsafeOutboundUrlError(invalidReason);
   const blocked =
@@ -112,19 +126,13 @@ function assertPublicAddress(address: string, invalidReason: OutboundUrlBlockRea
   if (blocked) {
     throw new UnsafeOutboundUrlError('blocked_address');
   }
+  return { address, family };
 }
 
-/**
- * Validate an HTTPS destination before server-side egress.
- *
- * The literal/localhost check is always performed. DNS resolution defaults on,
- * and every returned A/AAAA address must be public; callers that persist a URL
- * may disable DNS only when they repeat the full guard immediately before use.
- */
-export async function assertSafeOutboundUrl(
+async function inspectOutboundUrl(
   input: string,
   options: OutboundUrlGuardOptions = {},
-): Promise<URL> {
+): Promise<ResolvedOutboundUrl> {
   let url: URL;
   try {
     url = new URL(input);
@@ -142,18 +150,85 @@ export async function assertSafeOutboundUrl(
 
   const literalFamily = isIP(hostname);
   if (literalFamily !== 0) {
-    assertPublicAddress(hostname, 'blocked_address');
-    return url;
+    return {
+      url,
+      addresses: [assertPublicAddress(hostname, 'blocked_address')],
+    };
   }
 
-  if (options.resolveDns === false) return url;
+  if (options.resolveDns === false) return { url, addresses: [] };
 
   const addresses = await (options.resolver ?? defaultResolver)(hostname);
   if (addresses.length === 0) {
-    throw new Error('Outbound URL hostname resolved to no addresses.');
+    throw new UnsafeOutboundUrlError('invalid_resolved_address');
   }
-  for (const { address } of addresses) {
-    assertPublicAddress(address, 'invalid_resolved_address');
-  }
-  return url;
+  return {
+    url,
+    addresses: addresses.map(({ address }) =>
+      assertPublicAddress(address, 'invalid_resolved_address'),
+    ),
+  };
+}
+
+/**
+ * Resolve and validate an HTTPS destination immediately before egress.
+ *
+ * Callers must pin `addresses` into the actual connection so a second DNS
+ * lookup cannot replace the vetted result.
+ */
+export function resolveSafeOutboundUrl(
+  input: string,
+  options: Pick<OutboundUrlGuardOptions, 'resolver'> = {},
+): Promise<ResolvedOutboundUrl> {
+  return inspectOutboundUrl(input, options);
+}
+
+/**
+ * Build a one-destination HTTPS agent whose socket lookup can return only the
+ * already-vetted address set. The request keeps its original hostname, so Node
+ * still verifies the certificate and sends SNI for that hostname.
+ */
+export function createPinnedHttpsAgent(target: ResolvedOutboundUrl): HttpsAgent {
+  const expectedHostname = normalizedHostname(target.url.hostname);
+  const pinnedAddresses = [...target.addresses];
+
+  const pinnedLookup: LookupFunction = (hostname, options, callback) => {
+    if (normalizedHostname(hostname) !== expectedHostname) {
+      callback(new UnsafeOutboundUrlError('invalid_resolved_address'), '', 0);
+      return;
+    }
+
+    const requestedFamily =
+      options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family;
+    const candidates =
+      requestedFamily === 4 || requestedFamily === 6
+        ? pinnedAddresses.filter(({ family }) => family === requestedFamily)
+        : pinnedAddresses;
+    if (candidates.length === 0) {
+      callback(new UnsafeOutboundUrlError('invalid_resolved_address'), '', 0);
+      return;
+    }
+
+    if (options.all) {
+      callback(null, candidates);
+      return;
+    }
+    callback(null, candidates[0]!.address, candidates[0]!.family);
+  };
+
+  return new HttpsAgent({ keepAlive: false, lookup: pinnedLookup });
+}
+
+/**
+ * Validate an HTTPS destination before server-side egress.
+ *
+ * The literal/localhost check is always performed. DNS resolution defaults on,
+ * and every returned A/AAAA address must be public; callers that persist a URL
+ * may disable DNS only when they repeat the full guard immediately before use.
+ */
+export async function assertSafeOutboundUrl(
+  input: string,
+  options: OutboundUrlGuardOptions = {},
+): Promise<URL> {
+  return (await inspectOutboundUrl(input, options)).url;
 }

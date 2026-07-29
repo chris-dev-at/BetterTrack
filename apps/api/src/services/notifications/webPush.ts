@@ -1,10 +1,13 @@
+import type { Agent as HttpsAgent } from 'node:https';
+
 import webpush from 'web-push';
 
 import type { PushSubscriptionRepository } from '../../data/repositories/pushSubscriptionRepository';
 import type { Logger } from '../../logger';
 import {
   UnsafeOutboundUrlError,
-  assertSafeOutboundUrl,
+  createPinnedHttpsAgent,
+  resolveSafeOutboundUrl,
   type OutboundUrlResolver,
 } from '../security/outboundUrlGuard';
 
@@ -28,6 +31,7 @@ export interface WebPushTransport {
   sendNotification(
     subscription: { endpoint: string; keys: { p256dh: string; auth: string } },
     payload: string,
+    options: { agent: HttpsAgent },
   ): Promise<unknown>;
 }
 
@@ -68,19 +72,25 @@ export function createWebPushChannel(deps: CreateWebPushChannelDeps): WebPushCha
       const subs = await subscriptions.listForUser(userId);
       for (const sub of subs) {
         try {
-          await assertSafeOutboundUrl(
+          const target = await resolveSafeOutboundUrl(
             sub.endpoint,
             deps.resolveHostname === undefined ? undefined : { resolver: deps.resolveHostname },
           );
-          await transport.sendNotification(
-            { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-            JSON.stringify({
-              type: message.type,
-              title: message.title,
-              body: message.body,
-              data: message.data,
-            }),
-          );
+          const agent = createPinnedHttpsAgent(target);
+          try {
+            await transport.sendNotification(
+              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+              JSON.stringify({
+                type: message.type,
+                title: message.title,
+                body: message.body,
+                data: message.data,
+              }),
+              { agent },
+            );
+          } finally {
+            agent.destroy();
+          }
         } catch (err) {
           if (err instanceof UnsafeOutboundUrlError) {
             // Persisted legacy rows and DNS-rebound destinations are permanent

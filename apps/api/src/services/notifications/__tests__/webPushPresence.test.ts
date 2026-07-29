@@ -1,3 +1,6 @@
+import type { LookupAddress } from 'node:dns';
+import { Agent as HttpsAgent } from 'node:https';
+
 import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
 import { pino } from 'pino';
@@ -48,6 +51,27 @@ const VAPID = {
 };
 
 const PUBLIC_RESOLVER: OutboundUrlResolver = async () => [{ address: '8.8.8.8', family: 4 }];
+
+function lookupAll(agent: HttpsAgent, hostname: string): Promise<LookupAddress[]> {
+  return new Promise((resolve, reject) => {
+    const lookup = agent.options.lookup;
+    if (!lookup) {
+      reject(new Error('Expected the web-push HTTPS agent to pin DNS lookup.'));
+      return;
+    }
+    lookup(hostname, { all: true }, (error, addresses) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      if (!Array.isArray(addresses)) {
+        reject(new Error('Expected pinned lookup to return every vetted address.'));
+        return;
+      }
+      resolve(addresses);
+    });
+  });
+}
 
 describe('web-push channel (#368/#350)', () => {
   it('is disabled (null) with one warn when VAPID is unconfigured', () => {
@@ -136,6 +160,38 @@ describe('web-push channel (#368/#350)', () => {
     expect(resolveHostname).toHaveBeenCalledWith('push.example');
     expect(transport.sendNotification).not.toHaveBeenCalled();
     expect(repo.pruned).toEqual([endpoint]);
+  });
+
+  it('pins the vetted DNS answer into the transport connection', async () => {
+    const endpoint = 'https://push.example/rebinding-target';
+    let resolution = 0;
+    const resolveHostname: OutboundUrlResolver = vi.fn(async () => {
+      resolution += 1;
+      return resolution === 1
+        ? [{ address: '8.8.8.8', family: 4 }]
+        : [{ address: '10.0.0.5', family: 4 }];
+    });
+    const connectedAddresses: LookupAddress[][] = [];
+    const transport: WebPushTransport = {
+      setVapidDetails: vi.fn(),
+      async sendNotification(subscription, _payload, options) {
+        expect(subscription.endpoint).toBe(endpoint);
+        expect(options.agent).toBeInstanceOf(HttpsAgent);
+        connectedAddresses.push(await lookupAll(options.agent, 'push.example'));
+      },
+    };
+    const channel = createWebPushChannel({
+      vapid: VAPID,
+      subscriptions: subsRepo([endpoint]),
+      logger,
+      transport,
+      resolveHostname,
+    });
+
+    await expect(channel!.deliver('user-1', MESSAGE)).resolves.toBeUndefined();
+
+    expect(resolveHostname).toHaveBeenCalledTimes(1);
+    expect(connectedAddresses).toEqual([[{ address: '8.8.8.8', family: 4 }]]);
   });
 });
 
