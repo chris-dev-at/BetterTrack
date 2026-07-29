@@ -71,12 +71,12 @@ export async function provisionUserInContext(
  * list then carries `from` as a friend card.
  */
 export async function befriend(from: E2EUser, to: E2EUser): Promise<void> {
-  await from.page.goto('/social/friends');
+  await from.page.goto('/people');
   await from.page.getByLabel('Username or email').fill(to.username);
   await from.page.getByRole('button', { name: 'Send request' }).click();
   await expect(from.page.getByText(/we've sent your friend request/i)).toBeVisible();
 
-  await to.page.goto('/social/friends');
+  await to.page.goto('/people');
   const requestRow = to.page.getByRole('listitem').filter({ hasText: from.username });
   await expect(requestRow).toBeVisible({ timeout: 15_000 });
   await requestRow.getByRole('button', { name: 'Accept' }).click();

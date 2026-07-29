@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useT } from '../../i18n';
 import { getSharedWatchlist } from '../../lib/socialApi';
 import { EmptyState, Skeleton } from '../../ui';
+import { PageHead } from '../../ui/origin';
 import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
 
@@ -46,16 +47,18 @@ export function SharedWatchlistPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <BackLink />
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-neutral-100">
-            {data.owner.username}&rsquo;s {data.name}
-          </h2>
+    <div className="flex flex-col">
+      <BackLink />
+      <PageHead
+        actions={
           <ItemFollowButton kind="watchlist" subjectId={data.watchlistId} ownerId={data.owner.id} />
-        </div>
-      </div>
+        }
+        title={
+          <>
+            {data.owner.username}&rsquo;s {data.name}
+          </>
+        }
+      />
 
       {data.items.length === 0 ? (
         <EmptyState
@@ -63,22 +66,24 @@ export function SharedWatchlistPage() {
           description={t('social.shared.watchlistEmptyDescription')}
         />
       ) : (
-        <ul className="divide-y divide-neutral-800">
+        <ul className="bt-band bt-t-rule bt-b-rule flex flex-col">
           {data.items.map((item) => (
             <li key={item.id} className="flex items-center justify-between gap-3 py-3">
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-neutral-100">{item.asset.symbol}</p>
-                <p className="truncate text-xs text-neutral-500">{item.asset.name}</p>
+                <p className="bt-row-title truncate">{item.asset.symbol}</p>
+                <p className="bt-row-sub truncate">{item.asset.name}</p>
               </div>
               {item.asset.exchange ? (
-                <span className="shrink-0 text-xs text-neutral-500">{item.asset.exchange}</span>
+                <span className="bt-meta shrink-0">{item.asset.exchange}</span>
               ) : null}
             </li>
           ))}
         </ul>
       )}
 
-      <CommentThread kind="watchlist" subjectId={data.watchlistId} />
+      <div className="bt-section">
+        <CommentThread kind="watchlist" subjectId={data.watchlistId} />
+      </div>
     </div>
   );
 }
@@ -87,8 +92,9 @@ function BackLink() {
   const t = useT();
   return (
     <Link
-      to="/social/friends"
-      className="w-fit text-xs text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      to="/people"
+      className="bt-link w-fit self-start"
+      style={{ fontSize: 12.5, marginBottom: 10 }}
     >
       {t('social.shared.backToFriends')}
     </Link>

@@ -17,5 +17,5 @@ export interface DisclaimerProps {
  * delayed market-data notice. Purely presentational — no network.
  */
 export function Disclaimer({ children, className }: DisclaimerProps) {
-  return <p className={cx('text-xs text-neutral-500', className)}>{children}</p>;
+  return <p className={cx('bt-muted text-xs', className)}>{children}</p>;
 }

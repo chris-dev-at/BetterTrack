@@ -67,7 +67,7 @@ export function InvitePage() {
 
   if (invite.phase === 'loading') {
     return (
-      <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
+      <div className="bt-app grid place-items-center">
         <Spinner label={t('auth.invite.checkingInvite')} />
       </div>
     );
@@ -76,12 +76,9 @@ export function InvitePage() {
   if (invite.phase === 'invalid') {
     return (
       <AuthCard subtitle={t('auth.invite.invalidSubtitle')}>
-        <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div className="flex flex-col gap-4">
           <Alert tone="error">{t('auth.invite.invalidMessage')}</Alert>
-          <Link
-            to="/login"
-            className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
-          >
+          <Link to="/login" className="bt-link text-center text-sm font-medium">
             {t('auth.invite.goToSignIn')}
           </Link>
         </div>
@@ -105,10 +102,7 @@ export function InvitePage() {
 
   return (
     <AuthCard subtitle={t('auth.invite.subtitle')}>
-      <form
-        onSubmit={onSubmit}
-        className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
-      >
+      <form onSubmit={onSubmit} className="flex flex-col gap-4">
         {error ? <Alert tone="error">{error}</Alert> : null}
         <TextField
           label={t('auth.invite.emailLabel')}

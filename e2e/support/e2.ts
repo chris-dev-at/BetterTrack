@@ -18,7 +18,7 @@
  *    run, no external service, no sleeps.
  *
  *  - **Owner comment moderation.** Comments/reactions mount ONLY on the
- *    friend-shared read-only pages (`/social/shared-with-me/**`), which an item's
+ *    friend-shared read-only pages (`/people/shared/**`), which an item's
  *    OWNER cannot open for their own item (the shared read is friendship-gated
  *    and the owner is never their own friend). There is thus no owner-facing
  *    comment UI to click — but the DELETE endpoint authorizes the owner via
@@ -153,7 +153,7 @@ export async function ownerThreadComments(
   request: APIRequestContext,
   portfolioId: string,
 ): Promise<ThreadComment[]> {
-  const res = await request.get(apiV1(`/social/items/portfolio/${portfolioId}/thread`));
+  const res = await request.get(apiV1(`/people/items/portfolio/${portfolioId}/thread`));
   if (!res.ok()) throw new Error(`E2: owner thread read ${res.status()}: ${await res.text()}`);
   const body = (await res.json()) as { comments: ThreadComment[] };
   return body.comments;
@@ -164,7 +164,7 @@ export async function ownerDeleteComment(
   request: APIRequestContext,
   commentId: string,
 ): Promise<void> {
-  const res = await request.delete(apiV1(`/social/comments/${commentId}`), {
+  const res = await request.delete(apiV1(`/people/comments/${commentId}`), {
     headers: CSRF_HEADERS,
   });
   if (!res.ok()) throw new Error(`E2: owner delete ${res.status()}: ${await res.text()}`);

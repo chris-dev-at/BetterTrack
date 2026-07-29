@@ -15,8 +15,9 @@ import {
   sendFriendRequest,
 } from '../../lib/socialApi';
 import { useT } from '../../i18n';
-import { EmptyState, MoneyText, Skeleton } from '../../ui';
-import { Alert, Button, TextField, cx } from '../components/ui';
+import { EmptyState, MoneyText } from '../../ui';
+import { Button, Field, Icon, Input, PageHead, SkeletonBlock } from '../../ui/origin';
+import { Alert } from '../components/ui';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
 import { AlertFollowToggle, AutoFollowToggle, FollowButton } from './FollowButton';
@@ -34,21 +35,19 @@ import {
   type SharedPerson,
 } from './SharedPeople';
 
-/** Inline chat glyph — the chat entry point (routes to #349's future surface). */
-function ChatIcon({ className }: { className?: string }) {
+/** Disclosure chevron for the expandable friend rows. */
+function Chevron({ open }: { open: boolean }) {
   return (
-    <svg
-      className={className}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.75}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M4 5.5h16v10H9l-4 3.5v-3.5H4z" />
-    </svg>
+    <Icon
+      name="chevron-right"
+      size={16}
+      style={{
+        color: 'var(--bt-faint)',
+        flex: 'none',
+        transform: open ? 'rotate(90deg)' : undefined,
+        transition: 'transform var(--bt-t-fast)',
+      }}
+    />
   );
 }
 
@@ -89,21 +88,19 @@ function AddFriendForm() {
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-        {t('social.friends.addTitle')}
-      </h2>
+      <h2 className="bt-label">{t('social.friends.addTitle')}</h2>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-        <div className="flex-1">
-          <TextField
-            label={t('social.friends.identifierLabel')}
+        <Field className="flex-1" htmlFor="identifier" label={t('social.friends.identifierLabel')}>
+          <Input
+            autoComplete="off"
+            id="identifier"
             name="identifier"
-            value={identifier}
             onChange={(e) => setIdentifier(e.target.value)}
             placeholder={t('social.friends.identifierPlaceholder')}
-            autoComplete="off"
+            value={identifier}
           />
-        </div>
-        <Button type="submit" disabled={mutation.isPending || !identifier.trim()}>
+        </Field>
+        <Button disabled={mutation.isPending || !identifier.trim()} type="submit">
           {mutation.isPending ? t('social.friends.sending') : t('social.friends.sendRequest')}
         </Button>
       </div>
@@ -128,18 +125,18 @@ function IncomingRequestRow({
   const t = useT();
   const busy = pendingAction !== null;
   return (
-    <li className="flex items-center justify-between gap-3 px-4 py-3">
+    <li className="bt-band__row flex items-center justify-between gap-3">
       <span className="flex min-w-0 items-center gap-3">
         <Avatar name={request.user.username} iconId={request.user.profileIcon} size="sm" />
-        <span className="truncate text-sm font-medium text-neutral-100">
-          {request.user.username}
-        </span>
+        <span className="bt-row-title truncate">{request.user.username}</span>
       </span>
       <span className="flex gap-2">
-        <Button onClick={onAccept} disabled={busy}>
+        {/* Accepting is the one action this block exists for — it carries the
+            gold; everything beside it stays quiet (Origin: one primary). */}
+        <Button disabled={busy} onClick={onAccept} size="sm" variant="primary">
           {pendingAction === 'accept' ? t('social.friends.accepting') : t('social.friends.accept')}
         </Button>
-        <Button variant="secondary" onClick={onDecline} disabled={busy}>
+        <Button disabled={busy} onClick={onDecline} size="sm" variant="quiet">
           {pendingAction === 'decline'
             ? t('social.friends.declining')
             : t('social.friends.decline')}
@@ -160,14 +157,12 @@ function OutgoingRequestRow({
 }) {
   const t = useT();
   return (
-    <li className="flex items-center justify-between gap-3 px-4 py-3">
+    <li className="bt-band__row flex items-center justify-between gap-3">
       <span className="flex min-w-0 items-center gap-3">
         <Avatar name={request.user.username} iconId={request.user.profileIcon} size="sm" />
-        <span className="truncate text-sm font-medium text-neutral-100">
-          {request.user.username}
-        </span>
+        <span className="bt-row-title truncate">{request.user.username}</span>
       </span>
-      <Button variant="secondary" onClick={onCancel} disabled={pending}>
+      <Button disabled={pending} onClick={onCancel} size="sm" variant="quiet">
         {pending ? t('social.friends.cancelling') : t('common.cancel')}
       </Button>
     </li>
@@ -201,24 +196,23 @@ function MirrorInvitesSection() {
     <div className="flex flex-col gap-4">
       {incoming.length > 0 ? (
         <section className="flex flex-col gap-3">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-            {t('mirrorchain.invites.incomingTitle')}
-          </h2>
-          <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
+          <h2 className="bt-label">{t('mirrorchain.invites.incomingTitle')}</h2>
+          <ul className="bt-panel bt-band overflow-hidden">
             {incoming.map((invite) => (
               <li
                 key={invite.id}
-                className="flex flex-wrap items-center justify-between gap-3 px-3 py-3"
+                className="bt-band__row flex flex-wrap items-center justify-between gap-3"
               >
-                <span className="flex items-center gap-2 text-sm text-neutral-100">
-                  <span className="text-neutral-500">
-                    {t('mirrorchain.invites.incomingLabel', {
-                      inviter: invite.fromUsername ?? t('common.unknown'),
-                    })}
-                  </span>
-                  <span className="font-medium">{invite.chainName}</span>
+                <span className="bt-meta flex items-center gap-2">
+                  {t('mirrorchain.invites.incomingLabel', {
+                    inviter: invite.fromUsername ?? t('common.unknown'),
+                  })}
+                  <span className="bt-row-title">{invite.chainName}</span>
                 </span>
-                <Button variant="primary" onClick={() => setAcceptTarget(invite)}>
+                {/* Opens the §4 acknowledgment; the accept itself happens inside
+                    that dialog, so this stays neutral and the requests area
+                    keeps a single gold action (the friend-request accept). */}
+                <Button onClick={() => setAcceptTarget(invite)} size="sm">
                   {t('mirrorchain.invites.openAccept')}
                 </Button>
               </li>
@@ -228,25 +222,22 @@ function MirrorInvitesSection() {
       ) : null}
       {outgoing.length > 0 ? (
         <section className="flex flex-col gap-3">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-            {t('mirrorchain.invites.outgoingTitle')}
-          </h2>
-          <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
+          <h2 className="bt-label">{t('mirrorchain.invites.outgoingTitle')}</h2>
+          <ul className="bt-panel bt-band overflow-hidden">
             {outgoing.map((invite) => (
               <li
                 key={invite.id}
-                className="flex flex-wrap items-center justify-between gap-3 px-3 py-3"
+                className="bt-band__row flex flex-wrap items-center justify-between gap-3"
               >
-                <span className="flex items-center gap-2 text-sm text-neutral-100">
-                  <span className="text-neutral-500">
-                    {t('mirrorchain.invites.outgoingLabel', { invitee: invite.toUsername })}
-                  </span>
-                  <span className="font-medium">{invite.chainName}</span>
+                <span className="bt-meta flex items-center gap-2">
+                  {t('mirrorchain.invites.outgoingLabel', { invitee: invite.toUsername })}
+                  <span className="bt-row-title">{invite.chainName}</span>
                 </span>
                 <Button
-                  variant="secondary"
-                  onClick={() => revoke.mutate(invite.id)}
                   disabled={revoke.isPending && revoke.variables === invite.id}
+                  onClick={() => revoke.mutate(invite.id)}
+                  size="sm"
+                  variant="quiet"
                 >
                   {t('mirrorchain.actions.revokeInvite')}
                 </Button>
@@ -302,8 +293,8 @@ function RequestsSection() {
   if (isLoading) {
     return (
       <section className="flex flex-col gap-3">
-        <Skeleton height="h-4" width="w-32" />
-        <Skeleton height="h-16" />
+        <SkeletonBlock height={14} width={128} />
+        <SkeletonBlock height={64} />
       </section>
     );
   }
@@ -317,17 +308,16 @@ function RequestsSection() {
     <div id="requests" className="flex flex-col gap-8 scroll-mt-20">
       <MirrorInvitesSection />
       <section className="flex flex-col gap-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          {t('social.friends.incomingTitle')}
-        </h2>
+        <h2 className="bt-label">{t('social.friends.incomingTitle')}</h2>
         {actionFailed ? <Alert tone="error">{t('social.friends.actionError')}</Alert> : null}
         {data.incoming.length === 0 ? (
           <EmptyState
+            compact
             title={t('social.friends.incomingEmptyTitle')}
             description={t('social.friends.incomingEmptyDescription')}
           />
         ) : (
-          <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
+          <ul className="bt-panel bt-band overflow-hidden">
             {data.incoming.map((request) => (
               <IncomingRequestRow
                 key={request.id}
@@ -348,16 +338,15 @@ function RequestsSection() {
       </section>
 
       <section className="flex flex-col gap-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          {t('social.friends.outgoingTitle')}
-        </h2>
+        <h2 className="bt-label">{t('social.friends.outgoingTitle')}</h2>
         {data.outgoing.length === 0 ? (
           <EmptyState
+            compact
             title={t('social.friends.outgoingEmptyTitle')}
             description={t('social.friends.outgoingEmptyDescription')}
           />
         ) : (
-          <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
+          <ul className="bt-panel bt-band overflow-hidden">
             {data.outgoing.map((request) => (
               <OutgoingRequestRow
                 key={request.id}
@@ -392,21 +381,15 @@ function RemoveFriendDialog({
   return (
     <Dialog title={t('social.friends.removeTitle')} onClose={onClose}>
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-neutral-400">
-          <span className="font-medium text-neutral-200">{username}</span>{' '}
-          {t('social.friends.removeBody')}
+        <p className="bt-soft">
+          <span className="bt-row-title">{username}</span> {t('social.friends.removeBody')}
         </p>
         {error ? <Alert tone="error">{t('social.friends.removeError')}</Alert> : null}
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose} disabled={pending}>
+          <Button disabled={pending} onClick={onClose} variant="quiet">
             {t('common.cancel')}
           </Button>
-          <Button
-            variant="primary"
-            onClick={onConfirm}
-            disabled={pending}
-            className="bg-red-700 hover:bg-red-600 disabled:bg-red-900"
-          >
+          <Button disabled={pending} onClick={onConfirm} variant="danger">
             {pending ? t('social.friends.removing') : t('common.remove')}
           </Button>
         </div>
@@ -430,12 +413,10 @@ function FriendShares({
 }) {
   const t = useT();
   if (!person || person.total === 0) {
-    return (
-      <p className="text-sm text-neutral-500">{t('social.friend.sharesEmpty', { username })}</p>
-    );
+    return <p className="bt-meta">{t('social.friend.sharesEmpty', { username })}</p>;
   }
   return (
-    <div className="flex flex-col gap-2">
+    <div className="bt-band flex flex-col">
       {person.portfolios.map((p) => (
         <SharedItemRow
           key={p.portfolioId}
@@ -527,76 +508,62 @@ function FriendCard({
   const [open, setOpen] = useState(false);
   const { user } = friendship;
   const panelId = `friend-${user.id}`;
-  const chatHref = `/social/chat/${user.id}`;
+  const chatHref = `/people/chat/${user.id}`;
   const countLine = person && person.total > 0 ? kindCountSummary(person, t) : null;
 
   return (
-    <li className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/40">
-      <div className="flex items-center gap-3 pr-3">
+    <li className="bt-panel overflow-hidden">
+      <div className="flex items-center gap-2 pr-3">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-controls={panelId}
           aria-label={user.username}
-          className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-neutral-800/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
+          className="bt-band__row flex min-w-0 flex-1 items-center gap-3 text-left"
+          style={{
+            background: 'none',
+            border: 0,
+            color: 'inherit',
+            font: 'inherit',
+            cursor: 'pointer',
+          }}
         >
           <Avatar name={user.username} iconId={user.profileIcon} size="md" />
           <span className="flex min-w-0 flex-1 flex-col">
-            <span className="truncate text-sm font-semibold text-neutral-100">{user.username}</span>
-            {countLine ? (
-              <span className="truncate text-xs text-neutral-500">{countLine}</span>
-            ) : null}
+            <span className="bt-row-title truncate">{user.username}</span>
+            {countLine ? <span className="bt-row-sub truncate">{countLine}</span> : null}
           </span>
-          <svg
-            className={cx(
-              'h-4 w-4 shrink-0 text-neutral-500 transition-transform',
-              open && 'rotate-90',
-            )}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M9 6l6 6-6 6" />
-          </svg>
+          <Chevron open={open} />
         </button>
         <Link
           to={chatHref}
           aria-label={t('social.friend.messageAria', { username: user.username })}
           title={t('social.friend.chat')}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+          className="bt-btn bt-btn--quiet bt-btn--icon"
         >
-          <ChatIcon className="h-5 w-5" />
+          <Icon name="message" size={17} />
         </Link>
       </div>
 
       {open ? (
-        <div id={panelId} className="flex flex-col gap-4 border-t border-neutral-800 p-4">
+        <div id={panelId} className="bt-t-rule flex flex-col gap-4" style={{ padding: 16 }}>
           <div className="flex items-center gap-3">
             <Avatar name={user.username} iconId={user.profileIcon} size="lg" />
             <div className="min-w-0 flex-1">
-              <p className="truncate text-base font-semibold text-neutral-100">{user.username}</p>
-              <p className="truncate text-xs text-neutral-500">
+              <p className="bt-h2 truncate">{user.username}</p>
+              <p className="bt-meta truncate">
                 {t('social.friend.since', { date: friendship.createdAt.slice(0, 10) })}
               </p>
             </div>
-            <Link
-              to={chatHref}
-              className="inline-flex items-center gap-2 rounded-md bg-neutral-800 px-3 py-2 text-sm font-medium text-neutral-100 ring-1 ring-inset ring-neutral-700 transition-colors hover:bg-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            >
-              <ChatIcon className="h-4 w-4" />
+            <Link className="bt-btn" to={chatHref}>
+              <Icon name="message" size={16} />
               {t('social.friend.chat')}
             </Link>
           </div>
 
           <div className="flex flex-col gap-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-              {t('social.friend.sharesHeading')}
-            </h3>
+            <h3 className="bt-label">{t('social.friend.sharesHeading')}</h3>
             <FriendShares person={person} username={user.username} />
           </div>
 
@@ -604,13 +571,13 @@ function FriendCard({
               their row — no public profile needed. The auto-follow switch and
               the single "Follow their alerts" toggle (the latter only when this
               friend shares their alert activity) appear once you follow them. */}
-          <div className="flex flex-col gap-3 border-t border-neutral-800 pt-3">
+          <div className="bt-t-rule flex flex-col gap-3" style={{ paddingTop: 14 }}>
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                  {t('social.friend.followHeading')}
-                </h3>
-                <p className="mt-0.5 text-xs text-neutral-500">{t('social.friend.followHint')}</p>
+                <h3 className="bt-label">{t('social.friend.followHeading')}</h3>
+                <p className="bt-meta" style={{ marginTop: 2 }}>
+                  {t('social.friend.followHint')}
+                </p>
               </div>
               <FollowButton userId={user.id} username={user.username} />
             </div>
@@ -620,12 +587,8 @@ function FriendCard({
             </div>
           </div>
 
-          <div className="flex items-center justify-end gap-3 border-t border-neutral-800 pt-3">
-            <Button
-              variant="secondary"
-              onClick={onRequestRemove}
-              className="text-red-300 hover:text-red-200"
-            >
+          <div className="bt-t-rule flex items-center justify-end gap-3" style={{ paddingTop: 14 }}>
+            <Button onClick={onRequestRemove} size="sm" variant="danger">
               {t('social.friend.remove')}
             </Button>
           </div>
@@ -666,8 +629,8 @@ function FriendsListSection() {
   if (isLoading) {
     return (
       <section className="flex flex-col gap-3">
-        <Skeleton height="h-4" width="w-24" />
-        <Skeleton height="h-16" />
+        <SkeletonBlock height={14} width={96} />
+        <SkeletonBlock height={64} />
       </section>
     );
   }
@@ -678,9 +641,7 @@ function FriendsListSection() {
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-        {t('common.friends')}
-      </h2>
+      <h2 className="bt-h2">{t('common.friends')}</h2>
       {data.friends.length === 0 ? (
         <EmptyState
           icon="🫂"
@@ -716,23 +677,22 @@ function FriendsListSection() {
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 /**
- * `/social/friends` — add friends by username/email, respond to requests and
+ * `/people` — add friends by username/email, respond to requests and
  * manage the friends list (PROJECTPLAN.md §6.9).
  */
 export function FriendsPage() {
   const t = useT();
   return (
-    <div className="flex flex-col gap-8">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
-          {t('common.friends')}
-        </h1>
-        <p className="mt-1 text-sm text-neutral-400">{t('social.friends.subtitle')}</p>
+    <div className="flex flex-col">
+      <PageHead sub={t('social.friends.subtitle')} title={t('common.friends')} />
+      {/* PageHead already carries its own 22px rhythm below the title, so the
+          section stack starts here rather than inheriting the page gap. */}
+      <div className="flex flex-col gap-8">
+        <AddFriendForm />
+        <FriendsListSection />
+        <FriendGroupsSection />
+        <RequestsSection />
       </div>
-      <AddFriendForm />
-      <FriendsListSection />
-      <FriendGroupsSection />
-      <RequestsSection />
     </div>
   );
 }

@@ -1,14 +1,14 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 
 import { I18nProvider, useI18n } from '../i18n';
 import { RealtimeProvider } from '../lib/realtime';
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { RequireUser } from './RequireUser';
-import { AppLayout } from './components/AppLayout';
+import { OriginShell } from './components/OriginShell';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { Splash, Toast } from './components/ui';
 import { ForcedPasswordChangePage } from './auth/ForcedPasswordChangePage';
@@ -20,7 +20,6 @@ import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
 import { VaultRuntimeProvider } from './vault/VaultRuntimeProvider';
 import { ForecastPage } from './forecast/ForecastPage';
-import { ExpensesLayout } from './expenses/ExpensesSection';
 import { DashboardPage as ExpenseDashboardPage } from './expenses/DashboardPage';
 import { TransactionsPage as ExpenseTransactionsPage } from './expenses/TransactionsPage';
 import { BudgetsPage as ExpenseBudgetsPage } from './expenses/BudgetsPage';
@@ -33,14 +32,11 @@ import { CashSourcesPage } from './portfolio/CashSourcesPage';
 import { ImportPage } from './portfolio/ImportPage';
 import { TaxReportPage } from './portfolio/TaxReportPage';
 import { TaxReportPrintPage } from './portfolio/TaxReportPrintPage';
-import { CustomAssetsPage, PortfolioLayout, TransactionsPage } from './portfolio/PortfolioSection';
+import { CustomAssetsPage, TransactionsPage } from './portfolio/PortfolioSection';
+import { CashFlowLayout, PortfolioWorkspace } from './portfolio/PortfolioWorkspace';
+import { WorkbenchLayout } from './workbench/WorkbenchLayout';
 import { WorkboardPage } from './workboard/WorkboardPage';
-import {
-  BacktestsPage,
-  CalculatorsPage,
-  WatchlistPage,
-  WorkboardLayout,
-} from './workboard/WorkboardSection';
+import { BacktestsPage, CalculatorsPage, WatchlistPage } from './workboard/WorkboardSection';
 import { ComparisonPage } from './workboard/ComparisonPage';
 import { AlertsPage } from './workboard/AlertsPage';
 import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';
@@ -53,15 +49,9 @@ import { DeleteAccountPage } from './settings/DeleteAccountPage';
 import { SearchPage } from './assets/SearchPage';
 import { AssetDetailPage } from './assets/AssetDetailPage';
 import { NewsDigestPage } from './assets/NewsDigestPage';
-import {
-  AssetsLayout,
-  AssetsOverviewPage,
-  CommoditiesPage,
-  CryptoPage,
-  CustomAssetsBrowsePage,
-  EtfsPage,
-  StocksPage,
-} from './assets/AssetsSection';
+import { AssetsOverviewPage } from './assets/AssetsSection';
+import { AssetsWorkspace } from './assets/AssetsWorkspace';
+import { PeopleLayout } from './people/PeopleLayout';
 import { FriendsPage } from './social/FriendsPage';
 import { SharedPortfolioPage } from './social/SharedPortfolioPage';
 import { SharedConglomeratePage } from './social/SharedConglomeratePage';
@@ -71,8 +61,10 @@ import { SharedIdeaPage } from './social/SharedIdeaPage';
 import { PublicSharePage } from './social/PublicSharePage';
 import { PublicProfileViewPage } from './social/PublicProfileViewPage';
 import { ProfileSettingsPage } from './social/ProfileSettingsPage';
-import { SocialIdeasPage, SocialLayout } from './social/SocialSection';
 import { ChatPage } from './social/ChatPage';
+import { HomePage } from './home/HomePage';
+import { AskPage, ControlCenterPage, PrivacyPage, ReviewPage } from './hub/HubPages';
+import { ParkedPage } from './parked/ParkedPage';
 import {
   AccountSettingsPage,
   ApiAccessPage,
@@ -88,17 +80,33 @@ import {
 const queryClient = new QueryClient();
 
 /**
- * The non-admin app (PROJECTPLAN.md §6.1, §7.1, §7.2). Two app-wide auth gates
- * sit above routing: the session bootstrap (`loading`) and the forced-password-
- * change trap — while either is in effect no `user`/public route is reachable,
- * which is exactly the §6.1 guarantee that a must-change user cannot navigate
- * anywhere else until the change succeeds (sign-out aside).
+ * Legacy-path redirect that preserves the query string (the active portfolio
+ * rides in `?portfolio=`), so pre-redesign deep links land on the same content
+ * inside the new structure. `withSplat` appends the route's own `/*` remainder
+ * — pass it ONLY on splat routes: `useParams()` also inherits the app-mount
+ * `/*` splat from App.tsx, which must never be re-appended.
+ */
+function LegacyRedirect({ to, withSplat = false }: { to: string; withSplat?: boolean }) {
+  const location = useLocation();
+  const params = useParams();
+  const splat = withSplat ? params['*'] : undefined;
+  const target = splat ? `${to.replace(/\/$/, '')}/${splat}` : to;
+  return <Navigate replace to={{ pathname: target, search: location.search }} />;
+}
+
+/**
+ * The non-admin app (PROJECTPLAN.md §6.1, §7.1; docs/redesign/PRODUCT_BLUEPRINT.md).
+ * Two app-wide auth gates sit above routing: the session bootstrap (`loading`)
+ * and the forced-password-change trap — while either is in effect no
+ * `user`/public route is reachable (§6.1); the PIN gate wraps the app the same
+ * way, so deep links resolve only after the PIN clears.
  *
- * The authenticated route tree is the v2 five-section structure of §7.2 —
- * Portfolio · Workboard · Assets · Social (+ the Settings tree reached from the
- * profile menu). Each section nests under a layout that renders its subnav;
- * every not-yet-built surface resolves to a designed `ComingSoon` state, so
- * deep links never 404.
+ * The authenticated tree is the Origin suite structure (redesign): **Home ·
+ * Portfolio · Workbench · Assets · People** plus the utility destinations
+ * (Ask, Review, Control Center) and the Developer platform. Every legacy §7.2
+ * path redirects into the new structure with its search params intact; every
+ * parked surface renders a designed `ParkedPage`, so deep links never 404 and
+ * the full product structure is visible today.
  */
 function UserShell() {
   const { status } = useAuth();
@@ -106,136 +114,135 @@ function UserShell() {
   if (status === 'loading') return <Splash />;
   if (status === 'password-change-required') return <ForcedPasswordChangePage />;
   // PIN gate wraps the whole app while a PIN-enabled account hasn't been
-  // unlocked this browsing session (§6.1) — the trap sits above routing, so no
-  // /pin URL is needed and deep links resolve only after the PIN clears.
+  // unlocked this browsing session (§6.1) — the trap sits above routing.
   if (status === 'pin-required') return <PinGate />;
 
   return (
     <Routes>
       <Route path="login" element={<LoginPage />} />
-      {/* Public self-serve registration (§6.12, §13.4 V4-P4a): reflects the
-          active registration mode; a closed instance renders a closed notice. */}
       <Route path="register" element={<RegisterPage />} />
       <Route path="forgot-password" element={<ForgotPasswordPage />} />
       <Route path="reset/:token" element={<ResetPasswordPage />} />
       <Route path="invite/:token" element={<InvitePage />} />
       {/* Public share link (§14, V3-P5): a logged-out, read-only view. */}
       <Route path="s/:token" element={<PublicSharePage />} />
-      {/* Public profile (§14, V3-P6): the opt-in, username-slugged public page.
-          Logged-out and read-only; a not-opted-in / unknown user 404s in the API,
-          which the page renders as a friendly "not available". */}
+      {/* Public profile (§14, V3-P6): the opt-in, username-slugged public page. */}
       <Route path="u/:username" element={<PublicProfileViewPage />} />
       <Route element={<RequireUser />}>
-        {/* OAuth consent (§6.13 part 2) — a full-screen, standalone card outside
-            the AppLayout chrome. Sitting under RequireUser gives login-then-
-            consent for free: an anonymous visit is bounced to /login with the
-            full `/oauth/authorize?…` URL (path + query) preserved, so the user
-            lands back here with state + PKCE intact after signing in. */}
+        {/* OAuth consent (§6.13 part 2) — standalone card outside the shell. */}
         <Route path="oauth/authorize" element={<ConsentPage />} />
-        {/* Self-service account deletion (§13.4 V4-P2c, #362) — the stable public
-            deletion URL Google Play requires. A standalone full-screen card;
-            an anonymous visit bounces to /login and lands back here. */}
+        {/* Self-service account deletion (§13.4 V4-P2c, #362). */}
         <Route path="account/delete" element={<DeleteAccountPage />} />
-        {/* The Conglomerate Builder is a full-screen surface (§6.5) — it sits
-            outside the AppLayout chrome/subnav rather than inside the Workboard
-            section. Both `/new` and `/:id/edit` render the same Builder. */}
-        <Route path="workboard/conglomerates/new" element={<ConglomerateBuilderPage />} />
-        <Route path="workboard/conglomerates/:id/edit" element={<ConglomerateBuilderPage />} />
-        {/* Print-to-PDF view of one portfolio+year tax report (§13.5 V5-P4b,
-            #583) — a chrome-free document outside the AppLayout, opened from the
-            Tax report's per-year "Print / PDF" action. */}
+        {/* The Blueprint Builder is a full-screen surface (§6.5) outside the
+            shell chrome; legacy Conglomerate paths redirect here. */}
+        <Route path="workbench/blueprints/new" element={<ConglomerateBuilderPage />} />
+        <Route path="workbench/blueprints/:id/edit" element={<ConglomerateBuilderPage />} />
+        {/* Print-to-PDF tax report (§13.5 V5-P4b) — chrome-free document. */}
         <Route path="portfolio/tax/print" element={<TaxReportPrintPage />} />
-        <Route element={<AppLayout />}>
-          {/* Home → Portfolio (§6.8, §7.2). */}
-          <Route index element={<Navigate to="/portfolio" replace />} />
+        <Route element={<OriginShell />}>
+          {/* ── Home: the scoped command center ── */}
+          <Route index element={<HomePage />} />
 
-          {/* ── Portfolio ── */}
-          <Route path="portfolio" element={<PortfolioLayout />}>
+          {/* ── Portfolio workspace ── */}
+          <Route path="portfolio" element={<PortfolioWorkspace />}>
             <Route index element={<PortfolioPage />} />
-            <Route path="analytics" element={<AnalyticsPage />} />
-            <Route path="transactions" element={<TransactionsPage />} />
+            <Route path="activity" element={<TransactionsPage />} />
             <Route path="custom-assets" element={<CustomAssetsPage />} />
-            <Route path="cash" element={<CashSourcesPage />} />
+            <Route path="cash-flow" element={<CashFlowLayout />}>
+              <Route index element={<ExpenseDashboardPage />} />
+              <Route path="transactions" element={<ExpenseTransactionsPage />} />
+              <Route path="budgets" element={<ExpenseBudgetsPage />} />
+              <Route path="categories" element={<ExpenseCategoriesPage />} />
+              <Route path="rules" element={<ExpenseRulesPage />} />
+              <Route path="import" element={<ExpenseImportPage />} />
+              <Route path="accounts" element={<CashSourcesPage />} />
+            </Route>
+            <Route path="analysis" element={<AnalyticsPage />} />
             <Route path="tax" element={<TaxReportPage />} />
-            {/* Broker CSV import (§13.4 V4-P8): upload → preview → apply. */}
             <Route path="import" element={<ImportPage />} />
+            {/* Parked portfolio jobs (PRODUCT_BLUEPRINT §4) — reserved tabs. */}
+            <Route path="plan" element={<ParkedPage page="portfolioPlan" />} />
+            <Route path="automate" element={<ParkedPage page="automate" />} />
+            <Route path="files" element={<ParkedPage page="portfolioFiles" />} />
+            <Route path="people" element={<ParkedPage page="portfolioPeople" />} />
+            <Route path="settings" element={<ParkedPage page="portfolioSettings" />} />
+            {/* Parked deep surfaces reached from their parent workspaces. */}
+            <Route path="events" element={<ParkedPage page="portfolioEvents" />} />
+            <Route path="structure" element={<ParkedPage page="portfolioStructure" />} />
+            <Route path="health" element={<ParkedPage page="dataHealth" />} />
+            <Route path="private-markets" element={<ParkedPage page="privateMarkets" />} />
+            <Route path="rebalance" element={<ParkedPage page="rebalance" />} />
+            {/* Legacy §7.2 portfolio paths. */}
+            <Route path="transactions" element={<LegacyRedirect to="/portfolio/activity" />} />
+            <Route path="analytics" element={<LegacyRedirect to="/portfolio/analysis" />} />
+            <Route path="cash" element={<LegacyRedirect to="/portfolio/cash-flow/accounts" />} />
           </Route>
 
-          {/* ── Workboard ── */}
-          <Route path="workboard" element={<WorkboardLayout />}>
+          {/* ── Workbench (the possibility space) ── */}
+          <Route path="workbench" element={<WorkbenchLayout />}>
             <Route index element={<WorkboardPage />} />
-            <Route path="watchlist" element={<WatchlistPage />} />
-            <Route path="alerts" element={<AlertsPage />} />
-            <Route path="conglomerates" element={<ConglomeratesListPage />} />
-            <Route path="conglomerates/:id" element={<ConglomerateDetailPage />} />
+            <Route path="studio" element={<ParkedPage page="studio" />} />
+            <Route path="forecasts" element={<ForecastPage />} />
+            <Route path="blueprints" element={<ConglomeratesListPage />} />
+            <Route path="blueprints/:id" element={<ConglomerateDetailPage />} />
             <Route path="backtests" element={<BacktestsPage />} />
-            <Route path="calculators" element={<CalculatorsPage />} />
-            <Route path="comparisons" element={<ComparisonPage />} />
+            <Route path="compare" element={<ComparisonPage />} />
             <Route path="ideas" element={<IdeasListPage />} />
             <Route path="ideas/:ideaId" element={<IdeaWorkboardPage />} />
+            <Route path="calculators" element={<CalculatorsPage />} />
+            <Route path="alerts" element={<AlertsPage />} />
           </Route>
 
-          {/* ── Forecast (§13.5 V5-P6b arc (c)) ── */}
-          <Route path="forecast" element={<ForecastPage />} />
-
-          {/* ── Expenses (§13.5 V5-P9) — a NEW top-level area, separate from
-              portfolio money. Foundation: transactions + category manager. ── */}
-          <Route path="expenses" element={<ExpensesLayout />}>
-            <Route index element={<ExpenseDashboardPage />} />
-            <Route path="transactions" element={<ExpenseTransactionsPage />} />
-            <Route path="budgets" element={<ExpenseBudgetsPage />} />
-            <Route path="categories" element={<ExpenseCategoriesPage />} />
-            <Route path="rules" element={<ExpenseRulesPage />} />
-            <Route path="import" element={<ExpenseImportPage />} />
-          </Route>
-
-          {/* ── Assets ── */}
-          <Route path="assets" element={<AssetsLayout />}>
+          {/* ── Assets (research) ── */}
+          <Route path="assets" element={<AssetsWorkspace />}>
             <Route index element={<AssetsOverviewPage />} />
             <Route path="search" element={<SearchPage />} />
+            <Route path="watchlists" element={<WatchlistPage />} />
             <Route path="news" element={<NewsDigestPage />} />
-            <Route path="stocks" element={<StocksPage />} />
-            <Route path="etfs" element={<EtfsPage />} />
-            <Route path="crypto" element={<CryptoPage />} />
-            <Route path="commodities" element={<CommoditiesPage />} />
-            <Route path="custom" element={<CustomAssetsBrowsePage />} />
+            <Route path="discover" element={<ParkedPage page="discover" />} />
+            <Route path="events" element={<ParkedPage page="assetEvents" />} />
+            <Route path="screener" element={<ParkedPage page="screener" />} />
+            {/* Legacy category stubs fold into Discover. */}
+            <Route path="stocks" element={<LegacyRedirect to="/assets/discover" />} />
+            <Route path="etfs" element={<LegacyRedirect to="/assets/discover" />} />
+            <Route path="crypto" element={<LegacyRedirect to="/assets/discover" />} />
+            <Route path="commodities" element={<LegacyRedirect to="/assets/discover" />} />
+            <Route path="custom" element={<LegacyRedirect to="/assets/discover" />} />
             <Route path=":id" element={<AssetDetailPage />} />
           </Route>
 
-          {/* ── Social ── */}
-          <Route path="social" element={<SocialLayout />}>
-            <Route index element={<Navigate to="/social/friends" replace />} />
-            <Route path="friends" element={<FriendsPage />} />
-            {/* The standalone "Shared with me" tab was retired (#384): it folded
-                into the Friends overview. The old index path redirects there;
-                the read-only item detail routes below stay — they're the deep
-                links a friend's shared item opens to. */}
-            <Route path="shared-with-me" element={<Navigate to="/social/friends" replace />} />
-            <Route path="shared-with-me/conglomerates/:id" element={<SharedConglomeratePage />} />
-            <Route
-              path="shared-with-me/watchlists/:watchlistId"
-              element={<SharedWatchlistPage />}
-            />
-            <Route path="shared-with-me/ideas/:ideaId" element={<SharedIdeaPage />} />
-            <Route path="shared-with-me/:portfolioId" element={<SharedPortfolioPage />} />
-            {/* The standalone Following page was retired (V4-P0b): following now
-                lives in the Friends tab (in-row follow + alert switches, and the
-                followed-items collection). The old path redirects there. */}
-            <Route path="following" element={<Navigate to="/social/friends" replace />} />
-            <Route path="my-shared" element={<MySharedItemsPage />} />
-            <Route path="ideas" element={<SocialIdeasPage />} />
-            <Route path="profile" element={<ProfileSettingsPage />} />
-            {/* Friend chat (§13.3 V3-P8): a master-detail conversation list +
-                thread. The friend cards/overview deep-link to /social/chat/:userId
-                (the friend's id); /social/chat opens the list with no thread. */}
+          {/* ── People (collaboration) ── */}
+          <Route path="people" element={<PeopleLayout />}>
+            <Route index element={<FriendsPage />} />
             <Route path="chat" element={<ChatPage />} />
-            {/* Deep-link by conversation id — the only route to a thread whose
-                partner deleted their account (#362); declared before :userId. */}
+            {/* Deep-link by conversation id — declared before :userId (#362). */}
             <Route path="chat/c/:conversationId" element={<ChatPage />} />
             <Route path="chat/:userId" element={<ChatPage />} />
+            <Route path="shared" element={<MySharedItemsPage />} />
+            <Route path="shared/conglomerates/:id" element={<SharedConglomeratePage />} />
+            <Route path="shared/watchlists/:watchlistId" element={<SharedWatchlistPage />} />
+            <Route path="shared/ideas/:ideaId" element={<SharedIdeaPage />} />
+            <Route path="shared/:portfolioId" element={<SharedPortfolioPage />} />
+            <Route path="profile" element={<ProfileSettingsPage />} />
+            <Route path="teams" element={<ParkedPage page="teams" />} />
+            <Route path="approvals" element={<ParkedPage page="approvals" />} />
           </Route>
 
-          {/* ── Settings (reached from the profile menu) ── */}
+          {/* ── Suite utilities ── */}
+          <Route path="ask" element={<AskPage />} />
+          <Route path="review" element={<ReviewPage />} />
+          <Route path="control" element={<ControlCenterPage />} />
+          <Route path="control/privacy" element={<PrivacyPage />} />
+          <Route path="control/data" element={<ParkedPage page="dataManagement" />} />
+
+          {/* ── Developer platform (full build in the Control Center pass) ── */}
+          <Route path="developer" element={<Navigate replace to="/settings/api" />} />
+          <Route path="developer/webhooks" element={<Navigate replace to="/settings/api" />} />
+          <Route path="developer/mcp" element={<ParkedPage page="mcp" />} />
+          <Route path="developer/logs" element={<ParkedPage page="developerLogs" />} />
+          <Route path="developer/oauth-apps" element={<ParkedPage page="oauthApps" />} />
+
+          {/* ── Settings (Control Center pages) ── */}
           <Route path="settings" element={<SettingsLayout />}>
             <Route index element={<Navigate to="/settings/account" replace />} />
             <Route path="account" element={<AccountSettingsPage />} />
@@ -248,8 +255,49 @@ function UserShell() {
             <Route path="api" element={<ApiAccessPage />} />
           </Route>
 
-          {/* Legacy top-level /following → the Friends tab (V4-P0b retirement). */}
-          <Route path="following" element={<Navigate to="/social/friends" replace />} />
+          {/* The portfolio list/tree destination is the switcher for now. */}
+          <Route path="portfolios" element={<LegacyRedirect to="/portfolio" />} />
+
+          {/* ── Legacy section redirects (search params preserved) ── */}
+          <Route path="workboard" element={<LegacyRedirect to="/workbench" />} />
+          <Route path="workboard/watchlist" element={<LegacyRedirect to="/assets/watchlists" />} />
+          <Route path="workboard/alerts" element={<LegacyRedirect to="/workbench/alerts" />} />
+          <Route
+            path="workboard/backtests"
+            element={<LegacyRedirect to="/workbench/backtests" />}
+          />
+          <Route
+            path="workboard/calculators"
+            element={<LegacyRedirect to="/workbench/calculators" />}
+          />
+          <Route
+            path="workboard/comparisons"
+            element={<LegacyRedirect to="/workbench/compare" />}
+          />
+          <Route
+            path="workboard/conglomerates/*"
+            element={<LegacyRedirect to="/workbench/blueprints" withSplat />}
+          />
+          <Route
+            path="workboard/ideas/*"
+            element={<LegacyRedirect to="/workbench/ideas" withSplat />}
+          />
+          <Route path="forecast" element={<LegacyRedirect to="/workbench/forecasts" />} />
+          <Route
+            path="expenses/*"
+            element={<LegacyRedirect to="/portfolio/cash-flow" withSplat />}
+          />
+          <Route path="social" element={<LegacyRedirect to="/people" />} />
+          <Route path="social/friends" element={<LegacyRedirect to="/people" />} />
+          <Route path="social/chat/*" element={<LegacyRedirect to="/people/chat" withSplat />} />
+          <Route path="social/my-shared" element={<LegacyRedirect to="/people/shared" />} />
+          <Route
+            path="social/shared-with-me/*"
+            element={<LegacyRedirect to="/people/shared" withSplat />}
+          />
+          <Route path="social/ideas" element={<LegacyRedirect to="/workbench/ideas" />} />
+          <Route path="social/profile" element={<LegacyRedirect to="/people/profile" />} />
+          <Route path="following" element={<LegacyRedirect to="/people" />} />
         </Route>
       </Route>
       {/* Unknown paths fall back home (which the guard sends to /login if anon). */}
@@ -290,9 +338,7 @@ function RateLimitToastPortal() {
 /**
  * Admin-composed announcements banner (§13.4 V4-P5b) — a stacked, dismissible
  * banner mounted just above the app shell. Rendered only while a session is
- * fully authenticated; silent when nothing's active for the caller. Sitting
- * outside AppLayout keeps it visible on the auth screens' peer routes too —
- * but the query is gated on the auth status so anonymous pages fire no fetch.
+ * fully authenticated; silent when nothing's active for the caller.
  */
 function AnnouncementBannerRoot() {
   const { status } = useAuth();
@@ -301,9 +347,7 @@ function AnnouncementBannerRoot() {
 
 /**
  * Follow the authenticated user's stored UI language (§13.3 V3-P1): whenever the
- * signed-in `me` carries a locale, switch the runtime to it. The language picker
- * also flips the runtime instantly and persists server-side, so a `me` refetch
- * just re-affirms the same choice. Renders nothing.
+ * signed-in `me` carries a locale, switch the runtime to it. Renders nothing.
  */
 function LocaleSync() {
   const { user } = useAuth();

@@ -122,16 +122,16 @@ function AssetHeader({
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">{asset.name}</h1>
-          <p className="mt-0.5 text-sm text-neutral-400">
-            <span className="font-mono text-neutral-300">{asset.symbol}</span>
+          <h1 className="text-2xl font-semibold tracking-tight">{asset.name}</h1>
+          <p className="mt-0.5 text-sm bt-muted">
+            <span className="font-mono bt-soft">{asset.symbol}</span>
             {asset.exchange ? (
               <>
-                <span className="mx-1.5 text-neutral-600">·</span>
+                <span className="mx-1.5 bt-muted">·</span>
                 {asset.exchange}
               </>
             ) : null}
-            <span className="mx-1.5 text-neutral-600">·</span>
+            <span className="mx-1.5 bt-muted">·</span>
             <span className="capitalize">{asset.type}</span>
           </p>
           <CapabilityTags type={asset.type} className="mt-1.5" />
@@ -139,7 +139,7 @@ function AssetHeader({
 
         {quote ? (
           <div className="text-right">
-            <p className="text-3xl font-semibold tabular-nums text-neutral-100">
+            <p className="text-3xl font-semibold tabular-nums">
               <MoneyText
                 amount={quote.price}
                 currency={quote.currency}
@@ -151,10 +151,10 @@ function AssetHeader({
               <p
                 className={
                   isUp
-                    ? 'text-sm tabular-nums text-emerald-400'
+                    ? 'text-sm tabular-nums bt-pos'
                     : isDown
-                      ? 'text-sm tabular-nums text-red-400'
-                      : 'text-sm tabular-nums text-neutral-400'
+                      ? 'text-sm tabular-nums bt-neg'
+                      : 'text-sm tabular-nums bt-muted'
                 }
               >
                 {formatSignedPercent(dayChangePct)}
@@ -171,11 +171,9 @@ function AssetHeader({
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+      <div className="flex flex-wrap items-center gap-2 text-xs bt-muted">
         {stale ? (
-          <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-amber-400 ring-1 ring-amber-800">
-            {t('assets.detail.stale')}
-          </span>
+          <span className="bt-badge bt-badge--gold px-1.5 py-0.5">{t('assets.detail.stale')}</span>
         ) : null}
         {asOf ? <span>{t('assets.detail.asOf', { time: formatDateTime(asOf) })}</span> : null}
         <span>{t('assets.detail.delayedNote')}</span>
@@ -241,7 +239,7 @@ function AlertsSection({
   return (
     <section aria-labelledby="alerts-heading" className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
-        <h2 id="alerts-heading" className="text-base font-semibold text-neutral-200">
+        <h2 id="alerts-heading" className="text-base font-semibold bt-soft">
           {t('assets.detail.alerts.title')}
         </h2>
         <Button variant="secondary" onClick={() => setCreating(true)}>
@@ -254,7 +252,7 @@ function AlertsSection({
       ) : isError ? (
         <Alert tone="error">{t('assets.detail.alerts.loadError')}</Alert>
       ) : alerts.length === 0 ? (
-        <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+        <div className="bt-panel bt-panel--pad">
           <EmptyState
             icon="🔔"
             title={t('assets.detail.alerts.emptyTitle')}
@@ -310,7 +308,7 @@ function DividendsSection({ assetId }: { assetId: string }) {
 
   return (
     <section aria-labelledby="dividends-heading" className="flex flex-col gap-3">
-      <h2 id="dividends-heading" className="text-base font-semibold text-neutral-200">
+      <h2 id="dividends-heading" className="text-base font-semibold bt-soft">
         {t('assets.detail.dividends.title')}
       </h2>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -340,8 +338,8 @@ function DividendsSection({ assetId }: { assetId: string }) {
         ) : null}
       </div>
       {sparkData.length > 1 ? (
-        <div className="flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-          <span className="text-xs text-neutral-500">{t('assets.detail.dividends.history')}</span>
+        <div className="flex items-center gap-3 bt-panel bt-panel--pad">
+          <span className="text-xs bt-muted">{t('assets.detail.dividends.history')}</span>
           <Sparkline
             data={sparkData}
             width={140}
@@ -358,10 +356,10 @@ function AppearsInSection() {
   const t = useT();
   return (
     <section aria-labelledby="appears-in-heading" className="flex flex-col gap-3">
-      <h2 id="appears-in-heading" className="text-base font-semibold text-neutral-200">
+      <h2 id="appears-in-heading" className="text-base font-semibold bt-soft">
         {t('assets.detail.appearsIn.title')}
       </h2>
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+      <div className="bt-panel bt-panel--pad">
         <EmptyState
           icon="📂"
           title={t('assets.detail.appearsIn.emptyTitle')}
@@ -384,9 +382,7 @@ function EstimatedBadge({ estimated }: { estimated: boolean }) {
     <span
       className={cx(
         'inline-flex items-center rounded-full px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide ring-1',
-        estimated
-          ? 'bg-amber-950/40 text-amber-300 ring-amber-800/60'
-          : 'bg-emerald-950/40 text-emerald-300 ring-emerald-800/60',
+        estimated ? 'bt-badge bt-badge--gold' : 'bt-badge bt-badge--pos',
       )}
     >
       {estimated ? t('assets.detail.earnings.estimated') : t('assets.detail.earnings.confirmed')}
@@ -414,23 +410,21 @@ function EarningsSection({ assetId }: { assetId: string }) {
 
   return (
     <section aria-labelledby="earnings-heading" className="flex flex-col gap-3">
-      <h2 id="earnings-heading" className="text-base font-semibold text-neutral-200">
+      <h2 id="earnings-heading" className="text-base font-semibold bt-soft">
         {t('assets.detail.earnings.title')}
       </h2>
-      <div className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+      <div className="flex flex-col gap-3 bt-panel bt-panel--pad">
         {data.next && data.next.date ? (
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-col">
-              <span className="text-xs uppercase tracking-wide text-neutral-500">
+              <span className="text-xs uppercase tracking-wide bt-muted">
                 {t('assets.detail.earnings.nextLabel')}
               </span>
-              <span className="text-sm font-medium text-neutral-100">
-                {formatDate(data.next.date)}
-              </span>
+              <span className="text-sm font-medium">{formatDate(data.next.date)}</span>
             </div>
             <div className="flex items-center gap-2">
               {data.next.epsEstimate != null ? (
-                <span className="text-xs text-neutral-400">
+                <span className="text-xs bt-muted">
                   {t('assets.detail.earnings.epsEstimate', {
                     value: data.next.epsEstimate.toFixed(2),
                   })}
@@ -443,7 +437,7 @@ function EarningsSection({ assetId }: { assetId: string }) {
 
         {data.recent.length > 0 ? (
           <div className="flex flex-col gap-1.5">
-            <span className="text-xs uppercase tracking-wide text-neutral-500">
+            <span className="text-xs uppercase tracking-wide bt-muted">
               {t('assets.detail.earnings.recentLabel')}
             </span>
             <ul className="flex flex-col gap-1">
@@ -453,9 +447,9 @@ function EarningsSection({ assetId }: { assetId: string }) {
                 .map((e) => (
                   <li
                     key={e.date ?? `${e.epsActual}-${e.epsEstimate}`}
-                    className="flex items-center justify-between text-sm text-neutral-300"
+                    className="flex items-center justify-between text-sm bt-soft"
                   >
-                    <span className="tabular-nums text-neutral-400">{formatDate(e.date)}</span>
+                    <span className="tabular-nums bt-muted">{formatDate(e.date)}</span>
                     <span className="tabular-nums">
                       {e.epsActual != null
                         ? t('assets.detail.earnings.epsActual', { value: e.epsActual.toFixed(2) })
@@ -499,24 +493,22 @@ function SplitsSection({ assetId }: { assetId: string }) {
 
   return (
     <section aria-labelledby="splits-heading" className="flex flex-col gap-3">
-      <h2 id="splits-heading" className="text-base font-semibold text-neutral-200">
+      <h2 id="splits-heading" className="text-base font-semibold bt-soft">
         {t('assets.detail.splits.title')}
       </h2>
-      <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+      <div className="flex flex-col gap-2 bt-panel bt-panel--pad">
         {data.upcoming.map((s, i) => (
           <div
             key={`upcoming-${s.date ?? i}`}
             className="flex items-center justify-between text-sm"
           >
             <span className="flex items-center gap-2">
-              <span className="inline-flex items-center rounded-full bg-sky-950/40 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-sky-300 ring-1 ring-sky-800/60">
+              <span className="bt-badge bt-badge--blue px-2 py-0.5 text-[0.65rem] uppercase tracking-wide">
                 {t('assets.detail.splits.announced')}
               </span>
-              <span className="tabular-nums text-neutral-400">{formatDate(s.date)}</span>
+              <span className="tabular-nums bt-muted">{formatDate(s.date)}</span>
             </span>
-            <span className="font-mono text-neutral-100">
-              {splitRatio(s.numerator, s.denominator, s.ratio)}
-            </span>
+            <span className="font-mono">{splitRatio(s.numerator, s.denominator, s.ratio)}</span>
           </div>
         ))}
         {data.history
@@ -524,8 +516,8 @@ function SplitsSection({ assetId }: { assetId: string }) {
           .reverse()
           .map((s, i) => (
             <div key={`past-${s.date ?? i}`} className="flex items-center justify-between text-sm">
-              <span className="tabular-nums text-neutral-400">{formatDate(s.date)}</span>
-              <span className="font-mono text-neutral-200">
+              <span className="tabular-nums bt-muted">{formatDate(s.date)}</span>
+              <span className="font-mono bt-soft">
                 {splitRatio(s.numerator, s.denominator, s.ratio)}
               </span>
             </div>
@@ -554,10 +546,10 @@ function NewsSection({ assetId }: { assetId: string }) {
 
   return (
     <section aria-labelledby="news-heading" className="flex flex-col gap-3">
-      <h2 id="news-heading" className="text-base font-semibold text-neutral-200">
+      <h2 id="news-heading" className="text-base font-semibold bt-soft">
         {t('assets.detail.news.title')}
       </h2>
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+      <div className="bt-panel bt-panel--pad">
         <NewsHeadlineList headlines={data.headlines} />
       </div>
     </section>
@@ -642,7 +634,7 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
 
   return (
     <div className="relative flex flex-col items-end gap-1">
-      <div className="flex items-center rounded-md ring-1 ring-neutral-700" ref={containerRef}>
+      <div className="bt-seg flex items-center" ref={containerRef}>
         <button
           type="button"
           onClick={() => {
@@ -660,11 +652,9 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
           title={watched ? 'On your watchlist' : 'Add to watchlist'}
           className={cx(
             'rounded-l-md p-2 transition-colors',
-            watched
-              ? 'text-sky-400'
-              : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-            addMutation.isError && 'text-red-400',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+            watched ? 'bt-link' : 'bt-muted  hover:',
+            addMutation.isError && 'bt-neg',
+            '',
             'disabled:cursor-not-allowed disabled:opacity-60',
           )}
         >
@@ -677,7 +667,8 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
           aria-label={`Choose a watchlist for ${symbol}`}
           aria-haspopup="menu"
           aria-expanded={listPickerOpen}
-          className="rounded-r-md border-l border-neutral-700 p-1.5 text-xs text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          className="p-1.5 text-xs bt-muted"
+          style={{ borderLeft: '1px solid var(--bt-border-strong)' }}
         >
           ▾
         </button>
@@ -687,7 +678,8 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
         <div
           role="menu"
           aria-label={`Watchlists for ${symbol}`}
-          className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border border-neutral-700 bg-neutral-900 p-2 text-xs shadow-xl"
+          className="bt-popover w-48 p-2 text-xs"
+          style={{ right: 0, top: 'calc(100% + 4px)' }}
         >
           {(listsQuery.data?.watchlists ?? []).map((list) => (
             <button
@@ -698,12 +690,12 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
                 handleAdd(list.isDefault ? undefined : list.id);
                 setListPickerOpen(false);
               }}
-              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-neutral-200 hover:bg-neutral-800"
+              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left bt-soft"
             >
               {list.name}
             </button>
           ))}
-          {listsQuery.isLoading ? <p className="px-2 py-1.5 text-neutral-600">…</p> : null}
+          {listsQuery.isLoading ? <p className="px-2 py-1.5 bt-muted">…</p> : null}
         </div>
       ) : null}
 
@@ -748,17 +740,15 @@ function LiveControls({
         onClick={onToggle}
         className={cx(
           'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold transition-colors',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-          live
-            ? 'bg-red-600/20 text-red-400 ring-1 ring-inset ring-red-700'
-            : 'text-neutral-400 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-800 hover:text-neutral-100',
+          '',
+          live ? 'bt-badge bt-badge--neg' : 'bt-muted   hover:',
         )}
       >
         <span
           aria-hidden="true"
           className={cx(
             'h-1.5 w-1.5 rounded-full',
-            live ? 'animate-pulse bg-red-400' : 'bg-neutral-600',
+            live ? 'animate-pulse bg-[var(--bt-neg)]' : 'bg-[var(--bt-faint)]',
           )}
         />
         {t('assets.live.badge')}
@@ -766,11 +756,7 @@ function LiveControls({
 
       {live ? (
         <>
-          <div
-            role="group"
-            aria-label={t('assets.live.windowGroupLabel')}
-            className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
-          >
+          <div role="group" aria-label={t('assets.live.windowGroupLabel')} className="bt-seg">
             {LIVE_WINDOWS.map((token) => {
               const selected = token === window;
               return (
@@ -779,13 +765,7 @@ function LiveControls({
                   type="button"
                   aria-pressed={selected}
                   onClick={() => onWindowChange(token)}
-                  className={cx(
-                    'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-                    selected
-                      ? 'bg-sky-600 text-white'
-                      : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-                  )}
+                  className={cx('', selected && 'is-active')}
                 >
                   {token}
                 </button>
@@ -796,7 +776,7 @@ function LiveControls({
             role="group"
             aria-label={t('assets.live.rateGroupLabel')}
             title={t('assets.live.rateGroupHint')}
-            className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+            className="bt-seg"
           >
             {LIVE_RATES.map((token) => {
               const selected = token === rate;
@@ -806,13 +786,7 @@ function LiveControls({
                   type="button"
                   aria-pressed={selected}
                   onClick={() => onRateChange(token)}
-                  className={cx(
-                    'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-                    selected
-                      ? 'bg-emerald-700 text-white'
-                      : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-                  )}
+                  className={cx('', selected ? 'is-active' : 'bt-muted  hover:')}
                 >
                   {token}
                 </button>
@@ -950,7 +924,7 @@ export function AssetDetailPage() {
   if (detailQuery.isError) {
     return (
       <div className="flex flex-col gap-4">
-        <Link to="/assets/search" className="text-sm text-sky-400 hover:underline">
+        <Link to="/assets/search" className="text-sm bt-link">
           {t('assets.detail.backToSearch')}
         </Link>
         <Alert tone="error">{t('assets.detail.loadError')}</Alert>
@@ -965,7 +939,7 @@ export function AssetDetailPage() {
   return (
     <div className="flex flex-col gap-8">
       <div className="flex items-center gap-3">
-        <Link to="/assets/search" className="text-sm text-neutral-500 hover:text-neutral-300">
+        <Link to="/assets/search" className="text-sm bt-muted hover:bt-soft">
           {t('assets.detail.backShort')}
         </Link>
       </div>
@@ -990,14 +964,14 @@ export function AssetDetailPage() {
             />
             {liveActive && marketClosed ? (
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-neutral-800 px-2 py-0.5 text-xs text-neutral-400 ring-1 ring-inset ring-neutral-700"
+                className="bt-badge gap-1 px-2 py-0.5 text-xs"
                 title={t('assets.live.marketClosedHint')}
               >
-                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-neutral-500" />
+                <span aria-hidden="true" className="bt-dot h-1.5 w-1.5" />
                 {t('assets.live.marketClosed')}
               </span>
             ) : liveActive && !streaming ? (
-              <span className="text-xs text-neutral-500">{t('assets.live.fallbackNote')}</span>
+              <span className="text-xs bt-muted">{t('assets.live.fallbackNote')}</span>
             ) : null}
           </div>
         ) : null}

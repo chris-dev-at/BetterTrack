@@ -123,7 +123,7 @@ export async function errorCode(res: APIResponse): Promise<string | undefined> {
 export async function friendUserId(user: E2EUser, username: string): Promise<string> {
   const { friends } = await apiGet<{ friends: Array<{ user: { id: string; username: string } }> }>(
     user,
-    '/social/friends',
+    '/people',
   );
   const match = friends.find((f) => f.user.username === username);
   if (!match) throw new Error(`${username} is not in ${user.username}'s friends list`);

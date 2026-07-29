@@ -19,19 +19,16 @@ import { cx } from './ui';
  * admin publishes something the caller has not dismissed.
  */
 
-const SEVERITY_STYLES: Record<ActiveAnnouncementSeverity, { container: string; badge: string }> = {
-  info: {
-    container: 'border-sky-800 bg-sky-950/60 text-sky-100',
-    badge: 'bg-sky-800/70 text-sky-100',
-  },
-  warning: {
-    container: 'border-amber-700 bg-amber-950/60 text-amber-100',
-    badge: 'bg-amber-800/70 text-amber-100',
-  },
-  critical: {
-    container: 'border-red-700 bg-red-950/70 text-red-100',
-    badge: 'bg-red-800/80 text-red-100',
-  },
+/**
+ * Origin treatment: a quiet full-width band with a 1px bottom rule, tinted by
+ * the severity token rather than boxed as a card. Gold is the resting attention
+ * tone (`warning`); `critical` keeps the negative hue because it carries real
+ * negative meaning, and `info` takes the calm analytical blue.
+ */
+const SEVERITY_STYLES: Record<ActiveAnnouncementSeverity, { band: string; badge: string }> = {
+  info: { band: 'var(--bt-blue-soft)', badge: 'bt-badge--blue' },
+  warning: { band: 'var(--bt-gold-soft)', badge: 'bt-badge--gold' },
+  critical: { band: 'var(--bt-neg-soft)', badge: 'bt-badge--neg' },
 };
 
 const ANNOUNCEMENTS_QUERY_KEY = ['announcements', 'active'];
@@ -74,10 +71,7 @@ export function AnnouncementBanner({ enabled }: BannerProps) {
   if (!enabled || announcements.length === 0) return null;
 
   return (
-    <div
-      aria-label={t('announcements.aria.list')}
-      className="mx-auto flex max-w-6xl flex-col gap-2 px-4 pt-3"
-    >
+    <div aria-label={t('announcements.aria.list')} className="flex flex-col">
       {announcements.map((a) => (
         <AnnouncementRow
           key={a.id}
@@ -103,35 +97,28 @@ function AnnouncementRow({ announcement, onDismiss, dismissing }: RowProps) {
     <div
       role="alert"
       data-testid={`announcement-${announcement.id}`}
-      className={cx(
-        'flex flex-col gap-2 rounded-md border px-4 py-3 text-sm shadow-sm sm:flex-row sm:items-start sm:justify-between',
-        styles.container,
-      )}
+      className="flex flex-col gap-2 px-4 py-2.5 sm:flex-row sm:items-start sm:justify-between sm:gap-5 sm:px-6"
+      style={{
+        background: styles.band,
+        borderBottom: '1px solid var(--bt-border)',
+        color: 'var(--bt-text)',
+      }}
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <div className="flex items-center gap-2">
-          <span
-            className={cx(
-              'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold uppercase tracking-wide',
-              styles.badge,
-            )}
-          >
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={cx('bt-badge', styles.badge)}>
             {t(`announcements.severity.${announcement.severity}`)}
           </span>
-          <span className="font-semibold">{announcement.title}</span>
+          <span className="bt-row-title">{announcement.title}</span>
         </div>
-        <p className="whitespace-pre-line text-sm/relaxed">{announcement.body}</p>
+        <p className="bt-soft whitespace-pre-line text-sm/relaxed">{announcement.body}</p>
       </div>
       <button
         type="button"
         onClick={onDismiss}
         disabled={dismissing}
         aria-label={t('announcements.dismiss')}
-        className={cx(
-          'shrink-0 rounded-md px-3 py-1.5 text-xs font-medium',
-          'bg-white/10 hover:bg-white/20 disabled:opacity-60',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60',
-        )}
+        className="bt-btn bt-btn--quiet bt-btn--sm shrink-0"
       >
         {dismissing ? t('announcements.dismissing') : t('announcements.dismiss')}
       </button>

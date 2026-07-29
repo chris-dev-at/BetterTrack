@@ -5,8 +5,17 @@ import { PROFILE_BIO_MAX, PROFILE_ICON_IDS, type ProfileIconId } from '@bettertr
 
 import { getProfileSettings, updateProfileSettings } from '../../lib/socialApi';
 import { useT } from '../../i18n';
-import { Skeleton } from '../../ui';
-import { Alert, Button, cx } from '../components/ui';
+import {
+  Button,
+  Field,
+  Icon,
+  PageHead,
+  Panel,
+  SkeletonBlock,
+  Switch,
+  Textarea,
+} from '../../ui/origin';
+import { Alert } from '../components/ui';
 import { Avatar } from '../components/Avatar';
 import { ProfileIconSvg } from '../components/profileIcons';
 
@@ -73,8 +82,8 @@ export function ProfileSettingsPage() {
   if (isLoading) {
     return (
       <section className="flex flex-col gap-3">
-        <Skeleton height="h-6" width="w-48" />
-        <Skeleton height="h-24" />
+        <SkeletonBlock height={24} width={192} />
+        <SkeletonBlock height={96} />
       </section>
     );
   }
@@ -97,183 +106,186 @@ export function ProfileSettingsPage() {
   }
 
   return (
-    <div className="flex max-w-2xl flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
-          {t('profile.title')}
-        </h1>
-        <p className="mt-1 text-sm text-neutral-400">{t('profile.subtitle')}</p>
-      </div>
+    <div className="flex max-w-2xl flex-col">
+      <PageHead sub={t('profile.subtitle')} title={t('profile.title')} />
 
-      {/* Profile-icon picker (§13.5 V5-P0c). Compact grid inside the existing
-          card, collapsed by default so the surface never feels heavier. */}
-      <div className="flex flex-col gap-3 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
-        <button
-          type="button"
-          onClick={() => setIconOpen((v) => !v)}
-          aria-expanded={iconOpen}
-          aria-controls="profile-icon-grid"
-          className="flex items-center gap-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-        >
-          <Avatar name={data.username} iconId={currentIcon} size="md" />
-          <span className="flex min-w-0 flex-1 flex-col">
-            <span className="text-sm font-medium text-neutral-100">{t('profile.icon.title')}</span>
-            <span className="text-xs text-neutral-500">
-              {currentIcon
-                ? t('profile.icon.picked', { name: t(`profile.icon.name.${currentIcon}`) })
-                : t('profile.icon.defaultHint')}
-            </span>
-          </span>
-          <svg
-            className={cx(
-              'h-4 w-4 shrink-0 text-neutral-500 transition-transform',
-              iconOpen && 'rotate-90',
-            )}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
+      <div className="flex flex-col gap-6">
+        {/* Profile-icon picker (§13.5 V5-P0c). Compact grid inside the existing
+            card, collapsed by default so the surface never feels heavier. */}
+        <Panel className="flex flex-col gap-3">
+          <button
+            type="button"
+            onClick={() => setIconOpen((v) => !v)}
+            aria-expanded={iconOpen}
+            aria-controls="profile-icon-grid"
+            className="flex items-center gap-3 text-left"
+            style={{
+              background: 'none',
+              border: 0,
+              color: 'inherit',
+              cursor: 'pointer',
+              font: 'inherit',
+              padding: 0,
+            }}
           >
-            <path d="M9 6l6 6-6 6" />
-          </svg>
-        </button>
-        {iconOpen ? (
-          <div id="profile-icon-grid" role="radiogroup" aria-label={t('profile.icon.title')}>
-            <div className="grid grid-cols-6 gap-2 sm:grid-cols-8">
-              {PROFILE_ICON_IDS.map((id) => {
-                const active = currentIcon === id;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    aria-label={t(`profile.icon.name.${id}`)}
-                    onClick={() => setDraftIcon(id)}
-                    className={cx(
-                      'flex aspect-square items-center justify-center rounded-lg ring-1 ring-inset transition focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-                      active ? 'ring-sky-500 ring-2' : 'ring-neutral-700 hover:ring-neutral-500',
-                    )}
-                    data-icon-id={id}
-                  >
-                    <ProfileIconSvg id={id} className="h-full w-full" />
-                  </button>
-                );
-              })}
+            <Avatar name={data.username} iconId={currentIcon} size="md" />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="bt-row-title">{t('profile.icon.title')}</span>
+              <span className="bt-row-sub">
+                {currentIcon
+                  ? t('profile.icon.picked', { name: t(`profile.icon.name.${currentIcon}`) })
+                  : t('profile.icon.defaultHint')}
+              </span>
+            </span>
+            <Icon
+              name="chevron-right"
+              size={16}
+              style={{
+                color: 'var(--bt-faint)',
+                flex: 'none',
+                transform: iconOpen ? 'rotate(90deg)' : undefined,
+                transition: 'transform var(--bt-t-fast)',
+              }}
+            />
+          </button>
+          {iconOpen ? (
+            <div id="profile-icon-grid" role="radiogroup" aria-label={t('profile.icon.title')}>
+              <div className="grid grid-cols-6 gap-2 sm:grid-cols-8">
+                {PROFILE_ICON_IDS.map((id) => {
+                  const active = currentIcon === id;
+                  return (
+                    // Selection is the one thing gold is for here: the picked
+                    // tile takes the accent rule + its soft wash, the rest stay
+                    // on the quiet neutral border.
+                    <button
+                      key={id}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      aria-label={t(`profile.icon.name.${id}`)}
+                      onClick={() => setDraftIcon(id)}
+                      className="flex aspect-square items-center justify-center"
+                      style={{
+                        background: active ? 'var(--bt-gold-soft)' : 'none',
+                        border: `1px solid ${active ? 'var(--bt-gold)' : 'var(--bt-border-strong)'}`,
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        padding: 0,
+                        transition: 'border-color var(--bt-t-fast), background var(--bt-t-fast)',
+                      }}
+                      data-icon-id={id}
+                    >
+                      <ProfileIconSvg id={id} className="h-full w-full" />
+                    </button>
+                  );
+                })}
+              </div>
+              {currentIcon !== null ? (
+                <button
+                  type="button"
+                  onClick={() => setDraftIcon(null)}
+                  className="bt-link"
+                  style={{
+                    background: 'none',
+                    border: 0,
+                    cursor: 'pointer',
+                    fontSize: 12.5,
+                    marginTop: 10,
+                    padding: 0,
+                  }}
+                >
+                  {t('profile.icon.clear')}
+                </button>
+              ) : null}
             </div>
-            {currentIcon !== null ? (
-              <button
-                type="button"
-                onClick={() => setDraftIcon(null)}
-                className="mt-2 text-xs text-neutral-400 underline-offset-2 hover:text-neutral-200 hover:underline"
-              >
-                {t('profile.icon.clear')}
-              </button>
-            ) : null}
+          ) : null}
+        </Panel>
+
+        {/* Opt-in toggle */}
+        <Panel className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="bt-row-title">{t('profile.toggleLabel')}</p>
+            <p className="bt-row-sub">
+              {t('profile.publicItemCount', { count: data.publicItemCount })}
+            </p>
+          </div>
+          <Switch
+            aria-label={t('profile.toggleLabel')}
+            checked={isPublic}
+            onChange={() => {
+              setDraftPublic(!isPublic);
+              setAck(false);
+            }}
+          />
+        </Panel>
+
+        {/* Strong friction warning shown only while enabling from off */}
+        {enabling ? (
+          <div
+            className="flex flex-col gap-2"
+            style={{
+              background: 'var(--bt-gold-soft)',
+              border: '1px solid var(--bt-border-accent)',
+              borderRadius: 8,
+              padding: 16,
+            }}
+          >
+            <p className="bt-gold" style={{ fontWeight: 620 }}>
+              {t('profile.warningTitle')}
+            </p>
+            <p className="bt-soft">{t('profile.warningBody')}</p>
+            <label className="flex cursor-pointer items-start gap-2" style={{ marginTop: 4 }}>
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={ack}
+                onChange={(e) => setAck(e.target.checked)}
+                style={{ accentColor: 'var(--bt-gold)' }}
+              />
+              <span>{t('profile.acknowledge')}</span>
+            </label>
           </div>
         ) : null}
-      </div>
 
-      {/* Opt-in toggle */}
-      <div className="flex items-start justify-between gap-4 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-neutral-100">{t('profile.toggleLabel')}</p>
-          <p className="mt-0.5 text-xs text-neutral-500">
-            {t('profile.publicItemCount', { count: data.publicItemCount })}
-          </p>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={isPublic}
-          aria-label={t('profile.toggleLabel')}
-          onClick={() => {
-            setDraftPublic(!isPublic);
-            setAck(false);
-          }}
-          className={cx(
-            'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-            isPublic ? 'bg-sky-600' : 'bg-neutral-700',
-          )}
+        {/* Bio */}
+        <Field
+          hint={t('profile.bioCount', { count: bio.length, max: PROFILE_BIO_MAX })}
+          htmlFor="profile-bio"
+          label={t('profile.bioLabel')}
         >
-          <span
-            className={cx(
-              'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-              isPublic ? 'translate-x-6' : 'translate-x-1',
-            )}
+          <Textarea
+            id="profile-bio"
+            value={bio}
+            maxLength={PROFILE_BIO_MAX}
+            onChange={(e) => setDraftBio(e.target.value)}
+            rows={3}
+            placeholder={t('profile.bioPlaceholder')}
           />
-        </button>
-      </div>
+        </Field>
 
-      {/* Strong friction warning shown only while enabling from off */}
-      {enabling ? (
-        <div className="flex flex-col gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
-          <p className="text-sm font-semibold text-amber-200">{t('profile.warningTitle')}</p>
-          <p className="text-sm text-neutral-300">{t('profile.warningBody')}</p>
-          <label className="mt-1 flex cursor-pointer items-start gap-2 text-sm text-neutral-200">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={ack}
-              onChange={(e) => setAck(e.target.checked)}
-            />
-            <span>{t('profile.acknowledge')}</span>
-          </label>
+        {/* Live URL (only meaningful while public on the server) */}
+        {serverPublic ? (
+          <Panel className="flex flex-col gap-2">
+            <p className="bt-row-title">{t('profile.liveTitle')}</p>
+            <div className="flex items-center gap-2">
+              <code className="bt-input min-w-0 flex-1 overflow-x-auto">{profileUrl}</code>
+              <Button onClick={copyUrl}>{copied ? t('sharing.copied') : t('sharing.copy')}</Button>
+              <a className="bt-btn" href={`/u/${data.username}`} target="_blank" rel="noreferrer">
+                {t('profile.view')}
+              </a>
+            </div>
+          </Panel>
+        ) : null}
+
+        {mutation.isError ? <Alert tone="error">{t('profile.saveError')}</Alert> : null}
+        {mutation.isSuccess && !dirty ? <Alert tone="success">{t('profile.saved')}</Alert> : null}
+
+        <div className="flex justify-end">
+          {/* Save is this screen's single primary. */}
+          <Button disabled={!canSave} onClick={() => mutation.mutate()} variant="primary">
+            {mutation.isPending ? t('sharing.saving') : t('profile.save')}
+          </Button>
         </div>
-      ) : null}
-
-      {/* Bio */}
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="profile-bio" className="text-sm font-medium text-neutral-300">
-          {t('profile.bioLabel')}
-        </label>
-        <textarea
-          id="profile-bio"
-          value={bio}
-          maxLength={PROFILE_BIO_MAX}
-          onChange={(e) => setDraftBio(e.target.value)}
-          rows={3}
-          placeholder={t('profile.bioPlaceholder')}
-          className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
-        />
-        <p className="text-xs text-neutral-500">
-          {t('profile.bioCount', { count: bio.length, max: PROFILE_BIO_MAX })}
-        </p>
-      </div>
-
-      {/* Live URL (only meaningful while public on the server) */}
-      {serverPublic ? (
-        <div className="flex flex-col gap-2 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
-          <p className="text-sm font-medium text-neutral-100">{t('profile.liveTitle')}</p>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 overflow-x-auto rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-200">
-              {profileUrl}
-            </code>
-            <Button variant="secondary" onClick={copyUrl}>
-              {copied ? t('sharing.copied') : t('sharing.copy')}
-            </Button>
-            <a
-              href={`/u/${data.username}`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center rounded-md bg-neutral-800 px-3 py-2 text-sm font-medium text-neutral-100 ring-1 ring-inset ring-neutral-700 transition-colors hover:bg-neutral-700"
-            >
-              {t('profile.view')}
-            </a>
-          </div>
-        </div>
-      ) : null}
-
-      {mutation.isError ? <Alert tone="error">{t('profile.saveError')}</Alert> : null}
-      {mutation.isSuccess && !dirty ? <Alert tone="success">{t('profile.saved')}</Alert> : null}
-
-      <div className="flex justify-end">
-        <Button onClick={() => mutation.mutate()} disabled={!canSave}>
-          {mutation.isPending ? t('sharing.saving') : t('profile.save')}
-        </Button>
       </div>
     </div>
   );

@@ -146,10 +146,10 @@ function makeQueryClient() {
 function renderPage(id = CONGLOMERATE_ID) {
   return render(
     <QueryClientProvider client={makeQueryClient()}>
-      <MemoryRouter initialEntries={[`/workboard/conglomerates/${id}`]}>
+      <MemoryRouter initialEntries={[`/workbench/blueprints/${id}`]}>
         <Routes>
-          <Route path="/workboard/conglomerates" element={<div>Conglomerates list</div>} />
-          <Route path="/workboard/conglomerates/:id" element={<ConglomerateDetailPage />} />
+          <Route path="/workbench/blueprints" element={<div>Blueprints list</div>} />
+          <Route path="/workbench/blueprints/:id" element={<ConglomerateDetailPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -213,7 +213,7 @@ describe('ConglomerateDetailPage', () => {
     expect(within(table).getByText('60,00 %')).toBeInTheDocument();
     expect(within(table).getByText('40,00 %')).toBeInTheDocument();
 
-    const donut = screen.getByRole('img', { name: /conglomerate allocation/i });
+    const donut = screen.getByRole('img', { name: /blueprint allocation/i });
     expect(donut).toBeInTheDocument();
   });
 
@@ -252,11 +252,11 @@ describe('ConglomerateDetailPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'Delete' }));
 
-    const dialog = await screen.findByRole('dialog', { name: /delete conglomerate/i });
+    const dialog = await screen.findByRole('dialog', { name: /delete blueprint/i });
     await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(deleteConglomerate).toHaveBeenCalledWith(CONGLOMERATE_ID));
-    await waitFor(() => expect(screen.getByText('Conglomerates list')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Blueprints list')).toBeInTheDocument());
   });
 
   test('a nested basket shows the badge and the resolved-view toggle flips to effective weights (V5-P6)', async () => {
@@ -304,7 +304,7 @@ describe('ConglomerateDetailPage', () => {
   test('a delete blocked by parents (409 CONGLOMERATE_IN_USE) names them in the dialog', async () => {
     vi.mocked(getConglomerate).mockResolvedValue(DETAIL);
     vi.mocked(deleteConglomerate).mockRejectedValue(
-      new ApiError(409, 'CONGLOMERATE_IN_USE', 'This conglomerate is a constituent of World Mix.', {
+      new ApiError(409, 'CONGLOMERATE_IN_USE', 'This blueprint is a constituent of World Mix.', {
         parents: [{ id: 'c9', name: 'World Mix' }],
       }),
     );
@@ -313,7 +313,7 @@ describe('ConglomerateDetailPage', () => {
 
     await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: 'Delete' }));
-    const dialog = await screen.findByRole('dialog', { name: /delete conglomerate/i });
+    const dialog = await screen.findByRole('dialog', { name: /delete blueprint/i });
     await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
 
     await waitFor(() =>
@@ -321,12 +321,12 @@ describe('ConglomerateDetailPage', () => {
     );
   });
 
-  test('shows an error message when the Conglomerate fails to load', async () => {
+  test('shows an error message when the Blueprint fails to load', async () => {
     vi.mocked(getConglomerate).mockRejectedValue(new Error('nope'));
     renderPage();
 
     await waitFor(() =>
-      expect(screen.getByText(/Could not load this Conglomerate/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Could not load this Blueprint/i)).toBeInTheDocument(),
     );
   });
 

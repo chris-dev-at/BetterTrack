@@ -130,7 +130,7 @@ function emptyConglomerateDetail(id: string, name: string): ConglomerateDetail {
   };
 }
 
-/** A non-empty conglomerate: SPY 70 / BND 30, mirroring a live 70/30 basket. */
+/** A non-empty blueprint: SPY 70 / BND 30, mirroring a live 70/30 basket. */
 function twoPositionConglomerateDetail(id: string, name: string): ConglomerateDetail {
   return {
     id,
@@ -245,7 +245,7 @@ describe('AssetSearchBox', () => {
     await screen.findByText('NVDA');
 
     expect(screen.getByRole('button', { name: /add nvda to watchlist/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /conglomerate/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /blueprint/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /record a buy/i })).toBeInTheDocument();
   });
 
@@ -381,8 +381,8 @@ describe('AssetSearchBox', () => {
     });
   });
 
-  describe('→ Conglomerate (picker, §13.2)', () => {
-    test('opens a picker listing the caller’s conglomerates', async () => {
+  describe('→ Blueprint (picker, §13.2)', () => {
+    test('opens a picker listing the caller’s blueprints', async () => {
       vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
       vi.mocked(conglomerateApi.listConglomerates).mockResolvedValue(conglomerateList());
       const user = userEvent.setup();
@@ -390,12 +390,12 @@ describe('AssetSearchBox', () => {
 
       await user.type(screen.getByRole('searchbox'), 'NV');
       await screen.findByText('NVDA');
-      await user.click(screen.getByRole('button', { name: /add nvda to a conglomerate/i }));
+      await user.click(screen.getByRole('button', { name: /add nvda to a blueprint/i }));
 
       expect(await screen.findByRole('menuitem', { name: 'World Basket' })).toBeInTheDocument();
     });
 
-    test('picking a conglomerate adds the asset and confirms in place', async () => {
+    test('picking a blueprint adds the asset and confirms in place', async () => {
       vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
       vi.mocked(conglomerateApi.listConglomerates).mockResolvedValue(conglomerateList());
       vi.mocked(conglomerateApi.getConglomerate).mockResolvedValue(
@@ -409,7 +409,7 @@ describe('AssetSearchBox', () => {
 
       await user.type(screen.getByRole('searchbox'), 'NV');
       await screen.findByText('NVDA');
-      await user.click(screen.getByRole('button', { name: /add nvda to a conglomerate/i }));
+      await user.click(screen.getByRole('button', { name: /add nvda to a blueprint/i }));
       await user.click(await screen.findByRole('menuitem', { name: 'World Basket' }));
 
       await waitFor(() =>
@@ -420,7 +420,7 @@ describe('AssetSearchBox', () => {
       expect(await screen.findByText(/added to world basket/i)).toBeInTheDocument();
     });
 
-    test('adding to a non-empty conglomerate scales existing weights down proportionally instead of equalizing them', async () => {
+    test('adding to a non-empty blueprint scales existing weights down proportionally instead of equalizing them', async () => {
       vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
       vi.mocked(conglomerateApi.listConglomerates).mockResolvedValue(conglomerateList());
       vi.mocked(conglomerateApi.getConglomerate).mockResolvedValue(
@@ -434,7 +434,7 @@ describe('AssetSearchBox', () => {
 
       await user.type(screen.getByRole('searchbox'), 'NV');
       await screen.findByText('NVDA');
-      await user.click(screen.getByRole('button', { name: /add nvda to a conglomerate/i }));
+      await user.click(screen.getByRole('button', { name: /add nvda to a blueprint/i }));
       await user.click(await screen.findByRole('menuitem', { name: 'World Basket' }));
 
       // The existing SPY 70 / BND 30 ratio (70:30) must survive the resize —
