@@ -124,7 +124,7 @@ describe('IdeasListPage', () => {
     expect(screen.getByText('All friends')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute(
       'href',
-      `/workboard/ideas/${IDEA_ID}`,
+      `/workbench/ideas/${IDEA_ID}`,
     );
   });
 

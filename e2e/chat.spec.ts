@@ -23,7 +23,7 @@ test('chat: a direct message reaches the recipient', async ({ browser }) => {
   const body = `hello from e2e ${Date.now().toString(36)}`;
 
   // Sender opens a new chat with the friend and sends a message.
-  await sender.page.goto('/social/chat');
+  await sender.page.goto('/people/chat');
   await sender.page.getByRole('button', { name: 'New message' }).click();
   const newChat = sender.page.getByRole('dialog', { name: 'New message' });
   await newChat.getByRole('button', { name: recipient.username }).click();
@@ -32,7 +32,7 @@ test('chat: a direct message reaches the recipient', async ({ browser }) => {
   await expect(sender.page.getByText(body)).toBeVisible({ timeout: 15_000 });
 
   // Recipient opens their chat list, selects the conversation, and sees the DM.
-  await recipient.page.goto('/social/chat');
+  await recipient.page.goto('/people/chat');
   const conversation = recipient.page.getByRole('button').filter({ hasText: sender.username });
   await expect(conversation).toBeVisible({ timeout: 20_000 });
   await conversation.click();

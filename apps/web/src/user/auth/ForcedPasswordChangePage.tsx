@@ -55,10 +55,7 @@ export function ForcedPasswordChangePage() {
 
   return (
     <AuthCard subtitle={t('auth.forcedPasswordChange.subtitle')}>
-      <form
-        onSubmit={onSubmit}
-        className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
-      >
+      <form onSubmit={onSubmit} className="flex flex-col gap-4">
         <Alert tone="info">
           {user
             ? t('auth.forcedPasswordChange.signedInAs', { email: user.email })

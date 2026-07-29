@@ -9,9 +9,10 @@ import {
   getExpenseSummary,
   getExpenseTrends,
 } from '../../lib/expensesApi';
-import { EmptyState, Skeleton, StatCard } from '../../ui';
+import { EmptyState, Skeleton } from '../../ui';
 import { AllocationDonut } from '../../ui/charts';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert } from '../components/ui';
+import { Button, Stat, StatStrip } from '../../ui/origin';
 
 /**
  * Expense dashboard (PROJECTPLAN.md §13.5 V5-P9, issue 3/3): spend by category
@@ -78,15 +79,16 @@ export function DashboardPage() {
   return (
     <section className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-neutral-500">{t('expenses.dashboard.subtitle')}</p>
-        <label className="flex items-center gap-2 text-sm text-neutral-400">
+        <p className="bt-meta">{t('expenses.dashboard.subtitle')}</p>
+        <label className="bt-meta flex items-center gap-2">
           <span>{t('expenses.dashboard.month')}</span>
           <input
             type="month"
             value={month}
             onChange={(e) => setMonth(e.target.value || currentMonth())}
             aria-label={t('expenses.dashboard.month')}
-            className="rounded-md bg-neutral-950 px-2 py-1 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            className="bt-input"
+            style={{ minHeight: 28, padding: '2px 8px', width: 'auto', fontSize: 12 }}
           />
         </label>
       </div>
@@ -101,44 +103,42 @@ export function DashboardPage() {
         <div className="flex flex-col gap-3">
           <Alert tone="error">{t('expenses.dashboard.loadError')}</Alert>
           <div>
-            <Button variant="secondary" onClick={() => void summaryQuery.refetch()}>
-              {t('common.retry')}
-            </Button>
+            <Button onClick={() => void summaryQuery.refetch()}>{t('common.retry')}</Button>
           </div>
         </div>
       ) : (
         <>
           {/* Income vs spend headline. */}
-          <div className="grid gap-3 sm:grid-cols-3">
-            <StatCard
+          <StatStrip>
+            <Stat
               label={t('expenses.dashboard.income')}
               value={
-                <span className="text-emerald-400">
+                <span className="bt-pos">
                   {formatMoney(summary?.totalIncome ?? 0, DISPLAY_CURRENCY)}
                 </span>
               }
             />
-            <StatCard
+            <Stat
               label={t('expenses.dashboard.spend')}
               value={formatMoney(summary?.totalExpense ?? 0, DISPLAY_CURRENCY)}
             />
-            <StatCard
+            <Stat
               label={t('expenses.dashboard.net')}
               value={
-                <span className={cx((summary?.net ?? 0) < 0 ? 'text-red-400' : 'text-neutral-100')}>
+                <span className={(summary?.net ?? 0) < 0 ? 'bt-neg' : undefined}>
                   {formatMoney(summary?.net ?? 0, DISPLAY_CURRENCY)}
                 </span>
               }
             />
-          </div>
+          </StatStrip>
 
           {/* Spend by category. */}
-          <div className="rounded-lg border border-neutral-800 p-4">
-            <h2 className="mb-3 text-sm font-semibold text-neutral-200">
+          <div>
+            <h2 className="bt-h2" style={{ marginBottom: 12 }}>
               {t('expenses.dashboard.spendByCategory')}
             </h2>
             {monthEmpty || segments.length === 0 ? (
-              <p className="text-sm text-neutral-500">{t('expenses.dashboard.noSpend')}</p>
+              <p className="bt-meta">{t('expenses.dashboard.noSpend')}</p>
             ) : (
               <AllocationDonut data={segments} title={t('expenses.dashboard.spendByCategory')} />
             )}
@@ -147,18 +147,16 @@ export function DashboardPage() {
       )}
 
       {/* Income vs spend trend (independent of the chosen month). */}
-      <div className="rounded-lg border border-neutral-800 p-4">
+      <div>
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-sm font-semibold text-neutral-200">
-            {t('expenses.dashboard.trend')}
-          </h2>
-          <div className="flex items-center gap-3 text-xs text-neutral-400">
+          <h2 className="bt-h2">{t('expenses.dashboard.trend')}</h2>
+          <div className="bt-meta flex items-center gap-3">
             <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-rose-500/80" aria-hidden="true" />
+              <span className="bt-dot bt-dot--neg" aria-hidden="true" />
               {t('expenses.dashboard.spend')}
             </span>
             <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-emerald-500/80" aria-hidden="true" />
+              <span className="bt-dot bt-dot--pos" aria-hidden="true" />
               {t('expenses.dashboard.income')}
             </span>
           </div>
@@ -169,9 +167,7 @@ export function DashboardPage() {
           <div className="flex flex-col gap-3">
             <Alert tone="error">{t('expenses.dashboard.loadError')}</Alert>
             <div>
-              <Button variant="secondary" onClick={() => void trendsQuery.refetch()}>
-                {t('common.retry')}
-              </Button>
+              <Button onClick={() => void trendsQuery.refetch()}>{t('common.retry')}</Button>
             </div>
           </div>
         ) : trendEmpty ? (
@@ -193,19 +189,27 @@ export function DashboardPage() {
                     <span
                       role="img"
                       aria-label={expenseLabel}
-                      className="w-2.5 rounded-t bg-rose-500/80"
-                      style={{ height: `${(p.expense / trendMax) * 100}%` }}
+                      className="w-2.5 rounded-t"
+                      style={{
+                        height: `${(p.expense / trendMax) * 100}%`,
+                        background: 'var(--bt-neg)',
+                      }}
                       title={expenseLabel}
                     />
                     <span
                       role="img"
                       aria-label={incomeLabel}
-                      className="w-2.5 rounded-t bg-emerald-500/80"
-                      style={{ height: `${(p.income / trendMax) * 100}%` }}
+                      className="w-2.5 rounded-t"
+                      style={{
+                        height: `${(p.income / trendMax) * 100}%`,
+                        background: 'var(--bt-pos)',
+                      }}
                       title={incomeLabel}
                     />
                   </div>
-                  <span className="text-[10px] text-neutral-500">{monthLabel}</span>
+                  <span className="bt-meta" style={{ fontSize: 10 }}>
+                    {monthLabel}
+                  </span>
                 </li>
               );
             })}

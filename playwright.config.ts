@@ -26,6 +26,10 @@ import {
 const apiEnv = {
   ...process.env,
   NODE_ENV: 'development',
+  // Compressed multi-navigation specs pass through the Home command center's
+  // roll-up on every auth landing (Origin redesign), so the human-scale burst
+  // window needs e2e headroom; the steady-state limit stays enforced.
+  RATE_LIMIT_BURST_LIMIT: '240',
   DATABASE_URL,
   REDIS_URL,
   SESSION_SECRET,

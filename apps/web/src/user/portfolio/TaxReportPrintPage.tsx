@@ -244,19 +244,24 @@ export function TaxReportPrintPage() {
       >
         {t('portfolio.taxReport.print.back')}
       </Link>
-      <button
-        type="button"
-        onClick={() => {
-          try {
-            window.print();
-          } catch {
-            /* no-op without a print surface */
-          }
-        }}
-        className="rounded-md border border-neutral-400 px-3 py-1.5 text-sm font-medium hover:bg-neutral-100"
-      >
-        {t('portfolio.taxReport.print.print')}
-      </button>
+      {/* Paranoid accounts get a hint page with no figures — printing it would
+          produce a page saying "use the in-app action instead", so the button
+          stays out (the auto-print above is already inert for the same reason). */}
+      {paranoid ? null : (
+        <button
+          type="button"
+          onClick={() => {
+            try {
+              window.print();
+            } catch {
+              /* no-op without a print surface */
+            }
+          }}
+          className="rounded-md border border-neutral-400 px-3 py-1.5 text-sm font-medium hover:bg-neutral-100"
+        >
+          {t('portfolio.taxReport.print.print')}
+        </button>
+      )}
     </div>
   );
 

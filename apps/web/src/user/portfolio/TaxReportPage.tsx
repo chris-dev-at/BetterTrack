@@ -25,8 +25,9 @@ import {
   setPortfolioTaxOverride,
   taxYearReportCsvUrl,
 } from '../../lib/portfolioApi';
-import { Disclaimer, EmptyState, MoneyText, Skeleton } from '../../ui';
-import { Alert, cx } from '../components/ui';
+import { Disclaimer, EmptyState, MoneyText } from '../../ui';
+import { Badge, Icon, PageHead, Panel, SkeletonBlock } from '../../ui/origin';
+import { Alert } from '../components/ui';
 import { TaxModePicker } from '../settings/taxModePicker';
 import { vaultMoneyErrorKey } from '../vault/engine/errorCopy';
 import { asMoneyFailure, type VaultMoneyFailure } from '../vault/engine/errors';
@@ -46,42 +47,24 @@ import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitc
 const portfolioTaxSettingsKey = (portfolioId: string) =>
   ['portfolio', 'taxSettings', portfolioId] as const;
 
-/** Green for a gain, red for a loss, neutral for exactly zero — the P/L convention. */
-function pnlToneClass(value: number): string {
-  if (value > 0) return 'text-emerald-400';
-  if (value < 0) return 'text-red-400';
-  return 'text-neutral-300';
-}
-
-/** A signed EUR realized-P/L cell (tone by sign). */
-function PnlAmount({ amount }: { amount: number }) {
-  return (
-    <span className={cx('tabular-nums', pnlToneClass(amount))}>
-      <MoneyText amount={amount} currency="EUR" />
-    </span>
-  );
-}
-
 /** One sell inside a year's drill-down (#369 uncovered sells render their real basis). */
 function SellRow({ sell }: { sell: TaxYearSell }) {
   return (
-    <tr className="border-t border-neutral-800/60 text-xs">
-      <td className="px-3 py-2 text-neutral-400">{formatDate(sell.executedAt)}</td>
-      <td className="px-3 py-2 text-right tabular-nums text-neutral-300">
-        {formatQuantity(sell.quantity)}
-      </td>
-      <td className="px-3 py-2 text-right tabular-nums text-neutral-300">
+    <tr>
+      <td className="bt-muted">{formatDate(sell.executedAt)}</td>
+      <td className="is-num bt-soft">{formatQuantity(sell.quantity)}</td>
+      <td className="is-num bt-soft">
         <MoneyText amount={sell.proceedsEur} currency="EUR" />
       </td>
-      <td className="px-3 py-2 text-right tabular-nums text-neutral-300">
+      <td className="is-num bt-soft">
         <MoneyText amount={sell.costBasisEur} currency="EUR" />
       </td>
-      <td className="px-3 py-2 text-right">
-        <PnlAmount amount={sell.realizedPnlEur} />
+      <td className="is-num">
+        <MoneyText amount={sell.realizedPnlEur} currency="EUR" signed />
       </td>
-      <td className="px-3 py-2 text-right tabular-nums text-neutral-300">
+      <td className="is-num bt-soft">
         {sell.taxAmountEur === null ? (
-          <span className="text-neutral-600">{EM_DASH}</span>
+          <span className="bt-muted">{EM_DASH}</span>
         ) : (
           <MoneyText amount={sell.taxAmountEur} currency="EUR" />
         )}
@@ -93,68 +76,67 @@ function SellRow({ sell }: { sell: TaxYearSell }) {
 /** One asset's block inside a year's drill-down. */
 function PositionBlock({ position, t }: { position: TaxYearPosition; t: TranslateFn }) {
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-950/40 p-3">
+    <Panel className="flex flex-col gap-2" soft>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="flex items-baseline gap-2">
-          <span className="font-mono text-sm font-semibold text-neutral-100">
-            {position.asset.symbol}
-          </span>
-          <span className="truncate text-xs text-neutral-500">{position.asset.name}</span>
+          <span className="bt-row-title">{position.asset.symbol}</span>
+          <span className="bt-row-sub truncate">{position.asset.name}</span>
         </span>
-        <span className="flex items-center gap-4 text-xs">
-          <span className="text-neutral-500">
-            {t('portfolio.taxReport.realized')} <PnlAmount amount={position.realizedPnlEur} />
+        <span className="flex items-center gap-4">
+          <span className="bt-meta">
+            {t('portfolio.taxReport.realized')}{' '}
+            <MoneyText amount={position.realizedPnlEur} currency="EUR" signed />
           </span>
-          <span className="text-neutral-500">
+          <span className="bt-meta">
             {t('portfolio.taxReport.tax')}{' '}
-            <span className="tabular-nums text-neutral-300">
+            <span className="bt-soft">
               <MoneyText amount={position.taxEur} currency="EUR" />
             </span>
           </span>
         </span>
       </div>
       {position.sells.length > 0 ? (
-        <table className="w-full">
-          <thead>
-            <tr className="text-[0.65rem] uppercase tracking-wide text-neutral-600">
-              <th scope="col" className="px-3 py-1 text-left font-medium">
-                {t('portfolio.taxReport.sell.date')}
-              </th>
-              <th scope="col" className="px-3 py-1 text-right font-medium">
-                {t('portfolio.taxReport.sell.quantity')}
-              </th>
-              <th scope="col" className="px-3 py-1 text-right font-medium">
-                {t('portfolio.taxReport.sell.proceeds')}
-              </th>
-              <th scope="col" className="px-3 py-1 text-right font-medium">
-                {t('portfolio.taxReport.sell.costBasis')}
-              </th>
-              <th scope="col" className="px-3 py-1 text-right font-medium">
-                {t('portfolio.taxReport.sell.realized')}
-              </th>
-              <th scope="col" className="px-3 py-1 text-right font-medium">
-                {t('portfolio.taxReport.sell.tax')}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {position.sells.map((sell) => (
-              <SellRow key={sell.transactionId} sell={sell} />
-            ))}
-          </tbody>
-        </table>
+        <div className="bt-table-wrap">
+          <table className="bt-table" style={{ fontSize: 12.5 }}>
+            <thead>
+              <tr>
+                <th scope="col">{t('portfolio.taxReport.sell.date')}</th>
+                <th className="is-num" scope="col">
+                  {t('portfolio.taxReport.sell.quantity')}
+                </th>
+                <th className="is-num" scope="col">
+                  {t('portfolio.taxReport.sell.proceeds')}
+                </th>
+                <th className="is-num" scope="col">
+                  {t('portfolio.taxReport.sell.costBasis')}
+                </th>
+                <th className="is-num" scope="col">
+                  {t('portfolio.taxReport.sell.realized')}
+                </th>
+                <th className="is-num" scope="col">
+                  {t('portfolio.taxReport.sell.tax')}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {position.sells.map((sell) => (
+                <SellRow key={sell.transactionId} sell={sell} />
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : null}
-    </div>
+    </Panel>
   );
 }
 
 /** One label/value pair inside the compact DE year block. */
 function DeStat({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-[0.65rem] uppercase tracking-wide text-neutral-600">{label}</dt>
-      <dd className="tabular-nums text-neutral-300">{children}</dd>
-    </div>
+    <>
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </>
   );
 }
 
@@ -168,18 +150,16 @@ function DeYearBlock({ de, t }: { de: TaxYearDeSummary; t: TranslateFn }) {
   const pot = (inEur: number, outEur: number) => (
     <>
       <MoneyText amount={inEur} currency="EUR" />
-      <span aria-hidden="true" className="text-neutral-600">
+      <span aria-hidden="true" className="bt-muted">
         {' → '}
       </span>
       <MoneyText amount={outEur} currency="EUR" />
     </>
   );
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-950/40 p-3">
-      <span className="text-xs font-semibold text-neutral-100">
-        {t('portfolio.taxReport.de.title')}
-      </span>
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-3">
+    <Panel className="flex flex-col gap-2" soft>
+      <span className="bt-row-title">{t('portfolio.taxReport.de.title')}</span>
+      <dl className="bt-kv">
         <DeStat label={t('portfolio.taxReport.de.allowanceUsed')}>
           <MoneyText amount={de.allowanceUsedEur} currency="EUR" />
         </DeStat>
@@ -199,7 +179,7 @@ function DeYearBlock({ de, t }: { de: TaxYearDeSummary; t: TranslateFn }) {
           <MoneyText amount={de.soliEur} currency="EUR" />
         </DeStat>
       </dl>
-    </div>
+    </Panel>
   );
 }
 
@@ -217,20 +197,22 @@ function YearActions({ portfolioId, year }: { portfolioId: string; year: number 
     portfolioId,
   )}&year=${year}`;
   return (
-    <div className="flex items-center justify-end gap-3 text-xs">
+    <div className="flex items-center justify-end gap-2">
       <a
-        href={taxYearReportCsvUrl(portfolioId, year, csvLocale)}
+        className="bt-btn bt-btn--quiet bt-btn--sm"
         download
-        className="font-medium text-sky-400 hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+        href={taxYearReportCsvUrl(portfolioId, year, csvLocale)}
       >
+        <Icon name="download" size={15} />
         {t('portfolio.taxReport.export.csv')}
       </a>
       <Link
-        to={printHref}
-        target="_blank"
+        className="bt-btn bt-btn--quiet bt-btn--sm"
         rel="noopener"
-        className="font-medium text-sky-400 hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+        target="_blank"
+        to={printHref}
       >
+        <Icon name="printer" size={15} />
         {t('portfolio.taxReport.export.print')}
       </Link>
     </div>
@@ -249,8 +231,8 @@ function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }
   if (query.isPending) {
     return (
       <div className="flex flex-col gap-2 p-3">
-        <Skeleton height="h-10" />
-        <Skeleton height="h-10" />
+        <SkeletonBlock height={40} />
+        <SkeletonBlock height={40} />
       </div>
     );
   }
@@ -265,7 +247,9 @@ function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }
     return (
       <div className="flex flex-col gap-2 p-3">
         <YearActions portfolioId={portfolioId} year={year} />
-        <p className="py-2 text-sm text-neutral-500">{t('portfolio.taxReport.detailEmpty')}</p>
+        <p className="bt-meta" style={{ padding: '8px 0' }}>
+          {t('portfolio.taxReport.detailEmpty')}
+        </p>
         {/* Owner-mandated liability framing (#635): repeated under each year block. */}
         <Disclaimer>{t('settings.taxes.disclaimer')}</Disclaimer>
       </div>
@@ -300,55 +284,66 @@ function YearRow({
   const t = useT();
   return (
     <>
-      <tr className="border-b border-neutral-800">
-        <td className="px-3 py-3">
+      <tr>
+        <td>
           <button
-            type="button"
-            onClick={onToggle}
             aria-expanded={expanded}
             aria-label={t(
               expanded ? 'portfolio.taxReport.collapseYear' : 'portfolio.taxReport.expandYear',
               { year: summary.year },
             )}
-            className="flex items-center gap-2 font-medium text-neutral-100 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            className="bt-row-title"
+            onClick={onToggle}
+            style={{
+              alignItems: 'center',
+              background: 'none',
+              border: 0,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              gap: 8,
+              padding: 0,
+            }}
+            type="button"
           >
-            <span aria-hidden="true" className="text-neutral-500">
+            <span aria-hidden="true" className="bt-muted">
               {expanded ? '▾' : '▸'}
             </span>
             {summary.year}
           </button>
           {summary.locked ? (
-            <span
+            <Badge
+              className="ml-2"
+              outline
+              style={{ verticalAlign: 'middle' }}
               title={t('portfolio.taxReport.passedHint')}
-              className="ml-2 rounded border border-neutral-800 px-1.5 py-0.5 align-middle text-[0.6rem] uppercase tracking-wide text-neutral-500"
             >
               {t('portfolio.taxReport.passed')}
-            </span>
+            </Badge>
           ) : null}
         </td>
-        <td className="px-3 py-3 text-right">
-          <PnlAmount amount={summary.realizedPnlEur} />
+        <td className="is-num">
+          <MoneyText amount={summary.realizedPnlEur} currency="EUR" signed />
         </td>
-        <td className="px-3 py-3 text-right tabular-nums text-neutral-300">
+        <td className="is-num bt-soft">
           <MoneyText amount={summary.dividendsGrossEur} currency="EUR" />
         </td>
-        <td className="px-3 py-3 text-right tabular-nums text-neutral-300">
+        <td className="is-num bt-soft">
           <MoneyText amount={summary.taxWithheldEur} currency="EUR" />
         </td>
-        <td className="px-3 py-3 text-right tabular-nums text-emerald-400">
+        <td className="is-num bt-pos">
           {summary.taxRefundedEur > 0 ? (
             <MoneyText amount={summary.taxRefundedEur} currency="EUR" />
           ) : (
-            <span className="text-neutral-600">{EM_DASH}</span>
+            <span className="bt-muted">{EM_DASH}</span>
           )}
         </td>
-        <td className="px-3 py-3 text-right font-semibold tabular-nums text-neutral-100">
+        <td className="is-num">
           <MoneyText amount={summary.taxNetEur} currency="EUR" />
         </td>
       </tr>
       {expanded ? (
-        <tr className="border-b border-neutral-800 bg-neutral-950/40">
-          <td colSpan={6} className="p-0">
+        <tr style={{ background: 'var(--bt-bg-raised)' }}>
+          <td colSpan={6} style={{ padding: 0 }}>
             {detail}
           </td>
         </tr>
@@ -404,58 +399,48 @@ function PortfolioTaxTreatment({
   const overridden = query.data?.source === 'portfolio';
 
   return (
-    <details className="rounded-md border border-neutral-800 bg-neutral-900" open={overridden}>
-      <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 px-4 py-3">
+    <details className="bt-panel bt-band" open={overridden}>
+      <summary className="bt-band__row flex cursor-pointer flex-wrap items-center justify-between gap-2">
         <span className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium text-neutral-100">
+          <span className="bt-row-title">
             {t('portfolio.taxReport.treatment.title', { name: portfolioName })}
           </span>
-          <span className="text-xs text-neutral-500">
-            {t('portfolio.taxReport.treatment.description')}
-          </span>
+          <span className="bt-row-sub">{t('portfolio.taxReport.treatment.description')}</span>
         </span>
-        <span
-          className={cx(
-            'rounded-full px-2 py-0.5 text-xs font-medium',
-            overridden ? 'bg-sky-500/10 text-sky-300' : 'bg-neutral-800 text-neutral-400',
-          )}
-        >
+        <Badge tone={overridden ? 'blue' : 'neutral'}>
           {overridden
             ? t('portfolio.taxReport.treatment.overridden')
             : t('portfolio.taxReport.treatment.inheriting')}
-        </span>
+        </Badge>
       </summary>
-      <div className="flex flex-col gap-3 border-t border-neutral-800 px-4 py-3">
+      <div className="bt-band__row flex flex-col gap-3">
         {query.isPending ? (
-          <Skeleton height="h-16" />
+          <SkeletonBlock height={64} />
         ) : query.isError || !query.data ? (
           <EmptyState
-            title={t('portfolio.taxReport.loadError.title')}
             description={t('settings.retryHint')}
+            title={t('portfolio.taxReport.loadError.title')}
           />
         ) : (
           <>
             <TaxModePicker
-              value={query.data.effective}
-              name={`portfolio-tax-${portfolioId}`}
-              busy={busy}
               ariaLabel={t('portfolio.taxReport.treatment.title', { name: portfolioName })}
+              busy={busy}
+              name={`portfolio-tax-${portfolioId}`}
               onSelect={(body) => overrideMutation.mutate(body)}
+              value={query.data.effective}
             />
             {overridden ? (
               <button
-                type="button"
-                onClick={() => resetMutation.mutate()}
+                className="bt-link w-fit"
                 disabled={busy}
-                className="w-fit text-sm font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => resetMutation.mutate()}
+                type="button"
               >
                 {t('portfolio.taxReport.treatment.reset')}
               </button>
             ) : (
-              <Link
-                to="/settings/taxes"
-                className="w-fit text-xs font-medium text-neutral-400 hover:text-neutral-200"
-              >
+              <Link className="bt-link w-fit" to="/settings/taxes">
                 {t('portfolio.taxReport.treatment.editDefault')}
               </Link>
             )}
@@ -520,30 +505,28 @@ export function TaxReportPage() {
   });
 
   const header = (
-    <div className="flex flex-col gap-1">
-      <h1 className="text-lg font-semibold text-neutral-100">{t('portfolio.taxReport.title')}</h1>
-      <p className="text-sm text-neutral-500">{t('portfolio.taxReport.subtitle')}</p>
+    <PageHead sub={t('portfolio.taxReport.subtitle')} title={t('portfolio.taxReport.title')}>
       {/* Owner-mandated liability framing (#635): keep the wording as decided. */}
       <Disclaimer>{t('settings.taxes.disclaimer')}</Disclaimer>
-    </div>
+    </PageHead>
   );
 
   if (privacy.isPending) {
     return (
-      <div className="flex flex-col gap-4">
+      <div>
         {header}
-        <Skeleton height="h-24" />
+        <SkeletonBlock height={96} />
       </div>
     );
   }
 
   if (privacy.isError) {
     return (
-      <div className="flex flex-col gap-4">
+      <div>
         {header}
         <EmptyState
-          title={t('portfolio.taxReport.loadError.title')}
           description={t('settings.retryHint')}
+          title={t('portfolio.taxReport.loadError.title')}
         />
       </div>
     );
@@ -557,20 +540,20 @@ export function TaxReportPage() {
   // drives everything below (the per-portfolio tax settings + the report).
   if (portfoliosQuery.isPending) {
     return (
-      <div className="flex flex-col gap-4">
+      <div>
         {header}
-        <Skeleton height="h-24" />
+        <SkeletonBlock height={96} />
       </div>
     );
   }
 
   if (portfoliosQuery.isError) {
     return (
-      <div className="flex flex-col gap-4">
+      <div>
         {header}
         <EmptyState
-          title={t('portfolio.taxReport.loadError.title')}
           description={t('settings.retryHint')}
+          title={t('portfolio.taxReport.loadError.title')}
         />
       </div>
     );
@@ -578,12 +561,12 @@ export function TaxReportPage() {
 
   if (!active) {
     return (
-      <div className="flex flex-col gap-4">
+      <div>
         {header}
         <EmptyState
+          description={t('portfolio.taxReport.empty.description')}
           icon="🧾"
           title={t('portfolio.taxReport.empty.title')}
-          description={t('portfolio.taxReport.empty.description')}
         />
       </div>
     );
@@ -592,88 +575,86 @@ export function TaxReportPage() {
   const years = reportQuery.data?.years ?? [];
 
   return (
-    <div className="flex flex-col gap-4">
+    <div>
       {header}
 
       {/* Per-portfolio tax treatment (issue #636): inherit / override / reset. */}
-      <PortfolioTaxTreatment portfolioId={active.id} portfolioName={active.name} />
+      <div className="bt-section">
+        <PortfolioTaxTreatment portfolioId={active.id} portfolioName={active.name} />
+      </div>
 
-      {settingsQuery.isPending ? (
-        <Skeleton height="h-24" />
-      ) : settingsQuery.isError ? (
-        <EmptyState
-          title={t('portfolio.taxReport.loadError.title')}
-          description={t('settings.retryHint')}
-        />
-      ) : !taxActive ? (
-        // The report is only meaningful with a tax mode active for THIS
-        // portfolio; the treatment control above turns one on.
-        <EmptyState
-          icon="🧾"
-          title={t('portfolio.taxReport.disabled.title')}
-          description={t('portfolio.taxReport.disabled.description')}
-        />
-      ) : reportQuery.isPending ? (
-        <Skeleton height="h-24" />
-      ) : reportQuery.isError ? (
-        <EmptyState
-          title={t('portfolio.taxReport.loadError.title')}
-          description={t('settings.retryHint')}
-        />
-      ) : years.length === 0 ? (
-        <EmptyState
-          icon="🧾"
-          title={t('portfolio.taxReport.empty.title')}
-          description={t('portfolio.taxReport.empty.description')}
-        />
-      ) : (
-        <div className="overflow-x-auto rounded-md border border-neutral-800 bg-neutral-900">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-neutral-800 text-xs uppercase tracking-wide text-neutral-500">
-                <th scope="col" className="px-3 py-2 text-left font-medium">
-                  {t('portfolio.taxReport.column.year')}
-                </th>
-                <th scope="col" className="px-3 py-2 text-right font-medium">
-                  {t('portfolio.taxReport.column.realized')}
-                </th>
-                <th scope="col" className="px-3 py-2 text-right font-medium">
-                  {t('portfolio.taxReport.column.dividends')}
-                </th>
-                <th scope="col" className="px-3 py-2 text-right font-medium">
-                  {t('portfolio.taxReport.column.withheld')}
-                </th>
-                <th scope="col" className="px-3 py-2 text-right font-medium">
-                  {t('portfolio.taxReport.column.refund')}
-                </th>
-                <th scope="col" className="px-3 py-2 text-right font-medium">
-                  {t('portfolio.taxReport.column.net')}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {years.map((summary) => (
-                <YearRow
-                  key={summary.year}
-                  summary={summary}
-                  expanded={expandedYear === summary.year}
-                  onToggle={() =>
-                    setExpandedYear((cur) => (cur === summary.year ? null : summary.year))
-                  }
-                  detail={<YearDetail portfolioId={active!.id} year={summary.year} />}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <div className="bt-section">
+        {settingsQuery.isPending ? (
+          <SkeletonBlock height={96} />
+        ) : settingsQuery.isError ? (
+          <EmptyState
+            description={t('settings.retryHint')}
+            title={t('portfolio.taxReport.loadError.title')}
+          />
+        ) : !taxActive ? (
+          // The report is only meaningful with a tax mode active for THIS
+          // portfolio; the treatment control above turns one on.
+          <EmptyState
+            description={t('portfolio.taxReport.disabled.description')}
+            icon="🧾"
+            title={t('portfolio.taxReport.disabled.title')}
+          />
+        ) : reportQuery.isPending ? (
+          <SkeletonBlock height={96} />
+        ) : reportQuery.isError ? (
+          <EmptyState
+            description={t('settings.retryHint')}
+            title={t('portfolio.taxReport.loadError.title')}
+          />
+        ) : years.length === 0 ? (
+          <EmptyState
+            description={t('portfolio.taxReport.empty.description')}
+            icon="🧾"
+            title={t('portfolio.taxReport.empty.title')}
+          />
+        ) : (
+          <div className="bt-table-wrap bt-table-wrap--panel">
+            <table className="bt-table">
+              <thead>
+                <tr>
+                  <th scope="col">{t('portfolio.taxReport.column.year')}</th>
+                  <th className="is-num" scope="col">
+                    {t('portfolio.taxReport.column.realized')}
+                  </th>
+                  <th className="is-num" scope="col">
+                    {t('portfolio.taxReport.column.dividends')}
+                  </th>
+                  <th className="is-num" scope="col">
+                    {t('portfolio.taxReport.column.withheld')}
+                  </th>
+                  <th className="is-num" scope="col">
+                    {t('portfolio.taxReport.column.refund')}
+                  </th>
+                  <th className="is-num" scope="col">
+                    {t('portfolio.taxReport.column.net')}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {years.map((summary) => (
+                  <YearRow
+                    key={summary.year}
+                    summary={summary}
+                    expanded={expandedYear === summary.year}
+                    onToggle={() =>
+                      setExpandedYear((cur) => (cur === summary.year ? null : summary.year))
+                    }
+                    detail={<YearDetail portfolioId={active.id} year={summary.year} />}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
-
-/** Shared styling for the client-side per-year export actions. */
-const PARANOID_ACTION_CLASS =
-  'font-medium text-sky-400 hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400';
 
 /**
  * The paranoid tax surface (PD7): every number derives client-side from the
@@ -713,12 +694,12 @@ function ParanoidTaxReport({ header }: { header: ReactNode }) {
 
   if (session === null) {
     return (
-      <div className="flex flex-col gap-4">
+      <div>
         {header}
         <EmptyState
+          description={t('portfolio.taxReport.paranoid.locked.description')}
           icon="🔒"
           title={t('portfolio.taxReport.paranoid.locked.title')}
-          description={t('portfolio.taxReport.paranoid.locked.description')}
         />
       </div>
     );
@@ -726,20 +707,20 @@ function ParanoidTaxReport({ header }: { header: ReactNode }) {
 
   if (portfolios.status === 'pending') {
     return (
-      <div className="flex flex-col gap-4">
+      <div>
         {header}
-        <Skeleton height="h-24" />
+        <SkeletonBlock height={96} />
       </div>
     );
   }
 
   if (portfolios.status === 'error') {
     return (
-      <div className="flex flex-col gap-4">
+      <div>
         {header}
         <EmptyState
-          title={t('portfolio.taxReport.loadError.title')}
           description={t(vaultMoneyErrorKey(portfolios.failure))}
+          title={t('portfolio.taxReport.loadError.title')}
         />
       </div>
     );
@@ -748,21 +729,23 @@ function ParanoidTaxReport({ header }: { header: ReactNode }) {
   const active = resolveActivePortfolio(portfolios.list, param);
   if (!active) {
     return (
-      <div className="flex flex-col gap-4">
+      <div>
         {header}
         <EmptyState
+          description={t('portfolio.taxReport.empty.description')}
           icon="🧾"
           title={t('portfolio.taxReport.empty.title')}
-          description={t('portfolio.taxReport.empty.description')}
         />
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div>
       {header}
-      <ParanoidYearTable session={session} portfolio={active} />
+      <div className="bt-section">
+        <ParanoidYearTable session={session} portfolio={active} />
+      </div>
     </div>
   );
 }
@@ -789,6 +772,12 @@ function ParanoidYearTable({
   const [expandedYear, setExpandedYear] = useState<number | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [derived, setDerived] = useState<ParanoidDerivation>({ status: 'pending' });
+
+  // Re-runs the whole derivation: the retry after a retryable failure, and the
+  // way out of a stale table — a vault write synced in from another device
+  // invalidates the derived reports, which the exports detect (scope assertion)
+  // but the rendered table cannot see on its own.
+  const rederive = () => setAttempt((current) => current + 1);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -822,25 +811,21 @@ function ParanoidYearTable({
   }, [attempt, portfolio.id, session]);
 
   if (derived.status === 'pending') {
-    return <Skeleton height="h-24" />;
+    return <SkeletonBlock height={96} />;
   }
 
   if (derived.status === 'error') {
     return (
       <EmptyState
-        title={t('portfolio.taxReport.loadError.title')}
-        description={t(vaultMoneyErrorKey(derived.failure))}
         cta={
           derived.failure.retryable ? (
-            <button
-              type="button"
-              onClick={() => setAttempt((current) => current + 1)}
-              className={cx('text-sm', PARANOID_ACTION_CLASS)}
-            >
+            <button className="bt-btn bt-btn--quiet bt-btn--sm" onClick={rederive} type="button">
               {t('portfolio.taxReport.paranoid.retry')}
             </button>
           ) : undefined
         }
+        description={t(vaultMoneyErrorKey(derived.failure))}
+        title={t('portfolio.taxReport.loadError.title')}
       />
     );
   }
@@ -848,9 +833,9 @@ function ParanoidYearTable({
   if (derived.mode === 'none') {
     return (
       <EmptyState
+        description={t('portfolio.taxReport.paranoid.disabledDescription')}
         icon="🧾"
         title={t('portfolio.taxReport.disabled.title')}
-        description={t('portfolio.taxReport.paranoid.disabledDescription')}
       />
     );
   }
@@ -858,34 +843,32 @@ function ParanoidYearTable({
   if (derived.reports.length === 0) {
     return (
       <EmptyState
+        description={t('portfolio.taxReport.empty.description')}
         icon="🧾"
         title={t('portfolio.taxReport.empty.title')}
-        description={t('portfolio.taxReport.empty.description')}
       />
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-md border border-neutral-800 bg-neutral-900">
-      <table className="w-full text-sm">
+    <div className="bt-table-wrap bt-table-wrap--panel">
+      <table className="bt-table">
         <thead>
-          <tr className="border-b border-neutral-800 text-xs uppercase tracking-wide text-neutral-500">
-            <th scope="col" className="px-3 py-2 text-left font-medium">
-              {t('portfolio.taxReport.column.year')}
-            </th>
-            <th scope="col" className="px-3 py-2 text-right font-medium">
+          <tr>
+            <th scope="col">{t('portfolio.taxReport.column.year')}</th>
+            <th className="is-num" scope="col">
               {t('portfolio.taxReport.column.realized')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right font-medium">
+            <th className="is-num" scope="col">
               {t('portfolio.taxReport.column.dividends')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right font-medium">
+            <th className="is-num" scope="col">
               {t('portfolio.taxReport.column.withheld')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right font-medium">
+            <th className="is-num" scope="col">
               {t('portfolio.taxReport.column.refund')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right font-medium">
+            <th className="is-num" scope="col">
               {t('portfolio.taxReport.column.net')}
             </th>
           </tr>
@@ -899,7 +882,14 @@ function ParanoidYearTable({
               onToggle={() =>
                 setExpandedYear((cur) => (cur === tax.report.year ? null : tax.report.year))
               }
-              detail={<ParanoidYearDetail session={session} portfolio={portfolio} tax={tax} />}
+              detail={
+                <ParanoidYearDetail
+                  onStale={rederive}
+                  portfolio={portfolio}
+                  session={session}
+                  tax={tax}
+                />
+              }
             />
           ))}
         </tbody>
@@ -913,19 +903,24 @@ function ParanoidYearDetail({
   session,
   portfolio,
   tax,
+  onStale,
 }: {
   session: VaultMoneySession;
   portfolio: PortfolioSummary;
   tax: ClientTaxReport;
+  /** Re-derives the table when an export refuses this now-stale report. */
+  onStale: () => void;
 }) {
   const t = useT();
   const positions = tax.report.positions;
   return (
     <div className="flex flex-col gap-3 p-3">
-      <ParanoidYearActions session={session} portfolio={portfolio} tax={tax} />
+      <ParanoidYearActions onStale={onStale} portfolio={portfolio} session={session} tax={tax} />
       {tax.report.summary.de ? <DeYearBlock de={tax.report.summary.de} t={t} /> : null}
       {positions.length === 0 ? (
-        <p className="py-2 text-sm text-neutral-500">{t('portfolio.taxReport.detailEmpty')}</p>
+        <p className="bt-meta" style={{ padding: '8px 0' }}>
+          {t('portfolio.taxReport.detailEmpty')}
+        </p>
       ) : (
         positions.map((position) => (
           <PositionBlock key={position.asset.id} position={position} t={t} />
@@ -946,10 +941,13 @@ function ParanoidYearActions({
   session,
   portfolio,
   tax,
+  onStale,
 }: {
   session: VaultMoneySession;
   portfolio: PortfolioSummary;
   tax: ClientTaxReport;
+  /** Re-derives the table after a retryable refusal (typically a stale report). */
+  onStale: () => void;
 }) {
   const t = useT();
   const { locale } = useI18n();
@@ -984,15 +982,31 @@ function ParanoidYearActions({
 
   return (
     <div className="flex flex-col items-end gap-2">
-      <div className="flex items-center justify-end gap-3 text-xs">
-        <button type="button" onClick={onCsv} className={PARANOID_ACTION_CLASS}>
+      <div className="flex items-center justify-end gap-2">
+        <button className="bt-btn bt-btn--quiet bt-btn--sm" onClick={onCsv} type="button">
+          <Icon name="download" size={15} />
           {t('portfolio.taxReport.export.csv')}
         </button>
-        <button type="button" onClick={onPrint} className={PARANOID_ACTION_CLASS}>
+        <button className="bt-btn bt-btn--quiet bt-btn--sm" onClick={onPrint} type="button">
+          <Icon name="printer" size={15} />
           {t('portfolio.taxReport.export.print')}
         </button>
       </div>
-      {failure ? <Alert tone="error">{t(vaultMoneyErrorKey(failure))}</Alert> : null}
+      {failure ? (
+        <Alert tone="error">
+          <span className="flex flex-wrap items-center gap-2">
+            {t(vaultMoneyErrorKey(failure))}
+            {/* A refused export usually means the vault moved under the rendered
+                report (another device synced a write) — re-deriving is the way
+                out, so the alert carries the same retry the table error has. */}
+            {failure.retryable ? (
+              <button className="bt-link" onClick={onStale} type="button">
+                {t('portfolio.taxReport.paranoid.retry')}
+              </button>
+            ) : null}
+          </span>
+        </Alert>
+      ) : null}
     </div>
   );
 }

@@ -15,10 +15,16 @@ import { ProfileIconSvg, defaultProfileIconIdFor, isProfileIconId } from './prof
  * Presentational only: same person = same avatar on every surface.
  */
 
+/**
+ * Origin avatar ramp (styles/origin.css `bt-avatar`): the 28px base used in
+ * dense rows, its 40px `--lg` step for object headers, and a 56px hero size for
+ * profile/thread openers. Pixel values rather than Tailwind boxes so the three
+ * steps stay locked to the design system's own scale.
+ */
 const SIZES = {
-  sm: 'h-8 w-8',
-  md: 'h-10 w-10',
-  lg: 'h-14 w-14',
+  sm: 28,
+  md: 40,
+  lg: 56,
 } as const;
 
 export type AvatarSize = keyof typeof SIZES;
@@ -43,11 +49,8 @@ export function Avatar({
   return (
     <span
       aria-hidden="true"
-      className={cx(
-        'inline-flex shrink-0 select-none items-center justify-center overflow-hidden rounded-full ring-1 ring-inset ring-white/10',
-        SIZES[size],
-        className,
-      )}
+      className={cx('bt-avatar select-none overflow-hidden', className)}
+      style={{ width: SIZES[size], height: SIZES[size] }}
     >
       <ProfileIconSvg id={resolvedId} className="h-full w-full" />
     </span>

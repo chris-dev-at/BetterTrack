@@ -20,6 +20,9 @@ export interface EmptyStateProps {
  * Designed empty state (PROJECTPLAN.md §7.1 / §7.3 EmptyState) — every list
  * gets one instead of a blank area, with an optional CTA to the obvious next
  * step.
+ *
+ * Typography and tone come from the Origin tokens (`bt-empty__title`, `bt-muted`);
+ * the vertical rhythm stays on layout utilities so `compact` keeps working.
  */
 export function EmptyState({
   icon,
@@ -38,13 +41,13 @@ export function EmptyState({
       )}
     >
       {icon != null ? (
-        <span className="text-4xl text-neutral-600" aria-hidden="true">
+        <span className="text-4xl" style={{ color: 'var(--bt-faint)' }} aria-hidden="true">
           {icon}
         </span>
       ) : null}
       <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium text-neutral-300">{title}</p>
-        {description ? <p className="text-sm text-neutral-500">{description}</p> : null}
+        <p className="bt-empty__title">{title}</p>
+        {description ? <p className="bt-muted text-sm">{description}</p> : null}
       </div>
       {cta != null ? <div>{cta}</div> : null}
     </div>

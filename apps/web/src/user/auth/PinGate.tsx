@@ -120,51 +120,49 @@ export function PinGate() {
   }, [submit]);
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-[#0b0e14] px-4 py-12">
-      <div className="w-full max-w-sm">
-        <div className="mb-8 flex justify-center">
-          <Wordmark edition="Web" className="text-2xl" />
+    // The lock screen renders outside the app shell, so it carries `bt-app`
+    // itself; `bt-gate` supplies the top-middle-ish anchor and the card is the
+    // Origin gate card — the shake still rides the form element (`pin-shake`).
+    <div className="bt-app bt-gate">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (pin.length === PIN_LENGTH) void submit(pin);
+        }}
+        onAnimationEnd={() => setShake(false)}
+        className={cx('bt-gate__card flex flex-col gap-6', shake && 'pin-shake')}
+      >
+        <div className="flex flex-col gap-1 text-center">
+          <div className="bt-gate__brand" style={{ marginBottom: 6 }}>
+            <Wordmark edition="Web" />
+          </div>
+          <h1 className="bt-h2">{t('auth.pin.heading')}</h1>
+          <p className="bt-muted text-sm">
+            {user
+              ? t('auth.pin.promptWithUser', { username: user.username, length: PIN_LENGTH })
+              : t('auth.pin.prompt', { length: PIN_LENGTH })}
+          </p>
         </div>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (pin.length === PIN_LENGTH) void submit(pin);
-          }}
-          onAnimationEnd={() => setShake(false)}
-          className={cx(
-            'flex flex-col gap-6 rounded-xl border border-neutral-800 bg-neutral-900 p-8 shadow-xl shadow-black/30',
-            shake && 'pin-shake',
-          )}
-        >
-          <div className="flex flex-col gap-1 text-center">
-            <h1 className="text-lg font-semibold text-neutral-100">{t('auth.pin.heading')}</h1>
-            <p className="text-sm text-neutral-500">
-              {user
-                ? t('auth.pin.promptWithUser', { username: user.username, length: PIN_LENGTH })
-                : t('auth.pin.prompt', { length: PIN_LENGTH })}
-            </p>
-          </div>
 
-          {error ? <Alert tone="error">{error}</Alert> : null}
+        {error ? <Alert tone="error">{error}</Alert> : null}
 
-          <div className="flex justify-center">
-            <PinInput
-              key={attempt}
-              label={t('auth.pin.inputLabel')}
-              length={PIN_LENGTH}
-              value={pin}
-              onChange={setPin}
-              onComplete={(value) => void submit(value)}
-              disabled={submitting}
-              autoFocus
-            />
-          </div>
+        <div className="flex justify-center">
+          <PinInput
+            key={attempt}
+            label={t('auth.pin.inputLabel')}
+            length={PIN_LENGTH}
+            value={pin}
+            onChange={setPin}
+            onComplete={(value) => void submit(value)}
+            disabled={submitting}
+            autoFocus
+          />
+        </div>
 
-          <Button type="button" variant="ghost" onClick={() => void logout()} disabled={submitting}>
-            {t('auth.common.signOut')}
-          </Button>
-        </form>
-      </div>
+        <Button type="button" variant="ghost" onClick={() => void logout()} disabled={submitting}>
+          {t('auth.common.signOut')}
+        </Button>
+      </form>
     </div>
   );
 }

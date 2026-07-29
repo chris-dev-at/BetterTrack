@@ -48,8 +48,8 @@ test('nl builder: a local-provider draft is reviewed and confirmed before it com
     const page = owner.page;
 
     try {
-      await page.goto('/workboard/conglomerates/new');
-      await page.getByLabel('Conglomerate name').fill('AI Draft Basket');
+      await page.goto('/workbench/blueprints/new');
+      await page.getByLabel('Blueprint name').fill('AI Draft Basket');
 
       // Open the fold-away NL panel and describe the basket in plain words.
       const nlSummary = page.locator('summary').filter({ hasText: 'Describe it with AI' });
@@ -67,14 +67,14 @@ test('nl builder: a local-provider draft is reviewed and confirmed before it com
       expect(fake.chatCalls()).toBe(1);
 
       // The resolved positions sit in the Builder for the user to review/edit.
-      const positions = page.getByRole('list', { name: 'Conglomerate positions' });
+      const positions = page.getByRole('list', { name: 'Blueprint positions' });
       await expect(positions.getByText('AAPL', { exact: true })).toBeVisible();
       await expect(positions.getByText('MSFT', { exact: true })).toBeVisible();
 
       // NOT auto-committed: the draft is still an unsaved builder draft (URL never
       // left `/new`, and the primary action is "Activate", not "Re-activate"), so
       // confirmation is a distinct, explicit user action.
-      await expect(page).toHaveURL(/\/workboard\/conglomerates\/new$/);
+      await expect(page).toHaveURL(/\/workbench\/blueprints\/new$/);
       const activate = page.getByRole('button', { name: 'Activate' });
       await expect(activate).toBeEnabled();
 
@@ -82,7 +82,7 @@ test('nl builder: a local-provider draft is reviewed and confirmed before it com
       // Reaching the detail route (no longer `/new`) only happens AFTER activation
       // resolves, so it is itself the proof the confirm — not the draft — committed.
       await activate.click();
-      await expect(page).toHaveURL(/\/workboard\/conglomerates\/(?!new(?:\/|$))[^/]+$/, {
+      await expect(page).toHaveURL(/\/workbench\/blueprints\/(?!new(?:\/|$))[^/]+$/, {
         timeout: 20_000,
       });
       await expect(page.getByText('Active', { exact: true }).first()).toBeVisible({

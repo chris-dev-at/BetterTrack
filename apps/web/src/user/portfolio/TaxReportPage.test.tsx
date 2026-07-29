@@ -448,6 +448,32 @@ describe('TaxReportPage — paranoid mode (PD7)', () => {
     expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
   });
 
+  // A write synced in from another device moves the vault under the rendered
+  // report: the exports refuse it (scope assertion) rather than hand over stale
+  // figures, so the refusal has to offer the way back — a re-derivation.
+  test('a vault write under the rendered report refuses the export and offers a retry that re-derives', async () => {
+    const user = userEvent.setup();
+    const sync = await renderParanoidUnlocked();
+
+    await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
+    await screen.findByRole('button', { name: 'Export CSV' });
+
+    // Another device's write: same content, new vault version + write id.
+    await sync.mutate(({ document }) => document);
+
+    await user.click(screen.getByRole('button', { name: 'Export CSV' }));
+    expect(
+      await screen.findByText('The operation was interrupted before completion.'),
+    ).toBeInTheDocument();
+    expect(deliverClientDownload).not.toHaveBeenCalled();
+
+    // The retry re-derives against the current vault, and the export succeeds.
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await user.click(await screen.findByRole('button', { name: 'Export CSV' }));
+    await waitFor(() => expect(deliverClientDownload).toHaveBeenCalledTimes(1));
+    expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
+  });
+
   test('a locked vault shows the unlock prompt and never a figure or server fallback', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(

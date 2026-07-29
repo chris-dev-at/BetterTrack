@@ -54,10 +54,8 @@ export function NewPortfolioDefaultsPage() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">
-          {t('settings.newPortfolioDefaults.title')}
-        </h2>
-        <p className="text-sm text-neutral-500">{t('settings.newPortfolioDefaults.subtitle')}</p>
+        <h2 className="bt-h2">{t('settings.newPortfolioDefaults.title')}</h2>
+        <p className="bt-page-sub">{t('settings.newPortfolioDefaults.subtitle')}</p>
       </div>
 
       {query.isPending ? (
@@ -74,10 +72,8 @@ export function NewPortfolioDefaultsPage() {
       ) : (
         <section className="flex flex-col gap-3">
           <div className="flex flex-col gap-1">
-            <h3 className="text-sm font-medium text-neutral-200">{t('settings.taxes.title')}</h3>
-            <p className="text-xs text-neutral-500">
-              {t('settings.newPortfolioDefaults.tax.hint')}
-            </p>
+            <h3 className="bt-h3">{t('settings.taxes.title')}</h3>
+            <p className="bt-meta">{t('settings.newPortfolioDefaults.tax.hint')}</p>
           </div>
           <TaxModePicker
             value={query.data}
@@ -88,10 +84,7 @@ export function NewPortfolioDefaultsPage() {
           />
           {error ? <Alert tone="error">{t('settings.taxes.saveError')}</Alert> : null}
           {mode !== 'none' ? (
-            <Link
-              to="/portfolio/tax"
-              className="w-fit text-sm font-medium text-sky-400 hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            >
+            <Link to="/portfolio/tax" className="bt-link w-fit">
               {t('settings.taxes.reportLink')}
             </Link>
           ) : null}

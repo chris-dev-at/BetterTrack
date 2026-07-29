@@ -176,7 +176,7 @@ describe('AccountSettingsPage', () => {
 
     expect(await screen.findByText('Portfolio sharing')).toBeInTheDocument();
     const link = screen.getByRole('link', { name: /manage sharing in social/i });
-    expect(link).toHaveAttribute('href', '/social/my-shared');
+    expect(link).toHaveAttribute('href', '/people/shared');
 
     // The retired controls are gone: no Private/Friends or Yes/No radios.
     expect(screen.queryByRole('radio', { name: 'Friends' })).not.toBeInTheDocument();

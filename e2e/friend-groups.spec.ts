@@ -32,7 +32,7 @@ test('friend groups: a portfolio shared to a group is visible to members only', 
   await befriend(owner, outsider);
 
   // Owner creates a group and adds only `member` to it.
-  await owner.page.goto('/social/friends');
+  await owner.page.goto('/people');
   await owner.page.getByLabel('New group name').fill('Inner Circle');
   await owner.page.getByRole('button', { name: 'Create' }).click();
 
@@ -48,7 +48,7 @@ test('friend groups: a portfolio shared to a group is visible to members only', 
   await expect(memberCandidate).toBeHidden();
 
   // Owner shares "Main" to the group audience.
-  await owner.page.goto('/social/my-shared');
+  await owner.page.goto('/people/shared');
   const portfolioRow = owner.page.getByRole('listitem').filter({ hasText: 'Main' });
   await portfolioRow.getByRole('button', { name: 'Share' }).click();
 
@@ -60,7 +60,7 @@ test('friend groups: a portfolio shared to a group is visible to members only', 
   await expect(picker).toBeHidden();
 
   // The group member sees the shared portfolio in the owner's friend overview.
-  await member.page.goto('/social/friends');
+  await member.page.goto('/people');
   await member.page.getByRole('button', { name: owner.username }).click();
   const sharedLink = member.page.getByRole('link', { name: /Main/ });
   await expect(sharedLink).toBeVisible({ timeout: 15_000 });
@@ -70,7 +70,7 @@ test('friend groups: a portfolio shared to a group is visible to members only', 
   });
 
   // The non-member — a friend, but not in the group — sees nothing.
-  await outsider.page.goto('/social/friends');
+  await outsider.page.goto('/people');
   await outsider.page.getByRole('button', { name: owner.username }).click();
   await expect(
     outsider.page.getByText(new RegExp(`${owner.username} isn't sharing anything`, 'i')),

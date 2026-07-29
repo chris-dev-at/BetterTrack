@@ -1,53 +1,13 @@
-import { Outlet } from 'react-router-dom';
-
 import { useT } from '../../i18n';
-import type { TranslateFn } from '../../i18n';
-import { useFeatureEnabled } from '../../lib/featureFlags';
 import { ComingSoon } from '../../ui';
-import { SubNav, type SubNavItem } from '../components/SubNav';
 import { WatchlistsPage } from './WatchlistsPage';
 
 /**
- * Workboard section shell (PROJECTPLAN.md §6.4, §7.2). Subnav: Overview ·
- * Conglomerates · Watchlists · Alerts, plus the Coming-Soon experiments
- * (Backtests · Calculators · Comparisons · Saved Ideas).
+ * Workbench stub pages (PROJECTPLAN.md §6.4, §7.2). The Origin redesign mounts
+ * these under the WorkbenchLayout tabs; Backtests and Calculators run inside
+ * each Blueprint's detail page today, so their tabs render designed
+ * placeholders until the standalone workspaces build.
  */
-function workboardSubnav(t: TranslateFn, alertsEnabled: boolean): readonly SubNavItem[] {
-  return [
-    { to: '/workboard', label: t('workboard.section.subnav.overview'), end: true },
-    { to: '/workboard/conglomerates', label: t('workboard.section.subnav.conglomerates') },
-    { to: '/workboard/watchlist', label: t('workboard.section.subnav.watchlists') },
-    // Runtime kill-switch (§13.5 V5-P2 arc (c)): alerts OFF hides the tab.
-    ...(alertsEnabled
-      ? [{ to: '/workboard/alerts', label: t('workboard.section.subnav.alerts') } as SubNavItem]
-      : []),
-    {
-      to: '/workboard/backtests',
-      label: t('workboard.section.subnav.backtests'),
-      comingSoon: true,
-    },
-    {
-      to: '/workboard/calculators',
-      label: t('workboard.section.subnav.calculators'),
-      comingSoon: true,
-    },
-    { to: '/workboard/comparisons', label: t('workboard.section.subnav.comparisons') },
-    { to: '/workboard/ideas', label: t('workboard.section.subnav.savedIdeas') },
-  ];
-}
-
-export function WorkboardLayout() {
-  const t = useT();
-  const alertsEnabled = useFeatureEnabled('alerts');
-  return (
-    <div className="flex flex-col gap-6">
-      <SubNav items={workboardSubnav(t, alertsEnabled)} />
-      <Outlet />
-    </div>
-  );
-}
-
-// ─── Not-yet-built surfaces (own feature issues) ──────────────────────────────
 
 /** Named watchlists — create/rename/delete + per-list audience (§13.3 V3-P5). */
 export function WatchlistPage() {

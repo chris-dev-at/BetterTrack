@@ -612,10 +612,10 @@ describe('AssetDetailPage — quick actions (§13.2)', () => {
     );
   });
 
-  test('no label reading "Workboard" remains on the asset page', async () => {
+  test('no label reading "Workbench" remains on the asset page', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
-    expect(screen.queryByText(/Workboard/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Workbench/i)).not.toBeInTheDocument();
   });
 
   test('watchlist icon is unfilled and idle when the asset is not yet watched', async () => {
@@ -667,10 +667,10 @@ describe('AssetDetailPage — quick actions (§13.2)', () => {
     expect(screen.getByText(/Failed to add to Watchlist/i)).toBeInTheDocument();
   });
 
-  test('renders Portfolio and Conglomerate quick actions near the top', async () => {
+  test('renders Portfolio and Blueprint quick actions near the top', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: '+ Portfolio' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '+ Conglomerate' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '+ Blueprint' })).toBeInTheDocument();
   });
 });

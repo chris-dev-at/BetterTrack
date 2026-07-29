@@ -281,11 +281,11 @@ describe('WorkboardPage — zone placeholders', () => {
     expect(screen.getByText(/Alerts panel coming soon/i)).toBeInTheDocument();
   });
 
-  test('renders My Conglomerates zone with placeholder', async () => {
+  test('renders My Blueprints zone with placeholder', async () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
     renderPage();
-    await waitFor(() => expect(screen.getByText('My Conglomerates')).toBeInTheDocument());
-    expect(screen.getByText(/Conglomerates coming soon/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('My Blueprints')).toBeInTheDocument());
+    expect(screen.getByText(/Blueprints coming soon/i)).toBeInTheDocument();
   });
 
   test('placeholder zones do not throw when watchlist has items', async () => {
@@ -294,7 +294,7 @@ describe('WorkboardPage — zone placeholders', () => {
     await waitFor(() => expect(screen.getByText('AAPL')).toBeInTheDocument());
     // Use role+level to target the <h2> headings, not the "Alerts" <th> column header.
     expect(screen.getByRole('heading', { name: 'Alerts', level: 2 })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'My Conglomerates', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'My Blueprints', level: 2 })).toBeInTheDocument();
   });
 });
 

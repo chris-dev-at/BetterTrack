@@ -49,19 +49,19 @@ export function NlBuilderPanel({ onApply }: { onApply: (positions: BuilderPositi
   const trimmed = prompt.trim();
 
   return (
-    <details className="rounded-lg border border-neutral-800 bg-neutral-900/40">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium text-neutral-200 [&::-webkit-details-marker]:hidden">
+    <details className="bt-panel">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium bt-soft [&::-webkit-details-marker]:hidden">
         <span className="flex items-center gap-2">
           <span aria-hidden="true">✦</span>
           {t('workboard.builder.ai.title')}
         </span>
-        <span className="text-xs font-normal text-neutral-500">
+        <span className="text-xs font-normal bt-muted">
           {t('workboard.builder.ai.remaining', { remaining, cap: capability.data.dailyCap })}
         </span>
       </summary>
 
-      <div className="flex flex-col gap-2 border-t border-neutral-800 p-3">
-        <p className="text-xs text-neutral-500">{t('workboard.builder.ai.hint')}</p>
+      <div className="flex flex-col gap-2 bt-t-rule p-3">
+        <p className="text-xs bt-muted">{t('workboard.builder.ai.hint')}</p>
         <label className="sr-only" htmlFor="nl-builder-prompt">
           {t('workboard.builder.ai.title')}
         </label>
@@ -72,7 +72,7 @@ export function NlBuilderPanel({ onApply }: { onApply: (positions: BuilderPositi
           rows={2}
           onChange={(event) => setPrompt(event.target.value)}
           placeholder={t('workboard.builder.ai.placeholder')}
-          className="w-full rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-600 focus:border-sky-600 focus:outline-none"
+          className="bt-textarea w-full"
         />
 
         <div className="flex items-center gap-2">
@@ -102,11 +102,14 @@ export function NlBuilderPanel({ onApply }: { onApply: (positions: BuilderPositi
 
         {mutation.isSuccess ? (
           <>
-            <p className="text-xs text-emerald-300">
+            <p className="text-xs bt-pos">
               {t('workboard.builder.ai.applied', { count: appliedCount ?? 0 })}
             </p>
             {unresolved.length > 0 ? (
-              <div className="rounded-md border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200/90">
+              <div
+                className="bt-badge bt-badge--gold block px-3 py-2 text-xs"
+                style={{ borderRadius: 6 }}
+              >
                 <p className="font-medium">{t('workboard.builder.ai.unresolved')}</p>
                 <ul className="mt-1 list-disc pl-4">
                   {unresolved.map((line, index) => (
@@ -118,7 +121,7 @@ export function NlBuilderPanel({ onApply }: { onApply: (positions: BuilderPositi
           </>
         ) : null}
 
-        <p className="text-[0.7rem] text-neutral-600">{t('workboard.builder.ai.disclaimer')}</p>
+        <p className="text-[0.7rem] bt-muted">{t('workboard.builder.ai.disclaimer')}</p>
       </div>
     </details>
   );

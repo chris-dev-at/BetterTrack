@@ -68,13 +68,17 @@ function readParams(sp: URLSearchParams): OAuthAuthorizeParams | null {
   return params;
 }
 
-/** Centered, standalone card scaffold (this screen sits outside the app chrome). */
+/**
+ * Centered, standalone card scaffold (this screen sits outside the app chrome),
+ * built on the Origin gate. Widened past the 400px auth default because consent
+ * carries an app identity, a scope list and a redirect URI.
+ */
 function ConsentShell({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-[#0b0e14] px-4 pb-12 pt-[10vh] sm:pt-[14vh]">
-      <div className="mx-auto w-full max-w-md">
-        <div className="mb-8 text-center">
-          <Wordmark edition="Web" className="text-2xl" />
+    <div className="bt-app bt-gate">
+      <div className="bt-gate__card" style={{ width: 'min(480px, 100%)' }}>
+        <div className="bt-gate__brand text-center">
+          <Wordmark edition="Web" />
         </div>
         {children}
       </div>
@@ -100,28 +104,40 @@ function AppIdentity({
   return (
     <div className="flex items-center gap-3">
       {firstParty ? (
-        <div className="grid h-12 w-12 place-items-center rounded-xl bg-sky-500/15 text-base font-bold text-sky-300 ring-1 ring-sky-500/40">
+        <div
+          className="grid h-12 w-12 shrink-0 place-items-center rounded-lg text-base font-bold"
+          style={{
+            background: 'var(--bt-gold-soft)',
+            border: '1px solid var(--bt-border-accent)',
+            color: 'var(--bt-gold)',
+          }}
+        >
           {t('auth.oauthConsent.logoBadge')}
         </div>
       ) : logoUrl ? (
         <img
           src={logoUrl}
           alt=""
-          className="h-12 w-12 rounded-xl object-cover ring-1 ring-neutral-700"
+          className="h-12 w-12 shrink-0 rounded-lg object-cover"
+          style={{ border: '1px solid var(--bt-border-strong)' }}
         />
       ) : (
-        <div className="grid h-12 w-12 place-items-center rounded-xl bg-neutral-800 text-lg font-semibold text-neutral-300 ring-1 ring-neutral-700">
+        <div
+          className="bt-soft grid h-12 w-12 shrink-0 place-items-center rounded-lg text-lg font-semibold"
+          style={{
+            background: 'var(--bt-surface-strong)',
+            border: '1px solid var(--bt-border-strong)',
+          }}
+        >
           {name.charAt(0).toUpperCase()}
         </div>
       )}
       <div className="min-w-0">
-        <div className="truncate font-semibold text-neutral-100">{name}</div>
+        <div className="bt-h3 truncate">{name}</div>
         {firstParty ? (
-          <div className="text-xs font-medium text-sky-400">
-            {t('auth.oauthConsent.firstParty')}
-          </div>
+          <div className="bt-gold text-xs font-medium">{t('auth.oauthConsent.firstParty')}</div>
         ) : (
-          <div className="text-xs text-neutral-500">{t('auth.oauthConsent.thirdParty')}</div>
+          <div className="bt-row-sub">{t('auth.oauthConsent.thirdParty')}</div>
         )}
       </div>
     </div>
@@ -180,7 +196,7 @@ export function ConsentPage() {
   if (params == null) {
     return (
       <ConsentShell>
-        <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div>
           <Alert tone="error">{t('auth.oauthConsent.invalidRequest')}</Alert>
         </div>
       </ConsentShell>
@@ -191,11 +207,9 @@ export function ConsentPage() {
   if (cancelled) {
     return (
       <ConsentShell>
-        <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-          <h1 className="text-lg font-semibold text-neutral-100">
-            {t('auth.oauthConsent.cancelledTitle')}
-          </h1>
-          <p className="text-sm text-neutral-400">{t('auth.oauthConsent.cancelledBody')}</p>
+        <div className="flex flex-col gap-4">
+          <h1 className="bt-h2">{t('auth.oauthConsent.cancelledTitle')}</h1>
+          <p className="bt-muted text-sm">{t('auth.oauthConsent.cancelledBody')}</p>
           <Button onClick={() => navigate('/', { replace: true })}>
             {t('auth.oauthConsent.goToApp')}
           </Button>
@@ -207,7 +221,7 @@ export function ConsentPage() {
   if (query.isPending) {
     return (
       <ConsentShell>
-        <div className="grid place-items-center rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div className="grid place-items-center py-6">
           <Spinner label={t('auth.oauthConsent.loading')} />
         </div>
       </ConsentShell>
@@ -223,7 +237,7 @@ export function ConsentPage() {
         : t('auth.oauthConsent.loadError');
     return (
       <ConsentShell>
-        <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div>
           <Alert tone="error">{message}</Alert>
         </div>
       </ConsentShell>
@@ -242,10 +256,10 @@ export function ConsentPage() {
   if (details.client.firstParty) {
     return (
       <ConsentShell>
-        <div className="flex flex-col gap-5 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div className="flex flex-col gap-5">
           {approveError ? <Alert tone="error">{approveError}</Alert> : null}
           <AppIdentity name={details.client.name} logoUrl={null} firstParty />
-          <p className="text-sm text-neutral-400">{signedInAs}</p>
+          <p className="bt-muted text-sm">{signedInAs}</p>
           <div className="flex flex-col gap-2 sm:flex-row-reverse">
             <Button
               className="sm:flex-1"
@@ -278,16 +292,16 @@ export function ConsentPage() {
   // alongside (V4-P2b). ──
   return (
     <ConsentShell>
-      <div className="flex flex-col gap-5 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+      <div className="flex flex-col gap-5">
         {approveError ? <Alert tone="error">{approveError}</Alert> : null}
         <AppIdentity
           name={details.client.name}
           logoUrl={details.client.logoUrl}
           firstParty={false}
         />
-        <p className="text-sm text-neutral-400">{signedInAs}</p>
-        <p className="text-sm text-neutral-400">
-          <span className="font-medium text-neutral-200">{details.client.name}</span>{' '}
+        <p className="bt-muted text-sm">{signedInAs}</p>
+        <p className="bt-muted text-sm">
+          <span className="bt-soft font-medium">{details.client.name}</span>{' '}
           {t('auth.oauthConsent.wantsAccess')}
         </p>
 
@@ -295,9 +309,9 @@ export function ConsentPage() {
             groups (Portfolio, Social, …) instead of a flat run of lines. */}
         <ScopeSummary items={details.scopes} />
 
-        <p className="break-all text-xs text-neutral-500">
+        <p className="bt-muted break-all text-xs">
           {t('auth.oauthConsent.returnedTo')}{' '}
-          <code className="font-mono text-neutral-400">{details.redirectUri}</code>
+          <code className="bt-soft font-mono">{details.redirectUri}</code>
           {t('auth.oauthConsent.revokeHint')}
         </p>
 
@@ -325,7 +339,7 @@ export function ConsentPage() {
         </div>
         <button
           type="button"
-          className="text-center text-sm font-medium text-neutral-400 hover:text-neutral-200 disabled:opacity-60"
+          className="bt-btn bt-btn--quiet"
           disabled={approve.isPending || switching}
           onClick={() => void handleUseAnotherAccount()}
         >

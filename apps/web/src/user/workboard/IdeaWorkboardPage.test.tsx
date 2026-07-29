@@ -47,9 +47,9 @@ function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/workboard/ideas/${IDEA_ID}`]}>
+      <MemoryRouter initialEntries={[`/workbench/ideas/${IDEA_ID}`]}>
         <Routes>
-          <Route path="/workboard/ideas/:ideaId" element={<IdeaWorkboardPage />} />
+          <Route path="/workbench/ideas/:ideaId" element={<IdeaWorkboardPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -84,7 +84,7 @@ describe('IdeaWorkboardPage', () => {
     expect(getResolvedConglomerate).not.toHaveBeenCalled();
   });
 
-  test('reopens a conglomerate-sourced idea by resolving the referenced basket', async () => {
+  test('reopens a blueprint-sourced idea by resolving the referenced basket', async () => {
     const idea: Idea = {
       ...adhocIdea(),
       thesis: null,

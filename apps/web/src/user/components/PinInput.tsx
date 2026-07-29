@@ -1,8 +1,6 @@
 import { useRef } from 'react';
 import type { ClipboardEvent, KeyboardEvent } from 'react';
 
-import { cx } from './ui';
-
 /** The mask glyph rendered in place of a typed PIN digit. */
 const MASK_GLYPH = '•';
 
@@ -98,10 +96,8 @@ export function PinInput({
   }
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={`${baseId}-0`} className="text-sm font-medium text-neutral-300">
-        {label}
-      </label>
+    <div className="bt-field">
+      <label htmlFor={`${baseId}-0`}>{label}</label>
       <div role="group" data-pin-input="true" className="flex flex-wrap gap-2">
         {Array.from({ length }, (_, index) => {
           const digit = value[index] ?? '';
@@ -128,17 +124,17 @@ export function PinInput({
               onKeyDown={(e) => handleKeyDown(index, e)}
               onPaste={handlePaste}
               onFocus={(e) => e.target.select()}
-              className={cx(
-                'h-11 w-9 rounded-md text-center text-lg font-semibold text-neutral-100',
-                'bg-neutral-950 ring-1 ring-inset ring-neutral-700',
-                'focus:outline-none focus:ring-2 focus:ring-sky-500',
-                'disabled:cursor-not-allowed disabled:text-neutral-500',
-              )}
+              className="bt-input text-center"
+              // `bt-input` is a full-width 34px control; a PIN box is a fixed
+              // 38×44 tile with a large mask glyph. Its width/height/padding and
+              // type scale are unlayered rules that outrank Tailwind utilities,
+              // so the per-box geometry is expressed inline.
+              style={{ width: 38, height: 44, padding: 0, fontSize: 20, fontWeight: 600 }}
             />
           );
         })}
       </div>
-      {hint ? <p className="text-xs text-neutral-500">{hint}</p> : null}
+      {hint ? <p className="bt-field__hint">{hint}</p> : null}
     </div>
   );
 }
