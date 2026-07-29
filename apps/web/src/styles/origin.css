@@ -1614,3 +1614,189 @@
     color: #111;
   }
 }
+
+/* ===== R2: portfolio ===== */
+
+/*
+ * Portfolio switcher — a selector, not a management menu. The trigger is a quiet
+ * button (kind icon · name · chevron); the dropdown is a search + list + create
+ * footer. Selection is background/ink + a check, never an edge marker.
+ */
+
+.bt-portfolio-trigger {
+  max-width: min(360px, 46vw);
+  font-weight: 600;
+}
+
+.bt-portfolio-trigger > .bt-muted {
+  margin-left: -2px;
+}
+
+.bt-portfolio-menu {
+  width: 300px;
+  max-width: calc(100vw - 24px);
+}
+
+.bt-portfolio-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 1px 1px 5px;
+  padding: 0 9px;
+  min-height: 32px;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 6px;
+  background: var(--bt-bg);
+  color: var(--bt-muted);
+}
+
+.bt-portfolio-search:focus-within {
+  border-color: var(--bt-gold);
+  color: var(--bt-text-soft);
+}
+
+.bt-portfolio-search > input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--bt-text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  appearance: none;
+}
+
+.bt-portfolio-search > input::placeholder {
+  color: var(--bt-faint);
+}
+
+.bt-portfolio-search > input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.bt-portfolio-list {
+  max-height: 264px;
+  overflow-y: auto;
+  padding: 1px 0;
+}
+
+.bt-portfolio-option > svg:first-child {
+  flex: none;
+  color: var(--bt-muted);
+}
+
+/* Selected row: background + ink + check. No left-edge accent bar, ever. */
+.bt-portfolio-option[aria-checked='true'] {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text);
+}
+
+.bt-portfolio-option[aria-checked='true'] > svg:first-child {
+  color: var(--bt-text-soft);
+}
+
+.bt-portfolio-check {
+  flex: none;
+  margin-left: auto;
+}
+
+.bt-portfolio-default {
+  flex: none;
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* A default row that is also selected: badge keeps the gap, check ends the row. */
+.bt-portfolio-default + .bt-portfolio-check {
+  margin-left: 0;
+}
+
+.bt-portfolio-empty {
+  padding: 9px;
+  color: var(--bt-muted);
+  font-size: 12.5px;
+}
+
+/* ── Portfolio settings ──────────────────────────────────────────────────── */
+
+/* Label/control on the left, its one action on the right; stacks when narrow. */
+.bt-settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bt-settings-row__field {
+  flex: 1 1 260px;
+  max-width: 420px;
+}
+
+.bt-settings-block {
+  margin-top: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+/* Kind picker: icon + label per kind, selected by background/ink only. */
+.bt-kind-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bt-kind-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 13px;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 6px;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    border-color var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-kind-option > svg {
+  color: var(--bt-muted);
+  transition: color var(--bt-t-fast);
+}
+
+.bt-kind-option:hover {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text);
+}
+
+.bt-kind-option.is-active {
+  background: var(--bt-surface-strong);
+  border-color: var(--bt-border-strong);
+  color: var(--bt-text);
+  font-weight: 590;
+}
+
+.bt-kind-option.is-active > svg {
+  color: var(--bt-text);
+}
+
+.bt-danger-zone {
+  border-color: rgba(251, 113, 133, 0.24);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-kind-option,
+  .bt-kind-option > svg {
+    transition: none;
+  }
+}

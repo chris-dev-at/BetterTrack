@@ -186,7 +186,7 @@ test.each([
   ['/portfolio/plan', 'Plan'],
   ['/portfolio/automate', 'Automate'],
   ['/portfolio/files', 'Files'],
-  ['/portfolio/settings', 'Portfolio settings'],
+  // `/portfolio/settings` is a real page now (PortfolioSettingsPage), not parked.
   ['/portfolio/health', 'Data health'],
   ['/portfolio/private-markets', 'Private markets'],
   ['/portfolio/rebalance', 'Rebalance'],

@@ -1849,7 +1849,11 @@
       "deleteConfirmAriaLabel": "Portfolio name confirmation",
       "deleting": "Deleting…",
       "delete": "Delete permanently",
-      "deleteError": "Could not delete the portfolio. Please try again."
+      "deleteError": "Could not delete the portfolio. Please try again.",
+      "searchPlaceholder": "Search portfolios",
+      "searchAriaLabel": "Search portfolios",
+      "noMatches": "No matches.",
+      "settingsMenuItem": "Portfolio settings"
     },
     "cash": {
       "title": "Cash balance",
@@ -2119,6 +2123,32 @@
       "files": "Files",
       "people": "People",
       "settings": "Settings"
+    },
+    "kinds": {
+      "private": "Private",
+      "family": "Family",
+      "business": "Business",
+      "savings": "Savings",
+      "property": "Property",
+      "group": "Group"
+    },
+    "settings": {
+      "title": "Portfolio settings",
+      "subtitle": "Manage this portfolio.",
+      "loadError": "Could not load this portfolio.",
+      "generalHeading": "General",
+      "nameSaved": "Saved.",
+      "kindLabel": "Kind",
+      "kindHint": "Sets the icon shown in the switcher. Stored on this device.",
+      "groupHeading": "Group portfolio",
+      "groupHint": "Share this portfolio with friends — everyone edits the same book.",
+      "groupActive": "{{name}} · {{count}} members",
+      "manageGroup": "Manage group",
+      "dangerHeading": "Danger zone",
+      "archiveAction": "Archive this portfolio",
+      "archiveHint": "Hidden from your list. Restorable any time.",
+      "deleteAction": "Delete this portfolio",
+      "deleteHint": "Permanent. Everything in it is removed."
     }
   },
   "workboard": {
@@ -4051,13 +4081,6 @@
       "p1": "Owner, manager and viewer roles per portfolio",
       "p2": "Approval rules for consequential changes",
       "p3": "Access and activity in one audit view"
-    },
-    "portfolioSettings": {
-      "title": "Portfolio settings",
-      "body": "Identity, calculation and lifecycle policy for this portfolio — base currency, tax model, data authority, archive and split.",
-      "p1": "Name, currency and calculation preferences",
-      "p2": "Tax model overrides per portfolio",
-      "p3": "Archive, duplicate, split and merge"
     },
     "portfolioEvents": {
       "title": "Events",

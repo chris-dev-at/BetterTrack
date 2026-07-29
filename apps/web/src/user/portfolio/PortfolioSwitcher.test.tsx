@@ -7,25 +7,16 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 vi.mock('../../lib/portfolioApi', () => ({
   listPortfolios: vi.fn(),
   createPortfolio: vi.fn(),
-  archivePortfolio: vi.fn(),
-  restorePortfolio: vi.fn(),
-  updatePortfolio: vi.fn(),
-  deletePortfolio: vi.fn(),
 }));
 
-import {
-  archivePortfolio,
-  createPortfolio,
-  deletePortfolio,
-  listPortfolios,
-  restorePortfolio,
-} from '../../lib/portfolioApi';
+import { createPortfolio, listPortfolios } from '../../lib/portfolioApi';
 import {
   ACTIVE_PORTFOLIO_PARAM,
   PortfolioSwitcher,
   rememberActivePortfolio,
   resolveActivePortfolio,
 } from './PortfolioSwitcher';
+import { resetPortfolioKindCache, setPortfolioKind } from './portfolioKinds';
 
 type Summary = {
   id: string;
@@ -35,6 +26,13 @@ type Summary = {
   isDefault: boolean;
   defaultPayFromCash: boolean;
   archivedAt: string | null;
+  mirror?: {
+    chainId: string;
+    chainName: string;
+    role: 'owner' | 'manager' | 'member';
+    memberCount: number;
+    sync: { appliedSeq: number; lastSeq: number; percent: number; synced: boolean };
+  };
 };
 
 function summary(over: Partial<Summary> & { id: string; name: string }): Summary {
@@ -50,6 +48,36 @@ function summary(over: Partial<Summary> & { id: string; name: string }): Summary
 
 const MAIN = summary({ id: 'p1', name: 'Main', isDefault: true });
 const TRADING = summary({ id: 'p2', name: 'Trading', sortOrder: 1 });
+
+/** A synced copy of an active chain — the only group signal the contract carries. */
+const HOUSEHOLD = summary({
+  id: 'p3',
+  name: 'Household',
+  sortOrder: 2,
+  mirror: {
+    chainId: 'c1',
+    chainName: 'Household',
+    role: 'owner',
+    memberCount: 3,
+    sync: { appliedSeq: 9, lastSeq: 9, percent: 100, synced: true },
+  },
+});
+
+/** Seven portfolios — one past SEARCH_THRESHOLD, so the search field appears. */
+const MANY = [
+  MAIN,
+  TRADING,
+  summary({ id: 'p4', name: 'Retirement', sortOrder: 3 }),
+  summary({ id: 'p5', name: 'Crypto', sortOrder: 4 }),
+  summary({ id: 'p6', name: 'Kids', sortOrder: 5 }),
+  summary({ id: 'p7', name: 'Rentals', sortOrder: 6 }),
+  summary({ id: 'p8', name: 'Side business', sortOrder: 7 }),
+];
+
+/** The glyph a row/trigger rendered, read off the inert `data-icon` marker. */
+function iconOf(element: HTMLElement): string | null | undefined {
+  return element.querySelector('svg[data-icon]')?.getAttribute('data-icon');
+}
 
 /** Surfaces the current `?portfolio=` param so tests can assert routing. */
 function ActiveProbe() {
@@ -72,6 +100,8 @@ function renderSwitcher() {
 beforeEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
+  localStorage.clear();
+  resetPortfolioKindCache();
 });
 
 describe('resolveActivePortfolio session stickiness', () => {
@@ -136,129 +166,151 @@ describe('PortfolioSwitcher', () => {
     await waitFor(() => expect(screen.getByTestId('active-param')).toHaveTextContent('p9'));
   });
 
-  test('archive is disabled when only one active portfolio exists', async () => {
-    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN] });
-    renderSwitcher();
-
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    expect(await screen.findByRole('menuitem', { name: 'Archive current' })).toBeDisabled();
-  });
-
-  test('archives the active portfolio through the API', async () => {
+  test('the active row is checked, and only it', async () => {
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
-    vi.mocked(archivePortfolio).mockResolvedValue({
-      ...TRADING,
-      archivedAt: '2026-01-01T00:00:00.000Z',
-    });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    // Switch to the non-default Trading, then archive it.
-    await userEvent.click(await screen.findByRole('menuitemradio', { name: /Trading/ }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Archive current' }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Archive' }));
-
-    await waitFor(() => expect(archivePortfolio).toHaveBeenCalledWith('p2'));
-  });
-
-  test('shows loading skeletons while the Archived dialog fetches', async () => {
-    let resolveArchived!: (value: { portfolios: Summary[] }) => void;
-    vi.mocked(listPortfolios).mockImplementation((_signal, includeArchived) => {
-      if (includeArchived) {
-        return new Promise((resolve) => {
-          resolveArchived = resolve;
-        });
-      }
-      return Promise.resolve({ portfolios: [MAIN] });
-    });
-    renderSwitcher();
-
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Archived…' }));
-
-    expect(await screen.findAllByRole('status', { name: 'Loading' })).toHaveLength(2);
-    expect(screen.queryByText('No archived portfolios.')).not.toBeInTheDocument();
-
-    resolveArchived({ portfolios: [MAIN] });
-    await waitFor(() => expect(screen.getByText('No archived portfolios.')).toBeInTheDocument());
-  });
-
-  test('restores an archived portfolio from the Archived dialog', async () => {
-    vi.mocked(listPortfolios).mockImplementation((_signal, includeArchived) =>
-      Promise.resolve({
-        portfolios: includeArchived
-          ? [MAIN, summary({ id: 'p3', name: 'Old', archivedAt: '2026-01-01T00:00:00.000Z' })]
-          : [MAIN],
-      }),
+    expect(await screen.findByRole('menuitemradio', { name: /Main/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
     );
-    vi.mocked(restorePortfolio).mockResolvedValue(summary({ id: 'p3', name: 'Old' }));
+    expect(screen.getByRole('menuitemradio', { name: /Trading/ })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+  });
+
+  // ── Kinds ─────────────────────────────────────────────────────────────────
+
+  test('each row renders its stored kind icon, defaulting to private', async () => {
+    setPortfolioKind(TRADING.id, 'business');
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Archived…' }));
-
-    await userEvent.click(await screen.findByRole('button', { name: 'Restore' }));
-    await waitFor(() => expect(restorePortfolio).toHaveBeenCalledWith('p3'));
+    expect(iconOf(await screen.findByRole('menuitemradio', { name: /Trading/ }))).toBe('briefcase');
+    // Main was never classified → the private default.
+    expect(iconOf(screen.getByRole('menuitemradio', { name: /Main/ }))).toBe('user-lock');
   });
 
-  test('delete is disabled when only one active portfolio exists', async () => {
+  test('the trigger follows the active portfolio kind', async () => {
+    setPortfolioKind(MAIN.id, 'savings');
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await waitFor(() => expect(iconOf(trigger)).toBe('piggy-bank'));
+  });
+
+  test('a group portfolio shows the group icon regardless of its kind', async () => {
+    setPortfolioKind(HOUSEHOLD.id, 'family');
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, HOUSEHOLD] });
+    renderSwitcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    expect(iconOf(await screen.findByRole('menuitemradio', { name: /Household/ }))).toBe('users');
+  });
+
+  // ── Search ────────────────────────────────────────────────────────────────
+
+  test('a short list has no search field', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    renderSwitcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    await screen.findByRole('menuitemradio', { name: /Main/ });
+    expect(screen.queryByLabelText('Search portfolios')).not.toBeInTheDocument();
+  });
+
+  test('a long list gets a focused search field that filters by name', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: MANY });
+    renderSwitcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    const search = await screen.findByLabelText('Search portfolios');
+    expect(search).toHaveFocus();
+
+    await userEvent.type(search, 'ret');
+    // "Retirement" matches; case-insensitive and anywhere in the name.
+    expect(await screen.findByRole('menuitemradio', { name: /Retirement/ })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitemradio', { name: /Main/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitemradio', { name: /Crypto/ })).not.toBeInTheDocument();
+  });
+
+  test('a search matching nothing says so', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: MANY });
+    renderSwitcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    await userEvent.type(await screen.findByLabelText('Search portfolios'), 'zzz');
+
+    expect(await screen.findByText('No matches.')).toBeInTheDocument();
+    expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0);
+  });
+
+  test('the filter resets between openings', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: MANY });
+    renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await userEvent.click(trigger);
+    await userEvent.type(await screen.findByLabelText('Search portfolios'), 'crypto');
+    expect(screen.queryByRole('menuitemradio', { name: /Main/ })).not.toBeInTheDocument();
+
+    await userEvent.click(trigger); // close
+    await userEvent.click(trigger); // reopen
+    expect(await screen.findByLabelText('Search portfolios')).toHaveValue('');
+    expect(screen.getByRole('menuitemradio', { name: /Main/ })).toBeInTheDocument();
+  });
+
+  test('Escape closes the menu', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: MANY });
+    renderSwitcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    await screen.findByRole('menu', { name: 'Portfolios' });
+
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() =>
+      expect(screen.queryByRole('menu', { name: 'Portfolios' })).not.toBeInTheDocument(),
+    );
+  });
+
+  // ── The menu is a selector, not a management surface ──────────────────────
+
+  test('links to the settings tab of the active portfolio', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    renderSwitcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    await userEvent.click(await screen.findByRole('menuitemradio', { name: /Trading/ }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+
+    expect(await screen.findByRole('menuitem', { name: 'Portfolio settings' })).toHaveAttribute(
+      'href',
+      '/portfolio/settings?portfolio=p2',
+    );
+  });
+
+  test('rename / archive / delete / archived are gone from the menu', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    renderSwitcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    await screen.findByRole('menu', { name: 'Portfolios' });
+
+    for (const gone of ['Rename current', 'Archive current', 'Delete current', 'Archived…']) {
+      expect(screen.queryByRole('menuitem', { name: gone })).not.toBeInTheDocument();
+    }
+  });
+
+  test('still offers both create entry points', async () => {
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN] });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    expect(await screen.findByRole('menuitem', { name: 'Delete current' })).toBeDisabled();
-  });
-
-  test('the delete button stays disabled until the exact portfolio name is typed', async () => {
-    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
-    renderSwitcher();
-
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitemradio', { name: /Trading/ }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete current' }));
-
-    const del = await screen.findByRole('button', { name: 'Delete permanently' });
-    expect(del).toBeDisabled();
-
-    const field = screen.getByLabelText('Portfolio name confirmation');
-    await userEvent.type(field, 'Tradin'); // not yet the full name
-    expect(del).toBeDisabled();
-    await userEvent.type(field, 'g'); // now exactly "Trading"
-    expect(del).toBeEnabled();
-  });
-
-  test('deletes the active portfolio and navigates away on success', async () => {
-    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
-    vi.mocked(deletePortfolio).mockResolvedValue(undefined);
-    renderSwitcher();
-
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitemradio', { name: /Trading/ }));
-    await waitFor(() => expect(screen.getByTestId('active-param')).toHaveTextContent('p2'));
-
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete current' }));
-    await userEvent.type(screen.getByLabelText('Portfolio name confirmation'), 'Trading');
-    await userEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
-
-    await waitFor(() => expect(deletePortfolio).toHaveBeenCalledWith('p2'));
-    // The deleted portfolio was active → the routing param is cleared (navigates
-    // away to the auto-promoted default).
-    await waitFor(() => expect(screen.getByTestId('active-param')).toHaveTextContent(''));
-  });
-
-  test('names the auto-promoted default when deleting the current default', async () => {
-    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
-    renderSwitcher();
-
-    // Main is the active default; deleting it promotes Trading.
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete current' }));
-
-    expect(
-      await screen.findByText('"Trading" will become your new default portfolio.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('menuitem', { name: '+ New portfolio' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '+ New group portfolio' })).toBeInTheDocument();
   });
 });

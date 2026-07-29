@@ -31,7 +31,7 @@ export function PortfolioWorkspace() {
     { to: '/portfolio/automate', label: t('portfolio.tabs.automate'), parked: true },
     { to: '/portfolio/files', label: t('portfolio.tabs.files'), parked: true },
     { to: '/portfolio/people', label: t('portfolio.tabs.people'), parked: true },
-    { to: '/portfolio/settings', label: t('portfolio.tabs.settings'), parked: true },
+    { to: '/portfolio/settings', label: t('portfolio.tabs.settings') },
   ];
 
   return (
