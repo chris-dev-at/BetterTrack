@@ -63,9 +63,10 @@ function renderAt(path: string, { entries }: { entries?: string[] } = {}) {
           <Route path="/" element={<p>home-canvas</p>} />
           <Route path="/elsewhere" element={<p>elsewhere-canvas</p>} />
           <Route path="/developer" element={<p>developer-page</p>} />
-          <Route path="/control" element={<ControlCenterOverlay />} />
+          {/* Mirrors UserApp: ONE optional-param node — two separate nodes
+              would remount the overlay when a click crosses between them. */}
           <Route path="/control/data" element={<p>data-management-page</p>} />
-          <Route path="/control/:panel" element={<ControlCenterOverlay />} />
+          <Route path="/control/:panel?" element={<ControlCenterOverlay />} />
         </Routes>
       </MemoryRouter>
     </I18nProvider>,
@@ -165,6 +166,35 @@ describe('ControlCenterOverlay', () => {
     ]) {
       expect(within(dialog).getByRole('link', { name })).toHaveAttribute('href', href);
     }
+  });
+
+  test('panel switches keep the overlay alive and close leaves in ONE step', async () => {
+    // MemoryRouter never writes the router idx into window.history — seed it
+    // like the "goes back" test below, and reset at the end for later tests.
+    window.history.pushState({ idx: 1 }, '');
+    const user = userEvent.setup();
+    renderAt('/control', { entries: ['/elsewhere', '/control'] });
+
+    // Liveness probe: text typed into the filter must survive panel switches —
+    // a remounting overlay (the visual "reopen" bug) would blank it.
+    const filter = within(popup()).getByRole('searchbox', { name: 'Filter panels' });
+    await user.type(filter, 'e');
+
+    await user.click(within(popup()).getByRole('link', { name: 'Security' }));
+    expect(await screen.findByText('security-panel')).toBeInTheDocument();
+    expect(
+      within(popup()).getByRole('searchbox', { name: 'Filter panels' }),
+    ).toHaveValue('e');
+
+    await user.click(within(popup()).getByRole('link', { name: 'Webhooks' }));
+    expect(await screen.findByText('webhooks-panel')).toBeInTheDocument();
+
+    // Two panel hops later, ONE Escape returns to the pre-overlay page: the
+    // switches replaced the history entry instead of stacking on it.
+    await user.keyboard('{Escape}');
+    expect(await screen.findByText('elsewhere-canvas')).toBeInTheDocument();
+
+    window.history.pushState({ idx: 0 }, '');
   });
 
   test('Escape closes the popup; with no history it lands on the home canvas', async () => {

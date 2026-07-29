@@ -285,6 +285,11 @@ export function ControlCenterOverlay() {
                           panel.danger && 'is-danger',
                         )}
                         key={panel.id}
+                        // `replace`: the whole overlay session occupies ONE
+                        // history entry — closing (Esc, scrim, ✕, browser Back)
+                        // leaves in a single step no matter how many panels
+                        // were visited, instead of unwinding them one by one.
+                        replace
                         to={`/control/${panel.id}`}
                       >
                         <Icon name={panel.icon} size={16} />

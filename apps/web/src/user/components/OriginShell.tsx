@@ -619,7 +619,11 @@ export function OriginShell() {
           </header>
 
           <main className="bt-canvas">
-            <ErrorBoundary key={pathname}>
+            {/* resetKey, not key: keying by pathname remounted the whole page
+                tree on every navigation — replaying overlay entrance animations
+                and resetting page state. The boundary only needs navigation to
+                CLEAR a crash, never to remount healthy children. */}
+            <ErrorBoundary resetKey={pathname}>
               <Outlet />
             </ErrorBoundary>
             <footer style={{ marginTop: 56 }}>

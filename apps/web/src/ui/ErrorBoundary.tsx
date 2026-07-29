@@ -10,6 +10,13 @@ export interface ErrorBoundaryProps {
    * button is shown.
    */
   fallback?: ReactNode;
+  /**
+   * When this value changes while the boundary is showing an error, the error
+   * clears and children re-render. Unlike keying the boundary itself (the old
+   * shell pattern), a reset key never unmounts healthy children — route
+   * transitions keep long-lived subtrees (overlays, docks) mounted.
+   */
+  resetKey?: unknown;
 }
 
 interface ErrorBoundaryState {
@@ -36,6 +43,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     // Report render-time errors to error tracking (§13.4 V4-P5a). A no-op when
     // Sentry is disabled (no DSN), so behavior is unchanged without a DSN.
     reportError(error, { componentStack: info.componentStack });
+  }
+
+  override componentDidUpdate(prevProps: ErrorBoundaryProps): void {
+    if (this.state.hasError && prevProps.resetKey !== this.props.resetKey) this.reset();
   }
 
   reset = (): void => {
