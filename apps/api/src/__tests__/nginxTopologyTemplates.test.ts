@@ -50,7 +50,7 @@ function composeLandingEnvironment(hostEnv: Record<string, string>): Record<stri
   if (landingStart < 0 || apiStart < 0) throw new Error('landing Compose service not found');
 
   const landingService = compose.slice(landingStart, apiStart);
-  const entries = [...landingService.matchAll(/^      ([A-Z][A-Z0-9_]*): '([^']*)'$/gm)];
+  const entries = [...landingService.matchAll(/^ {6}([A-Z][A-Z0-9_]*): '([^']*)'$/gm)];
   return Object.fromEntries(
     entries.map((entry) => {
       const name = entry[1];
