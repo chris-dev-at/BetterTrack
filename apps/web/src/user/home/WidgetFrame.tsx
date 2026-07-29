@@ -1,4 +1,13 @@
-import { useEffect, useId, useRef, useState, type PointerEvent, type ReactNode } from 'react';
+// Aliased: `SettingsPopover` below binds a *DOM* `MouseEvent` listener, which an
+// unaliased React import would shadow.
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from 'react';
 
 import type { PortfolioSummary } from '@bettertrack/contracts';
 
@@ -14,9 +23,16 @@ import type { WidgetDefinition } from './widgets';
  * controls) over un-boxed content.
  *
  * Deliberately flat. No card border, no nested container, and never a left-edge
- * accent bar on the active/dragged item: state reads through background and ink
+ * accent bar on the active/armed item: state reads through background and ink
  * only.
  */
+
+/** One place this widget could go: the gold line the user clicks. */
+export interface PlacementTarget {
+  /** Accessible name — names the position, e.g. "Place before Net worth". */
+  label: string;
+  onSelect: () => void;
+}
 
 export interface WidgetFrameProps {
   definition: WidgetDefinition;
@@ -27,12 +43,23 @@ export interface WidgetFrameProps {
   /** The scoped portfolio's name, or null when the widget spans everything. */
   scopeLabel: string | null;
   portfolios: readonly PortfolioSummary[];
-  dragging: boolean;
+  /** This widget is the one picked up and waiting to be placed. */
+  armed: boolean;
+  /**
+   * Insertion target sitting in the gap *before* this widget, or null when that
+   * position is illegal (nothing armed, or it is where the armed widget already
+   * is). {@link placeAfter} is set only on the last widget, for "at the end".
+   */
+  placeBefore: PlacementTarget | null;
+  placeAfter: PlacementTarget | null;
   onRemove: () => void;
   onResize: (size: WidgetSize) => void;
   onMove: (to: number) => void;
   onSettingsChange: (patch: WidgetSettings) => void;
-  onDragStart: (event: PointerEvent<HTMLElement>) => void;
+  /** Pick this widget up, or put it back down if it is already armed. */
+  onArmToggle: () => void;
+  /** Cancel placement — fired by a click on the armed widget itself. */
+  onCancelPlacement: () => void;
   children: ReactNode;
 }
 
@@ -44,12 +71,15 @@ export function WidgetFrame({
   editing,
   scopeLabel,
   portfolios,
-  dragging,
+  armed,
+  placeBefore,
+  placeAfter,
   onRemove,
   onResize,
   onMove,
   onSettingsChange,
-  onDragStart,
+  onArmToggle,
+  onCancelPlacement,
   children,
 }: WidgetFrameProps) {
   const t = useT();
@@ -59,22 +89,41 @@ export function WidgetFrame({
     definition.rangeOptions !== undefined ||
     definition.SettingsExtra !== undefined;
 
+  /**
+   * Clicking the armed widget puts it back down. Clicks on its own edit chrome
+   * are excluded so the size, settings and ↑/↓ controls keep working while it is
+   * picked up — only the widget's *body* reads as "never mind".
+   */
+  function onSectionClick(event: ReactMouseEvent<HTMLElement>) {
+    if (!armed) return;
+    if ((event.target as HTMLElement).closest('.bt-home-w__chrome') !== null) return;
+    onCancelPlacement();
+  }
+
   return (
     <section
       aria-label={title}
-      className={cx('bt-home-w', editing && 'is-editing', dragging && 'is-dragging')}
+      className={cx('bt-home-w', editing && 'is-editing', armed && 'is-armed')}
       data-size={widget.size}
       data-widget-id={widget.id}
+      onClick={onSectionClick}
     >
+      {placeBefore !== null ? <PlacementLine target={placeBefore} where="before" /> : null}
+      {placeAfter !== null ? <PlacementLine target={placeAfter} where="after" /> : null}
       <div className="bt-home-w__head">
         <span className="bt-label bt-home-w__title">{title}</span>
         {scopeLabel !== null ? <Badge>{scopeLabel}</Badge> : null}
         {editing ? (
           <span className="bt-home-w__chrome">
             <button
-              aria-label={t('home.builder.dragHandle', { title })}
+              aria-label={
+                armed
+                  ? t('home.builder.placeCancel', { title })
+                  : t('home.builder.dragHandle', { title })
+              }
+              aria-pressed={armed}
               className="bt-btn bt-btn--quiet bt-btn--sm bt-btn--icon bt-home-w__grip"
-              onPointerDown={onDragStart}
+              onClick={onArmToggle}
               type="button"
             >
               <GripIcon />
@@ -134,7 +183,28 @@ export function WidgetFrame({
 }
 
 /**
- * The drag grip. Drawn here rather than added to the shared icon set: the icon
+ * One gold insertion line. Absolutely positioned into the grid's own gap — the
+ * column gap on the desktop grid, the row gap in the ≤760px single column — so
+ * showing the targets never reflows the board: the widgets do not move while the
+ * user is deciding where to move one.
+ *
+ * A real `<button>` rather than a styled div, so it is keyboard-reachable in
+ * visual order and announces the position it represents. The hit area is the
+ * whole gap; the 2px line inside it is drawn by the stylesheet.
+ */
+function PlacementLine({ target, where }: { target: PlacementTarget; where: 'before' | 'after' }) {
+  return (
+    <button
+      aria-label={target.label}
+      className={cx('bt-home-place', `bt-home-place--${where}`)}
+      onClick={target.onSelect}
+      type="button"
+    />
+  );
+}
+
+/**
+ * The pick-up grip. Drawn here rather than added to the shared icon set: the icon
  * module is owned by the design-system workstream, and this is the only surface
  * that needs a two-row grip.
  */

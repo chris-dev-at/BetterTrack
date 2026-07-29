@@ -1873,11 +1873,15 @@
   margin-top: 6px;
 }
 
+/* `position: relative` hosts the placement lines: each widget carries the gold
+   insertion target that sits in the gap before it, absolutely positioned so
+   showing the targets never reflows the board. */
 .bt-home-w {
+  position: relative;
   min-width: 0;
   grid-column: span 12;
   border-radius: 4px;
-  transition: opacity var(--bt-t-fast);
+  transition: background var(--bt-t-fast);
 }
 
 .bt-home-w[data-size='s'] {
@@ -1892,15 +1896,19 @@
   grid-column: span 12;
 }
 
-/* Edit mode: a quiet dashed outline marks what is draggable/removable. It sits
+/* Edit mode: a quiet dashed outline marks what is movable/removable. It sits
    outside the content box so nothing reflows when the builder opens. */
 .bt-home-w.is-editing {
   outline: 1px dashed var(--bt-border-strong);
   outline-offset: 12px;
 }
 
-.bt-home-w.is-dragging {
-  opacity: 0.5;
+/* Picked up and waiting for a destination. Reads as lifted through background and
+   ink only — the existing dashed edit outline simply turns gold. No edge bar, and
+   no opacity drop (which would read as "disabled" rather than "held"). */
+.bt-home-w.is-armed {
+  outline-color: var(--bt-gold);
+  background: var(--bt-surface);
 }
 
 .bt-home-w__head {
@@ -1920,15 +1928,10 @@
   margin-left: auto;
 }
 
-/* `touch-action: none` is what makes the pointer drag work on touch devices —
-   without it the browser claims the gesture for scrolling. */
-.bt-home-w__grip {
-  cursor: grab;
-  touch-action: none;
-}
-
-.bt-home-w.is-dragging .bt-home-w__grip {
-  cursor: grabbing;
+/* A click target, not a drag handle: no `touch-action` override (the page must
+   keep scrolling under the finger) and no grab cursor. */
+.bt-home-w__grip[aria-pressed='true'] {
+  color: var(--bt-gold);
 }
 
 .bt-home-w__anchor {
@@ -2463,6 +2466,176 @@
 
 .bt-home-spot-pick__current {
   margin-top: -2px;
+}
+
+/* ── Click-to-place insertion lines ──────────────────────────────────────────
+   Reordering is a discrete choice, not a drag: arming a widget reveals one gold
+   line per legal destination and clicking a line moves it there.
+
+   Every line is absolutely positioned INTO the grid's own gap and hosted by the
+   widget it lands in front of, so revealing them cannot reflow the board — the
+   widgets hold still while the user decides. The last widget additionally hosts
+   the "at the end" line at its trailing edge.
+
+   ORIENTATION follows the grid, because a line that does not match the axis it
+   divides is unreadable — and a vertical line hugging a full-width widget would
+   read as exactly the left-edge accent bar this design forbids. So:
+
+     - a widget sharing its row with a predecessor gets a VERTICAL line in the
+       28px column gap (the default below);
+     - a widget spanning all 12 columns is stacked, so it gets a HORIZONTAL line
+       in the 32px row gap.
+
+   Which sizes span the full row changes at each breakpoint (l always; m from
+   ≤1180px; everything in the ≤760px single column), so the horizontal block is
+   restated per regime rather than guessed at once. A sub-full-width widget that
+   happens to *start* a row still gets a vertical line at that row's leading edge
+   — which is where the widget would actually land, so it still reads true.
+
+   Deliberately un-transitioned: the lines appear and disappear instantly, which
+   is both what the interaction wants (they are a menu, not an animation) and what
+   `prefers-reduced-motion` would demand anyway. */
+
+.bt-home-place {
+  position: absolute;
+  z-index: 2;
+  /* The generous part of the hit area: the whole gap, full height of the widget. */
+  top: 0;
+  bottom: 0;
+  width: 30px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  /* No transition — see the note above. */
+}
+
+.bt-home-place--before {
+  /* Half the 30px target sits either side of the column gap's centre line. */
+  left: -15px;
+}
+
+.bt-home-place--after {
+  right: -15px;
+}
+
+/* The visible line: 2px of brand gold, centred in the target. Gold because this
+   IS the active action — the one moment the board asks a direct question. */
+.bt-home-place::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--bt-gold);
+  opacity: 0.8;
+}
+
+.bt-home-place:hover::after,
+.bt-home-place:focus-visible::after {
+  opacity: 1;
+  box-shadow: 0 0 0 3px var(--bt-gold-soft);
+}
+
+/* The focus ring belongs to the line itself, not to the invisible 30px box. */
+.bt-home-place:focus-visible {
+  outline: none;
+}
+
+/* Full-width widget ⇒ horizontal line, centred in the 32px row gap so it clears
+   the dashed edit outline (which sits 12px out) on both neighbours. */
+.bt-home-w[data-size='l'] > .bt-home-place {
+  top: auto;
+  right: 0;
+  bottom: auto;
+  left: 0;
+  width: auto;
+  height: 30px;
+}
+
+.bt-home-w[data-size='l'] > .bt-home-place--before {
+  top: -16px;
+}
+
+.bt-home-w[data-size='l'] > .bt-home-place--after {
+  bottom: -16px;
+}
+
+.bt-home-w[data-size='l'] > .bt-home-place::after {
+  top: 50%;
+  right: 0;
+  bottom: auto;
+  left: 0;
+  width: auto;
+  height: 2px;
+  margin-top: -1px;
+  margin-left: 0;
+}
+
+/* ≤1180px: `m` widens to all 12 columns, so it stacks too. */
+@media (max-width: 1180px) {
+  .bt-home-w[data-size='m'] > .bt-home-place {
+    top: auto;
+    right: 0;
+    bottom: auto;
+    left: 0;
+    width: auto;
+    height: 30px;
+  }
+
+  .bt-home-w[data-size='m'] > .bt-home-place--before {
+    top: -16px;
+  }
+
+  .bt-home-w[data-size='m'] > .bt-home-place--after {
+    bottom: -16px;
+  }
+
+  .bt-home-w[data-size='m'] > .bt-home-place::after {
+    top: 50%;
+    right: 0;
+    bottom: auto;
+    left: 0;
+    width: auto;
+    height: 2px;
+    margin-top: -1px;
+    margin-left: 0;
+  }
+}
+
+/* ≤760px the board is a single column: every position is a row boundary, and the
+   row gap tightens to 26px (with the edit outline pulled in to 8px). */
+@media (max-width: 759.98px) {
+  .bt-home-w > .bt-home-place {
+    top: auto;
+    right: 0;
+    bottom: auto;
+    left: 0;
+    width: auto;
+    height: 26px;
+  }
+
+  .bt-home-w > .bt-home-place--before {
+    top: -13px;
+  }
+
+  .bt-home-w > .bt-home-place--after {
+    bottom: -13px;
+  }
+
+  .bt-home-w > .bt-home-place::after {
+    top: 50%;
+    right: 0;
+    bottom: auto;
+    left: 0;
+    width: auto;
+    height: 2px;
+    margin-top: -1px;
+    margin-left: 0;
+  }
 }
 
 /* ===== R2: auth + firstrun ===================================================

@@ -7,7 +7,9 @@ import {
   DEFAULT_LAYOUT,
   HOME_CONFIG_STORAGE_KEY,
   moveWidget,
+  moveWidgetToSlot,
   parseHomeConfig,
+  placementSlots,
   readHomeConfig,
   removeWidget,
   setWidgetSettings,
@@ -407,5 +409,120 @@ describe('the settings keys the expanded catalog introduced', () => {
     expect(settingsOf({ count: 5, sentiment: 'bullish', assetIds: ['a', 'b'] })).toEqual({
       count: 5,
     });
+  });
+});
+
+// ─── Click-to-place ──────────────────────────────────────────────────────────
+
+/**
+ * The rules behind the gold insertion lines. Worth testing directly: the
+ * off-by-one between "the gap the user clicked" (numbered against the board as
+ * shown) and "the index to splice into" (numbered after the widget is lifted out)
+ * is exactly the kind of bug that moves a widget one place short and still looks
+ * plausible.
+ */
+describe('placementSlots', () => {
+  test('offers every gap except the two that mean "where it already is"', () => {
+    // Five widgets ⇒ six gaps (0…5); arming index 2 rules out gaps 2 and 3.
+    expect(placementSlots(5, 2)).toEqual([0, 1, 4, 5]);
+  });
+
+  test('the first widget cannot be placed before itself or before its successor', () => {
+    expect(placementSlots(5, 0)).toEqual([2, 3, 4, 5]);
+  });
+
+  test('the last widget’s own gap and the end gap are both ruled out', () => {
+    expect(placementSlots(5, 4)).toEqual([0, 1, 2, 3]);
+  });
+
+  test.each([2, 3, 5, 9])('a board of %i widgets always offers exactly N−1 slots', (count) => {
+    for (let from = 0; from < count; from += 1) {
+      expect(placementSlots(count, from)).toHaveLength(count - 1);
+    }
+  });
+
+  test.each([
+    ['a single widget has nowhere else to go', 1, 0],
+    ['an empty board', 0, 0],
+    ['a negative index', 5, -1],
+    ['an index past the end', 5, 5],
+  ])('%s ⇒ no slots', (_label, count, from) => {
+    expect(placementSlots(count, from)).toEqual([]);
+  });
+});
+
+describe('moveWidgetToSlot', () => {
+  const board: HomeConfig = {
+    version: 1,
+    widgets: (['net-worth', 'news', 'allocation', 'upcoming'] as const).map((type, index) => ({
+      id: `w${index}`,
+      type,
+      size: WIDGET_SIZE_RULES[type].default,
+      settings: {},
+    })),
+  };
+
+  test('moving forward lands the widget in front of the widget that named the gap', () => {
+    // Gap 3 is "before upcoming"; w0 must end up immediately before it.
+    expect(types(moveWidgetToSlot(board, 'w0', 3))).toEqual([
+      'news',
+      'allocation',
+      'net-worth',
+      'upcoming',
+    ]);
+  });
+
+  test('moving backward needs no adjustment', () => {
+    expect(types(moveWidgetToSlot(board, 'w2', 0))).toEqual([
+      'allocation',
+      'net-worth',
+      'news',
+      'upcoming',
+    ]);
+  });
+
+  test('the end slot appends', () => {
+    expect(types(moveWidgetToSlot(board, 'w0', 4))).toEqual([
+      'news',
+      'allocation',
+      'upcoming',
+      'net-worth',
+    ]);
+  });
+
+  test('every offered slot puts the widget exactly where its label promised', () => {
+    // The invariant the UI depends on: after moving into the gap before widget X,
+    // the moved widget is X's immediate predecessor (or last, for the end gap).
+    for (const [from, widget] of board.widgets.entries()) {
+      for (const slot of placementSlots(board.widgets.length, from)) {
+        const namedBefore = board.widgets[slot]?.id ?? null;
+        const next = moveWidgetToSlot(board, widget.id, slot).widgets;
+        const landed = next.findIndex((entry) => entry.id === widget.id);
+        expect(
+          namedBefore === null ? landed : next[landed + 1]?.id,
+          `slot ${slot} for ${widget.id} (from ${from})`,
+        ).toBe(namedBefore === null ? next.length - 1 : namedBefore);
+      }
+    }
+  });
+
+  test.each([
+    ['its own gap', 1],
+    ['the gap just after it', 2],
+  ])('%s is a no-op and returns the same board', (_label, slot) => {
+    expect(moveWidgetToSlot(board, 'w1', slot)).toBe(board);
+  });
+
+  test.each([
+    ['an unknown id', 'nope', 0],
+    ['a negative slot', 'w0', -1],
+    ['a slot past the end gap', 'w0', 5],
+  ])('%s is a no-op', (_label, id, slot) => {
+    expect(moveWidgetToSlot(board, id, slot)).toBe(board);
+  });
+
+  test('leaves the original board untouched', () => {
+    moveWidgetToSlot(board, 'w0', 4);
+    expect(types(board)).toEqual(['net-worth', 'news', 'allocation', 'upcoming']);
   });
 });

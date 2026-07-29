@@ -3974,7 +3974,10 @@
         "overview": "Overview",
         "charts": "Charts",
         "lists": "Lists"
-      }
+      },
+      "placeBefore": "Place before {{title}}",
+      "placeEnd": "Place at the end",
+      "placeCancel": "Stop placing {{title}}"
     },
     "widgets": {
       "range": {
