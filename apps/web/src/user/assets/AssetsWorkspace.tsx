@@ -2,7 +2,7 @@ import { Outlet } from 'react-router-dom';
 
 import { useT } from '../../i18n';
 import { LocalNav } from '../components/LocalNav';
-import { SECTION_NAV, SECTION_STRIP_CLASS, useSectionNavItems } from '../components/sectionNav';
+import { SECTION_NAV, useSectionNavItems } from '../components/sectionNav';
 
 /**
  * Assets destination (PRODUCT_BLUEPRINT.md §4): research the ingredients —
@@ -17,11 +17,7 @@ export function AssetsWorkspace() {
 
   return (
     <div>
-      <LocalNav
-        ariaLabel={t(SECTION_NAV.assets.ariaLabelKey)}
-        className={SECTION_STRIP_CLASS}
-        items={items}
-      />
+      <LocalNav ariaLabel={t(SECTION_NAV.assets.ariaLabelKey)} items={items} />
       <Outlet />
     </div>
   );

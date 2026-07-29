@@ -117,23 +117,16 @@ test('the rail groups carry their section tabs as children', async () => {
     .getAllByRole('link')
     .filter((link) => link.closest('#bt-rail-group-assets') !== null)
     .map((el) => el.textContent);
-  // The very tab set AssetsWorkspace renders, from `components/sectionNav.ts`.
-  expect(children).toEqual([
-    'Overview',
-    'Search',
-    'Watchlists',
-    'News',
-    'Discover',
-    'Events',
-    'Screener',
-  ]);
+  // The curated `rail: true` subset of `components/sectionNav.ts` — the vital
+  // pages only; parked and secondary tabs live in the in-page strip.
+  expect(children).toEqual(['Overview', 'Search', 'Watchlists', 'News']);
   // Home and the utilities stay plain rows — no chevron, no tree.
   expect(
     screen.queryByRole('button', { name: /^(Expand|Collapse) Home$/ }),
   ).not.toBeInTheDocument();
 });
 
-test('the rail tree and the in-page strip are one tab set', async () => {
+test('the rail tree is the vital subset of the full in-page strip', async () => {
   renderAt('/portfolio');
 
   const rail = await findRail();
@@ -142,13 +135,15 @@ test('the rail tree and the in-page strip are one tab set', async () => {
     .filter((link) => link.closest('#bt-rail-group-portfolio') !== null)
     .map((el) => el.textContent);
   const strip = screen.getByRole('navigation', { name: 'Portfolio workspace' });
-  // Both render `components/sectionNav.ts`, so they cannot drift apart.
-  expect(railChildren).toEqual(
-    within(strip)
-      .getAllByRole('link')
-      .map((el) => el.textContent),
-  );
-  expect(railChildren).toContain('Cash flow');
+  const stripChildren = within(strip)
+    .getAllByRole('link')
+    .map((el) => el.textContent);
+
+  // The rail curates; the strip carries everything. Same source table, so the
+  // subset relation is structural, not a coincidence.
+  expect(railChildren).toEqual(['Overview', 'Activity', 'Cash flow', 'Settings']);
+  for (const child of railChildren) expect(stripChildren).toContain(child);
+  expect(stripChildren).toEqual(expect.arrayContaining(['Custom assets', 'Analysis', 'Tax']));
 });
 
 test('the group of the active section opens itself', async () => {
@@ -165,9 +160,9 @@ test('the group of the active section opens itself', async () => {
   );
 });
 
-test('the chevron toggles a group without navigating, and the state persists', async () => {
+test('the chevron toggles without navigating; leaving the sections minimizes all', async () => {
   const user = userEvent.setup();
-  const view = renderAt('/assets/search');
+  renderAt('/assets/search');
 
   const collapse = await screen.findByRole('button', { name: 'Collapse Assets' });
   await user.click(collapse);
@@ -178,20 +173,16 @@ test('the chevron toggles a group without navigating, and the state persists', a
     'false',
   );
   expect(screen.getByRole('searchbox', { name: 'Search assets' })).toBeInTheDocument();
-  // Closing the only open tree leaves the accordion empty.
-  expect(JSON.parse(localStorage.getItem('bt.rail.groups') ?? 'null')).toBeNull();
 
-  // A fresh mount restores the closed tree — and opens the section it lands in.
-  view.unmount();
-  renderAt('/people');
-  expect(await screen.findByRole('button', { name: 'Expand Assets' })).toHaveAttribute(
-    'aria-expanded',
-    'false',
-  );
-  expect(screen.getByRole('button', { name: 'Collapse People' })).toHaveAttribute(
-    'aria-expanded',
-    'true',
-  );
+  // Navigating OUT of the sections (Home) minimizes every tree: the open
+  // dropdown follows the route, it is not a remembered preference.
+  await user.click(within(await findRail()).getByRole('link', { name: 'Home' }));
+  for (const section of ['Portfolio', 'Workbench', 'Assets', 'People']) {
+    expect(screen.getByRole('button', { name: `Expand ${section}` })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  }
 });
 
 test('the rail is an accordion — expanding one group closes the other', async () => {
@@ -213,7 +204,6 @@ test('the rail is an accordion — expanding one group closes the other', async 
     'aria-expanded',
     'false',
   );
-  expect(JSON.parse(localStorage.getItem('bt.rail.groups') ?? 'null')).toBe('workbench');
 });
 
 test('portfolio rail children keep the active portfolio scope', async () => {
@@ -225,9 +215,9 @@ test('portfolio rail children keep the active portfolio scope', async () => {
     'href',
     '/portfolio/cash-flow?portfolio=p-7',
   );
-  expect(within(rail).getByRole('link', { name: /^Plan Planned$/ })).toHaveAttribute(
+  expect(within(rail).getByRole('link', { name: 'Settings' })).toHaveAttribute(
     'href',
-    '/portfolio/plan?portfolio=p-7',
+    '/portfolio/settings?portfolio=p-7',
   );
 
   // The open child is the current page; its group row is not also "current".
@@ -250,14 +240,14 @@ test('the collapse control sits in the rail and persists the preference', async 
   expect(localStorage.getItem('bt.rail')).toBe('collapsed');
 });
 
-test('the four section strips are hidden wherever the rail is shown', async () => {
+test('the in-page strip renders in full alongside the rail tree', async () => {
   renderAt('/portfolio');
 
-  // Rail + strip would be two copies of the same sub-navigation on desktop, so
-  // the strip is display:none'd there and only phones (no rail) render it.
-  expect(await screen.findByRole('navigation', { name: 'Portfolio workspace' })).toHaveClass(
-    'bt-hide-when-rail',
-  );
+  // The strip is the complete sub-navigation at every width (owner: "still
+  // keep the full nav inside the content page"); the rail curates on top.
+  const strip = await screen.findByRole('navigation', { name: 'Portfolio workspace' });
+  expect(strip).not.toHaveClass('bt-hide-when-rail');
+  expect(within(strip).getByRole('link', { name: 'Analysis' })).toBeInTheDocument();
 });
 
 test('the rail utilities expose Ask, Review and the Control Center', async () => {

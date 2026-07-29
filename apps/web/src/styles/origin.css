@@ -168,7 +168,8 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  overflow: hidden auto;
+  /* No overflow here: tall trees scroll INSIDE .bt-rail__group--suite, and the
+     account popover must be able to escape a collapsed 64px rail unclipped. */
   background: var(--bt-nav);
   border-right: 1px solid var(--bt-border);
   padding: 14px 10px 12px;
@@ -207,25 +208,39 @@
 }
 
 .bt-rail__spacer {
+  /* Grows when there's room; its min-height is the guaranteed gap between the
+     utilities and the collapse/account foot — the suite section above starts
+     scrolling before this gap can vanish. */
   flex: 1 1 auto;
+  min-height: 14px;
 }
 
-/* Main destinations read a clear step above the tree children: larger, bolder,
-   brighter ink. The children stay 12.5px/muted behind their guide line. */
+.bt-rail__group--suite {
+  flex: 0 1 auto;
+  min-height: 108px;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bt-border-strong) transparent;
+}
+
+/* Main destinations read a step above the tree children — brighter ink, a bit
+   more weight, and (owner, demo-style) a gold edge line when active. The
+   children stay 12.5px/muted behind their guide line. */
 .bt-rail-item {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 38px;
-  padding: 7px 9px;
+  min-height: 34px;
+  padding: 6px 9px;
   border: 0;
   border-radius: 6px;
   background: none;
   color: var(--bt-text-soft);
   font: inherit;
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 560;
   text-align: left;
   text-decoration: none;
   white-space: nowrap;
@@ -241,8 +256,25 @@
 }
 
 .bt-rail-item.is-active {
+  position: relative;
   background: var(--bt-surface-strong);
   color: var(--bt-text);
+}
+
+/* The demo's active marker: a gold dash at the rail's OUTER edge — clear of
+   the rounded row background — vertically centered on the active row. Main
+   destinations only; child rows never carry it. `left` compensates the rail's
+   10px horizontal padding so the dash sits flush against the sidebar edge. */
+.bt-rail-item.is-active::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  translate: 0 -50%;
+  width: 3px;
+  height: 18px;
+  border-radius: 0 2px 2px 0;
+  background: var(--bt-gold);
 }
 
 /* The destination icon — a direct child of the row, or of the link inside an
@@ -1802,19 +1834,6 @@
 
   .bt-shell .bt-rail-item--toggle > svg {
     transform: scaleX(-1);
-  }
-}
-
-/* Desktop de-duplication: where the rail actually renders the section tree,
-   the in-page strip below the page header would be a second copy of it, so it
-   is removed — display:none, which takes the duplicate landmark out of the
-   accessibility tree too. That is exactly the expanded rail above 1180px (the
-   complement of the auto-collapse query): on phones, on tablets, and whenever
-   the user collapses the rail there is no tree, so the strip comes back and
-   the sub-navigation is never unreachable. */
-@media not all and (max-width: 1180px) {
-  .bt-shell[data-rail='expanded'] .bt-hide-when-rail {
-    display: none !important;
   }
 }
 

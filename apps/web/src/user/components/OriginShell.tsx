@@ -12,13 +12,7 @@ import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { CmdKPalette } from './CmdKPalette';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
-import {
-  isChildActive,
-  SECTION_KEYS,
-  SECTION_NAV,
-  useSectionNavChildren,
-  type SectionKey,
-} from './sectionNav';
+import { isChildActive, SECTION_NAV, useRailNavChildren, type SectionKey } from './sectionNav';
 
 /**
  * Origin application frame (docs/redesign/REAL_APP_REDESIGN_PROMPT.md,
@@ -31,14 +25,13 @@ import {
  * R2: the four sections with sub-navigation are expandable groups whose
  * children come from `sectionNav.ts` — the same table the in-page strips read.
  * A group row navigates to its section root *and* opens; the chevron beside it
- * only opens/closes. The rail is an accordion: the active route's group opens
- * itself and closes the previous one, and routes outside the sections (Home,
- * Control Center) leave the open tree exactly as it is. Both the collapse
- * preference and the open group persist in `localStorage`.
+ * only opens/closes. The rail is an accordion whose open tree FOLLOWS the
+ * route: inside a section exactly that section's dropdown is open, outside the
+ * sections (Home, Control Center, …) everything is minimized. Only the
+ * collapse preference persists in `localStorage`.
  */
 
 const RAIL_STORAGE_KEY = 'bt.rail';
-const RAIL_GROUPS_STORAGE_KEY = 'bt.rail.groups';
 
 interface SuiteItem {
   to: string;
@@ -71,28 +64,6 @@ const SUITE_ITEMS: readonly SuiteItem[] = [
   { to: '/assets', icon: 'assets', labelKey: 'nav.assets', section: 'assets' },
   { to: '/people', icon: 'people', labelKey: 'nav.people', also: ['/social'], section: 'people' },
 ];
-
-/**
- * The single open group — the rail is an accordion, never more than one tree.
- * Legacy multi-open map payloads collapse to their first open key.
- */
-function readOpenRailGroup(): SectionKey | null {
-  try {
-    const raw = localStorage.getItem(RAIL_GROUPS_STORAGE_KEY);
-    if (raw === null) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed === 'string') {
-      return (SECTION_KEYS as readonly string[]).includes(parsed) ? (parsed as SectionKey) : null;
-    }
-    if (typeof parsed === 'object' && parsed !== null) {
-      const stored = parsed as Record<string, unknown>;
-      return SECTION_KEYS.find((key) => stored[key] === true) ?? null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 /** The section that owns the current route, if any. */
 function activeSection(pathname: string): SectionKey | null {
@@ -181,11 +152,14 @@ function RailGroup({
   onToggle: () => void;
 }) {
   const { t } = useI18n();
-  const children = useSectionNavChildren(section);
+  // The tree renders the curated vital pages; "is a child page open?" is
+  // answered against the FULL set, so the group row never claims
+  // aria-current="page" while a strip-only page (Tax, Analysis…) is open.
+  const children = useRailNavChildren(section);
   const search = usePreservedSearch(SECTION_NAV[section].preserveParams);
   const active = isDestinationActive(item, pathname);
-  // A collapsed rail hides the children, so the row itself carries "current".
-  const childActive = !collapsed && children.some((child) => isChildActive(child, pathname));
+  const childActive =
+    !collapsed && SECTION_NAV[section].children.some((child) => isChildActive(child, pathname));
   const panelId = `bt-rail-group-${section}`;
 
   return (
@@ -468,29 +442,18 @@ export function OriginShell() {
       return false;
     }
   });
-  // Seed from the section being visited (falling back to storage), so the
-  // first paint already shows the active tree open (no expand animation).
-  const [openGroup, setOpenGroup] = useState<SectionKey | null>(
-    () => activeSection(pathname) ?? readOpenRailGroup(),
-  );
+  // The open tree FOLLOWS the route (owner): inside a section exactly that
+  // section's dropdown is open; on Home/Control/etc. everything minimizes.
+  // The chevron can still open/close trees freely until the next navigation
+  // re-syncs — so no persistence: the route is the source of truth.
+  const [openGroup, setOpenGroup] = useState<SectionKey | null>(() => activeSection(pathname));
 
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   const closePalette = useCallback(() => setPaletteOpen(false), []);
 
-  // Navigating into a section opens its group and — accordion — closes the
-  // previous one: at most one tree is ever open.
   useEffect(() => {
-    const section = activeSection(pathname);
-    if (section !== null) setOpenGroup(section);
+    setOpenGroup(activeSection(pathname));
   }, [pathname]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(RAIL_GROUPS_STORAGE_KEY, JSON.stringify(openGroup));
-    } catch {
-      // Preference persistence is best-effort only.
-    }
-  }, [openGroup]);
 
   const expandGroup = useCallback((section: SectionKey) => setOpenGroup(section), []);
 
@@ -530,7 +493,10 @@ export function OriginShell() {
       <div className="bt-shell" data-rail={collapsed ? 'collapsed' : 'expanded'}>
         <aside className="bt-rail">
           <RailBrand />
-          <nav aria-label={t('nav.primary')} className="bt-rail__group">
+          {/* The suite section scrolls on its own when an open tree outgrows
+              the viewport — it may push the utilities down only until the
+              bottom stack's guaranteed gap, never off screen. */}
+          <nav aria-label={t('nav.primary')} className="bt-rail__group bt-rail__group--suite">
             {SUITE_ITEMS.map((item) => {
               const { section } = item;
               return section === undefined ? (
@@ -570,8 +536,7 @@ export function OriginShell() {
           </nav>
           <div className="bt-rail__spacer" />
           {/* The collapse control lives at the foot of the rail it controls —
-              full width while expanded, icon-only (and still reachable) once
-              collapsed. */}
+              icon-only in both states (owner), the label lives in aria/title. */}
           <button
             aria-label={collapsed ? t('nav.expandRail') : t('nav.collapseRail')}
             className="bt-rail-item bt-rail-item--toggle"
@@ -580,9 +545,6 @@ export function OriginShell() {
             type="button"
           >
             <Icon name="collapse" size={17} />
-            <span className="bt-rail-item__label">
-              {collapsed ? t('nav.expandRail') : t('nav.collapseRail')}
-            </span>
           </button>
           <div className="bt-rail__rule" />
           <AccountMenu collapsed={collapsed} />

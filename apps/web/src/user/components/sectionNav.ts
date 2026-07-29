@@ -9,15 +9,14 @@ import type { LocalNavItem } from './LocalNav';
  * Section sub-navigation — ONE definition, two renderers (R2 rail nav).
  *
  * Portfolios · Workbench · Assets · People are expandable groups in the left
- * rail (`OriginShell`) *and* horizontal strips inside the page
- * (`LocalNav`, mobile only for these four). Both read the tables below, so the
- * rail tree and the in-page tabs can never drift apart.
+ * rail (`OriginShell`) *and* horizontal strips inside the page (`LocalNav`).
+ * Both read the tables below, so the rail tree and the in-page tabs can never
+ * drift apart.
  *
- * The strip stays mounted everywhere and is display:none'd — via
- * {@link SECTION_STRIP_CLASS}, which also keeps the duplicate landmark out of
- * the accessibility tree — exactly where the rail renders the tree instead
- * (expanded rail, above 1180px). Phones, tablets and a collapsed rail have no
- * tree, so there the strip is the sub-navigation.
+ * The strip renders the FULL set at every width; the rail tree shows only the
+ * children marked `rail` — the vital pages of each section (owner: "the
+ * dropdown only contains the most important options, the rest is inside the
+ * nav there [the page]").
  */
 
 export const SECTION_KEYS = ['portfolio', 'workbench', 'assets', 'people'] as const;
@@ -35,6 +34,8 @@ export interface SectionNavChild {
   parked?: boolean;
   /** Rendered only while this runtime kill-switch is on (§13.5 V5-P2). */
   flag?: FeatureFlagKey;
+  /** Curated into the rail tree (the vital pages). Strip-only when absent. */
+  rail?: boolean;
 }
 
 export interface SectionNav {
@@ -56,10 +57,10 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
     ariaLabelKey: 'portfolio.section.aria',
     preserveParams: [ACTIVE_PORTFOLIO_PARAM],
     children: [
-      { to: '/portfolio', labelKey: 'portfolio.tabs.overview', end: true },
-      { to: '/portfolio/activity', labelKey: 'portfolio.tabs.activity' },
+      { to: '/portfolio', labelKey: 'portfolio.tabs.overview', end: true, rail: true },
+      { to: '/portfolio/activity', labelKey: 'portfolio.tabs.activity', rail: true },
       { to: '/portfolio/custom-assets', labelKey: 'portfolio.tabs.customAssets' },
-      { to: '/portfolio/cash-flow', labelKey: 'portfolio.tabs.cashFlow' },
+      { to: '/portfolio/cash-flow', labelKey: 'portfolio.tabs.cashFlow', rail: true },
       { to: '/portfolio/analysis', labelKey: 'portfolio.tabs.analysis' },
       { to: '/portfolio/tax', labelKey: 'portfolio.tabs.tax' },
       { to: '/portfolio/import', labelKey: 'portfolio.tabs.import', flag: 'imports' },
@@ -67,32 +68,32 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
       { to: '/portfolio/automate', labelKey: 'portfolio.tabs.automate', parked: true },
       { to: '/portfolio/files', labelKey: 'portfolio.tabs.files', parked: true },
       { to: '/portfolio/people', labelKey: 'portfolio.tabs.people', parked: true },
-      { to: '/portfolio/settings', labelKey: 'portfolio.tabs.settings' },
+      { to: '/portfolio/settings', labelKey: 'portfolio.tabs.settings', rail: true },
     ],
   },
   workbench: {
     root: '/workbench',
     ariaLabelKey: 'workbench.aria',
     children: [
-      { to: '/workbench', labelKey: 'workbench.tabs.overview', end: true },
+      { to: '/workbench', labelKey: 'workbench.tabs.overview', end: true, rail: true },
       { to: '/workbench/studio', labelKey: 'workbench.tabs.studio', parked: true },
       { to: '/workbench/forecasts', labelKey: 'workbench.tabs.forecasts' },
-      { to: '/workbench/blueprints', labelKey: 'workbench.tabs.blueprints' },
-      { to: '/workbench/backtests', labelKey: 'workbench.tabs.backtests' },
+      { to: '/workbench/blueprints', labelKey: 'workbench.tabs.blueprints', rail: true },
+      { to: '/workbench/backtests', labelKey: 'workbench.tabs.backtests', rail: true },
       { to: '/workbench/compare', labelKey: 'workbench.tabs.compare' },
       { to: '/workbench/ideas', labelKey: 'workbench.tabs.ideas' },
       { to: '/workbench/calculators', labelKey: 'workbench.tabs.calculators' },
-      { to: '/workbench/alerts', labelKey: 'workbench.tabs.alerts' },
+      { to: '/workbench/alerts', labelKey: 'workbench.tabs.alerts', rail: true },
     ],
   },
   assets: {
     root: '/assets',
     ariaLabelKey: 'assets.aria',
     children: [
-      { to: '/assets', labelKey: 'assets.tabs.overview', end: true },
-      { to: '/assets/search', labelKey: 'assets.tabs.search' },
-      { to: '/assets/watchlists', labelKey: 'assets.tabs.watchlists' },
-      { to: '/assets/news', labelKey: 'assets.tabs.news' },
+      { to: '/assets', labelKey: 'assets.tabs.overview', end: true, rail: true },
+      { to: '/assets/search', labelKey: 'assets.tabs.search', rail: true },
+      { to: '/assets/watchlists', labelKey: 'assets.tabs.watchlists', rail: true },
+      { to: '/assets/news', labelKey: 'assets.tabs.news', rail: true },
       { to: '/assets/discover', labelKey: 'assets.tabs.discover', parked: true },
       { to: '/assets/events', labelKey: 'assets.tabs.events', parked: true },
       { to: '/assets/screener', labelKey: 'assets.tabs.screener', parked: true },
@@ -102,21 +103,15 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
     root: '/people',
     ariaLabelKey: 'people.aria',
     children: [
-      { to: '/people', labelKey: 'people.tabs.friends', end: true },
-      { to: '/people/chat', labelKey: 'people.tabs.chat' },
-      { to: '/people/shared', labelKey: 'people.tabs.shared' },
-      { to: '/people/profile', labelKey: 'people.tabs.profile' },
+      { to: '/people', labelKey: 'people.tabs.friends', end: true, rail: true },
+      { to: '/people/chat', labelKey: 'people.tabs.chat', rail: true },
+      { to: '/people/shared', labelKey: 'people.tabs.shared', rail: true },
+      { to: '/people/profile', labelKey: 'people.tabs.profile', rail: true },
       { to: '/people/teams', labelKey: 'people.tabs.teams', parked: true },
       { to: '/people/approvals', labelKey: 'people.tabs.approvals', parked: true },
     ],
   },
 };
-
-/**
- * Desktop de-duplication hook (styles/origin.css, "R2: rail nav"): hides the
- * strip only while the rail is showing the same tree.
- */
-export const SECTION_STRIP_CLASS = 'bt-hide-when-rail';
 
 /** The children a section shows right now (kill-switched entries dropped). */
 export function useSectionNavChildren(section: SectionKey): readonly SectionNavChild[] {
@@ -124,6 +119,12 @@ export function useSectionNavChildren(section: SectionKey): readonly SectionNavC
   return SECTION_NAV[section].children.filter(
     (child) => child.flag === undefined || flags[child.flag],
   );
+}
+
+/** The curated subset the rail tree renders — vital pages only. */
+export function useRailNavChildren(section: SectionKey): readonly SectionNavChild[] {
+  const children = useSectionNavChildren(section);
+  return children.filter((child) => child.rail === true);
 }
 
 /** The same children as translated {@link LocalNavItem}s for the in-page strip. */

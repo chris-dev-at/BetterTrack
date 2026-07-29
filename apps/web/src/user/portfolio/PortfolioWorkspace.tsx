@@ -2,7 +2,7 @@ import { Outlet, useLocation } from 'react-router-dom';
 
 import { useT } from '../../i18n';
 import { LocalNav } from '../components/LocalNav';
-import { SECTION_NAV, SECTION_STRIP_CLASS, useSectionNavItems } from '../components/sectionNav';
+import { SECTION_NAV, useSectionNavItems } from '../components/sectionNav';
 import { SubTabLink } from '../../ui/origin';
 
 /**
@@ -24,7 +24,6 @@ export function PortfolioWorkspace() {
     <div>
       <LocalNav
         ariaLabel={t(SECTION_NAV.portfolio.ariaLabelKey)}
-        className={SECTION_STRIP_CLASS}
         items={items}
         preserveParams={SECTION_NAV.portfolio.preserveParams}
       />
