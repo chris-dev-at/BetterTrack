@@ -6,6 +6,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   ACCOUNT_SECURITY_NOTIFICATION_TYPES,
   NOTIFICATION_TYPES,
+  WEB_PUSH_ENDPOINT_UNSAFE,
+  WEB_PUSH_MAX_SUBSCRIPTIONS,
+  WEB_PUSH_SUBSCRIPTION_LIMIT_REACHED,
   isOptInNotificationType,
   notificationSettingsResponseSchema,
 } from '@bettertrack/contracts';
@@ -186,6 +189,78 @@ describe('POST/DELETE /api/v1/notifications/web-push (#368/#350)', () => {
       .send({ endpoint: SUB.endpoint });
     rows = await subscriptionRows();
     expect(rows).toHaveLength(0);
+  });
+
+  it.each([
+    ['IPv4 loopback', 'https://127.0.0.1/push'],
+    ['IPv4 private', 'https://192.168.10.20/push'],
+    ['IPv4 link-local', 'https://169.254.169.254/push'],
+    ['IPv4 multicast', 'https://224.0.0.1/push'],
+    ['IPv6 loopback', 'https://[::1]/push'],
+    ['IPv6 unique-local', 'https://[fd00::1]/push'],
+    ['IPv6 link-local', 'https://[fe80::1]/push'],
+    ['IPv6 multicast', 'https://[ff02::1]/push'],
+    ['IPv4-mapped IPv6', 'https://[::ffff:127.0.0.1]/push'],
+    ['localhost-class name', 'https://push.localhost/subscription'],
+  ])('rejects a %s endpoint with a stable error code', async (_label, endpoint) => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    const response = await agent
+      .post('/api/v1/notifications/web-push')
+      .set(...XRW)
+      .send({ ...SUB, endpoint });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe(WEB_PUSH_ENDPOINT_UNSAFE);
+    expect(await subscriptionRows()).toHaveLength(0);
+  });
+
+  it('rejects non-HTTPS endpoints at the shared contract boundary', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    const response = await agent
+      .post('/api/v1/notifications/web-push')
+      .set(...XRW)
+      .send({ ...SUB, endpoint: 'http://push.example.com/subscription' });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    expect(await subscriptionRows()).toHaveLength(0);
+  });
+
+  it('caps each user’s fan-out while allowing an idempotent refresh at the cap', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    for (let index = 0; index < WEB_PUSH_MAX_SUBSCRIPTIONS; index += 1) {
+      const response = await agent
+        .post('/api/v1/notifications/web-push')
+        .set(...XRW)
+        .send({ ...SUB, endpoint: `https://push.example.com/sub/${index}` });
+      expect(response.status).toBe(200);
+    }
+
+    const refresh = await agent
+      .post('/api/v1/notifications/web-push')
+      .set(...XRW)
+      .send({
+        endpoint: 'https://push.example.com/sub/0',
+        keys: { p256dh: 'rotated-at-cap', auth: 'rotated-at-cap' },
+      });
+    expect(refresh.status).toBe(200);
+
+    const overLimit = await agent
+      .post('/api/v1/notifications/web-push')
+      .set(...XRW)
+      .send({ ...SUB, endpoint: 'https://push.example.com/sub/overflow' });
+    expect(overLimit.status).toBe(400);
+    expect(overLimit.body.error.code).toBe(WEB_PUSH_SUBSCRIPTION_LIMIT_REACHED);
+
+    const rows = await subscriptionRows();
+    expect(rows).toHaveLength(WEB_PUSH_MAX_SUBSCRIPTIONS);
+    expect(rows.find((row) => row.endpoint.endsWith('/0'))?.p256dh).toBe('rotated-at-cap');
   });
 });
 

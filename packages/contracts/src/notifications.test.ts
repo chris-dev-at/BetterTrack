@@ -170,6 +170,12 @@ describe('push registration schemas (#368)', () => {
     expect(
       webPushSubscribeRequestSchema.safeParse({ endpoint: 'not-a-url', keys: {} }).success,
     ).toBe(false);
+    expect(
+      webPushSubscribeRequestSchema.safeParse({
+        endpoint: 'http://push.example.com/x',
+        keys: { p256dh: 'k1', auth: 'k2' },
+      }).success,
+    ).toBe(false);
   });
 });
 
