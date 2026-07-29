@@ -51,7 +51,8 @@ const apiEnv = {
 
 // Both processes read the API environment, but only the HTTP API needs the
 // default Prometheus listener. Keeping it off in the worker prevents both from
-// binding the same default port during an e2e run.
+// binding the same default port during an e2e run. A worker-metrics e2e test can
+// opt in with an isolated BT_METRICS_PORT when it needs an endpoint.
 const workerEnv = {
   ...apiEnv,
   BT_METRICS_ENABLED: 'false',
