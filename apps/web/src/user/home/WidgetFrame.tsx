@@ -54,7 +54,10 @@ export function WidgetFrame({
 }: WidgetFrameProps) {
   const t = useT();
   const title = t(definition.labelKey);
-  const configurable = definition.supportsScope || definition.rangeOptions !== undefined;
+  const configurable =
+    definition.supportsScope ||
+    definition.rangeOptions !== undefined ||
+    definition.SettingsExtra !== undefined;
 
   return (
     <section
@@ -148,7 +151,11 @@ function GripIcon() {
   );
 }
 
-/** Per-widget settings: the portfolio scope picker and, where relevant, a range. */
+/**
+ * Per-widget settings: the portfolio scope picker, where relevant a range, and
+ * whatever extra fields the widget type declares (a row count, a watchlist, an
+ * asset) — in that order, generic before specific.
+ */
 function SettingsPopover({
   definition,
   settings,
@@ -233,6 +240,9 @@ function SettingsPopover({
                 ))}
               </Select>
             </Field>
+          ) : null}
+          {definition.SettingsExtra ? (
+            <definition.SettingsExtra onSettingsChange={onSettingsChange} settings={settings} />
           ) : null}
         </div>
       ) : null}

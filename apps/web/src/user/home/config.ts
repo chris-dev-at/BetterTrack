@@ -42,13 +42,20 @@ export const WIDGET_TYPES = [
   'net-worth',
   'today-change',
   'performance-chart',
+  'net-worth-history',
   'cashflow-chart',
   'allocation',
+  'asset-spotlight',
   'top-movers',
   'portfolio-cards',
   'news',
   'attention',
   'upcoming',
+  'recent-transactions',
+  'cash-balances',
+  'watchlist',
+  'dividends',
+  'alerts',
   'shortcuts',
 ] as const;
 
@@ -71,7 +78,26 @@ export interface WidgetSettings {
   range?: string;
   /** Top-movers ranking metric. */
   metric?: MoverMetric;
+  /** How many rows a list widget shows (recent transactions). See {@link COUNT_LIMITS}. */
+  count?: number;
+  /** Which named watchlist the watchlist widget reads. Absent ⇒ the first list. */
+  watchlistId?: string;
+  /** The asset the spotlight widget follows. Absent ⇒ the "pick an asset" state. */
+  assetId?: string;
+  /**
+   * The symbol captured when {@link assetId} was picked, so the header and the
+   * empty chrome can name the asset without waiting on (or requiring) a fetch.
+   * Purely a display cache — never trusted as identity.
+   */
+  assetLabel?: string;
 }
+
+/**
+ * Bounds on {@link WidgetSettings.count}. Deliberately wider than any picker
+ * offers: the stored value only has to be *sane*, and a future build offering
+ * "25 rows" must not have its setting rejected by this one.
+ */
+export const COUNT_LIMITS = { min: 1, max: 50 } as const;
 
 export interface WidgetConfig {
   /** Stable per-instance id — the React key, the drag/reorder handle identity. */
@@ -99,13 +125,24 @@ export const WIDGET_SIZE_RULES: Record<
   'net-worth': { allowed: ['m', 'l'], default: 'l' },
   'today-change': { allowed: ['s', 'm'], default: 's' },
   'performance-chart': { allowed: ['m', 'l'], default: 'l' },
+  // The all-portfolios curve is the widest thing on the board after the hero —
+  // a 4-column version would be a sparkline pretending to be a chart.
+  'net-worth-history': { allowed: ['m', 'l'], default: 'l' },
   'cashflow-chart': { allowed: ['m', 'l'], default: 'm' },
   allocation: { allowed: ['s', 'm', 'l'], default: 'm' },
+  'asset-spotlight': { allowed: ['s', 'm', 'l'], default: 'm' },
   'top-movers': { allowed: ['s', 'm', 'l'], default: 'm' },
   'portfolio-cards': { allowed: ['m', 'l'], default: 'l' },
   news: { allowed: ['s', 'm', 'l'], default: 'm' },
   attention: { allowed: ['s', 'm', 'l'], default: 'm' },
   upcoming: { allowed: ['s', 'm', 'l'], default: 'm' },
+  'recent-transactions': { allowed: ['s', 'm', 'l'], default: 'm' },
+  'cash-balances': { allowed: ['s', 'm', 'l'], default: 'm' },
+  watchlist: { allowed: ['s', 'm', 'l'], default: 'm' },
+  dividends: { allowed: ['s', 'm', 'l'], default: 'm' },
+  // A count plus a couple of rows — it reads fine in one column and has nothing
+  // to fill a full-width band with.
+  alerts: { allowed: ['s', 'm'], default: 's' },
   shortcuts: { allowed: ['m', 'l'], default: 'l' },
 };
 
@@ -175,6 +212,11 @@ export function clampSize(type: WidgetType, size: unknown): WidgetSize {
  * Keep only the settings keys this build understands, each type-checked. Unknown
  * keys are dropped rather than carried through, so a newer build's settings can
  * never reach a widget that would misread them.
+ *
+ * An out-of-range or wrong-typed *known* key is dropped too, never coerced: the
+ * widget then falls back to its own documented default, which is a state it is
+ * built to render. Silently clamping 9 000 rows to 50 would instead hand the
+ * widget a number the user never chose.
  */
 function parseSettings(raw: unknown): WidgetSettings {
   if (!isRecord(raw)) return {};
@@ -182,6 +224,21 @@ function parseSettings(raw: unknown): WidgetSettings {
   if (typeof raw.scope === 'string' && raw.scope.length > 0) settings.scope = raw.scope;
   if (typeof raw.range === 'string' && raw.range.length > 0) settings.range = raw.range;
   if (raw.metric === 'day' || raw.metric === 'total') settings.metric = raw.metric;
+  if (
+    typeof raw.count === 'number' &&
+    Number.isInteger(raw.count) &&
+    raw.count >= COUNT_LIMITS.min &&
+    raw.count <= COUNT_LIMITS.max
+  ) {
+    settings.count = raw.count;
+  }
+  if (typeof raw.watchlistId === 'string' && raw.watchlistId.length > 0) {
+    settings.watchlistId = raw.watchlistId;
+  }
+  if (typeof raw.assetId === 'string' && raw.assetId.length > 0) settings.assetId = raw.assetId;
+  if (typeof raw.assetLabel === 'string' && raw.assetLabel.length > 0) {
+    settings.assetLabel = raw.assetLabel;
+  }
   return settings;
 }
 

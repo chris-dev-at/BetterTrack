@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   addWidget,
   clearHomeConfig,
+  COUNT_LIMITS,
   DEFAULT_LAYOUT,
   HOME_CONFIG_STORAGE_KEY,
   moveWidget,
@@ -12,8 +13,10 @@ import {
   setWidgetSettings,
   setWidgetSize,
   WIDGET_SIZE_RULES,
+  WIDGET_TYPES,
   writeHomeConfig,
   type HomeConfig,
+  type WidgetType,
 } from './config';
 
 /**
@@ -293,5 +296,116 @@ describe('board edits are pure', () => {
   test('setWidgetSettings clears a key set to undefined', () => {
     const next = setWidgetSettings(board, 'a', { scope: undefined });
     expect(next.widgets[0]?.settings).toEqual({});
+  });
+});
+
+// ─── The expanded catalog ─────────────────────────────────────────────────────
+
+/**
+ * The seven types added on top of the original board. These are storage-contract
+ * tests like everything above: a type the parser refuses to recognise is a widget
+ * that silently vanishes from the user's board on the next page load.
+ */
+describe('expanded widget catalog', () => {
+  const ADDED: readonly WidgetType[] = [
+    'net-worth-history',
+    'asset-spotlight',
+    'recent-transactions',
+    'cash-balances',
+    'watchlist',
+    'dividends',
+    'alerts',
+  ];
+
+  test.each(ADDED)('%s survives a round-trip through storage', (type) => {
+    const board: HomeConfig = {
+      version: 1,
+      widgets: [{ id: `w-${type}`, type, size: WIDGET_SIZE_RULES[type].default, settings: {} }],
+    };
+    writeHomeConfig(board);
+    expect(readHomeConfig()).toEqual(board);
+  });
+
+  test('every declared type is registered in WIDGET_SIZE_RULES', () => {
+    // `clampSize` indexes the rules by type — a missing entry would throw on the
+    // first parse rather than degrade, so this is the guard for that.
+    const missing = WIDGET_TYPES.filter((type) => WIDGET_SIZE_RULES[type] === undefined);
+    expect(missing).toEqual([]);
+  });
+
+  test('every type’s default size is one of its own allowed sizes', () => {
+    const inconsistent = WIDGET_TYPES.filter(
+      (type) => !WIDGET_SIZE_RULES[type].allowed.includes(WIDGET_SIZE_RULES[type].default),
+    );
+    expect(inconsistent).toEqual([]);
+  });
+
+  test('clamps a size the new types do not allow', () => {
+    const parsed = parseHomeConfig(
+      JSON.stringify({
+        version: 1,
+        widgets: [
+          // The summed curve refuses to be a narrow column (allowed: m, l)…
+          { id: 'a', type: 'net-worth-history', size: 's', settings: {} },
+          // …and the alerts tile refuses to span the full width (allowed: s, m).
+          { id: 'b', type: 'alerts', size: 'l', settings: {} },
+        ],
+      }),
+    );
+    expect(parsed.widgets.map((widget) => widget.size)).toEqual([
+      WIDGET_SIZE_RULES['net-worth-history'].default,
+      WIDGET_SIZE_RULES.alerts.default,
+    ]);
+  });
+});
+
+describe('the settings keys the expanded catalog introduced', () => {
+  function settingsOf(settings: unknown): unknown {
+    return parseHomeConfig(
+      JSON.stringify({
+        version: 1,
+        widgets: [{ id: 'a', type: 'recent-transactions', size: 'm', settings }],
+      }),
+    ).widgets[0]?.settings;
+  }
+
+  test('count, watchlistId, assetId and assetLabel round-trip', () => {
+    expect(
+      settingsOf({ count: 15, watchlistId: 'wl-1', assetId: 'as-1', assetLabel: 'AAPL' }),
+    ).toEqual({ count: 15, watchlistId: 'wl-1', assetId: 'as-1', assetLabel: 'AAPL' });
+  });
+
+  test.each([
+    ['both bounds inclusive (min)', COUNT_LIMITS.min],
+    ['both bounds inclusive (max)', COUNT_LIMITS.max],
+    ['a count no picker offers, from a newer build', 25],
+  ])('keeps a valid count — %s', (_label, count) => {
+    expect(settingsOf({ count })).toEqual({ count });
+  });
+
+  test.each([
+    ['zero', 0],
+    ['negative', -5],
+    ['past the ceiling', COUNT_LIMITS.max + 1],
+    ['fractional', 7.5],
+    ['a numeric string', '10'],
+    ['NaN as null', null],
+  ])('drops an unusable count (%s) rather than coercing it', (_label, count) => {
+    // Dropped, not clamped: the widget then renders its own documented default,
+    // which is a state it is built for — unlike a number nobody chose.
+    expect(settingsOf({ count })).toEqual({});
+  });
+
+  test.each([
+    ['empty', ''],
+    ['not a string', 42],
+  ])('drops an unusable watchlistId / assetId / assetLabel (%s)', (_label, value) => {
+    expect(settingsOf({ watchlistId: value, assetId: value, assetLabel: value })).toEqual({});
+  });
+
+  test('still drops keys this build has never heard of', () => {
+    expect(settingsOf({ count: 5, sentiment: 'bullish', assetIds: ['a', 'b'] })).toEqual({
+      count: 5,
+    });
   });
 });

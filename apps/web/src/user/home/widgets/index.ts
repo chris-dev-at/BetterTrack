@@ -1,16 +1,29 @@
 import { WIDGET_SIZE_RULES, WIDGET_TYPES, type WidgetType } from '../config';
+import { AlertsWidget } from './AlertsWidget';
 import { AllocationWidget } from './AllocationWidget';
+import { AssetSpotlightSettings, AssetSpotlightWidget } from './AssetSpotlightWidget';
 import { AttentionWidget } from './AttentionWidget';
+import { CashBalancesWidget } from './CashBalancesWidget';
 import { CASHFLOW_MONTHS, CashflowChartWidget } from './CashflowChartWidget';
+import { DividendsWidget } from './DividendsWidget';
+import { NetWorthHistoryWidget } from './NetWorthHistoryWidget';
 import { NetWorthWidget } from './NetWorthWidget';
 import { NewsWidget } from './NewsWidget';
 import { PERFORMANCE_RANGES, PerformanceChartWidget } from './PerformanceChartWidget';
 import { PortfolioCardsWidget } from './PortfolioCardsWidget';
+import { RecentTransactionsSettings, RecentTransactionsWidget } from './RecentTransactionsWidget';
 import { ShortcutsWidget } from './ShortcutsWidget';
 import { TodayChangeWidget } from './TodayChangeWidget';
 import { TopMoversWidget } from './TopMoversWidget';
 import { UpcomingWidget } from './UpcomingWidget';
+import { WatchlistSettings, WatchlistWidget } from './WatchlistWidget';
 import type { WidgetDefinition, WidgetGroup } from './types';
+
+/** The range picker offers the same window set as the per-portfolio chart. */
+const PERFORMANCE_RANGE_OPTIONS = PERFORMANCE_RANGES.map((range) => ({
+  value: range,
+  labelKey: `home.widgets.range.${range}`,
+}));
 
 /**
  * The Home widget catalog. One entry per {@link WidgetType}; the board, the
@@ -67,11 +80,24 @@ export const WIDGET_REGISTRY = {
     defaultSettings: { range: '1M' },
     supportsScope: true,
     scopeAllowsAll: false,
-    rangeOptions: PERFORMANCE_RANGES.map((range) => ({
-      value: range,
-      labelKey: `home.widgets.range.${range}`,
-    })),
+    rangeOptions: PERFORMANCE_RANGE_OPTIONS,
     Component: PerformanceChartWidget,
+  },
+  'net-worth-history': {
+    type: 'net-worth-history',
+    icon: 'pulse',
+    labelKey: 'home.widgets.netWorthHistory.title',
+    descriptionKey: 'home.widgets.netWorthHistory.description',
+    group: 'charts',
+    allowedSizes: WIDGET_SIZE_RULES['net-worth-history'].allowed,
+    // 6M by default: long enough that the summed curve has a shape, short enough
+    // that a young account is not mostly flat zero at the left edge.
+    defaultSettings: { range: '6M' },
+    // The widget IS the all-portfolios curve — scoping it to one would just be
+    // `performance-chart` with a worse name.
+    supportsScope: false,
+    rangeOptions: PERFORMANCE_RANGE_OPTIONS,
+    Component: NetWorthHistoryWidget,
   },
   'cashflow-chart': {
     type: 'cashflow-chart',
@@ -99,6 +125,23 @@ export const WIDGET_REGISTRY = {
     defaultSettings: { scope: 'all' },
     supportsScope: true,
     Component: AllocationWidget,
+  },
+  'asset-spotlight': {
+    type: 'asset-spotlight',
+    icon: 'target',
+    labelKey: 'home.widgets.assetSpotlight.title',
+    descriptionKey: 'home.widgets.assetSpotlight.description',
+    group: 'charts',
+    allowedSizes: WIDGET_SIZE_RULES['asset-spotlight'].allowed,
+    defaultSettings: { range: '1M' },
+    // One asset, picked by hand — portfolios do not enter into it.
+    supportsScope: false,
+    rangeOptions: ['1W', '1M', '6M', '1Y'].map((range) => ({
+      value: range,
+      labelKey: `home.widgets.range.${range}`,
+    })),
+    SettingsExtra: AssetSpotlightSettings,
+    Component: AssetSpotlightWidget,
   },
   'top-movers': {
     type: 'top-movers',
@@ -145,6 +188,66 @@ export const WIDGET_REGISTRY = {
     supportsScope: false,
     Component: UpcomingWidget,
   },
+  'recent-transactions': {
+    type: 'recent-transactions',
+    icon: 'files',
+    labelKey: 'home.widgets.recentTransactions.title',
+    descriptionKey: 'home.widgets.recentTransactions.description',
+    group: 'lists',
+    allowedSizes: WIDGET_SIZE_RULES['recent-transactions'].allowed,
+    defaultSettings: { scope: 'all', count: 5 },
+    supportsScope: true,
+    SettingsExtra: RecentTransactionsSettings,
+    Component: RecentTransactionsWidget,
+  },
+  'cash-balances': {
+    type: 'cash-balances',
+    icon: 'cash',
+    labelKey: 'home.widgets.cashBalances.title',
+    descriptionKey: 'home.widgets.cashBalances.description',
+    group: 'lists',
+    allowedSizes: WIDGET_SIZE_RULES['cash-balances'].allowed,
+    defaultSettings: { scope: 'all' },
+    supportsScope: true,
+    Component: CashBalancesWidget,
+  },
+  watchlist: {
+    type: 'watchlist',
+    icon: 'star',
+    labelKey: 'home.widgets.watchlist.title',
+    descriptionKey: 'home.widgets.watchlist.description',
+    group: 'lists',
+    allowedSizes: WIDGET_SIZE_RULES.watchlist.allowed,
+    defaultSettings: {},
+    // A watchlist is user-level; it has no portfolio dimension to scope to.
+    supportsScope: false,
+    SettingsExtra: WatchlistSettings,
+    Component: WatchlistWidget,
+  },
+  dividends: {
+    type: 'dividends',
+    icon: 'percent',
+    labelKey: 'home.widgets.dividends.title',
+    descriptionKey: 'home.widgets.dividends.description',
+    group: 'lists',
+    allowedSizes: WIDGET_SIZE_RULES.dividends.allowed,
+    defaultSettings: {},
+    // The calendar endpoint spans held + watchlist assets user-level.
+    supportsScope: false,
+    Component: DividendsWidget,
+  },
+  alerts: {
+    type: 'alerts',
+    icon: 'bell',
+    labelKey: 'home.widgets.alerts.title',
+    descriptionKey: 'home.widgets.alerts.description',
+    group: 'lists',
+    allowedSizes: WIDGET_SIZE_RULES.alerts.allowed,
+    defaultSettings: {},
+    // An alert is attached to an asset, not to a portfolio.
+    supportsScope: false,
+    Component: AlertsWidget,
+  },
   shortcuts: {
     type: 'shortcuts',
     icon: 'bolt',
@@ -170,5 +273,5 @@ export function widgetsInGroup(group: WidgetGroup): WidgetDefinition[] {
   return WIDGET_CATALOG.filter((definition) => definition.group === group);
 }
 
-export type { WidgetDefinition, WidgetGroup, WidgetProps } from './types';
+export type { WidgetDefinition, WidgetGroup, WidgetProps, WidgetSettingsExtraProps } from './types';
 export { WIDGET_GROUPS } from './types';
