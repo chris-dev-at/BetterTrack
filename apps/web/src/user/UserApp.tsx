@@ -167,7 +167,9 @@ function UserShell() {
           <Route path="portfolio" element={<PortfolioWorkspace />}>
             <Route index element={<PortfolioPage />} />
             <Route path="activity" element={<TransactionsPage />} />
-            <Route path="custom-assets" element={<CustomAssetsPage />} />
+            {/* Custom assets are user-scoped (`/api/v1/custom-assets`), not a
+                portfolio's own list, so they live under Assets now. */}
+            <Route path="custom-assets" element={<LegacyRedirect to="/assets/custom-assets" />} />
             <Route path="cash-flow" element={<CashFlowLayout />}>
               <Route index element={<ExpenseDashboardPage />} />
               <Route path="transactions" element={<ExpenseTransactionsPage />} />
@@ -218,6 +220,7 @@ function UserShell() {
             <Route index element={<AssetsOverviewPage />} />
             <Route path="search" element={<SearchPage />} />
             <Route path="watchlists" element={<WatchlistPage />} />
+            <Route path="custom-assets" element={<CustomAssetsPage />} />
             <Route path="news" element={<NewsDigestPage />} />
             <Route path="discover" element={<ParkedPage page="discover" />} />
             <Route path="events" element={<ParkedPage page="assetEvents" />} />

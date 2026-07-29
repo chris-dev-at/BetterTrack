@@ -59,7 +59,6 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
     children: [
       { to: '/portfolio', labelKey: 'portfolio.tabs.overview', end: true, rail: true },
       { to: '/portfolio/activity', labelKey: 'portfolio.tabs.activity', rail: true },
-      { to: '/portfolio/custom-assets', labelKey: 'portfolio.tabs.customAssets' },
       { to: '/portfolio/cash-flow', labelKey: 'portfolio.tabs.cashFlow', rail: true },
       { to: '/portfolio/analysis', labelKey: 'portfolio.tabs.analysis' },
       { to: '/portfolio/tax', labelKey: 'portfolio.tabs.tax' },
@@ -93,6 +92,8 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
       { to: '/assets', labelKey: 'assets.tabs.overview', end: true, rail: true },
       { to: '/assets/search', labelKey: 'assets.tabs.search', rail: true },
       { to: '/assets/watchlists', labelKey: 'assets.tabs.watchlists', rail: true },
+      // User-scoped, not portfolio-scoped (`/api/v1/custom-assets`).
+      { to: '/assets/custom-assets', labelKey: 'assets.tabs.customAssets' },
       { to: '/assets/news', labelKey: 'assets.tabs.news', rail: true },
       { to: '/assets/discover', labelKey: 'assets.tabs.discover', parked: true },
       { to: '/assets/events', labelKey: 'assets.tabs.events', parked: true },

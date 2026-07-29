@@ -143,7 +143,10 @@ test('the rail tree is the vital subset of the full in-page strip', async () => 
   // subset relation is structural, not a coincidence.
   expect(railChildren).toEqual(['Overview', 'Activity', 'Cash flow', 'Settings']);
   for (const child of railChildren) expect(stripChildren).toContain(child);
-  expect(stripChildren).toEqual(expect.arrayContaining(['Custom assets', 'Analysis', 'Tax']));
+  // Custom assets moved to the Assets section (they are user-scoped), so the
+  // portfolio strip carries the portfolio-only extras.
+  expect(stripChildren).toEqual(expect.arrayContaining(['Analysis', 'Tax']));
+  expect(stripChildren).not.toContain('Custom assets');
 });
 
 test('trees start closed; clicking the selected section row toggles its tree', async () => {

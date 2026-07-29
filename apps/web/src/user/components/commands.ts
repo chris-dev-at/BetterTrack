@@ -69,7 +69,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     labelKey: 'portfolio.tabs.customAssets',
-    to: '/portfolio/custom-assets',
+    to: '/assets/custom-assets',
     group: 'navigate',
     icon: 'pen',
   },
