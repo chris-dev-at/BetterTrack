@@ -1122,10 +1122,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Everything below is skipped for a non-match, but the caller always sees
       // the same generic acknowledgement — no user enumeration (§6.1).
       if (user && user.role === 'user' && user.status === 'active') {
-        // One outstanding link per account: drop any prior token before issuing.
-        await passwordResetRepo.deleteForUser(user.id);
         const { token, tokenHash } = generateToken();
-        await passwordResetRepo.create({
+        // The repository serializes concurrent issues around the owning user,
+        // replacing any prior token in the same transaction.
+        await passwordResetRepo.issue({
           userId: user.id,
           tokenHash,
           expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
@@ -1136,14 +1136,19 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           targetId: user.id,
           ip,
         });
-        // Best-effort send after the token is committed — a mail failure never
-        // throws back (§6.11). The email_log row is written either way (§6.10).
+        // Best-effort send after the token is committed. SMTP latency must never
+        // become an account-existence oracle; the detached send still owns the
+        // normal email_log and failure-audit semantics (§6.10/§6.11).
         const resetUrl = `${config.appOrigin}/reset/${token}`;
-        await email.sendPasswordReset({
-          to: user.email,
-          resetUrl,
-          audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
-        });
+        void email
+          .sendPasswordReset({
+            to: user.email,
+            resetUrl,
+            audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
+          })
+          .catch((err) => {
+            logger?.warn({ err, userId: user.id }, 'detached password-reset email failed');
+          });
       }
     },
 
@@ -1152,9 +1157,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         badRequest('This reset link is invalid or has expired.', 'INVALID_RESET');
 
       const record = await passwordResetRepo.findByTokenHash(hashToken(token));
-      if (!record || record.usedAt || new Date(record.expiresAt).getTime() <= Date.now()) {
-        throw invalid();
-      }
+      if (!record) throw invalid();
 
       const user = await userRepo.findById(record.userId);
       // The token was only ever issued to an active user-kind account; re-check
@@ -1163,6 +1166,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       const policy = checkPasswordPolicy(newPassword);
       if (!policy.ok) throw badRequest(policy.reason, 'WEAK_PASSWORD');
+
+      // One conditional write linearizes completion before the expensive hash or
+      // any credential/session mutation. A concurrent loser stops here.
+      if (!(await passwordResetRepo.consume(record.id, new Date()))) throw invalid();
 
       const passwordHash = await passwordHasher.hash(newPassword);
       const securityGeneration = await userRepo.updatePassword(
@@ -1173,8 +1180,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       );
       if (securityGeneration === null) throw invalid();
 
-      // Consume this token and revoke every other outstanding one for the user.
-      await passwordResetRepo.markUsed(record.id, new Date());
+      // Revoke every other outstanding token after the password transition.
       await passwordResetRepo.deleteForUser(user.id);
 
       // A password change kills all sessions (§6.1).
