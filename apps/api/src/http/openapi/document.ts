@@ -39,6 +39,7 @@ const componentSchemas = {
   ApiError: contracts.apiErrorSchema,
   OkResponse: contracts.okResponseSchema,
   HealthResponse: contracts.healthResponseSchema,
+  ReadinessResponse: contracts.readinessResponseSchema,
   VersionResponse: contracts.versionResponseSchema,
   VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
   ParanoidMediaStateResponse: contracts.paranoidMediaStateResponseSchema,
@@ -507,6 +508,8 @@ interface EndpointDef {
   status: number;
   /** Success response schema; omit for empty (204) responses. */
   response?: z.ZodTypeAny;
+  /** Contract body returned with HTTP 503 by readiness-style public probes. */
+  unavailableResponse?: z.ZodTypeAny;
   /**
    * Success response media type; defaults to JSON. Paranoid-vault ciphertext
    * reads use `application/octet-stream` and describe their opaque bodies with a
@@ -531,6 +534,16 @@ const endpoints: EndpointDef[] = [
     public: true,
     status: 200,
     response: R.HealthResponse,
+  },
+  {
+    method: 'get',
+    path: '/health/ready',
+    tag: 'Meta',
+    summary: 'Postgres and Redis readiness probe.',
+    public: true,
+    status: 200,
+    response: R.ReadinessResponse,
+    unavailableResponse: R.ReadinessResponse,
   },
   {
     method: 'get',
@@ -3935,6 +3948,12 @@ for (const ep of endpoints) {
   }
   if (!ep.public) {
     responses['401'] = errorResponse('Authentication required.');
+  }
+  if (ep.unavailableResponse) {
+    responses['503'] = {
+      description: 'Required dependency unavailable.',
+      content: jsonContent(ep.unavailableResponse),
+    };
   }
   // Idempotency conflict semantics (§13.4 V4-P2a, #417): reusing a key for a
   // different request, or racing an in-flight one, is a typed 409.

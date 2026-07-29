@@ -183,6 +183,7 @@ function buildInertContext(): AppContext {
       },
     },
     health: inertService('health'),
+    readiness: inertService('readiness'),
     problems: inertService('problems'),
     monitoring: inertService('monitoring'),
     usageAnalytics: inertService('usageAnalytics'),

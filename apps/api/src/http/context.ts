@@ -68,6 +68,7 @@ import {
 import type { Logger } from '../logger';
 import { createRealtimeGateway, type RealtimeGateway } from '../realtime';
 import { createHealthService, type HealthService } from '../services/health/healthService';
+import { createReadinessService, type ReadinessService } from '../services/health/readinessService';
 import { initObservability, type Observability } from '../services/observability/sentry';
 import { createMarketData } from '../providers';
 import type { MarketDataService } from '../providers';
@@ -451,6 +452,8 @@ export interface AppContext {
   observability: Observability;
   /** Admin health snapshot behind `GET /admin/health` (§13.4 V4-P5a). */
   health: HealthService;
+  /** Public DB + Redis readiness gate behind `GET /health/ready` (#939). */
+  readiness: ReadinessService;
   /**
    * DB-backed problem capture + admin resolve flow (§13.5 V5-P2 arc (d), the
    * Sentry replacement). Captures unhandled errors, failed jobs and provider
@@ -1704,6 +1707,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     queues,
     gateway: realtime,
   });
+  const readiness = createReadinessService({ db, redis });
 
   return {
     config,
@@ -1763,6 +1767,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     queues,
     observability,
     health,
+    readiness,
     problems,
     monitoring,
     usageAnalytics,
