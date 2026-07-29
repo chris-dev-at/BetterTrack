@@ -1,6 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { MeResponse } from '@bettertrack/contracts';
@@ -54,6 +54,12 @@ function renderAt(path: string) {
       </Routes>
     </MemoryRouter>,
   );
+}
+
+/** Mirrors the live URL (path + search) so redirect tests can assert on it. */
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
 }
 
 /** The desktop navigation rail (the mobile bottom bar shares the label). */
@@ -167,9 +173,65 @@ test('`/workboard` redirects to the Workbench', async () => {
   }
 });
 
-test('`/settings` redirects to `/settings/account`', async () => {
-  renderAt('/settings');
-  expect(await screen.findByRole('heading', { name: 'Account' })).toBeInTheDocument();
+// ─── Control Center overlay: the retired /settings/* shell (R2) ──────────────
+
+/**
+ * Every legacy `/settings/*` path now redirects onto its Control Center panel.
+ * The nav row's `aria-current` is the assertion (not the panel's content), so
+ * these stay honest about ROUTING without depending on each page's data.
+ */
+test.each([
+  ['/settings', 'Account'],
+  ['/settings/account', 'Account'],
+  ['/settings/notifications', 'Notifications'],
+  ['/settings/security', 'Security'],
+  ['/settings/taxes', 'Portfolio defaults'],
+  ['/settings/connections', 'Connections'],
+  ['/settings/api', 'API keys'],
+])('%s opens the Control Center on the %s panel', async (path, panel) => {
+  renderAt(path);
+
+  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  expect(within(dialog).getByRole('link', { name: panel, current: 'page' })).toBeInTheDocument();
+});
+
+test.each([['/settings/imports'], ['/settings/backups']])(
+  '%s folds into the Data management page',
+  async (path) => {
+    renderAt(path);
+    expect(await screen.findByRole('heading', { name: 'Data management' })).toBeInTheDocument();
+  },
+);
+
+test('the settings redirects carry the query string onto the panel', async () => {
+  // Load-bearing: apps/api bounces the browser to
+  // `/settings/connections?google=linked | ?error=google_…` after the OAuth
+  // dance and ConnectionsPage reads exactly those params — a redirect that
+  // dropped the search would silently swallow the callback result.
+  render(
+    <MemoryRouter initialEntries={['/settings/api?google=linked']}>
+      <LocationProbe />
+      <Routes>
+        <Route path="/*" element={<UserApp />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  await screen.findByRole('dialog', { name: 'Control Center' });
+  expect(screen.getByTestId('location')).toHaveTextContent('/control/api?google=linked');
+});
+
+test('`/developer` is its own page, linked out of the Control Center', async () => {
+  renderAt('/control');
+
+  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  expect(within(dialog).getByRole('link', { name: 'Developer overview' })).toHaveAttribute(
+    'href',
+    '/developer',
+  );
+
+  renderAt('/developer');
+  expect(await screen.findByRole('heading', { name: 'Developer platform' })).toBeInTheDocument();
 });
 
 test('the Assets destination renders its local tabs', async () => {

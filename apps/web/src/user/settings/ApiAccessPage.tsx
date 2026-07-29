@@ -29,7 +29,6 @@ import { EmptyState, ScopePicker, Skeleton } from '../../ui';
 import { Badge, Button, Field, Input, SectionHead } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
 import { Alert } from '../components/ui';
-import { WebhooksSection } from './WebhooksSection';
 
 const API_KEYS_KEY = ['settings', 'api-keys'] as const;
 const OAUTH_CLIENTS_KEY = ['settings', 'oauth-clients'] as const;
@@ -707,10 +706,12 @@ function AuthorizedAppsSection() {
 }
 
 /**
- * Settings → API Access (PROJECTPLAN.md §6.13, V2-P12). Mint scoped personal
- * API keys (bearer tokens shown once), list active keys, and revoke them. Part 2
- * adds OAuth apps: register third-party clients (developer surface) and manage
- * the apps you've authorized (grants). The public API docs live at `/docs`.
+ * Control Center → API access (PROJECTPLAN.md §6.13, V2-P12). Mint scoped
+ * personal API keys (bearer tokens shown once), list active keys, and revoke
+ * them. Part 2 adds OAuth apps: register third-party clients (developer
+ * surface) and manage the apps you've authorized (grants). The public API docs
+ * live at `/docs`. Webhooks are their own Control Center panel
+ * (`/control/webhooks`), so this page no longer nests them.
  */
 export function ApiAccessPage() {
   const t = useT();
@@ -770,10 +771,6 @@ export function ApiAccessPage() {
           </ul>
         )}
       </section>
-
-      <hr className="bt-rule" />
-
-      <WebhooksSection />
 
       <hr className="bt-rule" />
 

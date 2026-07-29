@@ -63,19 +63,9 @@ import { PublicProfileViewPage } from './social/PublicProfileViewPage';
 import { ProfileSettingsPage } from './social/ProfileSettingsPage';
 import { ChatPage } from './social/ChatPage';
 import { HomePage } from './home/HomePage';
-import { AskPage, ControlCenterPage, PrivacyPage, ReviewPage } from './hub/HubPages';
+import { AskPage, DeveloperPlatformPage, ReviewPage } from './hub/HubPages';
+import { ControlCenterOverlay } from './control/ControlCenterOverlay';
 import { ParkedPage } from './parked/ParkedPage';
-import {
-  AccountSettingsPage,
-  ApiAccessPage,
-  BackupsPage,
-  ConnectionsPage,
-  ImportsExportsPage,
-  NewPortfolioDefaultsPage,
-  NotificationSettingsPage,
-  SecuritySettingsPage,
-  SettingsLayout,
-} from './settings/SettingsSection';
 
 /**
  * The app-wide query cache. Exported so tests that mount {@link UserApp} more
@@ -255,29 +245,47 @@ function UserShell() {
           {/* ── Suite utilities ── */}
           <Route path="ask" element={<AskPage />} />
           <Route path="review" element={<ReviewPage />} />
-          <Route path="control" element={<ControlCenterPage />} />
-          <Route path="control/privacy" element={<PrivacyPage />} />
+          {/* The Control Center is an OVERLAY (R2): `/control` opens it on the
+              default panel, `/control/:panel` deep-links one. `control/data`
+              is declared as its own page — a static segment outranks the
+              dynamic `:panel`, so Data management keeps its full page. */}
+          <Route path="control" element={<ControlCenterOverlay />} />
           <Route path="control/data" element={<ParkedPage page="dataManagement" />} />
+          <Route path="control/:panel" element={<ControlCenterOverlay />} />
 
-          {/* ── Developer platform (full build in the Control Center pass) ── */}
-          <Route path="developer" element={<Navigate replace to="/settings/api" />} />
-          <Route path="developer/webhooks" element={<Navigate replace to="/settings/api" />} />
+          {/* ── Developer platform ── */}
+          <Route path="developer" element={<DeveloperPlatformPage />} />
+          <Route path="developer/webhooks" element={<LegacyRedirect to="/control/webhooks" />} />
           <Route path="developer/mcp" element={<ParkedPage page="mcp" />} />
           <Route path="developer/logs" element={<ParkedPage page="developerLogs" />} />
           <Route path="developer/oauth-apps" element={<ParkedPage page="oauthApps" />} />
 
-          {/* ── Settings (Control Center pages) ── */}
-          <Route path="settings" element={<SettingsLayout />}>
-            <Route index element={<Navigate to="/settings/account" replace />} />
-            <Route path="account" element={<AccountSettingsPage />} />
-            <Route path="notifications" element={<NotificationSettingsPage />} />
-            <Route path="security" element={<SecuritySettingsPage />} />
-            <Route path="taxes" element={<NewPortfolioDefaultsPage />} />
-            <Route path="imports" element={<ImportsExportsPage />} />
-            <Route path="connections" element={<ConnectionsPage />} />
-            <Route path="backups" element={<BackupsPage />} />
-            <Route path="api" element={<ApiAccessPage />} />
-          </Route>
+          {/* ── Retired `/settings/*` shell → Control Center panels ──
+              Every legacy settings path redirects onto its panel WITH the
+              query string intact: the Google OAuth callback lands the browser
+              on `/settings/connections?google=linked|error=…` (apps/api), and
+              ConnectionsPage reads exactly those params. */}
+          <Route path="settings" element={<LegacyRedirect to="/control" />} />
+          <Route path="settings/account" element={<LegacyRedirect to="/control/account" />} />
+          <Route
+            path="settings/notifications"
+            element={<LegacyRedirect to="/control/notifications" />}
+          />
+          <Route path="settings/security" element={<LegacyRedirect to="/control/security" />} />
+          <Route
+            path="settings/taxes"
+            element={<LegacyRedirect to="/control/portfolio-defaults" />}
+          />
+          <Route
+            path="settings/connections"
+            element={<LegacyRedirect to="/control/connections" />}
+          />
+          <Route path="settings/api" element={<LegacyRedirect to="/control/api" />} />
+          {/* Imports/exports and backups were Coming-Soon stubs; the parked
+              Data management page is the surface that now covers them. */}
+          <Route path="settings/imports" element={<LegacyRedirect to="/control/data" />} />
+          <Route path="settings/backups" element={<LegacyRedirect to="/control/data" />} />
+          <Route path="settings/*" element={<LegacyRedirect to="/control" />} />
 
           {/* The portfolio list/tree destination is the switcher for now. */}
           <Route path="portfolios" element={<LegacyRedirect to="/portfolio" />} />

@@ -4063,7 +4063,11 @@
     "groups": {
       "account": "Konto",
       "data": "Daten",
-      "developer": "Developer-Plattform"
+      "developer": "Developer-Plattform",
+      "preferences": "Einstellungen",
+      "security": "Sicherheit",
+      "automation": "Daten & Automatisierung",
+      "links": "Seiten"
     },
     "account": "Konto",
     "accountSub": "Profil, E-Mail, Sprache, Passwort",
@@ -4092,7 +4096,16 @@
     "mcp": "MCP",
     "mcpSub": "Zugriff über das Model Context Protocol",
     "logs": "Request-Logs",
-    "logsSub": "API-Aktivität einsehen"
+    "logsSub": "API-Aktivität einsehen",
+    "deleteAccount": "Konto löschen",
+    "portfolioDefaults": "Portfolio-Voreinstellungen",
+    "oauthApps": "OAuth-Apps",
+    "oauthAppsSub": "Von dir registrierte Fremd-Apps",
+    "navAria": "Kontrollzentrum-Bereiche",
+    "filterAria": "Bereiche filtern",
+    "filterPlaceholder": "Filtern…",
+    "noMatches": "Kein Bereich passt.",
+    "leavesPopup": "Öffnet sich als eigene Seite"
   },
   "privacy": {
     "title": "Privatsphäre-Modi",
