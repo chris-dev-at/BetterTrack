@@ -18,6 +18,32 @@ export const healthResponseSchema = z.object({
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 
 /**
+ * Response body of `GET /api/v1/health/ready`.
+ *
+ * Readiness is deliberately narrower than the richer admin health snapshot:
+ * only dependencies required to serve ordinary API traffic participate in the
+ * container gate. A non-ready response uses this same shape with HTTP 503.
+ */
+export const readinessResponseSchema = z.object({
+  status: z.enum(['ready', 'not_ready']),
+  service: z.literal('bettertrack-api'),
+  version: z.string().min(1),
+  timestamp: z.string().datetime(),
+  checks: z.object({
+    database: z.object({
+      status: z.enum(['ok', 'down']),
+      latencyMs: z.number().nonnegative(),
+    }),
+    redis: z.object({
+      status: z.enum(['ok', 'down']),
+      latencyMs: z.number().nonnegative(),
+    }),
+  }),
+});
+
+export type ReadinessResponse = z.infer<typeof readinessResponseSchema>;
+
+/**
  * Response body of `GET /api/v1/version` — the public deploy-verification marker
  * (PROJECTPLAN.md §5 Meta). Reports which commit the running build was made from
  * and when, so anyone (human or script, no auth) can confirm a merged change

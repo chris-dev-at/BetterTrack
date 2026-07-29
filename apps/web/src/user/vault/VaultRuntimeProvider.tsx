@@ -24,6 +24,7 @@ import {
   createUnlockedVaultDriveRuntime,
   type UnlockedVaultDriveRuntime,
   type UnlockedVaultDriveRuntimeOptions,
+  type VaultDriveSyncCoordinator,
 } from './media/runtime';
 import { createServerBlobDataHome } from './serverBlobDataHome';
 import type { DataHome } from './dataHome';
@@ -40,6 +41,8 @@ export interface VaultDriveUnlockOptions {
 export interface VaultRuntime {
   readonly core: VaultLockCore;
   readonly connection: DriveConnectionController | null;
+  /** The unlocked session's PD5 sync seam — null while locked. */
+  readonly sync: VaultDriveSyncCoordinator | null;
   unlockWithPassphrase(
     passphrase: string,
     options: VaultDriveUnlockOptions,
@@ -83,6 +86,7 @@ export function VaultRuntimeProvider({
     () => new VaultLockCore({ custody: dependencies?.custody ?? createIndexedDbVaultCustody() }),
   );
   const [connection, setConnection] = useState<DriveConnectionController | null>(null);
+  const [sync, setSync] = useState<VaultDriveSyncCoordinator | null>(null);
   const runtimeRef = useRef<UnlockedVaultDriveRuntime | null>(null);
   const operationGenerationRef = useRef(0);
   const tokensRef = useRef<GoogleDriveTokenClient | null>(dependencies?.tokens ?? null);
@@ -118,6 +122,7 @@ export function VaultRuntimeProvider({
   const lock = useCallback(async () => {
     operationGenerationRef.current += 1;
     setConnection(null);
+    setSync(null);
     runtimeRef.current?.dispose();
     runtimeRef.current = null;
     driveRef.current = null;
@@ -197,6 +202,7 @@ export function VaultRuntimeProvider({
 
         if (core.state.status === 'unlocked') rememberKeyId(ownerId, core.state.keyId);
         setConnection(installed.controller);
+        setSync(installed.sync);
         return installed.controller;
       } catch (cause) {
         installed?.dispose();
@@ -204,6 +210,7 @@ export function VaultRuntimeProvider({
         if (operationGenerationRef.current === operationGeneration) {
           operationGenerationRef.current += 1;
           setConnection(null);
+          setSync(null);
           runtimeRef.current?.dispose();
           runtimeRef.current = null;
           tokenClient.clear();
@@ -226,8 +233,8 @@ export function VaultRuntimeProvider({
   );
 
   const value = useMemo<VaultRuntime>(
-    () => ({ core, connection, unlockWithPassphrase, lock }),
-    [connection, core, lock, unlockWithPassphrase],
+    () => ({ core, connection, sync, unlockWithPassphrase, lock }),
+    [connection, core, lock, sync, unlockWithPassphrase],
   );
 
   return <VaultRuntimeContext.Provider value={value}>{children}</VaultRuntimeContext.Provider>;

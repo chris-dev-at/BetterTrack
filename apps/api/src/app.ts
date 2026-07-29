@@ -5,7 +5,7 @@ import helmet from 'helmet';
 import { createBullBoardRouter } from './http/bullBoard';
 import { createErrorHandler } from './http/errorHandler';
 import { createFeatureFlagsRouter } from './http/routes/featureFlagsRoutes';
-import { healthRouter } from './http/healthRouter';
+import { createHealthRouter } from './http/healthRouter';
 import { versionRouter } from './http/versionRouter';
 import { loadBearerAuth, enforceApiKeyScope } from './http/middleware/bearerAuth';
 import { createCorsMiddleware } from './http/middleware/cors';
@@ -90,6 +90,10 @@ export function createApp(ctx: AppContext) {
   // without spending the API rate limit. Only `/version` matches; every other
   // /api/v1 path falls through to the guarded chain.
   app.use('/api/v1', versionRouter);
+  // Public process probes (#939), mounted before every auth/session/rate-limit
+  // middleware. Liveness therefore has no dependency path; readiness performs
+  // only its explicit DB + Redis checks and remains usable while either is down.
+  app.use('/api/v1', createHealthRouter(ctx.readiness));
 
   const limiters = createRateLimiters(ctx);
 
@@ -139,7 +143,6 @@ export function createApp(ctx: AppContext) {
   // Mounted after the auth chain so `req.authUser` is resolved for the capture.
   app.use('/api/v1', createUsageCaptureMiddleware(ctx.usageAnalytics));
 
-  app.use('/api/v1', healthRouter);
   // SPA-bootstrap advertisement of the effective runtime feature flags (§13.5
   // V5-P2 arc (c)): the client reads this to hide any killed surface. Read-only
   // + non-sensitive (just the on/off map), so it needs no CSRF header and no

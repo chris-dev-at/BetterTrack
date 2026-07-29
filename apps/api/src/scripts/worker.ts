@@ -507,6 +507,10 @@ const running = createJobWorkers({
 const metricsServer = createMetricsServer(config, logger);
 
 const scheduled = await registerSchedules(registry, definitions);
+// Enqueue one immediate proof on every successful bootstrap. The healthcheck
+// only turns green after a BullMQ worker consumes it and writes the canonical
+// Redis marker; the repeatable schedule keeps that proof fresh thereafter.
+await registry.enqueue(heartbeatJob.name, {});
 logger.info({ queues: definitions.map((d) => d.name), scheduled }, 'BetterTrack worker started');
 
 let shuttingDown = false;
