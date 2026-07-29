@@ -33,5 +33,11 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
+    // The vault suites run the production Argon2id profile (64 MiB, t=3) plus
+    // real AES-GCM/zip work, and a shared CI runner needs seconds per
+    // derivation. The 5s default would fail those on runner load rather than
+    // on a defect, so this matches apps/api's budget.
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
   },
 });
