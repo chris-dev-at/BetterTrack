@@ -17,115 +17,129 @@ import {
 import fixture from './vectors.fixture.json';
 
 const envelope = base64ToBytes(fixture.initial.envelopeBase64, 'envelope-invalid');
+// This provider test deliberately uses the production Argon2id vector (64 MiB, three passes).
+// Under the concurrent workspace test load in CI, a valid unlock can outlive Testing Library's
+// one-second async default.
+const CRYPTOGRAPHIC_UNLOCK_TIMEOUT_MS = 15_000;
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
 });
 
 describe('VaultRuntimeProvider Drive bootstrap', () => {
-  it('authorizes and reads Drive before unlocking a fresh Drive-only device', async () => {
-    const events: string[] = [];
-    let authorization: GoogleDriveTokenClient['state'] = 'consent-required';
-    const tokens: GoogleDriveTokenClient = {
-      get state() {
-        return authorization;
-      },
-      getAccessToken: vi.fn(
-        (): DriveAccessTokenResult =>
-          authorization === 'connected'
-            ? { status: 'ok', accessToken: 'memory-only', expiresAt: Date.now() + 60_000 }
-            : { status: authorization, message: 'sign in' },
-      ),
-      subscribe: vi.fn(() => () => undefined),
-      authorize: vi.fn(async (): Promise<DriveAccessTokenResult> => {
-        events.push('authorize');
-        authorization = 'connected';
-        return { status: 'ok', accessToken: 'memory-only', expiresAt: Date.now() + 60_000 };
-      }),
-      clear: vi.fn(() => {
-        authorization = 'consent-required';
-      }),
-      markExpired: vi.fn(() => {
-        authorization = 'token-expired';
-      }),
-    };
-    const drive: DriveDataHome = {
-      medium: 'drive',
-      read: vi.fn(async (): Promise<DataHomeReadResult> => {
-        events.push('drive-read');
-        return {
-          status: 'ok',
-          medium: 'drive',
-          envelope,
-          info: {
+  it(
+    'authorizes and reads Drive before unlocking a fresh Drive-only device',
+    async () => {
+      const events: string[] = [];
+      let authorization: GoogleDriveTokenClient['state'] = 'consent-required';
+      const tokens: GoogleDriveTokenClient = {
+        get state() {
+          return authorization;
+        },
+        getAccessToken: vi.fn(
+          (): DriveAccessTokenResult =>
+            authorization === 'connected'
+              ? { status: 'ok', accessToken: 'memory-only', expiresAt: Date.now() + 60_000 }
+              : { status: authorization, message: 'sign in' },
+        ),
+        subscribe: vi.fn(() => () => undefined),
+        authorize: vi.fn(async (): Promise<DriveAccessTokenResult> => {
+          events.push('authorize');
+          authorization = 'connected';
+          return { status: 'ok', accessToken: 'memory-only', expiresAt: Date.now() + 60_000 };
+        }),
+        clear: vi.fn(() => {
+          authorization = 'consent-required';
+        }),
+        markExpired: vi.fn(() => {
+          authorization = 'token-expired';
+        }),
+      };
+      const drive: DriveDataHome = {
+        medium: 'drive',
+        read: vi.fn(async (): Promise<DataHomeReadResult> => {
+          events.push('drive-read');
+          return {
+            status: 'ok',
             medium: 'drive',
-            version: fixture.initial.header.vaultVersion,
-            sizeBytes: envelope.byteLength,
-            updatedAt: fixture.initial.header.writtenAt,
-          },
-        };
-      }),
-      async observeReplicas() {
-        return {
-          observations: [await this.read()],
-          async converge() {
-            throw new Error('The single-file test Drive cannot converge duplicates.');
-          },
-          async deleteIfUnchanged() {
-            throw new Error('The provider regression does not delete Drive.');
-          },
-        };
-      },
-      write: vi.fn(),
-      info: vi.fn(),
-    };
-    const controller = connection();
-    const dispose = vi.fn();
-    const createRuntime: NonNullable<VaultRuntimeProviderDependencies['createRuntime']> = vi.fn(
-      (_vaultKey, keyId): UnlockedVaultDriveRuntime => {
-        events.push('runtime');
-        expect(keyId).toBe(fixture.initial.header.keyId);
-        return {
-          controller,
-          ready: Promise.resolve(),
-          syncState: { status: 'synced', active: null, pending: null },
-          reconnect: vi.fn(async () => ({
-            status: 'synced' as const,
-            active: null,
-            pending: null,
-          })),
-          dispose,
-        };
-      },
-    );
-    const serverRead = vi.fn();
-    const rendered = render(
-      <VaultRuntimeProvider
-        authenticated
-        userId="018f0000-0000-7000-8000-000000000099"
-        dependencies={{
-          clientId: 'browser-client-id',
-          tokens,
-          drive,
-          readEnvelope: serverRead,
-          createRuntime,
-        }}
-      >
-        <UnlockHarness />
-      </VaultRuntimeProvider>,
-    );
+            envelope,
+            info: {
+              medium: 'drive',
+              version: fixture.initial.header.vaultVersion,
+              sizeBytes: envelope.byteLength,
+              updatedAt: fixture.initial.header.writtenAt,
+            },
+          };
+        }),
+        async observeReplicas() {
+          return {
+            observations: [await this.read()],
+            async converge() {
+              throw new Error('The single-file test Drive cannot converge duplicates.');
+            },
+            async deleteIfUnchanged() {
+              throw new Error('The provider regression does not delete Drive.');
+            },
+          };
+        },
+        write: vi.fn(),
+        info: vi.fn(),
+      };
+      const controller = connection();
+      const dispose = vi.fn();
+      const createRuntime: NonNullable<VaultRuntimeProviderDependencies['createRuntime']> = vi.fn(
+        (_vaultKey, keyId): UnlockedVaultDriveRuntime => {
+          events.push('runtime');
+          expect(keyId).toBe(fixture.initial.header.keyId);
+          return {
+            controller,
+            ready: Promise.resolve(),
+            syncState: { status: 'synced', active: null, pending: null },
+            reconnect: vi.fn(async () => ({
+              status: 'synced' as const,
+              active: null,
+              pending: null,
+            })),
+            dispose,
+          };
+        },
+      );
+      const serverRead = vi.fn();
+      const rendered = render(
+        <VaultRuntimeProvider
+          authenticated
+          userId="018f0000-0000-7000-8000-000000000099"
+          dependencies={{
+            clientId: 'browser-client-id',
+            tokens,
+            drive,
+            readEnvelope: serverRead,
+            createRuntime,
+          }}
+        >
+          <UnlockHarness />
+        </VaultRuntimeProvider>,
+      );
 
-    await userEvent.setup().click(screen.getByRole('button', { name: 'unlock' }));
-    expect(await screen.findByText('unlocked')).toBeInTheDocument();
+      await userEvent.setup().click(screen.getByRole('button', { name: 'unlock' }));
+      expect(
+        await screen.findByRole(
+          'button',
+          { name: 'unlocked' },
+          { timeout: CRYPTOGRAPHIC_UNLOCK_TIMEOUT_MS },
+        ),
+      ).toBeInTheDocument();
 
-    expect(events).toEqual(['authorize', 'drive-read', 'runtime']);
-    expect(serverRead).not.toHaveBeenCalled();
-    expect(createRuntime).toHaveBeenCalledTimes(1);
+      expect(events).toEqual(['authorize', 'drive-read', 'runtime']);
+      expect(serverRead).not.toHaveBeenCalled();
+      expect(createRuntime).toHaveBeenCalledTimes(1);
 
-    rendered.unmount();
-    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
-    expect(tokens.clear).toHaveBeenCalled();
-  });
+      rendered.unmount();
+      await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+      expect(tokens.clear).toHaveBeenCalled();
+    },
+    CRYPTOGRAPHIC_UNLOCK_TIMEOUT_MS + 5_000,
+  );
 
   it('recreates the account-scoped Drive adapter when the BetterTrack user changes', async () => {
     const okToken: DriveAccessTokenResult = {
