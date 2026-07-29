@@ -39,11 +39,11 @@ export function NewsHeadlineList({
               href={h.url}
               target="_blank"
               rel="noreferrer"
-              className="rounded text-sm text-neutral-100 hover:text-sky-300 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              className="rounded text-sm hover:underline"
             >
               {h.title}
             </a>
-            <span className="text-xs text-neutral-500">
+            <span className="text-xs bt-muted">
               {[h.publisher, h.publishedAt ? formatDateTime(h.publishedAt) : null]
                 .filter(Boolean)
                 .join(' · ')}
@@ -55,7 +55,7 @@ export function NewsHeadlineList({
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="self-start rounded text-xs font-medium text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          className="self-start rounded text-xs font-medium bt-link"
         >
           {expanded ? t('assets.news.showLess') : t('assets.news.showMore', { count: remaining })}
         </button>

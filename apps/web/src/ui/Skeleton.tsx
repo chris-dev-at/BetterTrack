@@ -18,6 +18,10 @@ export interface SkeletonProps {
  * Animated placeholder shown while data loads (PROJECTPLAN.md §7.1 skeleton
  * loaders). Carries `role="status"` so assistive tech announces the pending
  * state rather than reading an empty box.
+ *
+ * Uses the Origin `bt-skeleton` surface — a soft token-coloured block with the
+ * system's sweep shimmer (which honours `prefers-reduced-motion`) in place of
+ * the old opacity pulse.
  */
 export function Skeleton({ variant = 'block', width, height = 'h-4', className }: SkeletonProps) {
   const t = useT();
@@ -26,7 +30,7 @@ export function Skeleton({ variant = 'block', width, height = 'h-4', className }
       role="status"
       aria-label={t('common.loadingLabel')}
       className={cx(
-        'inline-block animate-pulse rounded bg-neutral-800',
+        'bt-skeleton inline-block',
         width ?? (variant === 'block' ? 'w-full' : 'w-24'),
         height,
         className,

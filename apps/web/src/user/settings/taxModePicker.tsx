@@ -9,6 +9,7 @@ import type {
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
+import { Button } from '../../ui/origin';
 import { cx } from '../components/ui';
 
 /**
@@ -104,13 +105,15 @@ function ModeOption({
   const t = useT();
   return (
     <label
-      className={cx(
-        'flex cursor-pointer items-start gap-3 rounded-md border px-4 py-3 transition-colors',
-        selected
-          ? 'border-sky-500/60 bg-sky-500/5'
-          : 'border-neutral-800 bg-neutral-900 hover:border-neutral-700',
-        disabled && 'cursor-not-allowed opacity-60',
-      )}
+      className={cx('flex cursor-pointer items-start gap-3', disabled && 'cursor-not-allowed')}
+      style={{
+        padding: '11px 15px',
+        borderRadius: 6,
+        border: `1px solid ${selected ? 'var(--bt-border-accent)' : 'var(--bt-border)'}`,
+        background: selected ? 'var(--bt-gold-soft)' : 'var(--bt-surface)',
+        opacity: disabled ? 0.6 : undefined,
+        transition: 'background var(--bt-t-fast), border-color var(--bt-t-fast)',
+      }}
     >
       <input
         type="radio"
@@ -119,13 +122,12 @@ function ModeOption({
         checked={selected}
         disabled={disabled}
         onChange={onSelect}
-        className="mt-0.5 h-4 w-4 accent-sky-500"
+        className="mt-0.5 h-4 w-4"
+        style={{ accentColor: 'var(--bt-gold)' }}
       />
       <span className="flex flex-col gap-0.5">
-        <span className="text-sm font-medium text-neutral-100">
-          {t(`settings.taxes.mode.${option.i18nKey}.label`)}
-        </span>
-        <span className="text-xs leading-relaxed text-neutral-500">
+        <span className="bt-row-title">{t(`settings.taxes.mode.${option.i18nKey}.label`)}</span>
+        <span className="bt-row-sub leading-relaxed">
           {t(`settings.taxes.mode.${option.i18nKey}.description`)}
         </span>
       </span>
@@ -139,17 +141,19 @@ function InfoPoint({ text }: { text: string }) {
     <span
       title={text}
       aria-label={text}
-      className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full bg-neutral-800 text-[10px] font-semibold text-neutral-400"
+      className="inline-flex h-4 w-4 cursor-help items-center justify-center"
+      style={{
+        borderRadius: '50%',
+        background: 'var(--bt-surface-strong)',
+        color: 'var(--bt-muted)',
+        fontSize: 10,
+        fontWeight: 640,
+      }}
     >
       i
     </span>
   );
 }
-
-const fieldClass = cx(
-  'rounded-md bg-neutral-950 px-2 py-1 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
 
 /** One labelled on/off switch row of the custom builder (checkbox + info-point). */
 function ParamToggle({
@@ -166,13 +170,14 @@ function ParamToggle({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm text-neutral-200">
+    <label className="bt-soft flex items-center gap-2">
       <input
         type="checkbox"
         checked={checked}
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 accent-sky-500"
+        className="h-4 w-4"
+        style={{ accentColor: 'var(--bt-gold)' }}
       />
       <span>{label}</span>
       <InfoPoint text={info} />
@@ -203,9 +208,9 @@ function CustomParamsCard({
     rate.trim() !== '' && Number.isFinite(parsedRate) && parsedRate >= 0 && parsedRate <= 100;
   const set = (patch: Partial<CustomTaxParams>) => setParams((p) => ({ ...p, ...patch }));
   return (
-    <div className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+    <div className="bt-panel flex flex-col gap-3" style={{ padding: '13px 16px' }}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <label className="flex items-center gap-2 text-sm text-neutral-200">
+        <label className="bt-soft flex items-center gap-2">
           <span>{t('settings.taxes.custom.rateLabel')}</span>
           <input
             type="number"
@@ -216,18 +221,20 @@ function CustomParamsCard({
             disabled={busy}
             aria-label={t('settings.taxes.custom.rateAria')}
             onChange={(e) => setRate(e.target.value)}
-            className={cx(fieldClass, 'w-24')}
+            className="bt-input"
+            style={{ width: 96 }}
           />
           <InfoPoint text={t('settings.taxes.custom.rateInfo')} />
         </label>
-        <label className="flex items-center gap-2 text-sm text-neutral-200">
+        <label className="bt-soft flex items-center gap-2">
           <span>{t('settings.taxes.custom.costBasisLabel')}</span>
           <select
             value={params.costBasis}
             disabled={busy}
             aria-label={t('settings.taxes.custom.costBasisAria')}
             onChange={(e) => set({ costBasis: e.target.value as CustomTaxParams['costBasis'] })}
-            className={fieldClass}
+            className="bt-select"
+            style={{ width: 'auto' }}
           >
             <option value="moving-average">
               {t('settings.taxes.custom.costBasis.movingAverage')}
@@ -268,16 +275,17 @@ function CustomParamsCard({
         />
       </div>
       <div className="flex items-center gap-3">
-        <button
+        <Button
           type="button"
+          variant="primary"
+          size="sm"
           disabled={busy || !rateValid}
           onClick={() => onApply({ ...params, ratePct: parsedRate })}
-          className="w-fit rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {t('settings.taxes.custom.apply')}
-        </button>
+        </Button>
         {!rateValid ? (
-          <span className="text-xs text-rose-400">{t('settings.taxes.custom.invalid')}</span>
+          <span className="bt-field__error">{t('settings.taxes.custom.invalid')}</span>
         ) : null}
       </div>
     </div>
@@ -324,29 +332,22 @@ function ManualDefaultField({
       aria-pressed={unit === target}
       disabled={busy}
       onClick={() => setUnit(target)}
-      className={cx(
-        'rounded-md px-2 py-1 text-xs font-medium',
-        unit === target
-          ? 'bg-sky-500/15 text-sky-300'
-          : 'bg-neutral-800 text-neutral-400 hover:text-neutral-200',
-      )}
+      className={cx(unit === target && 'is-active')}
     >
       {label}
     </button>
   );
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+    <div className="bt-panel flex flex-col gap-2" style={{ padding: '13px 16px' }}>
       <div className="flex items-center gap-2">
-        <span className="text-sm font-medium text-neutral-100">
-          {t('settings.taxes.manualDefault.title')}
-        </span>
+        <span className="bt-row-title">{t('settings.taxes.manualDefault.title')}</span>
         <InfoPoint text={t('settings.taxes.manualDefault.info')} />
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <div
           role="group"
           aria-label={t('settings.taxes.manualDefault.unitAria')}
-          className="flex gap-1"
+          className="bt-seg"
         >
           {unitButton('amount', t('settings.taxes.manualDefault.unitAmount'))}
           {unitButton('rate', t('settings.taxes.manualDefault.unitRate'))}
@@ -360,10 +361,13 @@ function ManualDefaultField({
           aria-label={t('settings.taxes.manualDefault.valueAria')}
           placeholder={t('settings.taxes.manualDefault.placeholder')}
           onChange={(e) => setRaw(e.target.value)}
-          className={cx(fieldClass, 'w-28')}
+          className="bt-input"
+          style={{ width: 112 }}
         />
-        <button
+        <Button
           type="button"
+          variant="primary"
+          size="sm"
           disabled={busy || !valid}
           onClick={() =>
             onApply(
@@ -372,25 +376,25 @@ function ManualDefaultField({
                 : { mode: 'manual_per_trade', manualDefaultAmountEur: parsed },
             )
           }
-          className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {t('settings.taxes.manualDefault.apply')}
-        </button>
+        </Button>
         {hasStored ? (
-          <button
+          <Button
             type="button"
+            variant="quiet"
+            size="sm"
             disabled={busy}
             onClick={() => {
               setRaw('');
               onApply({ mode: 'manual_per_trade' });
             }}
-            className="text-sm font-medium text-neutral-400 hover:text-neutral-200 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {t('settings.taxes.manualDefault.clear')}
-          </button>
+          </Button>
         ) : null}
         {raw.trim() !== '' && !valid ? (
-          <span className="text-xs text-rose-400">{t('settings.taxes.manualDefault.invalid')}</span>
+          <span className="bt-field__error">{t('settings.taxes.manualDefault.invalid')}</span>
         ) : null}
       </div>
     </div>

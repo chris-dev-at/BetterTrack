@@ -34,7 +34,7 @@ async function enableAustriaTaxMode(page: Page): Promise<void> {
  * empty portfolio — unlike the overview button, which the empty state hides).
  */
 async function depositToMain(page: Page, amount: string): Promise<void> {
-  await page.goto('/portfolio/cash');
+  await page.goto('/portfolio/cash-flow/accounts');
   const rows = page.locator('table[aria-label="Cash sources"] tbody tr');
   // sortSourcesMainFirst: Main is row 0 on a fresh account.
   await rows.nth(0).getByRole('button', { name: 'Deposit' }).click();

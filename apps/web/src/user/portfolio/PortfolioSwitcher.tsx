@@ -235,8 +235,7 @@ export function PortfolioSwitcher() {
     onError: () => setActionError(t('portfolio.switcher.restoreError')),
   });
 
-  const itemClass =
-    'flex w-full items-center justify-between gap-2 rounded px-3 py-2 text-left text-sm text-neutral-200 hover:bg-neutral-800 focus:bg-neutral-800 focus:outline-none';
+  const itemClass = 'bt-menu-item justify-between';
   const onlyOneActive = portfolios.length <= 1;
 
   return (
@@ -247,17 +246,21 @@ export function PortfolioSwitcher() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={t('portfolio.switcher.triggerAriaLabel')}
-        className="inline-flex items-center gap-2 rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-neutral-200 ring-1 ring-inset ring-neutral-800 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+        className="bt-btn"
+        style={{ fontWeight: 600 }}
       >
         <span className="max-w-[12rem] truncate">
           {active?.name ?? t('portfolio.switcher.fallbackName')}
         </span>
         {active?.isDefault ? (
-          <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-neutral-500">
+          <span
+            className="bt-badge"
+            style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}
+          >
             {t('portfolio.switcher.defaultBadge')}
           </span>
         ) : null}
-        <span aria-hidden="true" className="text-neutral-500">
+        <span aria-hidden="true" className="bt-muted">
           ▾
         </span>
       </button>
@@ -266,7 +269,8 @@ export function PortfolioSwitcher() {
         <div
           role="menu"
           aria-label={t('portfolio.switcher.menuAriaLabel')}
-          className="absolute left-0 z-40 mt-2 w-64 rounded-lg border border-neutral-800 bg-neutral-900 p-1 shadow-xl"
+          className="bt-popover"
+          style={{ left: 0, top: 'calc(100% + 6px)', width: 268 }}
         >
           <div className="max-h-64 overflow-y-auto py-1">
             {portfolios.map((p) => (
@@ -282,13 +286,16 @@ export function PortfolioSwitcher() {
                 className={itemClass}
               >
                 <span className="flex min-w-0 items-center gap-2">
-                  <span aria-hidden="true" className="w-3 shrink-0 text-sky-400">
+                  <span aria-hidden="true" className="bt-gold w-3 shrink-0">
                     {p.id === active?.id ? '✓' : ''}
                   </span>
                   <span className="truncate">{p.name}</span>
                 </span>
                 {p.isDefault ? (
-                  <span className="shrink-0 rounded-full bg-neutral-800 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-neutral-500">
+                  <span
+                    className="bt-badge shrink-0"
+                    style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}
+                  >
                     {t('portfolio.switcher.defaultBadge')}
                   </span>
                 ) : null}
@@ -296,7 +303,8 @@ export function PortfolioSwitcher() {
             ))}
           </div>
 
-          <div className="border-t border-neutral-800 py-1">
+          <div className="bt-menu-rule" />
+          <div>
             <button
               type="button"
               role="menuitem"
@@ -331,7 +339,7 @@ export function PortfolioSwitcher() {
                 setNameDialog({ mode: 'rename', portfolio: active });
                 setOpen(false);
               }}
-              className={cx(itemClass, 'disabled:cursor-not-allowed disabled:text-neutral-600')}
+              className={cx(itemClass, 'disabled:cursor-not-allowed disabled:opacity-40')}
             >
               {t('portfolio.switcher.renameCurrent')}
             </button>
@@ -346,7 +354,7 @@ export function PortfolioSwitcher() {
                 setConfirmArchive(active);
                 setOpen(false);
               }}
-              className={cx(itemClass, 'disabled:cursor-not-allowed disabled:text-neutral-600')}
+              className={cx(itemClass, 'disabled:cursor-not-allowed disabled:opacity-40')}
             >
               {t('portfolio.switcher.archiveCurrent')}
             </button>
@@ -363,15 +371,16 @@ export function PortfolioSwitcher() {
               }}
               className={cx(
                 itemClass,
-                'text-red-300 hover:bg-red-950/60 focus:bg-red-950/60',
-                'disabled:cursor-not-allowed disabled:text-neutral-600 disabled:hover:bg-transparent',
+                'is-danger',
+                'disabled:cursor-not-allowed disabled:opacity-40',
               )}
             >
               {t('portfolio.switcher.deleteCurrent')}
             </button>
           </div>
 
-          <div className="border-t border-neutral-800 py-1">
+          <div className="bt-menu-rule" />
+          <div>
             <button
               type="button"
               role="menuitem"
@@ -684,7 +693,7 @@ function DeletePortfolioDialog({
           <Button
             type="submit"
             variant="secondary"
-            className="text-red-300 ring-red-900 hover:bg-red-950"
+            className="bt-btn--danger"
             disabled={!confirmed || submitting}
           >
             {submitting ? t('portfolio.switcher.deleting') : t('portfolio.switcher.delete')}

@@ -3,15 +3,13 @@ import { Link, useLocation } from 'react-router-dom';
 
 import { useT } from '../../i18n';
 import { followUser, listFollowing, unfollowUser, updateFollow } from '../../lib/socialApi';
+import { Icon, Switch } from '../../ui/origin';
+import { cx } from '../components/ui';
 import { useOptionalAuth } from '../AuthContext';
 import { ITEM_FOLLOWS_QUERY_KEY } from './ItemFollowButton';
 
 /** Shared query key for "who I follow" — one deduped fetch across every button + the list. */
 export const FOLLOWING_QUERY_KEY = ['social', 'following'] as const;
-
-/** Button/link chrome shared by every state (Follow / Following / Log in to follow). */
-const BUTTON_BASE =
-  'inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60';
 
 /**
  * Follow / unfollow control for a person (#438), reused on the public profile and
@@ -20,6 +18,11 @@ const BUTTON_BASE =
  * and its mutations invalidate that key so every button + the Following list stay
  * in sync. The caller's own row shows nothing; a logged-out visitor (only reached
  * on a public profile) gets a "log in to follow" link that returns them here.
+ *
+ * Origin styling: the follow state is a *selection*, not a call to action, so it
+ * rides the `bt-subtab` / `.is-active` pattern (quiet outline → restrained
+ * selected surface with a check) instead of a loud filled button. Gold stays
+ * reserved for the one real primary on whatever screen hosts this control.
  */
 export function FollowButton({
   userId,
@@ -64,7 +67,7 @@ export function FollowButton({
       <Link
         to="/login"
         state={{ from: `${location.pathname}${location.search}` }}
-        className={`${BUTTON_BASE} bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-700 ${className ?? ''}`}
+        className={cx('bt-btn bt-btn--sm', className)}
       >
         {t('social.follow.loginToFollow')}
       </Link>
@@ -83,8 +86,9 @@ export function FollowButton({
         disabled={busy}
         aria-label={t('social.follow.unfollowAria', { username })}
         onClick={() => unfollowMutation.mutate()}
-        className={`${BUTTON_BASE} bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-700 ${className ?? ''}`}
+        className={cx('bt-subtab is-active', className)}
       >
+        <Icon name="check" size={14} />
         {t('social.follow.following')}
       </button>
     );
@@ -96,8 +100,9 @@ export function FollowButton({
       disabled={busy}
       aria-label={t('social.follow.followAria', { username })}
       onClick={() => followMutation.mutate()}
-      className={`${BUTTON_BASE} bg-sky-500 text-white hover:bg-sky-400 ${className ?? ''}`}
+      className={cx('bt-subtab', className)}
     >
+      <Icon name="plus" size={14} />
       {t('social.follow.follow')}
     </button>
   );
@@ -120,24 +125,8 @@ function FollowPrefSwitch({
   onToggle: () => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-xs text-neutral-400" title={hint}>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={on}
-        aria-label={ariaLabel}
-        disabled={disabled}
-        onClick={onToggle}
-        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60 ${
-          on ? 'bg-sky-600' : 'bg-neutral-700'
-        }`}
-      >
-        <span
-          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-            on ? 'translate-x-[18px]' : 'translate-x-1'
-          }`}
-        />
-      </button>
+    <label className="bt-meta flex items-center gap-2" title={hint}>
+      <Switch aria-label={ariaLabel} checked={on} disabled={disabled} onChange={onToggle} />
       {label}
     </label>
   );

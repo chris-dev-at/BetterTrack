@@ -37,7 +37,7 @@ async function basketTotalReturn(page: Page): Promise<string> {
   return ((await cell.textContent()) ?? '').trim();
 }
 
-test('workboard benchmark: catalog + conglomerate benchmarks, yearly-rebalance stats change', async ({
+test('workboard benchmark: catalog + blueprint benchmarks, yearly-rebalance stats change', async ({
   browser,
 }) => {
   test.setTimeout(240_000);
@@ -50,7 +50,7 @@ test('workboard benchmark: catalog + conglomerate benchmarks, yearly-rebalance s
   const page = owner.page;
 
   // Two conglomerates: Alpha is the basket we backtest; Beta is a candidate
-  // benchmark for the "my conglomerates" branch.
+  // benchmark for the "my blueprints" branch.
   const alphaUrl = await activateConglomerate(page, 'Alpha', [
     { query: 'Apple', symbol: 'AAPL' },
     { query: 'Microsoft', symbol: 'MSFT' },
@@ -75,8 +75,8 @@ test('workboard benchmark: catalog + conglomerate benchmarks, yearly-rebalance s
   // Benchmark 2 — swap the catalog benchmark for one of the caller's own
   // conglomerates. Same three-column shape, labelled with the conglomerate's name.
   await page.getByRole('button', { name: 'Clear benchmark' }).click();
-  await page.getByRole('button', { name: 'My conglomerates…' }).click();
-  await page.getByLabel('Benchmark conglomerate').selectOption({ label: 'Beta' });
+  await page.getByRole('button', { name: 'My blueprints…' }).click();
+  await page.getByLabel('Benchmark blueprint').selectOption({ label: 'Beta' });
   const table2 = statsTable(page);
   await expect(table2).toBeVisible({ timeout: 30_000 });
   await expect(table2.getByRole('columnheader', { name: 'Beta' })).toBeVisible({

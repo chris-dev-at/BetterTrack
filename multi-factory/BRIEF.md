@@ -194,7 +194,9 @@ PR comment ending in exactly one of:
 - `FACTORY-TRIAGE: RELOCATE` + the scope reasoning. → The checker files a new
   properly-scoped, properly-tiered issue (with its own `mf-meta`), links both
   ways, and states whether the current PR is mergeable as-is (→ merge queue)
-  or blocked (→ close PR, label issue `blocked-by:#N`). A RELOCATE-spawned
+  or blocked (→ close PR, record the dep in the issue body and label it
+  `blocked`; the label is a breadcrumb the next assignment self-cleans — the
+  body-level dep is what gates scheduling). A RELOCATE-spawned
   issue that itself reaches triage gets **NEEDS_HUMAN directly** — chain depth
   is capped at 1.
 - `FACTORY-TRIAGE: NEEDS_HUMAN` + a **distilled decision question** ("A or B,

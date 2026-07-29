@@ -10,7 +10,7 @@ import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { useAuth } from '../AuthContext';
 import { legalUrl } from '../legal';
-import { Alert, AuthCard, Button, Spinner, TextField, cx } from '../components/ui';
+import { Alert, AuthCard, Button, OrDivider, Spinner, TextField } from '../components/ui';
 import { GoogleButton } from './GoogleButton';
 
 /**
@@ -159,7 +159,7 @@ export function RegisterPage() {
 
   if (state.phase === 'loading') {
     return (
-      <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
+      <div className="bt-app grid place-items-center">
         <Spinner label={t('auth.register.loading')} />
       </div>
     );
@@ -168,12 +168,9 @@ export function RegisterPage() {
   if (state.phase === 'error') {
     return (
       <AuthCard subtitle={t('auth.register.subtitle')}>
-        <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div className="flex flex-col gap-4">
           <Alert tone="error">{t('common.genericError')}</Alert>
-          <Link
-            to="/login"
-            className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
-          >
+          <Link to="/login" className="bt-link text-center text-sm font-medium">
             {t('auth.register.goToSignIn')}
           </Link>
         </div>
@@ -186,12 +183,9 @@ export function RegisterPage() {
   if (mode === 'closed') {
     return (
       <AuthCard subtitle={t('auth.register.closedSubtitle')}>
-        <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div className="flex flex-col gap-4">
           <Alert tone="info">{t('auth.register.closedMessage')}</Alert>
-          <Link
-            to="/login"
-            className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
-          >
+          <Link to="/login" className="bt-link text-center text-sm font-medium">
             {t('auth.register.goToSignIn')}
           </Link>
         </div>
@@ -202,12 +196,9 @@ export function RegisterPage() {
   if (pending) {
     return (
       <AuthCard subtitle={t('auth.register.pendingSubtitle')}>
-        <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div className="flex flex-col gap-4">
           <Alert tone="success">{t('auth.register.pendingMessage')}</Alert>
-          <Link
-            to="/login"
-            className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
-          >
+          <Link to="/login" className="bt-link text-center text-sm font-medium">
             {t('auth.register.goToSignIn')}
           </Link>
         </div>
@@ -219,7 +210,7 @@ export function RegisterPage() {
   // flashing the plain form before the connected state lands.
   if (google.phase === 'loading') {
     return (
-      <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
+      <div className="bt-app grid place-items-center">
         <Spinner label={t('auth.register.google.connecting')} />
       </div>
     );
@@ -271,14 +262,11 @@ export function RegisterPage() {
           bottom. Google is hidden once connected (the OAuth round-trip is done
           and the account is a submit away). */}
       {googleEnabled && !connected ? (
-        <div className="mb-4">
+        <div className="mb-5">
           <GoogleButton />
         </div>
       ) : null}
-      <form
-        onSubmit={onSubmit}
-        className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
-      >
+      <form onSubmit={onSubmit} className="flex flex-col gap-4">
         {error ? <Alert tone="error">{error}</Alert> : null}
         {google.phase === 'expired' ? (
           <Alert tone="error">{t('auth.register.google.ticketExpired')}</Alert>
@@ -289,7 +277,7 @@ export function RegisterPage() {
           </Alert>
         ) : null}
         {mode === 'approval' ? (
-          <p className="text-sm text-neutral-400">{t('auth.register.approvalHint')}</p>
+          <p className="bt-muted text-sm">{t('auth.register.approvalHint')}</p>
         ) : null}
         {mode === 'invite_token' ? (
           <TextField
@@ -340,7 +328,7 @@ export function RegisterPage() {
         />
         {/* Legal consent notice (V4-P0 (e), §13.4). The versioned re-accept
             flow is V6-5; this ships the up-front notice + links only. */}
-        <p className="text-xs leading-relaxed text-neutral-500">
+        <p className="bt-muted text-xs leading-relaxed">
           {interpolateNodes(t('auth.register.legalConsent'), {
             terms: (
               <a
@@ -348,7 +336,7 @@ export function RegisterPage() {
                 href={legalUrl('terms', locale)}
                 target="_blank"
                 rel="noreferrer"
-                className="font-medium text-sky-400 hover:text-sky-300"
+                className="bt-link font-medium"
               >
                 {t('footer.terms')}
               </a>
@@ -359,7 +347,7 @@ export function RegisterPage() {
                 href={legalUrl('privacy', locale)}
                 target="_blank"
                 rel="noreferrer"
-                className="font-medium text-sky-400 hover:text-sky-300"
+                className="bt-link font-medium"
               >
                 {t('footer.privacy')}
               </a>
@@ -370,7 +358,7 @@ export function RegisterPage() {
                 href={legalUrl('impressum', locale)}
                 target="_blank"
                 rel="noreferrer"
-                className="font-medium text-sky-400 hover:text-sky-300"
+                className="bt-link font-medium"
               >
                 {t('footer.impressum')}
               </a>
@@ -381,7 +369,7 @@ export function RegisterPage() {
                 href={legalUrl('cookies', locale)}
                 target="_blank"
                 rel="noreferrer"
-                className="font-medium text-sky-400 hover:text-sky-300"
+                className="bt-link font-medium"
               >
                 {t('footer.cookies')}
               </a>
@@ -398,25 +386,11 @@ export function RegisterPage() {
       </form>
       {/* Mirrored "Have an account? → Sign in" bottom box — styled like the login
           page's sign-up box so both surfaces read uniform (V5-P0 arc (a)). */}
-      <div className="mt-4 flex flex-col gap-3">
-        <div className="flex items-center gap-3">
-          <span className="h-px flex-1 bg-neutral-800" />
-          <span className="text-xs uppercase tracking-wide text-neutral-600">{t('common.or')}</span>
-          <span className="h-px flex-1 bg-neutral-800" />
-        </div>
-        <div className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
-          <p className="text-center text-xs font-medium uppercase tracking-wide text-neutral-500">
-            {t('auth.register.haveAccountHeading')}
-          </p>
-          <Link
-            to="/login"
-            className={cx(
-              'inline-flex w-full items-center justify-center rounded-md px-3 py-2 text-sm font-semibold',
-              'border border-sky-700 bg-neutral-950 text-sky-300 transition-colors',
-              'hover:border-sky-500 hover:bg-neutral-900 hover:text-sky-200',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-            )}
-          >
+      <div className="mt-5 flex flex-col gap-4">
+        <OrDivider label={t('common.or')} />
+        <div className="bt-panel bt-panel--soft flex flex-col gap-3 p-4">
+          <p className="bt-label text-center">{t('auth.register.haveAccountHeading')}</p>
+          <Link to="/login" className="bt-btn w-full">
             {t('auth.register.signIn')}
           </Link>
         </div>

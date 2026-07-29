@@ -31,3 +31,22 @@ export function Wordmark({
     </span>
   );
 }
+
+/**
+ * The compact app mark — the white **B** / gold **T** pair shown when the full
+ * wordmark does not fit (the collapsed navigation rail of the Origin redesign).
+ * Same brand colors as the app icon; sizing inherits from the parent font-size.
+ */
+export function Brandmark({ className }: { className?: string }) {
+  return (
+    <span
+      aria-label="BetterTrack"
+      className={['inline-flex items-baseline font-bold tracking-tight', className]
+        .filter(Boolean)
+        .join(' ')}
+    >
+      <span className="text-white">B</span>
+      <span className="text-[#F6B82E]">T</span>
+    </span>
+  );
+}

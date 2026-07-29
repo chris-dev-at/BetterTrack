@@ -13,8 +13,9 @@ import {
   renameGroup,
 } from '../../lib/socialApi';
 import { useT } from '../../i18n';
-import { EmptyState, Skeleton } from '../../ui';
-import { Alert, Button, TextField, cx } from '../components/ui';
+import { EmptyState } from '../../ui';
+import { Button, Field, Icon, Input, SkeletonBlock } from '../../ui/origin';
+import { Alert } from '../components/ui';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
 
@@ -49,18 +50,13 @@ function DeleteGroupDialog({
   return (
     <Dialog title={t('social.groups.deleteTitle', { name: group.name })} onClose={onClose}>
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-neutral-400">{t('social.groups.deleteWarning')}</p>
+        <p className="bt-soft">{t('social.groups.deleteWarning')}</p>
         {error ? <Alert tone="error">{t('social.groups.deleteError')}</Alert> : null}
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose} disabled={pending}>
+          <Button disabled={pending} onClick={onClose} variant="quiet">
             {t('common.cancel')}
           </Button>
-          <Button
-            variant="primary"
-            onClick={onConfirm}
-            disabled={pending}
-            className="bg-red-700 hover:bg-red-600 disabled:bg-red-900"
-          >
+          <Button disabled={pending} onClick={onConfirm} variant="danger">
             {pending ? t('social.groups.deleting') : t('common.delete')}
           </Button>
         </div>
@@ -115,38 +111,40 @@ function GroupCard({ group }: { group: FriendGroup }) {
   const canRename = trimmed.length > 0 && trimmed !== group.name && !renameMutation.isPending;
 
   return (
-    <li className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/40">
+    <li className="bt-panel overflow-hidden">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-neutral-800/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
+        className="bt-band__row flex w-full items-center gap-3 text-left"
+        style={{
+          background: 'none',
+          border: 0,
+          color: 'inherit',
+          font: 'inherit',
+          cursor: 'pointer',
+        }}
       >
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-sm font-semibold text-neutral-100">{group.name}</span>
-          <span className="truncate text-xs text-neutral-500">
+          <span className="bt-row-title truncate">{group.name}</span>
+          <span className="bt-row-sub truncate">
             {t('social.groups.memberCount', { count: group.memberCount })}
           </span>
         </span>
-        <svg
-          className={cx(
-            'h-4 w-4 shrink-0 text-neutral-500 transition-transform',
-            open && 'rotate-90',
-          )}
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M9 6l6 6-6 6" />
-        </svg>
+        <Icon
+          name="chevron-right"
+          size={16}
+          style={{
+            color: 'var(--bt-faint)',
+            flex: 'none',
+            transform: open ? 'rotate(90deg)' : undefined,
+            transition: 'transform var(--bt-t-fast)',
+          }}
+        />
       </button>
 
       {open ? (
-        <div className="flex flex-col gap-4 border-t border-neutral-800 p-4">
+        <div className="bt-t-rule flex flex-col gap-4" style={{ padding: 16 }}>
           {/* Rename */}
           <form
             className="flex items-end gap-2"
@@ -155,41 +153,36 @@ function GroupCard({ group }: { group: FriendGroup }) {
               if (canRename) renameMutation.mutate(trimmed);
             }}
           >
-            <div className="flex-1">
-              <TextField
-                label={t('social.groups.nameLabel')}
-                name="groupName"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
+            <Field className="flex-1" htmlFor="groupName" label={t('social.groups.nameLabel')}>
+              <Input
+                id="groupName"
                 maxLength={60}
+                name="groupName"
+                onChange={(e) => setName(e.target.value)}
+                value={name}
               />
-            </div>
-            <Button type="submit" variant="secondary" disabled={!canRename}>
+            </Field>
+            <Button disabled={!canRename} type="submit">
               {renameMutation.isPending ? t('common.saving') : t('social.groups.renameAction')}
             </Button>
           </form>
 
           {/* Members */}
           <div className="flex flex-col gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-              {t('social.groups.membersHeading')}
-            </h4>
+            <h4 className="bt-label">{t('social.groups.membersHeading')}</h4>
             {group.members.length === 0 ? (
-              <p className="text-sm text-neutral-500">{t('social.groups.membersEmpty')}</p>
+              <p className="bt-meta">{t('social.groups.membersEmpty')}</p>
             ) : (
-              <ul className="flex flex-col gap-1">
+              <ul className="bt-band flex flex-col">
                 {group.members.map((m) => (
-                  <li
-                    key={m.id}
-                    className="flex items-center gap-3 rounded-lg border border-neutral-800 px-3 py-2"
-                  >
+                  <li key={m.id} className="flex items-center gap-3" style={{ padding: '8px 0' }}>
                     <Avatar name={m.username} iconId={m.profileIcon} size="sm" />
-                    <span className="flex-1 truncate text-sm text-neutral-200">{m.username}</span>
+                    <span className="bt-soft flex-1 truncate">{m.username}</span>
                     <Button
-                      variant="secondary"
-                      onClick={() => removeMutation.mutate(m.id)}
                       disabled={removeMutation.isPending}
-                      className="text-red-300 hover:text-red-200"
+                      onClick={() => removeMutation.mutate(m.id)}
+                      size="sm"
+                      variant="quiet"
                     >
                       {t('common.remove')}
                     </Button>
@@ -201,26 +194,23 @@ function GroupCard({ group }: { group: FriendGroup }) {
 
           {/* Add a friend */}
           <div className="flex flex-col gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-              {t('social.groups.addMemberHeading')}
-            </h4>
+            <h4 className="bt-label">{t('social.groups.addMemberHeading')}</h4>
             {candidates.length === 0 ? (
-              <p className="text-sm text-neutral-500">{t('social.groups.addMemberNone')}</p>
+              <p className="bt-meta">{t('social.groups.addMemberNone')}</p>
             ) : (
-              <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto pr-1">
+              <ul className="bt-band flex max-h-48 flex-col overflow-y-auto pr-1">
                 {candidates.map((f) => (
                   <li
                     key={f.user.id}
-                    className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-neutral-800"
+                    className="flex items-center gap-3"
+                    style={{ padding: '8px 0' }}
                   >
                     <Avatar name={f.user.username} iconId={f.user.profileIcon} size="sm" />
-                    <span className="flex-1 truncate text-sm text-neutral-200">
-                      {f.user.username}
-                    </span>
+                    <span className="bt-soft flex-1 truncate">{f.user.username}</span>
                     <Button
-                      variant="secondary"
-                      onClick={() => addMutation.mutate(f.user.id)}
                       disabled={addMutation.isPending}
+                      onClick={() => addMutation.mutate(f.user.id)}
+                      size="sm"
                     >
                       {t('social.groups.add')}
                     </Button>
@@ -234,12 +224,8 @@ function GroupCard({ group }: { group: FriendGroup }) {
             <Alert tone="error">{t('social.groups.mutateError')}</Alert>
           ) : null}
 
-          <div className="flex justify-end border-t border-neutral-800 pt-3">
-            <Button
-              variant="secondary"
-              onClick={() => setConfirmDelete(true)}
-              className="text-red-300 hover:text-red-200"
-            >
+          <div className="bt-t-rule flex justify-end" style={{ paddingTop: 14 }}>
+            <Button onClick={() => setConfirmDelete(true)} size="sm" variant="danger">
               {t('social.groups.delete')}
             </Button>
           </div>
@@ -290,31 +276,31 @@ export function FriendGroupsSection() {
   return (
     <section className="flex flex-col gap-3">
       <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          {t('social.groups.title')}
-        </h2>
-        <p className="mt-1 text-sm text-neutral-500">{t('social.groups.subtitle')}</p>
+        <h2 className="bt-h2">{t('social.groups.title')}</h2>
+        <p className="bt-meta" style={{ marginTop: 2 }}>
+          {t('social.groups.subtitle')}
+        </p>
       </div>
 
       <form onSubmit={handleCreate} className="flex items-end gap-2">
-        <div className="flex-1">
-          <TextField
-            label={t('social.groups.newLabel')}
+        <Field className="flex-1" htmlFor="newGroupName" label={t('social.groups.newLabel')}>
+          <Input
+            id="newGroupName"
+            maxLength={60}
             name="newGroupName"
-            value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder={t('social.groups.newPlaceholder')}
-            maxLength={60}
+            value={newName}
           />
-        </div>
-        <Button type="submit" disabled={createMutation.isPending || !newName.trim()}>
+        </Field>
+        <Button disabled={createMutation.isPending || !newName.trim()} type="submit">
           {createMutation.isPending ? t('social.groups.creating') : t('social.groups.create')}
         </Button>
       </form>
       {createMutation.isError ? <Alert tone="error">{t('social.groups.createError')}</Alert> : null}
 
       {isLoading ? (
-        <Skeleton height="h-16" />
+        <SkeletonBlock height={64} />
       ) : isError || !data ? (
         <Alert tone="error">{t('social.groups.loadError')}</Alert>
       ) : data.groups.length === 0 ? (

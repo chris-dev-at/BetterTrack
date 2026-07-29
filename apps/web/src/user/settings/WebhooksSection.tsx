@@ -20,10 +20,14 @@ import {
   updateWebhook,
 } from '../../lib/webhooksApi';
 import { EmptyState, Skeleton } from '../../ui';
+import { Badge, Button, Field, Input, type BadgeTone } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, TextField, cx } from '../components/ui';
+import { Alert } from '../components/ui';
 
 const WEBHOOKS_KEY = ['settings', 'webhooks'] as const;
+
+/** Monospace surface for the show-once secret, URLs and event ids. */
+const MONO_FONT = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 const deliveriesKey = (id: string) => ['settings', 'webhooks', id, 'deliveries'] as const;
 
 /** Maps each catalog event type to its i18n label subkey (camelCase of the type). */
@@ -82,16 +86,21 @@ function SecretModal({
     >
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-2">
-          <code className="flex-1 overflow-x-auto rounded-md bg-neutral-950 px-3 py-2 font-mono text-sm text-emerald-300 ring-1 ring-inset ring-neutral-700">
+          <code
+            className="bt-panel bt-panel--soft bt-num flex-1 overflow-x-auto"
+            style={{ fontFamily: MONO_FONT, padding: '8px 11px', color: 'var(--bt-pos)' }}
+          >
             {result.secret}
           </code>
-          <Button variant="secondary" onClick={copy}>
+          <Button onClick={copy}>
             {copied ? t('settings.api.copied') : t('settings.api.copy')}
           </Button>
         </div>
         <Alert tone="info">{t('settings.api.webhooks.secretModal.storeWarning')}</Alert>
         <div className="flex justify-end">
-          <Button onClick={onClose}>{t('settings.api.done')}</Button>
+          <Button onClick={onClose} variant="primary">
+            {t('settings.api.done')}
+          </Button>
         </div>
       </div>
     </Dialog>
@@ -152,43 +161,45 @@ function CreateWebhookForm({
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
-      <h3 className="text-sm font-semibold text-neutral-100">
-        {t('settings.api.webhooks.createTitle')}
-      </h3>
+      <h3 className="bt-h3">{t('settings.api.webhooks.createTitle')}</h3>
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <TextField
-        label={t('settings.api.webhooks.urlLabel')}
-        name="webhook-url"
-        type="url"
-        value={url}
-        onChange={(e) => setUrl(e.target.value)}
-        maxLength={2048}
-        placeholder={t('settings.api.webhooks.urlPlaceholder')}
-        required
-      />
-      <TextField
+      <Field className="max-w-xl" htmlFor="webhook-url" label={t('settings.api.webhooks.urlLabel')}>
+        <Input
+          id="webhook-url"
+          maxLength={2048}
+          name="webhook-url"
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder={t('settings.api.webhooks.urlPlaceholder')}
+          required
+          type="url"
+          value={url}
+        />
+      </Field>
+      <Field
+        className="max-w-sm"
+        htmlFor="webhook-description"
         label={t('settings.api.webhooks.descriptionLabel')}
-        name="webhook-description"
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        maxLength={200}
-        placeholder={t('settings.api.webhooks.descriptionPlaceholder')}
-      />
+      >
+        <Input
+          id="webhook-description"
+          maxLength={200}
+          name="webhook-description"
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder={t('settings.api.webhooks.descriptionPlaceholder')}
+          value={description}
+        />
+      </Field>
       <fieldset className="flex flex-col gap-2">
-        <legend className="text-sm font-medium text-neutral-300">
-          {t('settings.api.webhooks.eventsLegend')}
-        </legend>
+        <legend className="bt-label">{t('settings.api.webhooks.eventsLegend')}</legend>
         <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
           {WEBHOOK_EVENT_TYPES.map((type) => (
-            <label
-              key={type}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm text-neutral-200 hover:bg-neutral-800"
-            >
+            <label key={type} className="bt-soft flex cursor-pointer items-center gap-2 py-1">
               <input
                 type="checkbox"
                 checked={events.has(type)}
                 onChange={() => toggle(type)}
-                className="h-4 w-4 accent-sky-500"
+                className="h-4 w-4"
+                style={{ accentColor: 'var(--bt-gold)' }}
               />
               <span>{t(`settings.api.webhooks.event.${EVENT_LABEL_KEY[type]}`)}</span>
             </label>
@@ -196,7 +207,7 @@ function CreateWebhookForm({
         </div>
       </fieldset>
       <div>
-        <Button type="submit" disabled={mutation.isPending}>
+        <Button disabled={mutation.isPending} type="submit">
           {mutation.isPending
             ? t('settings.api.webhooks.creating')
             : t('settings.api.webhooks.create')}
@@ -217,35 +228,24 @@ function DeliveriesList({ id }: { id: string }) {
 
   if (query.isPending) return <Skeleton height="h-16" />;
   if (query.isError)
-    return (
-      <p className="text-xs text-red-400">{t('settings.api.webhooks.deliveries.loadError')}</p>
-    );
+    return <p className="bt-field__error">{t('settings.api.webhooks.deliveries.loadError')}</p>;
 
   const deliveries = query.data?.deliveries ?? [];
   if (deliveries.length === 0)
-    return (
-      <p className="text-xs text-neutral-500">{t('settings.api.webhooks.deliveries.empty')}</p>
-    );
+    return <p className="bt-meta">{t('settings.api.webhooks.deliveries.empty')}</p>;
 
   return (
-    <ul className="flex flex-col gap-1">
+    <ul className="flex flex-col gap-1.5">
       {deliveries.map((d) => (
-        <li key={d.id} className="flex flex-wrap items-center gap-2 text-xs text-neutral-400">
-          <span
-            className={cx(
-              'rounded px-1.5 py-0.5 font-medium',
-              d.status === 'success'
-                ? 'bg-emerald-950 text-emerald-300'
-                : 'bg-red-950 text-red-300',
-            )}
-          >
+        <li key={d.id} className="bt-row-sub flex flex-wrap items-center gap-2">
+          <Badge tone={d.status === 'success' ? 'pos' : 'neg'}>
             {d.status === 'success'
               ? t('settings.api.webhooks.deliveries.success')
               : t('settings.api.webhooks.deliveries.failed')}
-          </span>
-          <span className="font-mono">{d.eventType}</span>
-          {d.responseStatus != null ? <span>· {d.responseStatus}</span> : null}
-          <span className="text-neutral-500">· {formatDate(d.createdAt)}</span>
+          </Badge>
+          <span style={{ fontFamily: MONO_FONT }}>{d.eventType}</span>
+          {d.responseStatus != null ? <span className="bt-num">· {d.responseStatus}</span> : null}
+          <span style={{ color: 'var(--bt-faint)' }}>· {formatDate(d.createdAt)}</span>
         </li>
       ))}
     </ul>
@@ -274,48 +274,44 @@ function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
     onError: () => setError(t('settings.api.webhooks.deleteFailed')),
   });
 
-  const statusBadge = !subscription.enabled
+  const statusBadge: { text: string; tone: BadgeTone } = !subscription.enabled
     ? subscription.disabledReason === 'auto'
-      ? { text: t('settings.api.webhooks.status.disabledAuto'), tone: 'bg-red-950 text-red-300' }
-      : {
-          text: t('settings.api.webhooks.status.pausedManual'),
-          tone: 'bg-amber-950 text-amber-300',
-        }
-    : { text: t('settings.api.webhooks.status.active'), tone: 'bg-emerald-950 text-emerald-300' };
+      ? { text: t('settings.api.webhooks.status.disabledAuto'), tone: 'neg' }
+      : { text: t('settings.api.webhooks.status.pausedManual'), tone: 'gold' }
+    : { text: t('settings.api.webhooks.status.active'), tone: 'pos' };
 
   return (
-    <li className="flex flex-col gap-2 px-4 py-3">
+    <li className="bt-band__row flex flex-col gap-2">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 flex-col gap-1">
           <span className="flex items-center gap-2">
-            <span
-              className={cx('rounded px-1.5 py-0.5 text-[0.65rem] font-medium', statusBadge.tone)}
-            >
-              {statusBadge.text}
+            <Badge tone={statusBadge.tone}>{statusBadge.text}</Badge>
+            <span className="bt-row-title truncate" style={{ fontFamily: MONO_FONT }}>
+              {subscription.url}
             </span>
-            <span className="truncate font-mono text-sm text-neutral-100">{subscription.url}</span>
           </span>
           {subscription.description ? (
-            <span className="text-xs text-neutral-400">{subscription.description}</span>
+            <span className="bt-row-sub">{subscription.description}</span>
           ) : null}
           <span className="flex flex-wrap gap-1">
             {subscription.eventTypes.map((type) => (
-              <span
+              <Badge
                 key={type}
-                className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-[0.65rem] text-neutral-300"
+                outline
+                style={{ fontFamily: MONO_FONT, fontSize: 11, minHeight: 18 }}
               >
                 {type}
-              </span>
+              </Badge>
             ))}
           </span>
           {!subscription.enabled && subscription.disabledReason === 'auto' ? (
-            <span className="text-xs text-red-400">
+            <span className="bt-field__error">
               {t('settings.api.webhooks.disabledAutoHint', {
                 count: subscription.consecutiveFailures,
               })}
             </span>
           ) : null}
-          <span className="text-xs text-neutral-500">
+          <span className="bt-row-sub">
             {subscription.lastDeliveryAt
               ? t('settings.api.webhooks.lastDelivery', {
                   at: formatDate(subscription.lastDeliveryAt),
@@ -324,16 +320,16 @@ function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
           </span>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {error ? <span className="text-xs text-red-400">{error}</span> : null}
-          <Button variant="ghost" onClick={() => setShowDeliveries((v) => !v)}>
+          {error ? <span className="bt-field__error">{error}</span> : null}
+          <Button onClick={() => setShowDeliveries((v) => !v)} size="sm" variant="quiet">
             {showDeliveries
               ? t('settings.api.webhooks.hideDeliveries')
               : t('settings.api.webhooks.viewDeliveries')}
           </Button>
           <Button
-            variant="ghost"
             disabled={toggle.isPending}
             onClick={() => toggle.mutate(!subscription.enabled)}
+            size="sm"
           >
             {subscription.enabled
               ? toggle.isPending
@@ -346,32 +342,33 @@ function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
           {confirming ? (
             <>
               <Button
-                variant="secondary"
-                className={cx('text-red-300 ring-red-900 hover:bg-red-950')}
                 disabled={remove.isPending}
                 onClick={() => remove.mutate()}
+                size="sm"
+                variant="danger"
               >
                 {remove.isPending
                   ? t('settings.api.webhooks.deleting')
                   : t('settings.api.webhooks.confirmDelete')}
               </Button>
               <Button
-                variant="ghost"
                 disabled={remove.isPending}
                 onClick={() => setConfirming(false)}
+                size="sm"
+                variant="quiet"
               >
                 {t('common.cancel')}
               </Button>
             </>
           ) : (
-            <Button variant="ghost" onClick={() => setConfirming(true)}>
+            <Button onClick={() => setConfirming(true)} size="sm" variant="danger">
               {t('settings.api.webhooks.delete')}
             </Button>
           )}
         </div>
       </div>
       {showDeliveries ? (
-        <div className="rounded-md border border-neutral-800 bg-neutral-950 p-3">
+        <div className="bt-panel bt-panel--soft" style={{ padding: 12 }}>
           <DeliveriesList id={subscription.id} />
         </div>
       ) : null}
@@ -398,36 +395,31 @@ export function WebhooksSection() {
   const subscriptions = query.data?.subscriptions ?? [];
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
         className="flex items-center justify-between gap-2 text-left"
+        style={{ background: 'none', border: 0, padding: 0, color: 'inherit', cursor: 'pointer' }}
       >
         <span className="flex flex-col gap-1">
-          <span className="text-lg font-semibold text-neutral-100">
-            {t('settings.api.webhooks.sectionTitle')}
-          </span>
-          <span className="text-sm text-neutral-500">
-            {t('settings.api.webhooks.sectionDescription')}
-          </span>
+          <span className="bt-h2">{t('settings.api.webhooks.sectionTitle')}</span>
+          <span className="bt-meta">{t('settings.api.webhooks.sectionDescription')}</span>
         </span>
-        <span aria-hidden className="text-neutral-500">
+        <span aria-hidden style={{ color: 'var(--bt-faint)' }}>
           {expanded ? '▲' : '▼'}
         </span>
       </button>
 
       {expanded ? (
         <>
-          <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
+          <section className="bt-panel bt-panel--pad">
             <CreateWebhookForm onCreated={setMinted} />
           </section>
 
           <section className="flex flex-col gap-3">
-            <h3 className="text-sm font-semibold text-neutral-100">
-              {t('settings.api.webhooks.listTitle')}
-            </h3>
+            <h3 className="bt-h3">{t('settings.api.webhooks.listTitle')}</h3>
             {query.isPending ? (
               <Skeleton height="h-20" />
             ) : query.isError ? (
@@ -442,7 +434,7 @@ export function WebhooksSection() {
                 description={t('settings.api.webhooks.empty.description')}
               />
             ) : (
-              <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
+              <ul className="bt-panel bt-band">
                 {subscriptions.map((subscription) => (
                   <WebhookRow key={subscription.id} subscription={subscription} />
                 ))}

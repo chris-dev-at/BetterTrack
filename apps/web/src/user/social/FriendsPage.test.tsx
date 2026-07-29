@@ -232,7 +232,7 @@ describe('FriendsPage', () => {
     await waitFor(() => expect(screen.getByText('erin')).toBeInTheDocument());
     expect(screen.getByRole('link', { name: /message erin/i })).toHaveAttribute(
       'href',
-      '/social/chat/u5',
+      '/people/chat/u5',
     );
   });
 
@@ -314,7 +314,7 @@ describe('FriendsPage', () => {
     await user.click(screen.getByRole('button', { name: 'grace' }));
     // The idea appears as a read-only deep link into the shared-idea view.
     const link = screen.getByRole('link', { name: /momentum basket/i });
-    expect(link).toHaveAttribute('href', `/social/shared-with-me/ideas/${SHARED_IDEA_ID}`);
+    expect(link).toHaveAttribute('href', `/people/shared/ideas/${SHARED_IDEA_ID}`);
   });
 
   // The aggregated "Followed items" collection was removed from Social (#532):

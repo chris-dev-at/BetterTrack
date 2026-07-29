@@ -25,7 +25,7 @@ export function ForgotPasswordPage() {
 
   if (status === 'loading') {
     return (
-      <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
+      <div className="bt-app grid place-items-center">
         <Spinner label={t('auth.common.checkingSession')} />
       </div>
     );
@@ -63,12 +63,9 @@ export function ForgotPasswordPage() {
   if (sent) {
     return (
       <AuthCard subtitle={t('auth.forgotPassword.subtitle')}>
-        <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div className="flex flex-col gap-4">
           <Alert tone="success">{t('auth.forgotPassword.sentMessage')}</Alert>
-          <Link
-            to="/login"
-            className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
-          >
+          <Link to="/login" className="bt-link text-center text-sm font-medium">
             {t('auth.forgotPassword.backToSignIn')}
           </Link>
         </div>
@@ -78,12 +75,9 @@ export function ForgotPasswordPage() {
 
   return (
     <AuthCard subtitle={t('auth.forgotPassword.subtitle')}>
-      <form
-        onSubmit={onSubmit}
-        className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
-      >
+      <form onSubmit={onSubmit} className="flex flex-col gap-4">
         {error ? <Alert tone="error">{error}</Alert> : null}
-        <p className="text-sm text-neutral-400">{t('auth.forgotPassword.description')}</p>
+        <p className="bt-muted text-sm">{t('auth.forgotPassword.description')}</p>
         <TextField
           label={t('auth.forgotPassword.emailLabel')}
           name="email"
@@ -97,10 +91,7 @@ export function ForgotPasswordPage() {
         <Button type="submit" disabled={submitting}>
           {submitting ? t('auth.forgotPassword.sending') : t('auth.forgotPassword.submit')}
         </Button>
-        <Link
-          to="/login"
-          className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
-        >
+        <Link to="/login" className="bt-link text-center text-sm font-medium">
           {t('auth.forgotPassword.backToSignIn')}
         </Link>
       </form>

@@ -60,7 +60,7 @@ export function ResetPasswordPage() {
 
   if (status === 'loading') {
     return (
-      <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
+      <div className="bt-app grid place-items-center">
         <Spinner label={t('auth.common.checkingSession')} />
       </div>
     );
@@ -99,10 +99,7 @@ export function ResetPasswordPage() {
 
   return (
     <AuthCard subtitle={t('auth.resetPassword.subtitle')}>
-      <form
-        onSubmit={onSubmit}
-        className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
-      >
+      <form onSubmit={onSubmit} className="flex flex-col gap-4">
         {error ? <Alert tone="error">{error}</Alert> : null}
         <TextField
           label={t('auth.resetPassword.newPasswordLabel')}
@@ -119,10 +116,7 @@ export function ResetPasswordPage() {
         <Button type="submit" disabled={submitting}>
           {submitting ? t('auth.resetPassword.saving') : t('auth.resetPassword.submit')}
         </Button>
-        <Link
-          to="/forgot-password"
-          className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
-        >
+        <Link to="/forgot-password" className="bt-link text-center text-sm font-medium">
           {t('auth.resetPassword.requestNewLink')}
         </Link>
       </form>

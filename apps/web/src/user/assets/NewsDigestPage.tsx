@@ -19,23 +19,23 @@ function NewsGroupCard({ group }: { group: NewsDigestGroup }) {
   return (
     <section
       aria-label={t('assets.news.groupAria', { symbol: group.symbol })}
-      className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4"
+      className="flex flex-col gap-3 bt-panel bt-panel--pad"
     >
       <div className="flex flex-wrap items-center gap-2">
         <Link
           to={`/assets/${encodeURIComponent(group.assetId)}`}
-          className="rounded font-mono text-sm font-semibold text-neutral-100 hover:text-sky-300 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          className="rounded font-mono text-sm font-semibold hover:underline"
         >
           {group.symbol}
         </Link>
-        <span className="truncate text-sm text-neutral-400">{group.name}</span>
+        <span className="truncate text-sm bt-muted">{group.name}</span>
         {group.held ? (
-          <span className="inline-flex items-center rounded-full bg-emerald-950/40 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-emerald-300 ring-1 ring-emerald-800/60">
+          <span className="bt-badge bt-badge--pos px-2 py-0.5 text-[0.65rem] uppercase tracking-wide">
             {t('assets.news.held')}
           </span>
         ) : null}
         {group.watched ? (
-          <span className="inline-flex items-center rounded-full bg-sky-950/40 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-sky-300 ring-1 ring-sky-800/60">
+          <span className="bt-badge bt-badge--blue px-2 py-0.5 text-[0.65rem] uppercase tracking-wide">
             {t('assets.news.watched')}
           </span>
         ) : null}
@@ -67,10 +67,8 @@ export function NewsDigestPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
-          {t('assets.news.title')}
-        </h1>
-        <p className="mt-1 text-sm text-neutral-400">{t('assets.news.subtitle')}</p>
+        <h1 className="text-2xl font-semibold tracking-tight">{t('assets.news.title')}</h1>
+        <p className="mt-1 text-sm bt-muted">{t('assets.news.subtitle')}</p>
       </div>
 
       <section aria-busy={isLoading} aria-label={t('assets.news.title')}>

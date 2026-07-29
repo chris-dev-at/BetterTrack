@@ -11,11 +11,11 @@ describe('Disclaimer', () => {
 
   test('applies the muted footnote styling', () => {
     render(<Disclaimer>Market data may be delayed.</Disclaimer>);
-    expect(screen.getByText('Market data may be delayed.')).toHaveClass('text-neutral-500');
+    expect(screen.getByText('Market data may be delayed.')).toHaveClass('bt-muted');
   });
 
   test('merges an additional className', () => {
     render(<Disclaimer className="mt-4">Some copy</Disclaimer>);
-    expect(screen.getByText('Some copy')).toHaveClass('mt-4', 'text-neutral-500');
+    expect(screen.getByText('Some copy')).toHaveClass('mt-4', 'bt-muted');
   });
 });
