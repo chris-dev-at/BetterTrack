@@ -505,6 +505,10 @@
     "collapseSection": "{{section}} einklappen"
   },
   "askdock": {
+    "pin": "Offen halten",
+    "unpin": "Nicht mehr offen halten",
+    "maximize": "Maximieren",
+    "restore": "Größe zurücksetzen",
     "close": "BetterTrack fragen schließen",
     "composerPlaceholder": "Frag etwas zu deinen Portfolios",
     "send": "Senden",
