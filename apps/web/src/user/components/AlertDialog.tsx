@@ -170,7 +170,10 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
       <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
         {/* Asset — a picker when creating from the Workboard, locked otherwise. */}
         {selectedAsset ? (
-          <div className="bt-input flex items-center justify-between gap-3" style={{ height: 'auto' }}>
+          <div
+            className="bt-input flex items-center justify-between gap-3"
+            style={{ height: 'auto' }}
+          >
             <span className="min-w-0 truncate">
               <span className="bt-row-title">{selectedAsset.symbol}</span>{' '}
               <span className="bt-muted">{selectedAsset.name}</span>
@@ -209,7 +212,11 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
               {t(kindMeta.labelKey)}
             </p>
           ) : (
-            <Select id="alert-kind" onChange={(e) => selectKind(e.target.value as AlertKind)} value={kind}>
+            <Select
+              id="alert-kind"
+              onChange={(e) => selectKind(e.target.value as AlertKind)}
+              value={kind}
+            >
               {groups.map((g) => (
                 <optgroup key={g.groupKey} label={t(g.groupKey)}>
                   {g.kinds.map((k) => (

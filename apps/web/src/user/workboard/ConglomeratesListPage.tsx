@@ -73,14 +73,10 @@ function ConglomerateCard({ conglomerate }: { conglomerate: ConglomerateSummary 
       className="flex flex-col gap-3 bt-panel bt-panel--pad transition-colors"
     >
       <div className="flex items-start justify-between gap-2">
-        <h3 className="min-w-0 truncate text-base font-semibold">
-          {conglomerate.name}
-        </h3>
+        <h3 className="min-w-0 truncate text-base font-semibold">{conglomerate.name}</h3>
         <StatusBadge status={conglomerate.status} />
       </div>
-      <p className="text-sm bt-muted">
-        {positionCountLabel(t, conglomerate.positionCount)}
-      </p>
+      <p className="text-sm bt-muted">{positionCountLabel(t, conglomerate.positionCount)}</p>
     </Link>
   );
 }
@@ -90,7 +86,8 @@ function NewConglomerateCard() {
   return (
     <Link
       to="/workbench/blueprints/new"
-      className="flex min-h-[104px] flex-col items-center justify-center gap-1 rounded-lg p-4 text-center text-sm bt-muted transition-colors" style={{ border: '1px dashed var(--bt-border-strong)' }}
+      className="flex min-h-[104px] flex-col items-center justify-center gap-1 rounded-lg p-4 text-center text-sm bt-muted transition-colors"
+      style={{ border: '1px dashed var(--bt-border-strong)' }}
     >
       <span className="text-xl" aria-hidden="true">
         +
@@ -136,10 +133,7 @@ export function ConglomeratesListPage() {
           title={t('workboard.conglomerates.emptyTitle')}
           description={t('workboard.conglomerates.emptyDescription')}
           cta={
-            <Link
-              to="/workbench/blueprints/new"
-              className="rounded text-sm bt-link"
-            >
+            <Link to="/workbench/blueprints/new" className="rounded text-sm bt-link">
               {t('workboard.conglomerates.emptyCta')}
             </Link>
           }

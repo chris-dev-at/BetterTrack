@@ -50,7 +50,12 @@ export function LocalNav({
         >
           {item.label}
           {item.parked ? (
-            <span aria-label={t('common.parked')} className="bt-dot bt-dot--gold" role="img" title={t('common.parked')} />
+            <span
+              aria-label={t('common.parked')}
+              className="bt-dot bt-dot--gold"
+              role="img"
+              title={t('common.parked')}
+            />
           ) : null}
         </NavLink>
       ))}

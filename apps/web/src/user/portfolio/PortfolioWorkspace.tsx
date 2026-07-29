@@ -36,7 +36,11 @@ export function PortfolioWorkspace() {
 
   return (
     <div>
-      <LocalNav ariaLabel={t('portfolio.section.aria')} items={items} preserveParams={[ACTIVE_PORTFOLIO_PARAM]} />
+      <LocalNav
+        ariaLabel={t('portfolio.section.aria')}
+        items={items}
+        preserveParams={[ACTIVE_PORTFOLIO_PARAM]}
+      />
       <Outlet />
     </div>
   );

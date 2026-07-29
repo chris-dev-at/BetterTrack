@@ -91,10 +91,7 @@ function WatchlistRow({
       )}
     >
       {/* Drag handle */}
-      <td
-        className="w-5 cursor-grab select-none pl-2 pr-0 text-center bt-muted"
-        aria-hidden="true"
-      >
+      <td className="w-5 cursor-grab select-none pl-2 pr-0 text-center bt-muted" aria-hidden="true">
         ⠿
       </td>
 
@@ -146,11 +143,7 @@ function WatchlistRow({
         {quoteQuery.isLoading ? (
           <Skeleton variant="line" width="w-14" className="ml-auto" />
         ) : dayPct != null ? (
-          <span
-            className={
-              dayPct > 0 ? 'bt-pos' : dayPct < 0 ? 'bt-neg' : 'bt-muted'
-            }
-          >
+          <span className={dayPct > 0 ? 'bt-pos' : dayPct < 0 ? 'bt-neg' : 'bt-muted'}>
             {formatSignedPercent(dayPct)}
           </span>
         ) : (
@@ -353,10 +346,7 @@ function WatchlistZone() {
           title={t('workboard.overview.watchlist.emptyTitle')}
           description={t('workboard.overview.watchlist.emptyDescription')}
           cta={
-            <Link
-              to="/assets/search"
-              className="rounded text-sm bt-link"
-            >
+            <Link to="/assets/search" className="rounded text-sm bt-link">
               {t('workboard.overview.watchlist.emptySearchLink')}
             </Link>
           }
@@ -473,9 +463,7 @@ function UpcomingEarningsZone() {
               <span
                 className={cx(
                   'inline-flex items-center rounded-full px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide ring-1',
-                  e.estimated
-                    ? 'bt-badge bt-badge--gold'
-                    : 'bt-badge bt-badge--pos',
+                  e.estimated ? 'bt-badge bt-badge--gold' : 'bt-badge bt-badge--pos',
                 )}
               >
                 {e.estimated
@@ -552,9 +540,7 @@ export function WorkboardPage() {
   return (
     <div className="flex flex-col gap-10">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {t('workboard.overview.title')}
-        </h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{t('workboard.overview.title')}</h1>
         <p className="mt-1 text-sm bt-muted">{t('workboard.overview.subtitle')}</p>
       </div>
       <WatchlistZone />

@@ -137,12 +137,7 @@ function NotificationRow({
         {unread ? (
           <span aria-hidden="true" className="bt-dot bt-dot--gold h-1.5 w-1.5 flex-none" />
         ) : null}
-        <span
-          className={cx(
-            'truncate text-sm font-medium',
-            unread ? '' : 'bt-muted',
-          )}
-        >
+        <span className={cx('truncate text-sm font-medium', unread ? '' : 'bt-muted')}>
           {notification.title}
         </span>
       </span>
@@ -254,7 +249,12 @@ export function NotificationBell() {
         {unreadCount > 0 ? (
           <span
             aria-hidden="true"
-            className="absolute right-0.5 top-0.5 grid h-4 min-w-4 place-items-center rounded-full px-1 text-[0.625rem] font-semibold leading-none" style={{ background: 'var(--bt-gold)', color: 'var(--bt-gold-ink)', boxShadow: '0 0 0 2px var(--bt-bg)' }}
+            className="absolute right-0.5 top-0.5 grid h-4 min-w-4 place-items-center rounded-full px-1 text-[0.625rem] font-semibold leading-none"
+            style={{
+              background: 'var(--bt-gold)',
+              color: 'var(--bt-gold-ink)',
+              boxShadow: '0 0 0 2px var(--bt-bg)',
+            }}
           >
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
@@ -265,12 +265,11 @@ export function NotificationBell() {
         <div
           role="dialog"
           aria-label={t('settings.notifications.title')}
-          className="bt-popover w-80" style={{ right: 0, top: 'calc(100% + 6px)', padding: 0 }}
+          className="bt-popover w-80"
+          style={{ right: 0, top: 'calc(100% + 6px)', padding: 0 }}
         >
           <div className="flex items-center justify-between bt-b-rule px-3 py-2">
-            <span className="text-sm font-medium bt-soft">
-              {t('settings.notifications.title')}
-            </span>
+            <span className="text-sm font-medium bt-soft">{t('settings.notifications.title')}</span>
             <button
               type="button"
               onClick={() => markReadMutation.mutate({ all: true })}

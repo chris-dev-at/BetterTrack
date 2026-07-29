@@ -280,9 +280,7 @@ const PATHS: Record<string, ReactNode> = {
       <circle cx="18.5" cy="12" r="1.4" fill="currentColor" stroke="none" />
     </>
   ),
-  star: (
-    <path d="m12 4.5 2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L4.8 9.8l5-.7Z" />
-  ),
+  star: <path d="m12 4.5 2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L4.8 9.8l5-.7Z" />,
   clock: (
     <>
       <circle cx="12" cy="12" r="8" />
@@ -326,9 +324,7 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8" />
     </>
   ),
-  cloud: (
-    <path d="M7 18.5a4 4 0 0 1-.6-8A5.5 5.5 0 0 1 17 8.6a4.5 4.5 0 0 1 .5 8.9Z" />
-  ),
+  cloud: <path d="M7 18.5a4 4 0 0 1-.6-8A5.5 5.5 0 0 1 17 8.6a4.5 4.5 0 0 1 .5 8.9Z" />,
   printer: (
     <>
       <path d="M7 9V4.5h10V9" />
@@ -349,9 +345,7 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M5.5 19.5c.8-3.4 3.3-5 6.5-5s5.7 1.6 6.5 5" />
     </>
   ),
-  message: (
-    <path d="M4.5 5.5h15v10.5h-9L6 20v-4H4.5Z" />
-  ),
+  message: <path d="M4.5 5.5h15v10.5h-9L6 20v-4H4.5Z" />,
   warning: (
     <>
       <path d="M12 4 3.5 19h17Z" />

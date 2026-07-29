@@ -173,9 +173,7 @@ function AssetHeader({
 
       <div className="flex flex-wrap items-center gap-2 text-xs bt-muted">
         {stale ? (
-          <span className="bt-badge bt-badge--gold px-1.5 py-0.5">
-            {t('assets.detail.stale')}
-          </span>
+          <span className="bt-badge bt-badge--gold px-1.5 py-0.5">{t('assets.detail.stale')}</span>
         ) : null}
         {asOf ? <span>{t('assets.detail.asOf', { time: formatDateTime(asOf) })}</span> : null}
         <span>{t('assets.detail.delayedNote')}</span>
@@ -384,9 +382,7 @@ function EstimatedBadge({ estimated }: { estimated: boolean }) {
     <span
       className={cx(
         'inline-flex items-center rounded-full px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide ring-1',
-        estimated
-          ? 'bt-badge bt-badge--gold'
-          : 'bt-badge bt-badge--pos',
+        estimated ? 'bt-badge bt-badge--gold' : 'bt-badge bt-badge--pos',
       )}
     >
       {estimated ? t('assets.detail.earnings.estimated') : t('assets.detail.earnings.confirmed')}
@@ -424,9 +420,7 @@ function EarningsSection({ assetId }: { assetId: string }) {
               <span className="text-xs uppercase tracking-wide bt-muted">
                 {t('assets.detail.earnings.nextLabel')}
               </span>
-              <span className="text-sm font-medium">
-                {formatDate(data.next.date)}
-              </span>
+              <span className="text-sm font-medium">{formatDate(data.next.date)}</span>
             </div>
             <div className="flex items-center gap-2">
               {data.next.epsEstimate != null ? (
@@ -514,9 +508,7 @@ function SplitsSection({ assetId }: { assetId: string }) {
               </span>
               <span className="tabular-nums bt-muted">{formatDate(s.date)}</span>
             </span>
-            <span className="font-mono">
-              {splitRatio(s.numerator, s.denominator, s.ratio)}
-            </span>
+            <span className="font-mono">{splitRatio(s.numerator, s.denominator, s.ratio)}</span>
           </div>
         ))}
         {data.history
@@ -660,9 +652,7 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
           title={watched ? 'On your watchlist' : 'Add to watchlist'}
           className={cx(
             'rounded-l-md p-2 transition-colors',
-            watched
-              ? 'bt-link'
-              : 'bt-muted  hover:',
+            watched ? 'bt-link' : 'bt-muted  hover:',
             addMutation.isError && 'bt-neg',
             '',
             'disabled:cursor-not-allowed disabled:opacity-60',
@@ -677,7 +667,8 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
           aria-label={`Choose a watchlist for ${symbol}`}
           aria-haspopup="menu"
           aria-expanded={listPickerOpen}
-          className="p-1.5 text-xs bt-muted" style={{ borderLeft: '1px solid var(--bt-border-strong)' }}
+          className="p-1.5 text-xs bt-muted"
+          style={{ borderLeft: '1px solid var(--bt-border-strong)' }}
         >
           ▾
         </button>
@@ -687,7 +678,8 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
         <div
           role="menu"
           aria-label={`Watchlists for ${symbol}`}
-          className="bt-popover w-48 p-2 text-xs" style={{ right: 0, top: 'calc(100% + 4px)' }}
+          className="bt-popover w-48 p-2 text-xs"
+          style={{ right: 0, top: 'calc(100% + 4px)' }}
         >
           {(listsQuery.data?.watchlists ?? []).map((list) => (
             <button
@@ -749,9 +741,7 @@ function LiveControls({
         className={cx(
           'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold transition-colors',
           '',
-          live
-            ? 'bt-badge bt-badge--neg'
-            : 'bt-muted   hover:',
+          live ? 'bt-badge bt-badge--neg' : 'bt-muted   hover:',
         )}
       >
         <span
@@ -766,11 +756,7 @@ function LiveControls({
 
       {live ? (
         <>
-          <div
-            role="group"
-            aria-label={t('assets.live.windowGroupLabel')}
-            className="bt-seg"
-          >
+          <div role="group" aria-label={t('assets.live.windowGroupLabel')} className="bt-seg">
             {LIVE_WINDOWS.map((token) => {
               const selected = token === window;
               return (
@@ -779,10 +765,7 @@ function LiveControls({
                   type="button"
                   aria-pressed={selected}
                   onClick={() => onWindowChange(token)}
-                  className={cx(
-                    '',
-                    (selected) && 'is-active',
-                  )}
+                  className={cx('', selected && 'is-active')}
                 >
                   {token}
                 </button>
@@ -803,12 +786,7 @@ function LiveControls({
                   type="button"
                   aria-pressed={selected}
                   onClick={() => onRateChange(token)}
-                  className={cx(
-                    '',
-                    selected
-                      ? 'is-active'
-                      : 'bt-muted  hover:',
-                  )}
+                  className={cx('', selected ? 'is-active' : 'bt-muted  hover:')}
                 >
                   {token}
                 </button>

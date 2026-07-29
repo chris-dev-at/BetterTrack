@@ -327,7 +327,11 @@ function RankedHoldingRow({ holding, pct, deltaEur }: RankedHolding) {
   return (
     <li className="flex items-center justify-between gap-3 py-2">
       <div className="min-w-0">
-        <Link className="bt-row-title bt-link" style={{ color: 'inherit' }} to={`/assets/${holding.asset.id}`}>
+        <Link
+          className="bt-row-title bt-link"
+          style={{ color: 'inherit' }}
+          to={`/assets/${holding.asset.id}`}
+        >
           {holding.asset.symbol}
         </Link>
         <p className="bt-row-sub max-w-[12rem] truncate" title={holding.asset.name}>
@@ -439,7 +443,10 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
     .slice(0, RECENT_TRANSACTIONS_LIMIT);
 
   return (
-    <section aria-label={t('portfolio.overview.recentTransactions.ariaLabel')} className="bt-section">
+    <section
+      aria-label={t('portfolio.overview.recentTransactions.ariaLabel')}
+      className="bt-section"
+    >
       <div className="bt-section__head">
         <h2 className="bt-h2">{t('portfolio.overview.recentTransactions.heading')}</h2>
         {showFilter ? (
@@ -481,7 +488,11 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
               <tr key={txn.id}>
                 <td className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <Link className="bt-row-title" style={{ textDecoration: 'none' }} to={`/assets/${txn.assetId}`}>
+                    <Link
+                      className="bt-row-title"
+                      style={{ textDecoration: 'none' }}
+                      to={`/assets/${txn.assetId}`}
+                    >
                       {txn.asset.symbol}
                     </Link>
                     <SourceBadge source={txn.source} />
@@ -681,9 +692,7 @@ function HoldingRow({
           <td colSpan={8} style={{ padding: '14px 16px' }}>
             <div className="flex flex-col gap-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h4 className="bt-label">
-                  {t('portfolio.overview.holdings.transactionsHeading')}
-                </h4>
+                <h4 className="bt-label">{t('portfolio.overview.holdings.transactionsHeading')}</h4>
                 <div className="flex gap-2">
                   {asset.isCustom ? (
                     <Button
@@ -999,7 +1008,13 @@ function DividendIntelSection() {
             <button
               className="bt-link self-start"
               onClick={() => setShowAll((v) => !v)}
-              style={{ fontSize: 12.5, background: 'none', border: 0, cursor: 'pointer', padding: 0 }}
+              style={{
+                fontSize: 12.5,
+                background: 'none',
+                border: 0,
+                cursor: 'pointer',
+                padding: 0,
+              }}
               type="button"
             >
               {showAll

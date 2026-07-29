@@ -54,7 +54,9 @@ export function SaveIdeaDialog({
     return (
       <Dialog title={t('workboard.ideas.save.title')} onClose={onClose}>
         <div className="flex flex-col gap-4">
-          <Alert tone="success">{t('workboard.ideas.save.successBody', { name: saved.name })}</Alert>
+          <Alert tone="success">
+            {t('workboard.ideas.save.successBody', { name: saved.name })}
+          </Alert>
           <div className="flex justify-end gap-2">
             <Link to="/workbench/ideas">
               <Button>{t('workboard.ideas.save.viewIdeas')}</Button>
@@ -101,7 +103,9 @@ export function SaveIdeaDialog({
             {t('common.cancel')}
           </Button>
           <Button disabled={!name.trim() || mutation.isPending} type="submit" variant="primary">
-            {mutation.isPending ? t('workboard.ideas.save.saving') : t('workboard.ideas.save.submit')}
+            {mutation.isPending
+              ? t('workboard.ideas.save.saving')
+              : t('workboard.ideas.save.submit')}
           </Button>
         </div>
       </form>

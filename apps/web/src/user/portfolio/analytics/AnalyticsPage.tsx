@@ -336,7 +336,10 @@ export function AnalyticsPage() {
       >
         {data?.inflation ? (
           <p className="bt-meta flex items-center gap-2">
-            <span className="bt-badge bt-badge--gold" style={{ textTransform: 'uppercase', fontSize: 10.5, letterSpacing: '0.05em' }}>
+            <span
+              className="bt-badge bt-badge--gold"
+              style={{ textTransform: 'uppercase', fontSize: 10.5, letterSpacing: '0.05em' }}
+            >
               {t('portfolio.analytics.inflation.realTermsBadge')}
             </span>
             {t('portfolio.analytics.inflation.realTermsHint')}
@@ -510,9 +513,7 @@ function InflationControl({
             className="bt-input bt-num w-20"
             style={{ minHeight: 30, fontSize: 12.5 }}
           />
-          <span className="bt-meta">
-            {t('portfolio.analytics.inflation.rateSuffix')}
-          </span>
+          <span className="bt-meta">{t('portfolio.analytics.inflation.rateSuffix')}</span>
         </span>
       ) : null}
     </div>
@@ -620,19 +621,27 @@ function StatsBlock({
     <div className="flex flex-col gap-3">
       <div className="flex flex-col">
         <span className="bt-label">{caption}</span>
-        <span className="bt-h3 truncate" style={{ marginTop: 2 }}>{label}</span>
+        <span className="bt-h3 truncate" style={{ marginTop: 2 }}>
+          {label}
+        </span>
       </div>
       <StatStrip panel>
         <Stat
           label={t('portfolio.analytics.stats.totalReturn')}
           value={formatSignedPercent(stats.totalReturnPct)}
         />
-        <Stat label={t('portfolio.analytics.stats.cagr')} value={formatSignedPercent(stats.cagrPct)} />
+        <Stat
+          label={t('portfolio.analytics.stats.cagr')}
+          value={formatSignedPercent(stats.cagrPct)}
+        />
         <Stat
           label={t('portfolio.analytics.stats.maxDrawdown')}
           value={formatPercent(stats.maxDrawdownPct)}
         />
-        <Stat label={t('portfolio.analytics.stats.bestDay')} value={<DayStat day={stats.bestDay} />} />
+        <Stat
+          label={t('portfolio.analytics.stats.bestDay')}
+          value={<DayStat day={stats.bestDay} />}
+        />
         <Stat
           label={t('portfolio.analytics.stats.worstDay')}
           value={<DayStat day={stats.worstDay} />}
@@ -647,7 +656,9 @@ function DayStat({ day }: { day: { date: string; returnPct: number } | null }) {
   return (
     <span className="flex flex-col">
       <span>{formatSignedPercent(day.returnPct)}</span>
-      <span className="bt-meta" style={{ fontWeight: 400 }}>{formatDate(day.date)}</span>
+      <span className="bt-meta" style={{ fontWeight: 400 }}>
+        {formatDate(day.date)}
+      </span>
     </span>
   );
 }

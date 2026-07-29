@@ -72,9 +72,7 @@ export function CompareControl({
   return (
     <div className="bt-panel bt-panel--soft flex flex-col gap-3 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="bt-label">
-          {t('portfolio.analytics.compare.heading')}
-        </span>
+        <span className="bt-label">{t('portfolio.analytics.compare.heading')}</span>
         {value ? (
           <span className="bt-meta">
             {t('portfolio.analytics.compare.current', { label: value.label })}

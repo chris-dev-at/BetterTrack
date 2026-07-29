@@ -91,8 +91,7 @@
   min-height: 100vh;
   background:
     radial-gradient(circle at 40% -16%, rgba(56, 189, 248, 0.05), transparent 30rem),
-    radial-gradient(circle at 94% 6%, rgba(246, 184, 46, 0.035), transparent 24rem),
-    var(--bt-bg);
+    radial-gradient(circle at 94% 6%, rgba(246, 184, 46, 0.035), transparent 24rem), var(--bt-bg);
   color: var(--bt-text);
   font-family:
     'Inter',
@@ -767,7 +766,9 @@
   border-radius: 999px;
   background: var(--bt-surface-soft);
   cursor: pointer;
-  transition: background var(--bt-t-fast), border-color var(--bt-t-fast);
+  transition:
+    background var(--bt-t-fast),
+    border-color var(--bt-t-fast);
 }
 
 .bt-switch::after {
@@ -779,7 +780,9 @@
   height: 14px;
   border-radius: 50%;
   background: var(--bt-muted);
-  transition: transform var(--bt-t-fast), background var(--bt-t-fast);
+  transition:
+    transform var(--bt-t-fast),
+    background var(--bt-t-fast);
 }
 
 .bt-switch[aria-checked='true'] {
@@ -905,7 +908,9 @@
   white-space: nowrap;
   text-decoration: none;
   cursor: pointer;
-  transition: color var(--bt-t-fast), border-color var(--bt-t-fast);
+  transition:
+    color var(--bt-t-fast),
+    border-color var(--bt-t-fast);
 }
 
 .bt-tab:hover {
@@ -1270,9 +1275,7 @@
   padding: 40px clamp(20px, 4vw, 48px) 44px;
   border: 1px dashed var(--bt-border-strong);
   border-radius: 10px;
-  background:
-    linear-gradient(160deg, var(--bt-gold-soft), transparent 34%),
-    var(--bt-surface);
+  background: linear-gradient(160deg, var(--bt-gold-soft), transparent 34%), var(--bt-surface);
   max-width: 760px;
 }
 

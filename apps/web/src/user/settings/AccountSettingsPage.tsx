@@ -120,11 +120,7 @@ function ChangePasswordForm() {
       <h3 className="bt-h3">{t('settings.password.title')}</h3>
       {error ? <Alert tone="error">{error}</Alert> : null}
       {done ? <Alert tone="success">{t('settings.password.success')}</Alert> : null}
-      <Field
-        className="max-w-sm"
-        htmlFor="currentPassword"
-        label={t('settings.password.current')}
-      >
+      <Field className="max-w-sm" htmlFor="currentPassword" label={t('settings.password.current')}>
         <Input
           autoComplete="current-password"
           id="currentPassword"
@@ -152,11 +148,7 @@ function ChangePasswordForm() {
           value={newPassword}
         />
       </Field>
-      <Field
-        className="max-w-sm"
-        htmlFor="confirmPassword"
-        label={t('settings.password.confirm')}
-      >
+      <Field className="max-w-sm" htmlFor="confirmPassword" label={t('settings.password.confirm')}>
         <Input
           autoComplete="new-password"
           id="confirmPassword"

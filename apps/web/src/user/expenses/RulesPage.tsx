@@ -65,7 +65,11 @@ export function RulesPage() {
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="bt-meta">{t('expenses.rules.subtitle')}</p>
-        <Button onClick={() => setCreating(true)} disabled={categories.length === 0} variant="primary">
+        <Button
+          onClick={() => setCreating(true)}
+          disabled={categories.length === 0}
+          variant="primary"
+        >
           {t('expenses.rules.new')}
         </Button>
       </div>

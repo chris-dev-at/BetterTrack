@@ -46,10 +46,7 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
     <section aria-labelledby="forecast-standing-orders-heading" className="flex flex-col gap-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2
-            id="forecast-standing-orders-heading"
-            className="text-sm font-semibold bt-soft"
-          >
+          <h2 id="forecast-standing-orders-heading" className="text-sm font-semibold bt-soft">
             {t('forecast.standingOrders.title')}
           </h2>
           <p className="text-xs bt-muted">{t('forecast.standingOrders.subtitle')}</p>
@@ -210,9 +207,7 @@ function StandingOrderRow({
         </button>
         {confirmingDelete ? (
           <span className="inline-flex items-center gap-2 text-xs">
-            <span className="bt-muted">
-              {t('forecast.standingOrders.list.deleteConfirm')}
-            </span>
+            <span className="bt-muted">{t('forecast.standingOrders.list.deleteConfirm')}</span>
             <button
               id={deleteConfirmYesActionId}
               type="button"
@@ -261,9 +256,7 @@ function StatusBadge({ paused }: { paused: boolean }) {
     <span
       className={cx(
         'inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset',
-        paused
-          ? 'bt-badge'
-          : 'bt-badge bt-badge--pos',
+        paused ? 'bt-badge' : 'bt-badge bt-badge--pos',
       )}
     >
       {paused

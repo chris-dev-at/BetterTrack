@@ -21,11 +21,7 @@ import { AssetSearchBox } from '../components/AssetSearchBox';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 
-const inputClass = cx(
-  'bt-input w-full',
-  '',
-  '',
-);
+const inputClass = cx('bt-input w-full', '', '');
 
 /**
  * Minimal picked-asset shape held in dialog state after a search selection.
@@ -205,9 +201,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
               className={cx(
                 'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
                 '',
-                kind === k
-                  ? 'is-active'
-                  : 'bt-muted hover:bt-soft',
+                kind === k ? 'is-active' : 'bt-muted hover:bt-soft',
                 isEdit && kind !== k ? 'cursor-not-allowed opacity-40' : '',
               )}
             >

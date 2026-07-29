@@ -94,7 +94,11 @@ export function WatchlistsPage() {
             value={name}
           />
         </Field>
-        <Button disabled={create.isPending || name.trim().length === 0} type="submit" variant="primary">
+        <Button
+          disabled={create.isPending || name.trim().length === 0}
+          type="submit"
+          variant="primary"
+        >
           {t('watchlists.create')}
         </Button>
       </form>
@@ -210,7 +214,11 @@ function RenameDialog({
         {error ? <Alert tone="error">{error}</Alert> : null}
         <div className="flex justify-end gap-2">
           <Button onClick={onClose}>{t('sharing.cancel')}</Button>
-          <Button disabled={rename.isPending || name.trim().length === 0} type="submit" variant="primary">
+          <Button
+            disabled={rename.isPending || name.trim().length === 0}
+            type="submit"
+            variant="primary"
+          >
             {t('sharing.save')}
           </Button>
         </div>

@@ -297,11 +297,7 @@ export function AssetSearchBox({
         }}
         placeholder={placeholder ?? t('assets.searchBox.placeholder')}
         aria-label={t('assets.searchBox.inputAria')}
-        className={cx(
-          'bt-input w-full px-4 py-3',
-          '',
-          '',
-        )}
+        className={cx('bt-input w-full px-4 py-3', '', '')}
       />
 
       {showSkeleton ? (
@@ -322,7 +318,8 @@ export function AssetSearchBox({
       {showError ? (
         <p
           role="alert"
-          className="px-3 py-2 text-sm bt-neg" style={{ background: 'var(--bt-neg-soft)', borderRadius: 6 }}
+          className="px-3 py-2 text-sm bt-neg"
+          style={{ background: 'var(--bt-neg-soft)', borderRadius: 6 }}
         >
           {t('assets.searchBox.failed')}
         </p>
@@ -435,9 +432,7 @@ function ResultRow({
       >
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-sm font-semibold">{item.symbol}</span>
-          <span className={cx('bt-badge px-1.5 py-0.5 text-xs', badgeClass)}>
-            {item.type}
-          </span>
+          <span className={cx('bt-badge px-1.5 py-0.5 text-xs', badgeClass)}>{item.type}</span>
           <MarketStateBadge state={item.marketState} />
           <CapabilityTags type={item.type} />
         </div>
@@ -579,7 +574,8 @@ function WatchlistControl({
         <div
           role="menu"
           aria-label={t('assets.searchBox.watchlistsMenuAria', { symbol: item.symbol })}
-          className="bt-popover w-48 p-2 text-xs" style={{ right: 0, top: 'calc(100% + 4px)' }}
+          className="bt-popover w-48 p-2 text-xs"
+          style={{ right: 0, top: 'calc(100% + 4px)' }}
         >
           {(listsQuery.data?.watchlists ?? []).map((list) => (
             <button
@@ -647,12 +643,11 @@ function ConglomeratePicker({
     <div
       role="menu"
       aria-label={t('assets.searchBox.pickerMenuAria', { symbol: item.symbol })}
-      className="bt-popover w-64 p-2" style={{ right: 0, top: 'calc(100% + 4px)' }}
+      className="bt-popover w-64 p-2"
+      style={{ right: 0, top: 'calc(100% + 4px)' }}
     >
       <div className="flex items-center justify-between px-1 pb-1">
-        <span className="text-xs font-medium bt-muted">
-          {t('assets.searchBox.pickerTitle')}
-        </span>
+        <span className="text-xs font-medium bt-muted">{t('assets.searchBox.pickerTitle')}</span>
         <button
           type="button"
           onClick={onClose}
@@ -666,9 +661,7 @@ function ConglomeratePicker({
       {isLoading ? (
         <p className="px-1 py-2 text-xs bt-muted">{t('common.loading')}</p>
       ) : conglomerates.length === 0 ? (
-        <p className="px-1 py-2 text-xs bt-muted">
-          {t('assets.searchBox.noConglomerates')}
-        </p>
+        <p className="px-1 py-2 text-xs bt-muted">{t('assets.searchBox.noConglomerates')}</p>
       ) : (
         <ul className="flex max-h-40 flex-col gap-0.5 overflow-y-auto">
           {conglomerates.map((c) => (
@@ -726,9 +719,7 @@ function SelectRow({ item, onSelect }: { item: SearchResultItem; onSelect: () =>
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-sm font-semibold">{item.symbol}</span>
-            <span className={cx('bt-badge px-1.5 py-0.5 text-xs', badgeClass)}>
-              {item.type}
-            </span>
+            <span className={cx('bt-badge px-1.5 py-0.5 text-xs', badgeClass)}>{item.type}</span>
             <CapabilityTags type={item.type} />
           </div>
           <span className="truncate text-xs bt-muted">

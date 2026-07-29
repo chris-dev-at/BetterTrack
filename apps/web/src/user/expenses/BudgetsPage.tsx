@@ -163,7 +163,10 @@ export function BudgetsPage() {
                     aria-valuemax={100}
                     aria-label={b.categoryName}
                   >
-                    <div className="h-full rounded-full" style={{ width: `${pct}%`, background: barTone(b) }} />
+                    <div
+                      className="h-full rounded-full"
+                      style={{ width: `${pct}%`, background: barTone(b) }}
+                    />
                   </div>
                   <span
                     className={cx('shrink-0 bt-num', b.remaining < 0 ? 'bt-neg' : 'bt-muted')}

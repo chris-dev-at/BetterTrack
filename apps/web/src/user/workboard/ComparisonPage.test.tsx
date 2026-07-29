@@ -226,9 +226,7 @@ describe('ComparisonPage', () => {
     vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: [cong('c1', 'Alpha', 3)] });
     renderPage();
 
-    await waitFor(() =>
-      expect(screen.getByText('Not enough blueprints yet')).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText('Not enough blueprints yet')).toBeInTheDocument());
     expect(compareConglomerates).not.toHaveBeenCalled();
   });
 });

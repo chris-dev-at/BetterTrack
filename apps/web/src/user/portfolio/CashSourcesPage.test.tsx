@@ -110,9 +110,7 @@ function renderPage() {
  * name styling (Origin's `bt-row-title`) rather than any occurrence.
  */
 function rowFor(name: string): HTMLElement {
-  const cell = screen
-    .getAllByText(name)
-    .find((el) => el.className.includes('bt-row-title'));
+  const cell = screen.getAllByText(name).find((el) => el.className.includes('bt-row-title'));
   const row = cell?.closest('tr');
   if (!row) throw new Error(`no row for ${name}`);
   return row as HTMLElement;

@@ -686,7 +686,10 @@ export function ConnectionsPage({
     driveUnlock === undefined ? (runtime?.unlockWithPassphrase ?? null) : driveUnlock;
   return (
     <div className="flex flex-col gap-5">
-      <SectionHead sub={t('settings.connections.subtitle')} title={t('settings.connections.title')} />
+      <SectionHead
+        sub={t('settings.connections.subtitle')}
+        title={t('settings.connections.title')}
+      />
 
       <GoogleSection />
 

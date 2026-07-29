@@ -464,7 +464,8 @@ function BuilderHeader({
             onChange={(e) => onNameChange(e.target.value)}
             placeholder={t('workboard.builder.defaultName')}
             aria-label={t('workboard.builder.nameAriaLabel')}
-            className="bt-input min-w-0 flex-1 text-lg font-semibold" style={{ background: 'transparent', borderColor: 'transparent' }}
+            className="bt-input min-w-0 flex-1 text-lg font-semibold"
+            style={{ background: 'transparent', borderColor: 'transparent' }}
           />
         </div>
         <div className="flex shrink-0 items-center gap-3">
@@ -497,18 +498,11 @@ function SavePill({ state, error }: { state: SaveState; error: string | null }) 
   const base =
     'inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset';
   if (state === 'saving') {
-    return (
-      <span className={cx(base, 'bt-badge')}>
-        {t('workboard.builder.saving')}
-      </span>
-    );
+    return <span className={cx(base, 'bt-badge')}>{t('workboard.builder.saving')}</span>;
   }
   if (state === 'error') {
     return (
-      <span
-        className={cx(base, 'bt-badge bt-badge--neg')}
-        title={error ?? undefined}
-      >
+      <span className={cx(base, 'bt-badge bt-badge--neg')} title={error ?? undefined}>
         {t('workboard.builder.saveFailed')}
       </span>
     );
@@ -520,11 +514,7 @@ function SavePill({ state, error }: { state: SaveState; error: string | null }) 
       </span>
     );
   }
-  return (
-    <span className={cx(base, 'bt-badge')}>
-      {t('workboard.builder.draftIdle')}
-    </span>
-  );
+  return <span className={cx(base, 'bt-badge')}>{t('workboard.builder.draftIdle')}</span>;
 }
 
 // ─── Left: add assets ────────────────────────────────────────────────────────
@@ -672,7 +662,13 @@ function PositionsPanel({
       </div>
 
       {positions.length === 0 ? (
-        <div className="rounded-lg p-8 text-center text-sm bt-muted" style={{ border: '1px dashed var(--bt-border-strong)', background: 'var(--bt-surface-soft)' }}>
+        <div
+          className="rounded-lg p-8 text-center text-sm bt-muted"
+          style={{
+            border: '1px dashed var(--bt-border-strong)',
+            background: 'var(--bt-surface-soft)',
+          }}
+        >
           {t('workboard.builder.noPositionsMessage')}
         </div>
       ) : (
@@ -728,9 +724,7 @@ export function WeightRow({
     <li className="flex flex-col gap-2 bt-panel p-3 sm:flex-row sm:items-center sm:gap-4">
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center gap-2">
-          <span className="truncate font-mono text-sm font-semibold">
-            {symbol}
-          </span>
+          <span className="truncate font-mono text-sm font-semibold">{symbol}</span>
           {position.kind === 'conglomerate' ? <NestedBadge /> : null}
         </span>
         <span className="truncate text-xs bt-muted" title={name}>
@@ -747,7 +741,8 @@ export function WeightRow({
           value={weightPct}
           onChange={(e) => onWeight(Number(e.target.value))}
           aria-label={t('workboard.builder.weightSliderAriaLabel', { symbol })}
-          className="min-w-0 flex-1" style={{ accentColor: 'var(--bt-gold)' }}
+          className="min-w-0 flex-1"
+          style={{ accentColor: 'var(--bt-gold)' }}
         />
         <div className="flex items-center gap-1">
           <input
@@ -785,9 +780,7 @@ export function WeightRow({
           title={locked ? t('workboard.builder.lockedTitle') : t('workboard.builder.lockTitle')}
           className={cx(
             'rounded px-2 py-1 text-sm transition-colors ',
-            locked
-              ? 'bt-badge bt-badge--gold'
-              : 'bt-muted  hover:bt-soft',
+            locked ? 'bt-badge bt-badge--gold' : 'bt-muted  hover:bt-soft',
           )}
         >
           {locked ? '🔒' : '🔓'}
@@ -829,10 +822,7 @@ export function SumPill({ positions }: { positions: BuilderPosition[] }) {
 
   if (valid) {
     return (
-      <span
-        role="status"
-        className="bt-badge bt-badge--pos px-3 py-1 text-sm font-semibold"
-      >
+      <span role="status" className="bt-badge bt-badge--pos px-3 py-1 text-sm font-semibold">
         {formatPercent(ACTIVE_SUM)}
       </span>
     );
@@ -843,10 +833,7 @@ export function SumPill({ positions }: { positions: BuilderPosition[] }) {
       ? t('workboard.builder.sumRemainingLeft', { value: formatPercent(remaining) })
       : t('workboard.builder.sumRemainingOver', { value: formatPercent(Math.abs(remaining)) });
   return (
-    <span
-      role="status"
-      className="bt-badge bt-badge--gold px-3 py-1 text-sm font-semibold"
-    >
+    <span role="status" className="bt-badge bt-badge--gold px-3 py-1 text-sm font-semibold">
       {formatPercent(sum)} — {tail}
     </span>
   );
@@ -868,10 +855,7 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
 
   return (
     <section aria-labelledby="preview-heading" className="flex flex-col gap-3">
-      <h2
-        id="preview-heading"
-        className="text-sm font-semibold uppercase tracking-wide bt-muted"
-      >
+      <h2 id="preview-heading" className="text-sm font-semibold uppercase tracking-wide bt-muted">
         {t('workboard.builder.livePreviewHeading')}
       </h2>
 
@@ -894,7 +878,11 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
 
       <div
         aria-label={t('workboard.builder.backtestPreviewAriaLabel')}
-        className="rounded-lg p-6 text-center text-sm bt-muted" style={{ border: '1px dashed var(--bt-border-strong)', background: 'var(--bt-surface-soft)' }}
+        className="rounded-lg p-6 text-center text-sm bt-muted"
+        style={{
+          border: '1px dashed var(--bt-border-strong)',
+          background: 'var(--bt-surface-soft)',
+        }}
       >
         {t('workboard.builder.backtestPreviewText')}
       </div>

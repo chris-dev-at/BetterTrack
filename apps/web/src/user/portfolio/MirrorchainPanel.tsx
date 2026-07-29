@@ -396,11 +396,7 @@ function MemberRow({
           </Button>
         ) : null}
         {canKick ? (
-          <Button
-            variant="secondary"
-            className="bt-btn--danger"
-            onClick={() => onAction('kick')}
-          >
+          <Button variant="secondary" className="bt-btn--danger" onClick={() => onAction('kick')}>
             {t('mirrorchain.actions.kick')}
           </Button>
         ) : null}

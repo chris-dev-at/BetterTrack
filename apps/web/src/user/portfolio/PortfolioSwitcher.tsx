@@ -253,7 +253,10 @@ export function PortfolioSwitcher() {
           {active?.name ?? t('portfolio.switcher.fallbackName')}
         </span>
         {active?.isDefault ? (
-          <span className="bt-badge" style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          <span
+            className="bt-badge"
+            style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}
+          >
             {t('portfolio.switcher.defaultBadge')}
           </span>
         ) : null}
@@ -366,7 +369,11 @@ export function PortfolioSwitcher() {
                 setConfirmDelete(active);
                 setOpen(false);
               }}
-              className={cx(itemClass, 'is-danger', 'disabled:cursor-not-allowed disabled:opacity-40')}
+              className={cx(
+                itemClass,
+                'is-danger',
+                'disabled:cursor-not-allowed disabled:opacity-40',
+              )}
             >
               {t('portfolio.switcher.deleteCurrent')}
             </button>

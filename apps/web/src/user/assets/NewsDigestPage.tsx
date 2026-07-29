@@ -67,9 +67,7 @@ export function NewsDigestPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {t('assets.news.title')}
-        </h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{t('assets.news.title')}</h1>
         <p className="mt-1 text-sm bt-muted">{t('assets.news.subtitle')}</p>
       </div>
 

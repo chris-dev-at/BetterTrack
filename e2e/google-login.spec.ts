@@ -123,7 +123,9 @@ test('google login: verified-email match links an existing account; Google and p
       name: 'Link Tester',
     });
     await clickContinueWithGoogle(page);
-    await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({
+      timeout: 30_000,
+    });
 
     // (2) A second Google sign-in with the same sub now hits the linked identity
     // directly (resolution step 1) — proof the first sign-in persisted the link.
@@ -132,7 +134,9 @@ test('google login: verified-email match links an existing account; Google and p
     await repeatPage.goto('/login');
     await primeGoogleIdentity(idp, { sub, email: user.email, email_verified: true });
     await clickContinueWithGoogle(repeatPage);
-    await expect(repeatPage.getByRole('button', { name: 'Account menu' })).toBeVisible({ timeout: 30_000 });
+    await expect(repeatPage.getByRole('button', { name: 'Account menu' })).toBeVisible({
+      timeout: 30_000,
+    });
 
     // (3) Password login for the same account still works — linking never
     // disables the existing credential.
@@ -178,7 +182,9 @@ test('google login: open mode registers a brand-new verified identity', async ({
     await page.getByRole('button', { name: 'Create account' }).click();
 
     // Open mode signs the freshly-registered account straight in.
-    await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({
+      timeout: 30_000,
+    });
   } finally {
     await setRegistrationMode(apiRequest, priorMode);
     await idp.dispose();

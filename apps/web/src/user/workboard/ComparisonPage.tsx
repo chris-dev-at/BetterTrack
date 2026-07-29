@@ -349,7 +349,10 @@ export function ComparisonPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHead sub={t('workboard.comparison.description')} title={t('workboard.comparison.title')} />
+      <PageHead
+        sub={t('workboard.comparison.description')}
+        title={t('workboard.comparison.title')}
+      />
 
       {listQuery.isLoading ? (
         <Skeleton height="h-40" />

@@ -64,16 +64,11 @@ function PositionsTable({ positions }: { positions: ConglomerateConstituent[] })
   return (
     <PositionsFrame>
       {positions.map((p) => (
-        <tr
-          key={p.kind === 'asset' ? p.assetId : p.childId}
-          className="bt-b-rule last:border-b-0"
-        >
+        <tr key={p.kind === 'asset' ? p.assetId : p.childId} className="bt-b-rule last:border-b-0">
           <td className="px-3 py-3">
             {p.kind === 'asset' ? (
               <>
-                <span className="font-mono text-sm font-medium">
-                  {p.asset.symbol}
-                </span>
+                <span className="font-mono text-sm font-medium">{p.asset.symbol}</span>
                 <p className="max-w-[16rem] truncate text-xs bt-muted" title={p.asset.name}>
                   {p.asset.name}
                 </p>
@@ -81,9 +76,7 @@ function PositionsTable({ positions }: { positions: ConglomerateConstituent[] })
             ) : (
               <>
                 <span className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium">
-                    {p.child.name}
-                  </span>
+                  <span className="truncate text-sm font-medium">{p.child.name}</span>
                   <NestedBadge />
                 </span>
                 <p className="text-xs bt-muted">
@@ -147,9 +140,7 @@ function DeleteConfirmDialog({
   return (
     <Dialog title={t('workboard.detail.deleteDialogTitle')} onClose={onClose}>
       <div className="flex flex-col gap-4">
-        <p className="text-sm bt-muted">
-          {t('workboard.detail.deleteDialogBody', { name })}
-        </p>
+        <p className="text-sm bt-muted">{t('workboard.detail.deleteDialogBody', { name })}</p>
         {error ? <Alert tone="error">{error}</Alert> : null}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose} disabled={pending}>
@@ -286,10 +277,7 @@ export function ConglomerateDetailPage() {
 
   return (
     <div className="flex flex-col gap-8">
-      <Link
-        to="/workbench/blueprints"
-        className="text-sm bt-muted hover:bt-soft"
-      >
+      <Link to="/workbench/blueprints" className="text-sm bt-muted hover:bt-soft">
         {t('workboard.detail.backLink')}
       </Link>
 
@@ -347,9 +335,7 @@ export function ConglomerateDetailPage() {
                     aria-pressed={view === v}
                     className={cx(
                       'px-2.5 py-1 text-xs font-medium first:rounded-l-md last:rounded-r-md ',
-                      view === v
-                        ? 'is-active'
-                        : 'bt-muted hover:bt-soft',
+                      view === v ? 'is-active' : 'bt-muted hover:bt-soft',
                     )}
                   >
                     {v === 'stored'

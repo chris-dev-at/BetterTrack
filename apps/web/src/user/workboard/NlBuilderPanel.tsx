@@ -106,7 +106,10 @@ export function NlBuilderPanel({ onApply }: { onApply: (positions: BuilderPositi
               {t('workboard.builder.ai.applied', { count: appliedCount ?? 0 })}
             </p>
             {unresolved.length > 0 ? (
-              <div className="bt-badge bt-badge--gold block px-3 py-2 text-xs" style={{ borderRadius: 6 }}>
+              <div
+                className="bt-badge bt-badge--gold block px-3 py-2 text-xs"
+                style={{ borderRadius: 6 }}
+              >
                 <p className="font-medium">{t('workboard.builder.ai.unresolved')}</p>
                 <ul className="mt-1 list-disc pl-4">
                   {unresolved.map((line, index) => (

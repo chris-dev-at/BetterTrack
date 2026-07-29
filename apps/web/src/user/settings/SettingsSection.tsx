@@ -287,12 +287,8 @@ function MirrorGroupRow({
     <tr>
       <td>
         <div className="flex flex-col gap-0.5">
-          <span className="bt-row-title">
-            {t('settings.notifications.mirrorchain.groupLabel')}
-          </span>
-          <span className="bt-row-sub">
-            {t('settings.notifications.mirrorchain.groupHint')}
-          </span>
+          <span className="bt-row-title">{t('settings.notifications.mirrorchain.groupLabel')}</span>
+          <span className="bt-row-sub">{t('settings.notifications.mirrorchain.groupHint')}</span>
         </div>
       </td>
       {channels.map((channel) => {
@@ -709,10 +705,7 @@ function QuietHoursControls({
                 />
               </label>
             </div>
-            <label
-              className="bt-field bt-soft max-w-sm"
-              style={{ fontSize: 12, fontWeight: 570 }}
-            >
+            <label className="bt-field bt-soft max-w-sm" style={{ fontSize: 12, fontWeight: 570 }}>
               {t('settings.notifications.quietHours.timezone')}
               <Select
                 value={quiet.timezone ?? ''}
@@ -1164,7 +1157,11 @@ function NotificationListRow({
       >
         <span className="flex items-center gap-2">
           {unread ? (
-            <span aria-hidden="true" className="bt-dot bt-dot--gold" style={{ width: 6, height: 6 }} />
+            <span
+              aria-hidden="true"
+              className="bt-dot bt-dot--gold"
+              style={{ width: 6, height: 6 }}
+            />
           ) : null}
           <span className={cx('truncate', unread ? 'bt-row-title' : 'bt-muted')}>
             {notification.title}

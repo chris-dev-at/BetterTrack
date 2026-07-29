@@ -100,7 +100,11 @@ export function SectionHead({
     <div className="bt-section__head">
       <div>
         <h2 className="bt-h2">{title}</h2>
-        {sub ? <p className="bt-meta" style={{ marginTop: 2 }}>{sub}</p> : null}
+        {sub ? (
+          <p className="bt-meta" style={{ marginTop: 2 }}>
+            {sub}
+          </p>
+        ) : null}
       </div>
       {actions ? <div className="bt-page-head__actions">{actions}</div> : null}
     </div>
@@ -276,10 +280,7 @@ export function Seg<T extends string>({
   );
 }
 
-export function TabLink({
-  className,
-  ...rest
-}: NavLinkProps & { className?: string }) {
+export function TabLink({ className, ...rest }: NavLinkProps & { className?: string }) {
   return (
     <NavLink
       className={({ isActive }) => cx('bt-tab', isActive && 'is-active', className)}
@@ -288,10 +289,7 @@ export function TabLink({
   );
 }
 
-export function SubTabLink({
-  className,
-  ...rest
-}: NavLinkProps & { className?: string }) {
+export function SubTabLink({ className, ...rest }: NavLinkProps & { className?: string }) {
   return (
     <NavLink
       className={({ isActive }) => cx('bt-subtab', isActive && 'is-active', className)}
@@ -485,12 +483,7 @@ export function Drawer({
   if (!open) return null;
   return (
     <>
-      <button
-        aria-label={t('common.close')}
-        className="bt-scrim"
-        onClick={onClose}
-        type="button"
-      />
+      <button aria-label={t('common.close')} className="bt-scrim" onClick={onClose} type="button" />
       <aside aria-label={typeof title === 'string' ? title : undefined} className="bt-drawer">
         <div className="bt-drawer__head">
           <h2 className="bt-dialog__title">{title}</h2>

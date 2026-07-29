@@ -278,9 +278,15 @@ function UserShell() {
             path="workboard/conglomerates/*"
             element={<LegacyRedirect to="/workbench/blueprints" withSplat />}
           />
-          <Route path="workboard/ideas/*" element={<LegacyRedirect to="/workbench/ideas" withSplat />} />
+          <Route
+            path="workboard/ideas/*"
+            element={<LegacyRedirect to="/workbench/ideas" withSplat />}
+          />
           <Route path="forecast" element={<LegacyRedirect to="/workbench/forecasts" />} />
-          <Route path="expenses/*" element={<LegacyRedirect to="/portfolio/cash-flow" withSplat />} />
+          <Route
+            path="expenses/*"
+            element={<LegacyRedirect to="/portfolio/cash-flow" withSplat />}
+          />
           <Route path="social" element={<LegacyRedirect to="/people" />} />
           <Route path="social/friends" element={<LegacyRedirect to="/people" />} />
           <Route path="social/chat/*" element={<LegacyRedirect to="/people/chat" withSplat />} />

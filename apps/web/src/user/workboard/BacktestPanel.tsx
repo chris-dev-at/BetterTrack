@@ -149,11 +149,7 @@ function RangeSelector({
   const t = useT();
   const labels = rangeLabels(t);
   return (
-    <div
-      role="group"
-      aria-label={t('workboard.backtest.rangeAriaLabel')}
-      className="bt-seg"
-    >
+    <div role="group" aria-label={t('workboard.backtest.rangeAriaLabel')} className="bt-seg">
       {BACKTEST_PREVIEW_RANGES.map((token) => {
         const selected = token === active;
         return (
@@ -165,7 +161,7 @@ function RangeSelector({
             className={cx(
               'rounded px-2 py-1 text-xs font-medium transition-colors',
               '',
-              (selected) && 'is-active',
+              selected && 'is-active',
             )}
           >
             {labels[token]}
@@ -202,7 +198,7 @@ function ModeSelector({
             className={cx(
               'rounded px-2 py-1 text-xs font-medium transition-colors',
               '',
-              (selected) && 'is-active',
+              selected && 'is-active',
             )}
           >
             {labels[token]}
@@ -240,7 +236,7 @@ function RebalanceSelector({
             className={cx(
               'rounded px-2 py-1 text-xs font-medium transition-colors',
               '',
-              (selected) && 'is-active',
+              selected && 'is-active',
             )}
           >
             {labels[token]}
@@ -284,9 +280,7 @@ function BenchmarkPicker({
     cx(
       'rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-colors',
       '',
-      selected
-        ? 'bg-violet-600/20 text-violet-200 ring-violet-600'
-        : '',
+      selected ? 'bg-violet-600/20 text-violet-200 ring-violet-600' : '',
     );
 
   return (
@@ -360,9 +354,7 @@ function BenchmarkPicker({
         ) : conglomeratesQuery.isError ? (
           <p className="text-xs bt-neg">{t('common.genericError')}</p>
         ) : conglomerates.length === 0 ? (
-          <p className="text-xs bt-muted">
-            {t('workboard.backtest.benchmark.noConglomerates')}
-          </p>
+          <p className="text-xs bt-muted">{t('workboard.backtest.benchmark.noConglomerates')}</p>
         ) : (
           <select
             aria-label={t('workboard.backtest.benchmark.pickConglomerate')}
@@ -374,10 +366,7 @@ function BenchmarkPicker({
                 setSource('none');
               }
             }}
-            className={cx(
-              'bt-input w-full max-w-xs',
-              ' ',
-            )}
+            className={cx('bt-input w-full max-w-xs', ' ')}
           >
             <option value="">
               {t('workboard.backtest.benchmark.pickConglomeratePlaceholder')}
@@ -520,9 +509,7 @@ function StatsTable({
                   ) : null}
                 </td>
                 {showDelta ? (
-                  <td className="px-3 py-2 text-right bt-soft">
-                    {formatSignedPercent(delta)}
-                  </td>
+                  <td className="px-3 py-2 text-right bt-soft">{formatSignedPercent(delta)}</td>
                 ) : null}
               </tr>
             );
@@ -630,7 +617,8 @@ export function BacktestPanel({ positions, className, source, initialParams }: B
                     type="checkbox"
                     checked={showRebalanceMarkers}
                     onChange={(e) => setShowRebalanceMarkers(e.target.checked)}
-                    className="size-3.5" style={{ accentColor: 'var(--bt-gold)' }}
+                    className="size-3.5"
+                    style={{ accentColor: 'var(--bt-gold)' }}
                   />
                   {t('workboard.backtest.showRebalanceMarkers')}
                 </label>
@@ -641,7 +629,8 @@ export function BacktestPanel({ positions, className, source, initialParams }: B
                     type="checkbox"
                     checked={showDelta}
                     onChange={(e) => setShowDelta(e.target.checked)}
-                    className="size-3.5" style={{ accentColor: 'var(--bt-gold)' }}
+                    className="size-3.5"
+                    style={{ accentColor: 'var(--bt-gold)' }}
                   />
                   {t('workboard.backtest.statsTable.showDelta')}
                 </label>

@@ -92,7 +92,9 @@ function SecretModal({
           >
             {result.secret}
           </code>
-          <Button onClick={copy}>{copied ? t('settings.api.copied') : t('settings.api.copy')}</Button>
+          <Button onClick={copy}>
+            {copied ? t('settings.api.copied') : t('settings.api.copy')}
+          </Button>
         </div>
         <Alert tone="info">{t('settings.api.webhooks.secretModal.storeWarning')}</Alert>
         <div className="flex justify-end">
@@ -161,11 +163,7 @@ function CreateWebhookForm({
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       <h3 className="bt-h3">{t('settings.api.webhooks.createTitle')}</h3>
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <Field
-        className="max-w-xl"
-        htmlFor="webhook-url"
-        label={t('settings.api.webhooks.urlLabel')}
-      >
+      <Field className="max-w-xl" htmlFor="webhook-url" label={t('settings.api.webhooks.urlLabel')}>
         <Input
           id="webhook-url"
           maxLength={2048}
@@ -297,7 +295,11 @@ function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
           ) : null}
           <span className="flex flex-wrap gap-1">
             {subscription.eventTypes.map((type) => (
-              <Badge key={type} outline style={{ fontFamily: MONO_FONT, fontSize: 11, minHeight: 18 }}>
+              <Badge
+                key={type}
+                outline
+                style={{ fontFamily: MONO_FONT, fontSize: 11, minHeight: 18 }}
+              >
                 {type}
               </Badge>
             ))}
@@ -349,7 +351,12 @@ function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
                   ? t('settings.api.webhooks.deleting')
                   : t('settings.api.webhooks.confirmDelete')}
               </Button>
-              <Button disabled={remove.isPending} onClick={() => setConfirming(false)} size="sm" variant="quiet">
+              <Button
+                disabled={remove.isPending}
+                onClick={() => setConfirming(false)}
+                size="sm"
+                variant="quiet"
+              >
                 {t('common.cancel')}
               </Button>
             </>

@@ -32,11 +32,7 @@ function allocateModes(t: TranslateFn): Array<{ value: AllocateMode; label: stri
   ];
 }
 
-const inputClass = cx(
-  'bt-input w-full',
-  '',
-  '',
-);
+const inputClass = cx('bt-input w-full', '', '');
 
 /**
  * Selectable stepper granularities for the budget amount (V3-P0, #322): "how far
@@ -73,11 +69,7 @@ function ModeToggle({
 }) {
   const t = useT();
   return (
-    <div
-      role="group"
-      aria-label={t('workboard.calculator.buyingModeAriaLabel')}
-      className="bt-seg"
-    >
+    <div role="group" aria-label={t('workboard.calculator.buyingModeAriaLabel')} className="bt-seg">
       {allocateModes(t).map(({ value, label }) => {
         const selected = value === active;
         return (
@@ -89,7 +81,7 @@ function ModeToggle({
             className={cx(
               'rounded px-2.5 py-1.5 text-xs font-medium transition-colors',
               '',
-              (selected) && 'is-active',
+              selected && 'is-active',
             )}
           >
             {label}
@@ -180,12 +172,7 @@ function DeviationTable({ positions }: { positions: AllocatePosition[] }) {
         <tbody>
           {positions.map((p) => (
             <Fragment key={p.assetId}>
-              <tr
-                className={cx(
-                  'bt-b-rule last:border-b-0',
-                  p.note && 'border-b-0',
-                )}
-              >
+              <tr className={cx('bt-b-rule last:border-b-0', p.note && 'border-b-0')}>
                 <td className="px-3 py-3">
                   <span className="font-mono text-sm font-medium">{p.symbol}</span>
                   <p className="max-w-[16rem] truncate text-xs bt-muted" title={p.name}>
@@ -209,7 +196,10 @@ function DeviationTable({ positions }: { positions: AllocatePosition[] }) {
                 </td>
               </tr>
               {p.note ? (
-                <tr className="bt-b-rule last:border-b-0" style={{ background: 'var(--bt-gold-soft)' }}>
+                <tr
+                  className="bt-b-rule last:border-b-0"
+                  style={{ background: 'var(--bt-gold-soft)' }}
+                >
                   <td colSpan={6} className="px-3 pb-3 text-xs bt-gold">
                     {p.unbuyable ? `⚠ ${p.note}` : p.note}
                   </td>

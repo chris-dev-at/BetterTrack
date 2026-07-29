@@ -946,11 +946,7 @@ function RecoveryCodesControl({
       </p>
       {error ? <Alert tone="error">{error}</Alert> : null}
       <div>
-        <Button
-          type="button"
-          disabled={regenerate.isPending}
-          onClick={() => regenerate.mutate()}
-        >
+        <Button type="button" disabled={regenerate.isPending} onClick={() => regenerate.mutate()}>
           {regenerate.isPending
             ? t('settings.security.twoFactor.recoveryCodes.regenerating')
             : t('settings.security.twoFactor.recoveryCodes.regenerate')}

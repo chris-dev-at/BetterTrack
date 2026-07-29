@@ -9,7 +9,15 @@ import { listNotifications } from '../../lib/notificationsApi';
 import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
 import { listStandingOrders, STANDING_ORDERS_QUERY_KEY } from '../../lib/standingOrdersApi';
 import { MoneyText } from '../../ui';
-import { Badge, Icon, PageHead, SkeletonBlock, Stat, StatStrip, type IconName } from '../../ui/origin';
+import {
+  Badge,
+  Icon,
+  PageHead,
+  SkeletonBlock,
+  Stat,
+  StatStrip,
+  type IconName,
+} from '../../ui/origin';
 import { useAuth } from '../AuthContext';
 
 /**
@@ -73,9 +81,24 @@ export function HomePage() {
 
   const shortcuts: ReadonlyArray<{ to: string; icon: IconName; labelKey: string; subKey: string }> =
     [
-      { to: '/portfolio', icon: 'portfolios', labelKey: 'home.go.portfolio', subKey: 'home.go.portfolioSub' },
-      { to: '/workbench', icon: 'workbench', labelKey: 'home.go.workbench', subKey: 'home.go.workbenchSub' },
-      { to: '/assets/search', icon: 'search', labelKey: 'home.go.research', subKey: 'home.go.researchSub' },
+      {
+        to: '/portfolio',
+        icon: 'portfolios',
+        labelKey: 'home.go.portfolio',
+        subKey: 'home.go.portfolioSub',
+      },
+      {
+        to: '/workbench',
+        icon: 'workbench',
+        labelKey: 'home.go.workbench',
+        subKey: 'home.go.workbenchSub',
+      },
+      {
+        to: '/assets/search',
+        icon: 'search',
+        labelKey: 'home.go.research',
+        subKey: 'home.go.researchSub',
+      },
       { to: '/people', icon: 'people', labelKey: 'home.go.people', subKey: 'home.go.peopleSub' },
     ];
 
@@ -99,9 +122,7 @@ export function HomePage() {
           <StatStrip>
             <Stat
               delta={
-                rows.length
-                  ? t('home.acrossPortfolios', { count: String(rows.length) })
-                  : undefined
+                rows.length ? t('home.acrossPortfolios', { count: String(rows.length) }) : undefined
               }
               label={t('home.invested')}
               value={loading ? '…' : <MoneyText amount={invested} />}
@@ -138,7 +159,9 @@ export function HomePage() {
                 }}
                 to={`/portfolio?portfolio=${portfolio.id}`}
               >
-                <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span
+                  style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}
+                >
                   <span className="bt-row-title">{portfolio.name}</span>
                   {portfolio.isDefault ? <Badge>{t('home.defaultPortfolio')}</Badge> : null}
                 </span>
@@ -172,7 +195,11 @@ export function HomePage() {
           </div>
           {attention.length === 0 ? (
             <p className="bt-meta" style={{ padding: '14px 0' }}>
-              <Icon name="check" size={14} style={{ verticalAlign: -2, marginRight: 6, color: 'var(--bt-pos)' }} />
+              <Icon
+                name="check"
+                size={14}
+                style={{ verticalAlign: -2, marginRight: 6, color: 'var(--bt-pos)' }}
+              />
               {t('home.attention.clear')}
             </p>
           ) : (

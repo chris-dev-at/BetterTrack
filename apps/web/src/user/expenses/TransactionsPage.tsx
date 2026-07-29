@@ -143,7 +143,12 @@ export function TransactionsPage() {
                     })
                   }
                   className="bt-select shrink-0"
-                  style={{ minHeight: 28, padding: '2px 26px 2px 8px', width: 'auto', fontSize: 12 }}
+                  style={{
+                    minHeight: 28,
+                    padding: '2px 26px 2px 8px',
+                    width: 'auto',
+                    fontSize: 12,
+                  }}
                 >
                   {categoriesReady ? (
                     <>

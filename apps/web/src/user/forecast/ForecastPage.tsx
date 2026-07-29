@@ -498,10 +498,7 @@ export function ForecastPage() {
         <p className="text-sm bt-muted">{t('forecast.subtitle')}</p>
       </header>
 
-      <section
-        aria-labelledby="forecast-projection-heading"
-        className="bt-panel bt-panel--soft"
-      >
+      <section aria-labelledby="forecast-projection-heading" className="bt-panel bt-panel--soft">
         <div className="bt-b-rule px-4 py-3">
           <h2 id="forecast-projection-heading" className="text-sm font-semibold bt-soft">
             {t('forecast.projection.title')}

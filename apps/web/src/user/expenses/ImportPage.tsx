@@ -35,7 +35,12 @@ import { Badge, Button, Panel, type BadgeTone } from '../../ui/origin';
  */
 
 /** Compact inline select sizing shared by the bank picker and per-row category picker. */
-const compactSelectStyle = { minHeight: 28, padding: '2px 26px 2px 8px', width: 'auto', fontSize: 12 } as const;
+const compactSelectStyle = {
+  minHeight: 28,
+  padding: '2px 26px 2px 8px',
+  width: 'auto',
+  fontSize: 12,
+} as const;
 
 const FLAG_TONE: Record<ExpenseImportRowFlag, BadgeTone> = {
   new: 'pos',
@@ -189,7 +194,9 @@ export function ImportPage() {
       {preview ? (
         <Panel className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="bt-h2">{t('expenses.import.previewTitle', { bank: preview.bankLabel })}</h2>
+            <h2 className="bt-h2">
+              {t('expenses.import.previewTitle', { bank: preview.bankLabel })}
+            </h2>
             <p className="bt-meta">
               {t('expenses.import.counts', {
                 new: preview.counts.new,
@@ -223,7 +230,12 @@ export function ImportPage() {
                       </Badge>
                       {row.description ?? row.message ?? row.raw}
                     </td>
-                    <td className={cx('is-num whitespace-nowrap', row.direction === 'income' && 'bt-pos')}>
+                    <td
+                      className={cx(
+                        'is-num whitespace-nowrap',
+                        row.direction === 'income' && 'bt-pos',
+                      )}
+                    >
                       {row.amount !== null && row.direction
                         ? `${row.direction === 'income' ? '+' : '−'}${formatMoney(row.amount, row.currency ?? 'EUR')}`
                         : '—'}

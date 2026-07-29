@@ -1806,7 +1806,9 @@ function RowFields({
                   }
                   className={cx(
                     'pointer-events-auto rounded p-0.5 transition disabled:opacity-40',
-                    link.linked ? 'text-[var(--bt-gold)]' : 'bt-muted hover:text-[var(--bt-text-soft)]',
+                    link.linked
+                      ? 'text-[var(--bt-gold)]'
+                      : 'bt-muted hover:text-[var(--bt-text-soft)]',
                   )}
                 >
                   <LinkGlyph linked={link.linked} />
@@ -1841,8 +1843,7 @@ function RowFields({
         >
           {derived ? (
             <>
-              ≈{' '}
-              <span className="font-mono bt-soft">{formatQuantity(derived.quantity)}</span>{' '}
+              ≈ <span className="font-mono bt-soft">{formatQuantity(derived.quantity)}</span>{' '}
               {symbol} {t('portfolio.transaction.derivedRecords')}{' '}
               <span className="font-mono bt-soft">
                 {formatMoney(derived.recordedAmount, row.asset.currency)}

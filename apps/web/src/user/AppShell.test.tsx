@@ -125,9 +125,7 @@ test('the account menu lists profile, settings, discreet mode and Logout works',
   const menu = screen.getByRole('menu');
   expect(within(menu).getByRole('menuitem', { name: 'My profile' })).toBeInTheDocument();
   expect(within(menu).getByRole('menuitem', { name: 'Settings' })).toBeInTheDocument();
-  expect(
-    within(menu).getByRole('menuitemcheckbox', { name: /Discreet mode/ }),
-  ).toBeInTheDocument();
+  expect(within(menu).getByRole('menuitemcheckbox', { name: /Discreet mode/ })).toBeInTheDocument();
 
   await user.click(within(menu).getByRole('menuitem', { name: 'Logout' }));
   expect(api.logout).toHaveBeenCalledOnce();

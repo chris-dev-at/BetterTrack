@@ -36,7 +36,12 @@ interface SuiteItem {
 const SUITE_ITEMS: readonly SuiteItem[] = [
   { to: '/', icon: 'home', labelKey: 'nav.home', end: true },
   { to: '/portfolio', icon: 'portfolios', labelKey: 'nav.portfolios', also: ['/portfolios'] },
-  { to: '/workbench', icon: 'workbench', labelKey: 'nav.workbench', also: ['/workboard', '/forecast'] },
+  {
+    to: '/workbench',
+    icon: 'workbench',
+    labelKey: 'nav.workbench',
+    also: ['/workboard', '/forecast'],
+  },
   { to: '/assets', icon: 'assets', labelKey: 'nav.assets' },
   { to: '/people', icon: 'people', labelKey: 'nav.people', also: ['/social'] },
 ];
@@ -44,7 +49,12 @@ const SUITE_ITEMS: readonly SuiteItem[] = [
 const UTILITY_ITEMS: readonly SuiteItem[] = [
   { to: '/ask', icon: 'sparkles', labelKey: 'nav.ask' },
   { to: '/review', icon: 'inbox', labelKey: 'nav.review' },
-  { to: '/control', icon: 'grid', labelKey: 'nav.controlCenter', also: ['/settings', '/developer'] },
+  {
+    to: '/control',
+    icon: 'grid',
+    labelKey: 'nav.controlCenter',
+    also: ['/settings', '/developer'],
+  },
 ];
 
 const LEGAL_LINKS: ReadonlyArray<{ page: LegalPage; labelKey: string }> = [
@@ -163,7 +173,12 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
             </div>
           ) : null}
           <div className="bt-menu-rule" />
-          <Link className="bt-menu-item" onClick={() => setOpen(false)} role="menuitem" to="/people/profile">
+          <Link
+            className="bt-menu-item"
+            onClick={() => setOpen(false)}
+            role="menuitem"
+            to="/people/profile"
+          >
             <Icon name="user" size={15} />
             {t('nav.myProfile')}
           </Link>
@@ -242,7 +257,11 @@ function CreateMenu() {
   const items: ReadonlyArray<{ to: string; icon: IconName; labelKey: string }> = [
     { to: '/portfolio/activity?create=trade', icon: 'assets', labelKey: 'create.trade' },
     { to: '/portfolio/cash-flow?create=transaction', icon: 'cash', labelKey: 'create.cashFlow' },
-    { to: '/portfolio/cash-flow/accounts?create=transfer', icon: 'wallet', labelKey: 'create.transfer' },
+    {
+      to: '/portfolio/cash-flow/accounts?create=transfer',
+      icon: 'wallet',
+      labelKey: 'create.transfer',
+    },
     { to: '/workbench/blueprints/new', icon: 'layers', labelKey: 'create.blueprint' },
     { to: '/assets/watchlists?create=1', icon: 'star', labelKey: 'create.watchlist' },
     { to: '/workbench/alerts?create=1', icon: 'bell', labelKey: 'create.alert' },

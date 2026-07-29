@@ -115,11 +115,7 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
                               title={t('common.parked')}
                             />
                           ) : null}
-                          <Icon
-                            name="arrow-right"
-                            size={13}
-                            style={{ color: 'var(--bt-faint)' }}
-                          />
+                          <Icon name="arrow-right" size={13} style={{ color: 'var(--bt-faint)' }} />
                         </Link>
                       </li>
                     ))}

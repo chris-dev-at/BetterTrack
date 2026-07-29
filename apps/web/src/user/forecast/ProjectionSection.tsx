@@ -253,10 +253,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                         type="button"
                         aria-pressed={selected}
                         onClick={() => setReturnWindow(token)}
-                        className={cx(
-                          '',
-                          (selected) && 'is-active',
-                        )}
+                        className={cx('', selected && 'is-active')}
                       >
                         {t(`forecast.projection.window.${token}`)}
                       </button>
@@ -391,9 +388,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
             <h3 className="text-sm font-semibold bt-soft">
               {t('forecast.projection.whatIf.title')}
             </h3>
-            <p className="text-xs bt-muted">
-              {t('forecast.projection.whatIf.description')}
-            </p>
+            <p className="text-xs bt-muted">{t('forecast.projection.whatIf.description')}</p>
           </div>
           <Button variant="secondary" onClick={addPlan} className="shrink-0">
             {t('forecast.projection.whatIf.add')}
@@ -473,7 +468,8 @@ function FactorToggle({
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded" style={{ accentColor: 'var(--bt-gold)' }}
+        className="h-4 w-4 rounded"
+        style={{ accentColor: 'var(--bt-gold)' }}
       />
       <span>{label}</span>
     </label>

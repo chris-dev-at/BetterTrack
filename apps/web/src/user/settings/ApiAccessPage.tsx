@@ -75,7 +75,9 @@ function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose
           >
             {result.token}
           </code>
-          <Button onClick={copy}>{copied ? t('settings.api.copied') : t('settings.api.copy')}</Button>
+          <Button onClick={copy}>
+            {copied ? t('settings.api.copied') : t('settings.api.copy')}
+          </Button>
         </div>
         <Alert tone="info">
           {t('settings.api.keys.tokenModal.storeWarning', { name: result.key.name })}
@@ -201,7 +203,12 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeySummary }) {
             >
               {mutation.isPending ? t('settings.api.revoking') : t('settings.api.confirmRevoke')}
             </Button>
-            <Button disabled={mutation.isPending} onClick={() => setConfirming(false)} size="sm" variant="quiet">
+            <Button
+              disabled={mutation.isPending}
+              onClick={() => setConfirming(false)}
+              size="sm"
+              variant="quiet"
+            >
               {t('common.cancel')}
             </Button>
           </>
@@ -360,11 +367,7 @@ function RegisterOAuthClientForm({
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       <h3 className="bt-h3">{t('settings.api.oauth.registerTitle')}</h3>
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <Field
-        className="max-w-sm"
-        htmlFor="oauth-name"
-        label={t('settings.api.oauth.appNameLabel')}
-      >
+      <Field className="max-w-sm" htmlFor="oauth-name" label={t('settings.api.oauth.appNameLabel')}>
         <Input
           id="oauth-name"
           maxLength={80}
@@ -519,7 +522,12 @@ function OAuthClientRow({ client }: { client: OAuthClientSummary }) {
                 ? t('settings.api.oauth.deleting')
                 : t('settings.api.oauth.confirmDelete')}
             </Button>
-            <Button disabled={mutation.isPending} onClick={() => setConfirming(false)} size="sm" variant="quiet">
+            <Button
+              disabled={mutation.isPending}
+              onClick={() => setConfirming(false)}
+              size="sm"
+              variant="quiet"
+            >
               {t('common.cancel')}
             </Button>
           </>
@@ -584,7 +592,12 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
             >
               {mutation.isPending ? t('settings.api.revoking') : t('settings.api.confirmRevoke')}
             </Button>
-            <Button disabled={mutation.isPending} onClick={() => setConfirming(false)} size="sm" variant="quiet">
+            <Button
+              disabled={mutation.isPending}
+              onClick={() => setConfirming(false)}
+              size="sm"
+              variant="quiet"
+            >
               {t('common.cancel')}
             </Button>
           </>
