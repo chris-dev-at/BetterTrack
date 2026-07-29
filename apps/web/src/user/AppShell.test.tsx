@@ -178,9 +178,8 @@ test('the chevron toggles a group without navigating, and the state persists', a
     'false',
   );
   expect(screen.getByRole('searchbox', { name: 'Search assets' })).toBeInTheDocument();
-  expect(JSON.parse(localStorage.getItem('bt.rail.groups') ?? '{}')).toMatchObject({
-    assets: false,
-  });
+  // Closing the only open tree leaves the accordion empty.
+  expect(JSON.parse(localStorage.getItem('bt.rail.groups') ?? 'null')).toBeNull();
 
   // A fresh mount restores the closed tree — and opens the section it lands in.
   view.unmount();
@@ -193,6 +192,28 @@ test('the chevron toggles a group without navigating, and the state persists', a
     'aria-expanded',
     'true',
   );
+});
+
+test('the rail is an accordion — expanding one group closes the other', async () => {
+  const user = userEvent.setup();
+  renderAt('/portfolio');
+
+  expect(await screen.findByRole('button', { name: 'Collapse Portfolio' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+
+  await user.click(screen.getByRole('button', { name: 'Expand Workbench' }));
+
+  expect(screen.getByRole('button', { name: 'Collapse Workbench' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+  expect(screen.getByRole('button', { name: 'Expand Portfolio' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  expect(JSON.parse(localStorage.getItem('bt.rail.groups') ?? 'null')).toBe('workbench');
 });
 
 test('portfolio rail children keep the active portfolio scope', async () => {

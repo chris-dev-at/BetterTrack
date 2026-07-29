@@ -71,23 +71,25 @@ const SUITE_ITEMS: readonly SuiteItem[] = [
   { to: '/people', icon: 'people', labelKey: 'nav.people', also: ['/social'], section: 'people' },
 ];
 
-/** Which groups are open. Absent/false = closed. */
-type RailGroupState = Partial<Record<SectionKey, boolean>>;
-
-function readRailGroups(): RailGroupState {
+/**
+ * The single open group — the rail is an accordion, never more than one tree.
+ * Legacy multi-open map payloads collapse to their first open key.
+ */
+function readOpenRailGroup(): SectionKey | null {
   try {
     const raw = localStorage.getItem(RAIL_GROUPS_STORAGE_KEY);
-    if (raw === null) return {};
+    if (raw === null) return null;
     const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null) return {};
-    const stored = parsed as Record<string, unknown>;
-    const state: RailGroupState = {};
-    for (const key of SECTION_KEYS) {
-      if (stored[key] === true) state[key] = true;
+    if (typeof parsed === 'string') {
+      return (SECTION_KEYS as readonly string[]).includes(parsed) ? (parsed as SectionKey) : null;
     }
-    return state;
+    if (typeof parsed === 'object' && parsed !== null) {
+      const stored = parsed as Record<string, unknown>;
+      return SECTION_KEYS.find((key) => stored[key] === true) ?? null;
+    }
+    return null;
   } catch {
-    return {};
+    return null;
   }
 }
 
@@ -465,43 +467,36 @@ export function OriginShell() {
       return false;
     }
   });
-  // Seed from storage plus the section being visited, so the first paint
-  // already shows the active tree open (no expand animation on load).
-  const [groups, setGroups] = useState<RailGroupState>(() => {
-    const stored = readRailGroups();
-    const section = activeSection(pathname);
-    return section === null ? stored : { ...stored, [section]: true };
-  });
+  // Seed from the section being visited (falling back to storage), so the
+  // first paint already shows the active tree open (no expand animation).
+  const [openGroup, setOpenGroup] = useState<SectionKey | null>(
+    () => activeSection(pathname) ?? readOpenRailGroup(),
+  );
 
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   const closePalette = useCallback(() => setPaletteOpen(false), []);
 
-  // Navigating into a section opens its group; nothing ever auto-closes.
+  // Navigating into a section opens its group and — accordion — closes the
+  // previous one: at most one tree is ever open.
   useEffect(() => {
     const section = activeSection(pathname);
-    if (section === null) return;
-    setGroups((previous) =>
-      previous[section] === true ? previous : { ...previous, [section]: true },
-    );
+    if (section !== null) setOpenGroup(section);
   }, [pathname]);
 
   useEffect(() => {
     try {
-      localStorage.setItem(RAIL_GROUPS_STORAGE_KEY, JSON.stringify(groups));
+      localStorage.setItem(RAIL_GROUPS_STORAGE_KEY, JSON.stringify(openGroup));
     } catch {
       // Preference persistence is best-effort only.
     }
-  }, [groups]);
+  }, [openGroup]);
 
-  const expandGroup = useCallback((section: SectionKey) => {
-    setGroups((previous) =>
-      previous[section] === true ? previous : { ...previous, [section]: true },
-    );
-  }, []);
+  const expandGroup = useCallback((section: SectionKey) => setOpenGroup(section), []);
 
-  const toggleGroup = useCallback((section: SectionKey) => {
-    setGroups((previous) => ({ ...previous, [section]: previous[section] !== true }));
-  }, []);
+  const toggleGroup = useCallback(
+    (section: SectionKey) => setOpenGroup((previous) => (previous === section ? null : section)),
+    [],
+  );
 
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
@@ -548,7 +543,7 @@ export function OriginShell() {
               ) : (
                 <RailGroup
                   collapsed={collapsed}
-                  expanded={groups[section] === true}
+                  expanded={openGroup === section}
                   item={item}
                   key={item.to}
                   label={t(item.labelKey)}
