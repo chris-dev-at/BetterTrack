@@ -1019,6 +1019,124 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     }
   });
 
+  it('rejects an inverse dependency hidden by IEEE-754 loss of significance', async () => {
+    const arranged = await arrangeScaleEightRoundingBatch(false);
+    const inverseAssetId = '018f0000-0630-7000-8000-000000000637';
+    await seedGlobalAsset(arranged.harness, inverseAssetId, 'FLOAT-INVERSE-SOURCES');
+    await arranged.harness.ctx.portfolio.createTransactions(
+      arranged.userId,
+      arranged.portfolioId,
+      [
+        {
+          assetId: inverseAssetId,
+          side: 'buy',
+          quantity: 999_999_999_999,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-23T10:02:00.000Z',
+        },
+        {
+          assetId: inverseAssetId,
+          side: 'buy',
+          quantity: 0.00000001,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-23T10:03:00.000Z',
+        },
+        {
+          assetId: inverseAssetId,
+          side: 'sell',
+          quantity: 999_999_999_999,
+          price: 11,
+          fee: 0,
+          executedAt: '2026-07-23T10:04:00.000Z',
+        },
+        {
+          assetId: inverseAssetId,
+          side: 'sell',
+          quantity: 0.00000001,
+          price: 11,
+          fee: 0,
+          executedAt: '2026-07-23T10:06:00.000Z',
+        },
+        {
+          assetId: inverseAssetId,
+          side: 'buy',
+          quantity: 0.00000001,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-23T10:05:00.000Z',
+        },
+      ],
+      { source: 'import:flatex' },
+    );
+
+    const document = await capturePortfolioDocument(arranged.harness, arranged.portfolioId);
+    const inverseRows = quantityEntities(document)
+      .filter((transaction) => transaction.data.assetId === inverseAssetId)
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const impossibleSell = inverseRows.find(
+      (transaction) =>
+        transaction.data.side === 'sell' &&
+        transaction.data.quantity === '0.00000001' &&
+        transaction.data.executedAt === '2026-07-23T10:06:00.000Z',
+    );
+    const laterBuy = inverseRows.find(
+      (transaction) =>
+        transaction.data.side === 'buy' &&
+        transaction.data.quantity === '0.00000001' &&
+        transaction.data.executedAt === '2026-07-23T10:05:00.000Z',
+    );
+    if (!impossibleSell || !laterBuy) {
+      throw new Error('expected the loss-of-significance inverse CREATE rows');
+    }
+    expect(inverseRows).toHaveLength(5);
+    expect(impossibleSell.id < laterBuy.id).toBe(true);
+    expect(999_999_999_999 + 0.00000001).toBe(999_999_999_999);
+    expect([impossibleSell.data.source, laterBuy.data.source]).toEqual([
+      'import:flatex',
+      'import:flatex',
+    ]);
+
+    await replaceNormalRowsWithServerVault(arranged.harness, arranged.userId);
+    await rehydrateReachableState(
+      arranged.harness,
+      arranged.userId,
+      document,
+      FIRST_REHYDRATION_ID,
+      'same-source loss-of-significance inverse normal CREATE',
+    );
+
+    // The tiny buy that precedes the large sale disappears in IEEE-754
+    // arithmetic. The later backdated buy therefore has to share the tiny
+    // sale's CREATE; mutating its immutable source makes that impossible.
+    laterBuy.data.source = 'import:ibkr';
+
+    await replaceNormalRowsWithServerVault(arranged.harness, arranged.userId);
+    const mutationTransaction = vi.spyOn(arranged.harness.db, 'transaction');
+    try {
+      await expect(
+        createParanoidRehydrationService({ db: arranged.harness.db }).rehydrate(arranged.userId, {
+          rehydrationId: SECOND_REHYDRATION_ID,
+          document,
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_CASH_LEDGER',
+        message: expect.stringContaining(quantityField(impossibleSell)),
+      });
+      expect(mutationTransaction).not.toHaveBeenCalled();
+      expect(
+        await arranged.harness.db
+          .select()
+          .from(portfolios)
+          .where(eq(portfolios.userId, arranged.userId)),
+      ).toEqual([]);
+      expect(await arranged.harness.db.select().from(transactions)).toEqual([]);
+    } finally {
+      mutationTransaction.mockRestore();
+    }
+  });
+
   it('rehydrates a solvent inverse dependency written by one compatible normal CREATE', async () => {
     const arranged = await arrangeScaleEightRoundingBatch(false);
     const inverseAssetId = '018f0000-0630-7000-8000-000000000642';

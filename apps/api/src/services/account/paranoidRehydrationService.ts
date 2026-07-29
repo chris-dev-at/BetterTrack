@@ -189,14 +189,37 @@ function fixedScaleDecimal(value: bigint, scale: number): string {
 const FLOAT64_BYTES = new ArrayBuffer(8);
 const FLOAT64_VIEW = new DataView(FLOAT64_BYTES);
 
+function adjacentFloat(value: number, direction: 'up' | 'down'): number {
+  if (Number.isNaN(value)) return value;
+  if (value === Number.POSITIVE_INFINITY) {
+    return direction === 'up' ? value : Number.MAX_VALUE;
+  }
+  if (value === Number.NEGATIVE_INFINITY) {
+    return direction === 'down' ? value : -Number.MAX_VALUE;
+  }
+  if (value === 0) {
+    return direction === 'up' ? Number.MIN_VALUE : -Number.MIN_VALUE;
+  }
+  FLOAT64_VIEW.setFloat64(0, value);
+  const bits = FLOAT64_VIEW.getBigUint64(0);
+  FLOAT64_VIEW.setBigUint64(
+    0,
+    value > 0
+      ? direction === 'up'
+        ? bits + 1n
+        : bits - 1n
+      : direction === 'up'
+        ? bits - 1n
+        : bits + 1n,
+  );
+  return FLOAT64_VIEW.getFloat64(0);
+}
+
 function nextPositiveFloat(value: number, direction: 'up' | 'down'): number {
   if (!(value > 0) || !Number.isFinite(value)) {
     throw new Error('cannot step non-positive or non-finite quantity ' + value);
   }
-  FLOAT64_VIEW.setFloat64(0, value);
-  const bits = FLOAT64_VIEW.getBigUint64(0);
-  FLOAT64_VIEW.setBigUint64(0, direction === 'up' ? bits + 1n : bits - 1n);
-  return FLOAT64_VIEW.getFloat64(0);
+  return adjacentFloat(value, direction);
 }
 
 /**
@@ -595,11 +618,31 @@ interface HoldingReplayTransform {
   readonly floor: bigint;
 }
 
+interface NumberReplayLine {
+  /** Non-negative slope of one conservative affine lower bound. */
+  readonly slope: number;
+  readonly intercept: number;
+}
+
+interface NumberReplayTransform {
+  /**
+   * A sufficient entering holding for the real IEEE-754 reducer. It may be
+   * conservative, but it must never call an invalid Number replay solvent.
+   */
+  readonly required: number;
+  /**
+   * The real final holding is at least the maximum of these affine lines for
+   * every entering holding at or above `required`.
+   */
+  readonly lowerLines: readonly NumberReplayLine[];
+}
+
 interface FixedPrefixSolvencyTree {
   readonly leafBase: number;
   readonly required: bigint[];
   readonly offsets: bigint[];
   readonly floors: bigint[];
+  readonly numberReplays: NumberReplayTransform[];
 }
 
 interface InverseWriteGroup {
@@ -621,6 +664,176 @@ interface InverseWriteLocator {
  * a fixed-width O(rows) proof, not a CREATE-span search.
  */
 const FIXED_PREFIX_TREE_MAX_LEVELS = 32;
+const NUMBER_REPLAY_MAX_LOWER_LINES = 6;
+const NUMBER_REPLAY_LOWER_FACTOR = 1 - Number.EPSILON * 4;
+const NUMBER_REPLAY_CLAMP_MARGIN = QTY_EPSILON * 2;
+const NUMBER_REPLAY_LINE_PROBES = [0, 0.00000001, 1, 1_000_000, 1_000_000_000_000, 1e22] as const;
+
+function roundDown(value: number): number {
+  return Number.isNaN(value) ? Number.NEGATIVE_INFINITY : adjacentFloat(value, 'down');
+}
+
+function roundUp(value: number): number {
+  return Number.isNaN(value) ? Number.POSITIVE_INFINITY : adjacentFloat(value, 'up');
+}
+
+function addDown(left: number, right: number): number {
+  if (left === 0) return right;
+  if (right === 0) return left;
+  return roundDown(left + right);
+}
+
+function multiplyDown(left: number, right: number): number {
+  if (left === 0 || right === 0) return 0;
+  if (left === 1) return right;
+  if (right === 1) return left;
+  return roundDown(left * right);
+}
+
+function subtractUp(left: number, right: number): number {
+  return roundUp(left - right);
+}
+
+function divideUp(dividend: number, divisor: number): number {
+  return roundUp(dividend / divisor);
+}
+
+function identityNumberReplay(): NumberReplayTransform {
+  return {
+    required: 0,
+    lowerLines: [{ slope: 1, intercept: 0 }],
+  };
+}
+
+function lineValue(line: NumberReplayLine, input: number): number {
+  return line.slope * input + line.intercept;
+}
+
+/**
+ * Every retained line is independently a valid lower bound, so dropping a
+ * line only makes the proof more conservative. Keep the fixed set that is most
+ * useful across the storage range; this prevents composition from growing with
+ * user history while preserving both zero-input and high-holding witnesses.
+ */
+function boundedNumberReplayLines(
+  candidates: readonly NumberReplayLine[],
+): readonly NumberReplayLine[] {
+  const undominated = candidates.filter(
+    (candidate, candidateIndex) =>
+      !candidates.some(
+        (other, otherIndex) =>
+          otherIndex !== candidateIndex &&
+          other.slope >= candidate.slope &&
+          other.intercept >= candidate.intercept &&
+          (other.slope > candidate.slope || other.intercept > candidate.intercept),
+      ),
+  );
+  if (undominated.length <= NUMBER_REPLAY_MAX_LOWER_LINES) return undominated;
+
+  const retained = new Set<NumberReplayLine>();
+  for (const probe of NUMBER_REPLAY_LINE_PROBES) {
+    let best = undominated[0]!;
+    for (let index = 1; index < undominated.length; index += 1) {
+      const candidate = undominated[index]!;
+      if (lineValue(candidate, probe) > lineValue(best, probe)) best = candidate;
+    }
+    retained.add(best);
+  }
+  return [...retained];
+}
+
+function sufficientInputForLowerBound(
+  replay: NumberReplayTransform,
+  requiredOutput: number,
+): number {
+  let sufficient = Number.POSITIVE_INFINITY;
+  for (const line of replay.lowerLines) {
+    if (line.intercept >= requiredOutput) return 0;
+    if (!(line.slope > 0)) continue;
+    const candidate = divideUp(subtractUp(requiredOutput, line.intercept), line.slope);
+    sufficient = Math.min(sufficient, candidate);
+  }
+  return sufficient;
+}
+
+/**
+ * Compose conservative lower envelopes for the real Number reducer. Directed
+ * rounding keeps every produced affine line below the true transition.
+ * Cross-products are capped to a fixed line count; discarded lines can only
+ * turn a difficult reachable snapshot into a pre-write rejection, never make
+ * an unreachable write prefix appear solvent.
+ */
+function composeNumberReplay(
+  left: NumberReplayTransform,
+  right: NumberReplayTransform,
+): NumberReplayTransform {
+  const requiredThroughLeft = sufficientInputForLowerBound(left, right.required);
+  const lowerLines: NumberReplayLine[] = [];
+  for (const rightLine of right.lowerLines) {
+    if (rightLine.slope === 0) {
+      lowerLines.push(rightLine);
+      continue;
+    }
+    for (const leftLine of left.lowerLines) {
+      lowerLines.push({
+        slope: multiplyDown(rightLine.slope, leftLine.slope),
+        intercept: addDown(multiplyDown(rightLine.slope, leftLine.intercept), rightLine.intercept),
+      });
+    }
+  }
+  return {
+    required: Math.max(left.required, requiredThroughLeft),
+    lowerLines: boundedNumberReplayLines(lowerLines),
+  };
+}
+
+function numberReplayForRow(row: QuantityReplayRow): NumberReplayTransform {
+  const quantity = row.readbackQuantity;
+  if (row.transaction.data.side === 'buy') {
+    return {
+      required: 0,
+      lowerLines: boundedNumberReplayLines([
+        // Adding a positive finite quantity can never lower either operand.
+        { slope: 1, intercept: 0 },
+        { slope: 0, intercept: quantity },
+        // Retain accumulated buying power where IEEE-754 addition is precise
+        // enough; the wider factor absorbs both operation and summary rounding.
+        {
+          slope: NUMBER_REPLAY_LOWER_FACTOR,
+          intercept: multiplyDown(NUMBER_REPLAY_LOWER_FACTOR, quantity),
+        },
+      ]),
+    };
+  }
+  if (row.transaction.data.allowUncovered) {
+    // The saturating branch never fails. A deliberately tolerated sub-epsilon
+    // subtraction can be slightly negative, so retain only a universal lower
+    // bound instead of inventing later buying power.
+    return {
+      required: 0,
+      lowerLines: [{ slope: 0, intercept: -Number.MAX_VALUE }],
+    };
+  }
+
+  const required = minimumNormalHoldingForSuffixRow(row, 0);
+  if (required === null) {
+    return {
+      required: Number.POSITIVE_INFINITY,
+      lowerLines: [{ slope: 0, intercept: 0 }],
+    };
+  }
+  const scaledQuantity = roundUp(NUMBER_REPLAY_LOWER_FACTOR * quantity);
+  return {
+    required,
+    lowerLines: [
+      { slope: 0, intercept: 0 },
+      {
+        slope: NUMBER_REPLAY_LOWER_FACTOR,
+        intercept: addDown(-scaledQuantity, -NUMBER_REPLAY_CLAMP_MARGIN),
+      },
+    ],
+  };
+}
 
 /**
  * Compose two chronological quantity reducers. For every entering holding at
@@ -671,6 +884,7 @@ function createFixedPrefixSolvencyTree(length: number): FixedPrefixSolvencyTree 
     required: new Array<bigint>(leafBase * 2).fill(0n),
     offsets: new Array<bigint>(leafBase * 2).fill(0n),
     floors: new Array<bigint>(leafBase * 2).fill(0n),
+    numberReplays: Array.from({ length: leafBase * 2 }, identityNumberReplay),
   };
 }
 
@@ -684,6 +898,7 @@ function activateFixedPrefixRow(
   tree.required[node] = leaf.required;
   tree.offsets[node] = leaf.offset;
   tree.floors[node] = leaf.floor;
+  tree.numberReplays[node] = numberReplayForRow(row);
   node = Math.floor(node / 2);
 
   let levels = 0;
@@ -705,6 +920,10 @@ function activateFixedPrefixRow(
     tree.required[node] = replay.required;
     tree.offsets[node] = replay.offset;
     tree.floors[node] = replay.floor;
+    tree.numberReplays[node] = composeNumberReplay(
+      tree.numberReplays[left]!,
+      tree.numberReplays[right]!,
+    );
     node = Math.floor(node / 2);
     levels += 1;
   }
@@ -714,7 +933,7 @@ function activateFixedPrefixRow(
 }
 
 function fixedPrefixIsSolvent(tree: FixedPrefixSolvencyTree): boolean {
-  return tree.required[1] === 0n;
+  return tree.required[1] === 0n && tree.numberReplays[1]!.required === 0;
 }
 
 /**
@@ -724,9 +943,13 @@ function fixedPrefixIsSolvent(tree: FixedPrefixSolvencyTree): boolean {
  * one normal CREATE that a later row repairs.
  *
  * Build one compact chronological reducer per asset group, then activate its
- * rows in document write order. Each activation updates a fixed-width prefix
- * tree, so an invalid-prefix interval is found directly without enumerating or
- * replaying candidate spans. `allowUncovered` remains a saturating transition
+ * rows in document write order. Each activation updates both the exact-storage
+ * transform and a fixed-size conservative lower envelope of the real IEEE-754
+ * transition. The latter preserves loss of significance: the exact transform
+ * may retain a tiny buy that normal admission loses beside a large holding, but
+ * that prefix is never called solvent unless the Number lower bound also proves
+ * it. Each activation performs at most 32 fixed parent merges and never replays
+ * or searches a candidate span. `allowUncovered` remains a saturating transition
  * that never invents a funding dependency. A final exact storage shortfall is
  * left to the public-input proof in {@link collectNormalCreateWitnesses}; any
  * inverse interval repaired before it still produces its own witness here.
