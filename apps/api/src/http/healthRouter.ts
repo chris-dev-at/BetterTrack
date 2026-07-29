@@ -1,24 +1,34 @@
 import express from 'express';
 
-import { healthResponseSchema } from '@bettertrack/contracts';
+import { healthResponseSchema, readinessResponseSchema } from '@bettertrack/contracts';
 
+import type { ReadinessService } from '../services/health/readinessService';
 import { API_SERVICE_NAME, API_VERSION } from '../version';
 
 /**
- * Thin HTTP layer (PROJECTPLAN.md §4.3): parse → respond. The payload is run
- * through the shared contract schema before it leaves the process, so the API
- * can never drift from what clients expect.
+ * Public process probes. `/health` is dependency-free liveness; `/health/ready`
+ * delegates the DB + Redis checks to the health service. Both payloads run
+ * through shared contracts before leaving the process.
  */
-export const healthRouter = express.Router();
+export function createHealthRouter(readiness: ReadinessService) {
+  const router = express.Router();
 
-healthRouter.get('/health', (_req, res) => {
-  const body = healthResponseSchema.parse({
-    status: 'ok',
-    service: API_SERVICE_NAME,
-    version: API_VERSION,
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
+  router.get('/health', (_req, res) => {
+    const body = healthResponseSchema.parse({
+      status: 'ok',
+      service: API_SERVICE_NAME,
+      version: API_VERSION,
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+    });
+
+    res.json(body);
   });
 
-  res.json(body);
-});
+  router.get('/health/ready', async (_req, res) => {
+    const body = readinessResponseSchema.parse(await readiness.check());
+    res.status(body.status === 'ready' ? 200 : 503).json(body);
+  });
+
+  return router;
+}
