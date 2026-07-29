@@ -2324,6 +2324,147 @@
   }
 }
 
+/* ── Expanded catalog: transactions, dividends, cash, watchlist, alerts,
+      spotlight ────────────────────────────────────────────────────────────────
+   All of these are list widgets, so they reuse `.bt-home-row`/`.bt-band` for
+   their rows and add only what their own right-hand column needs. Same bargain
+   as the rest of the board: no boxes, no accent bars, ink and space only. */
+
+/* Right-hand figure stack shared by the transaction, watchlist and quote rows:
+   the badge/price on top, the secondary figure under it, both right-aligned so
+   the numbers form a column the eye can scan. */
+.bt-home-txn__figures {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.bt-home-txn__amount {
+  color: var(--bt-text-soft);
+}
+
+/* Row titles that are links stay ink-coloured until hover — a list of ten blue
+   symbols would read as a navigation menu rather than as data. */
+.bt-home-txn__link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.bt-home-txn__link:hover {
+  color: var(--bt-gold);
+}
+
+.bt-home-divs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Cash balances ───────────────────────────────────────────────────────── */
+
+.bt-home-cash__group + .bt-home-cash__group {
+  margin-top: 14px;
+}
+
+.bt-home-cash__portfolio {
+  margin-bottom: 2px;
+  color: var(--bt-text-soft);
+}
+
+.bt-home-cash__name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The total sits under a rule as a summary line, not as another row. */
+.bt-home-cash__total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--bt-border-strong);
+}
+
+/* ── Alerts ──────────────────────────────────────────────────────────────── */
+
+.bt-home-alerts {
+  display: flex;
+  gap: 28px;
+  padding: 2px 0 4px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.bt-home-alerts__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.bt-home-alerts__value {
+  font-size: 23px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+/* Gold, never the negative palette: a fired alert wants attention, it is not a
+   loss. pos/neg ink stays reserved for real gain/loss polarity. */
+.bt-home-alerts__value.is-hot {
+  color: var(--bt-gold);
+}
+
+.bt-home-alerts:hover .bt-label {
+  color: var(--bt-gold);
+}
+
+.bt-home-alerts__list {
+  margin-top: 6px;
+  border-top: 1px solid var(--bt-border);
+}
+
+/* ── Asset spotlight ─────────────────────────────────────────────────────── */
+
+.bt-home-spot__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.bt-home-spot__price {
+  font-size: 17px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The asset picker inside the settings popover. The default 236px popover is too
+   narrow for search results, so a popover containing a picker widens — scoped
+   with :has() so every other popover keeps its width. */
+.bt-home-w__popover:has(.bt-home-spot-pick) {
+  width: 304px;
+}
+
+.bt-home-spot-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* Results scroll inside the popover instead of growing it off-screen. */
+  max-height: 336px;
+  overflow-y: auto;
+}
+
+.bt-home-spot-pick__current {
+  margin-top: -2px;
+}
+
 /* ===== R2: auth + firstrun ===================================================
  *
  * (1) The split auth gate. Above 900px the standalone auth screens become two

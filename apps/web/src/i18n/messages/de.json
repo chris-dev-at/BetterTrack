@@ -4059,6 +4059,58 @@
       "shortcuts": {
         "title": "Direkt loslegen",
         "description": "Links zu den Hauptbereichen"
+      },
+      "netWorthHistory": {
+        "title": "Vermögensverlauf",
+        "description": "Der Wertverlauf aller Portfolios, zusammengefasst",
+        "ariaLabel": "Gesamter Wertverlauf — {{label}}",
+        "empty": "Noch keine Portfolios zum Anzeigen."
+      },
+      "assetSpotlight": {
+        "title": "Spotlight",
+        "description": "Eine Anlage mit Kurs und Chart",
+        "ariaLabel": "Kursverlauf von {{name}}",
+        "unpicked": "Noch keine Anlage gewählt",
+        "unpickedHint": "Öffne die Einstellungen dieses Widgets und wähle eine aus.",
+        "unnamed": "Anlage",
+        "pickLabel": "Anlage",
+        "current": "Aktuell {{name}}",
+        "searchPlaceholder": "Anlagen suchen"
+      },
+      "recentTransactions": {
+        "title": "Letzte Aktivität",
+        "description": "Die neuesten Trades aus deinen Portfolios",
+        "empty": "Noch keine Transaktionen.",
+        "countLabel": "Zeilen",
+        "countOption": "{{count}} Zeilen"
+      },
+      "cashBalances": {
+        "title": "Cash",
+        "description": "Bestände je Cash-Quelle",
+        "empty": "Noch keine Cash-Quellen.",
+        "total": "Gesamt"
+      },
+      "watchlist": {
+        "title": "Watchlist",
+        "description": "Eine Watchlist mit aktuellen Kursen",
+        "empty": "{{name}} ist leer.",
+        "noLists": "Noch keine Watchlists.",
+        "listLabel": "Liste"
+      },
+      "dividends": {
+        "title": "Dividenden",
+        "description": "Kommende Ex- und Zahltage",
+        "empty": "Keine Dividenden in Sicht.",
+        "unavailable": "Dividendendaten sind nicht verfügbar.",
+        "exDate": "Ex-Tag",
+        "payDate": "Zahltag"
+      },
+      "alerts": {
+        "title": "Alarme",
+        "description": "Wie viele scharf sind und was ausgelöst hat",
+        "armed": "Scharf",
+        "triggered": "Ausgelöst",
+        "empty": "Noch keine Alarme."
       }
     }
   },

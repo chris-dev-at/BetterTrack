@@ -33,8 +33,15 @@ export const PERFORMANCE_RANGES: readonly PriceRange[] = [
   'Max',
 ];
 
-/** The chart's `PriceRange` tokens use 'Max'; the contract uses 'MAX'. */
-function toHistoryRange(range: PriceRange): PortfolioHistoryRange {
+/**
+ * The chart's `PriceRange` tokens use 'Max'; the contract uses 'MAX'.
+ *
+ * Exported because `net-worth-history` fans the same endpoint out per portfolio
+ * under the same `['portfolio', id, 'history', range]` keys. Both surfaces must
+ * spell the range token identically or the two silently stop sharing cache
+ * entries — so they share the mapping rather than each keeping a copy.
+ */
+export function toHistoryRange(range: PriceRange): PortfolioHistoryRange {
   return range === 'Max' ? 'MAX' : (range as PortfolioHistoryRange);
 }
 

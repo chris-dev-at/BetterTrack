@@ -44,6 +44,21 @@ export interface RangeOption {
   labelKey: string;
 }
 
+/**
+ * Props for a widget's own settings fields ({@link WidgetDefinition.SettingsExtra}).
+ *
+ * Deliberately narrower than {@link WidgetProps}: a settings field edits the
+ * instance's settings and nothing else. It gets no portfolios and no resolved
+ * scope, so it cannot quietly grow into a second copy of the widget — anything
+ * it needs to list (the user's watchlists, an asset search) it fetches itself
+ * under the same query key its owning surface uses.
+ */
+export interface WidgetSettingsExtraProps {
+  settings: WidgetSettings;
+  /** Merge a patch into this instance's settings; `undefined` clears a key. */
+  onSettingsChange: (patch: WidgetSettings) => void;
+}
+
 export interface WidgetDefinition {
   type: WidgetType;
   icon: IconName;
@@ -64,5 +79,16 @@ export interface WidgetDefinition {
   scopeAllowsAll?: boolean;
   /** Present ⇒ the settings popover offers a range picker over these tokens. */
   rangeOptions?: readonly RangeOption[];
+  /**
+   * Extra settings fields for types whose configuration is not scope-or-range —
+   * a row count, a watchlist, an asset. Rendered by the frame's settings popover
+   * *below* the generic fields, and its presence alone makes an otherwise
+   * unconfigurable widget offer the settings button.
+   *
+   * Colocated with the widget it configures rather than living in the frame: the
+   * frame stays ignorant of what any individual widget needs, which is the same
+   * bargain the rest of this contract makes.
+   */
+  SettingsExtra?: ComponentType<WidgetSettingsExtraProps>;
   Component: ComponentType<WidgetProps>;
 }

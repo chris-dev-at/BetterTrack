@@ -4059,6 +4059,58 @@
       "shortcuts": {
         "title": "Jump in",
         "description": "Links to the main sections"
+      },
+      "netWorthHistory": {
+        "title": "Net worth history",
+        "description": "Every portfolio's value over time, combined",
+        "ariaLabel": "Combined value over time — {{label}}",
+        "empty": "No portfolios to chart yet."
+      },
+      "assetSpotlight": {
+        "title": "Spotlight",
+        "description": "One asset with its price and chart",
+        "ariaLabel": "Price over time for {{name}}",
+        "unpicked": "No asset picked yet",
+        "unpickedHint": "Open this widget's settings to pick one.",
+        "unnamed": "Asset",
+        "pickLabel": "Asset",
+        "current": "Currently {{name}}",
+        "searchPlaceholder": "Search assets"
+      },
+      "recentTransactions": {
+        "title": "Recent activity",
+        "description": "The latest trades across your portfolios",
+        "empty": "No transactions yet.",
+        "countLabel": "Rows",
+        "countOption": "{{count}} rows"
+      },
+      "cashBalances": {
+        "title": "Cash",
+        "description": "Balances per cash source",
+        "empty": "No cash sources yet.",
+        "total": "Total"
+      },
+      "watchlist": {
+        "title": "Watchlist",
+        "description": "A watchlist with live quotes",
+        "empty": "{{name}} is empty.",
+        "noLists": "No watchlists yet.",
+        "listLabel": "List"
+      },
+      "dividends": {
+        "title": "Dividends",
+        "description": "Upcoming ex- and pay dates",
+        "empty": "No dividends coming up.",
+        "unavailable": "Dividend data is not available.",
+        "exDate": "Ex-date",
+        "payDate": "Pay date"
+      },
+      "alerts": {
+        "title": "Alerts",
+        "description": "How many are armed and what fired",
+        "armed": "Armed",
+        "triggered": "Triggered",
+        "empty": "No alerts yet."
       }
     }
   },
