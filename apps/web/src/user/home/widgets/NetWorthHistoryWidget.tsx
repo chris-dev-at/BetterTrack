@@ -44,7 +44,8 @@ import type { WidgetProps } from './types';
  * is also no longer legible as a shape. The excess is dropped from the *sum*
  * rather than silently mis-totalled — see {@link NetWorthHistoryWidget}'s note.
  */
-const MAX_PORTFOLIOS = 12;
+/** Fan-out ceiling for the combined curve; shared with the performance chart. */
+export const MAX_HISTORY_PORTFOLIOS = 12;
 
 /** §6.9 caches the series for an hour server-side; mirror it client-side. */
 const HISTORY_STALE_MS = 3_600_000;
@@ -115,7 +116,7 @@ export function NetWorthHistoryWidget({
   const t = useT();
   const range = asRange(settings.range);
   const historyRange = toHistoryRange(range);
-  const charted = scopedPortfolios.slice(0, MAX_PORTFOLIOS);
+  const charted = scopedPortfolios.slice(0, MAX_HISTORY_PORTFOLIOS);
 
   // `combine` runs inside React Query and its result is structurally cached, so
   // the chart receives a stable `series` identity and redraws only when the
