@@ -49,7 +49,7 @@ test('expenses: bank import → categorize → dashboard → single budget alert
 
   // ── An auto-categorization rule: everything containing "spar" → Groceries.
   //    (Visiting the page also seeds the default category set.) ──
-  await page.goto('/expenses/rules');
+  await page.goto('/portfolio/cash-flow/rules');
   await page.getByRole('button', { name: 'New rule' }).click();
   const ruleDialog = page.getByRole('dialog');
   await ruleDialog.getByRole('combobox').first().selectOption({ label: 'Groceries' });
@@ -58,7 +58,7 @@ test('expenses: bank import → categorize → dashboard → single budget alert
   await expect(ruleDialog).toBeHidden();
 
   // ── A €200 monthly Groceries budget (no spend yet, so no alert fires now). ──
-  await page.goto('/expenses/budgets');
+  await page.goto('/portfolio/cash-flow/budgets');
   await page.getByRole('button', { name: 'New budget' }).click();
   const budgetDialog = page.getByRole('dialog');
   await budgetDialog.getByRole('combobox').selectOption({ label: 'Groceries' });
@@ -67,7 +67,7 @@ test('expenses: bank import → categorize → dashboard → single budget alert
   await expect(budgetDialog).toBeHidden();
 
   // ── Import the statement: it autodetects as Revolut and stages 4 new rows. ──
-  await page.goto('/expenses/import');
+  await page.goto('/portfolio/cash-flow/import');
   await page.getByLabel('Choose a CSV file').setInputFiles(stmt.file);
   await page.getByRole('button', { name: 'Preview' }).click();
   await expect(page.getByText('Detected Revolut')).toBeVisible({ timeout: 20_000 });
@@ -90,13 +90,13 @@ test('expenses: bank import → categorize → dashboard → single budget alert
   });
 
   // ── Reconcile the dashboard to the imported fixture. ──
-  await page.goto('/expenses');
+  await page.goto('/portfolio/cash-flow');
   // Total spend = Σ groceries (€300); income = the salary credit (€2 000).
   await expect(page.getByText(/300[.,]00/).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/2[.,]000[.,]00/).first()).toBeVisible();
 
   // The Groceries budget reads spend €300 against its €200 target, and is blown.
-  await page.goto('/expenses/budgets');
+  await page.goto('/portfolio/cash-flow/budgets');
   const groceriesBudget = page.getByRole('listitem').filter({ hasText: 'Groceries' });
   await expect(groceriesBudget).toBeVisible({ timeout: 15_000 });
   await expect(groceriesBudget).toContainText(/300[.,]00/);
@@ -107,7 +107,7 @@ test('expenses: bank import → categorize → dashboard → single budget alert
   //    worker's dispatch queue — poll a few reloads, never a bare sleep). ──
   const bell = page.getByRole('button', { name: /Notifications/ });
   await expect(async () => {
-    await page.goto('/expenses');
+    await page.goto('/portfolio/cash-flow');
     await expect(page.getByRole('button', { name: /Notifications \(\d+ unread\)/ })).toBeVisible({
       timeout: 5_000,
     });
@@ -117,7 +117,7 @@ test('expenses: bank import → categorize → dashboard → single budget alert
 
   // ── Re-drive the evaluation path (a budget re-save re-runs evaluate for the
   //    same period): the exactly-once gate means STILL one alert, never two. ──
-  await page.goto('/expenses/budgets');
+  await page.goto('/portfolio/cash-flow/budgets');
   await groceriesBudget.getByRole('button', { name: 'Edit' }).click();
   const editDialog = page.getByRole('dialog');
   await editDialog.getByRole('spinbutton').fill('150');
@@ -125,7 +125,7 @@ test('expenses: bank import → categorize → dashboard → single budget alert
   await expect(editDialog).toBeHidden();
   await expect(groceriesBudget).toContainText(/150[.,]00/);
 
-  await page.goto('/expenses');
+  await page.goto('/portfolio/cash-flow');
   await bell.click();
   await expect(page.getByText('Budget exceeded: Groceries')).toHaveCount(1);
 

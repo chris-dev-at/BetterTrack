@@ -13,7 +13,7 @@ import type { TranslateFn } from '../../i18n';
 import { getValuePoints, putValuePoints, updateCustomAsset } from '../../lib/portfolioApi';
 import { Skeleton } from '../../ui';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert, Button } from '../components/ui';
 import { customCategoryLabels } from './customCategories';
 
 export interface ValuePointEditorAsset {
@@ -41,12 +41,6 @@ interface EditRow {
   date: string;
   value: string;
 }
-
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
 
 let rowSeq = 0;
 function nextKey(): string {
@@ -168,15 +162,13 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
         <Alert tone="error">{t('portfolio.valuePoint.loadError')}</Alert>
       ) : (
         <div className="flex flex-col gap-4">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">
-              {t('portfolio.customInvestment.categoryLabel')}
-            </span>
+          <div className="bt-field">
+            <label>{t('portfolio.customInvestment.categoryLabel')}</label>
             <select
               value={category}
               onChange={(e) => setCategory(e.target.value as CustomAssetCategory)}
               aria-label={t('portfolio.customInvestment.categoryLabel')}
-              className={inputClass}
+              className="bt-select"
             >
               {CUSTOM_ASSET_CATEGORIES.map((c) => (
                 <option key={c} value={c}>
@@ -184,23 +176,24 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
                 </option>
               ))}
             </select>
-          </label>
+          </div>
 
-          <label className="flex items-center gap-2 text-sm text-neutral-300">
+          <label className="flex items-center gap-2 text-sm bt-soft">
             <input
               type="checkbox"
               checked={smoothing}
               onChange={(e) => setSmoothing(e.target.checked)}
-              className="h-4 w-4 rounded border-neutral-700 bg-neutral-950 text-sky-600 focus:ring-sky-500"
+              className="h-4 w-4"
+              style={{ accentColor: 'var(--bt-gold)' }}
             />
             {t('portfolio.valuePoint.smoothingLabel')}
           </label>
 
           {rows.length === 0 ? (
-            <p className="text-sm text-neutral-500">{t('portfolio.valuePoint.empty')}</p>
+            <p className="text-sm bt-muted">{t('portfolio.valuePoint.empty')}</p>
           ) : (
             <ul className="flex flex-col gap-2">
-              <li className="grid grid-cols-[1fr_1fr_auto] gap-2 px-1 text-xs uppercase tracking-wide text-neutral-500">
+              <li className="grid grid-cols-[1fr_1fr_auto] gap-2 px-1 bt-label">
                 <span>{t('portfolio.valuePoint.dateHeader')}</span>
                 <span>{t('portfolio.valuePoint.valueHeader', { currency: asset.currency })}</span>
                 <span className="sr-only">{t('portfolio.valuePoint.removeHeader')}</span>
@@ -212,7 +205,7 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
                     value={row.date}
                     onChange={(e) => updateRow(row.key, { date: e.target.value })}
                     aria-label={t('portfolio.valuePoint.dateAriaLabel')}
-                    className={inputClass}
+                    className="bt-input"
                   />
                   <input
                     type="number"
@@ -222,13 +215,13 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
                     value={row.value}
                     onChange={(e) => updateRow(row.key, { value: e.target.value })}
                     aria-label={t('portfolio.valuePoint.amountAriaLabel')}
-                    className={inputClass}
+                    className="bt-input"
                   />
                   <button
                     type="button"
                     onClick={() => removeRow(row.key)}
                     aria-label={t('portfolio.valuePoint.removeAriaLabel', { date: row.date })}
-                    className="rounded p-2 text-neutral-500 hover:bg-neutral-800 hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                    className="bt-btn bt-btn--danger bt-btn--sm bt-btn--icon"
                   >
                     ✕
                   </button>
@@ -237,11 +230,7 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
             </ul>
           )}
 
-          <button
-            type="button"
-            onClick={addRow}
-            className="self-start text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-          >
+          <button type="button" onClick={addRow} className="self-start text-sm bt-link">
             {t('portfolio.valuePoint.addButton')}
           </button>
 

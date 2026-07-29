@@ -8,9 +8,10 @@ import { deleteIdea, listIdeas } from '../../lib/ideasApi';
 import { listMyShared } from '../../lib/socialApi';
 import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
+import { Badge, Button, PageHead, type BadgeTone } from '../../ui/origin';
 import { AudiencePicker } from '../components/AudiencePicker';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert } from '../components/ui';
 
 const IDEAS_KEY = ['ideas'] as const;
 const MY_SHARED_KEY = ['social', 'my-shared'] as const;
@@ -28,15 +29,9 @@ function AudienceBadge({
     audience === 'specific_friends' && friendCount > 0
       ? `${t('sharing.badge.specific_friends')} · ${friendCount}`
       : t(`sharing.badge.${audience}`);
-  const tone =
-    audience === 'private'
-      ? 'border-neutral-700 text-neutral-400'
-      : audience === 'public_link'
-        ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-        : 'border-sky-500/40 bg-sky-500/10 text-sky-200';
-  return (
-    <span className={cx('rounded-full border px-2 py-0.5 text-xs font-medium', tone)}>{label}</span>
-  );
+  const tone: BadgeTone =
+    audience === 'private' ? 'neutral' : audience === 'public_link' ? 'gold' : 'blue';
+  return <Badge tone={tone}>{label}</Badge>;
 }
 
 function DeleteIdeaDialog({
@@ -56,18 +51,13 @@ function DeleteIdeaDialog({
   return (
     <Dialog title={t('workboard.ideas.list.deleteTitle')} onClose={onClose}>
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-neutral-400">{t('workboard.ideas.list.deleteBody', { name })}</p>
+        <p className="bt-soft">{t('workboard.ideas.list.deleteBody', { name })}</p>
         {error ? <Alert tone="error">{t('workboard.ideas.list.deleteError')}</Alert> : null}
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose} disabled={pending}>
+          <Button disabled={pending} onClick={onClose}>
             {t('common.cancel')}
           </Button>
-          <Button
-            variant="primary"
-            onClick={onConfirm}
-            disabled={pending}
-            className="bg-red-700 hover:bg-red-600 disabled:bg-red-900"
-          >
+          <Button disabled={pending} onClick={onConfirm} variant="danger">
             {t('common.delete')}
           </Button>
         </div>
@@ -91,24 +81,22 @@ function IdeaRow({
 }) {
   const t = useT();
   return (
-    <li className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+    <li className="bt-band__row flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex min-w-0 flex-col gap-1">
-        <span className="truncate text-sm font-medium text-neutral-100">{idea.name}</span>
-        <p className="truncate text-xs text-neutral-500">
-          {idea.thesis ?? t('workboard.ideas.list.thesisNone')}
-        </p>
+        <span className="bt-row-title truncate">{idea.name}</span>
+        <p className="bt-row-sub truncate">{idea.thesis ?? t('workboard.ideas.list.thesisNone')}</p>
         <div className="flex flex-wrap items-center gap-2 pt-0.5">
           <AudienceBadge audience={audience} friendCount={friendCount} />
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <Link to={`/workboard/ideas/${idea.id}`}>
-          <Button variant="secondary">{t('workboard.ideas.list.open')}</Button>
+        <Link to={`/workbench/ideas/${idea.id}`}>
+          <Button size="sm">{t('workboard.ideas.list.open')}</Button>
         </Link>
-        <Button variant="secondary" onClick={onShare}>
+        <Button onClick={onShare} size="sm">
           {t('workboard.ideas.list.share')}
         </Button>
-        <Button variant="secondary" onClick={onDelete} className="text-red-300 hover:text-red-200">
+        <Button onClick={onDelete} size="sm" variant="danger">
           {t('common.delete')}
         </Button>
       </div>
@@ -117,7 +105,7 @@ function IdeaRow({
 }
 
 /**
- * `/workboard/ideas` — the Ideas list (PROJECTPLAN.md §13.4 V4-P9): every saved
+ * `/workbench/ideas` — the Ideas list (PROJECTPLAN.md §13.4 V4-P9): every saved
  * Workboard analysis the caller owns, each reopenable exactly as saved, shareable
  * through the reusable AudiencePicker (the ONE audience model), and deletable. The
  * per-idea audience is read off `GET /social/my-shared` so it never disagrees with
@@ -162,9 +150,7 @@ export function IdeasListPage() {
       <div className="flex flex-col gap-3">
         <Alert tone="error">{t('workboard.ideas.list.loadError')}</Alert>
         <div>
-          <Button variant="secondary" onClick={() => void ideasQuery.refetch()}>
-            {t('common.retry')}
-          </Button>
+          <Button onClick={() => void ideasQuery.refetch()}>{t('common.retry')}</Button>
         </div>
       </div>
     );
@@ -177,12 +163,7 @@ export function IdeasListPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">
-          {t('workboard.ideas.list.title')}
-        </h2>
-        <p className="text-sm text-neutral-500">{t('workboard.ideas.list.subtitle')}</p>
-      </div>
+      <PageHead sub={t('workboard.ideas.list.subtitle')} title={t('workboard.ideas.list.title')} />
 
       {ideas.length === 0 ? (
         <EmptyState
@@ -191,7 +172,7 @@ export function IdeasListPage() {
           description={t('workboard.ideas.list.emptyBody')}
         />
       ) : (
-        <ul className="flex flex-col gap-2">
+        <ul className="bt-panel bt-band">
           {ideas.map((idea) => {
             const shared = audienceById.get(idea.id);
             return (

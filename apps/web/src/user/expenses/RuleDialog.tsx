@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import {
@@ -17,13 +17,8 @@ import {
   updateExpenseRule,
 } from '../../lib/expensesApi';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
-
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
+import { Alert } from '../components/ui';
+import { Button, Field, Switch } from '../../ui/origin';
 
 export interface RuleDialogProps {
   /** Edit mode — the rule being edited; omit to create. */
@@ -42,6 +37,10 @@ export function RuleDialog({ existing, categories, onClose }: RuleDialogProps) {
   const t = useT();
   const queryClient = useQueryClient();
   const isEdit = !!existing;
+  const categoryFieldId = useId();
+  const matchTypeFieldId = useId();
+  const patternFieldId = useId();
+  const priorityFieldId = useId();
 
   const [categoryId, setCategoryId] = useState(existing?.categoryId ?? categories[0]?.id ?? '');
   const [matchType, setMatchType] = useState<ExpenseRuleMatchType>(
@@ -97,12 +96,10 @@ export function RuleDialog({ existing, categories, onClose }: RuleDialogProps) {
       onClose={onClose}
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('expenses.rules.dialog.category')}
-          </span>
+        <Field label={t('expenses.rules.dialog.category')} htmlFor={categoryFieldId}>
           <select
-            className={inputClass}
+            id={categoryFieldId}
+            className="bt-select"
             value={categoryId}
             onChange={(e) => setCategoryId(e.target.value)}
           >
@@ -112,14 +109,12 @@ export function RuleDialog({ existing, categories, onClose }: RuleDialogProps) {
               </option>
             ))}
           </select>
-        </label>
+        </Field>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('expenses.rules.dialog.matchType')}
-          </span>
+        <Field label={t('expenses.rules.dialog.matchType')} htmlFor={matchTypeFieldId}>
           <select
-            className={inputClass}
+            id={matchTypeFieldId}
+            className="bt-select"
             value={matchType}
             onChange={(e) => setMatchType(e.target.value as ExpenseRuleMatchType)}
           >
@@ -129,52 +124,56 @@ export function RuleDialog({ existing, categories, onClose }: RuleDialogProps) {
               </option>
             ))}
           </select>
-        </label>
+        </Field>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('expenses.rules.dialog.pattern')}
-          </span>
+        <Field label={t('expenses.rules.dialog.pattern')} htmlFor={patternFieldId}>
           <input
-            className={inputClass}
+            id={patternFieldId}
+            className="bt-input"
             value={pattern}
             onChange={(e) => setPattern(e.target.value)}
             placeholder={t('expenses.rules.dialog.patternPlaceholder')}
             autoFocus
           />
-        </label>
+        </Field>
 
-        <label className="flex items-center justify-between gap-3">
-          <span className="text-sm font-medium text-neutral-300">
+        <div className="flex items-center justify-between gap-3">
+          <label
+            htmlFor={priorityFieldId}
+            style={{ color: 'var(--bt-text-soft)', fontSize: 12, fontWeight: 570 }}
+          >
             {t('expenses.rules.dialog.priority')}
-          </span>
+          </label>
           <input
+            id={priorityFieldId}
             type="number"
             min={0}
-            className={cx(inputClass, 'w-24')}
+            className="bt-input"
+            style={{ width: 96 }}
             value={priority}
             onChange={(e) => setPriority(e.target.value)}
             aria-label={t('expenses.rules.dialog.priority')}
           />
-        </label>
+        </div>
 
-        <label className="flex items-center gap-2 text-sm font-medium text-neutral-300">
-          <input
-            type="checkbox"
+        <div className="flex items-center justify-between gap-3">
+          <span style={{ color: 'var(--bt-text-soft)', fontSize: 12, fontWeight: 570 }}>
+            {t('expenses.rules.dialog.enabled')}
+          </span>
+          <Switch
+            aria-label={t('expenses.rules.dialog.enabled')}
             checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-            className="h-4 w-4 rounded border-neutral-600 bg-neutral-950 text-sky-500 focus:ring-sky-500"
+            onChange={setEnabled}
           />
-          {t('expenses.rules.dialog.enabled')}
-        </label>
+        </div>
 
         {formError ? <Alert tone="error">{formError}</Alert> : null}
 
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose}>
+          <Button type="button" variant="quiet" onClick={onClose}>
             {t('common.cancel')}
           </Button>
-          <Button type="submit" disabled={mutation.isPending}>
+          <Button type="submit" variant="primary" disabled={mutation.isPending}>
             {mutation.isPending ? t('common.saving') : t('common.save')}
           </Button>
         </div>

@@ -363,7 +363,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // (403, or a stray must-change me) → the trap; 429 → hold the splash and retry
   // after `Retry-After` rather than mistaking a transient rate-limit for a
   // dropped session (the burst limiter can trip on a rapid multi-navigation
-  // flurry, e.g. an e2e spec that hard-reloads `/social/friends` several times
+  // flurry, e.g. an e2e spec that hard-reloads `/people` several times
   // in a few seconds — falling through to anonymous would bounce the caller to
   // `/login`); anything else → anonymous.
   useEffect(() => {

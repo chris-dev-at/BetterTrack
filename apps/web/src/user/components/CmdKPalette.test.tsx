@@ -129,7 +129,7 @@ describe('direct actions parity (§13.2 — reuses AssetSearchBox)', () => {
     await screen.findByText('NVDA');
 
     expect(screen.getByRole('button', { name: /add nvda to watchlist/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /add nvda to a conglomerate/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /add nvda to a blueprint/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /record a buy for nvda/i })).toBeInTheDocument();
   });
 });

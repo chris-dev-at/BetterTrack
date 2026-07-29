@@ -13,7 +13,7 @@ import { provisionUserInContext } from './support/users';
  * Kept to a tight happy path (the nightly per-test budget is real). The
  * scheduling edge cases (exactly-once booking, catch-up, clamp, pause/resume,
  * overdraw) live in `apps/api/src/services/standingOrders/__tests__/**` and the
- * projection math in `apps/web/src/user/forecast/projection.test.ts`; this spec
+ * projection math in `apps/web/src/user\/workbench\/forecasts/projection.test.ts`; this spec
  * is the browser layer wiring the create UI to the projection surface.
  */
 
@@ -116,7 +116,7 @@ test('forecast: a scheduled cash-add lifts the enabled one-year projection', asy
   const page = owner.page;
   const fixtures = await pinForecastInputs(page);
 
-  await page.goto('/forecast');
+  await page.goto('/workbench/forecasts');
 
   const baseLegend = page.getByTestId('projection-series-base');
   const returnFactor = page.getByRole('checkbox', { name: 'Average return' });

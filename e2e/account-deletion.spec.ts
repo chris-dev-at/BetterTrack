@@ -38,7 +38,7 @@ test('account deletion: re-auth + typed confirm deletes the account, revokes ses
     // Owner sends one DM through the real chat UI so there is history to
     // anonymize after deletion.
     const messageBody = `pre-delete ${Date.now().toString(36)}`;
-    await owner.page.goto('/social/chat');
+    await owner.page.goto('/people/chat');
     await owner.page.getByRole('button', { name: 'New message' }).click();
     const newChat = owner.page.getByRole('dialog', { name: 'New message' });
     await newChat.getByRole('button', { name: friend.username }).click();
@@ -68,7 +68,7 @@ test('account deletion: re-auth + typed confirm deletes the account, revokes ses
     // Friend still opens the same conversation — the partner is anonymized to
     // "Deleted user", the pre-delete DM body is preserved, and the composer is
     // gone (the thread is closed to new messages).
-    await friend.page.goto('/social/chat');
+    await friend.page.goto('/people/chat');
     const deletedRow = friend.page.getByRole('button').filter({ hasText: 'Deleted user' });
     await expect(deletedRow).toBeVisible({ timeout: 20_000 });
     await expect(deletedRow).not.toContainText(ownerUsername);

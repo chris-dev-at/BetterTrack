@@ -9,7 +9,7 @@ import {
 import { useT } from '../../i18n';
 import { createCustomAsset } from '../../lib/portfolioApi';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert, Button } from '../components/ui';
 import { customCategoryLabels } from './customCategories';
 
 export interface CustomInvestmentDialogProps {
@@ -19,12 +19,6 @@ export interface CustomInvestmentDialogProps {
   /** Today as ISO `YYYY-MM-DD`, injectable for deterministic tests. */
   today?: string;
 }
-
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
 
 function isoToday(today?: string): string {
   if (today) return today;
@@ -128,10 +122,8 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
           {t('portfolio.customInvestment.title')}
         </span>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.customInvestment.nameLabel')}
-          </span>
+        <div className="bt-field">
+          <label>{t('portfolio.customInvestment.nameLabel')}</label>
           <input
             type="text"
             value={name}
@@ -139,20 +131,18 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
             onChange={(e) => setName(e.target.value)}
             aria-label={t('portfolio.customInvestment.nameLabel')}
             placeholder={t('portfolio.customInvestment.namePlaceholder')}
-            className={inputClass}
+            className="bt-input"
           />
-        </label>
+        </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">
-              {t('portfolio.customInvestment.categoryLabel')}
-            </span>
+          <div className="bt-field">
+            <label>{t('portfolio.customInvestment.categoryLabel')}</label>
             <select
               value={category}
               onChange={(e) => setCategory(e.target.value as CustomAssetCategory)}
               aria-label={t('portfolio.customInvestment.categoryLabel')}
-              className={inputClass}
+              className="bt-select"
             >
               {CUSTOM_ASSET_CATEGORIES.map((c) => (
                 <option key={c} value={c}>
@@ -160,12 +150,10 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
                 </option>
               ))}
             </select>
-          </label>
+          </div>
 
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">
-              {t('portfolio.customInvestment.currencyLabel')}
-            </span>
+          <div className="bt-field">
+            <label>{t('portfolio.customInvestment.currencyLabel')}</label>
             <input
               type="text"
               value={currency}
@@ -173,37 +161,40 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
               onChange={(e) => setCurrency(e.target.value.toUpperCase())}
               aria-label={t('portfolio.customInvestment.currencyLabel')}
               placeholder={t('portfolio.customInvestment.currencyPlaceholder')}
-              className={cx(inputClass, 'uppercase')}
+              className="bt-input uppercase"
             />
-          </label>
+          </div>
         </div>
 
-        <label className="flex items-center gap-2 text-sm text-neutral-300">
+        <label className="flex items-center gap-2 text-sm bt-soft">
           <input
             type="checkbox"
             checked={smoothing}
             onChange={(e) => setSmoothing(e.target.checked)}
-            className="h-4 w-4 rounded border-neutral-700 bg-neutral-950 text-sky-600 focus:ring-sky-500"
+            className="h-4 w-4"
+            style={{ accentColor: 'var(--bt-gold)' }}
           />
           {t('portfolio.customInvestment.smoothingLabel')}
         </label>
 
-        <label className="flex items-center gap-2 text-sm text-neutral-300">
+        <label className="flex items-center gap-2 text-sm bt-soft">
           <input
             type="checkbox"
             checked={withPurchase}
             onChange={(e) => setWithPurchase(e.target.checked)}
-            className="h-4 w-4 rounded border-neutral-700 bg-neutral-950 text-sky-600 focus:ring-sky-500"
+            className="h-4 w-4"
+            style={{ accentColor: 'var(--bt-gold)' }}
           />
           {t('portfolio.customInvestment.recordPurchase')}
         </label>
 
         {withPurchase ? (
-          <div className="grid grid-cols-2 gap-3 rounded-md border border-neutral-800 p-3">
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium text-neutral-300">
-                {t('portfolio.customInvestment.quantityLabel')}
-              </span>
+          <div
+            className="grid grid-cols-2 gap-3 rounded-md p-3"
+            style={{ border: '1px solid var(--bt-border)' }}
+          >
+            <div className="bt-field">
+              <label>{t('portfolio.customInvestment.quantityLabel')}</label>
               <input
                 type="number"
                 inputMode="decimal"
@@ -212,27 +203,25 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
                 value={quantity}
                 onChange={(e) => setQuantity(e.target.value)}
                 aria-label={t('portfolio.customInvestment.quantityAriaLabel')}
-                className={inputClass}
+                className="bt-input"
               />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium text-neutral-300">
-                {t('portfolio.customInvestment.dateLabel')}
-              </span>
+            </div>
+            <div className="bt-field">
+              <label>{t('portfolio.customInvestment.dateLabel')}</label>
               <input
                 type="date"
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
                 aria-label={t('portfolio.customInvestment.purchaseDateAriaLabel')}
-                className={inputClass}
+                className="bt-input"
               />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium text-neutral-300">
+            </div>
+            <div className="bt-field">
+              <label>
                 {t('portfolio.customInvestment.priceLabel', {
                   currency: currency.toUpperCase() || 'EUR',
                 })}
-              </span>
+              </label>
               <input
                 type="number"
                 inputMode="decimal"
@@ -241,15 +230,15 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
                 value={price}
                 onChange={(e) => setPrice(e.target.value)}
                 aria-label={t('portfolio.customInvestment.priceAriaLabel')}
-                className={inputClass}
+                className="bt-input"
               />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium text-neutral-300">
+            </div>
+            <div className="bt-field">
+              <label>
                 {t('portfolio.customInvestment.feeLabel', {
                   currency: currency.toUpperCase() || 'EUR',
                 })}
-              </span>
+              </label>
               <input
                 type="number"
                 inputMode="decimal"
@@ -259,9 +248,9 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
                 onChange={(e) => setFee(e.target.value)}
                 aria-label={t('portfolio.customInvestment.feeAriaLabel')}
                 placeholder="0"
-                className={inputClass}
+                className="bt-input"
               />
-            </label>
+            </div>
           </div>
         ) : null}
 

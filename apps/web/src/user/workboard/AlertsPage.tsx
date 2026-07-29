@@ -6,16 +6,17 @@ import type { Alert } from '@bettertrack/contracts';
 import { ALERTS_QUERY_KEY, listAlerts } from '../../lib/alertsApi';
 import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
+import { Button, PageHead } from '../../ui/origin';
 import { AlertDialog } from '../components/AlertDialog';
 import { AlertList } from '../components/AlertList';
-import { Alert as AlertBanner, Button } from '../components/ui';
+import { Alert as AlertBanner } from '../components/ui';
 
 /** TanStack Query polls the list so a fired alert flips to `triggered` without
  * a manual refresh (the socket bell push is V3-P7 — this is the fallback). */
 const ALERTS_POLL_INTERVAL_MS = 60_000;
 
 /**
- * `/workboard/alerts` — the price-alerts panel (PROJECTPLAN.md §14, V3-P10 arc
+ * `/workbench/alerts` — the price-alerts panel (PROJECTPLAN.md §14, V3-P10 arc
  * b). Lists every alert the caller owns with create / edit / delete / re-arm,
  * all against the #334 CRUD API. The asset-page inline widget shares the same
  * dialog + list components and the same cached query.
@@ -36,15 +37,15 @@ export function AlertsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
-            {t('workboard.alerts.title')}
-          </h1>
-          <p className="mt-1 text-sm text-neutral-400">{t('workboard.alerts.subtitle')}</p>
-        </div>
-        <Button onClick={() => setCreating(true)}>{t('workboard.alerts.newAlert')}</Button>
-      </div>
+      <PageHead
+        actions={
+          <Button onClick={() => setCreating(true)} variant="primary">
+            {t('workboard.alerts.newAlert')}
+          </Button>
+        }
+        sub={t('workboard.alerts.subtitle')}
+        title={t('workboard.alerts.title')}
+      />
 
       {isLoading ? (
         <div className="flex flex-col gap-3">
@@ -60,11 +61,7 @@ export function AlertsPage() {
           title={t('workboard.alerts.emptyTitle')}
           description={t('workboard.alerts.emptyDescription')}
           cta={
-            <button
-              type="button"
-              onClick={() => setCreating(true)}
-              className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            >
+            <button className="bt-link" onClick={() => setCreating(true)} type="button">
               {t('workboard.alerts.emptyCta')}
             </button>
           }

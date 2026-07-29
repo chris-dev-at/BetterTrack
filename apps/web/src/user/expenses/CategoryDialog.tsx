@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import {
@@ -16,13 +16,8 @@ import {
   updateExpenseCategory,
 } from '../../lib/expensesApi';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
-
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
+import { Alert } from '../components/ui';
+import { Button, Field, Seg } from '../../ui/origin';
 
 const DEFAULT_COLOR = '#64748b';
 
@@ -41,6 +36,8 @@ export function CategoryDialog({ existing, onClose }: CategoryDialogProps) {
   const t = useT();
   const queryClient = useQueryClient();
   const isEdit = !!existing;
+  const nameFieldId = useId();
+  const colorFieldId = useId();
 
   const [name, setName] = useState(existing?.name ?? '');
   const [direction, setDirection] = useState<ExpenseDirection>(existing?.direction ?? 'expense');
@@ -87,62 +84,51 @@ export function CategoryDialog({ existing, onClose }: CategoryDialogProps) {
       onClose={onClose}
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('expenses.categories.dialog.name')}
-          </span>
+        <Field label={t('expenses.categories.dialog.name')} htmlFor={nameFieldId}>
           <input
-            className={inputClass}
+            id={nameFieldId}
+            className="bt-input"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={t('expenses.categories.dialog.namePlaceholder')}
             autoFocus
           />
-        </label>
+        </Field>
 
-        <div
-          className="flex gap-2"
-          role="group"
-          aria-label={t('expenses.categories.dialog.direction')}
-        >
-          {EXPENSE_DIRECTIONS.map((d) => (
-            <button
-              key={d}
-              type="button"
-              onClick={() => setDirection(d)}
-              aria-pressed={direction === d}
-              className={cx(
-                'flex-1 rounded-md px-3 py-2 text-sm font-medium ring-1 ring-inset transition-colors',
-                direction === d
-                  ? 'bg-neutral-800 text-white ring-neutral-600'
-                  : 'text-neutral-400 ring-neutral-700 hover:text-neutral-200',
-              )}
-            >
-              {t(`expenses.direction.${d}`)}
-            </button>
-          ))}
-        </div>
+        <Seg
+          ariaLabel={t('expenses.categories.dialog.direction')}
+          value={direction}
+          onChange={setDirection}
+          options={EXPENSE_DIRECTIONS.map((d) => ({
+            value: d,
+            label: t(`expenses.direction.${d}`),
+          }))}
+        />
 
-        <label className="flex items-center justify-between gap-3">
-          <span className="text-sm font-medium text-neutral-300">
+        <div className="flex items-center justify-between gap-3">
+          <label
+            htmlFor={colorFieldId}
+            style={{ color: 'var(--bt-text-soft)', fontSize: 12, fontWeight: 570 }}
+          >
             {t('expenses.categories.dialog.color')}
-          </span>
+          </label>
           <input
+            id={colorFieldId}
             type="color"
             value={color}
             onChange={(e) => setColor(e.target.value)}
             aria-label={t('expenses.categories.dialog.color')}
             className="h-9 w-14 cursor-pointer rounded bg-transparent"
           />
-        </label>
+        </div>
 
         {formError ? <Alert tone="error">{formError}</Alert> : null}
 
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose}>
+          <Button type="button" variant="quiet" onClick={onClose}>
             {t('common.cancel')}
           </Button>
-          <Button type="submit" disabled={mutation.isPending}>
+          <Button type="submit" variant="primary" disabled={mutation.isPending}>
             {mutation.isPending ? t('common.saving') : t('common.save')}
           </Button>
         </div>

@@ -25,10 +25,7 @@ function quickAuthErrorMessage(t: TranslateFn, err: unknown): string {
 function AccountAvatar({ username }: { username: string }) {
   const initial = username.trim().charAt(0).toUpperCase() || '?';
   return (
-    <span
-      aria-hidden
-      className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-sky-500/20 text-sm font-semibold text-sky-300"
-    >
+    <span aria-hidden className="bt-avatar bt-avatar--lg">
       {initial}
     </span>
   );
@@ -135,11 +132,11 @@ export function OAuthAccountChooser({
             e.preventDefault();
             if (pin.length === PIN_LENGTH) void submitPin(pin);
           }}
-          className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
+          className="flex flex-col gap-4"
         >
           <div className="flex items-center gap-3">
             <AccountAvatar username={account.username} />
-            <p className="text-sm text-neutral-300">
+            <p className="bt-soft text-sm">
               {t('auth.oauthChooser.pinPrompt', {
                 username: account.username,
                 length: PIN_LENGTH,
@@ -169,21 +166,32 @@ export function OAuthAccountChooser({
 
   return (
     <AuthCard subtitle={t('auth.oauthChooser.subtitle')}>
-      <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-        <p className="text-sm text-neutral-400">{t('auth.oauthChooser.prompt')}</p>
+      <div className="flex flex-col gap-4">
+        <p className="bt-muted text-sm">{t('auth.oauthChooser.prompt')}</p>
         {error ? <Alert tone="error">{error}</Alert> : null}
         <button
           type="button"
           onClick={() => void handleLoginAs()}
           disabled={busy}
-          className="flex items-center gap-3 rounded-lg border border-neutral-700 bg-neutral-950 p-3 text-left transition hover:border-sky-600 hover:bg-neutral-900 disabled:opacity-60"
+          className="bt-btn w-full disabled:opacity-60"
+          // The remembered identity is the screen's main tap target: the system
+          // control surface (border, hover, focus, disabled) relaxed into a
+          // left-aligned, two-line row.
+          style={{
+            justifyContent: 'flex-start',
+            minHeight: 0,
+            padding: 11,
+            gap: 12,
+            textAlign: 'left',
+            whiteSpace: 'normal',
+          }}
         >
           <AccountAvatar username={account.username} />
           <span className="flex flex-col">
-            <span className="text-sm font-medium text-neutral-100">
+            <span className="bt-row-title">
               {t('auth.oauthChooser.loginAs', { username: account.username })}
             </span>
-            <span className="text-xs text-neutral-500">
+            <span className="bt-row-sub">
               {busy ? t('auth.oauthChooser.checking') : t('auth.oauthChooser.pinHint')}
             </span>
           </span>

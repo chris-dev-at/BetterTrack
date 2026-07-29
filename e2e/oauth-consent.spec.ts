@@ -221,7 +221,7 @@ test('oauth consent: third-party scopes render grouped by module in plain langua
     await expect(page.getByText('Portfolio', { exact: true })).toBeVisible();
     await expect(page.getByText('Market', { exact: true })).toBeVisible();
     await expect(page.getByText('Social', { exact: true })).toBeVisible();
-    await expect(page.getByText('Workboard', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Workbench', { exact: true })).toHaveCount(0);
     await expect(page.getByText('Chat', { exact: true })).toHaveCount(0);
 
     // Plain-language labels (from OAUTH_SCOPE_LABELS) — never the raw scope

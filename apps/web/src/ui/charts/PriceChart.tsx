@@ -16,6 +16,7 @@ import {
 import { useEffect, useRef, useState } from 'react';
 
 import { LOCALES, useI18n, useT } from '../../i18n';
+import * as palette from './palette';
 import { Spinner } from '../../user/components/ui';
 import { cx } from '../../lib/cx';
 import { DISCREET_MASK, formatPercent, isDiscreetMode } from '../../lib/format';
@@ -117,36 +118,28 @@ export interface PriceChartProps {
   ariaLabel?: string;
 }
 
-// Palette tuned for the dark UI shell (matches the sky/emerald accents).
-const MAIN_LINE = '#38bdf8'; // sky-400
-const MAIN_AREA_TOP = 'rgba(56, 189, 248, 0.35)';
-const MAIN_AREA_BOTTOM = 'rgba(56, 189, 248, 0.02)';
-const BENCHMARK_LINE = '#a78bfa'; // violet-400
-const MARKER_FLAG = '#fbbf24'; // amber-400 — entry-event flags (§14)
-const GRID = 'rgba(82, 82, 91, 0.25)'; // neutral-600 @ 25%
-const TEXT = '#a1a1aa'; // neutral-400
+// Origin chart palette (ui/charts/palette.ts): spec blue for the lone main
+// series, the validated categorical order for overlays, semantic green/red
+// only where polarity is real, gold only as an event flag.
+const MAIN_LINE = palette.MAIN_SERIES;
+const MAIN_AREA_TOP = palette.MAIN_AREA_TOP;
+const MAIN_AREA_BOTTOM = palette.MAIN_AREA_BOTTOM;
+const BENCHMARK_LINE = palette.BENCHMARK;
+const MARKER_FLAG = palette.GOLD_FLAG; // entry-event flags (§14)
+const GRID = palette.CHART_GRID;
+const TEXT = palette.CHART_TEXT;
 
-// Baseline (performance-%) mode: gains glow emerald above 0, losses rose below.
-const BASELINE_UP_LINE = '#34d399'; // emerald-400
-const BASELINE_UP_FILL_TOP = 'rgba(52, 211, 153, 0.3)';
+// Baseline (performance-%) mode: gains above 0, losses below — real polarity.
+const BASELINE_UP_LINE = palette.POSITIVE;
+const BASELINE_UP_FILL_TOP = 'rgba(52, 211, 153, 0.22)';
 const BASELINE_UP_FILL_BOTTOM = 'rgba(52, 211, 153, 0.02)';
-const BASELINE_DOWN_LINE = '#fb7185'; // rose-400
+const BASELINE_DOWN_LINE = palette.NEGATIVE;
 const BASELINE_DOWN_FILL_TOP = 'rgba(251, 113, 133, 0.02)';
-const BASELINE_DOWN_FILL_BOTTOM = 'rgba(251, 113, 133, 0.3)';
-
-/** Distinguishable overlay palette for the dark shell; cycles past its length. */
-const OVERLAY_LINES = [
-  '#fbbf24', // amber-400
-  '#34d399', // emerald-400
-  '#fb7185', // rose-400
-  '#a78bfa', // violet-400
-  '#67e8f9', // cyan-300
-  '#a3e635', // lime-400
-] as const;
+const BASELINE_DOWN_FILL_BOTTOM = 'rgba(251, 113, 133, 0.22)';
 
 /** Colour for the `i`-th overlay series (and its legend chip). */
 export function overlayColor(i: number): string {
-  return OVERLAY_LINES[i % OVERLAY_LINES.length]!;
+  return palette.categoricalColor(i);
 }
 
 // ─── Time-axis formatting (§13.5 V5-P1 Part C) ───────────────────────────────
@@ -584,7 +577,7 @@ export function PriceChart({
         {hasBenchmark || overlayCount > 0 ? (
           <div className="flex flex-wrap items-center gap-3">
             {hasBenchmark ? (
-              <span className="flex items-center gap-1.5 text-xs text-neutral-400">
+              <span className="bt-meta flex items-center gap-1.5">
                 <span
                   aria-hidden="true"
                   className="inline-block h-0.5 w-4"
@@ -594,10 +587,7 @@ export function PriceChart({
               </span>
             ) : null}
             {overlays.map((overlay, i) => (
-              <span
-                key={overlay.label}
-                className="flex items-center gap-1.5 text-xs text-neutral-400"
-              >
+              <span className="bt-meta flex items-center gap-1.5" key={overlay.label}>
                 <span
                   aria-hidden="true"
                   className="inline-block h-0.5 w-4"
@@ -611,14 +601,17 @@ export function PriceChart({
       </div>
 
       {loading ? (
-        <div className="grid place-items-center rounded-md bg-neutral-900/40" style={{ height }}>
+        <div
+          className="grid place-items-center rounded-md"
+          style={{ height, background: 'var(--bt-surface-soft)' }}
+        >
           <Spinner label={t('common.charts.loadingChart')} />
         </div>
       ) : isEmpty ? (
         <div
           role="status"
-          className="grid place-items-center rounded-md bg-neutral-900/40 text-sm text-neutral-500"
-          style={{ height }}
+          className="grid place-items-center rounded-md text-sm"
+          style={{ height, background: 'var(--bt-surface-soft)', color: 'var(--bt-muted)' }}
         >
           {emptyMessage ?? t('common.charts.noPriceData')}
         </div>
@@ -646,26 +639,16 @@ function RangeToggle({
 }) {
   const t = useT();
   return (
-    <div
-      role="group"
-      aria-label={t('common.charts.selectRange')}
-      className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
-    >
+    <div aria-label={t('common.charts.selectRange')} className="bt-seg" role="group">
       {ranges.map((token) => {
         const selected = token === active;
         return (
           <button
-            key={token}
-            type="button"
             aria-pressed={selected}
+            className={cx(selected && 'is-active')}
+            key={token}
             onClick={() => onSelect(token)}
-            className={cx(
-              'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              selected
-                ? 'bg-sky-600 text-white'
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-            )}
+            type="button"
           >
             {token}
           </button>

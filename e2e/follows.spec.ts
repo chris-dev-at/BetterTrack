@@ -15,7 +15,7 @@ import { befriend, provisionUser } from './support/users';
  * it (the item-follow toggle round-trips). When the owner opts into alert
  * sharing — now from the Social "My items" area, not Settings — a single
  * "Follow their alerts" toggle appears in the same row expansion; and the
- * retired `/social/following` path redirects to the Friends tab.
+ * retired `/people/following` path redirects to the Friends tab.
  */
 test('follows: follow + bookmark from the Friends tab, alert toggle, /following redirect', async ({
   browser,
@@ -35,7 +35,7 @@ test('follows: follow + bookmark from the Friends tab, alert toggle, /following 
   // Owner shares the default "Main" portfolio with the follower only
   // (sharing-audience.spec.ts pattern — the specific_friends tier has no
   // friction dialog).
-  await owner.page.goto('/social/my-shared');
+  await owner.page.goto('/people/shared');
   const portfolioRow = owner.page.getByRole('listitem').filter({ hasText: 'Main' });
   await portfolioRow.getByRole('button', { name: 'Share' }).click();
   const picker = owner.page.getByRole('dialog', { name: /Share/ });
@@ -50,7 +50,7 @@ test('follows: follow + bookmark from the Friends tab, alert toggle, /following 
   // from the row (V4-P0b — a friend needs no public profile). The button flips
   // from "Follow <user>" to "Following" (aria: "Unfollow <user>"), and the
   // per-person auto-follow switch (#439) appears in the same expansion.
-  await follower.page.goto('/social/friends');
+  await follower.page.goto('/people');
   await follower.page.getByRole('button', { name: owner.username }).click();
   await follower.page.getByRole('button', { name: `Follow ${owner.username}` }).click();
   await expect(
@@ -75,14 +75,14 @@ test('follows: follow + bookmark from the Friends tab, alert toggle, /following 
 
   // The aggregated Followed-items list was removed (#532): the Friends tab no
   // longer surfaces a followed-items collection.
-  await follower.page.goto('/social/friends');
+  await follower.page.goto('/people');
   await expect(follower.page.getByText('Followed items')).toBeHidden();
 
   // ── Alert follows (#455) ──────────────────────────────────────────────────
   // The owner opts in to sharing their alerts with followers — the control now
   // lives in the Social "My items" area (#532) and raises the all-followers
   // friction dialog first.
-  await owner.page.goto('/social/my-shared');
+  await owner.page.goto('/people/shared');
   const shareToggle = owner.page.getByRole('switch', { name: 'Share my alerts with followers' });
   await expect(shareToggle).toHaveAttribute('aria-checked', 'false');
   await shareToggle.click();
@@ -92,7 +92,7 @@ test('follows: follow + bookmark from the Friends tab, alert toggle, /following 
   // The follower's friend-row expansion now carries a single "Follow their
   // alerts" toggle — it renders ONLY while the owner shares their alerts (#532).
   // It defaults OFF; flipping it on persists across a reload.
-  await follower.page.goto('/social/friends');
+  await follower.page.goto('/people');
   await follower.page.getByRole('button', { name: owner.username }).click();
   const alertToggle = follower.page.getByRole('switch', {
     name: `Follow alerts from ${owner.username}`,
@@ -109,8 +109,8 @@ test('follows: follow + bookmark from the Friends tab, alert toggle, /following 
   ).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
 
   // The retired Following page redirects to the Friends tab.
-  await follower.page.goto('/social/following');
-  await expect(follower.page).toHaveURL(/\/social\/friends$/);
+  await follower.page.goto('/people/following');
+  await expect(follower.page).toHaveURL(/\/people$/);
 
   await owner.context.close();
   await follower.context.close();
