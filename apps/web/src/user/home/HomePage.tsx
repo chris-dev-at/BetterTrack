@@ -1,295 +1,194 @@
-import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
-
-import type { StandingOrder } from '@bettertrack/contracts';
+import { useCallback, useRef, useState, type PointerEvent } from 'react';
 
 import { useT } from '../../i18n';
-import { formatDate } from '../../lib/format';
-import { listNotifications } from '../../lib/notificationsApi';
-import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
-import { listStandingOrders, STANDING_ORDERS_QUERY_KEY } from '../../lib/standingOrdersApi';
-import { MoneyText } from '../../ui';
-import {
-  Badge,
-  Icon,
-  PageHead,
-  SkeletonBlock,
-  Stat,
-  StatStrip,
-  type IconName,
-} from '../../ui/origin';
+import { Button, Empty, PageHead } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
+import { AddWidgetDrawer } from './AddWidgetDrawer';
+import {
+  addWidget,
+  defaultLayout,
+  moveWidget,
+  readHomeConfig,
+  removeWidget,
+  setWidgetSettings,
+  setWidgetSize,
+  writeHomeConfig,
+  type HomeConfig,
+  type WidgetType,
+} from './config';
+import { resolveWidgetScope, usePortfoliosQuery } from './homeData';
+import { WidgetFrame } from './WidgetFrame';
+import { widgetDefinition } from './widgets';
 
 /**
- * Home — the scoped command center (PRODUCT_BLUEPRINT.md §5), in the required
- * order: total value first, then what changed, what needs attention, what is
- * upcoming, and where to go next. Aggregates the active portfolios client-side
- * (no all-wealth endpoint yet); attention = unread notifications until the
- * Review inbox backend lands; upcoming = standing-order next runs.
+ * Home — a widget board the user composes (R2 home-widgets workstream).
+ *
+ * The screen is a minimal greeting plus widgets: which ones, in which order, how
+ * wide and scoped to what is entirely the user's choice, persisted client-side
+ * under `bt.home.v1` (see `config.ts`). A user who never opens the builder gets
+ * {@link defaultLayout} — the command center Home has always shown.
+ *
+ * Composition rules the board enforces:
+ *  - **one focal point.** The net-worth hero is the only loud element; every
+ *    other widget is a quiet label header over un-boxed content.
+ *  - **no explainer copy.** The widgets are the page.
+ *  - **one primary action.** "Customize" while reading, "Done" while editing.
  */
 export function HomePage() {
   const t = useT();
   const { user } = useAuth();
 
-  const portfoliosQuery = useQuery({
-    queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
-    staleTime: 60_000,
-  });
+  const [config, setConfig] = useState<HomeConfig>(() => readHomeConfig());
+  const [editing, setEditing] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const dragRef = useRef<string | null>(null);
+
+  const portfoliosQuery = usePortfoliosQuery();
   const portfolios = portfoliosQuery.data?.portfolios ?? [];
 
-  // Client-side all-wealth roll-up: one summary fetch per active portfolio.
-  const totalsQuery = useQuery({
-    queryKey: ['home', 'totals', portfolios.map((p) => p.id)],
-    enabled: portfolios.length > 0,
-    queryFn: async ({ signal }) => {
-      const summaries = await Promise.all(portfolios.map((p) => getPortfolio(p.id, signal)));
-      return portfolios.map((portfolio, index) => ({ portfolio, summary: summaries[index]! }));
+  /**
+   * Every board edit writes straight through to storage. The builder has no
+   * Save/Cancel affordance, so an eagerly-persisted board is what the user
+   * expects from direct manipulation — and it means closing the tab mid-edit
+   * never silently discards the layout.
+   */
+  const update = useCallback((next: HomeConfig) => {
+    setConfig(next);
+    writeHomeConfig(next);
+  }, []);
+
+  const stopEditing = useCallback(() => {
+    setEditing(false);
+    setAddOpen(false);
+    writeHomeConfig(config);
+  }, [config]);
+
+  // ── Pointer drag-to-reorder (dependency-free) ──
+  // The grip captures the pointer, so every move event bubbles to the grid; we
+  // hit-test the widget under the cursor and reorder live. Keyboard users get
+  // the same operation from the ↑/↓ buttons in the same chrome.
+  const onDragStart = useCallback((event: PointerEvent<HTMLElement>, id: string) => {
+    event.preventDefault();
+    dragRef.current = id;
+    setDraggingId(id);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }, []);
+
+  const onPointerMove = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const held = dragRef.current;
+      if (held === null) return;
+      const target = document.elementFromPoint(event.clientX, event.clientY);
+      const overId = target?.closest('[data-widget-id]')?.getAttribute('data-widget-id');
+      if (!overId || overId === held) return;
+      const from = config.widgets.findIndex((widget) => widget.id === held);
+      const to = config.widgets.findIndex((widget) => widget.id === overId);
+      if (from < 0 || to < 0) return;
+      update(moveWidget(config, from, to));
     },
-    staleTime: 60_000,
-  });
+    [config, update],
+  );
 
-  const notificationsQuery = useQuery({
-    queryKey: ['notifications', 'home'],
-    queryFn: ({ signal }) => listNotifications({}, signal),
-    staleTime: 30_000,
-  });
+  const endDrag = useCallback(() => {
+    dragRef.current = null;
+    setDraggingId(null);
+  }, []);
 
-  const ordersQuery = useQuery({
-    queryKey: [...STANDING_ORDERS_QUERY_KEY, 'home'],
-    queryFn: ({ signal }) => listStandingOrders(undefined, signal),
-    staleTime: 60_000,
-  });
+  function onAdd(type: WidgetType) {
+    update(addWidget(config, type, widgetDefinition(type).defaultSettings));
+    setAddOpen(false);
+  }
 
-  const rows = totalsQuery.data ?? [];
-  const netWorth = rows.reduce((sum, row) => sum + row.summary.totals.totalValueEur, 0);
-  const invested = rows.reduce((sum, row) => sum + row.summary.totals.investedEur, 0);
-  const cash = rows.reduce((sum, row) => sum + row.summary.totals.cashEur, 0);
-  const dayChange = rows.reduce((sum, row) => sum + row.summary.totals.dayChangeEur, 0);
-  const loading = portfoliosQuery.isLoading || (portfolios.length > 0 && totalsQuery.isLoading);
-
-  const attention = (notificationsQuery.data?.items ?? [])
-    .filter((item) => item.readAt === null && item.archivedAt === null)
-    .slice(0, 4);
-  const upcoming = (ordersQuery.data?.orders ?? [])
-    .filter(
-      (order): order is StandingOrder & { nextRunDate: string } =>
-        order.status === 'active' && order.nextRunDate !== null,
-    )
-    .sort((a, b) => a.nextRunDate.localeCompare(b.nextRunDate))
-    .slice(0, 4);
-
-  const shortcuts: ReadonlyArray<{ to: string; icon: IconName; labelKey: string; subKey: string }> =
-    [
-      {
-        to: '/portfolio',
-        icon: 'portfolios',
-        labelKey: 'home.go.portfolio',
-        subKey: 'home.go.portfolioSub',
-      },
-      {
-        to: '/workbench',
-        icon: 'workbench',
-        labelKey: 'home.go.workbench',
-        subKey: 'home.go.workbenchSub',
-      },
-      {
-        to: '/assets/search',
-        icon: 'search',
-        labelKey: 'home.go.research',
-        subKey: 'home.go.researchSub',
-      },
-      { to: '/people', icon: 'people', labelKey: 'home.go.people', subKey: 'home.go.peopleSub' },
-    ];
+  const greeting = user?.username ? `${t('home.greeting')}, ${user.username}` : t('home.greeting');
 
   return (
     <div>
       <PageHead
-        sub={t('home.subtitle')}
-        title={user?.username ? `${t('home.greeting')}, ${user.username}` : t('home.greeting')}
+        actions={
+          editing ? (
+            <>
+              <Button icon="plus" onClick={() => setAddOpen(true)}>
+                {t('home.builder.add')}
+              </Button>
+              <Button onClick={() => update(defaultLayout())} variant="quiet">
+                {t('home.builder.reset')}
+              </Button>
+              <Button onClick={stopEditing} variant="primary">
+                {t('home.builder.done')}
+              </Button>
+            </>
+          ) : (
+            <Button icon="sliders" onClick={() => setEditing(true)} variant="quiet">
+              {t('home.builder.customize')}
+            </Button>
+          )
+        }
+        title={greeting}
       />
 
-      <section aria-label={t('home.netWorth')}>
-        <p className="bt-label">{t('home.netWorth')}</p>
-        {loading ? (
-          <SkeletonBlock height={44} width={280} />
-        ) : (
-          <p className="bt-hero-value">
-            <MoneyText amount={netWorth} />
-          </p>
-        )}
-        <div style={{ marginTop: 18 }}>
-          <StatStrip>
-            <Stat
-              delta={
-                rows.length ? t('home.acrossPortfolios', { count: String(rows.length) }) : undefined
-              }
-              label={t('home.invested')}
-              value={loading ? '…' : <MoneyText amount={invested} />}
-            />
-            <Stat label={t('home.cash')} value={loading ? '…' : <MoneyText amount={cash} />} />
-            <Stat
-              delta={t('home.today')}
-              deltaTone={dayChange >= 0 ? 'pos' : 'neg'}
-              label={t('home.dayChange')}
-              value={loading ? '…' : <MoneyText amount={dayChange} signed />}
-            />
-            <Stat label={t('home.portfolios')} value={loading ? '…' : String(rows.length)} />
-          </StatStrip>
-        </div>
-      </section>
-
-      {rows.length > 1 ? (
-        <section aria-label={t('home.portfolios')} className="bt-section">
-          <h2 className="bt-h2" style={{ marginBottom: 12 }}>
-            {t('home.portfolios')}
-          </h2>
-          <div className="bt-band" style={{ borderBlock: '1px solid var(--bt-border)' }}>
-            {rows.map(({ portfolio, summary }) => (
-              <Link
-                className="bt-band__row"
-                key={portfolio.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  paddingInline: 4,
-                  color: 'inherit',
-                  textDecoration: 'none',
-                }}
-                to={`/portfolio?portfolio=${portfolio.id}`}
-              >
-                <span
-                  style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8 }}
-                >
-                  <span className="bt-row-title">{portfolio.name}</span>
-                  {portfolio.isDefault ? <Badge>{t('home.defaultPortfolio')}</Badge> : null}
-                </span>
-                <span className="bt-num">
-                  <MoneyText amount={summary.totals.totalValueEur} />
-                </span>
-                <span className="bt-num" style={{ width: 110, textAlign: 'right' }}>
-                  <MoneyText amount={summary.totals.dayChangeEur} signed />
-                </span>
-                <Icon name="chevron-right" size={15} style={{ color: 'var(--bt-faint)' }} />
-              </Link>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      <div
-        className="bt-section"
-        style={{
-          display: 'grid',
-          gap: 26,
-          gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-        }}
-      >
-        <section aria-label={t('home.attention.title')}>
-          <div className="bt-section__head" style={{ marginBottom: 10 }}>
-            <h2 className="bt-h2">{t('home.attention.title')}</h2>
-            <Link className="bt-link" style={{ fontSize: 12.5 }} to="/review">
-              {t('home.attention.review')}
-            </Link>
-          </div>
-          {attention.length === 0 ? (
-            <p className="bt-meta" style={{ padding: '14px 0' }}>
-              <Icon
-                name="check"
-                size={14}
-                style={{ verticalAlign: -2, marginRight: 6, color: 'var(--bt-pos)' }}
-              />
-              {t('home.attention.clear')}
-            </p>
-          ) : (
-            <div className="bt-band" style={{ borderBlock: '1px solid var(--bt-border)' }}>
-              {attention.map((item) => (
-                <div className="bt-band__row" key={item.id} style={{ paddingInline: 4 }}>
-                  <p className="bt-row-title">{item.title}</p>
-                  <p className="bt-row-sub">{item.body}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section aria-label={t('home.upcoming.title')}>
-          <div className="bt-section__head" style={{ marginBottom: 10 }}>
-            <h2 className="bt-h2">{t('home.upcoming.title')}</h2>
-            <Link className="bt-link" style={{ fontSize: 12.5 }} to="/workbench/forecasts">
-              {t('home.upcoming.manage')}
-            </Link>
-          </div>
-          {upcoming.length === 0 ? (
-            <p className="bt-meta" style={{ padding: '14px 0' }}>
-              {t('home.upcoming.empty')}
-            </p>
-          ) : (
-            <div className="bt-band" style={{ borderBlock: '1px solid var(--bt-border)' }}>
-              {upcoming.map((order) => (
-                <div
-                  className="bt-band__row"
-                  key={order.id}
-                  style={{ display: 'flex', alignItems: 'baseline', gap: 10, paddingInline: 4 }}
-                >
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span className="bt-row-title">
-                      {order.label ?? order.assetSymbol ?? t('home.upcoming.order')}
-                    </span>
-                    <span className="bt-row-sub" style={{ display: 'block' }}>
-                      {formatDate(order.nextRunDate)}
-                    </span>
-                  </span>
-                  <span className="bt-num">
-                    {order.kind === 'buy-asset' ? (
-                      `${order.amount} ×`
-                    ) : (
-                      <MoneyText amount={order.amount} currency={order.currency} />
-                    )}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
-
-      <section className="bt-section" aria-label={t('home.go.title')}>
-        <h2 className="bt-h2" style={{ marginBottom: 14 }}>
-          {t('home.go.title')}
-        </h2>
-        <div
-          style={{
-            display: 'grid',
-            gap: 10,
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-          }}
+      {config.widgets.length === 0 ? (
+        <Empty
+          action={
+            <Button onClick={() => setAddOpen(true)} variant="primary">
+              {t('home.builder.add')}
+            </Button>
+          }
+          center
+          icon="grid"
+          title={t('home.builder.emptyBoard')}
         >
-          {shortcuts.map((shortcut) => (
-            <Link
-              className="bt-panel bt-panel--pad"
-              key={shortcut.to}
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: 12,
-                textDecoration: 'none',
-                color: 'inherit',
-              }}
-              to={shortcut.to}
-            >
-              <Icon name={shortcut.icon} size={19} style={{ color: 'var(--bt-gold)' }} />
-              <span>
-                <span className="bt-row-title">{t(shortcut.labelKey)}</span>
-                <span className="bt-row-sub" style={{ display: 'block' }}>
-                  {t(shortcut.subKey)}
-                </span>
-              </span>
-            </Link>
-          ))}
+          <button className="bt-link" onClick={() => update(defaultLayout())} type="button">
+            {t('home.builder.reset')}
+          </button>
+        </Empty>
+      ) : (
+        <div
+          className="bt-home-grid"
+          onPointerCancel={endDrag}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+        >
+          {config.widgets.map((widget, index) => {
+            const definition = widgetDefinition(widget.type);
+            const scope = resolveWidgetScope(portfolios, widget.settings.scope, {
+              supportsScope: definition.supportsScope,
+              allowsAll: definition.scopeAllowsAll !== false,
+            });
+            const { Component } = definition;
+            return (
+              <WidgetFrame
+                count={config.widgets.length}
+                definition={definition}
+                dragging={draggingId === widget.id}
+                editing={editing}
+                index={index}
+                key={widget.id}
+                onDragStart={(event) => onDragStart(event, widget.id)}
+                onMove={(to) => update(moveWidget(config, index, to))}
+                onRemove={() => update(removeWidget(config, widget.id))}
+                onResize={(size) => update(setWidgetSize(config, widget.id, size))}
+                onSettingsChange={(patch) => update(setWidgetSettings(config, widget.id, patch))}
+                portfolios={portfolios}
+                scopeLabel={scope.single?.name ?? null}
+                widget={widget}
+              >
+                <Component
+                  onSettingsChange={(patch) => update(setWidgetSettings(config, widget.id, patch))}
+                  portfolios={portfolios}
+                  portfoliosLoading={portfoliosQuery.isLoading}
+                  scopedPortfolio={scope.single}
+                  scopedPortfolios={scope.portfolios}
+                  settings={widget.settings}
+                  size={widget.size}
+                />
+              </WidgetFrame>
+            );
+          })}
         </div>
-      </section>
+      )}
+
+      <AddWidgetDrawer onAdd={onAdd} onClose={() => setAddOpen(false)} open={addOpen} />
     </div>
   );
 }
