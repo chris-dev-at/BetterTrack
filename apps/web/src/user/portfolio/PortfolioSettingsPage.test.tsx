@@ -80,6 +80,17 @@ function mockLists(active: Summary[], archived: Summary[] = []) {
   );
 }
 
+/**
+ * The hue a picker option's chip is tinted with, read off its
+ * `bt-pf-chip--<tint>` class (origin.css holds the hues; jsdom loads no CSS).
+ */
+function chipTintOf(element: HTMLElement): string | undefined {
+  const chip = element.querySelector('.bt-pf-chip');
+  return [...(chip?.classList ?? [])]
+    .find((c) => c.startsWith('bt-pf-chip--') && c !== 'bt-pf-chip--lg')
+    ?.slice('bt-pf-chip--'.length);
+}
+
 function ActiveProbe() {
   const [params] = useSearchParams();
   return <div data-testid="active-param">{params.get(ACTIVE_PORTFOLIO_PARAM) ?? ''}</div>;
@@ -157,8 +168,41 @@ describe('PortfolioSettingsPage — general', () => {
   });
 });
 
-describe('PortfolioSettingsPage — kind', () => {
-  test('defaults to private and marks exactly one kind checked', async () => {
+describe('PortfolioSettingsPage — icon', () => {
+  test('the section is called Icon, never Kind', async () => {
+    mockLists([MAIN, TRADING]);
+    renderSettings('p2');
+
+    expect(await screen.findByText('Icon')).toBeInTheDocument();
+    expect(screen.getByRole('radiogroup', { name: 'Portfolio icon' })).toBeInTheDocument();
+    expect(screen.queryByText('Kind')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Marks this portfolio with a coloured icon in the switcher and its lists. Stored on this device.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('every option shows its own tinted chip, group hue excluded', async () => {
+    mockLists([MAIN, TRADING]);
+    renderSettings('p2');
+
+    // One chip per option, each carrying that icon's hue class — the picker is
+    // where the user learns which colour means what.
+    expect(chipTintOf(await screen.findByRole('radio', { name: 'Private' }))).toBe('private');
+    for (const [name, tint] of [
+      ['Family', 'family'],
+      ['Business', 'business'],
+      ['Savings', 'savings'],
+      ['Property', 'property'],
+    ] as const) {
+      expect(chipTintOf(screen.getByRole('radio', { name }))).toBe(tint);
+    }
+    // `group` is not a pickable icon — a synced copy overrides it (V5-P7 M5).
+    expect(document.querySelectorAll('.bt-pf-chip--group')).toHaveLength(0);
+  });
+
+  test('defaults to private and marks exactly one icon checked', async () => {
     mockLists([MAIN, TRADING]);
     renderSettings('p2');
 
@@ -172,7 +216,7 @@ describe('PortfolioSettingsPage — kind', () => {
     );
   });
 
-  test('picking a kind persists it for that portfolio only', async () => {
+  test('picking an icon persists it for that portfolio only', async () => {
     mockLists([MAIN, TRADING]);
     renderSettings('p2');
 
@@ -192,7 +236,7 @@ describe('PortfolioSettingsPage — kind', () => {
     expect(getPortfolioKind('p2')).toBe('property');
   });
 
-  test('shows the stored kind on mount', async () => {
+  test('shows the stored icon on mount', async () => {
     setPortfolioKind('p2', 'savings');
     mockLists([MAIN, TRADING]);
     renderSettings('p2');

@@ -11,14 +11,24 @@ import { Icon } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 import { CreateChainDialog, MirrorInviteStepDialog } from './MirrorchainPanel';
-import { DEFAULT_PORTFOLIO_KIND, portfolioIconName, usePortfolioKinds } from './portfolioKinds';
+import { PortfolioIconChip } from './PortfolioIconChip';
+import {
+  DEFAULT_PORTFOLIO_KIND,
+  portfolioIconName,
+  portfolioIconTint,
+  usePortfolioKinds,
+} from './portfolioKinds';
 
 /**
  * Portfolio switcher (PROJECTPLAN.md §6.8, §13.2 V2-P8). A **selector, not a
- * management menu**: it lists the user's active portfolios with their kind icon
- * (see `portfolioKinds.ts`), switches the active one via the `?portfolio=`
- * routing param (so every scoped view below the layout follows), filters by name
- * once the list outgrows the eye, and creates portfolios — plain or group.
+ * management menu**: it lists the user's active portfolios behind their tinted
+ * icon chip (see `portfolioKinds.ts` + `PortfolioIconChip`), switches the active
+ * one via the `?portfolio=` routing param (so every scoped view below the layout
+ * follows), filters by name, and creates portfolios — plain or group.
+ *
+ * The trigger is the topbar's one stated fact: a bordered, surfaced control
+ * carrying the current portfolio's chip, its name and its default badge. Which
+ * portfolio you are looking at is never something the user has to go find.
  *
  * Rename / Archive / Delete / Archived live on `PortfolioSettingsPage`
  * (`/portfolio/settings`), reachable from this menu's footer: changing or
@@ -36,7 +46,12 @@ import { DEFAULT_PORTFOLIO_KIND, portfolioIconName, usePortfolioKinds } from './
 /** The `?portfolio=<id>` search-param key that names the active portfolio. */
 export const ACTIVE_PORTFOLIO_PARAM = 'portfolio';
 
-/** Above this many portfolios the dropdown grows a search field. */
+/**
+ * Above this many portfolios the dropdown's search field takes focus on open.
+ * The field itself shows from the second portfolio on (below that there is
+ * nothing to filter); it only hijacks the keyboard once the list outgrows the
+ * eye, so switching between two portfolios stays a single click.
+ */
 const SEARCH_THRESHOLD = 6;
 
 /** sessionStorage key for the last active portfolio — session-scoped on purpose. */
@@ -155,7 +170,8 @@ export function PortfolioSwitcher() {
   const active = resolveActivePortfolio(portfolios, param);
   const kinds = usePortfolioKinds();
 
-  const searchable = portfolios.length > SEARCH_THRESHOLD;
+  const showSearch = portfolios.length > 1;
+  const autoFocusSearch = portfolios.length > SEARCH_THRESHOLD;
   const needle = query.trim().toLocaleLowerCase();
   const visible = useMemo(
     () =>
@@ -205,9 +221,9 @@ export function PortfolioSwitcher() {
       ),
   });
 
-  const triggerIcon = active
-    ? portfolioIconName(active, kinds[active.id] ?? DEFAULT_PORTFOLIO_KIND)
-    : 'portfolios';
+  // Until a portfolio resolves (first load) the trigger shows the generic glyph
+  // on an untinted chip — it states nothing it cannot yet know.
+  const activeKind = active ? (kinds[active.id] ?? DEFAULT_PORTFOLIO_KIND) : null;
 
   return (
     <div ref={rootRef} className="relative inline-block">
@@ -217,10 +233,14 @@ export function PortfolioSwitcher() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={t('portfolio.switcher.triggerAriaLabel')}
-        className="bt-btn bt-btn--quiet bt-portfolio-trigger"
+        className={cx('bt-btn bt-portfolio-trigger', open && 'is-open')}
       >
-        <Icon name={triggerIcon} size={16} />
-        <span className="max-w-[12rem] truncate">
+        <PortfolioIconChip
+          icon={active && activeKind ? portfolioIconName(active, activeKind) : 'portfolios'}
+          size="lg"
+          tint={active && activeKind ? portfolioIconTint(active, activeKind) : undefined}
+        />
+        <span className="bt-portfolio-trigger__name truncate">
           {active?.name ?? t('portfolio.switcher.fallbackName')}
         </span>
         {active?.isDefault ? (
@@ -228,7 +248,7 @@ export function PortfolioSwitcher() {
             {t('portfolio.switcher.defaultBadge')}
           </span>
         ) : null}
-        <Icon className="bt-muted" name="chevron-down" size={14} />
+        <Icon className="bt-portfolio-trigger__chevron" name="chevron-down" size={14} />
       </button>
 
       {open ? (
@@ -238,13 +258,13 @@ export function PortfolioSwitcher() {
           className="bt-popover bt-portfolio-menu"
           style={{ left: 0, top: 'calc(100% + 6px)' }}
         >
-          {searchable ? (
+          {showSearch ? (
             <div className="bt-portfolio-search" role="none">
               <Icon name="search" size={14} />
               <input
                 type="search"
                 value={query}
-                autoFocus
+                autoFocus={autoFocusSearch}
                 onChange={(e) => setQuery(e.target.value)}
                 aria-label={t('portfolio.switcher.searchAriaLabel')}
                 placeholder={t('portfolio.switcher.searchPlaceholder')}
@@ -258,6 +278,7 @@ export function PortfolioSwitcher() {
             ) : (
               visible.map((p) => {
                 const selected = p.id === active?.id;
+                const kind = kinds[p.id] ?? DEFAULT_PORTFOLIO_KIND;
                 return (
                   <button
                     key={p.id}
@@ -270,8 +291,11 @@ export function PortfolioSwitcher() {
                     }}
                     className="bt-menu-item bt-portfolio-option"
                   >
-                    <Icon name={portfolioIconName(p, kinds[p.id] ?? DEFAULT_PORTFOLIO_KIND)} />
-                    <span className="truncate">{p.name}</span>
+                    <PortfolioIconChip
+                      icon={portfolioIconName(p, kind)}
+                      tint={portfolioIconTint(p, kind)}
+                    />
+                    <span className="bt-portfolio-option__name truncate">{p.name}</span>
                     {p.isDefault ? (
                       <span className="bt-badge bt-portfolio-default">
                         {t('portfolio.switcher.defaultBadge')}
@@ -287,7 +311,7 @@ export function PortfolioSwitcher() {
           </div>
 
           <div className="bt-menu-rule" />
-          <div>
+          <div className="bt-portfolio-actions">
             <button
               type="button"
               role="menuitem"
