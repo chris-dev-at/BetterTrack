@@ -250,9 +250,11 @@ function UserShell() {
               default panel, `/control/:panel` deep-links one. `control/data`
               is declared as its own page — a static segment outranks the
               dynamic `:panel`, so Data management keeps its full page. */}
-          <Route path="control" element={<ControlCenterOverlay />} />
           <Route path="control/data" element={<ParkedPage page="dataManagement" />} />
-          <Route path="control/:panel" element={<ControlCenterOverlay />} />
+          {/* ONE route node for the overlay: `/control` and `/control/:panel`
+              matching separate nodes would remount the dialog on every panel
+              switch and replay its entrance animation. */}
+          <Route path="control/:panel?" element={<ControlCenterOverlay />} />
 
           {/* ── Developer platform ── */}
           <Route path="developer" element={<DeveloperPlatformPage />} />
