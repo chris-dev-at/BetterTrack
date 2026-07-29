@@ -43,22 +43,22 @@ export interface AdminTwoFactorService {
   /** Begin TOTP enrollment — provisional encrypted secret + provisioning URI. */
   enrollTotp(
     adminId: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
   ): Promise<TwoFactorEnrollResponse>;
   /** Confirm TOTP with a current code; recovery codes returned iff first method. */
   confirmTotp(
     adminId: string,
     code: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
   ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
   /** Turn TOTP off with a valid factor (re-enroll = disable then enroll). */
   disableTotp(
     adminId: string,
     code: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
   ): Promise<TwoFactorMutationResult<void>>;
   /**
    * Set (first time) or change the 2FA email and send a confirmation code to it.
@@ -77,20 +77,20 @@ export interface AdminTwoFactorService {
   confirmEmail(
     adminId: string,
     code: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
   ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
   /** Turn the email method off (session-authorized); clears the 2FA email. */
   disableEmail(
     adminId: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
   ): Promise<TwoFactorMutationResult<void>>;
   /** Regenerate the recovery codes (only while some method is on; old set voided). */
   regenerateRecoveryCodes(
     adminId: string,
-    ip?: string | null,
-    session?: SessionSecurityContext,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
   ): Promise<TwoFactorMutationResult<TwoFactorRecoveryCodesResponse>>;
 }
 
@@ -328,7 +328,10 @@ export function createAdminTwoFactorService(
         ip,
       });
       await invalidateSessions(adminId);
-      return { response: { recoveryCodes } };
+      return {
+        response: { recoveryCodes },
+        securityGeneration: committedGeneration,
+      };
     },
 
     async disableEmail(adminId, ip, session) {
@@ -355,7 +358,7 @@ export function createAdminTwoFactorService(
         ip,
       });
       await invalidateSessions(adminId);
-      return { response: undefined };
+      return { response: undefined, securityGeneration };
     },
   };
 }

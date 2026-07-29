@@ -59,6 +59,8 @@ export interface TwoFactorAuthorizationState {
 /** Internal result wrapper; the HTTP layer emits only `response`. */
 export interface TwoFactorMutationResult<T> {
   response: T;
+  /** Durable generation committed by the factor transition. */
+  securityGeneration: number;
 }
 
 export interface TwoFactorService {
@@ -386,7 +388,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         ip,
       });
       await invalidateSessions(userId);
-      return { response: { recoveryCodes } };
+      return { response: { recoveryCodes }, securityGeneration };
     },
 
     async disableTotp(userId, code, ip, security) {
@@ -412,7 +414,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         ip,
       });
       await invalidateSessions(userId);
-      return { response: undefined };
+      return { response: undefined, securityGeneration };
     },
 
     async startEmailEnrollment(userId, ip, security) {
@@ -524,7 +526,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         ip,
       });
       await invalidateSessions(userId);
-      return { response: { recoveryCodes } };
+      return { response: { recoveryCodes }, securityGeneration: committedGeneration };
     },
 
     async disableEmail(userId, ip, security) {
@@ -552,7 +554,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         ip,
       });
       await invalidateSessions(userId);
-      return { response: undefined };
+      return { response: undefined, securityGeneration };
     },
 
     async regenerateRecoveryCodes(userId, ip, security) {
@@ -576,6 +578,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       await invalidateSessions(userId);
       return {
         response: { recoveryCodes: recovery.codes },
+        securityGeneration,
       };
     },
 

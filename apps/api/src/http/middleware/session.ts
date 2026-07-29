@@ -121,18 +121,18 @@ export const requireAdmin: RequestHandler = (req, _res, next) => {
 };
 
 /**
- * Mandatory admin-login 2FA gate (§6.12, #400). Mounted right AFTER
- * {@link requireAdmin} and AFTER the 2FA enroll/confirm sub-router, so it guards
- * every OTHER admin endpoint: a logged-in admin with no confirmed 2FA method gets
- * `403 ADMIN_2FA_SETUP_REQUIRED`, which the admin SPA turns into the forced
- * enrollment wizard. This is the bootstrap that makes "mandatory" deployable
- * without locking out the seeded admin — password login still succeeds, but the
- * admin can do nothing except enroll until a method is confirmed. An enrolled
- * admin can never reach here on a fresh login without first passing the shared
- * `two_factor_required` challenge (the session is withheld until it does), so this
- * gate only ever fires in the not-yet-enrolled state.
+ * Mandatory current-session admin MFA gate (§6.12, #400, #878). Account-wide
+ * enrollment is not assurance: every non-bootstrap admin request must resolve
+ * the exact cookie again and find a password first factor plus a second-factor
+ * method/time on that server-side session. `allowBootstrap` admits only a
+ * password-authenticated, unassured session while the account has no factor, so
+ * the first enrollment wizard remains deployable without widening any later
+ * factor-management route.
  */
-export function requireAdminTwoFactor(ctx: AppContext): RequestHandler {
+export function requireAdminTwoFactor(
+  ctx: AppContext,
+  options: { allowBootstrap?: boolean } = {},
+): RequestHandler {
   return async (req, _res, next) => {
     try {
       // requireAdmin already ran; be defensive if the mount order ever changes.
@@ -140,28 +140,54 @@ export function requireAdminTwoFactor(ctx: AppContext): RequestHandler {
         next();
         return;
       }
-      const authorization = await ctx.twoFactor.getAuthorizationState(req.authUser.id);
-      if (
-        !authorization ||
-        req.sessionSecurityGeneration === undefined ||
-        authorization.securityGeneration !== req.sessionSecurityGeneration
-      ) {
-        // `loadSession` proved a specific generation earlier in this request.
-        // Recheck it at the final bootstrap gate so a sibling resolved at G
-        // cannot inherit factor assurance committed later at G+1.
+      if (!req.sessionId) {
         next(unauthorized());
         return;
       }
-      if (authorization.enabled) {
+
+      // Re-resolve the exact server-side session at the final authorization
+      // boundary. Besides validating expiry/generation again, this prevents a
+      // request from inheriting assurance that another browser established
+      // after `loadSession` ran.
+      const resolved = await ctx.auth.resolveSession(req.sessionId);
+      const authorization = await ctx.twoFactor.getAuthorizationState(req.authUser.id);
+      if (
+        !resolved ||
+        resolved.user.id !== req.authUser.id ||
+        resolved.user.role !== 'admin' ||
+        // A reset proves mailbox control and may mint an ordinary user session,
+        // but administrator authority still requires a fresh password login.
+        // Thus `password_reset` deliberately fails here until the admin signs
+        // in once with the newly chosen password.
+        resolved.authenticationMethod !== 'password' ||
+        !authorization ||
+        req.sessionSecurityGeneration === undefined ||
+        resolved.securityGeneration !== req.sessionSecurityGeneration ||
+        authorization.securityGeneration !== resolved.securityGeneration
+      ) {
+        next(unauthorized());
+        return;
+      }
+
+      if (!authorization.enabled) {
+        if (options.allowBootstrap && resolved.mfaAssurance === null) {
+          next();
+          return;
+        }
+        next(
+          forbidden(
+            'Two-factor authentication setup is required for admin accounts.',
+            ADMIN_2FA_SETUP_REQUIRED,
+          ),
+        );
+        return;
+      }
+
+      if (resolved.mfaAssurance) {
         next();
         return;
       }
-      next(
-        forbidden(
-          'Two-factor authentication setup is required for admin accounts.',
-          ADMIN_2FA_SETUP_REQUIRED,
-        ),
-      );
+      next(unauthorized());
     } catch (err) {
       next(err);
     }

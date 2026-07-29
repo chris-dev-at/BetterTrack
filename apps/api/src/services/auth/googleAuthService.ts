@@ -229,7 +229,9 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
     // mutate. See {@link assertNotAdmin}.
     assertNotAdmin(user);
     const persistent = true;
-    const sessionId = await sessions.create(user.id, user.securityGeneration, persistent);
+    const sessionId = await sessions.create(user.id, user.securityGeneration, persistent, {
+      method: 'google',
+    });
     const now = new Date();
     await userRepo.setLastLogin(user.id, now);
     await audit.record({
