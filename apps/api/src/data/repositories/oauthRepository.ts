@@ -35,6 +35,8 @@ export interface CreateOAuthClientInput {
   isPublic: boolean;
   isFirstParty?: boolean;
   logoUrl?: string | null;
+  logoBytes?: Buffer | null;
+  logoContentType?: string | null;
 }
 
 export interface CreateOAuthAuthCodeInput {
@@ -152,6 +154,8 @@ export function createOAuthRepository(db: Database) {
           isPublic: input.isPublic,
           isFirstParty: input.isFirstParty ?? false,
           logoUrl: input.logoUrl ?? null,
+          logoBytes: input.logoBytes ?? null,
+          logoContentType: input.logoContentType ?? null,
         })
         .returning();
       if (!row) throw new Error('Failed to insert OAuth client');
@@ -279,6 +283,22 @@ export function createOAuthRepository(db: Database) {
         .where(eq(oauthClients.clientId, clientId))
         .limit(1);
       return row;
+    },
+
+    /** Read only the already-cached raster bytes; never fetch the source URL. */
+    async findClientLogoByClientId(
+      clientId: string,
+    ): Promise<{ bytes: Buffer; contentType: string } | undefined> {
+      const [row] = await db
+        .select({
+          bytes: oauthClients.logoBytes,
+          contentType: oauthClients.logoContentType,
+        })
+        .from(oauthClients)
+        .where(and(eq(oauthClients.clientId, clientId), eq(oauthClients.isFirstParty, false)))
+        .limit(1);
+      if (!row?.bytes || !row.contentType) return undefined;
+      return { bytes: row.bytes, contentType: row.contentType };
     },
 
     /**

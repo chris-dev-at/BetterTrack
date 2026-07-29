@@ -650,10 +650,9 @@ const tsvector = customType<{ data: string }>({
 });
 
 /**
- * Opaque binary column (Postgres `bytea`). Used ONLY for the paranoid vault
- * ciphertext (§13.5 V5-P13), which the server stores and returns verbatim and
- * never interprets. Normalises the driver's read value (postgres-js / PGlite
- * hand back a `Uint8Array`) to a Node `Buffer` so callers get one stable type.
+ * Opaque binary column (Postgres `bytea`). Normalises the driver's read value
+ * (postgres-js / PGlite hand back a `Uint8Array`) to a Node `Buffer` so callers
+ * get one stable type.
  */
 const bytea = customType<{ data: Buffer; driverData: Buffer | Uint8Array }>({
   dataType() {
@@ -2093,14 +2092,30 @@ export const oauthClients = pgTable(
     // branding and is auto-approved (no scope-approval prompt), and it is managed
     // only from the admin panel (never listed under a user's API Access).
     isFirstParty: boolean('is_first_party').notNull().default(false),
-    // Optional app icon shown on the consent screen for THIRD-party apps (a
-    // developer/app avatar). First-party apps render the BetterTrack mark instead.
+    // Registered THIRD-party logo source. Server-only: it is fetched once at
+    // save time and is NEVER returned to a browser.
     logoUrl: text('logo_url'),
+    // Guard-fetched raster bytes served by our own logo endpoint. Existing
+    // source-only rows intentionally have no cache and render the placeholder.
+    logoBytes: bytea('logo_bytes'),
+    logoContentType: varchar('logo_content_type', { length: 32 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex('oauth_clients_client_id_unique').on(t.clientId),
     index('oauth_clients_user_idx').on(t.userId),
+    check(
+      'oauth_clients_logo_cache_complete',
+      sql`(${t.logoBytes} IS NULL) = (${t.logoContentType} IS NULL)`,
+    ),
+    check(
+      'oauth_clients_logo_cache_size',
+      sql`${t.logoBytes} IS NULL OR octet_length(${t.logoBytes}) <= 524288`,
+    ),
+    check(
+      'oauth_clients_logo_cache_type',
+      sql`${t.logoContentType} IS NULL OR ${t.logoContentType} IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp')`,
+    ),
   ],
 );
 

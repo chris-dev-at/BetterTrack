@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
@@ -56,7 +56,7 @@ const DETAILS: OAuthAuthorizationDetailsResponse = {
     clientId: 'btc_charting_buddy',
     name: 'Charting Buddy',
     firstParty: false,
-    logoUrl: null,
+    logoPath: null,
   },
   scopes: [
     {
@@ -149,6 +149,9 @@ test('third-party card shows the signed-in account plus Use another account, and
   // shown, so a browser-shared session can't authorize under the wrong account.
   expect(screen.getByText('Signed in as jane')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Use another account' })).toBeInTheDocument();
+  // No configured/cached logo stays on the existing letter placeholder.
+  expect(document.querySelector('img')).toBeNull();
+  expect(screen.getByText('C')).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: 'Approve' }));
 
@@ -165,6 +168,27 @@ test('third-party card shows the signed-in account plus Use another account, and
       code_challenge_method: 'S256',
     }),
   );
+});
+
+test('client logos load only from the BetterTrack API path and fall back if that cache read fails', async () => {
+  vi.mocked(getAuthorizationDetails).mockResolvedValue({
+    ...DETAILS,
+    client: {
+      ...DETAILS.client,
+      logoPath: '/oauth/client-logos/btc_charting_buddy',
+    },
+  });
+  renderConsent();
+
+  await screen.findByText('Third-party app');
+  const logo = document.querySelector('img');
+  expect(logo).not.toBeNull();
+  expect(logo).toHaveAttribute('src', '/api/v1/oauth/client-logos/btc_charting_buddy');
+  expect(logo?.getAttribute('src')).not.toContain('app.example.com');
+
+  fireEvent.error(logo!);
+  expect(document.querySelector('img')).toBeNull();
+  expect(screen.getByText('C')).toBeInTheDocument();
 });
 
 test('first-party client interposes an account chooser — never auto-approves before an explicit Continue', async () => {

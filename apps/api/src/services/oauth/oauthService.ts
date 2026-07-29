@@ -37,6 +37,11 @@ import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken, sha256Base64Url } from '../crypto/tokens';
+import {
+  createOAuthLogoFetcher,
+  type OAuthLogoFetcher,
+  type OAuthLogoContentType,
+} from './oauthLogo';
 
 /** The resolved principal behind a valid OAuth access token (mirrors the key one). */
 export interface OAuthPrincipal {
@@ -58,6 +63,8 @@ export interface OAuthServiceDeps {
   /** Best-effort lifecycle fan-out to disconnect already-open realtime sockets. */
   events?: Pick<EventBus, 'publish'>;
   logger?: Pick<Logger, 'warn'>;
+  /** Save-time remote-logo fetcher; defaults to the guard-pinned HTTPS implementation. */
+  logoFetcher?: OAuthLogoFetcher;
   /** Clock seam so token/code TTLs are testable without wall-clock waits. */
   now?: () => Date;
 }
@@ -108,6 +115,10 @@ export interface OAuthService {
   getAuthorizationDetails(
     query: OAuthAuthorizationDetailsQuery,
   ): Promise<OAuthAuthorizationDetailsResponse>;
+  /** Public raster endpoint reads only persisted bytes; it never contacts the source URL. */
+  getClientLogo(
+    clientId: string,
+  ): Promise<{ bytes: Buffer; contentType: OAuthLogoContentType } | null>;
   /** User approved consent → mint a single-use code, return where to send them. */
   approve(input: {
     userId: string;
@@ -171,9 +182,14 @@ function toClientSummary(row: OAuthClientRow): OAuthClientSummary {
     scopes: row.scopes as ApiKeyScope[],
     public: row.isPublic,
     firstParty: row.isFirstParty,
-    logoUrl: row.logoUrl ?? null,
+    logoPath: logoPathFor(row),
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+function logoPathFor(row: OAuthClientRow): string | null {
+  if (row.isFirstParty || !row.logoBytes || !row.logoContentType) return null;
+  return `/oauth/client-logos/${row.clientId}`;
 }
 
 /** Parse the space-delimited `scope` param into a validated, client-allowed set. */
@@ -237,6 +253,7 @@ function clampToAllowed(
 export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   const { repo, audit, redis, userRepo, events, logger } = deps;
   const now = deps.now ?? (() => new Date());
+  const logoFetcher = deps.logoFetcher ?? createOAuthLogoFetcher({ logger });
 
   async function publishInvalidation(
     event: Omit<RealtimePrincipalInvalidatedEvent, 'type' | 'occurredAt'>,
@@ -390,6 +407,11 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       clientSecret = secret.token;
       clientSecretHash = secret.tokenHash;
     }
+    // Fetch exactly once at save time. A blocked, invalid, oversized or failed
+    // logo degrades to the existing letter placeholder without failing app
+    // registration. The remote source is never read during consent rendering.
+    const logo =
+      !input.isFirstParty && input.logoUrl ? await logoFetcher.fetch(input.logoUrl) : null;
     const row = await repo.createClient({
       userId: input.userId,
       clientId,
@@ -400,7 +422,10 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       isPublic: input.isPublic,
       isFirstParty: input.isFirstParty,
       // First-party apps render the BetterTrack mark, so a logo is never stored.
-      logoUrl: input.isFirstParty ? null : (input.logoUrl ?? null),
+      // Failed source URLs are not retained, avoiding any future accidental retry.
+      logoUrl: logo ? input.logoUrl : null,
+      logoBytes: logo?.bytes ?? null,
+      logoContentType: logo?.contentType ?? null,
     });
     await audit.record({
       actorId: input.actorId,
@@ -596,7 +621,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
           clientId: client.clientId,
           name: client.name,
           firstParty: client.isFirstParty,
-          logoUrl: client.isFirstParty ? null : (client.logoUrl ?? null),
+          logoPath: logoPathFor(client),
         },
         // Write-implies-read (#371): show every implied read on the consent
         // screen so the user sees the true effective access an approval grants
@@ -607,6 +632,20 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         })),
         redirectUri: query.redirect_uri,
         state: query.state ?? null,
+      };
+    },
+
+    async getClientLogo(clientId) {
+      const logo = await repo.findClientLogoByClientId(clientId);
+      if (
+        !logo ||
+        !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(logo.contentType)
+      ) {
+        return null;
+      }
+      return {
+        bytes: logo.bytes,
+        contentType: logo.contentType as OAuthLogoContentType,
       };
     },
 
