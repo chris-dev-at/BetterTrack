@@ -12,6 +12,10 @@ import {
 
 import { badRequest } from '../../errors';
 import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
+import {
+  MULTIPART_HEADER_PAIRS_LIMIT,
+  observeMultipartHeaderPairs,
+} from '../middleware/multipartHeaderPairs';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -42,7 +46,8 @@ export function createImportsRouter(ctx: AppContext): Router {
   // file, a parts-limit sentinel of four (Busboy emits at equality, so this
   // admits exactly the three allowed parts), a field-size sentinel of 1,000,001
   // (Busboy truncates at equality, so this admits 1,000,000 payload bytes), and
-  // 32 header pairs per part (well above browser form data's usual 1–2).
+  // 32 header pairs per part (well above browser form data's usual 1–2). Busboy
+  // 1.6 ignores `headerPairs`, so the raw-stream observer below enforces it.
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -51,13 +56,18 @@ export function createImportsRouter(ctx: AppContext): Router {
       fields: 2,
       parts: 4,
       fieldSize: 1_000_001,
-      headerPairs: 32,
+      headerPairs: MULTIPART_HEADER_PAIRS_LIMIT,
     },
   });
 
   /** `upload.single('file')` with Multer's errors mapped onto the §8 envelope. */
   const uploadFile: RequestHandler = (req, res, next) => {
+    const headerPairs = observeMultipartHeaderPairs(req);
     upload.single('file')(req, res, (err?: unknown) => {
+      if (headerPairs.finish()) {
+        next(badRequest('Invalid file upload.', 'IMPORT_FILE_INVALID'));
+        return;
+      }
       if (!err) {
         next();
         return;

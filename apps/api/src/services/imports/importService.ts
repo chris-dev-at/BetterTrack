@@ -123,8 +123,49 @@ const needsInstrument = (kind: NormalizedImportRow['kind']): boolean =>
  */
 export const IMPORT_ENRICHMENT_WAIT_BUDGET_MS = 5_000;
 
-interface EnrichmentWaitBudget {
-  remainingMs: number;
+/**
+ * Hard admission ceiling for provider-backed search queries from one import.
+ * Sixteen fits inside the provider queue's five-second spacing window while
+ * staying far below the 150-instrument file cap. A query may coalesce or hit a
+ * provider cache, but it still spends one slot because it could start upstream
+ * work.
+ */
+export const IMPORT_ENRICHMENT_QUERY_BUDGET = 16;
+
+interface EnrichmentBudget {
+  remainingWaitMs: number;
+  remainingQueries: number;
+}
+
+interface InstrumentIdentity {
+  isin: string | null;
+  symbol: string | null;
+  name: string | null;
+}
+
+interface InstrumentLookupAttempt {
+  query: string;
+  matches(result: SearchResultItem): boolean;
+}
+
+function instrumentLookupAttempts(key: InstrumentIdentity): InstrumentLookupAttempt[] {
+  const attempts: InstrumentLookupAttempt[] = [];
+  if (key.symbol) {
+    const wanted = key.symbol.toUpperCase();
+    attempts.push({
+      query: key.symbol,
+      matches: (result) => result.symbol.toUpperCase() === wanted,
+    });
+  }
+  if (key.isin) {
+    const wanted = key.isin.toUpperCase();
+    attempts.push({ query: key.isin, matches: (result) => result.symbol.toUpperCase() === wanted });
+  }
+  if (key.name) {
+    const wanted = normalizeName(key.name);
+    attempts.push({ query: key.name, matches: (result) => normalizeName(result.name) === wanted });
+  }
+  return attempts;
 }
 
 /**
@@ -196,61 +237,61 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     if (!owned) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
   }
 
-  /**
-   * Resolve one instrument identity against the local catalog (§6.2) via the
-   * search service, accepting only exact matches: the file's ticker symbol, its
-   * ISIN used as a catalog symbol (common for custom assets), or the exact
-   * security name. When the first pass misses and the search kicked off a
-   * background provider enrichment, wait for it once and retry — a fresh
-   * instrument the user never opened can then still resolve. Anything less than
-   * an exact match returns null (→ `unmapped`, never a silent guess). Once the
-   * batch's wait budget is exhausted, every remaining local lookup still runs;
-   * only the provider wait + retry is skipped.
-   */
-  async function resolveInstrument(
+  /** Resolve an identity only from Postgres; this path can never start provider work. */
+  async function resolveInstrumentLocally(
     userId: string,
-    key: { isin: string | null; symbol: string | null; name: string | null },
-    enrichmentBudget: EnrichmentWaitBudget,
+    key: InstrumentIdentity,
   ): Promise<SearchResultItem | null> {
-    const attempts: Array<{ query: string; matches: (r: SearchResultItem) => boolean }> = [];
-    if (key.symbol) {
-      const wanted = key.symbol.toUpperCase();
-      attempts.push({ query: key.symbol, matches: (r) => r.symbol.toUpperCase() === wanted });
+    for (const attempt of instrumentLookupAttempts(key)) {
+      const result = await search.search(userId, attempt.query, { allowEnrichment: false });
+      const hit = result.results.find(attempt.matches);
+      if (hit) return hit;
     }
-    if (key.isin) {
-      const wanted = key.isin.toUpperCase();
-      attempts.push({ query: key.isin, matches: (r) => r.symbol.toUpperCase() === wanted });
-    }
-    if (key.name) {
-      const wanted = normalizeName(key.name);
-      attempts.push({ query: key.name, matches: (r) => normalizeName(r.name) === wanted });
-    }
-    for (const attempt of attempts) {
-      let result = await search.search(userId, attempt.query);
-      let hit = result.results.find(attempt.matches);
-      if (!hit && result.enriching && enrichmentBudget.remainingMs > 0) {
-        const waitMs = enrichmentBudget.remainingMs;
-        const startedAt = Date.now();
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const settled = await Promise.race([
-          search.enrichmentSettled().then(() => true),
-          new Promise<false>((resolve) => {
-            timer = setTimeout(() => resolve(false), waitMs);
-          }),
-        ]).finally(() => {
-          if (timer !== undefined) clearTimeout(timer);
-        });
-        enrichmentBudget.remainingMs = Math.max(
-          0,
-          enrichmentBudget.remainingMs - Math.max(0, Date.now() - startedAt),
-        );
-        if (!settled) {
-          enrichmentBudget.remainingMs = 0;
-        } else {
-          result = await search.search(userId, attempt.query);
-          hit = result.results.find(attempt.matches);
-        }
+    return null;
+  }
+
+  /**
+   * Admit provider enrichment for one unresolved identity under both per-batch
+   * ceilings. The query slot is spent before search because that call may launch
+   * fire-and-forget provider work. A settled retry is catalog-only, so neither
+   * retries nor exhausted imports can silently enqueue more upstream searches.
+   */
+  async function enrichInstrument(
+    userId: string,
+    key: InstrumentIdentity,
+    budget: EnrichmentBudget,
+  ): Promise<SearchResultItem | null> {
+    for (const attempt of instrumentLookupAttempts(key)) {
+      if (budget.remainingQueries <= 0 || budget.remainingWaitMs <= 0) return null;
+
+      budget.remainingQueries -= 1;
+      const result = await search.search(userId, attempt.query);
+      const immediateHit = result.results.find(attempt.matches);
+      if (immediateHit) return immediateHit;
+      if (!result.enriching) continue;
+
+      const waitMs = budget.remainingWaitMs;
+      const startedAt = Date.now();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settled = await Promise.race([
+        search.enrichmentSettled().then(() => true),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), waitMs);
+        }),
+      ]).finally(() => {
+        if (timer !== undefined) clearTimeout(timer);
+      });
+      budget.remainingWaitMs = Math.max(
+        0,
+        budget.remainingWaitMs - Math.max(0, Date.now() - startedAt),
+      );
+      if (!settled) {
+        budget.remainingWaitMs = 0;
+        return null;
       }
+
+      const refreshed = await search.search(userId, attempt.query, { allowEnrichment: false });
+      const hit = refreshed.results.find(attempt.matches);
       if (hit) return hit;
     }
     return null;
@@ -414,15 +455,29 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         );
       }
 
+      // Complete the bounded local pass before admitting any provider work.
+      // This keeps every existing catalog hit resolvable even if a slow first
+      // miss consumes the entire enrichment budget.
       const resolutions = new Map<string, SearchResultItem | null>();
-      const enrichmentBudget: EnrichmentWaitBudget = {
-        remainingMs: IMPORT_ENRICHMENT_WAIT_BUDGET_MS,
-      };
+      const unresolved: Array<[key: string, row: NormalizedImportRow]> = [];
       for (const [key, row] of instruments) {
-        resolutions.set(
-          key,
-          await resolutionQueue.run(() => resolveInstrument(userId, row, enrichmentBudget)),
+        const local = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+        resolutions.set(key, local);
+        if (local === null) unresolved.push([key, row]);
+      }
+
+      const enrichmentBudget: EnrichmentBudget = {
+        remainingWaitMs: IMPORT_ENRICHMENT_WAIT_BUDGET_MS,
+        remainingQueries: IMPORT_ENRICHMENT_QUERY_BUDGET,
+      };
+      for (const [key, row] of unresolved) {
+        if (enrichmentBudget.remainingQueries <= 0 || enrichmentBudget.remainingWaitMs <= 0) {
+          break;
+        }
+        const enriched = await resolutionQueue.run(() =>
+          enrichInstrument(userId, row, enrichmentBudget),
         );
+        if (enriched !== null) resolutions.set(key, enriched);
       }
 
       const existing = await collectExistingHashes(userId, input.portfolioId);

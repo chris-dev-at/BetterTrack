@@ -44,6 +44,10 @@ import {
 import { z } from 'zod';
 
 import { badRequest } from '../../errors';
+import {
+  MULTIPART_HEADER_PAIRS_LIMIT,
+  observeMultipartHeaderPairs,
+} from '../middleware/multipartHeaderPairs';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -89,6 +93,7 @@ export function createExpensesRouter(ctx: AppContext): Router {
   // exactly the three allowed parts), a field-size sentinel of 1,000,001
   // (Busboy truncates at equality, so this admits the overrides contract's
   // 1,000,000-byte maximum), and 32 header pairs per part (normally just 1–2).
+  // Busboy 1.6 ignores `headerPairs`, so the raw-stream observer enforces it.
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -97,13 +102,18 @@ export function createExpensesRouter(ctx: AppContext): Router {
       fields: 2,
       parts: 4,
       fieldSize: 1_000_001,
-      headerPairs: 32,
+      headerPairs: MULTIPART_HEADER_PAIRS_LIMIT,
     },
   });
 
   /** `upload.single('file')` with Multer's errors mapped onto the §8 envelope. */
   const uploadFile: RequestHandler = (req, res, next) => {
+    const headerPairs = observeMultipartHeaderPairs(req);
     upload.single('file')(req, res, (err?: unknown) => {
+      if (headerPairs.finish()) {
+        next(badRequest('Invalid file upload.', 'EXPENSE_IMPORT_FILE_INVALID'));
+        return;
+      }
       if (!err) {
         next();
         return;

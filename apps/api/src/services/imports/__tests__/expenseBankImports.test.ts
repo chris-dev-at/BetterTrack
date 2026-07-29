@@ -16,6 +16,7 @@ import {
   type ExpenseTransaction,
 } from '@bettertrack/contracts';
 
+import { MULTIPART_HEADER_PAIRS_LIMIT } from '../../../http/middleware/multipartHeaderPairs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 
 /**
@@ -34,6 +35,33 @@ const ERSTE = fixture('erste-george.csv');
 const ELBA = fixture('raiffeisen-elba.csv');
 const N26 = fixture('n26.csv');
 const REVOLUT = fixture('revolut.csv');
+
+function rawMultipartUpload(
+  boundary: string,
+  field: { name: string; value: string; headerPairs: number },
+  csv: string,
+): Buffer {
+  const extraHeaders = Array.from(
+    { length: field.headerPairs - 1 },
+    (_, index) => `X-BetterTrack-${index}: value`,
+  );
+  return Buffer.from(
+    [
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="${field.name}"`,
+      ...extraHeaders,
+      '',
+      field.value,
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="file"; filename="statement.csv"',
+      'Content-Type: text/csv',
+      '',
+      csv,
+      `--${boundary}--`,
+      '',
+    ].join('\r\n'),
+  );
+}
 
 let harness: TestHarness;
 
@@ -289,6 +317,32 @@ describe('import guards', () => {
       .field('unexpected-one', 'amplification')
       .field('unexpected-two', 'amplification')
       .attach('file', Buffer.from(N26, 'utf8'), 'statement.csv');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'EXPENSE_IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
+  it('enforces the per-part multipart header-pair limit ignored by Busboy', async () => {
+    const { agent } = await setup();
+    const boundary = 'bettertrack-expense-header-pairs';
+    const res = await agent
+      .post('/api/v1/expenses/import/preview')
+      .set(...XRW)
+      .set('Content-Type', `multipart/form-data; boundary=${boundary}`)
+      .send(
+        rawMultipartUpload(
+          boundary,
+          {
+            name: 'bankId',
+            value: 'n26',
+            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT + 1,
+          },
+          N26,
+        ),
+      );
+
     expect(res.status).toBe(400);
     expect(res.body.error).toEqual({
       code: 'EXPENSE_IMPORT_FILE_INVALID',

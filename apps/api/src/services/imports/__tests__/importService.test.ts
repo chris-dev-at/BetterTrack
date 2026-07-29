@@ -21,9 +21,14 @@ import { createCashSourceRepository } from '../../../data/repositories/cashSourc
 import { createImportRepository } from '../../../data/repositories/importRepository';
 import { createPortfolioRepository } from '../../../data/repositories/portfolioRepository';
 import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
+import { MULTIPART_HEADER_PAIRS_LIMIT } from '../../../http/middleware/multipartHeaderPairs';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
-import { createImportService, IMPORT_ENRICHMENT_WAIT_BUDGET_MS } from '../importService';
+import {
+  createImportService,
+  IMPORT_ENRICHMENT_QUERY_BUDGET,
+  IMPORT_ENRICHMENT_WAIT_BUDGET_MS,
+} from '../importService';
 import type { SearchService } from '../../search/searchService';
 import type { BrokerMapper } from '../types';
 
@@ -48,6 +53,33 @@ const FLATEX_CASH_FIXTURE = readFixture('flatex-cash.csv');
 const IBKR_FIXTURE = readFixture('ibkr.csv');
 
 const HEADER = 'Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung';
+
+function rawMultipartUpload(
+  boundary: string,
+  field: { name: string; value: string; headerPairs: number },
+  csv: string,
+): Buffer {
+  const extraHeaders = Array.from(
+    { length: field.headerPairs - 1 },
+    (_, index) => `X-BetterTrack-${index}: value`,
+  );
+  return Buffer.from(
+    [
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="${field.name}"`,
+      ...extraHeaders,
+      '',
+      field.value,
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="file"; filename="export.csv"',
+      'Content-Type: text/csv',
+      '',
+      csv,
+      `--${boundary}--`,
+      '',
+    ].join('\r\n'),
+  );
+}
 
 let harness: TestHarness;
 
@@ -253,6 +285,32 @@ describe('POST /imports — staged preview', () => {
     });
   });
 
+  it('enforces the per-part multipart header-pair limit ignored by Busboy', async () => {
+    const { agent, pid } = await setup();
+    const boundary = 'bettertrack-import-header-pairs';
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .set('Content-Type', `multipart/form-data; boundary=${boundary}`)
+      .send(
+        rawMultipartUpload(
+          boundary,
+          {
+            name: 'portfolioId',
+            value: pid,
+            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT + 1,
+          },
+          FIXTURE,
+        ),
+      );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
   it('accepts the distinct-instrument cap and rejects cap+1 before queued resolution', async () => {
     const { user, pid } = await setup();
     const mapper: BrokerMapper = {
@@ -279,7 +337,12 @@ describe('POST /imports — staged preview', () => {
           },
         })),
     };
-    const searchCatalog = vi.fn(async () => ({ results: [], enriching: false }));
+    const searchCatalog = vi.fn(
+      async (_userId: string, _query: string, _options?: { allowEnrichment?: boolean }) => ({
+        results: [],
+        enriching: false,
+      }),
+    );
     const search: SearchService = {
       search: searchCatalog,
       catalogFreshness: async () => null,
@@ -318,8 +381,15 @@ describe('POST /imports — staged preview', () => {
       duplicate: 0,
       error: 0,
     });
-    expect(searchCatalog).toHaveBeenCalledTimes(IMPORT_MAX_DISTINCT_INSTRUMENTS);
-    expect(queuedResolutions).toBe(IMPORT_MAX_DISTINCT_INSTRUMENTS);
+    expect(searchCatalog).toHaveBeenCalledTimes(
+      IMPORT_MAX_DISTINCT_INSTRUMENTS + IMPORT_ENRICHMENT_QUERY_BUDGET,
+    );
+    expect(
+      searchCatalog.mock.calls.filter(([, , options]) => options?.allowEnrichment !== false),
+    ).toHaveLength(IMPORT_ENRICHMENT_QUERY_BUDGET);
+    expect(queuedResolutions).toBe(
+      IMPORT_MAX_DISTINCT_INSTRUMENTS + IMPORT_ENRICHMENT_QUERY_BUDGET,
+    );
 
     await expect(
       imports.createBatch(user.id, {
@@ -333,8 +403,12 @@ describe('POST /imports — staged preview', () => {
       code: 'IMPORT_TOO_MANY_INSTRUMENTS',
       message: expect.stringContaining(`at most ${IMPORT_MAX_DISTINCT_INSTRUMENTS} instruments`),
     });
-    expect(searchCatalog).toHaveBeenCalledTimes(IMPORT_MAX_DISTINCT_INSTRUMENTS);
-    expect(queuedResolutions).toBe(IMPORT_MAX_DISTINCT_INSTRUMENTS);
+    expect(searchCatalog).toHaveBeenCalledTimes(
+      IMPORT_MAX_DISTINCT_INSTRUMENTS + IMPORT_ENRICHMENT_QUERY_BUDGET,
+    );
+    expect(queuedResolutions).toBe(
+      IMPORT_MAX_DISTINCT_INSTRUMENTS + IMPORT_ENRICHMENT_QUERY_BUDGET,
+    );
   });
 
   it('bounds the whole batch enrichment wait while resolving later local identities', async () => {
@@ -371,6 +445,7 @@ describe('POST /imports — staged preview', () => {
       expect(Date.now() - startedAt).toBeLessThanOrEqual(IMPORT_ENRICHMENT_WAIT_BUDGET_MS);
       expect(preview.rows.map((row) => row.flag)).toEqual(['unmapped', 'mapped']);
       expect(preview.rows[1]?.asset?.id).toBe(localAsset.id);
+      expect(marketData.calls.search).toBe(1);
     } finally {
       providerResult.resolve([]);
       await harness.ctx.search.enrichmentSettled();
