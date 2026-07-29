@@ -894,3 +894,289 @@ test('every widget in the catalog is offered in the drawer and renders when adde
     'Alerts',
   ]);
 });
+
+// ─── Click-to-place reordering ────────────────────────────────────────────────
+
+/**
+ * Reordering is an explicit two-step: the grip picks a widget up, then one gold
+ * line per legal destination appears and clicking one moves it. It replaced live
+ * pointer dragging, so these cases also stand in for what the drag used to do —
+ * and the ↑/↓ tests above must keep passing alongside them, since those remain
+ * the single-step fast path and the accessibility fallback.
+ */
+
+/** Every visible placement target's accessible name, in DOM (= visual) order. */
+function placementLabels(): string[] {
+  return screen
+    .queryAllByRole('button', { name: /^Place / })
+    .map((button) => button.getAttribute('aria-label') ?? '');
+}
+
+async function customizeAndArm(user: ReturnType<typeof editMode>, title: string) {
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+  await user.click(screen.getByRole('button', { name: `Reorder ${title}` }));
+}
+
+test('edit mode on its own shows no placement lines — only arming does', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+
+  expect(placementLabels()).toEqual([]);
+  expect(screen.getByRole('button', { name: 'Reorder Net worth' })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+});
+
+test('arming shows one target per legal position, in visual order, no-ops omitted', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+
+  await customizeAndArm(user, 'Net worth');
+
+  // Five widgets ⇒ six gaps, minus the two that mean "where it already is" ⇒ four.
+  expect(placementLabels()).toEqual([
+    'Place before Needs attention',
+    'Place before Upcoming',
+    'Place before Jump in',
+    'Place at the end',
+  ]);
+  expect(placementLabels()).toHaveLength(DEFAULT_LAYOUT.widgets.length - 1);
+  // Before itself, and before its own successor, are the same position it is in.
+  expect(screen.queryByRole('button', { name: 'Place before Net worth' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Place before Portfolios' })).not.toBeInTheDocument();
+  // The armed widget reads as picked up, and its grip now offers the way out.
+  expect(screen.getByRole('button', { name: 'Stop placing Net worth' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+});
+
+test('arming a middle widget offers the positions on both sides of it', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+
+  await customizeAndArm(user, 'Needs attention');
+
+  expect(placementLabels()).toEqual([
+    'Place before Net worth',
+    'Place before Portfolios',
+    'Place before Jump in',
+    'Place at the end',
+  ]);
+});
+
+test('clicking a target moves the widget there, persists it, and disarms', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await customizeAndArm(user, 'Net worth');
+
+  await user.click(screen.getByRole('button', { name: 'Place before Upcoming' }));
+
+  // The persisted layout is the claim — the DOM merely reflects it.
+  expect(persisted().widgets.map((widget) => widget.type)).toEqual([
+    'portfolio-cards',
+    'attention',
+    'net-worth',
+    'upcoming',
+    'shortcuts',
+  ]);
+  expect(boardOrder()).toEqual([
+    'Portfolios',
+    'Needs attention',
+    'Net worth',
+    'Upcoming',
+    'Jump in',
+  ]);
+  expect(placementLabels()).toEqual([]);
+});
+
+test('the end target moves the widget to the bottom of the board', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await customizeAndArm(user, 'Net worth');
+
+  await user.click(screen.getByRole('button', { name: 'Place at the end' }));
+
+  expect(persisted().widgets.map((widget) => widget.type)).toEqual([
+    'portfolio-cards',
+    'attention',
+    'upcoming',
+    'shortcuts',
+    'net-worth',
+  ]);
+});
+
+test('a placed board survives a remount — the move was written through', async () => {
+  const user = editMode();
+  const first = renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await customizeAndArm(user, 'Net worth');
+  await user.click(screen.getByRole('button', { name: 'Place at the end' }));
+  first.unmount();
+
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  expect(boardOrder()).toEqual([
+    'Portfolios',
+    'Needs attention',
+    'Upcoming',
+    'Jump in',
+    'Net worth',
+  ]);
+});
+
+test('Escape cancels placement and leaves the board untouched', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await customizeAndArm(user, 'Net worth');
+
+  await user.keyboard('{Escape}');
+
+  expect(placementLabels()).toEqual([]);
+  expect(boardOrder()).toEqual([
+    'Net worth',
+    'Portfolios',
+    'Needs attention',
+    'Upcoming',
+    'Jump in',
+  ]);
+  // Cancelling is not an edit, so nothing was written.
+  expect(localStorage.getItem(HOME_CONFIG_STORAGE_KEY)).toBeNull();
+});
+
+test('clicking the grip again puts the widget back down', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await customizeAndArm(user, 'Net worth');
+
+  await user.click(screen.getByRole('button', { name: 'Stop placing Net worth' }));
+
+  expect(placementLabels()).toEqual([]);
+  expect(screen.getByRole('button', { name: 'Reorder Net worth' })).toBeInTheDocument();
+});
+
+test('clicking the armed widget itself cancels', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await customizeAndArm(user, 'Net worth');
+
+  // The widget's own title — its body, not its edit chrome.
+  await user.click(
+    within(screen.getByRole('region', { name: 'Net worth' })).getByText('Net worth'),
+  );
+
+  expect(placementLabels()).toEqual([]);
+});
+
+test('the armed widget’s edit chrome keeps working while it is picked up', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await customizeAndArm(user, 'Net worth');
+
+  // Resizing is not "never mind" — the click must not be read as a cancel.
+  const sizes = screen.getByRole('group', { name: 'Net worth size' });
+  await user.click(within(sizes).getByRole('button', { name: 'M' }));
+
+  expect(persisted().widgets[0]?.size).toBe('m');
+  expect(placementLabels()).toHaveLength(DEFAULT_LAYOUT.widgets.length - 1);
+});
+
+test('arming a different widget re-targets instead of stacking state', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await customizeAndArm(user, 'Net worth');
+
+  await user.click(screen.getByRole('button', { name: 'Reorder Needs attention' }));
+
+  // Exactly one widget is armed, and the targets describe the new one.
+  expect(screen.getByRole('button', { name: 'Reorder Net worth' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Stop placing Needs attention' })).toBeInTheDocument();
+  expect(placementLabels()).toEqual([
+    'Place before Net worth',
+    'Place before Portfolios',
+    'Place before Jump in',
+    'Place at the end',
+  ]);
+});
+
+test('the whole flow works from the keyboard', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+
+  // Arm with Enter on the focused grip…
+  screen.getByRole('button', { name: 'Reorder Net worth' }).focus();
+  await user.keyboard('{Enter}');
+  expect(placementLabels()).toHaveLength(DEFAULT_LAYOUT.widgets.length - 1);
+
+  // …then activate a target the same way. Real buttons, so no key handling of ours.
+  const target = screen.getByRole('button', { name: 'Place before Jump in' });
+  target.focus();
+  expect(target).toHaveFocus();
+  await user.keyboard('{Enter}');
+
+  expect(persisted().widgets.map((widget) => widget.type)).toEqual([
+    'portfolio-cards',
+    'attention',
+    'upcoming',
+    'net-worth',
+    'shortcuts',
+  ]);
+});
+
+test('leaving edit mode disarms', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await customizeAndArm(user, 'Net worth');
+
+  await user.click(screen.getByRole('button', { name: 'Done' }));
+
+  expect(placementLabels()).toEqual([]);
+  expect(screen.queryByRole('button', { name: 'Reorder Net worth' })).not.toBeInTheDocument();
+});
+
+test('the up/down buttons still reorder, and disarm a pending placement', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await customizeAndArm(user, 'Net worth');
+
+  // The fast path stays available even mid-placement; performing it ends the mode.
+  await user.click(screen.getByRole('button', { name: 'Move Net worth down' }));
+
+  expect(persisted().widgets.map((widget) => widget.type)).toEqual([
+    'portfolio-cards',
+    'net-worth',
+    'attention',
+    'upcoming',
+    'shortcuts',
+  ]);
+  expect(placementLabels()).toEqual([]);
+});
+
+test('a single-widget board offers no placement targets', async () => {
+  storeBoard('news');
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'News' });
+
+  await customizeAndArm(user, 'News');
+
+  // Nowhere else to go — arming is honest about it rather than showing a no-op line.
+  expect(placementLabels()).toEqual([]);
+});

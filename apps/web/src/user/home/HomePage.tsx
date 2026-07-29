@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type PointerEvent } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { useT } from '../../i18n';
 import { Button, Empty, PageHead } from '../../ui/origin';
@@ -8,6 +8,8 @@ import {
   addWidget,
   defaultLayout,
   moveWidget,
+  moveWidgetToSlot,
+  placementSlots,
   readHomeConfig,
   removeWidget,
   setWidgetSettings,
@@ -33,6 +35,14 @@ import { widgetDefinition } from './widgets';
  *    other widget is a quiet label header over un-boxed content.
  *  - **no explainer copy.** The widgets are the page.
  *  - **one primary action.** "Customize" while reading, "Done" while editing.
+ *
+ * Reordering is **click-to-place**, not live dragging. The grip picks a widget up
+ * (arms it); every legal destination then shows as a gold insertion line the user
+ * clicks. This replaced a pointer-drag implementation whose hit-testing produced
+ * dead and jumpy spots mid-gesture — a discrete choice between labelled targets
+ * cannot land "between" anything, works identically on touch, and is the same
+ * operation for keyboard users as for the mouse. The ↑/↓ buttons stay as the fast
+ * path for a single-step nudge.
  */
 export function HomePage() {
   const t = useT();
@@ -41,8 +51,8 @@ export function HomePage() {
   const [config, setConfig] = useState<HomeConfig>(() => readHomeConfig());
   const [editing, setEditing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const dragRef = useRef<string | null>(null);
+  /** The widget picked up and waiting for a destination, or null. */
+  const [armedId, setArmedId] = useState<string | null>(null);
 
   const portfoliosQuery = usePortfoliosQuery();
   const portfolios = portfoliosQuery.data?.portfolios ?? [];
@@ -58,46 +68,53 @@ export function HomePage() {
     writeHomeConfig(next);
   }, []);
 
+  const disarm = useCallback(() => setArmedId(null), []);
+
   const stopEditing = useCallback(() => {
     setEditing(false);
     setAddOpen(false);
+    setArmedId(null);
     writeHomeConfig(config);
   }, [config]);
 
-  // ── Pointer drag-to-reorder (dependency-free) ──
-  // The grip captures the pointer, so every move event bubbles to the grid; we
-  // hit-test the widget under the cursor and reorder live. Keyboard users get
-  // the same operation from the ↑/↓ buttons in the same chrome.
-  const onDragStart = useCallback((event: PointerEvent<HTMLElement>, id: string) => {
-    event.preventDefault();
-    dragRef.current = id;
-    setDraggingId(id);
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-  }, []);
+  // Escape is the universal way out of a picked-up widget, matching the settings
+  // popover's own dismissal. Bound only while something is armed.
+  useEffect(() => {
+    if (armedId === null) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setArmedId(null);
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [armedId]);
 
-  const onPointerMove = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const held = dragRef.current;
-      if (held === null) return;
-      const target = document.elementFromPoint(event.clientX, event.clientY);
-      const overId = target?.closest('[data-widget-id]')?.getAttribute('data-widget-id');
-      if (!overId || overId === held) return;
-      const from = config.widgets.findIndex((widget) => widget.id === held);
-      const to = config.widgets.findIndex((widget) => widget.id === overId);
-      if (from < 0 || to < 0) return;
-      update(moveWidget(config, from, to));
+  const armedIndex = armedId === null ? -1 : config.widgets.findIndex((w) => w.id === armedId);
+  /**
+   * Which gaps the armed widget may go into. Empty whenever nothing is armed, so
+   * a board that is merely in edit mode shows no lines at all.
+   */
+  const openSlots = armedIndex < 0 ? [] : placementSlots(config.widgets.length, armedIndex);
+
+  const place = useCallback(
+    (slot: number) => {
+      if (armedId === null) return;
+      update(moveWidgetToSlot(config, armedId, slot));
+      setArmedId(null);
     },
-    [config, update],
+    [armedId, config, update],
   );
-
-  const endDrag = useCallback(() => {
-    dragRef.current = null;
-    setDraggingId(null);
-  }, []);
 
   function onAdd(type: WidgetType) {
     update(addWidget(config, type, widgetDefinition(type).defaultSettings));
     setAddOpen(false);
+  }
+
+  /** The label a target announces: the widget it lands in front of, or the end. */
+  function slotLabel(slot: number): string {
+    const before = config.widgets[slot];
+    return before === undefined
+      ? t('home.builder.placeEnd')
+      : t('home.builder.placeBefore', { title: t(widgetDefinition(before.type).labelKey) });
   }
 
   const greeting = user?.username ? `${t('home.greeting')}, ${user.username}` : t('home.greeting');
@@ -143,12 +160,7 @@ export function HomePage() {
           </button>
         </Empty>
       ) : (
-        <div
-          className="bt-home-grid"
-          onPointerCancel={endDrag}
-          onPointerMove={onPointerMove}
-          onPointerUp={endDrag}
-        >
+        <div className="bt-home-grid">
           {config.widgets.map((widget, index) => {
             const definition = widgetDefinition(widget.type);
             const scope = resolveWidgetScope(portfolios, widget.settings.scope, {
@@ -156,19 +168,45 @@ export function HomePage() {
               allowsAll: definition.scopeAllowsAll !== false,
             });
             const { Component } = definition;
+            // Each widget owns the line in the gap before it; the last one also
+            // owns the "at the end" line, so every slot has a host cell and none
+            // of them needs a grid item of its own (which would reflow the board).
+            const isLast = index === config.widgets.length - 1;
             return (
               <WidgetFrame
+                armed={armedId === widget.id}
                 count={config.widgets.length}
                 definition={definition}
-                dragging={draggingId === widget.id}
                 editing={editing}
                 index={index}
                 key={widget.id}
-                onDragStart={(event) => onDragStart(event, widget.id)}
-                onMove={(to) => update(moveWidget(config, index, to))}
-                onRemove={() => update(removeWidget(config, widget.id))}
+                onArmToggle={() =>
+                  setArmedId((current) => (current === widget.id ? null : widget.id))
+                }
+                onCancelPlacement={disarm}
+                onMove={(to) => {
+                  update(moveWidget(config, index, to));
+                  disarm();
+                }}
+                onRemove={() => {
+                  update(removeWidget(config, widget.id));
+                  disarm();
+                }}
                 onResize={(size) => update(setWidgetSize(config, widget.id, size))}
                 onSettingsChange={(patch) => update(setWidgetSettings(config, widget.id, patch))}
+                placeAfter={
+                  isLast && openSlots.includes(config.widgets.length)
+                    ? {
+                        label: slotLabel(config.widgets.length),
+                        onSelect: () => place(config.widgets.length),
+                      }
+                    : null
+                }
+                placeBefore={
+                  openSlots.includes(index)
+                    ? { label: slotLabel(index), onSelect: () => place(index) }
+                    : null
+                }
                 portfolios={portfolios}
                 scopeLabel={scope.single?.name ?? null}
                 widget={widget}

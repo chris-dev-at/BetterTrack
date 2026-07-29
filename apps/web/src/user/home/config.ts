@@ -360,6 +360,43 @@ export function moveWidget(config: HomeConfig, from: number, to: number): HomeCo
   return { ...config, widgets: next };
 }
 
+/**
+ * The insertion slots a placement UI should offer for the widget at `from`.
+ *
+ * A board of N widgets has N+1 gaps to drop into, indexed by the widget they sit
+ * *before* (`N` meaning "at the end"). Two of them — the gap immediately before
+ * the widget and the one immediately after it — describe where it already is, so
+ * they are omitted rather than offered as buttons that do nothing. Hence exactly
+ * N−1 slots for any board of N ≥ 1.
+ *
+ * Slots are numbered against the board **as it looks now**, which is what the
+ * targets are labelled with; {@link moveWidgetToSlot} does the off-by-one that
+ * removing the widget first introduces.
+ */
+export function placementSlots(count: number, from: number): number[] {
+  if (count <= 1 || from < 0 || from >= count) return [];
+  const slots: number[] = [];
+  for (let slot = 0; slot <= count; slot += 1) {
+    if (slot === from || slot === from + 1) continue;
+    slots.push(slot);
+  }
+  return slots;
+}
+
+/**
+ * Move the widget with `id` into insertion slot `slot` (see
+ * {@link placementSlots}). A no-op slot, an unknown id or an out-of-range slot
+ * returns the board unchanged.
+ */
+export function moveWidgetToSlot(config: HomeConfig, id: string, slot: number): HomeConfig {
+  const from = config.widgets.findIndex((widget) => widget.id === id);
+  if (from < 0 || slot < 0 || slot > config.widgets.length) return config;
+  if (slot === from || slot === from + 1) return config;
+  // `moveWidget` splices the widget out first, so every slot past its old
+  // position shifts down by one.
+  return moveWidget(config, from, slot < from ? slot : slot - 1);
+}
+
 export function setWidgetSize(config: HomeConfig, id: string, size: WidgetSize): HomeConfig {
   return {
     ...config,
