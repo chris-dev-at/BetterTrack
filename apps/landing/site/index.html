@@ -162,43 +162,6 @@
       </div>
     </footer>
 
-    <script>
-      // Point every "Open the web app" link at the configured web origin
-      // (window.__BT_LANDING__.webOrigin, injected by env.js at container start).
-      (function () {
-        var origin = (window.__BT_LANDING__ && window.__BT_LANDING__.webOrigin) || '';
-        if (!origin) return;
-        var links = document.querySelectorAll('.js-web-link');
-        for (var i = 0; i < links.length; i++) {
-          links[i].setAttribute('href', origin);
-        }
-      })();
-
-      // Reflect the active registration mode (§13.4 V4-P4a): when the instance
-      // allows self-serve registration, reveal the "Create an account" CTA and
-      // drop the invite-only note. Best-effort — any failure leaves the closed,
-      // invite-only default untouched.
-      (function () {
-        var cfg = window.__BT_LANDING__ || {};
-        var apiOrigin = cfg.apiOrigin || '';
-        var webOrigin = cfg.webOrigin || '';
-        if (!apiOrigin) return;
-        fetch(apiOrigin + '/api/v1/auth/registration-info')
-          .then(function (r) {
-            return r.ok ? r.json() : null;
-          })
-          .then(function (info) {
-            if (!info || !info.mode || info.mode === 'closed') return;
-            var cta = document.querySelector('.js-register-cta');
-            if (cta) {
-              if (webOrigin) cta.setAttribute('href', webOrigin + '/register');
-              cta.hidden = false;
-            }
-            var note = document.querySelector('.invite-note');
-            if (note) note.hidden = true;
-          })
-          .catch(function () {});
-      })();
-    </script>
+    <script src="/landing.js"></script>
   </body>
 </html>

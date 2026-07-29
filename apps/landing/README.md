@@ -15,6 +15,7 @@ pages render instantly.
 | `mobile.html`    | Mobile placeholder — English                |
 | `mobile.de.html` | Mobile placeholder — German                 |
 | `styles.css`     | Shared styles (app dark aesthetic)          |
+| `landing.js`     | CSP-safe runtime link + registration wiring |
 | `screens/*.svg`  | Feature screenshots                         |
 | `env.js`         | Runtime origin config (regenerated at boot) |
 

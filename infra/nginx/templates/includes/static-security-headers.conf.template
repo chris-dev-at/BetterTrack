@@ -1,0 +1,14 @@
+# Shared browser policy for every BetterTrack static/SPA response. Keep this
+# include at both server level and in any location that declares add_header:
+# nginx otherwise drops all inherited add_header values in that location.
+#
+# Tailwind utilities, React layout props, lightweight-charts, and Recharts emit
+# inline style attributes at runtime, so style-src deliberately allows
+# 'unsafe-inline'. Scripts stay external: script-src never permits inline code
+# or eval. Google Identity Services is loaded only for the user-authorized Drive
+# connection; API/Socket.IO, Drive, Grafana, chart images, workers, and the PWA
+# path are explicitly covered below.
+add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self' https://accounts.google.com; script-src 'self' https://accounts.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' ${API_ORIGIN} ws: wss: https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com; frame-src 'self' ${API_ORIGIN} https:; worker-src 'self' blob:; manifest-src 'self'" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;

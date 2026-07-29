@@ -60,6 +60,17 @@ fi
 
 # Restrict envsubst to OUR vars so nginx runtime vars ($host, $uri, …) survive.
 VARS='${BT_DOMAIN} ${BT_SUB_API} ${BT_SUB_WEB} ${BT_SUB_ADMIN} ${BT_SUB_MOBILE} ${BT_PORT_API} ${BT_PORT_WEB} ${BT_PORT_ADMIN} ${BT_PORT_PRODUCT} ${BT_PORT_MOBILE} ${API_UPSTREAM} ${LANDING_UPSTREAM} ${API_ORIGIN}'
+INCLUDE_DIR="/etc/nginx/bt-includes"
+mkdir -p "$INCLUDE_DIR"
+envsubst "$VARS" \
+    < /etc/nginx/bt-templates/includes/static-security-headers.conf.template \
+    > "$INCLUDE_DIR/static-security-headers.conf"
+if [ "$SCHEME" = "https" ]; then
+    cp /etc/nginx/bt-templates/includes/static-hsts.conf "$INCLUDE_DIR/static-hsts.conf"
+else
+    # Keep the include valid but empty for every plain-HTTP layout.
+    : > "$INCLUDE_DIR/static-hsts.conf"
+fi
 envsubst "$VARS" < "$TEMPLATE" > /etc/nginx/conf.d/default.conf
 
 echo "bettertrack-web: mode=${MODE} apiOrigin=${API_ORIGIN}"
