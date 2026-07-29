@@ -83,7 +83,7 @@ test('an unauthenticated visit to a user route redirects to /login', async () =>
 
   expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
   expect(
-    screen.queryByText('Your watched assets, alerts and conglomerates at a glance.'),
+    screen.queryByText('Your watched assets, alerts and blueprints at a glance.'),
   ).not.toBeInTheDocument();
 });
 
@@ -102,7 +102,7 @@ test('after signing in, the user returns to the originally requested route', asy
   // Landed on the intended route (the legacy /workboard path redirects into
   // the Workbench destination), not the Home command center.
   expect(
-    await screen.findByText('Your watched assets, alerts and conglomerates at a glance.'),
+    await screen.findByText('Your watched assets, alerts and blueprints at a glance.'),
   ).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: /Welcome back/ })).not.toBeInTheDocument();
   expect(api.login).toHaveBeenCalledWith({

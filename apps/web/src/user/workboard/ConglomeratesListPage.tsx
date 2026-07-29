@@ -69,7 +69,7 @@ function ConglomerateCard({ conglomerate }: { conglomerate: ConglomerateSummary 
   const t = useT();
   return (
     <Link
-      to={`/workboard/conglomerates/${conglomerate.id}`}
+      to={`/workbench/blueprints/${conglomerate.id}`}
       className="flex flex-col gap-3 bt-panel bt-panel--pad transition-colors"
     >
       <div className="flex items-start justify-between gap-2">
@@ -89,7 +89,7 @@ function NewConglomerateCard() {
   const t = useT();
   return (
     <Link
-      to="/workboard/conglomerates/new"
+      to="/workbench/blueprints/new"
       className="flex min-h-[104px] flex-col items-center justify-center gap-1 rounded-lg p-4 text-center text-sm bt-muted transition-colors" style={{ border: '1px dashed var(--bt-border-strong)' }}
     >
       <span className="text-xl" aria-hidden="true">
@@ -101,7 +101,7 @@ function NewConglomerateCard() {
 }
 
 /**
- * `/workboard/conglomerates` — the caller's Conglomerates as a card grid
+ * `/workbench/blueprints` — the caller's Conglomerates as a card grid
  * (PROJECTPLAN.md §6.5, §7.2). The Builder (`/new`, `/:id/edit`) is a separate
  * issue; the "New Conglomerate" card links there ahead of that route landing.
  */
@@ -137,7 +137,7 @@ export function ConglomeratesListPage() {
           description={t('workboard.conglomerates.emptyDescription')}
           cta={
             <Link
-              to="/workboard/conglomerates/new"
+              to="/workbench/blueprints/new"
               className="rounded text-sm bt-link"
             >
               {t('workboard.conglomerates.emptyCta')}

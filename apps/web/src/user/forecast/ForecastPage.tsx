@@ -483,7 +483,7 @@ function WithdrawalPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 /**
- * `/forecast` route (V5-P6b arc (c)). Renders the projection-view slot, then
+ * `/workbench/forecasts` route (V5-P6b arc (c)). Renders the projection-view slot, then
  * the compact calculator suite. The projection engine + what-if plans land in
  * a sibling issue and replace the empty state here.
  */

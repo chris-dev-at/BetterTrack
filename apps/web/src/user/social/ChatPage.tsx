@@ -105,19 +105,19 @@ function chipHref(chip: ChatChip): string {
     case 'asset':
       return `/assets/${chip.subjectId}`;
     case 'portfolio':
-      return owned ? '/portfolio' : `/social/shared-with-me/${chip.subjectId}`;
+      return owned ? '/portfolio' : `/people/shared/${chip.subjectId}`;
     case 'conglomerate':
       return owned
-        ? `/workboard/conglomerates/${chip.subjectId}`
-        : `/social/shared-with-me/conglomerates/${chip.subjectId}`;
+        ? `/workbench/blueprints/${chip.subjectId}`
+        : `/people/shared/conglomerates/${chip.subjectId}`;
     case 'watchlist':
-      return owned ? '/workboard/watchlist' : `/social/shared-with-me/watchlists/${chip.subjectId}`;
+      return owned ? '/assets/watchlists' : `/people/shared/watchlists/${chip.subjectId}`;
     case 'idea':
       // Owned → the idea reopens in the Workboard; shared → the read-only
       // shared-idea view where the recipient can clone it (V4-P9).
       return owned
-        ? `/workboard/ideas/${chip.subjectId}`
-        : `/social/shared-with-me/ideas/${chip.subjectId}`;
+        ? `/workbench/ideas/${chip.subjectId}`
+        : `/people/shared/ideas/${chip.subjectId}`;
   }
 }
 
@@ -409,7 +409,7 @@ function NewChatDialog({ onClose }: { onClose: () => void }) {
                   type="button"
                   onClick={() => {
                     onClose();
-                    navigate(`/social/chat/${f.user.id}`);
+                    navigate(`/people/chat/${f.user.id}`);
                   }}
                   className="bt-menu-item"
                   style={{ minHeight: 40 }}
@@ -488,7 +488,7 @@ function ConversationListPane({
                 // deep-links by conversation id instead (#362).
                 onClick={() =>
                   navigate(
-                    convo.user ? `/social/chat/${convo.user.id}` : `/social/chat/c/${convo.id}`,
+                    convo.user ? `/people/chat/${convo.user.id}` : `/people/chat/c/${convo.id}`,
                   )
                 }
               />
@@ -787,7 +787,7 @@ function ChatThreadPane({
   return (
     <div className="bt-panel flex h-full flex-col overflow-hidden">
       <div className="bt-b-rule flex items-center gap-3" style={{ padding: '10px 14px' }}>
-        <Link className="bt-muted md:hidden" to="/social/chat" aria-label={t('common.back')}>
+        <Link className="bt-muted md:hidden" to="/people/chat" aria-label={t('common.back')}>
           ←
         </Link>
         <Avatar name={otherName} iconId={other?.profileIcon ?? null} size="sm" />
@@ -876,7 +876,7 @@ function ChatThreadPane({
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 /**
- * `/social/chat` (and `/social/chat/:userId`) — friend chat (PROJECTPLAN.md
+ * `/people/chat` (and `/people/chat/:userId`) — friend chat (PROJECTPLAN.md
  * §13.3 V3-P8). A master-detail layout: the conversation list beside the open
  * thread. Realtime pushes over the §4.5 gateway invalidate the relevant queries;
  * each query keeps a TanStack Query poll so chat stays live with the socket
@@ -885,7 +885,7 @@ function ChatThreadPane({
 export function ChatPage() {
   const t = useT();
   const queryClient = useQueryClient();
-  // `/social/chat/:userId` opens by friend; `/social/chat/c/:conversationId`
+  // `/people/chat/:userId` opens by friend; `/people/chat/c/:conversationId`
   // opens a thread directly — the only path to one whose partner was deleted (#362).
   const { userId, conversationId } = useParams<{ userId?: string; conversationId?: string }>();
   const selected = userId ?? conversationId;

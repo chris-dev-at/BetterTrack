@@ -146,10 +146,10 @@ export function KindTile({ kind, size = 34 }: { kind: ShareKind; size?: number }
 
 /** The read-only deep link for one item a friend shares with me. */
 export function sharedItemHref(kind: ShareKind, subjectId: string): string {
-  if (kind === 'portfolio') return `/social/shared-with-me/${subjectId}`;
-  if (kind === 'conglomerate') return `/social/shared-with-me/conglomerates/${subjectId}`;
-  if (kind === 'idea') return `/social/shared-with-me/ideas/${subjectId}`;
-  return `/social/shared-with-me/watchlists/${subjectId}`;
+  if (kind === 'portfolio') return `/people/shared/${subjectId}`;
+  if (kind === 'conglomerate') return `/people/shared/conglomerates/${subjectId}`;
+  if (kind === 'idea') return `/people/shared/ideas/${subjectId}`;
+  return `/people/shared/watchlists/${subjectId}`;
 }
 
 /**

@@ -275,7 +275,7 @@ export function AssetSearchBox({
   }
 
   function handleCreateConglomerate() {
-    navigate('/workboard/conglomerates/new');
+    navigate('/workbench/blueprints/new');
     onAction?.();
   }
 

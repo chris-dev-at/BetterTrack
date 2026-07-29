@@ -11,7 +11,7 @@ import { Alert } from '../components/ui';
 import { CommentThread } from './CommentThread';
 
 /**
- * `/social/shared-with-me/ideas/:ideaId` — a friend's shared idea, READ-ONLY
+ * `/people/shared/ideas/:ideaId` — a friend's shared idea, READ-ONLY
  * (PROJECTPLAN.md §13.4 V4-P9). An idea's saved state is never mirrored to a
  * non-owner; the recipient sees only the public-safe pointer (name, owner, whether
  * a thesis exists) resolved from the enforcement-derived Shared-With-Me payload,
@@ -34,12 +34,12 @@ export function SharedIdeaPage() {
   const cloneMutation = useMutation({
     mutationFn: () => cloneIdea(ideaId!),
     onSuccess: (result) => {
-      navigate(`/workboard/ideas/${result.idea.id}`);
+      navigate(`/workbench/ideas/${result.idea.id}`);
     },
   });
 
   const backLink = (
-    <Link to="/social/friends" className="bt-link self-start" style={{ fontSize: 12.5 }}>
+    <Link to="/people" className="bt-link self-start" style={{ fontSize: 12.5 }}>
       {t('social.sharedIdea.backLink')}
     </Link>
   );

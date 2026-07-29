@@ -90,7 +90,7 @@ function IdeaRow({
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <Link to={`/workboard/ideas/${idea.id}`}>
+        <Link to={`/workbench/ideas/${idea.id}`}>
           <Button size="sm">{t('workboard.ideas.list.open')}</Button>
         </Link>
         <Button onClick={onShare} size="sm">
@@ -105,7 +105,7 @@ function IdeaRow({
 }
 
 /**
- * `/workboard/ideas` — the Ideas list (PROJECTPLAN.md §13.4 V4-P9): every saved
+ * `/workbench/ideas` — the Ideas list (PROJECTPLAN.md §13.4 V4-P9): every saved
  * Workboard analysis the caller owns, each reopenable exactly as saved, shareable
  * through the reusable AudiencePicker (the ONE audience model), and deletable. The
  * per-idea audience is read off `GET /social/my-shared` so it never disagrees with

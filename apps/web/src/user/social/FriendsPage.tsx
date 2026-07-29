@@ -508,7 +508,7 @@ function FriendCard({
   const [open, setOpen] = useState(false);
   const { user } = friendship;
   const panelId = `friend-${user.id}`;
-  const chatHref = `/social/chat/${user.id}`;
+  const chatHref = `/people/chat/${user.id}`;
   const countLine = person && person.total > 0 ? kindCountSummary(person, t) : null;
 
   return (
@@ -677,7 +677,7 @@ function FriendsListSection() {
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 /**
- * `/social/friends` — add friends by username/email, respond to requests and
+ * `/people` — add friends by username/email, respond to requests and
  * manage the friends list (PROJECTPLAN.md §6.9).
  */
 export function FriendsPage() {

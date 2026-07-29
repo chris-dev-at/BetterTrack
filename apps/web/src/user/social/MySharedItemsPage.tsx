@@ -322,7 +322,7 @@ export function MySharedItemsPage() {
       <AlertSharingControl />
 
       <div className="bt-section bt-t-rule" style={{ paddingTop: 18 }}>
-        <Link className="bt-link inline-flex items-center gap-1.5" to="/social/profile">
+        <Link className="bt-link inline-flex items-center gap-1.5" to="/people/profile">
           {t('social.myShared.publicProfileLink')}
           <span aria-hidden="true">→</span>
         </Link>

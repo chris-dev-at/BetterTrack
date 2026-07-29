@@ -1,8 +1,8 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`ComparisonPage > three conglomerates compare on one chart with a full stats grid (snapshot) 1`] = `
+exports[`ComparisonPage > three blueprints compare on one chart with a full stats grid (snapshot) 1`] = `
 <table
-  aria-label="Conglomerate comparison statistics"
+  aria-label="Blueprint comparison statistics"
   class="bt-table"
   style="min-width: 36rem;"
 >

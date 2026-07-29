@@ -92,7 +92,7 @@ function BackLink() {
   const t = useT();
   return (
     <Link
-      to="/social/friends"
+      to="/people"
       className="bt-link w-fit self-start"
       style={{ fontSize: 12.5, marginBottom: 10 }}
     >

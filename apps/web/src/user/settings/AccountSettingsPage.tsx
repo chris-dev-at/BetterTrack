@@ -303,7 +303,7 @@ function SharingMovedNote() {
         <h3 className="bt-h3">{t('settings.sharingMoved.title')}</h3>
         <p className="bt-meta">{t('settings.sharingMoved.description')}</p>
       </div>
-      <Link className="bt-link w-fit" to="/social/my-shared">
+      <Link className="bt-link w-fit" to="/people/shared">
         {t('settings.sharingMoved.link')}
       </Link>
     </div>

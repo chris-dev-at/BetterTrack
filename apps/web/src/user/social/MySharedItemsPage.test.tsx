@@ -104,7 +104,7 @@ describe('MySharedItemsPage', () => {
     expect(screen.getByRole('radio', { name: /all friends/i })).toBeInTheDocument();
   });
 
-  test('lists all three kinds including a never-shared conglomerate + watchlist, each settable (#384)', async () => {
+  test('lists all three kinds including a never-shared blueprint + watchlist, each settable (#384)', async () => {
     vi.mocked(listMyShared).mockResolvedValue({
       portfolios: [
         { portfolioId: PORTFOLIO_ID, name: 'Main', audience: 'private', friendCount: 0 },
@@ -146,7 +146,7 @@ describe('MySharedItemsPage', () => {
     expect(screen.getByText('Main')).toBeInTheDocument();
     expect(screen.getByText('General')).toBeInTheDocument();
     expect(screen.getByText('Portfolios')).toBeInTheDocument();
-    expect(screen.getByText('Conglomerates')).toBeInTheDocument();
+    expect(screen.getByText('Blueprints')).toBeInTheDocument();
     expect(screen.getByText('Watchlists')).toBeInTheDocument();
     // All three read Private (never shared).
     expect(screen.getAllByText('Private')).toHaveLength(3);

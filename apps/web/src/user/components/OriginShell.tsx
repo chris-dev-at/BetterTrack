@@ -242,7 +242,7 @@ function CreateMenu() {
   const items: ReadonlyArray<{ to: string; icon: IconName; labelKey: string }> = [
     { to: '/portfolio/activity?create=trade', icon: 'assets', labelKey: 'create.trade' },
     { to: '/portfolio/cash-flow?create=transaction', icon: 'cash', labelKey: 'create.cashFlow' },
-    { to: '/portfolio/cash?create=transfer', icon: 'wallet', labelKey: 'create.transfer' },
+    { to: '/portfolio/cash-flow/accounts?create=transfer', icon: 'wallet', labelKey: 'create.transfer' },
     { to: '/workbench/blueprints/new', icon: 'layers', labelKey: 'create.blueprint' },
     { to: '/assets/watchlists?create=1', icon: 'star', labelKey: 'create.watchlist' },
     { to: '/workbench/alerts?create=1', icon: 'bell', labelKey: 'create.alert' },

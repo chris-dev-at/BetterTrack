@@ -172,7 +172,7 @@ function DeleteConfirmDialog({
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 /**
- * `/workboard/conglomerates/:id` — Conglomerate detail scaffold (PROJECTPLAN.md
+ * `/workbench/blueprints/:id` — Conglomerate detail scaffold (PROJECTPLAN.md
  * §6.5, §7.2): header, positions table, allocation donut, the backtest panel
  * (#137), and the Invest Calculator (§6.7, #138).
  */
@@ -203,7 +203,7 @@ export function ConglomerateDetailPage() {
     mutationFn: () => deleteConglomerate(id!),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['conglomerates'] });
-      navigate('/workboard/conglomerates');
+      navigate('/workbench/blueprints');
     },
   });
 
@@ -251,7 +251,7 @@ export function ConglomerateDetailPage() {
   if (isError || !data) {
     return (
       <div className="flex flex-col gap-4">
-        <Link to="/workboard/conglomerates" className="text-sm bt-link">
+        <Link to="/workbench/blueprints" className="text-sm bt-link">
           {t('workboard.detail.backToConglomeratesError')}
         </Link>
         <Alert tone="error">{t('workboard.detail.loadError')}</Alert>
@@ -287,7 +287,7 @@ export function ConglomerateDetailPage() {
   return (
     <div className="flex flex-col gap-8">
       <Link
-        to="/workboard/conglomerates"
+        to="/workbench/blueprints"
         className="text-sm bt-muted hover:bt-soft"
       >
         {t('workboard.detail.backLink')}
@@ -313,7 +313,7 @@ export function ConglomerateDetailPage() {
                 ? t('workboard.detail.sharedButton')
                 : t('workboard.detail.shareButton')}
             </Button>
-            <Link to={`/workboard/conglomerates/${id}/edit`}>
+            <Link to={`/workbench/blueprints/${id}/edit`}>
               <Button variant="secondary">{t('common.edit')}</Button>
             </Link>
             <Button variant="secondary" onClick={() => setConfirmOpen(true)}>

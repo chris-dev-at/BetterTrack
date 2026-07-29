@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`BacktestPanel > a conglomerate benchmark renders two full stat columns + delta (V4-P7 snapshot) 1`] = `
+exports[`BacktestPanel > a blueprint benchmark renders two full stat columns + delta (V4-P7 snapshot) 1`] = `
 <table
   aria-label="Backtest statistics: basket vs benchmark"
   class="w-full min-w-96 text-sm"

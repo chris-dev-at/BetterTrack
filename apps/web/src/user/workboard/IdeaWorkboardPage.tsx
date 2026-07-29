@@ -12,7 +12,7 @@ import { Alert } from '../components/ui';
 import { BacktestPanel, type BacktestParams } from './BacktestPanel';
 
 /**
- * `/workboard/ideas/:ideaId` — reopen a saved idea in the Workboard EXACTLY as it
+ * `/workbench/ideas/:ideaId` — reopen a saved idea in the Workboard EXACTLY as it
  * was saved (PROJECTPLAN.md §13.4 V4-P9): the basket (a conglomerate reference OR
  * an ad-hoc weighted set) is resolved back to positions and the backtest params
  * (range / benchmark / late-listing mode / rebalance schedule) seed the panel, so
@@ -44,7 +44,7 @@ export function IdeaWorkboardPage() {
   });
 
   const backLink = (
-    <Link className="bt-link" style={{ fontSize: 13 }} to="/workboard/ideas">
+    <Link className="bt-link" style={{ fontSize: 13 }} to="/workbench/ideas">
       {t('workboard.ideas.open.backLink')}
     </Link>
   );

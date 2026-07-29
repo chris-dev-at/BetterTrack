@@ -267,8 +267,8 @@
           "description": "Read your portfolios, holdings and cash balances, or create and edit portfolios, transactions, custom assets and cash movements."
         },
         "workboard": {
-          "label": "Workboard",
-          "description": "Read watchlists, conglomerates and backtests, or edit them and run backtests."
+          "label": "Workbench",
+          "description": "Read watchlists, blueprints and backtests, or edit them and run backtests."
         },
         "market": {
           "label": "Market",
@@ -459,7 +459,7 @@
   },
   "nav": {
     "portfolio": "Portfolio",
-    "workboard": "Workboard",
+    "workboard": "Workbench",
     "forecast": "Forecast",
     "expenses": "Expenses",
     "assets": "Assets",
@@ -637,8 +637,8 @@
           "description": "When a friend shares a watchlist with you."
         },
         "conglomerateShared": {
-          "label": "Shared conglomerates",
-          "description": "When a friend shares a conglomerate with you."
+          "label": "Shared blueprints",
+          "description": "When a friend shares a blueprint with you."
         },
         "friendActivity": {
           "label": "Friend activity",
@@ -646,7 +646,7 @@
         },
         "followPublished": {
           "label": "New from people you follow",
-          "description": "When someone you follow makes a portfolio, watchlist or conglomerate public."
+          "description": "When someone you follow makes a portfolio, watchlist or blueprint public."
         },
         "followAlertCreated": {
           "label": "New alerts from people you follow",
@@ -1077,7 +1077,7 @@
           "friendAccepted": "Friend request accepted",
           "portfolioShared": "Portfolio shared with you",
           "watchlistShared": "Watchlist shared with you",
-          "conglomerateShared": "Conglomerate shared with you",
+          "conglomerateShared": "Blueprint shared with you",
           "friendActivity": "Friend activity on a shared item",
           "followPublished": "Someone you follow published an item",
           "followAlertCreated": "Someone you follow created an alert",
@@ -1108,12 +1108,12 @@
           "description": "Create/edit portfolios, transactions and cash movements."
         },
         "workboardRead": {
-          "label": "Workboard · read",
-          "description": "Read watchlists, conglomerates and backtests."
+          "label": "Workbench · read",
+          "description": "Read watchlists, blueprints and backtests."
         },
         "workboardWrite": {
-          "label": "Workboard · write",
-          "description": "Edit watchlists, conglomerates and run backtests."
+          "label": "Workbench · write",
+          "description": "Edit watchlists, blueprints and run backtests."
         },
         "marketRead": {
           "label": "Market · read",
@@ -1637,15 +1637,15 @@
         "none": "None",
         "asset": "Asset / index",
         "portfolio": "Portfolio",
-        "conglomerate": "Conglomerate",
+        "conglomerate": "Blueprint",
         "searchPlaceholder": "Search an asset or index…",
         "current": "Comparing: {{label}}",
         "pickPortfolio": "Choose a portfolio to compare",
         "pickPortfolioPlaceholder": "Choose a portfolio…",
         "noPortfolios": "You have no other portfolios to compare.",
-        "pickConglomerate": "Choose a conglomerate to compare",
-        "pickConglomeratePlaceholder": "Choose a conglomerate…",
-        "noConglomerates": "You don't have any conglomerates yet."
+        "pickConglomerate": "Choose a blueprint to compare",
+        "pickConglomeratePlaceholder": "Choose a blueprint…",
+        "noConglomerates": "You don't have any blueprints yet."
       },
       "chart": {
         "ariaLabel": "Portfolio analytics chart",
@@ -2125,7 +2125,7 @@
     "section": {
       "subnav": {
         "overview": "Overview",
-        "conglomerates": "Conglomerates",
+        "conglomerates": "Blueprints",
         "watchlists": "Watchlists",
         "alerts": "Alerts",
         "backtests": "Backtests",
@@ -2135,19 +2135,19 @@
       },
       "watchlist": {
         "title": "Watchlists",
-        "description": "Named, multiple watchlists arrive here. For now your watchlist lives on the Workboard overview."
+        "description": "Named, multiple watchlists arrive here. For now your watchlist lives on the Workbench overview."
       },
       "backtests": {
         "title": "Backtests",
-        "description": "Standalone backtesting across any basket of assets, beyond the conglomerate-embedded backtest."
+        "description": "Standalone backtesting across any basket of assets, beyond the blueprint-embedded backtest."
       },
       "calculators": {
         "title": "Calculators",
-        "description": "Standalone invest calculators — turn a budget into an exact buy list without a saved conglomerate."
+        "description": "Standalone invest calculators — turn a budget into an exact buy list without a saved blueprint."
       },
       "comparisons": {
         "title": "Comparisons",
-        "description": "Side-by-side comparison of assets and conglomerates on returns, risk and allocation."
+        "description": "Side-by-side comparison of assets and blueprints on returns, risk and allocation."
       },
       "savedIdeas": {
         "title": "Saved Ideas",
@@ -2155,8 +2155,8 @@
       }
     },
     "overview": {
-      "title": "Workboard",
-      "subtitle": "Your watched assets, alerts and conglomerates at a glance.",
+      "title": "Workbench",
+      "subtitle": "Your watched assets, alerts and blueprints at a glance.",
       "watchlist": {
         "heading": "Watchlist",
         "shareButton": "Share with friends",
@@ -2166,7 +2166,7 @@
         "removeError": "Failed to remove. Please try again.",
         "reorderError": "Failed to save new order. Please try again.",
         "emptyTitle": "Your watchlist is empty",
-        "emptyDescription": "Find an asset and add it to your Workboard to start watching.",
+        "emptyDescription": "Find an asset and add it to your Workbench to start watching.",
         "emptySearchLink": "Search for an asset →",
         "trendHeader": "Trend",
         "assetHeader": "Asset",
@@ -2195,8 +2195,8 @@
         "emptyDescription": "Your active alerts across all watched assets will appear here."
       },
       "conglomerates": {
-        "heading": "My Conglomerates",
-        "emptyTitle": "Conglomerates coming soon",
+        "heading": "My Blueprints",
+        "emptyTitle": "Blueprints coming soon",
         "emptyDescription": "Your custom ETF baskets will appear here."
       }
     },
@@ -2241,12 +2241,12 @@
         "dax": "DAX",
         "msciWorld": "MSCI World",
         "search": "Search asset…",
-        "myConglomerates": "My conglomerates…",
+        "myConglomerates": "My blueprints…",
         "searchPlaceholder": "Search any asset as benchmark…",
-        "pickConglomerate": "Benchmark conglomerate",
-        "pickConglomeratePlaceholder": "Choose a conglomerate…",
-        "loading": "Loading conglomerates…",
-        "noConglomerates": "No conglomerates yet.",
+        "pickConglomerate": "Benchmark blueprint",
+        "pickConglomeratePlaceholder": "Choose a blueprint…",
+        "loading": "Loading blueprints…",
+        "noConglomerates": "No blueprints yet.",
         "clear": "Clear benchmark",
         "saved": "Custom benchmark"
       },
@@ -2267,7 +2267,7 @@
       "rebalanceAriaLabel": "Select rebalance frequency",
       "noPositions": "Add positions to preview a backtest",
       "error": "Could not run the backtest. Please try again.",
-      "chartAriaLabel": "Conglomerate backtest chart",
+      "chartAriaLabel": "Blueprint backtest chart",
       "stats": {
         "totalReturn": "Total return",
         "cagr": "CAGR",
@@ -2369,13 +2369,13 @@
       }
     },
     "conglomerates": {
-      "title": "Conglomerates",
+      "title": "Blueprints",
       "subtitle": "Your custom ETF-style baskets — build, backtest and turn a budget into a buy list.",
-      "loadError": "Could not load your Conglomerates. Please refresh the page.",
-      "emptyTitle": "No Conglomerates yet",
+      "loadError": "Could not load your Blueprints. Please refresh the page.",
+      "emptyTitle": "No Blueprints yet",
       "emptyDescription": "Build a custom ETF-style basket, backtest it and turn a budget into a buy list.",
-      "emptyCta": "New Conglomerate →",
-      "newCardLabel": "New Conglomerate",
+      "emptyCta": "New Blueprint →",
+      "newCardLabel": "New Blueprint",
       "positionCountOne": "{{count}} position",
       "positionCountOther": "{{count}} positions",
       "status": {
@@ -2393,32 +2393,32 @@
       "noPositionsDescription": "Add assets and weights in the Builder to start allocating this basket.",
       "assetHeader": "Asset",
       "weightHeader": "Weight",
-      "deleteDialogTitle": "Delete Conglomerate?",
+      "deleteDialogTitle": "Delete Blueprint?",
       "deleteDialogBody": "This permanently deletes {{name}} and all its positions. This cannot be undone.",
-      "deleteError": "Could not delete this Conglomerate. Please try again.",
+      "deleteError": "Could not delete this Blueprint. Please try again.",
       "deleting": "Deleting…",
-      "backToConglomeratesError": "← Back to Conglomerates",
-      "backLink": "← Conglomerates",
-      "loadError": "Could not load this Conglomerate. It may not exist or the server is temporarily unavailable.",
+      "backToConglomeratesError": "← Back to Blueprints",
+      "backLink": "← Blueprints",
+      "loadError": "Could not load this Blueprint. It may not exist or the server is temporarily unavailable.",
       "shareButton": "Share with friends",
       "sharedButton": "Shared with friends",
       "shareError": "Could not update sharing. Please try again.",
       "positionsHeading": "Positions",
       "allocationHeading": "Allocation",
-      "allocationChartTitle": "Conglomerate allocation",
+      "allocationChartTitle": "Blueprint allocation",
       "backtestHeading": "Backtest",
       "calculatorHeading": "Calculator",
       "viewToggleAriaLabel": "Positions view",
       "viewStored": "As built",
       "viewResolved": "Resolved",
-      "resolvedHint": "Effective asset weights after resolving nested conglomerates.",
+      "resolvedHint": "Effective asset weights after resolving nested blueprints.",
       "resolvedLoadError": "The resolved view could not be loaded.",
-      "deleteInUseError": "This conglomerate is a constituent of {{parents}} — remove it there first."
+      "deleteInUseError": "This blueprint is a constituent of {{parents}} — remove it there first."
     },
     "builder": {
       "loading": "Loading the Builder…",
-      "defaultName": "Untitled conglomerate",
-      "nameAriaLabel": "Conglomerate name",
+      "defaultName": "Untitled blueprint",
+      "nameAriaLabel": "Blueprint name",
       "closeAriaLabel": "Close the Builder",
       "activatableHint": "Active = your live, validated basket used by the calculator; must sum to 100%.",
       "notActivatableHint": "Weights must sum to 100% (±0.01) before activating.",
@@ -2426,7 +2426,7 @@
       "reactivate": "Re-activate",
       "activate": "Activate",
       "activateValidationError": "Weights must sum to 100% (±0.01) with every position above 0 before activating.",
-      "activateError": "Could not activate this Conglomerate. Please try again.",
+      "activateError": "Could not activate this Blueprint. Please try again.",
       "saving": "Saving…",
       "saveFailed": "Save failed",
       "draftSaved": "Draft — saved",
@@ -2451,7 +2451,7 @@
       "autoBalance": "Auto-balance",
       "normalize": "Normalize",
       "noPositionsMessage": "No positions yet. Search on the left and click an asset to add it.",
-      "positionsListAriaLabel": "Conglomerate positions",
+      "positionsListAriaLabel": "Blueprint positions",
       "weightSliderAriaLabel": "Weight slider for {{symbol}}",
       "weightAriaLabel": "Weight for {{symbol}}",
       "lockAriaLabel": "Lock {{symbol}}",
@@ -2468,28 +2468,28 @@
       "statLargest": "Largest",
       "backtestPreviewAriaLabel": "Backtest preview (coming soon)",
       "backtestPreviewText": "Backtest preview — coming with the backtest panel.",
-      "nestConglomerateHeading": "Nest a conglomerate",
-      "nestConglomerateHint": "Add one of your own conglomerates as a weighted slice — its weights resolve recursively at backtest and allocation time.",
-      "nestConglomerateEmpty": "No other conglomerates to nest yet.",
-      "nestConglomerateLoadError": "Your conglomerates could not be loaded.",
-      "nestConglomerateListAriaLabel": "Your conglomerates",
+      "nestConglomerateHeading": "Nest a blueprint",
+      "nestConglomerateHint": "Add one of your own blueprints as a weighted slice — its weights resolve recursively at backtest and allocation time.",
+      "nestConglomerateEmpty": "No other blueprints to nest yet.",
+      "nestConglomerateLoadError": "Your blueprints could not be loaded.",
+      "nestConglomerateListAriaLabel": "Your blueprints",
       "nestConglomerateAddAriaLabel": "Add {{name}} as a constituent",
-      "saveIdeaNestedHint": "Ideas hold asset weights only — a basket with nested conglomerates cannot be saved as an idea.",
+      "saveIdeaNestedHint": "Ideas hold asset weights only — a basket with nested blueprints cannot be saved as an idea.",
       "errors": {
-        "maxPositions": "A conglomerate may have at most {{max}} positions.",
-        "duplicateAsset": "That asset is already in this conglomerate.",
-        "duplicateConglomerate": "That conglomerate is already a constituent.",
-        "selfNest": "A conglomerate cannot contain itself.",
-        "nestingCycle": "This nesting would create a cycle — a conglomerate cannot contain itself, directly or through another conglomerate.",
-        "nestingTooDeep": "Conglomerates can be nested at most {{max}} levels deep."
+        "maxPositions": "A blueprint may have at most {{max}} positions.",
+        "duplicateAsset": "That asset is already in this blueprint.",
+        "duplicateConglomerate": "That blueprint is already a constituent.",
+        "selfNest": "A blueprint cannot contain itself.",
+        "nestingCycle": "This nesting would create a cycle — a blueprint cannot contain itself, directly or through another blueprint.",
+        "nestingTooDeep": "Blueprints can be nested at most {{max}} levels deep."
       }
     },
     "ideas": {
       "list": {
         "title": "Ideas",
-        "subtitle": "Saved Workboard analyses — reopen any one exactly as saved, or share it with friends.",
+        "subtitle": "Saved Workbench analyses — reopen any one exactly as saved, or share it with friends.",
         "emptyTitle": "No saved ideas yet",
-        "emptyBody": "Save a basket and its backtest from a conglomerate or the Builder to revisit it later.",
+        "emptyBody": "Save a basket and its backtest from a blueprint or the Builder to revisit it later.",
         "open": "Open",
         "share": "Share",
         "thesisNone": "No thesis note",
@@ -2516,27 +2516,27 @@
         "loadError": "Couldn't load this idea.",
         "thesisHeading": "Thesis",
         "backtestHeading": "Backtest",
-        "conglomerateGone": "The conglomerate this idea references is no longer available."
+        "conglomerateGone": "The blueprint this idea references is no longer available."
       }
     },
     "comparison": {
-      "title": "Compare conglomerates",
-      "description": "Overlay 2–6 of your conglomerates on one chart and compare returns and risk side by side.",
-      "selectHeading": "Choose conglomerates",
-      "selectHint": "Pick {{min}}–{{max}} conglomerates to compare.",
+      "title": "Compare blueprints",
+      "description": "Overlay 2–6 of your blueprints on one chart and compare returns and risk side by side.",
+      "selectHeading": "Choose blueprints",
+      "selectHint": "Pick {{min}}–{{max}} blueprints to compare.",
       "selectionCount": "{{count}}/{{max}} selected",
       "emptyPositions": "No positions",
-      "noConglomerates": "Not enough conglomerates yet",
-      "noConglomeratesHint": "Build at least two conglomerates with positions to compare them here.",
-      "needTwo": "Select at least {{min}} conglomerates to compare.",
+      "noConglomerates": "Not enough blueprints yet",
+      "noConglomeratesHint": "Build at least two blueprints with positions to compare them here.",
+      "needTwo": "Select at least {{min}} blueprints to compare.",
       "error": "The comparison could not be computed. Please try again.",
-      "windowError": "One of the selected conglomerates has too little price history to cover the comparison window. Try a shorter range or deselect it.",
-      "chartAriaLabel": "Conglomerate comparison chart",
-      "legendAriaLabel": "Compared conglomerates",
+      "windowError": "One of the selected blueprints has too little price history to cover the comparison window. Try a shorter range or deselect it.",
+      "chartAriaLabel": "Blueprint comparison chart",
+      "legendAriaLabel": "Compared blueprints",
       "baselineLabel": "Baseline",
       "setBaseline": "Use {{name}} as the baseline",
       "grid": {
-        "ariaLabel": "Conglomerate comparison statistics",
+        "ariaLabel": "Blueprint comparison statistics",
         "metric": "Metric"
       }
     }
@@ -2722,8 +2722,8 @@
       },
       "appearsIn": {
         "title": "Appears in",
-        "emptyTitle": "Not in any conglomerate or portfolio",
-        "emptyDescription": "Add this asset to a conglomerate or record a transaction to see it here."
+        "emptyTitle": "Not in any blueprint or portfolio",
+        "emptyDescription": "Add this asset to a blueprint or record a transaction to see it here."
       },
       "dividends": {
         "title": "Dividends",
@@ -2753,7 +2753,7 @@
       "watchlistAddError": "Failed to add to Watchlist. Please try again.",
       "quickActions": "Quick actions",
       "addToPortfolio": "+ Portfolio",
-      "addToConglomerate": "+ Conglomerate",
+      "addToConglomerate": "+ Blueprint",
       "backToSearch": "← Back to Search",
       "backShort": "← Search",
       "loadError": "Could not load asset details. The asset may not exist or the server is temporarily unavailable.",
@@ -2818,9 +2818,9 @@
       "searchingMore": "Searching the market for more results…",
       "resultsAria": "Search results",
       "openAria": "Open {{symbol}} — {{name}}",
-      "toConglomerate": "→ Conglomerate",
+      "toConglomerate": "→ Blueprint",
       "toPortfolio": "→ Portfolio",
-      "addToConglomerateAria": "Add {{symbol}} to a Conglomerate",
+      "addToConglomerateAria": "Add {{symbol}} to a Blueprint",
       "recordBuyAria": "Record a buy for {{symbol}}",
       "onWatchlistAria": "{{symbol}} is on your watchlist",
       "retryWatchlistAria": "Retry adding {{symbol}} to your watchlist",
@@ -2829,14 +2829,14 @@
       "addToWatchlistTitle": "Add to watchlist",
       "chooseWatchlistAria": "Choose a watchlist for {{symbol}}",
       "watchlistsMenuAria": "Watchlists for {{symbol}}",
-      "pickerMenuAria": "Add {{symbol}} to a conglomerate",
-      "pickerTitle": "Add to conglomerate",
-      "noConglomerates": "You don't have any conglomerates yet.",
+      "pickerMenuAria": "Add {{symbol}} to a blueprint",
+      "pickerTitle": "Add to blueprint",
+      "noConglomerates": "You don't have any blueprints yet.",
       "addedTo": "Added to {{name}}.",
-      "createNewConglomerate": "+ Create new conglomerate",
+      "createNewConglomerate": "+ Create new blueprint",
       "selectAria": "Select {{symbol}}",
       "select": "Select →",
-      "addToConglomerateError": "Could not add to that conglomerate."
+      "addToConglomerateError": "Could not add to that blueprint."
     },
     "aria": "Assets",
     "tabs": {
@@ -2944,8 +2944,8 @@
         "other": "{{count}} portfolios"
       },
       "conglomerate": {
-        "one": "{{count}} conglomerate",
-        "other": "{{count}} conglomerates"
+        "one": "{{count}} blueprint",
+        "other": "{{count}} blueprints"
       },
       "watchlist": {
         "one": "{{count}} watchlist",
@@ -2969,15 +2969,15 @@
     },
     "kind": {
       "portfolios": "Portfolios",
-      "conglomerates": "Conglomerates",
+      "conglomerates": "Blueprints",
       "watchlists": "Watchlists",
       "ideas": "Ideas"
     },
     "myShared": {
       "title": "My items",
-      "subtitle": "Every portfolio, conglomerate and watchlist you own is here — choose who can see each one. Everything stays private until you share it.",
+      "subtitle": "Every portfolio, blueprint and watchlist you own is here — choose who can see each one. Everything stays private until you share it.",
       "emptyTitle": "You don't own anything yet",
-      "emptyBody": "Create a portfolio, conglomerate or watchlist and it appears here to manage its sharing.",
+      "emptyBody": "Create a portfolio, blueprint or watchlist and it appears here to manage its sharing.",
       "error": "Could not load your items. Please refresh the page.",
       "publicProfileLink": "Manage your public profile"
     },
@@ -3007,7 +3007,7 @@
       "unfollowAria": "Unfollow {{username}}",
       "loginToFollow": "Log in to follow",
       "listTitle": "Following",
-      "listSubtitle": "People you follow. You get a notification when they make a new portfolio, watchlist or conglomerate public.",
+      "listSubtitle": "People you follow. You get a notification when they make a new portfolio, watchlist or blueprint public.",
       "empty": "You're not following anyone yet.",
       "emptyHint": "Open someone's public profile to follow them.",
       "error": "Couldn't load who you follow. Please refresh the page.",
@@ -3034,7 +3034,7 @@
       "sharesHeading": "Shares with you",
       "sharesEmpty": "{{username}} isn't sharing anything with you yet.",
       "followHeading": "News about this person",
-      "followHint": "Follow to hear when they make a portfolio, watchlist or conglomerate public."
+      "followHint": "Follow to hear when they make a portfolio, watchlist or blueprint public."
     },
     "chat": {
       "title": "Messages",
@@ -3053,7 +3053,7 @@
         "shared": {
           "asset": "Shared an asset",
           "portfolio": "Shared a portfolio",
-          "conglomerate": "Shared a conglomerate",
+          "conglomerate": "Shared a blueprint",
           "watchlist": "Shared a watchlist",
           "idea": "Shared an idea"
         }
@@ -3078,7 +3078,7 @@
         "kind": {
           "asset": "Asset",
           "portfolio": "Portfolio",
-          "conglomerate": "Conglomerate",
+          "conglomerate": "Blueprint",
           "watchlist": "Watchlist",
           "idea": "Idea"
         },
@@ -3143,11 +3143,11 @@
       "portfolioEmptyTitle": "Nothing to show yet",
       "portfolioEmptyDescription": "{{username}} hasn't recorded any holdings in this portfolio.",
       "portfolioChartAria": "Shared portfolio value over time",
-      "conglomerateUnavailableTitle": "This conglomerate isn't available",
+      "conglomerateUnavailableTitle": "This blueprint isn't available",
       "watchlistUnavailableTitle": "This watchlist isn't available",
       "unavailableDescription": "The owner may have stopped sharing it, or you're no longer friends.",
       "noPositionsTitle": "No positions",
-      "noPositionsDescription": "This conglomerate has no assets yet.",
+      "noPositionsDescription": "This blueprint has no assets yet.",
       "watchlistEmptyTitle": "Empty watchlist",
       "watchlistEmptyDescription": "This friend isn't watching any assets.",
       "sharedByReadOnly": "Shared by {{username}} · read-only",
@@ -3397,7 +3397,7 @@
     "warning": {
       "headline": "This cannot be undone. Deleting your account removes:",
       "data": "All portfolios, transactions, cash sources, custom assets, tax records and reports",
-      "social": "Your friendships, shared items, watchlists, conglomerates, alerts and notifications",
+      "social": "Your friendships, shared items, watchlists, blueprints, alerts and notifications",
       "access": "Every session, API key and connected app — you are signed out everywhere immediately",
       "chat": "Your identity in chats — messages you sent stay visible to your friends as “Deleted user”"
     },
@@ -3838,7 +3838,7 @@
       },
       "feature": {
         "portfolio": "Portfolio",
-        "workboard": "Workboard",
+        "workboard": "Workbench",
         "assets": "Assets",
         "social": "Social",
         "alerts": "Alerts",

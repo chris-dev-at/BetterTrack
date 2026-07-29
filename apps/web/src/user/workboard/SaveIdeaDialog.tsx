@@ -56,7 +56,7 @@ export function SaveIdeaDialog({
         <div className="flex flex-col gap-4">
           <Alert tone="success">{t('workboard.ideas.save.successBody', { name: saved.name })}</Alert>
           <div className="flex justify-end gap-2">
-            <Link to="/workboard/ideas">
+            <Link to="/workbench/ideas">
               <Button>{t('workboard.ideas.save.viewIdeas')}</Button>
             </Link>
             <Button onClick={onClose} variant="primary">

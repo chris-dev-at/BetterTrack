@@ -222,7 +222,7 @@ export function SharedPortfolioPage() {
   return (
     <div className="flex flex-col">
       <Link
-        to="/social/friends"
+        to="/people"
         className="bt-link self-start"
         style={{ fontSize: 12.5, marginBottom: 10 }}
       >

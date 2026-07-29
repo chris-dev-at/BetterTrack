@@ -125,7 +125,7 @@ function renderPage() {
   );
 }
 
-/** Select conglomerates by clicking their picker checkboxes, in order. */
+/** Select blueprints by clicking their picker checkboxes, in order. */
 async function selectConglomerates(user: ReturnType<typeof userEvent.setup>, names: string[]) {
   for (const name of names) {
     await user.click(screen.getByRole('checkbox', { name: new RegExp(name) }));
@@ -142,7 +142,7 @@ beforeEach(() => {
 });
 
 describe('ComparisonPage', () => {
-  test('three conglomerates compare on one chart with a full stats grid (snapshot)', async () => {
+  test('three blueprints compare on one chart with a full stats grid (snapshot)', async () => {
     vi.mocked(listConglomerates).mockResolvedValue({
       conglomerates: [cong('c1', 'Alpha', 3), cong('c2', 'Beta', 4), cong('c3', 'Gamma', 2)],
     });
@@ -155,7 +155,7 @@ describe('ComparisonPage', () => {
     await selectConglomerates(user, ['Alpha', 'Beta', 'Gamma']);
 
     // The grid renders once all three series are back (one baseline radio each).
-    const grid = await screen.findByRole('table', { name: 'Conglomerate comparison statistics' });
+    const grid = await screen.findByRole('table', { name: 'Blueprint comparison statistics' });
     await waitFor(() => expect(within(grid).getAllByRole('radio')).toHaveLength(3));
 
     // Every metric row is present, side by side with all three series.
@@ -165,7 +165,7 @@ describe('ComparisonPage', () => {
     expect(grid).toMatchSnapshot();
   });
 
-  test('caps the selection at six — a seventh conglomerate cannot be added (N=7 prevented)', async () => {
+  test('caps the selection at six — a seventh blueprint cannot be added (N=7 prevented)', async () => {
     const seven = Array.from({ length: 7 }, (_, i) => cong(`c${i}`, `Cong${i}`, 3));
     vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: seven });
     const user = userEvent.setup();
@@ -192,7 +192,7 @@ describe('ComparisonPage', () => {
       expect(screen.getByRole('checkbox', { name: /Alpha/ })).toBeInTheDocument(),
     );
     await selectConglomerates(user, ['Alpha', 'Beta', 'Gamma']);
-    await screen.findByRole('table', { name: 'Conglomerate comparison statistics' });
+    await screen.findByRole('table', { name: 'Blueprint comparison statistics' });
 
     // Default baseline is the first pick (c1). Choose Beta (c2) as the baseline.
     await user.click(screen.getByRole('radio', { name: 'Use Beta as the baseline' }));
@@ -205,7 +205,7 @@ describe('ComparisonPage', () => {
     );
   });
 
-  test('prompts for a second pick until two conglomerates are selected', async () => {
+  test('prompts for a second pick until two blueprints are selected', async () => {
     vi.mocked(listConglomerates).mockResolvedValue({
       conglomerates: [cong('c1', 'Alpha', 3), cong('c2', 'Beta', 4)],
     });
@@ -215,19 +215,19 @@ describe('ComparisonPage', () => {
     await waitFor(() =>
       expect(screen.getByRole('checkbox', { name: /Alpha/ })).toBeInTheDocument(),
     );
-    expect(screen.getByText(/Select at least 2 conglomerates/i)).toBeInTheDocument();
+    expect(screen.getByText(/Select at least 2 blueprints/i)).toBeInTheDocument();
     expect(compareConglomerates).not.toHaveBeenCalled();
 
     await selectConglomerates(user, ['Alpha', 'Beta']);
     await waitFor(() => expect(compareConglomerates).toHaveBeenCalled());
   });
 
-  test('offers an empty state when the user has fewer than two conglomerates', async () => {
+  test('offers an empty state when the user has fewer than two blueprints', async () => {
     vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: [cong('c1', 'Alpha', 3)] });
     renderPage();
 
     await waitFor(() =>
-      expect(screen.getByText('Not enough conglomerates yet')).toBeInTheDocument(),
+      expect(screen.getByText('Not enough blueprints yet')).toBeInTheDocument(),
     );
     expect(compareConglomerates).not.toHaveBeenCalled();
   });

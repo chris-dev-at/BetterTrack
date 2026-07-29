@@ -46,7 +46,7 @@ describe('ScopePicker', () => {
     // Every module label surfaces exactly once.
     for (const label of [
       'Portfolio',
-      'Workboard',
+      'Workbench',
       'Market',
       'Social',
       'Notifications',
@@ -111,7 +111,7 @@ describe('ScopePicker', () => {
     // write scope + its implied read, i.e. every string in API_KEY_SCOPES.
     const writes = [
       /portfolio · write/i,
-      /workboard · write/i,
+      /workbench · write/i,
       /social · write/i,
       /notifications · write/i,
       /chat · write/i,
@@ -227,7 +227,7 @@ describe('ScopeSummary', () => {
     ).toBeInTheDocument();
 
     // Modules with no requested scopes stay hidden.
-    expect(screen.queryByText('Workboard')).not.toBeInTheDocument();
+    expect(screen.queryByText('Workbench')).not.toBeInTheDocument();
     expect(screen.queryByText('Chat')).not.toBeInTheDocument();
   });
 });

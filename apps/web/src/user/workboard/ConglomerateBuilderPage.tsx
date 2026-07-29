@@ -59,7 +59,7 @@ type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 /**
  * The Conglomerate **Builder** (PROJECTPLAN.md §6.5, §7.2) — the full-screen
- * create/edit experience mounted at `/workboard/conglomerates/new` and
+ * create/edit experience mounted at `/workbench/blueprints/new` and
  * `…/:id/edit`. `/new` starts from a blank basket; `/:id/edit` loads the draft
  * (or active) Conglomerate first, then hands its positions to the same Builder.
  */
@@ -91,7 +91,7 @@ function EditBuilderLoader({ id }: { id: string }) {
       <BuilderFrame>
         <div className="mx-auto flex max-w-md flex-col gap-4 px-4 py-16">
           <Alert tone="error">{t('workboard.detail.loadError')}</Alert>
-          <Link to="/workboard/conglomerates" className="text-sm bt-link">
+          <Link to="/workbench/blueprints" className="text-sm bt-link">
             {t('workboard.detail.backToConglomeratesError')}
           </Link>
         </div>
@@ -365,7 +365,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
       setStatus(detail.status);
       void queryClient.invalidateQueries({ queryKey: ['conglomerates'] });
       void queryClient.invalidateQueries({ queryKey: ['conglomerate', id] });
-      navigate(`/workboard/conglomerates/${id}`);
+      navigate(`/workbench/blueprints/${id}`);
     } catch (err) {
       setActivateError(
         err instanceof ApiError ? err.message : t('workboard.builder.activateError'),
@@ -452,7 +452,7 @@ function BuilderHeader({
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <Link
-            to="/workboard/conglomerates"
+            to="/workbench/blueprints"
             aria-label={t('workboard.builder.closeAriaLabel')}
             className="shrink-0 rounded px-2 py-1 text-sm bt-muted hover:bt-soft"
           >

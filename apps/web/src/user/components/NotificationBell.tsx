@@ -40,36 +40,36 @@ function notificationLink(notification: Notification): string | null {
     case 'follow.alert.created':
     case 'follow.alert.fired': {
       const assetId = payloadString(p, 'assetId');
-      return assetId ? `/assets/${enc(assetId)}` : '/workboard/alerts';
+      return assetId ? `/assets/${enc(assetId)}` : '/workbench/alerts';
     }
     // Friend request → the requests section of the Friends tab (V4-P0b).
     case 'friend.request':
-      return '/social/friends#requests';
+      return '/people#requests';
     case 'friend.accepted':
-      return '/social/friends';
+      return '/people';
     // Shared items → the recipient's Shared-With-Me view for that item.
     case 'portfolio.shared': {
       const id = payloadString(p, 'portfolioId');
-      return id ? `/social/shared-with-me/${enc(id)}` : '/social/friends';
+      return id ? `/people/shared/${enc(id)}` : '/people';
     }
     case 'watchlist.shared': {
       const id = payloadString(p, 'watchlistId');
-      return id ? `/social/shared-with-me/watchlists/${enc(id)}` : '/social/friends';
+      return id ? `/people/shared/watchlists/${enc(id)}` : '/people';
     }
     case 'conglomerate.shared': {
       const id = payloadString(p, 'conglomerateId');
-      return id ? `/social/shared-with-me/conglomerates/${enc(id)}` : '/social/friends';
+      return id ? `/people/shared/conglomerates/${enc(id)}` : '/people';
     }
     // Friend activity + newly-published items → the actor's public profile (#438).
     case 'friend.activity':
     case 'follow.published': {
       const username = payloadString(p, 'actorUsername');
-      return username ? `/u/${enc(username)}` : '/social/friends';
+      return username ? `/u/${enc(username)}` : '/people';
     }
     // Chat → the DM thread (scroll-to-message is the thread page's concern).
     case 'chat.message': {
       const conversationId = payloadString(p, 'conversationId');
-      return conversationId ? `/social/chat/c/${enc(conversationId)}` : '/social/chat';
+      return conversationId ? `/people/chat/c/${enc(conversationId)}` : '/people/chat';
     }
     // Account/security → the matching settings page.
     case 'account.temp_password':

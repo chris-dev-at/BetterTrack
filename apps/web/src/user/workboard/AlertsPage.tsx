@@ -16,7 +16,7 @@ import { Alert as AlertBanner } from '../components/ui';
 const ALERTS_POLL_INTERVAL_MS = 60_000;
 
 /**
- * `/workboard/alerts` — the price-alerts panel (PROJECTPLAN.md §14, V3-P10 arc
+ * `/workbench/alerts` — the price-alerts panel (PROJECTPLAN.md §14, V3-P10 arc
  * b). Lists every alert the caller owns with create / edit / delete / re-arm,
  * all against the #334 CRUD API. The asset-page inline widget shares the same
  * dialog + list components and the same cached query.
