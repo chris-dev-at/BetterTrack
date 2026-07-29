@@ -486,7 +486,9 @@
     "utilities": "Werkzeuge",
     "myProfile": "Mein Profil",
     "expandRail": "Navigation ausklappen",
-    "collapseRail": "Navigation einklappen"
+    "collapseRail": "Navigation einklappen",
+    "expandSection": "{{section}} ausklappen",
+    "collapseSection": "{{section}} einklappen"
   },
   "footer": {
     "legal": "Rechtliches",

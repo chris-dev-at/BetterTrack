@@ -70,8 +70,20 @@ async function findRail(): Promise<HTMLElement> {
   return rail!;
 }
 
+/**
+ * The rail's top-level destination rows. Section groups render their children
+ * inside the same nav — CSS hides a closed tree, but jsdom applies no CSS, so
+ * the sub-rows are filtered out here by their container.
+ */
+function suiteRows(rail: HTMLElement): HTMLElement[] {
+  return within(rail)
+    .getAllByRole('link')
+    .filter((link) => link.closest('.bt-rail-group__children') === null);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   vi.mocked(api.getMe).mockResolvedValue(member);
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
@@ -84,9 +96,7 @@ test('the rail shows exactly the five suite destinations', async () => {
   renderAt('/portfolio');
 
   const rail = await findRail();
-  const labels = within(rail)
-    .getAllByRole('link')
-    .map((el) => el.textContent);
+  const labels = suiteRows(rail).map((el) => el.textContent);
   // Origin redesign: Home · Portfolio · Workbench · Assets · People — the
   // suite nav never grows beyond these five; utilities live below the rule.
   expect(labels).toEqual(['Home', 'Portfolio', 'Workbench', 'Assets', 'People']);
@@ -95,6 +105,138 @@ test('the rail shows exactly the five suite destinations', async () => {
   for (const gone of ['Forecast', 'Expenses', 'Social', 'Workboard', 'Dashboard']) {
     expect(within(rail).queryByRole('link', { name: gone })).not.toBeInTheDocument();
   }
+});
+
+// ─── R2 rail: expandable section groups ───────────────────────────────────────
+
+test('the rail groups carry their section tabs as children', async () => {
+  renderAt('/assets');
+
+  const rail = await findRail();
+  const children = within(rail)
+    .getAllByRole('link')
+    .filter((link) => link.closest('#bt-rail-group-assets') !== null)
+    .map((el) => el.textContent);
+  // The very tab set AssetsWorkspace renders, from `components/sectionNav.ts`.
+  expect(children).toEqual([
+    'Overview',
+    'Search',
+    'Watchlists',
+    'News',
+    'Discover',
+    'Events',
+    'Screener',
+  ]);
+  // Home and the utilities stay plain rows — no chevron, no tree.
+  expect(
+    screen.queryByRole('button', { name: /^(Expand|Collapse) Home$/ }),
+  ).not.toBeInTheDocument();
+});
+
+test('the rail tree and the in-page strip are one tab set', async () => {
+  renderAt('/portfolio');
+
+  const rail = await findRail();
+  const railChildren = within(rail)
+    .getAllByRole('link')
+    .filter((link) => link.closest('#bt-rail-group-portfolio') !== null)
+    .map((el) => el.textContent);
+  const strip = screen.getByRole('navigation', { name: 'Portfolio workspace' });
+  // Both render `components/sectionNav.ts`, so they cannot drift apart.
+  expect(railChildren).toEqual(
+    within(strip)
+      .getAllByRole('link')
+      .map((el) => el.textContent),
+  );
+  expect(railChildren).toContain('Cash flow');
+});
+
+test('the group of the active section opens itself', async () => {
+  renderAt('/workbench/alerts');
+
+  expect(await screen.findByRole('button', { name: 'Collapse Workbench' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+  // Sections the user is not in stay as they were — closed by default.
+  expect(screen.getByRole('button', { name: 'Expand Assets' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+});
+
+test('the chevron toggles a group without navigating, and the state persists', async () => {
+  const user = userEvent.setup();
+  const view = renderAt('/assets/search');
+
+  const collapse = await screen.findByRole('button', { name: 'Collapse Assets' });
+  await user.click(collapse);
+
+  // Toggling is navigation-free: the Assets page is still mounted.
+  expect(screen.getByRole('button', { name: 'Expand Assets' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  expect(screen.getByRole('searchbox', { name: 'Search assets' })).toBeInTheDocument();
+  expect(JSON.parse(localStorage.getItem('bt.rail.groups') ?? '{}')).toMatchObject({
+    assets: false,
+  });
+
+  // A fresh mount restores the closed tree — and opens the section it lands in.
+  view.unmount();
+  renderAt('/people');
+  expect(await screen.findByRole('button', { name: 'Expand Assets' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  expect(screen.getByRole('button', { name: 'Collapse People' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+});
+
+test('portfolio rail children keep the active portfolio scope', async () => {
+  renderAt('/portfolio/activity?portfolio=p-7');
+
+  const rail = await findRail();
+  // `?portfolio=<id>` rides along every child of the section (#322).
+  expect(within(rail).getByRole('link', { name: 'Cash flow' })).toHaveAttribute(
+    'href',
+    '/portfolio/cash-flow?portfolio=p-7',
+  );
+  expect(within(rail).getByRole('link', { name: /^Plan Planned$/ })).toHaveAttribute(
+    'href',
+    '/portfolio/plan?portfolio=p-7',
+  );
+
+  // The open child is the current page; its group row is not also "current".
+  expect(within(rail).getByRole('link', { name: 'Activity' })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+  expect(within(rail).getByRole('link', { name: 'Portfolio' })).not.toHaveAttribute('aria-current');
+});
+
+test('the collapse control sits in the rail and persists the preference', async () => {
+  const user = userEvent.setup();
+  renderAt('/');
+
+  const collapse = await screen.findByRole('button', { name: 'Collapse navigation' });
+  expect(collapse.closest('.bt-rail')).not.toBeNull();
+
+  await user.click(collapse);
+  expect(await screen.findByRole('button', { name: 'Expand navigation' })).toBeInTheDocument();
+  expect(localStorage.getItem('bt.rail')).toBe('collapsed');
+});
+
+test('the four section strips are hidden wherever the rail is shown', async () => {
+  renderAt('/portfolio');
+
+  // Rail + strip would be two copies of the same sub-navigation on desktop, so
+  // the strip is display:none'd there and only phones (no rail) render it.
+  expect(await screen.findByRole('navigation', { name: 'Portfolio workspace' })).toHaveClass(
+    'bt-hide-when-rail',
+  );
 });
 
 test('the rail utilities expose Ask, Review and the Control Center', async () => {

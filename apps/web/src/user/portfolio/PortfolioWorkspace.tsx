@@ -1,10 +1,9 @@
 import { Outlet, useLocation } from 'react-router-dom';
 
 import { useT } from '../../i18n';
-import { useFeatureEnabled } from '../../lib/featureFlags';
-import { LocalNav, type LocalNavItem } from '../components/LocalNav';
+import { LocalNav } from '../components/LocalNav';
+import { SECTION_NAV, SECTION_STRIP_CLASS, useSectionNavItems } from '../components/sectionNav';
 import { SubTabLink } from '../../ui/origin';
-import { ACTIVE_PORTFOLIO_PARAM } from './PortfolioSwitcher';
 
 /**
  * The portfolio workspace (PRODUCT_BLUEPRINT.md §4 "Portfolio-local
@@ -12,34 +11,22 @@ import { ACTIVE_PORTFOLIO_PARAM } from './PortfolioSwitcher';
  * mount the real feature pages; parked tabs (gold dot) render their designed
  * parking surface until their build lands. The active portfolio rides in
  * `?portfolio=<id>` and is preserved across every tab (#322).
+ *
+ * The tab set itself lives in `components/sectionNav.ts` — the rail's
+ * Portfolios group renders the very same children, and this strip only shows
+ * where the rail is hidden (≤760px).
  */
 export function PortfolioWorkspace() {
   const t = useT();
-  const importsEnabled = useFeatureEnabled('imports');
-
-  const items: LocalNavItem[] = [
-    { to: '/portfolio', label: t('portfolio.tabs.overview'), end: true },
-    { to: '/portfolio/activity', label: t('portfolio.tabs.activity') },
-    { to: '/portfolio/custom-assets', label: t('portfolio.tabs.customAssets') },
-    { to: '/portfolio/cash-flow', label: t('portfolio.tabs.cashFlow') },
-    { to: '/portfolio/analysis', label: t('portfolio.tabs.analysis') },
-    { to: '/portfolio/tax', label: t('portfolio.tabs.tax') },
-    ...(importsEnabled
-      ? [{ to: '/portfolio/import', label: t('portfolio.tabs.import') } satisfies LocalNavItem]
-      : []),
-    { to: '/portfolio/plan', label: t('portfolio.tabs.plan'), parked: true },
-    { to: '/portfolio/automate', label: t('portfolio.tabs.automate'), parked: true },
-    { to: '/portfolio/files', label: t('portfolio.tabs.files'), parked: true },
-    { to: '/portfolio/people', label: t('portfolio.tabs.people'), parked: true },
-    { to: '/portfolio/settings', label: t('portfolio.tabs.settings'), parked: true },
-  ];
+  const items = useSectionNavItems('portfolio');
 
   return (
     <div>
       <LocalNav
-        ariaLabel={t('portfolio.section.aria')}
+        ariaLabel={t(SECTION_NAV.portfolio.ariaLabelKey)}
+        className={SECTION_STRIP_CLASS}
         items={items}
-        preserveParams={[ACTIVE_PORTFOLIO_PARAM]}
+        preserveParams={SECTION_NAV.portfolio.preserveParams}
       />
       <Outlet />
     </div>

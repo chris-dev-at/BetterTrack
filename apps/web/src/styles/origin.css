@@ -45,7 +45,7 @@
   --bt-shadow-menu: 0 10px 34px rgba(0, 0, 0, 0.45);
   --bt-shadow-overlay: 0 28px 80px rgba(0, 0, 0, 0.55);
   /* Frame metrics */
-  --bt-rail-w: 232px;
+  --bt-rail-w: 248px;
   --bt-rail-w-collapsed: 64px;
   --bt-topbar-h: 60px;
   --bt-gutter: 48px;
@@ -243,12 +243,17 @@
   color: var(--bt-text);
 }
 
-.bt-rail-item > svg {
+/* The destination icon — a direct child of the row, or of the link inside an
+   expandable group row (`.bt-rail-item--group`). The group chevron's own icon
+   is deliberately excluded: it stays neutral, never gold. */
+.bt-rail-item > svg,
+.bt-rail-item__link > svg {
   flex: none;
   color: var(--bt-faint);
 }
 
-.bt-rail-item.is-active > svg {
+.bt-rail-item.is-active > svg,
+.bt-rail-item.is-active > .bt-rail-item__link > svg {
   color: var(--bt-gold);
 }
 
@@ -1612,6 +1617,196 @@
   .bt-app {
     background: #fff;
     color: #111;
+  }
+}
+
+/* ===== R2: rail nav ===== */
+
+/* Expandable section groups in the rail. The row is a flex box holding the
+   destination link and a chevron that toggles the tree without navigating;
+   `.bt-rail-item` still supplies the row's shape, hover and active surface, so
+   an active group highlights as ONE row — background + ink + gold icon, never
+   an edge accent. */
+
+.bt-rail-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.bt-rail-item--group {
+  gap: 2px;
+  /* The link carries the row's inner padding, so the whole row stays 34px. */
+  padding: 0 3px 0 0;
+}
+
+.bt-rail-item__link {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 0 6px 9px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.bt-rail-item__chevron {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--bt-faint);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-rail-item__chevron:hover {
+  background: var(--bt-surface-hover);
+  color: var(--bt-text-soft);
+}
+
+.bt-rail-item__chevron > svg {
+  transition: transform var(--bt-t-fast);
+}
+
+.bt-rail-group.is-open .bt-rail-item__chevron > svg {
+  transform: rotate(90deg);
+}
+
+/* Height animation without measuring: the 0fr → 1fr grid track. `visibility`
+   flips only after the close finishes, which keeps a closed tree out of the
+   accessibility tree and off the tab order. */
+.bt-rail-group__children {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition:
+    grid-template-rows 180ms cubic-bezier(0.3, 0, 0.2, 1),
+    visibility 0s linear 180ms;
+}
+
+.bt-rail-group.is-open > .bt-rail-group__children {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition:
+    grid-template-rows 180ms cubic-bezier(0.3, 0, 0.2, 1),
+    visibility 0s;
+}
+
+.bt-rail-group__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.bt-rail-group__list > :first-child {
+  margin-top: 2px;
+}
+
+/* Child rows: indented to the group's label, one step quieter, and — like
+   every other selected surface here — active means background + ink only. */
+.bt-rail-child {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 4px 9px 4px 36px;
+  border-radius: 6px;
+  color: var(--bt-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-rail-child:hover {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text-soft);
+}
+
+.bt-rail-child.is-active {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-rail-child__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Foot of the rail: the quiet collapse row, above the rule and the account. */
+.bt-rail-item--toggle {
+  color: var(--bt-faint);
+  font-weight: 500;
+}
+
+.bt-shell[data-rail='collapsed'] .bt-rail-item--toggle > svg {
+  transform: scaleX(-1);
+}
+
+/* A narrow rail has no room for a tree: the group row becomes a plain icon
+   link to the section root (tooltip as before), chevron and children gone. */
+.bt-shell[data-rail='collapsed'] .bt-rail-item--group,
+.bt-shell[data-rail='collapsed'] .bt-rail-item__link {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.bt-shell[data-rail='collapsed'] .bt-rail-item__chevron,
+.bt-shell[data-rail='collapsed'] .bt-rail-group__children {
+  display: none;
+}
+
+@media (max-width: 1180px) {
+  .bt-shell .bt-rail-item--group,
+  .bt-shell .bt-rail-item__link {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .bt-shell .bt-rail-item__chevron,
+  .bt-shell .bt-rail-group__children {
+    display: none;
+  }
+
+  .bt-shell .bt-rail-item--toggle > svg {
+    transform: scaleX(-1);
+  }
+}
+
+/* Desktop de-duplication: where the rail actually renders the section tree,
+   the in-page strip below the page header would be a second copy of it, so it
+   is removed — display:none, which takes the duplicate landmark out of the
+   accessibility tree too. That is exactly the expanded rail above 1180px (the
+   complement of the auto-collapse query): on phones, on tablets, and whenever
+   the user collapses the rail there is no tree, so the strip comes back and
+   the sub-navigation is never unreachable. */
+@media not all and (max-width: 1180px) {
+  .bt-shell[data-rail='expanded'] .bt-hide-when-rail {
+    display: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-rail-group__children,
+  .bt-rail-group.is-open > .bt-rail-group__children,
+  .bt-rail-item__chevron > svg {
+    transition: none;
   }
 }
 
