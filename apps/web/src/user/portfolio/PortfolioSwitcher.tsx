@@ -1,15 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
-import { createPortfolio, listPortfolios } from '../../lib/portfolioApi';
+import { listPortfolios } from '../../lib/portfolioApi';
 import { Icon } from '../../ui/origin';
-import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
+import { cx } from '../components/ui';
 import { CreateChainDialog, MirrorInviteStepDialog } from './MirrorchainPanel';
 import { PortfolioIconChip } from './PortfolioIconChip';
 import {
@@ -18,13 +16,18 @@ import {
   portfolioIconTint,
   usePortfolioKinds,
 } from './portfolioKinds';
+import { PortfolioWizard } from './wizard/PortfolioWizard';
 
 /**
  * Portfolio switcher (PROJECTPLAN.md §6.8, §13.2 V2-P8). A **selector, not a
  * management menu**: it lists the user's active portfolios behind their tinted
  * icon chip (see `portfolioKinds.ts` + `PortfolioIconChip`), switches the active
  * one via the `?portfolio=` routing param (so every scoped view below the layout
- * follows), filters by name, and creates portfolios — plain or group.
+ * follows), filters by name, and offers exactly one way to make another:
+ * "Add portfolio", which opens the wizard (`wizard/PortfolioWizard.tsx`). The
+ * group-portfolio flow lives inside that wizard now, as its "shared book"
+ * branch, rather than as a second menu item nobody could tell apart from the
+ * first.
  *
  * The trigger is the topbar's one stated fact: a bordered, surfaced control
  * carrying the current portfolio's chip, its name and its default badge. Which
@@ -117,24 +120,21 @@ export function portfolioSearch(portfolioId: string | null | undefined): string 
   return portfolioId ? `?${ACTIVE_PORTFOLIO_PARAM}=${encodeURIComponent(portfolioId)}` : '';
 }
 
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
-
 export function PortfolioSwitcher() {
   const t = useT();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState(false);
-  const [createOpen, setCreateOpen] = useState(false);
+  // The footer's one create action: the wizard owns the name, the icon and the
+  // POST; this component only activates whatever comes back (see PortfolioWizard).
+  const [wizardOpen, setWizardOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [actionError, setActionError] = useState<string | null>(null);
-  // Create-group-portfolio flow (V5-P7 §11): the "New group portfolio" menu
-  // item opens CreateChainDialog; on success we chain straight into the
-  // friend-picker invite step (§4/§11 zero-config AC).
+  // Create-group-portfolio flow (V5-P7 §11), unchanged — it is now reached
+  // through the wizard's "shared book" branch instead of its own menu item:
+  // CreateChainDialog, then straight into the friend-picker invite step
+  // (§4/§11 zero-config AC).
   const [createChainOpen, setCreateChainOpen] = useState(false);
+  const [chainSeedName, setChainSeedName] = useState('');
   const [inviteChainId, setInviteChainId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -204,22 +204,6 @@ export function PortfolioSwitcher() {
     void queryClient.invalidateQueries({ queryKey: ['portfolios'] });
     void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
   };
-
-  const createMutation = useMutation({
-    mutationFn: (name: string) => createPortfolio(name),
-    onSuccess: (created) => {
-      setActionError(null);
-      setCreateOpen(false);
-      refetchLists();
-      setActive(created.id); // jump straight to the new portfolio
-    },
-    onError: (err) =>
-      setActionError(
-        err instanceof ApiError && err.code === 'PORTFOLIO_NAME_TAKEN'
-          ? t('portfolio.switcher.nameTakenError')
-          : t('portfolio.switcher.createError'),
-      ),
-  });
 
   // Until a portfolio resolves (first load) the trigger shows the generic glyph
   // on an untinted chip — it states nothing it cannot yet know.
@@ -316,27 +300,13 @@ export function PortfolioSwitcher() {
               type="button"
               role="menuitem"
               onClick={() => {
-                setActionError(null);
-                setCreateOpen(true);
+                setWizardOpen(true);
                 setOpen(false);
               }}
               className="bt-menu-item"
             >
               <Icon name="plus" size={15} />
-              {t('portfolio.switcher.newPortfolio')}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setActionError(null);
-                setCreateChainOpen(true);
-                setOpen(false);
-              }}
-              className="bt-menu-item"
-            >
-              <Icon name="users" size={15} />
-              {t('portfolio.switcher.newGroupPortfolio')}
+              {t('portfolio.switcher.addPortfolio')}
             </button>
             <Link
               role="menuitem"
@@ -351,26 +321,26 @@ export function PortfolioSwitcher() {
         </div>
       ) : null}
 
-      {actionError && !createOpen ? (
-        <div className="absolute left-0 top-full z-30 mt-2 w-64">
-          <Alert tone="error">{actionError}</Alert>
-        </div>
-      ) : null}
-
-      {createOpen ? (
-        <NewPortfolioDialog
-          submitting={createMutation.isPending}
-          error={actionError}
-          onClose={() => {
-            setCreateOpen(false);
-            setActionError(null);
+      {wizardOpen ? (
+        <PortfolioWizard
+          onClose={() => setWizardOpen(false)}
+          onCreated={(portfolio) => {
+            refetchLists();
+            setActive(portfolio.id); // jump straight to the new portfolio
           }}
-          onSubmit={(name) => createMutation.mutate(name)}
+          onSharedBook={(name) => {
+            // Straight into the untouched §11 group-create flow below, carrying
+            // the name from the wizard's first step.
+            setChainSeedName(name);
+            setWizardOpen(false);
+            setCreateChainOpen(true);
+          }}
         />
       ) : null}
 
       {createChainOpen ? (
         <CreateChainDialog
+          initialName={chainSeedName}
           onClose={() => setCreateChainOpen(false)}
           onCreated={(chainId) => {
             setCreateChainOpen(false);
@@ -391,62 +361,5 @@ export function PortfolioSwitcher() {
         />
       ) : null}
     </div>
-  );
-}
-
-/** New-portfolio dialog — a single trimmed-name text field. */
-function NewPortfolioDialog({
-  submitting,
-  error,
-  onClose,
-  onSubmit,
-}: {
-  submitting: boolean;
-  error: string | null;
-  onClose: () => void;
-  onSubmit: (name: string) => void;
-}) {
-  const t = useT();
-  const [name, setName] = useState('');
-  const trimmed = name.trim();
-  const valid = trimmed.length > 0 && trimmed.length <= 120;
-
-  return (
-    <Dialog title={t('portfolio.switcher.createTitle')} onClose={onClose} widthClassName="max-w-md">
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (valid) onSubmit(trimmed);
-        }}
-        className="flex flex-col gap-4"
-      >
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.switcher.nameLabel')}
-          </span>
-          <input
-            type="text"
-            value={name}
-            maxLength={120}
-            autoFocus
-            onChange={(e) => setName(e.target.value)}
-            aria-label={t('portfolio.switcher.nameAriaLabel')}
-            placeholder={t('portfolio.switcher.namePlaceholder')}
-            className={inputClass}
-          />
-        </label>
-
-        {error ? <Alert tone="error">{error}</Alert> : null}
-
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose} disabled={submitting}>
-            {t('common.cancel')}
-          </Button>
-          <Button type="submit" disabled={!valid || submitting}>
-            {submitting ? t('common.saving') : t('portfolio.switcher.create')}
-          </Button>
-        </div>
-      </form>
-    </Dialog>
   );
 }

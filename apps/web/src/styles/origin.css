@@ -3743,6 +3743,236 @@
   color: var(--bt-text-soft);
 }
 
+/* ── Add-portfolio wizard ────────────────────────────────────────────────────
+ * The switcher's one create action, at popup scale: a slim dot stepper, one
+ * question, that step's own control, and a single gold primary. Same grammar as
+ * the first-run gate (`bt-fr`), sized for a dialog instead of a full canvas.
+ */
+
+.bt-pfw {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.bt-pfw__stepper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bt-pfw__dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bt-pfw__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bt-border-strong);
+  transition:
+    background var(--bt-t-fast),
+    width var(--bt-t-fast);
+}
+
+.bt-pfw__dot[data-state='done'] {
+  background: var(--bt-faint);
+}
+
+.bt-pfw__dot[data-state='current'] {
+  width: 18px;
+  border-radius: 3px;
+  background: var(--bt-gold);
+}
+
+.bt-pfw__stepnow {
+  color: var(--bt-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.bt-pfw__body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  animation: bt-rise-sm var(--bt-t-fast) both;
+}
+
+.bt-pfw__q {
+  color: var(--bt-text);
+  font-size: 17px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.bt-pfw__hint {
+  margin-top: -8px;
+  max-width: 52ch;
+  color: var(--bt-muted);
+  font-size: 12.5px;
+}
+
+/* One choice per line, separated by a rule rather than boxed into cards. */
+.bt-pfw__choices {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bt-border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.bt-pfw__choice {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 12px;
+  border: 0;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-pfw__choice + .bt-pfw__choice {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-pfw__choice:hover {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text);
+}
+
+/* Selected: background + ink + check. No left-edge accent bar, ever. */
+.bt-pfw__choice.is-active {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text);
+}
+
+.bt-pfw__choice-icon {
+  flex: none;
+  color: var(--bt-muted);
+}
+
+.bt-pfw__choice.is-active .bt-pfw__choice-icon {
+  color: var(--bt-text-soft);
+}
+
+.bt-pfw__choice-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.bt-pfw__choice-text > strong {
+  font-size: 13.5px;
+  font-weight: 590;
+}
+
+.bt-pfw__choice-text > small {
+  color: var(--bt-muted);
+  font-size: 12px;
+}
+
+.bt-pfw__choice-check {
+  flex: none;
+}
+
+/* Terminal read-back: the chip and the name of what was just made. */
+.bt-pfw__summary {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid var(--bt-border);
+  border-radius: 7px;
+}
+
+.bt-pfw__summary-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.bt-pfw__summary-text > strong {
+  color: var(--bt-text);
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.bt-pfw__summary-text > small {
+  color: var(--bt-muted);
+  font-size: 12px;
+}
+
+/* Parked rows: stated in the bt-parked voice, never a control that does nothing. */
+.bt-pfw__parkedset {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-pfw__parked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+  color: var(--bt-faint);
+  font-size: 12px;
+}
+
+.bt-pfw__parked > svg {
+  flex: none;
+}
+
+.bt-pfw__parked > span:first-of-type {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bt-pfw__parked-flag {
+  flex: none;
+  color: var(--bt-muted);
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.bt-pfw__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--bt-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-pfw__dot,
+  .bt-pfw__choice {
+    transition: none;
+  }
+
+  .bt-pfw__body {
+    animation: none;
+  }
+}
+
 /* ===== R2: palette =========================================================
    Universal ⌘K search: one faux-input trigger in the topbar, one overlay with
    ONE row grammar for everything it can reach — icon chip · primary · quiet

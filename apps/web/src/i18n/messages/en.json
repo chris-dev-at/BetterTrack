@@ -1791,8 +1791,6 @@
       "fallbackName": "Portfolio",
       "defaultBadge": "Default",
       "menuAriaLabel": "Portfolios",
-      "newPortfolio": "+ New portfolio",
-      "newGroupPortfolio": "+ New group portfolio",
       "renameCurrent": "Rename current",
       "archiveCurrent": "Archive current",
       "archiveDisabledHint": "You cannot archive your only portfolio",
@@ -1805,12 +1803,10 @@
       "archivedDialogDescription": "Restore a portfolio to bring it back into your list.",
       "noArchived": "No archived portfolios.",
       "restore": "Restore",
-      "createTitle": "New portfolio",
       "renameTitle": "Rename portfolio",
       "nameLabel": "Name",
       "nameAriaLabel": "Portfolio name",
       "namePlaceholder": "e.g. Retirement",
-      "create": "Create",
       "nameTakenError": "You already have a portfolio with that name.",
       "createError": "Could not create the portfolio. Please try again.",
       "renameError": "Could not rename the portfolio. Please try again.",
@@ -1834,7 +1830,44 @@
       "searchPlaceholder": "Search portfolios",
       "searchAriaLabel": "Search portfolios",
       "noMatches": "No matches.",
-      "settingsMenuItem": "Portfolio settings"
+      "settingsMenuItem": "Portfolio settings",
+      "addPortfolio": "Add portfolio"
+    },
+    "wizard": {
+      "title": "Add portfolio",
+      "stepOf": "Step {{current}} of {{total}}",
+      "name": {
+        "label": "Name",
+        "title": "What is this portfolio called?"
+      },
+      "icon": {
+        "label": "Icon",
+        "title": "Pick its icon",
+        "hint": "Colours it everywhere it appears. Changeable any time."
+      },
+      "book": {
+        "label": "Book",
+        "title": "Who keeps this book?",
+        "solo": {
+          "title": "Just me",
+          "hint": "Only you see and edit it."
+        },
+        "shared": {
+          "title": "Shared with people",
+          "hint": "Everyone edits the same book. It carries the group icon."
+        }
+      },
+      "done": {
+        "label": "Done",
+        "title": "Portfolio created",
+        "primary": "Open portfolio"
+      },
+      "parked": {
+        "currency": "Its own base currency",
+        "template": "Start from a template",
+        "balances": "Opening balances",
+        "import": "Import a broker file"
+      }
     },
     "cash": {
       "title": "Cash balance",

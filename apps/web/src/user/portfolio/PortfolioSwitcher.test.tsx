@@ -7,6 +7,9 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 vi.mock('../../lib/portfolioApi', () => ({
   listPortfolios: vi.fn(),
   createPortfolio: vi.fn(),
+  // The wizard renames instead of re-creating when the user goes Back (see
+  // PortfolioWizard) — mocked so an accidental call is visible, not a network hit.
+  updatePortfolio: vi.fn(),
 }));
 
 import { createPortfolio, listPortfolios } from '../../lib/portfolioApi';
@@ -162,18 +165,21 @@ describe('PortfolioSwitcher', () => {
     await waitFor(() => expect(screen.getByTestId('active-param')).toHaveTextContent('p2'));
   });
 
-  test('creating a portfolio calls the API and activates the new one', async () => {
+  test('Add portfolio opens the wizard, which creates and activates the new one', async () => {
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN] });
     vi.mocked(createPortfolio).mockResolvedValue(summary({ id: 'p9', name: 'Retirement' }));
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: '+ New portfolio' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Add portfolio' }));
 
     await userEvent.type(await screen.findByLabelText('Portfolio name'), 'Retirement');
-    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // → icon
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // → book
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // creates
 
     await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement'));
+    await userEvent.click(await screen.findByRole('button', { name: 'Open portfolio' }));
     await waitFor(() => expect(screen.getByTestId('active-param')).toHaveTextContent('p9'));
   });
 
@@ -362,12 +368,34 @@ describe('PortfolioSwitcher', () => {
     }
   });
 
-  test('still offers both create entry points', async () => {
+  test('creating is ONE entry point: the old pair of menu items is gone', async () => {
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN] });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    expect(await screen.findByRole('menuitem', { name: '+ New portfolio' })).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: '+ New group portfolio' })).toBeInTheDocument();
+    expect(await screen.findByRole('menuitem', { name: 'Add portfolio' })).toBeInTheDocument();
+    for (const gone of ['+ New portfolio', '+ New group portfolio']) {
+      expect(screen.queryByRole('menuitem', { name: gone })).not.toBeInTheDocument();
+    }
+    // …and the settings row still sits beside it.
+    expect(screen.getByRole('menuitem', { name: 'Portfolio settings' })).toBeInTheDocument();
+  });
+
+  test('the wizard shared-book branch reaches the untouched group-create flow', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN] });
+    renderSwitcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Add portfolio' }));
+    await userEvent.type(await screen.findByLabelText('Portfolio name'), 'Household');
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // → icon
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // → book
+    await userEvent.click(screen.getByRole('radio', { name: /Shared with people/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    // The §11 CreateChainDialog, exactly as the retired menu item opened it —
+    // and no plain portfolio was created on the way.
+    expect(await screen.findByRole('dialog', { name: 'New group portfolio' })).toBeInTheDocument();
+    expect(createPortfolio).not.toHaveBeenCalled();
   });
 });

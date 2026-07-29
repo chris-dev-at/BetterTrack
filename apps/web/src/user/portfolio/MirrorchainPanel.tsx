@@ -727,14 +727,21 @@ function ConfirmActionDialog({
  * prompt; on create, the friend-picker invite step opens immediately (§11).
  */
 export function CreateChainDialog({
+  initialName = '',
   onClose,
   onCreated,
 }: {
+  /**
+   * Seed for the name field — the add-portfolio wizard passes the name the user
+   * already typed on its first step, so choosing "shared" does not ask for it a
+   * second time. Behaviour is unchanged when omitted (the field starts empty).
+   */
+  initialName?: string;
   onClose: () => void;
   onCreated: (chainId: string) => void;
 }) {
   const t = useT();
-  const [name, setName] = useState('');
+  const [name, setName] = useState(initialName);
   const create = useMutation({
     mutationFn: () => createMirrorChain({ name: name.trim() }),
     onSuccess: (summary) => onCreated(summary.chainId),
