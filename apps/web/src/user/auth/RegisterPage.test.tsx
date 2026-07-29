@@ -85,7 +85,10 @@ test('open mode registers and signs the account straight in', async () => {
       locale: 'en',
     }),
   );
-  // The app opens once the session lands.
+  // A fresh account opens on first-run setup, not on Home (R2).
+  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  // …and "Do this later" is always there to hand the app straight over.
+  await u.click(screen.getByRole('button', { name: 'Do this later' }));
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
 });
 
@@ -229,6 +232,10 @@ test('the connected state locks the prefilled email, seeds the username, and sub
     }),
   );
   expect(api.register).not.toHaveBeenCalled();
+  // A first-time Google identity is routed through this same form, so it lands
+  // on first-run setup too.
+  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  await u.click(screen.getByRole('button', { name: 'Do this later' }));
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
 });
 

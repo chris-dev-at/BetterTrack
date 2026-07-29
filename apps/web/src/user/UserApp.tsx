@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 
@@ -77,7 +77,21 @@ import {
   SettingsLayout,
 } from './settings/SettingsSection';
 
-const queryClient = new QueryClient();
+/**
+ * The app-wide query cache. Exported so tests that mount {@link UserApp} more
+ * than once can `clear()` it between cases — the client is a module singleton,
+ * so without that a `staleTime`d response from one case is still served to the
+ * next one.
+ */
+export const queryClient = new QueryClient();
+
+/**
+ * First-run setup (`/welcome`). Lazy: a wizard that most sessions never open
+ * has no business in the main bundle, and it pulls in the QR renderer.
+ */
+const WelcomePage = lazy(() =>
+  import('./firstrun/WelcomePage').then((m) => ({ default: m.WelcomePage })),
+);
 
 /**
  * Legacy-path redirect that preserves the query string (the active portfolio
@@ -133,6 +147,16 @@ function UserShell() {
         <Route path="oauth/authorize" element={<ConsentPage />} />
         {/* Self-service account deletion (§13.4 V4-P2c, #362). */}
         <Route path="account/delete" element={<DeleteAccountPage />} />
+        {/* First-run setup — a full-screen gate canvas outside the shell chrome.
+            Registration lands here; ⌘K "Run setup again" re-opens it any time. */}
+        <Route
+          path="welcome"
+          element={
+            <Suspense fallback={<Splash />}>
+              <WelcomePage />
+            </Suspense>
+          }
+        />
         {/* The Blueprint Builder is a full-screen surface (§6.5) outside the
             shell chrome; legacy Conglomerate paths redirect here. */}
         <Route path="workbench/blueprints/new" element={<ConglomerateBuilderPage />} />

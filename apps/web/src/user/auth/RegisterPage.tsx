@@ -246,7 +246,12 @@ export function RegisterPage() {
         setPending(true);
         return;
       }
-      navigate('/', { replace: true });
+      // A brand-new account opens on first-run setup rather than on Home — the
+      // one moment the offer is actually welcome. Covers the Google-assisted
+      // path too: a first-time Google identity is routed through this same form
+      // (`?google=connected`), so it lands here as well. `replace` keeps Back
+      // from returning to a spent registration form.
+      navigate('/welcome', { replace: true });
     } catch (err) {
       setError(registerErrorMessage(t, err));
     } finally {

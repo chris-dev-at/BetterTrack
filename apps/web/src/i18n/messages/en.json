@@ -4296,5 +4296,91 @@
     "create": "Create",
     "control": "Control Center",
     "commandsAria": "Commands"
+  },
+  "firstrun": {
+    "stepOf": "Step {{current}} of {{total}}",
+    "later": "Do this later",
+    "finish": "Go to BetterTrack",
+    "parkedFlag": "In the works",
+    "command": {
+      "runAgain": "Run setup again"
+    },
+    "profile": {
+      "label": "You",
+      "title": "Is this you?",
+      "hint": "The name and address your account was created with.",
+      "nameLabel": "Display name",
+      "nameParked": "Renaming arrives with profile editing.",
+      "emailLabel": "Email"
+    },
+    "verifyEmail": {
+      "label": "Email",
+      "title": "Verify your email",
+      "verified": "{{email}} arrived verified from Google — nothing to do.",
+      "parkedNote": "Arrives with email delivery.",
+      "codeLabel": "Verification code",
+      "codeHint": "A code will go to {{email}} once delivery is live."
+    },
+    "security": {
+      "label": "Security",
+      "title": "Add a second lock?",
+      "hint": "Both are optional, and either can wait.",
+      "setUp": "Set up",
+      "on": "On",
+      "pin": {
+        "title": "App PIN",
+        "description": "Four digits to unlock BetterTrack on this device.",
+        "newLabel": "New PIN",
+        "confirmLabel": "Confirm PIN",
+        "save": "Save PIN",
+        "mismatch": "The two PINs do not match.",
+        "rateLimited": "Too many attempts. Try again shortly.",
+        "failed": "The PIN could not be saved."
+      },
+      "twoFactor": {
+        "title": "Two-factor authentication",
+        "description": "A code from your authenticator app at every sign-in.",
+        "scan": "Scan this with your authenticator app.",
+        "qrAria": "Authenticator setup QR code",
+        "manualToggle": "Enter the key manually",
+        "codeLabel": "Code from your app",
+        "confirm": "Turn on",
+        "invalidCode": "That code is incorrect or has expired.",
+        "rateLimited": "Too many codes. Try again shortly.",
+        "enrollError": "Setup could not be started.",
+        "enabled": "Two-factor authentication is on."
+      },
+      "recoveryCodes": {
+        "description": "Keep these somewhere safe. Each one signs you in once if you lose your app.",
+        "saved": "I have saved them"
+      }
+    },
+    "preferences": {
+      "label": "Preferences",
+      "title": "Language and currency",
+      "languageLabel": "Language",
+      "currencyLabel": "Base currency",
+      "currencyHint": "Every total is converted to this."
+    },
+    "tax": {
+      "label": "Tax",
+      "title": "How should tax be handled?",
+      "hint": "This becomes the default for new portfolios — change it any time.",
+      "groupAria": "Tax handling"
+    },
+    "publicProfile": {
+      "label": "Profile",
+      "title": "Your public profile",
+      "pictureParked": "Picking a picture lands later.",
+      "toggleLabel": "Make my profile public",
+      "toggleHint": "Anyone can see the items you have shared publicly.",
+      "acknowledge": "I understand and want a public profile."
+    },
+    "done": {
+      "label": "Done",
+      "title": "You are set up",
+      "set": "Set",
+      "later": "Later"
+    }
   }
 }
