@@ -10,25 +10,24 @@ import type {
   MeResponse,
 } from '@bettertrack/contracts';
 
-vi.mock('../../lib/userApi', () => ({
+vi.mock('../../../lib/userApi', () => ({
   getMe: vi.fn(),
-  changePassword: vi.fn(),
   requestDataExport: vi.fn(),
   getDataExportStatus: vi.fn(),
   dataExportDownloadUrl: vi.fn(
     (token: string) => `/api/v1/account/export/download?token=${encodeURIComponent(token)}`,
   ),
 }));
-vi.mock('../../lib/settingsApi', () => ({
+vi.mock('../../../lib/settingsApi', () => ({
   getAccountSettings: vi.fn(),
   updateAccountSettings: vi.fn(),
 }));
 
-import { I18nProvider } from '../../i18n';
-import { getMoneyCurrency, setMoneyCurrency } from '../../lib/format';
-import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
-import { changePassword, getDataExportStatus, getMe, requestDataExport } from '../../lib/userApi';
-import { AccountSettingsPage } from './AccountSettingsPage';
+import { I18nProvider } from '../../../i18n';
+import { getMoneyCurrency, setMoneyCurrency } from '../../../lib/format';
+import { getAccountSettings, updateAccountSettings } from '../../../lib/settingsApi';
+import { getDataExportStatus, getMe, requestDataExport } from '../../../lib/userApi';
+import { AccountPanel } from './AccountPanel';
 
 const ME: MeResponse = {
   id: '00000000-0000-0000-0000-000000000001',
@@ -67,13 +66,13 @@ const REQUEST_RESPONSE: ExportRequestResponse = {
   downloadToken: 'raw-download-token-1',
 };
 
-function renderPage() {
+function renderPanel() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
     <MemoryRouter>
       <I18nProvider>
         <QueryClientProvider client={client}>
-          <AccountSettingsPage />
+          <AccountPanel />
         </QueryClientProvider>
       </I18nProvider>
     </MemoryRouter>,
@@ -84,7 +83,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   vi.mocked(getMe).mockResolvedValue(ME);
-  vi.mocked(changePassword).mockResolvedValue(ME);
   vi.mocked(getDataExportStatus).mockResolvedValue(NO_EXPORT);
   vi.mocked(requestDataExport).mockResolvedValue(REQUEST_RESPONSE);
   vi.mocked(getAccountSettings).mockResolvedValue({
@@ -105,9 +103,9 @@ beforeEach(() => {
 // stay order-independent.
 afterEach(() => setMoneyCurrency('EUR'));
 
-describe('AccountSettingsPage', () => {
-  test('renders identity fields; the base currency moved to its own picker (V3-P10d)', async () => {
-    renderPage();
+describe('AccountPanel', () => {
+  test('renders identity rows; the base currency has its own picker (V3-P10d)', async () => {
+    renderPanel();
 
     expect(await screen.findByText('ada')).toBeInTheDocument();
     expect(screen.getByText('ada@example.com')).toBeInTheDocument();
@@ -116,51 +114,37 @@ describe('AccountSettingsPage', () => {
     expect(screen.queryByText(/\(fixed\)/)).not.toBeInTheDocument();
   });
 
-  test('change-password submit calls the client with current + new', async () => {
-    const user = userEvent.setup();
-    renderPage();
+  // Popup-native: ONE compact head naming the panel, and no page-sized title
+  // stack or subtitle restating it.
+  test('carries exactly one panel head and no page heading', async () => {
+    renderPanel();
 
-    await user.type(await screen.findByLabelText('Current password'), 'oldpassword1');
-    await user.type(screen.getByLabelText('New password'), 'newpassword123');
-    await user.type(screen.getByLabelText('Confirm new password'), 'newpassword123');
-    await user.click(screen.getByRole('button', { name: 'Update password' }));
-
-    await waitFor(() =>
-      expect(changePassword).toHaveBeenCalledWith({
-        currentPassword: 'oldpassword1',
-        newPassword: 'newpassword123',
-      }),
-    );
-    expect(await screen.findByText(/password has been changed/i)).toBeInTheDocument();
+    await screen.findByText('ada');
+    const heads = screen.getAllByRole('heading', { level: 2 });
+    expect(heads).toHaveLength(1);
+    expect(heads[0]).toHaveTextContent('Account');
+    expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
   });
 
-  test('mismatched new passwords do not call the client', async () => {
-    const user = userEvent.setup();
-    renderPage();
+  // Credentials are the Sign-in panel's job now — this panel is identity +
+  // display + data, and must not ship a password form of its own.
+  test('has no password form (it moved to the Sign-in panel)', async () => {
+    renderPanel();
 
-    await user.type(await screen.findByLabelText('Current password'), 'oldpassword1');
-    await user.type(screen.getByLabelText('New password'), 'newpassword123');
-    await user.type(screen.getByLabelText('Confirm new password'), 'different12345');
-    await user.click(screen.getByRole('button', { name: 'Update password' }));
-
-    expect(await screen.findByText(/do not match/i)).toBeInTheDocument();
-    expect(changePassword).not.toHaveBeenCalled();
+    await screen.findByText('ada');
+    expect(screen.queryByLabelText('Current password')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Update password' })).not.toBeInTheDocument();
   });
 
-  // Portfolio visibility moved to the Socials tab (#377): Settings no longer has
-  // any sharing toggle — neither the per-default-portfolio one nor the create-time
-  // default — only a signpost linking to where sharing now lives.
-  test('has no visibility toggle and links to sharing in the Social tab (#377)', async () => {
-    renderPage();
+  // Portfolio visibility moved to the Socials tab (#377): the Control Center has
+  // no sharing toggle — neither the per-default-portfolio one nor the create-time
+  // default — and never writes a portfolio visibility.
+  test('has no visibility toggle and never writes a portfolio visibility (#377)', async () => {
+    renderPanel();
 
-    expect(await screen.findByText('Portfolio sharing')).toBeInTheDocument();
-    const link = screen.getByRole('link', { name: /manage sharing in social/i });
-    expect(link).toHaveAttribute('href', '/people/shared');
-
-    // The retired controls are gone: no Private/Friends or Yes/No radios.
+    await screen.findByText('ada');
     expect(screen.queryByRole('radio', { name: 'Friends' })).not.toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: 'Yes' })).not.toBeInTheDocument();
-    // …and Settings never writes a portfolio visibility any more.
     expect(updateAccountSettings).not.toHaveBeenCalledWith(
       expect.objectContaining({ defaultPortfolioVisibility: expect.anything() }),
     );
@@ -174,7 +158,7 @@ describe('AccountSettingsPage', () => {
       baseCurrency: 'EUR',
       discreetMode: false,
     });
-    renderPage();
+    renderPanel();
 
     // Renders in English by default (source of truth).
     expect(await screen.findByText('Account')).toBeInTheDocument();
@@ -195,7 +179,7 @@ describe('AccountSettingsPage', () => {
       baseCurrency: 'USD',
       discreetMode: false,
     });
-    renderPage();
+    renderPanel();
 
     // Defaults to EUR (the migration/backfill default) with all four options.
     const picker = await screen.findByLabelText('Base currency');
@@ -222,7 +206,7 @@ describe('AccountSettingsPage', () => {
     const user = userEvent.setup();
     // Never-requested until the export is asked for; the same job then reports ready.
     vi.mocked(getDataExportStatus).mockResolvedValueOnce(NO_EXPORT).mockResolvedValue(READY_EXPORT);
-    renderPage();
+    renderPanel();
 
     await user.type(await screen.findByLabelText('Confirm your password'), 'oldpassword1');
     await user.click(screen.getByRole('button', { name: 'Export my data' }));
@@ -256,7 +240,7 @@ describe('AccountSettingsPage', () => {
       JSON.stringify({ jobId: 'a-different-job', token: 'stale-token' }),
     );
     vi.mocked(getDataExportStatus).mockResolvedValue(READY_EXPORT);
-    renderPage();
+    renderPanel();
 
     expect(
       await screen.findByText(/its download link isn't available on this device/i),

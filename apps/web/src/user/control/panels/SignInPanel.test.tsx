@@ -1,38 +1,25 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type {
-  MeResponse,
-  Passkey,
-  SessionInfoResponse,
-  SessionSummary,
-  TwoFactorStatusResponse,
-} from '@bettertrack/contracts';
+import type { MeResponse, Passkey, TwoFactorStatusResponse } from '@bettertrack/contracts';
 
-vi.mock('../../lib/userApi', () => ({
-  getMe: vi.fn(),
-  getSession: vi.fn(),
-  listSessions: vi.fn(),
-  revokeSession: vi.fn(),
-  revokeOtherSessions: vi.fn(),
-  setPin: vi.fn(),
-  disablePin: vi.fn(),
-  setPinLockIdleMinutes: vi.fn(),
+vi.mock('../../../lib/userApi', () => ({
+  changePassword: vi.fn(),
   listPasskeys: vi.fn(),
   renamePasskey: vi.fn(),
   deletePasskey: vi.fn(),
 }));
 
-vi.mock('../../lib/passkeys', () => ({
+vi.mock('../../../lib/passkeys', () => ({
   browserSupportsWebAuthn: vi.fn(() => true),
   isPasskeyCancellation: vi.fn(() => false),
   registerPasskey: vi.fn(),
 }));
 
-vi.mock('../../lib/twoFactorApi', () => ({
+vi.mock('../../../lib/twoFactorApi', () => ({
   getTwoFactorStatus: vi.fn(),
   enrollTwoFactor: vi.fn(),
   confirmTwoFactor: vi.fn(),
@@ -43,7 +30,8 @@ vi.mock('../../lib/twoFactorApi', () => ({
   regenerateRecoveryCodes: vi.fn(),
 }));
 
-import { ApiError } from '../../lib/apiClient';
+import { ApiError } from '../../../lib/apiClient';
+import { registerPasskey } from '../../../lib/passkeys';
 import {
   confirmEmailTwoFactor,
   confirmTwoFactor,
@@ -53,28 +41,23 @@ import {
   enrollTwoFactor,
   getTwoFactorStatus,
   regenerateRecoveryCodes,
-} from '../../lib/twoFactorApi';
-import {
-  deletePasskey,
-  disablePin,
-  getMe,
-  getSession,
-  listPasskeys,
-  listSessions,
-  renamePasskey,
-  revokeOtherSessions,
-  revokeSession,
-  setPin,
-  setPinLockIdleMinutes,
-} from '../../lib/userApi';
-import { registerPasskey } from '../../lib/passkeys';
-import { SecuritySettingsPage } from './SecuritySettingsPage';
+} from '../../../lib/twoFactorApi';
+import { changePassword, deletePasskey, listPasskeys, renamePasskey } from '../../../lib/userApi';
+import { SignInPanel } from './SignInPanel';
 
-const SESSION: SessionInfoResponse = {
-  signedInAt: '2026-06-01T08:00:00.000Z',
-  renewedAt: '2026-07-01T08:00:00.000Z',
-  persistent: true,
-  expiresAt: '2026-07-31T08:00:00.000Z',
+const ME: MeResponse = {
+  id: '00000000-0000-0000-0000-000000000001',
+  email: 'ada@example.com',
+  username: 'ada',
+  role: 'user',
+  status: 'active',
+  mustChangePassword: false,
+  pinEnabled: false,
+  pinLockIdleMinutes: null,
+  baseCurrency: 'EUR',
+  locale: 'en',
+  lastLoginAt: '2026-07-01T10:00:00.000Z',
+  createdAt: '2026-01-15T09:00:00.000Z',
 };
 
 function makeTwoFactorStatus(
@@ -89,213 +72,116 @@ function makeTwoFactorStatus(
   };
 }
 
-function makeMe(pinEnabled: boolean): MeResponse {
+function makePasskey(overrides: Partial<Passkey> = {}): Passkey {
   return {
-    id: '00000000-0000-0000-0000-000000000001',
-    email: 'ada@example.com',
-    username: 'ada',
-    role: 'user',
-    status: 'active',
-    mustChangePassword: false,
-    pinEnabled,
-    pinLockIdleMinutes: null,
-    baseCurrency: 'EUR',
-    locale: 'en',
-    lastLoginAt: '2026-07-01T08:00:00.000Z',
-    createdAt: '2026-01-15T09:00:00.000Z',
+    id: 'pk-1',
+    name: 'MacBook Touch ID',
+    createdAt: '2026-06-01T08:00:00.000Z',
+    lastUsedAt: '2026-07-01T08:00:00.000Z',
+    ...overrides,
   };
 }
 
-function renderPage(initialEntry = '/settings/security') {
+function renderPanel() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <MemoryRouter initialEntries={['/control/sign-in']}>
       <QueryClientProvider client={client}>
-        <SecuritySettingsPage />
+        <SignInPanel />
       </QueryClientProvider>
     </MemoryRouter>,
   );
 }
 
-const SESSIONS: SessionSummary[] = [
-  {
-    id: 'handle-current',
-    device: 'Chrome on macOS',
-    createdAt: '2026-07-01T08:00:00.000Z',
-    lastSeenAt: '2026-07-07T09:00:00.000Z',
-    current: true,
-    persistent: true,
-  },
-  {
-    id: 'handle-other',
-    device: 'Firefox on Windows',
-    createdAt: '2026-06-20T08:00:00.000Z',
-    lastSeenAt: '2026-07-05T10:00:00.000Z',
-    current: false,
-    persistent: false,
-  },
-];
+/**
+ * "Current password" is the accessible label of BOTH the change-password field
+ * and the passkey re-auth field — merging credentials onto one panel made them
+ * coexist, and the labels are load-bearing (tests + e2e), so they stay. Queries
+ * scope to the owning group instead of guessing.
+ */
+function group(name: string): HTMLElement {
+  const heading = screen.getByRole('heading', { level: 3, name });
+  const section = heading.closest('section');
+  if (!section) throw new Error(`no group section for "${name}"`);
+  return section as HTMLElement;
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getSession).mockResolvedValue(SESSION);
-  vi.mocked(listSessions).mockResolvedValue(SESSIONS);
-  vi.mocked(revokeSession).mockResolvedValue(undefined);
-  vi.mocked(revokeOtherSessions).mockResolvedValue({ revoked: 1 });
-  vi.mocked(setPin).mockResolvedValue(makeMe(true));
-  vi.mocked(disablePin).mockResolvedValue(makeMe(false));
-  vi.mocked(setPinLockIdleMinutes).mockResolvedValue(makeMe(true));
+  vi.mocked(changePassword).mockResolvedValue(ME);
   vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
   vi.mocked(enrollEmailTwoFactor).mockResolvedValue(undefined);
   vi.mocked(disableEmailTwoFactor).mockResolvedValue(undefined);
   vi.mocked(listPasskeys).mockResolvedValue([]);
 });
 
-describe('SecuritySettingsPage', () => {
-  test('renders session info', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    renderPage();
+describe('SignInPanel — password', () => {
+  // Popup-native: ONE compact head naming the panel; the three credential
+  // groups keep real headings so the outline survives the compaction.
+  test('carries one panel head and its three credential groups', async () => {
+    renderPanel();
 
-    expect(await screen.findByText(/signed in since/i)).toBeInTheDocument();
-    expect(screen.getByText(/expires after 30 days of inactivity/i)).toBeInTheDocument();
+    const heads = await screen.findAllByRole('heading', { level: 2 });
+    expect(heads).toHaveLength(1);
+    expect(heads[0]).toHaveTextContent('Sign-in');
+    for (const name of ['Change password', 'Two-factor authentication', 'Passkeys']) {
+      expect(screen.getByRole('heading', { level: 3, name })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
   });
 
-  test('an ephemeral session reports its real lifetime, not "30 days" (V4-P2b, §399 §A)', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    vi.mocked(getSession).mockResolvedValue({ ...SESSION, persistent: false });
-    renderPage();
-
-    // The browser-only copy, never the persistent 30-day claim.
-    expect(await screen.findByText(/signs out when you close it/i)).toBeInTheDocument();
-    expect(screen.queryByText(/expires after 30 days of inactivity/i)).not.toBeInTheDocument();
-  });
-
-  test('lists active sessions with device labels and a current-device marker (V3-P11a)', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    renderPage();
-
-    expect(await screen.findByRole('heading', { name: 'Active sessions' })).toBeInTheDocument();
-    expect(await screen.findByText('Chrome on macOS')).toBeInTheDocument();
-    expect(screen.getByText('Firefox on Windows')).toBeInTheDocument();
-    // The current session is marked and has no per-row log-out button.
-    expect(screen.getByText('This device')).toBeInTheDocument();
-    // Exactly one per-row "Log out" (the non-current device).
-    expect(screen.getAllByRole('button', { name: 'Log out' })).toHaveLength(1);
-  });
-
-  test('marks each session persistent vs ephemeral (V4-P2b, §399 §A)', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    renderPage();
-
-    // The current session is persistent; the other was a browser-session login.
-    expect(await screen.findByText('Stays signed in')).toBeInTheDocument();
-    expect(screen.getByText('This browser only')).toBeInTheDocument();
-  });
-
-  test('logs out one device via revokeSession (V3-P11a)', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+  test('change-password submit calls the client with current + new', async () => {
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
-    await user.click(await screen.findByRole('button', { name: 'Log out' }));
-    await waitFor(() => expect(revokeSession).toHaveBeenCalledWith('handle-other'));
+    const form = group('Change password');
+    await user.type(within(form).getByLabelText('Current password'), 'oldpassword1');
+    await user.type(within(form).getByLabelText('New password'), 'newpassword123');
+    await user.type(within(form).getByLabelText('Confirm new password'), 'newpassword123');
+    await user.click(within(form).getByRole('button', { name: 'Update password' }));
+
+    await waitFor(() =>
+      expect(changePassword).toHaveBeenCalledWith({
+        currentPassword: 'oldpassword1',
+        newPassword: 'newpassword123',
+      }),
+    );
+    expect(await screen.findByText(/password has been changed/i)).toBeInTheDocument();
   });
 
-  test('logs out all other devices behind a confirm step (V3-P11a)', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+  test('mismatched new passwords do not call the client', async () => {
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
-    // First click reveals the confirmation, not an immediate revoke.
-    await user.click(await screen.findByRole('button', { name: 'Log out all other devices' }));
-    expect(revokeOtherSessions).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole('button', { name: 'Log out all other devices' }));
-    await waitFor(() => expect(revokeOtherSessions).toHaveBeenCalled());
-  });
-
-  test('enables a PIN when none is set', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    const user = userEvent.setup();
-    renderPage();
-
-    await user.type(await screen.findByLabelText('PIN'), '1234');
-    await user.type(screen.getByLabelText('Confirm PIN'), '1234');
-    await user.click(screen.getByRole('button', { name: 'Enable PIN' }));
-
-    await waitFor(() => expect(setPin).toHaveBeenCalledWith({ pin: '1234' }));
-  });
-
-  test('rejects a mismatched PIN confirmation', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    const user = userEvent.setup();
-    renderPage();
-
-    await user.type(await screen.findByLabelText('PIN'), '1234');
-    await user.type(screen.getByLabelText('Confirm PIN'), '5678');
-    await user.click(screen.getByRole('button', { name: 'Enable PIN' }));
+    const form = group('Change password');
+    await user.type(within(form).getByLabelText('Current password'), 'oldpassword1');
+    await user.type(within(form).getByLabelText('New password'), 'newpassword123');
+    await user.type(within(form).getByLabelText('Confirm new password'), 'different12345');
+    await user.click(within(form).getByRole('button', { name: 'Update password' }));
 
     expect(await screen.findByText(/do not match/i)).toBeInTheDocument();
-    expect(setPin).not.toHaveBeenCalled();
+    expect(changePassword).not.toHaveBeenCalled();
   });
 
-  test('changes and disables an existing PIN', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(true));
+  test('a wrong current password surfaces the credential error, not a generic one', async () => {
+    vi.mocked(changePassword).mockRejectedValue(new ApiError(401, 'INVALID_CREDENTIALS', 'nope'));
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
-    // Change flow reveals the PIN form and submits via setPin.
-    await user.click(await screen.findByRole('button', { name: 'Change PIN' }));
-    await user.type(screen.getByLabelText('PIN'), '9999');
-    await user.type(screen.getByLabelText('Confirm PIN'), '9999');
-    await user.click(screen.getByRole('button', { name: 'Save new PIN' }));
+    const form = group('Change password');
+    await user.type(within(form).getByLabelText('Current password'), 'wrongpassword');
+    await user.type(within(form).getByLabelText('New password'), 'newpassword123');
+    await user.type(within(form).getByLabelText('Confirm new password'), 'newpassword123');
+    await user.click(within(form).getByRole('button', { name: 'Update password' }));
 
-    await waitFor(() => expect(setPin).toHaveBeenCalledWith({ pin: '9999' }));
-
-    // Disable calls disablePin.
-    await user.click(await screen.findByRole('button', { name: 'Disable PIN' }));
-    await waitFor(() => expect(disablePin).toHaveBeenCalled());
-  });
-
-  test('the unlock-window control only shows once a PIN is enabled (#288)', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    renderPage();
-
-    // With no PIN, the enable form is up but no window picker.
-    expect(await screen.findByRole('button', { name: 'Enable PIN' })).toBeInTheDocument();
-    expect(screen.queryByLabelText('Unlock window')).not.toBeInTheDocument();
-  });
-
-  test('the unlock window defaults to 10 minutes when unset (#288)', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(true)); // pinLockIdleMinutes: null → default
-    renderPage();
-
-    const select = (await screen.findByLabelText('Unlock window')) as HTMLSelectElement;
-    expect(select.value).toBe('10');
-  });
-
-  test('changing the unlock window persists the new value (#288)', async () => {
-    vi.mocked(getMe).mockResolvedValue({ ...makeMe(true), pinLockIdleMinutes: 5 });
-    vi.mocked(setPinLockIdleMinutes).mockResolvedValue({
-      ...makeMe(true),
-      pinLockIdleMinutes: 30,
-    });
-    const user = userEvent.setup();
-    renderPage();
-
-    const select = (await screen.findByLabelText('Unlock window')) as HTMLSelectElement;
-    expect(select.value).toBe('5');
-    await user.selectOptions(select, '30');
-
-    await waitFor(() => expect(setPinLockIdleMinutes).toHaveBeenCalledWith({ idleMinutes: 30 }));
+    expect(await screen.findByText(/current password is incorrect/i)).toBeInTheDocument();
   });
 });
 
-describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
+describe('SignInPanel — two-factor authentication (#298)', () => {
   test('shows both methods disabled, each with its own setup button', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
-    renderPage();
+    renderPanel();
 
     expect(
       await screen.findByRole('heading', { name: 'Two-factor authentication' }),
@@ -311,7 +197,6 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
   });
 
   test('authenticator enroll: renders a QR code, confirms, and shows recovery codes once', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
     vi.mocked(enrollTwoFactor).mockResolvedValue({
       otpauthUri: 'otpauth://totp/BetterTrack:ada%40example.com?secret=ABCDEFGHIJKLMNOP',
@@ -321,7 +206,7 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
       recoveryCodes: ['aaaa-bbbb-cccc-dddd', 'eeee-ffff-gggg-hhhh'],
     });
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Set up authenticator app' }));
 
@@ -345,13 +230,12 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
   });
 
   test('email enroll: sends a code, confirms, and shows recovery codes (first method)', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
     vi.mocked(confirmEmailTwoFactor).mockResolvedValue({
       recoveryCodes: ['iiii-jjjj-kkkk-llll'],
     });
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Set up email codes' }));
     await waitFor(() => expect(enrollEmailTwoFactor).toHaveBeenCalled());
@@ -364,7 +248,6 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
   });
 
   test('email enroll blocked (no SMTP) shows the lockout-guard message', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
     vi.mocked(enrollEmailTwoFactor).mockRejectedValue(
       new ApiError(
@@ -374,7 +257,7 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
       ),
     );
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Set up email codes' }));
 
@@ -383,11 +266,10 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
   });
 
   test('shows both methods enabled with turn-off and regenerate actions', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(getTwoFactorStatus).mockResolvedValue(
       makeTwoFactorStatus({ totpEnabled: true, emailEnabled: true, recoveryCodesRemaining: 3 }),
     );
-    renderPage();
+    renderPanel();
 
     expect(await screen.findByText(/3 recovery codes remaining/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Regenerate recovery codes' })).toBeInTheDocument();
@@ -396,13 +278,12 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
   });
 
   test('disables the authenticator method with a code', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(getTwoFactorStatus).mockResolvedValue(
       makeTwoFactorStatus({ totpEnabled: true, recoveryCodesRemaining: 5 }),
     );
     vi.mocked(disableTwoFactor).mockResolvedValue(undefined);
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Turn off' }));
     await user.type(
@@ -418,12 +299,11 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
   });
 
   test('disables the email method directly from the authenticated session', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(getTwoFactorStatus).mockResolvedValue(
       makeTwoFactorStatus({ emailEnabled: true, recoveryCodesRemaining: 5 }),
     );
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     // Email is the only enabled method, so there is exactly one "Turn off".
     await user.click(await screen.findByRole('button', { name: 'Turn off' }));
@@ -433,7 +313,6 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
   });
 
   test('regenerates recovery codes when a method is enabled', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(getTwoFactorStatus).mockResolvedValue(
       makeTwoFactorStatus({ totpEnabled: true, recoveryCodesRemaining: 3 }),
     );
@@ -441,7 +320,7 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
       recoveryCodes: ['zzzz-yyyy-xxxx-wwww'],
     });
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Regenerate recovery codes' }));
 
@@ -450,24 +329,13 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
   });
 });
 
-function makePasskey(overrides: Partial<Passkey> = {}): Passkey {
-  return {
-    id: 'pk-1',
-    name: 'MacBook Touch ID',
-    createdAt: '2026-06-01T08:00:00.000Z',
-    lastUsedAt: '2026-07-01T08:00:00.000Z',
-    ...overrides,
-  };
-}
-
-describe('SecuritySettingsPage — passkeys (§13.4 V4-P4)', () => {
+describe('SignInPanel — passkeys (§13.4 V4-P4)', () => {
   test('lists passkeys with name, added, and last-used', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(listPasskeys).mockResolvedValue([
       makePasskey({ id: 'pk-1', name: 'MacBook Touch ID' }),
       makePasskey({ id: 'pk-2', name: 'YubiKey', lastUsedAt: null }),
     ]);
-    renderPage();
+    renderPanel();
 
     expect(await screen.findByText('MacBook Touch ID')).toBeInTheDocument();
     expect(screen.getByText('YubiKey')).toBeInTheDocument();
@@ -477,11 +345,10 @@ describe('SecuritySettingsPage — passkeys (§13.4 V4-P4)', () => {
   });
 
   test('renames a passkey', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(listPasskeys).mockResolvedValue([makePasskey()]);
     vi.mocked(renamePasskey).mockResolvedValue(makePasskey({ name: 'Work laptop' }));
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Rename' }));
     const input = screen.getByLabelText('Passkey name');
@@ -493,19 +360,19 @@ describe('SecuritySettingsPage — passkeys (§13.4 V4-P4)', () => {
   });
 
   test('deletes a passkey after confirming the password', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(listPasskeys).mockResolvedValue([
       makePasskey({ id: 'pk-1' }),
       makePasskey({ id: 'pk-2', name: 'YubiKey' }),
     ]);
     vi.mocked(deletePasskey).mockResolvedValue(undefined);
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click((await screen.findAllByRole('button', { name: 'Delete' }))[0]!);
-    const pw = screen.getByLabelText('Current password');
-    await user.type(pw, 'my-password');
-    await user.click(screen.getByRole('button', { name: 'Remove passkey' }));
+    // Scoped: the change-password form owns a "Current password" field too.
+    const keys = group('Passkeys');
+    await user.type(within(keys).getByLabelText('Current password'), 'my-password');
+    await user.click(within(keys).getByRole('button', { name: 'Remove passkey' }));
 
     await waitFor(() =>
       expect(deletePasskey).toHaveBeenCalledWith('pk-1', { password: 'my-password' }),
@@ -513,29 +380,38 @@ describe('SecuritySettingsPage — passkeys (§13.4 V4-P4)', () => {
   });
 
   test('warns when removing the last passkey (password login remains)', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(listPasskeys).mockResolvedValue([makePasskey()]);
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Delete' }));
     expect(screen.getByText(/last passkey/i)).toBeInTheDocument();
   });
 
   test('registers a passkey with a name + password re-auth', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(listPasskeys).mockResolvedValue([]);
     vi.mocked(registerPasskey).mockResolvedValue(makePasskey({ name: 'New key' }));
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Add a passkey' }));
-    await user.type(screen.getByLabelText('Passkey name'), 'New key');
-    await user.type(screen.getByLabelText('Current password'), 'my-password');
-    await user.click(screen.getByRole('button', { name: 'Add passkey' }));
+    const keys = group('Passkeys');
+    await user.type(within(keys).getByLabelText('Passkey name'), 'New key');
+    await user.type(within(keys).getByLabelText('Current password'), 'my-password');
+    await user.click(within(keys).getByRole('button', { name: 'Add passkey' }));
 
     await waitFor(() =>
       expect(registerPasskey).toHaveBeenCalledWith('New key', { password: 'my-password' }),
     );
+  });
+
+  test('an unsupported browser hides the add form and says so', async () => {
+    const { browserSupportsWebAuthn } = await import('../../../lib/passkeys');
+    vi.mocked(browserSupportsWebAuthn).mockReturnValueOnce(false);
+    vi.mocked(listPasskeys).mockResolvedValue([]);
+    renderPanel();
+
+    expect(await screen.findByText(/doesn't support passkeys/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add a passkey' })).not.toBeInTheDocument();
   });
 });

@@ -4,20 +4,20 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-vi.mock('../../lib/settingsApi', () => ({
+vi.mock('../../../lib/settingsApi', () => ({
   getTaxSettings: vi.fn(),
   updateTaxSettings: vi.fn(),
 }));
 
-import { getTaxSettings, updateTaxSettings } from '../../lib/settingsApi';
-import { NewPortfolioDefaultsPage } from './NewPortfolioDefaultsPage';
+import { getTaxSettings, updateTaxSettings } from '../../../lib/settingsApi';
+import { DefaultsPanel } from './DefaultsPanel';
 
-function renderPage() {
+function renderPanel() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <NewPortfolioDefaultsPage />
+        <DefaultsPanel />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -28,19 +28,20 @@ beforeEach(() => {
   vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'none', country: null });
 });
 
-describe('NewPortfolioDefaultsPage (issue #636)', () => {
+describe('DefaultsPanel (issue #636)', () => {
   test('frames the tax control as the default for new portfolios', async () => {
-    renderPage();
+    renderPanel();
     // The hint only renders once the default has loaded — telling the user each
     // portfolio can override it.
     expect(await screen.findByText(/override or reset it per portfolio/i)).toBeInTheDocument();
-    expect(screen.getByText(/Defaults for new portfolios/i)).toBeInTheDocument();
+    // The popup head names the panel (the old page title stack is gone).
+    expect(screen.getByRole('heading', { name: 'Portfolio defaults' })).toBeInTheDocument();
     // Owner-mandated liability framing (#635) on the tax settings surface.
     expect(screen.getByText(/Estimates for your personal overview only/i)).toBeInTheDocument();
   });
 
   test('offers all modes with `none` selected, editing the user-level default', async () => {
-    renderPage();
+    renderPanel();
     expect(await screen.findByRole('radio', { name: /No tax tracking/i })).toBeChecked();
     expect(screen.getByRole('radio', { name: /Manual — enter tax per trade/i })).not.toBeChecked();
     const austria = screen.getByRole('radio', { name: /Austria \(KESt\)/i });
@@ -50,7 +51,7 @@ describe('NewPortfolioDefaultsPage (issue #636)', () => {
   test('choosing Austria persists country_specific/AT and reveals the report link', async () => {
     vi.mocked(updateTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'AT' });
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('radio', { name: /Austria \(KESt\)/i }));
 
@@ -66,7 +67,7 @@ describe('NewPortfolioDefaultsPage (issue #636)', () => {
   test('choosing Manual persists manual_per_trade with no country', async () => {
     vi.mocked(updateTaxSettings).mockResolvedValue({ mode: 'manual_per_trade', country: null });
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('radio', { name: /Manual — enter tax per trade/i }));
 
@@ -78,7 +79,7 @@ describe('NewPortfolioDefaultsPage (issue #636)', () => {
   test('offers Germany and persists country_specific with country DE', async () => {
     vi.mocked(updateTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'DE' });
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     const germany = await screen.findByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i });
     expect(germany).toHaveAccessibleName(/Sparer-Pauschbetrag/i);
@@ -90,13 +91,13 @@ describe('NewPortfolioDefaultsPage (issue #636)', () => {
 
   test('surfaces a load error without crashing', async () => {
     vi.mocked(getTaxSettings).mockRejectedValue(new Error('boom'));
-    renderPage();
+    renderPanel();
     expect(await screen.findByText(/Couldn’t load your tax settings/i)).toBeInTheDocument();
   });
 
   test('saved DE default marks Germany selected — not Austria', async () => {
     vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'DE' });
-    renderPage();
+    renderPanel();
     expect(
       await screen.findByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i }),
     ).toBeChecked();
@@ -123,7 +124,7 @@ describe('custom tax mode (V5-P4c)', () => {
       custom: AT_LIKE_PARAMS,
     });
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     await user.click(await screen.findByRole('radio', { name: /Custom rules/i }));
     await waitFor(() =>
@@ -143,7 +144,7 @@ describe('custom tax mode (V5-P4c)', () => {
       custom: { ...AT_LIKE_PARAMS, ratePct: 20, carryForward: true, costBasis: 'fifo' },
     });
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     // The compact card shows the saved parameters.
     const rate = await screen.findByLabelText(/custom tax rate in percent/i);
@@ -164,7 +165,7 @@ describe('custom tax mode (V5-P4c)', () => {
   });
 
   test('the builder stays hidden in every other mode (anti-bloat)', async () => {
-    renderPage();
+    renderPanel();
     await screen.findByRole('radio', { name: /No tax tracking/i });
     expect(screen.queryByLabelText(/custom tax rate in percent/i)).toBeNull();
   });
@@ -179,7 +180,7 @@ describe('manual default (V5-P4c)', () => {
       manualDefaultAmountEur: 5,
     });
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     const value = await screen.findByLabelText(/default manual tax/i);
     await user.type(value, '5');
@@ -201,7 +202,7 @@ describe('manual default (V5-P4c)', () => {
     });
     vi.mocked(updateTaxSettings).mockResolvedValue({ mode: 'manual_per_trade', country: null });
     const user = userEvent.setup();
-    renderPage();
+    renderPanel();
 
     // The stored rate default is shown with the % unit active.
     expect(await screen.findByLabelText(/default manual tax/i)).toHaveValue(10);
@@ -218,7 +219,7 @@ describe('manual default (V5-P4c)', () => {
   });
 
   test('the default field stays hidden outside manual mode', async () => {
-    renderPage();
+    renderPanel();
     await screen.findByRole('radio', { name: /No tax tracking/i });
     expect(screen.queryByLabelText(/default manual tax/i)).toBeNull();
   });

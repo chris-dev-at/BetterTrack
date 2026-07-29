@@ -3,28 +3,38 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 
-import { useT } from '../../i18n';
-import type { TranslateFn } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
-import { formatDateTime } from '../../lib/format';
+import { useT } from '../../../i18n';
+import type { TranslateFn } from '../../../i18n';
+import { ApiError } from '../../../lib/apiClient';
+import { formatDateTime } from '../../../lib/format';
 import {
   getGoogleLinkStatus,
   getParanoidMediaState,
   googleStartUrl,
   unlinkGoogle,
-} from '../../lib/userApi';
-import { EmptyState, Skeleton } from '../../ui';
-import { Badge, Button, Field, Input, SectionHead, type BadgeTone } from '../../ui/origin';
-import { Alert } from '../components/ui';
+} from '../../../lib/userApi';
+import { Skeleton } from '../../../ui';
+import { Badge, Button, Field, Input, type BadgeTone } from '../../../ui/origin';
+import { Alert } from '../../components/ui';
 import type {
   DriveConnectionActionResult,
   DriveConnectionController,
   VaultRetiredPurgeResult,
-} from '../vault/media';
+} from '../../vault/media';
 import {
   useOptionalVaultRuntime,
   type VaultDriveUnlockOptions,
-} from '../vault/VaultRuntimeProvider';
+} from '../../vault/VaultRuntimeProvider';
+import {
+  PanelFold,
+  PanelForm,
+  PanelGroup,
+  PanelHead,
+  PanelList,
+  PanelListItem,
+  PanelNote,
+  Row,
+} from './panelKit';
 
 const GOOGLE_KEY = ['auth', 'google', 'link-status'] as const;
 const VAULT_MEDIA_KEY = ['vault', 'media'] as const;
@@ -52,12 +62,16 @@ function connectErrorMessage(t: TranslateFn, code: string | null): string | null
 
 /**
  * Google account link/unlink (PROJECTPLAN.md §13.4 V4-P4b; moved to Connections
- * in V5-P0c). Shows the linked Google identity and offers an unlink (password
- * re-auth), or a "Connect Google" affordance when unlinked. Env-gated: a 404 (or
- * `enabled: false`) hides the whole section. Unlink is refused while Google is
- * the only usable sign-in method (`canUnlink: false`) — surfaced as a hint, and
- * the button is withheld. Behaviour is byte-identical to the former Security
- * placement — only the home surface changed.
+ * in V5-P0c, compacted into the Control Center's row grammar in R2). Shows the
+ * linked Google identity and offers an unlink (password re-auth), or a "Connect
+ * Google" affordance when unlinked. Env-gated: a 404 (or `enabled: false`) hides
+ * the whole group. Unlink is refused while Google is the only usable sign-in
+ * method (`canUnlink: false`) — surfaced as the group's one note line, and the
+ * button is withheld. Behaviour is byte-identical to the page it replaced: same
+ * query key, same mutation, same error mapping, same one-shot marker consumption.
+ *
+ * The group label is a real `<h3>` ("Google account"), which is the heading the
+ * Google e2e flow looks for.
  */
 function GoogleSection() {
   const t = useT();
@@ -119,51 +133,71 @@ function GoogleSection() {
   if (query.isError) {
     if (query.error instanceof ApiError && query.error.status === 404) return null;
     return (
-      <section className="bt-panel bt-panel--pad flex flex-col gap-3">
-        <h3 className="bt-h3">{t('settings.security.google.title')}</h3>
-        <EmptyState
-          title={t('settings.security.google.loadError')}
-          description={t('settings.retryHint')}
-        />
-      </section>
+      <PanelGroup label={t('settings.security.google.title')}>
+        <Row stack>
+          <PanelNote>{t('settings.security.google.loadError')}</PanelNote>
+        </Row>
+      </PanelGroup>
     );
   }
   if (query.isPending) {
     return (
-      <section className="bt-panel bt-panel--pad flex flex-col gap-3">
-        <h3 className="bt-h3">{t('settings.security.google.title')}</h3>
-        <Skeleton height="h-6" />
-      </section>
+      <PanelGroup label={t('settings.security.google.title')}>
+        <Row stack>
+          <Skeleton height="h-4" width="w-40" />
+        </Row>
+      </PanelGroup>
     );
   }
   if (!query.data.enabled) return null;
   const status = query.data;
 
   return (
-    <section className="bt-panel bt-panel--pad flex flex-col gap-3">
-      <h3 className="bt-h3">{t('settings.security.google.title')}</h3>
-      <p className="bt-meta">{t('settings.security.google.description')}</p>
-      {connectError ? <Alert tone="error">{connectError}</Alert> : null}
-      {notice ? <Alert tone="success">{notice}</Alert> : null}
+    <PanelGroup label={t('settings.security.google.title')}>
+      {connectError ? (
+        <Row stack>
+          <Alert tone="error">{connectError}</Alert>
+        </Row>
+      ) : null}
+      {notice ? (
+        <Row stack>
+          <Alert tone="success">{notice}</Alert>
+        </Row>
+      ) : null}
+
       {status.linked ? (
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-col items-start gap-1">
-            {/* The linked identity IS the status — one badge, no duplicate line. */}
-            <Badge tone="pos">
-              {t('settings.security.google.linkedAs', { email: status.email ?? '' })}
-            </Badge>
-            {status.linkedAt ? (
-              <p className="bt-meta">
-                {t('settings.security.google.linkedOn', {
-                  date: formatDateTime(status.linkedAt),
-                })}
-              </p>
+        <>
+          {/* The linked identity IS the status — one badge, no duplicate line. */}
+          <Row
+            hint={
+              status.linkedAt
+                ? t('settings.security.google.linkedOn', { date: formatDateTime(status.linkedAt) })
+                : undefined
+            }
+            label={
+              <Badge tone="pos">
+                {t('settings.security.google.linkedAs', { email: status.email ?? '' })}
+              </Badge>
+            }
+          >
+            {status.canUnlink && !unlinking ? (
+              <Button onClick={() => setUnlinking(true)} size="sm">
+                {t('settings.security.google.unlinkButton')}
+              </Button>
             ) : null}
-          </div>
-          {status.canUnlink ? (
-            unlinking ? (
-              <form
-                className="flex flex-col gap-3"
+          </Row>
+
+          {/* The one constraint worth a line: an unlink is refused while Google
+              is the only usable sign-in method. */}
+          {status.canUnlink ? null : (
+            <Row stack>
+              <PanelNote warn>{t('settings.security.google.onlyMethod')}</PanelNote>
+            </Row>
+          )}
+
+          {status.canUnlink && unlinking ? (
+            <Row stack>
+              <PanelForm
                 onSubmit={(e) => {
                   e.preventDefault();
                   setError(null);
@@ -171,9 +205,7 @@ function GoogleSection() {
                 }}
               >
                 {error ? <Alert tone="error">{error}</Alert> : null}
-                <p className="bt-meta">{t('settings.security.google.unlinkPrompt')}</p>
                 <Field
-                  className="max-w-sm"
                   htmlFor="google-unlink-password"
                   label={t('settings.security.google.passwordLabel')}
                 >
@@ -189,6 +221,7 @@ function GoogleSection() {
                 <div className="flex gap-2">
                   <Button
                     disabled={unlink.isPending || password.length === 0}
+                    size="sm"
                     type="submit"
                     variant="danger"
                   >
@@ -200,33 +233,25 @@ function GoogleSection() {
                       setError(null);
                       setPassword('');
                     }}
+                    size="sm"
                     type="button"
                     variant="quiet"
                   >
                     {t('settings.security.google.cancel')}
                   </Button>
                 </div>
-              </form>
-            ) : (
-              <div>
-                <Button onClick={() => setUnlinking(true)}>
-                  {t('settings.security.google.unlinkButton')}
-                </Button>
-              </div>
-            )
-          ) : (
-            <Alert tone="info">{t('settings.security.google.onlyMethod')}</Alert>
-          )}
-        </div>
+              </PanelForm>
+            </Row>
+          ) : null}
+        </>
       ) : (
-        <div className="flex flex-col items-start gap-3">
-          <Badge>{t('settings.security.google.notLinked')}</Badge>
-          <a className="bt-btn" href={googleStartUrl()}>
+        <Row label={<Badge>{t('settings.security.google.notLinked')}</Badge>}>
+          <a className="bt-btn bt-btn--sm" href={googleStartUrl()}>
             {t('settings.security.google.connectButton')}
           </a>
-        </div>
+        </Row>
       )}
-    </section>
+    </PanelGroup>
   );
 }
 
@@ -249,6 +274,13 @@ function useDriveAuthorization(connection: DriveConnectionController | null) {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
+/**
+ * The paranoid vault's Drive medium (§13.5 V5-P13/PD6), as popup rows: the live
+ * status badge with its actions on one line, the storage-copy and retained-copy
+ * blocks folded away, and the passphrase unlock as the panel's narrow inline
+ * form. Every transition still runs through the media controller — same
+ * verified-copy semantics, same messages, same `['vault','media']` refresh.
+ */
 function DriveVaultSection({
   connection,
   configured,
@@ -279,21 +311,20 @@ function DriveVaultSection({
 
   if (query.isError) {
     return (
-      <section className="bt-panel bt-panel--pad flex flex-col gap-3">
-        <h3 className="bt-h3">{t('settings.connections.drive.title')}</h3>
-        <EmptyState
-          title={t('settings.connections.drive.loadError')}
-          description={t('settings.retryHint')}
-        />
-      </section>
+      <PanelGroup label={t('settings.connections.drive.title')}>
+        <Row stack>
+          <PanelNote>{t('settings.connections.drive.loadError')}</PanelNote>
+        </Row>
+      </PanelGroup>
     );
   }
   if (query.isPending) {
     return (
-      <section className="bt-panel bt-panel--pad flex flex-col gap-3">
-        <h3 className="bt-h3">{t('settings.connections.drive.title')}</h3>
-        <Skeleton height="h-6" />
-      </section>
+      <PanelGroup label={t('settings.connections.drive.title')}>
+        <Row stack>
+          <Skeleton height="h-4" width="w-40" />
+        </Row>
+      </PanelGroup>
     );
   }
 
@@ -458,77 +489,118 @@ function DriveVaultSection({
   }
 
   return (
-    <section className="bt-panel bt-panel--pad flex flex-col gap-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="bt-h3">{t('settings.connections.drive.title')}</h3>
-        <Badge tone={DRIVE_STATUS_TONE[statusKey] ?? 'neutral'}>
-          {t(`settings.connections.drive.status.${statusKey}`)}
-        </Badge>
-      </div>
-      <p className="bt-meta">{t('settings.connections.drive.description')}</p>
-      {message ? <Alert tone={message.tone}>{t(message.key)}</Alert> : null}
-      {!configured ? (
-        <Alert tone="info">{t('settings.connections.drive.configMissing')}</Alert>
-      ) : null}
-      {unlockAction ? (
-        <form
-          className="bt-panel bt-panel--soft flex max-w-sm flex-col gap-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void unlockAndContinue();
-          }}
-          style={{ padding: 14 }}
-        >
-          <p className="bt-meta">{t('settings.connections.drive.unlockPrompt')}</p>
-          <Field
-            htmlFor="drive-vault-passphrase"
-            label={t('settings.connections.drive.passphraseLabel')}
+    <PanelGroup label={t('settings.connections.drive.title')}>
+      {/* Status left, its two actions right — the whole live surface on one row. */}
+      <Row
+        label={
+          <Badge tone={DRIVE_STATUS_TONE[statusKey] ?? 'neutral'}>
+            {t(`settings.connections.drive.status.${statusKey}`)}
+          </Badge>
+        }
+      >
+        {configured && (!selected || needsSignIn) ? (
+          <Button
+            disabled={working}
+            onClick={() => void run('connect')}
+            size="sm"
+            variant="primary"
           >
-            <Input
-              autoComplete="current-password"
-              autoFocus
-              disabled={working}
-              id="drive-vault-passphrase"
-              onChange={(event) => setPassphrase(event.target.value)}
-              required
-              type="password"
-              value={passphrase}
-            />
-          </Field>
-          <div className="flex flex-wrap gap-2">
-            <Button disabled={working || passphrase.length === 0} type="submit">
-              {t('settings.connections.drive.unlockAndContinue')}
-            </Button>
-            <Button
-              disabled={working}
-              onClick={() => {
-                setUnlockAction(null);
-                setPassphrase('');
-              }}
-              type="button"
-              variant="quiet"
-            >
-              {t('common.cancel')}
-            </Button>
-          </div>
-        </form>
+            {t(
+              selected ? 'settings.connections.drive.signIn' : 'settings.connections.drive.connect',
+            )}
+          </Button>
+        ) : null}
+        {configured && selected && media.mediaSet.length > 1 ? (
+          <Button
+            disabled={working}
+            onClick={() => void run('disconnect')}
+            size="sm"
+            variant="quiet"
+          >
+            {t('settings.connections.drive.disconnect')}
+          </Button>
+        ) : null}
+      </Row>
+
+      {/* The one kept line of Drive prose: it states the access scope — the
+          app-data folder only, never ordinary Drive files. */}
+      <Row stack>
+        <PanelNote>{t('settings.connections.drive.description')}</PanelNote>
+      </Row>
+
+      {message ? (
+        <Row stack>
+          <Alert tone={message.tone}>{t(message.key)}</Alert>
+        </Row>
+      ) : null}
+      {!configured ? (
+        <Row stack>
+          <PanelNote warn>{t('settings.connections.drive.configMissing')}</PanelNote>
+        </Row>
       ) : null}
       {selected && media.mediaSet.length === 1 ? (
-        <Alert tone="info">{t('settings.connections.drive.lastMedium')}</Alert>
+        <Row stack>
+          <PanelNote warn>{t('settings.connections.drive.lastMedium')}</PanelNote>
+        </Row>
       ) : null}
+
+      {unlockAction ? (
+        <Row stack>
+          <PanelForm
+            onSubmit={(event) => {
+              event.preventDefault();
+              void unlockAndContinue();
+            }}
+          >
+            {/* Kept: the passphrase is asked for mid-flow because Drive
+                authorization and the migration continue from THIS gesture. */}
+            <PanelNote>{t('settings.connections.drive.unlockPrompt')}</PanelNote>
+            <Field
+              htmlFor="drive-vault-passphrase"
+              label={t('settings.connections.drive.passphraseLabel')}
+            >
+              <Input
+                autoComplete="current-password"
+                autoFocus
+                disabled={working}
+                id="drive-vault-passphrase"
+                onChange={(event) => setPassphrase(event.target.value)}
+                required
+                type="password"
+                value={passphrase}
+              />
+            </Field>
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={working || passphrase.length === 0} size="sm" type="submit">
+                {t('settings.connections.drive.unlockAndContinue')}
+              </Button>
+              <Button
+                disabled={working}
+                onClick={() => {
+                  setUnlockAction(null);
+                  setPassphrase('');
+                }}
+                size="sm"
+                type="button"
+                variant="quiet"
+              >
+                {t('common.cancel')}
+              </Button>
+            </div>
+          </PanelForm>
+        </Row>
+      ) : null}
+
       {selected ? (
-        <details className="bt-panel bt-panel--soft" style={{ padding: '9px 13px' }}>
-          <summary className="bt-h3 cursor-pointer">
-            {t('settings.connections.drive.storage.title')}
-          </summary>
-          <div className="mt-2 flex flex-col items-start gap-2">
-            <p className="bt-meta">
+        <PanelFold summary={t('settings.connections.drive.storage.title')}>
+          <div className="flex flex-col items-start gap-2">
+            <PanelNote>
               {t(
                 media.mediaSet.includes('server')
                   ? 'settings.connections.drive.storage.both'
                   : 'settings.connections.drive.storage.driveOnly',
               )}
-            </p>
+            </PanelNote>
             <Button
               disabled={working || !configured}
               onClick={() =>
@@ -544,22 +616,20 @@ function DriveVaultSection({
               )}
             </Button>
           </div>
-        </details>
+        </PanelFold>
       ) : null}
+
       {canPurgeRetiredServer ? (
-        <details className="bt-panel bt-panel--soft" style={{ padding: '9px 13px' }}>
-          <summary className="bt-h3 cursor-pointer">
-            {t('settings.connections.drive.retired.title')}
-          </summary>
-          <div className="mt-2 flex flex-col items-start gap-2">
-            <p className="bt-meta">
+        <PanelFold summary={t('settings.connections.drive.retired.title')}>
+          <div className="flex flex-col items-start gap-2">
+            <PanelNote>
               {t(
                 purgeReady
                   ? 'settings.connections.drive.retired.ready'
                   : 'settings.connections.drive.retired.wait',
                 { date: formatDateTime(retired.purgeAfter) },
               )}
-            </p>
+            </PanelNote>
             <Button
               disabled={working || !purgeReady || !configured}
               onClick={() => void run('purge')}
@@ -570,33 +640,9 @@ function DriveVaultSection({
               {t('settings.connections.drive.retired.purge')}
             </Button>
           </div>
-        </details>
+        </PanelFold>
       ) : null}
-      <div className="flex flex-wrap gap-2">
-        {configured && (!selected || needsSignIn) ? (
-          <Button
-            disabled={working}
-            onClick={() => void run('connect')}
-            type="button"
-            variant="primary"
-          >
-            {t(
-              selected ? 'settings.connections.drive.signIn' : 'settings.connections.drive.connect',
-            )}
-          </Button>
-        ) : null}
-        {configured && selected && media.mediaSet.length > 1 ? (
-          <Button
-            disabled={working}
-            onClick={() => void run('disconnect')}
-            type="button"
-            variant="quiet"
-          >
-            {t('settings.connections.drive.disconnect')}
-          </Button>
-        ) : null}
-      </div>
-    </section>
+    </PanelGroup>
   );
 }
 
@@ -604,8 +650,9 @@ function DriveVaultSection({
  * The v6 connectors, as designed-but-inert slots (V5-P0c). Each names itself,
  * says what it does in one line, states its sync semantics (a one-time import
  * vs a connection that stays live and auto-syncs), and wears a plain "coming
- * soon" state — no dead buttons (anti-bloat). The whole set folds away in a
- * collapsed `<details>` so the live Google identity stays the visible thing.
+ * soon" chip — no dead buttons (anti-bloat). In the popup they are two dense
+ * list rows rather than a folded card: the fold and its "these are on the way"
+ * subtitle were pure narration.
  */
 const CONNECTOR_SLOTS = [
   { key: 'bankCash', sync: 'stayConnected' },
@@ -615,59 +662,53 @@ const CONNECTOR_SLOTS = [
 function ConnectorSlot({ slotKey, sync }: { slotKey: string; sync: 'oneTime' | 'stayConnected' }) {
   const t = useT();
   return (
-    <li className="bt-band__row flex flex-col gap-1" style={{ paddingInline: 0 }}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="bt-row-title">{t(`settings.connections.slots.${slotKey}.name`)}</span>
-        <Badge outline>{t('settings.connections.comingSoon')}</Badge>
-      </div>
-      <p className="bt-row-sub">{t(`settings.connections.slots.${slotKey}.purpose`)}</p>
-      <p className="bt-row-sub" style={{ color: 'var(--bt-faint)' }}>
-        {t(
-          sync === 'oneTime'
-            ? 'settings.connections.sync.oneTime'
-            : 'settings.connections.sync.stayConnected',
-        )}
-      </p>
-    </li>
+    <PanelListItem
+      actions={<Badge outline>{t('settings.connections.comingSoon')}</Badge>}
+      main={
+        <>
+          <span className="bt-cc-row__label">
+            {t(`settings.connections.slots.${slotKey}.name`)}
+          </span>
+          <span className="bt-cc-row__hint">
+            {t(`settings.connections.slots.${slotKey}.purpose`)}
+          </span>
+          <span className="bt-cc-list__meta">
+            {t(
+              sync === 'oneTime'
+                ? 'settings.connections.sync.oneTime'
+                : 'settings.connections.sync.stayConnected',
+            )}
+          </span>
+        </>
+      }
+    />
   );
 }
 
 function ConnectorSlots() {
   const t = useT();
   return (
-    <details className="bt-panel group">
-      <summary
-        className="flex cursor-pointer list-none items-center justify-between gap-3"
-        style={{ padding: '15px 20px' }}
-      >
-        <span className="flex flex-col gap-0.5">
-          <span className="bt-h3">{t('settings.connections.slotsTitle')}</span>
-          <span className="bt-meta">{t('settings.connections.slotsSubtitle')}</span>
-        </span>
-        <span
-          aria-hidden="true"
-          className="transition-transform group-open:rotate-90"
-          style={{ color: 'var(--bt-faint)' }}
-        >
-          ▸
-        </span>
-      </summary>
-      <ul className="bt-band bt-t-rule flex flex-col" style={{ padding: '0 20px 6px' }}>
+    <PanelGroup label={t('settings.connections.slotsTitle')}>
+      <PanelList>
         {CONNECTOR_SLOTS.map((slot) => (
           <ConnectorSlot key={slot.key} slotKey={slot.key} sync={slot.sync} />
         ))}
-      </ul>
-    </details>
+      </PanelList>
+    </PanelGroup>
   );
 }
 
 /**
- * Settings → Connections (PROJECTPLAN.md §13.5 V5-P0c). The single home for
- * everything that links BetterTrack to the outside: the Google sign-in identity
- * (moved here from Security, behaviour unchanged) sits up top as the live thing,
- * and the future connectors fold away below as compact designed placeholders.
+ * Control Center → Connections (PROJECTPLAN.md §13.5 V5-P0c, compacted in R2).
+ * The single home for everything that links BetterTrack to the outside: the
+ * Google sign-in identity, the paranoid vault's Drive medium, and the future
+ * connectors as inert slots. Content only was rebuilt for popup density — every
+ * query key, mutation, endpoint and confirmation flow is the page's.
+ *
+ * The Drive props stay injectable (the vault runtime is optional at this depth
+ * and the suite drives the media flows through a stub controller).
  */
-export function ConnectionsPage({
+export function ConnectionsPanel({
   driveConnection,
   driveUnlock,
   driveConfigured = Boolean(import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID),
@@ -685,15 +726,14 @@ export function ConnectionsPage({
   const resolvedDriveUnlock =
     driveUnlock === undefined ? (runtime?.unlockWithPassphrase ?? null) : driveUnlock;
   return (
-    <div className="flex flex-col gap-5">
-      {/* Terse (R2): the panel is named in the Control Center nav — no restating it. */}
-      <SectionHead title={t('settings.connections.title')} />
+    <div className="bt-cc-panel">
+      <PanelHead title={t('control.connections')} />
 
       <GoogleSection />
 
       <DriveVaultSection
-        connection={resolvedDriveConnection}
         configured={driveConfigured}
+        connection={resolvedDriveConnection}
         unlock={resolvedDriveUnlock}
       />
 

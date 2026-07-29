@@ -499,7 +499,6 @@
   },
   "language": {
     "title": "Sprache",
-    "description": "Die Sprache, die BetterTrack in der App und in deinen E-Mails verwendet.",
     "label": "Anzeigesprache",
     "saveError": "Deine Sprache konnte nicht gespeichert werden. Bitte versuche es erneut."
   },
@@ -518,11 +517,9 @@
       "description": "Broker-CSV-Importe (Trade Republic, George, …) und vollständiger Konto-Datenexport."
     },
     "connections": {
-      "title": "Verbindungen",
       "subtitle": "Alles, was BetterTrack mit der Außenwelt verbindet — Anmeldung, verschlüsselter Speicher und kompakte Connector-Steuerung.",
       "comingSoon": "Bald verfügbar",
       "slotsTitle": "Connectors",
-      "slotsSubtitle": "Synchronisiere deine Daten mit externen Diensten. Sie sind in Arbeit — noch nichts einzurichten.",
       "drive": {
         "title": "Google Drive-App-Daten",
         "description": "Speichere deinen verschlüsselten Paranoid-Tresor im privaten App-Daten-Ordner von Drive. BetterTrack kann keine normalen Drive-Dateien sehen.",
@@ -593,110 +590,84 @@
     },
     "notifications": {
       "title": "Benachrichtigungen",
-      "subtitle": "Lege für jede Art von Aktivität fest, über welche Kanäle du benachrichtigt wirst — Glocke in der App, E-Mail, Handy-Push, Browser-Push — oder schalte alles auf einmal stumm.",
       "loadError": {
         "title": "Deine Benachrichtigungseinstellungen konnten nicht geladen werden"
       },
       "types": {
         "friendRequest": {
-          "label": "Freundschaftsanfragen",
-          "description": "Wenn dir jemand eine Freundschaftsanfrage sendet."
+          "label": "Freundschaftsanfragen"
         },
         "friendAccepted": {
-          "label": "Angenommene Freundschaftsanfragen",
-          "description": "Wenn jemand deine Freundschaftsanfrage annimmt."
+          "label": "Angenommene Freundschaftsanfragen"
         },
         "portfolioShared": {
-          "label": "Geteilte Portfolios",
-          "description": "Wenn ein Freund ein Portfolio mit dir teilt."
+          "label": "Geteilte Portfolios"
         },
         "accountInvite": {
-          "label": "Konto-Einladungen",
-          "description": "Wenn du zu BetterTrack eingeladen wirst."
+          "label": "Konto-Einladungen"
         },
         "tempPassword": {
-          "label": "Temporäre Passwörter",
-          "description": "Wenn ein Administrator dir ein temporäres Passwort ausstellt."
+          "label": "Temporäre Passwörter"
         },
         "dataExport": {
-          "label": "Datenexporte",
-          "description": "Wenn ein von dir angeforderter Datenexport zum Download bereit ist."
+          "label": "Datenexporte"
         },
         "alertTriggered": {
-          "label": "Preisalarme",
-          "description": "Wenn einer deiner Preisalarme auslöst."
+          "label": "Preisalarme"
         },
         "earningsReminder": {
-          "label": "Erinnerungen an Quartalszahlen",
-          "description": "Vor einem Quartalsbericht für einen Wert, den du hältst oder beobachtest. Standardmäßig aus."
+          "label": "Erinnerungen an Quartalszahlen"
         },
         "chatMessage": {
-          "label": "Chat-Nachrichten",
-          "description": "Wenn dir ein Freund eine Nachricht sendet."
+          "label": "Chat-Nachrichten"
         },
         "watchlistShared": {
-          "label": "Geteilte Watchlists",
-          "description": "Wenn Freunde eine Watchlist mit dir teilen."
+          "label": "Geteilte Watchlists"
         },
         "conglomerateShared": {
-          "label": "Geteilte Blueprints",
-          "description": "Wenn Freunde ein Blueprints mit dir teilen."
+          "label": "Geteilte Blueprints"
         },
         "friendActivity": {
-          "label": "Aktivität von Freunden",
-          "description": "Käufe, Verkäufe und Watchlist-Einträge bei geteilten Elementen, denen du folgst."
+          "label": "Aktivität von Freunden"
         },
         "followPublished": {
-          "label": "Neues von Personen, denen du folgst",
-          "description": "Wenn jemand, dem du folgst, ein Portfolio, eine Watchlist oder ein Blueprints öffentlich macht."
+          "label": "Neues von Personen, denen du folgst"
         },
         "followAlertCreated": {
-          "label": "Neue Alarme von Personen, denen du folgst",
-          "description": "Wenn jemand, dem du folgst, einen Preisalarm erstellt (nur Personen, deren Alarm-Neuigkeiten du aktiviert hast)."
+          "label": "Neue Alarme von Personen, denen du folgst"
         },
         "followAlertFired": {
-          "label": "Ausgelöste Alarme von Personen, denen du folgst",
-          "description": "Wenn ein Preisalarm von jemandem, dem du folgst, auslöst (nur Personen, deren Alarm-Neuigkeiten du aktiviert hast)."
+          "label": "Ausgelöste Alarme von Personen, denen du folgst"
         },
         "dividendEvent": {
-          "label": "Dividenden-Erinnerungen",
-          "description": "Wenn eine Aktie, die du hältst, bald ex Dividende notiert. Standardmäßig aus."
+          "label": "Dividenden-Erinnerungen"
         },
         "budgetExceeded": {
-          "label": "Budget-Warnungen",
-          "description": "Wenn deine Ausgaben in einer Kategorie ihr Monatsbudget überschreiten."
+          "label": "Budget-Warnungen"
         },
         "mirrorInvite": {
-          "label": "Einladungen zu Gruppen-Portfolios",
-          "description": "Wenn dich ein:e Freund:in zu einem Gruppen-Portfolio einlädt."
+          "label": "Einladungen zu Gruppen-Portfolios"
         },
         "mirrorMemberJoined": {
-          "label": "Mitglied beigetreten",
-          "description": "Wenn jemand einem Gruppen-Portfolio beitritt, das dir gehört."
+          "label": "Mitglied beigetreten"
         },
         "mirrorMemberLeft": {
-          "label": "Mitglied ausgetreten",
-          "description": "Wenn ein Mitglied eines deiner Gruppen-Portfolios verlässt."
+          "label": "Mitglied ausgetreten"
         },
         "mirrorMemberRemoved": {
-          "label": "Mitglied entfernt",
-          "description": "Wenn ein Mitglied aus deinem Gruppen-Portfolio entfernt wird."
+          "label": "Mitglied entfernt"
         },
         "mirrorRemoved": {
-          "label": "Aus einem Gruppen-Portfolio entfernt",
-          "description": "Wenn du aus einem Gruppen-Portfolio entfernt wirst."
+          "label": "Aus einem Gruppen-Portfolio entfernt"
         },
         "mirrorOwnershipTransferred": {
-          "label": "Eigentümerschaft übertragen",
-          "description": "Wenn sich die Eigentümerschaft eines Gruppen-Portfolios ändert, in dem du bist."
+          "label": "Eigentümerschaft übertragen"
         },
         "mirrorChainDissolved": {
-          "label": "Gruppen-Portfolio aufgelöst",
-          "description": "Wenn ein Gruppen-Portfolio, in dem du bist, aufgelöst wird."
+          "label": "Gruppen-Portfolio aufgelöst"
         },
         "mirrorSyncStalled": {
-          "label": "Synchronisierungsprobleme",
-          "description": "Wenn ein Gruppen-Portfolio nicht fertig synchronisiert werden kann."
+          "label": "Synchronisierungsprobleme"
         }
       },
       "routing": {
@@ -808,7 +779,6 @@
       },
       "telegram": {
         "title": "Telegram",
-        "description": "Empfange Benachrichtigungen über den BetterTrack-Telegram-Bot. Einmal verknüpfen — jederzeit wieder trennen.",
         "startLink": "Telegram-Verknüpfung starten",
         "openBot": "Telegram-Bot öffnen",
         "codeHint": "Sende /start {{code}} an den Bot, um die Verknüpfung abzuschließen.",
@@ -841,10 +811,15 @@
         "removeError": "Der Webhook konnte nicht entfernt werden. Bitte versuche es erneut."
       },
       "loadErrorTitle": "Benachrichtigungen konnten nicht geladen werden",
-      "loadErrorDescription": "Bitte versuche es gleich noch einmal."
+      "loadErrorDescription": "Bitte versuche es gleich noch einmal.",
+      "groups": {
+        "general": "Allgemein",
+        "channels": "Kanäle",
+        "routing": "Zuordnung",
+        "timing": "Zeitsteuerung"
+      }
     },
     "security": {
-      "title": "Sicherheit",
       "subtitle": "Deine Sitzung, deine PIN und Zwei-Faktor-Optionen.",
       "loadError": {
         "title": "Deine Sicherheitseinstellungen konnten nicht geladen werden"
@@ -888,7 +863,6 @@
         "windowError": "Das Sperrfenster konnte nicht aktualisiert werden. Bitte versuche es erneut.",
         "lockAfterInactivity": "Nach Inaktivität sperren",
         "lockDescription": "Solange du BetterTrack aktiv nutzt, bleibt es entsperrt — auch bei Neuladen und neuen Tabs. Die PIN wird erst nach dieser Zeit ohne Aktivität wieder abgefragt.",
-        "idleForLabel": "Sperren nach Inaktivität von",
         "unlockWindowAriaLabel": "Entsperrfenster",
         "disabledNotice": "Deine PIN wurde deaktiviert.",
         "title": "PIN",
@@ -902,7 +876,6 @@
       },
       "twoFactor": {
         "title": "Zwei-Faktor-Authentifizierung",
-        "description": "Füge einen zweiten Schritt bei der Anmeldung hinzu. Aktiviere eine Methode — oder beide.",
         "loadError": {
           "title": "Dein Zwei-Faktor-Status konnte nicht geladen werden"
         },
@@ -947,7 +920,6 @@
           "done": "Ich habe diese Codes gespeichert",
           "regenerateError": "Wiederherstellungscodes konnten nicht neu erzeugt werden. Bitte versuche es erneut.",
           "cardTitle": "Wiederherstellungscodes",
-          "cardDescription": "Einmalcodes zum Anmelden, falls du den Zugriff auf deine anderen Faktoren verlierst.",
           "remainingOne": "Noch {{count}} Wiederherstellungscode übrig.",
           "remainingOther": "Noch {{count}} Wiederherstellungscodes übrig.",
           "regenerating": "Wird neu erzeugt…",
@@ -956,14 +928,12 @@
       },
       "google": {
         "title": "Google-Konto",
-        "description": "Melde dich mit Google an oder verwalte das verknüpfte Konto.",
         "linkedAs": "Verknüpft als {{email}}",
         "linkedOn": "Verknüpft {{date}}",
         "notLinked": "Es ist kein Google-Konto verknüpft.",
         "connectButton": "Google verbinden",
         "unlinkButton": "Trennen",
         "unlinkTitle": "Google trennen",
-        "unlinkPrompt": "Gib zur Bestätigung dein Passwort ein, um die Google-Verknüpfung zu trennen.",
         "passwordLabel": "Passwort",
         "confirmUnlink": "Google trennen",
         "cancel": "Abbrechen",
@@ -1009,10 +979,6 @@
       }
     },
     "api": {
-      "title": "API-Zugriff",
-      "introBefore": "Persönliche API-Schlüssel authentifizieren Skripte und Integrationen in deinem Namen, begrenzt auf das, was sie lesen oder ändern dürfen. Sende einen Schlüssel als ",
-      "introMiddle": ". Die API-Dokumentation findest du unter ",
-      "introAfter": ".",
       "copied": "Kopiert",
       "copy": "Kopieren",
       "done": "Fertig",
@@ -1022,7 +988,6 @@
       "scopeRequired": "Wähle mindestens einen Berechtigungsbereich.",
       "scopesLegend": "Berechtigungsbereiche",
       "webhooks": {
-        "sectionTitle": "Webhooks",
         "sectionDescription": "Sende bei jedem deiner Ereignisse einen signierten HTTP-POST an deine eigene URL. Jede Zustellung ist HMAC-signiert, sodass du prüfen kannst, dass sie von BetterTrack stammt.",
         "createTitle": "Webhook hinzufügen",
         "urlLabel": "Payload-URL",
@@ -1040,8 +1005,7 @@
           "title": "Deine Webhooks konnten nicht geladen werden"
         },
         "empty": {
-          "title": "Noch keine Webhooks",
-          "description": "Füge oben einen hinzu, um signierte Ereigniszustellungen zu erhalten."
+          "title": "Noch keine Webhooks"
         },
         "status": {
           "active": "Aktiv",
@@ -1180,20 +1144,16 @@
           "title": "Deine API-Schlüssel konnten nicht geladen werden"
         },
         "empty": {
-          "title": "Noch keine API-Schlüssel",
-          "description": "Erstelle oben einen Schlüssel, um die API zu nutzen."
+          "title": "Noch keine API-Schlüssel"
         }
       },
       "oauth": {
-        "sectionTitle": "OAuth-Apps",
-        "sectionDescription": "Registriere eine Drittanbieter-App für begrenzten, widerrufbaren Zugriff auf BetterTrack-Konten über OAuth 2.0 (Authorization Code + PKCE). Nutzer stimmen auf einem Zustimmungsbildschirm zu und geben ihr Passwort nie preis.",
         "yourApps": "Deine Apps",
         "loadError": {
           "title": "Deine Apps konnten nicht geladen werden"
         },
         "empty": {
-          "title": "Noch keine OAuth-Apps",
-          "description": "Registriere oben eine App, um sie in den OAuth-Flow einzubinden."
+          "title": "Noch keine OAuth-Apps"
         },
         "credentialsModal": {
           "title": "Deine neue OAuth-App",
@@ -1231,27 +1191,25 @@
         "registeredOn": "Registriert {{createdAt}}"
       },
       "grants": {
-        "sectionTitle": "Autorisierte Apps",
         "sectionDescription": "Drittanbieter-Apps, denen du Zugriff auf dein Konto erlaubt hast. Der Widerruf einer App macht ihre Tokens sofort ungültig — sie muss erneut autorisiert werden, um wieder Zugriff zu erhalten.",
         "loadError": {
           "title": "Deine autorisierten Apps konnten nicht geladen werden"
         },
         "empty": {
-          "title": "Keine autorisierten Apps",
-          "description": "Apps, die du auf dem OAuth-Zustimmungsbildschirm genehmigst, erscheinen hier."
+          "title": "Keine autorisierten Apps"
         },
         "canAccess": "{{appName}} kann:",
         "authorizedLastUsed": "Autorisiert {{createdAt}} · zuletzt verwendet {{lastUsedAt}}",
         "authorizedNeverUsed": "Autorisiert {{createdAt}} · nie verwendet",
         "revokeAccess": "Zugriff widerrufen"
-      }
+      },
+      "hint": "Schick einen Key als „Authorization: Bearer …“. Referenz unter /docs."
     },
     "account": {
       "title": "Konto",
       "subtitle": "Deine Identität, dein Passwort und deine Freigabe-Einstellungen.",
       "loadError": {
-        "title": "Dein Konto konnte nicht geladen werden",
-        "description": "Bitte versuche es gleich noch einmal."
+        "title": "Dein Konto konnte nicht geladen werden"
       },
       "portfolioError": {
         "title": "Dein Portfolio konnte nicht geladen werden",
@@ -1261,11 +1219,13 @@
         "username": "Benutzername",
         "email": "E-Mail",
         "memberSince": "Mitglied seit"
-      }
+      },
+      "identity": "Identität",
+      "display": "Anzeige",
+      "yourData": "Deine Daten"
     },
     "baseCurrency": {
       "title": "Basiswährung",
-      "description": "Die Währung, in der alle Bewertungen, Diagramme und Berichte angezeigt werden. Beträge bleiben in der nativen Währung der jeweiligen Anlage gespeichert — nur die Anzeige-Umrechnung ändert sich.",
       "label": "Basiswährung",
       "saveError": "Deine Basiswährung konnte nicht gespeichert werden. Bitte versuche es erneut.",
       "option": {
@@ -1273,12 +1233,11 @@
         "USD": "USD — US-Dollar ($)",
         "CHF": "CHF — Schweizer Franken",
         "GBP": "GBP — Britisches Pfund (£)"
-      }
+      },
+      "hint": "Nur die Anzeige — Beträge bleiben in der Währung des jeweiligen Assets gespeichert."
     },
     "newPortfolioDefaults": {
       "navLabel": "Standardwerte für neue Portfolios",
-      "title": "Standardwerte für neue Portfolios",
-      "subtitle": "Was ein neu erstelltes Portfolio übernimmt. Bestehende Portfolios folgen diesen Werten weiter, sofern du sie nicht einzeln überschreibst.",
       "tax": {
         "hint": "Gilt für neue Portfolios und für jedes Portfolio ohne eigene Einstellung. Pro Portfolio kannst du sie im Steuerbericht des Portfolios überschreiben oder zurücksetzen."
       }
@@ -1367,16 +1326,9 @@
       "currentWrong": "Dein aktuelles Passwort ist falsch.",
       "changeFailed": "Passwort konnte nicht geändert werden. Bitte versuche es erneut."
     },
-    "sharingMoved": {
-      "title": "Portfolio-Freigabe",
-      "description": "Die Freigabe befindet sich jetzt im Tab „Sozial“. Lege dort fest, wer welches deiner Portfolios sehen kann — jedes Portfolio bleibt privat, bis du es teilst.",
-      "link": "Freigabe im Tab „Sozial“ verwalten →"
-    },
     "export": {
       "title": "Meine Daten exportieren",
-      "description": "Lade eine Kopie deiner Kontodaten als ZIP herunter (JSON für jede Art von Daten, die dir gehören, plus CSVs für Transaktionen, Geldbewegungen und Bestände). Du kannst einen Export pro Tag anfordern.",
       "password": "Passwort bestätigen",
-      "passwordHint": "Gib dein Passwort erneut ein, um einen Export zu starten.",
       "request": "Meine Daten exportieren",
       "requestAgain": "Neuen Export anfordern",
       "submitting": "Wird angefordert…",
@@ -1389,10 +1341,10 @@
       "currentWrong": "Dein Passwort ist falsch.",
       "codeWrong": "Dieser Zwei-Faktor-Code ist falsch oder abgelaufen.",
       "rateLimited": "Du kannst einen Datenexport einmal pro Tag anfordern. Bitte versuche es später erneut.",
-      "requestFailed": "Der Export konnte nicht gestartet werden. Bitte versuche es erneut."
+      "requestFailed": "Der Export konnte nicht gestartet werden. Bitte versuche es erneut.",
+      "hint": "Ein Export pro Tag. Der Download-Link läuft ab."
     },
     "dangerZone": {
-      "title": "Gefahrenzone",
       "description": "Wenn du dein Konto löschst, werden alle deine Daten dauerhaft entfernt. Das kann nicht rückgängig gemacht werden.",
       "link": "Mein Konto löschen…"
     }
@@ -3250,7 +3202,6 @@
   },
   "profile": {
     "title": "Mein öffentliches Profil",
-    "subtitle": "Eine optionale öffentliche Seite, die andere sehen können — sie zeigt nur die Elemente, die du per öffentlichem Link geteilt hast.",
     "error": "Deine Profileinstellungen konnten nicht geladen werden. Bitte lade die Seite neu.",
     "toggleLabel": "Mein Profil öffentlich machen",
     "publicItemCount": "{{count}} deiner Elemente sind derzeit öffentlich.",
@@ -3291,6 +3242,9 @@
         "compass": "Kompass",
         "anchor": "Anker"
       }
+    },
+    "groups": {
+      "page": "Öffentliche Seite"
     }
   },
   "mirrorchain": {
@@ -4098,8 +4052,9 @@
       "developer": "Developer-Plattform",
       "preferences": "Einstellungen",
       "security": "Sicherheit",
-      "automation": "Daten & Automatisierung",
-      "links": "Seiten"
+      "links": "Seiten",
+      "integrations": "Verbindungen & API",
+      "danger": "Gefahrenzone"
     },
     "account": "Konto",
     "accountSub": "Profil, E-Mail, Sprache, Passwort",
@@ -4137,10 +4092,14 @@
     "filterAria": "Bereiche filtern",
     "filterPlaceholder": "Filtern…",
     "noMatches": "Kein Bereich passt.",
-    "leavesPopup": "Öffnet sich als eigene Seite"
+    "leavesPopup": "Öffnet sich als eigene Seite",
+    "signIn": "Anmeldung",
+    "sessions": "Sitzungen",
+    "notificationLog": "Benachrichtigungsprotokoll",
+    "profile": "Öffentliches Profil",
+    "authorizedApps": "Autorisierte Apps"
   },
   "privacy": {
-    "title": "Privatsphäre-Modi",
     "subtitle": "Steuere, was der Bildschirm zeigt und wo deine Daten liegen.",
     "discreet": {
       "title": "Diskreter Modus",

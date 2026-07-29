@@ -1,8 +1,7 @@
 import { Link } from 'react-router-dom';
 
 import { useT } from '../../i18n';
-import { Icon, PageHead, SectionHead, Switch, type IconName } from '../../ui/origin';
-import { useAuth } from '../AuthContext';
+import { Icon, PageHead, type IconName } from '../../ui/origin';
 import { ParkedPage } from '../parked/ParkedPage';
 
 /**
@@ -11,7 +10,8 @@ import { ParkedPage } from '../parked/ParkedPage';
  * capability. The Control Center itself is no longer a page — it is the
  * settings-absorbing overlay in `../control/ControlCenterOverlay.tsx`; what
  * stays here are the surfaces that are genuinely their own page (the Developer
- * platform) and the Privacy panel the overlay mounts.
+ * platform). The Privacy panel moved to `../control/panels/PrivacyPanel.tsx`
+ * when the overlay's panels were rebuilt for popup density (R2).
  */
 
 export function AskPage() {
@@ -129,43 +129,6 @@ export function DeveloperPlatformPage() {
           </Link>
         ))}
       </div>
-    </div>
-  );
-}
-
-/**
- * Privacy modes (§13.5 V5-P13), mounted as the Control Center's Privacy panel:
- * the live discreet-mode switch — every absolute amount masked app-wide — next
- * to the parked paranoid-vault surface whose client foundations are already
- * merged.
- */
-export function PrivacyPanel() {
-  const t = useT();
-  const { user, toggleDiscreetMode } = useAuth();
-  const discreet = user?.discreetMode === true;
-
-  return (
-    <div>
-      <SectionHead title={t('privacy.title')} />
-      <div className="bt-panel bt-panel--pad" style={{ maxWidth: 760, marginBottom: 26 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <Icon name={discreet ? 'eye-off' : 'eye'} size={19} style={{ color: 'var(--bt-gold)' }} />
-          <div style={{ flex: 1 }}>
-            <p className="bt-row-title">{t('privacy.discreet.title')}</p>
-            <p className="bt-row-sub">{t('privacy.discreet.body')}</p>
-          </div>
-          <Switch
-            aria-label={t('privacy.discreet.title')}
-            checked={discreet}
-            onChange={() => {
-              void toggleDiscreetMode().catch(() => {
-                // Optimistic flip rolled back; the switch simply reflects state.
-              });
-            }}
-          />
-        </div>
-      </div>
-      <ParkedPage page="paranoid" />
     </div>
   );
 }

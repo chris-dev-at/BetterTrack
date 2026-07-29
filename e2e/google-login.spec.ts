@@ -83,11 +83,16 @@ test('google identity block lives under Settings → Connections and is gone fro
       timeout: 20_000,
     });
     await expect(page.getByRole('link', { name: 'Connect Google' })).toBeVisible();
-    await expect(page.getByText('Google Drive backup')).toBeVisible();
+    // The Drive surface on this panel is the real paranoid-vault section
+    // ("Google Drive app data"); the coming-soon "Google Drive backup" slot it
+    // replaced was dropped in ccd0cd2, so this assertion had gone stale.
+    await expect(page.getByRole('heading', { name: 'Google Drive app data' })).toBeVisible();
 
-    // The old home no longer shows it (only relocated, never duplicated).
+    // The old home no longer shows it (only relocated, never duplicated). The
+    // former Security page is the Sign-in panel now (credentials); devices and
+    // the app lock live on Sessions.
     await page.goto('/settings/security');
-    await expect(page.getByRole('heading', { name: 'Security' })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('heading', { name: 'Sign-in' })).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole('heading', { name: 'Google account' })).toHaveCount(0);
   } finally {
     await user.context.close();

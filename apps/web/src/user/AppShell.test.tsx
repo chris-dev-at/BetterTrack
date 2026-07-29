@@ -411,10 +411,16 @@ test.each([
   ['/settings', 'Account'],
   ['/settings/account', 'Account'],
   ['/settings/notifications', 'Notifications'],
-  ['/settings/security', 'Security'],
+  // Security split into Sign-in (credentials) + Sessions (devices + app lock);
+  // the legacy path lands on the credentials half.
+  ['/settings/security', 'Sign-in'],
   ['/settings/taxes', 'Portfolio defaults'],
   ['/settings/connections', 'Connections'],
   ['/settings/api', 'API keys'],
+  // The public-profile settings moved into the Control Center (owner order);
+  // both the legacy settings path and the People route land on the panel.
+  ['/settings/profile', 'Public profile'],
+  ['/people/profile', 'Public profile'],
 ])('%s opens the Control Center on the %s panel', async (path, panel) => {
   renderAt(path);
 
