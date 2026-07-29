@@ -251,6 +251,85 @@ describe('realizedSellsEur', () => {
       ).toThrow(TaxComputationError);
     });
   });
+
+  describe('storage-quantum shortfall waiver (#917)', () => {
+    // numeric(20,8) storage oracle: raw quantities 1.0000000046 / 1.0000000051
+    // pass the write path's 1e-9 epsilon, then persist one quantum apart as
+    // 1.00000000 / 1.00000001 — the stored rows every later report replays.
+    const quantumPair = (sellQuantity: number) => [
+      T('b1', 'buy', 1.0, 100, '2026-01-01T10:00:00Z'),
+      T('s1', 'sell', sellQuantity, 110, '2026-01-02T10:00:00Z'),
+    ];
+
+    it('waives a same-batch one-quantum shortfall instead of poisoning every report', () => {
+      const [r] = realizedSellsEur(quantumPair(1.00000001));
+      expect(r!.proceedsEur).toBeCloseTo(1.00000001 * 110, 9);
+      // The held share releases its full basis; the quantum of drift takes the
+      // sale price → contributes exactly 0 gain, so the PnL is the held
+      // share's own 10.
+      expect(r!.costBasisEur).toBeCloseTo(100 + 0.00000001 * 110, 9);
+      expect(r!.realizedPnlEur).toBeCloseTo(10, 6);
+      expect(r!.uncoveredQuantity).toBe(0);
+    });
+
+    it('scales the envelope per contributing row — multi-buy drift (F1 shape)', () => {
+      // 4 raw buys of 0.1000000049 persist as 0.10000000 each; their exact-sum
+      // sell persists as 0.40000002: a two-quantum shortfall across 5 rows.
+      const [r] = realizedSellsEur([
+        T('b1', 'buy', 0.1, 50, '2026-01-01T10:00:00Z'),
+        T('b2', 'buy', 0.1, 50, '2026-01-02T10:00:00Z'),
+        T('b3', 'buy', 0.1, 50, '2026-01-03T10:00:00Z'),
+        T('b4', 'buy', 0.1, 50, '2026-01-04T10:00:00Z'),
+        T('s1', 'sell', 0.40000002, 60, '2026-01-05T10:00:00Z'),
+      ]);
+      expect(r!.realizedPnlEur).toBeCloseTo(0.4 * 10, 6);
+      expect(r!.uncoveredQuantity).toBe(0);
+    });
+
+    it('waives identically under the FIFO strategy', () => {
+      const [r] = realizedSellsEur(quantumPair(1.00000001), 'fifo');
+      expect(r!.costBasisEur).toBeCloseTo(100 + 0.00000001 * 110, 9);
+      expect(r!.realizedPnlEur).toBeCloseTo(10, 6);
+      expect(r!.uncoveredQuantity).toBe(0);
+    });
+
+    it('closes the position so a later buy rebuilds a clean average', () => {
+      const sells = realizedSellsEur([
+        ...quantumPair(1.00000001),
+        T('b2', 'buy', 1, 50, '2026-02-01T10:00:00Z'),
+        T('s2', 'sell', 1, 70, '2026-03-01T10:00:00Z'),
+      ]);
+      expect(sells[1]!.realizedPnlEur).toBe(20);
+    });
+
+    it('fails closed beyond the per-row envelope — never a blanket loosening', () => {
+      // Two contributing rows (buy + the sell itself) allow two quanta; a
+      // three-quantum shortfall cannot be numeric(20,8) rounding drift.
+      expect(() => realizedSellsEur(quantumPair(1.00000003))).toThrow(TaxComputationError);
+      expect(() => realizedSellsEur(quantumPair(1.00000003), 'fifo')).toThrow(TaxComputationError);
+    });
+
+    it('resets the envelope when a position closes exactly', () => {
+      // The first, cleanly closed round trip must not widen the second's envelope.
+      expect(() =>
+        realizedSellsEur([
+          T('b1', 'buy', 1, 100, '2026-01-01T10:00:00Z'),
+          T('s1', 'sell', 1, 110, '2026-01-02T10:00:00Z'),
+          T('b2', 'buy', 1, 100, '2026-02-01T10:00:00Z'),
+          T('s2', 'sell', 1.00000003, 110, '2026-02-02T10:00:00Z'),
+        ]),
+      ).toThrow(TaxComputationError);
+    });
+
+    it('a real oversell still throws regardless of the row count', () => {
+      const buys = Array.from({ length: 100 }, (_, i) =>
+        T(`b${i}`, 'buy', 1, 100, '2026-01-01T10:00:00Z'),
+      );
+      expect(() =>
+        realizedSellsEur([...buys, T('s1', 'sell', 101, 110, '2026-01-02T10:00:00Z')]),
+      ).toThrow(TaxComputationError);
+    });
+  });
 });
 
 describe('atYearTargetEur', () => {
