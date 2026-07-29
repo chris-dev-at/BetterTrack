@@ -14,10 +14,11 @@ import {
   updatePortfolio,
 } from '../../lib/portfolioApi';
 import { Skeleton } from '../../ui';
-import { Button, Field, Icon, Input, PageHead, SectionHead } from '../../ui/origin';
+import { Button, Field, Input, PageHead, SectionHead } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
 import { Alert, cx } from '../components/ui';
 import { ConvertChainDialog, MemberSheet, MirrorInviteStepDialog } from './MirrorchainPanel';
+import { PortfolioIconChip } from './PortfolioIconChip';
 import {
   ACTIVE_PORTFOLIO_PARAM,
   promotedDefaultName,
@@ -32,7 +33,8 @@ import { PORTFOLIO_KINDS, PORTFOLIO_KIND_ICONS, usePortfolioKind } from './portf
  * portfolio rather than *views* it lives here, absorbed out of the switcher
  * dropdown and out of the overview header:
  *
- *   • General — rename, and the kind that picks its icon everywhere.
+ *   • General — rename, and the Icon (internally the *kind*) that colours and
+ *     marks this portfolio everywhere it appears.
  *   • Group portfolio — the MIRRORCHAIN convert entry point (V5-P7 M5, design
  *     §11) that used to sit as a standing CTA on the overview header, or the
  *     member sheet once the portfolio already is a synced copy.
@@ -232,9 +234,9 @@ export function PortfolioSettingsPage() {
         {saved ? <p className="bt-meta">{t('portfolio.settings.nameSaved')}</p> : null}
 
         <div className="bt-settings-block">
-          <p className="bt-label">{t('portfolio.settings.kindLabel')}</p>
+          <p className="bt-label">{t('portfolio.settings.iconLabel')}</p>
           <div
-            aria-label={t('portfolio.settings.kindLabel')}
+            aria-label={t('portfolio.settings.iconPickerAriaLabel')}
             className="bt-kind-picker"
             role="radiogroup"
           >
@@ -247,12 +249,12 @@ export function PortfolioSettingsPage() {
                 role="radio"
                 type="button"
               >
-                <Icon name={PORTFOLIO_KIND_ICONS[option]} size={17} />
+                <PortfolioIconChip icon={PORTFOLIO_KIND_ICONS[option]} tint={option} />
                 <span>{t(`portfolio.kinds.${option}`)}</span>
               </button>
             ))}
           </div>
-          <p className="bt-meta">{t('portfolio.settings.kindHint')}</p>
+          <p className="bt-meta">{t('portfolio.settings.iconHint')}</p>
         </div>
       </section>
 

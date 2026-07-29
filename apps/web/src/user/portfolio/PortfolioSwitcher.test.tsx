@@ -79,6 +79,17 @@ function iconOf(element: HTMLElement): string | null | undefined {
   return element.querySelector('svg[data-icon]')?.getAttribute('data-icon');
 }
 
+/**
+ * The hue a row/trigger chip is tinted with, read off its `bt-pf-chip--<tint>`
+ * class (the hues themselves live in origin.css, which jsdom does not load).
+ */
+function tintOf(element: HTMLElement): string | undefined {
+  const chip = element.querySelector('.bt-pf-chip');
+  return [...(chip?.classList ?? [])]
+    .find((c) => c.startsWith('bt-pf-chip--') && c !== 'bt-pf-chip--lg')
+    ?.slice('bt-pf-chip--'.length);
+}
+
 /** Surfaces the current `?portfolio=` param so tests can assert routing. */
 function ActiveProbe() {
   const [params] = useSearchParams();
@@ -181,46 +192,92 @@ describe('PortfolioSwitcher', () => {
     );
   });
 
-  // ── Kinds ─────────────────────────────────────────────────────────────────
+  // ── Icons (kinds, internally) ──────────────────────────────────────────────
 
-  test('each row renders its stored kind icon, defaulting to private', async () => {
+  test('each row renders its stored icon glyph and hue, defaulting to private', async () => {
     setPortfolioKind(TRADING.id, 'business');
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    expect(iconOf(await screen.findByRole('menuitemradio', { name: /Trading/ }))).toBe('briefcase');
-    // Main was never classified → the private default.
-    expect(iconOf(screen.getByRole('menuitemradio', { name: /Main/ }))).toBe('user-lock');
+    const trading = await screen.findByRole('menuitemradio', { name: /Trading/ });
+    expect(iconOf(trading)).toBe('briefcase');
+    expect(tintOf(trading)).toBe('business');
+    // Main was never classified → the private default, glyph and hue together.
+    const main = screen.getByRole('menuitemradio', { name: /Main/ });
+    expect(iconOf(main)).toBe('user-lock');
+    expect(tintOf(main)).toBe('private');
   });
 
-  test('the trigger follows the active portfolio kind', async () => {
+  test('the trigger follows the active portfolio icon', async () => {
     setPortfolioKind(MAIN.id, 'savings');
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
     renderSwitcher();
 
     const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
     await waitFor(() => expect(iconOf(trigger)).toBe('piggy-bank'));
+    expect(tintOf(trigger)).toBe('savings');
   });
 
-  test('a group portfolio shows the group icon regardless of its kind', async () => {
+  test('before anything resolves the trigger chip claims no icon at all', async () => {
+    // A pending list: tinting this "private" would assert a purpose the user
+    // never picked, so the chip stays untinted until a portfolio is known.
+    vi.mocked(listPortfolios).mockReturnValue(new Promise(() => {}));
+    renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    expect(trigger).toHaveTextContent('Portfolio');
+    expect(iconOf(trigger)).toBe('portfolios');
+    expect(tintOf(trigger)).toBeUndefined();
+  });
+
+  test('the chips are garnish: they add no words to a row or the trigger', async () => {
+    setPortfolioKind(TRADING.id, 'business');
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    renderSwitcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    // Exact-name lookups: a chip that leaked its icon name into the accessible
+    // name (…"Trading Business") would fail these.
+    expect(await screen.findByRole('menuitemradio', { name: 'Trading' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: 'Main Default' })).toBeInTheDocument();
+  });
+
+  test('a group portfolio overrides both the glyph and the hue of its kind', async () => {
     setPortfolioKind(HOUSEHOLD.id, 'family');
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, HOUSEHOLD] });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    expect(iconOf(await screen.findByRole('menuitemradio', { name: /Household/ }))).toBe('users');
+    const household = await screen.findByRole('menuitemradio', { name: /Household/ });
+    expect(iconOf(household)).toBe('users');
+    expect(tintOf(household)).toBe('group');
   });
 
   // ── Search ────────────────────────────────────────────────────────────────
 
-  test('a short list has no search field', async () => {
-    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+  test('a single portfolio has nothing to filter, so it gets no search field', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN] });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
     await screen.findByRole('menuitemradio', { name: /Main/ });
     expect(screen.queryByLabelText('Search portfolios')).not.toBeInTheDocument();
+  });
+
+  test('a short list gets a search field that does not steal the keyboard', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    renderSwitcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    const search = await screen.findByLabelText('Search portfolios');
+    // Present (it is the menu's grammar) but unfocused: two portfolios are one
+    // click apart, and autofocus would swallow the click-through.
+    expect(search).not.toHaveFocus();
+
+    await userEvent.type(search, 'trad');
+    expect(await screen.findByRole('menuitemradio', { name: /Trading/ })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitemradio', { name: /Main/ })).not.toBeInTheDocument();
   });
 
   test('a long list gets a focused search field that filters by name', async () => {

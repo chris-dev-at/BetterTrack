@@ -7,6 +7,7 @@ import {
   getPortfolioKind,
   getPortfolioKinds,
   portfolioIconName,
+  portfolioIconTint,
   resetPortfolioKindCache,
   setPortfolioKind,
 } from './portfolioKinds';
@@ -101,6 +102,27 @@ describe('portfolioIconName', () => {
     };
     for (const kind of PORTFOLIO_KINDS) {
       expect(portfolioIconName({ mirror }, kind)).toBe('users');
+    }
+  });
+});
+
+describe('portfolioIconTint', () => {
+  test('a normal portfolio is tinted by its kind', () => {
+    for (const kind of PORTFOLIO_KINDS) {
+      expect(portfolioIconTint({ mirror: undefined }, kind)).toBe(kind);
+    }
+  });
+
+  test('a synced chain copy takes the group hue, exactly like its glyph', () => {
+    const mirror = {
+      chainId: 'c1',
+      chainName: 'Household',
+      role: 'owner' as const,
+      memberCount: 3,
+      sync: { appliedSeq: 1, lastSeq: 1, percent: 100, synced: true },
+    };
+    for (const kind of PORTFOLIO_KINDS) {
+      expect(portfolioIconTint({ mirror }, kind)).toBe('group');
     }
   });
 });

@@ -2876,34 +2876,26 @@
 /* ===== R2: portfolio ===== */
 
 /*
- * Portfolio switcher — a selector, not a management menu. The trigger is a quiet
- * button (kind icon · name · chevron); the dropdown is a search + list + create
- * footer. Selection is background/ink + a check, never an edge marker.
+ * Portfolio switcher — a selector, not a management menu. The trigger is a
+ * bordered, surfaced control (icon chip · name · default badge · chevron); the
+ * dropdown is a search + list + create footer. Selection is background/ink + a
+ * check, never an edge marker. The icon chips, their per-icon hues and the
+ * trigger/row metrics live in the "R2: switcher" section at the end of this file.
  */
 
-.bt-portfolio-trigger {
-  max-width: min(360px, 46vw);
-  font-weight: 600;
-}
-
-.bt-portfolio-trigger > .bt-muted {
-  margin-left: -2px;
-}
-
 .bt-portfolio-menu {
-  width: 300px;
   max-width: calc(100vw - 24px);
 }
 
 .bt-portfolio-search {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin: 1px 1px 5px;
-  padding: 0 9px;
-  min-height: 32px;
+  gap: 8px;
+  margin: 2px 2px 6px;
+  padding: 0 10px;
+  min-height: 34px;
   border: 1px solid var(--bt-border-strong);
-  border-radius: 6px;
+  border-radius: 7px;
   background: var(--bt-bg);
   color: var(--bt-muted);
 }
@@ -2934,24 +2926,15 @@
 }
 
 .bt-portfolio-list {
-  max-height: 264px;
+  max-height: 304px;
   overflow-y: auto;
   padding: 1px 0;
-}
-
-.bt-portfolio-option > svg:first-child {
-  flex: none;
-  color: var(--bt-muted);
 }
 
 /* Selected row: background + ink + check. No left-edge accent bar, ever. */
 .bt-portfolio-option[aria-checked='true'] {
   background: var(--bt-surface-soft);
   color: var(--bt-text);
-}
-
-.bt-portfolio-option[aria-checked='true'] > svg:first-child {
-  color: var(--bt-text-soft);
 }
 
 .bt-portfolio-check {
@@ -3001,7 +2984,7 @@
   gap: 9px;
 }
 
-/* Kind picker: icon + label per kind, selected by background/ink only. */
+/* Icon picker: chip + label per icon, selected by background/ink only. */
 .bt-kind-picker {
   display: flex;
   flex-wrap: wrap;
@@ -3011,11 +2994,11 @@
 .bt-kind-option {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 36px;
-  padding: 0 13px;
+  gap: 9px;
+  min-height: 40px;
+  padding: 0 13px 0 7px;
   border: 1px solid var(--bt-border-strong);
-  border-radius: 6px;
+  border-radius: 7px;
   background: none;
   color: var(--bt-text-soft);
   font: inherit;
@@ -3025,11 +3008,6 @@
     background var(--bt-t-fast),
     border-color var(--bt-t-fast),
     color var(--bt-t-fast);
-}
-
-.bt-kind-option > svg {
-  color: var(--bt-muted);
-  transition: color var(--bt-t-fast);
 }
 
 .bt-kind-option:hover {
@@ -3044,17 +3022,12 @@
   font-weight: 590;
 }
 
-.bt-kind-option.is-active > svg {
-  color: var(--bt-text);
-}
-
 .bt-danger-zone {
   border-color: rgba(251, 113, 133, 0.24);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bt-kind-option,
-  .bt-kind-option > svg {
+  .bt-kind-option {
     transition: none;
   }
 }
@@ -3174,4 +3147,171 @@
   .bt-chatdock {
     animation: none;
   }
+}
+
+/* ===== R2: switcher ===== */
+
+/*
+ * Portfolio icon chips — the user-facing "Icon" of a portfolio (internally its
+ * *kind*, see user/portfolio/portfolioKinds.ts). One rounded chip: a ~14% tint
+ * of the icon's hue behind the glyph drawn in that hue at full strength, so a
+ * list of portfolios is scannable by colour before it is readable by name. The
+ * glyph always carries the meaning; colour only speeds up the scan.
+ *
+ * HUES come off the validated categorical palette (ui/charts/palette.ts) — dark
+ * theme uses those values verbatim, the light theme uses same-hue darkened
+ * counterparts (the palette is validated against the dark canvas only, and the
+ * dark inks sit at ~2.5:1 on white). Both themes keep every glyph above 3:1
+ * against its own tinted chip.
+ *
+ * Deliberately EXCLUDED palette slots: green (#199e70) and teal (#0d9488) read
+ * as the positive semantic pair, red-brown (#c0453f) as the negative one, and
+ * yellow (#c98500) as the gold the app reserves for brand/action/focus. What is
+ * left is six well-separated hues (min adjacent gap 34°), one per icon.
+ */
+
+.bt-pf-chip {
+  --bt-pf-ink: var(--bt-muted);
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--bt-pf-ink) 26%, transparent);
+  background: color-mix(in srgb, var(--bt-pf-ink) 14%, transparent);
+  color: var(--bt-pf-ink);
+}
+
+/* The topbar trigger's chip: one step up, because it states the current scope. */
+.bt-pf-chip--lg {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+}
+
+.bt-pf-chip--private {
+  --bt-pf-ink: #3987e5; /* palette blue */
+}
+
+.bt-pf-chip--family {
+  --bt-pf-ink: #d55181; /* palette magenta */
+}
+
+.bt-pf-chip--business {
+  --bt-pf-ink: #b06fc9; /* palette purple */
+}
+
+.bt-pf-chip--savings {
+  --bt-pf-ink: #7a9e2b; /* palette lime */
+}
+
+.bt-pf-chip--property {
+  --bt-pf-ink: #d95926; /* palette orange */
+}
+
+/* Group (MIRRORCHAIN) copies override the icon entirely — hue included. */
+.bt-pf-chip--group {
+  --bt-pf-ink: #9085e9; /* palette violet */
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--private {
+  --bt-pf-ink: #1f6ac4;
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--family {
+  --bt-pf-ink: #b93a68;
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--business {
+  --bt-pf-ink: #8e46ad;
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--savings {
+  --bt-pf-ink: #5c7a13;
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--property {
+  --bt-pf-ink: #b8431a;
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--group {
+  --bt-pf-ink: #6154c6;
+}
+
+/* ── Trigger ─────────────────────────────────────────────────────────────── */
+
+/*
+ * The one topbar control that is a *statement*, not an action: bordered and
+ * surfaced so the current portfolio is unmistakable at a glance. Gold stays with
+ * brand/action/focus — prominence here is border + surface + weight.
+ */
+.bt-portfolio-trigger {
+  justify-content: flex-start;
+  gap: 9px;
+  min-width: 200px;
+  max-width: min(340px, 42vw);
+  min-height: 40px;
+  padding: 0 10px 0 5px;
+  background: var(--bt-surface);
+  text-align: left;
+}
+
+.bt-portfolio-trigger:hover,
+.bt-portfolio-trigger.is-open {
+  background: var(--bt-surface-hover);
+  border-color: var(--bt-border-strong);
+}
+
+.bt-portfolio-trigger__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--bt-text);
+  font-size: 13.5px;
+  font-weight: 620;
+  letter-spacing: -0.005em;
+}
+
+.bt-portfolio-trigger__chevron {
+  flex: none;
+  color: var(--bt-muted);
+}
+
+/* ── Dropdown ────────────────────────────────────────────────────────────── */
+
+.bt-portfolio-menu {
+  width: 324px;
+}
+
+.bt-portfolio-option {
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 8px;
+}
+
+.bt-portfolio-option__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 530;
+}
+
+.bt-portfolio-option[aria-checked='true'] .bt-portfolio-option__name {
+  font-weight: 620;
+}
+
+/* Create + settings footer: same rhythm as the rows above the rule. */
+.bt-portfolio-actions > .bt-menu-item {
+  min-height: 34px;
+  gap: 10px;
+}
+
+.bt-portfolio-actions > .bt-menu-item > svg {
+  flex: none;
+  color: var(--bt-muted);
+}
+
+.bt-portfolio-actions > .bt-menu-item:hover > svg {
+  color: var(--bt-text-soft);
 }

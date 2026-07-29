@@ -10,6 +10,11 @@ import type { IconName } from '../../ui/origin';
  * switcher trigger, the switcher list and the portfolio settings page, so a
  * long portfolio list stays scannable at a glance.
  *
+ * ⚠️ NAMING: `kind` is the internal name only. To the user this is the
+ * portfolio's **Icon** (settings section, aria labels, helper copy) — a colour
+ * plus a glyph, not a taxonomy they have to reason about. Rename the copy, never
+ * the type or {@link STORAGE_KEY} (no migration).
+ *
  * ⚠️ CLIENT-ONLY, FOR NOW. There is no `kind` field on `PortfolioSummary` and no
  * `PATCH /portfolios/:id` body field for it (see `packages/contracts/src/
  * portfolio.ts` — the patch accepts `name`, `visibility`, `defaultPayFromCash`
@@ -47,6 +52,28 @@ export const PORTFOLIO_KIND_ICONS: Record<PortfolioKind, IconName> = {
  * it gets its own trio glyph rather than a decorated kind icon (V5-P7 M5).
  */
 export const PORTFOLIO_GROUP_ICON: IconName = 'users';
+
+/**
+ * Which hue an icon chip is tinted with: one per kind, plus `group` for the
+ * synced-copy glyph. The hues themselves live in CSS
+ * (`.bt-pf-chip--<tint>` in the R2 switcher section of `styles/origin.css`),
+ * taken off the validated categorical palette — see that section for why the
+ * green/teal/red/gold slots are excluded.
+ */
+export type PortfolioIconTint = PortfolioKind | 'group';
+
+/**
+ * The tint one portfolio row renders with, resolved exactly like
+ * {@link portfolioIconName}: `group` for a synced copy of an active chain, else
+ * its kind. Glyph and tint always move together, so colour never claims
+ * something the icon contradicts.
+ */
+export function portfolioIconTint(
+  portfolio: Pick<PortfolioSummary, 'mirror'>,
+  kind: PortfolioKind,
+): PortfolioIconTint {
+  return portfolio.mirror ? 'group' : kind;
+}
 
 /** localStorage key for the portfolioId → kind map. */
 const STORAGE_KEY = 'bt.portfolio.kinds';
