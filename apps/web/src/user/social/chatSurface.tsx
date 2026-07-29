@@ -41,11 +41,11 @@ import { Alert, cx } from '../components/ui';
  *
  * R2: this is the chat itself — conversation list, thread, composer, share
  * chips, realtime sync — extracted out of `ChatPage.tsx` so the same live code
- * backs BOTH mounts: the `/people/chat` master-detail page and the right-side
- * `ChatDock`. Nothing here knows about routes: the two page-bound decisions
- * (what selecting a conversation does, and what "back" means) are props, so the
- * page keeps navigating by URL while the dock keeps its selection in local
- * state and never hijacks the deep links.
+ * backs BOTH mounts: the `/people/chat` master-detail page and the popped-out
+ * `/chat-window` (`ChatWindowPage`). Nothing here knows about routes: the two
+ * page-bound decisions (what selecting a conversation does, and what "back"
+ * means) are props, so each surface owns its own URL contract and neither can
+ * hijack the other's deep links.
  */
 
 export const CONVERSATIONS_KEY = ['chat', 'conversations'] as const;

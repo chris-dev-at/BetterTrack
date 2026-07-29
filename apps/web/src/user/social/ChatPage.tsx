@@ -10,6 +10,7 @@ import {
   useChatRealtimeSync,
   type ChatTarget,
 } from './chatSurface';
+import { ChatPopoutButton } from './ChatPopoutButton';
 
 /**
  * `/people/chat` (and `/people/chat/:userId`) — friend chat (PROJECTPLAN.md
@@ -19,8 +20,9 @@ import {
  * absent. Share chips are resolved per-viewer server-side (never a leak).
  *
  * R2: the panes themselves live in `chatSurface.tsx` and are shared with the
- * right-side `ChatDock`. This page owns only the URL contract — selection is a
- * route, so every `/people/chat/...` deep link keeps working unchanged.
+ * pop-out window (`ChatWindowPage`). This page owns only the URL contract —
+ * selection is a route, so every `/people/chat/...` deep link keeps working
+ * unchanged, and popping out never disturbs it.
  */
 export function ChatPage() {
   const t = useT();
@@ -42,7 +44,15 @@ export function ChatPage() {
 
   return (
     <div className="flex flex-col">
-      <PageHead sub={t('social.chat.subhead')} title={t('social.chat.title')} />
+      <PageHead
+        actions={
+          <ChatPopoutButton
+            target={userId ? { userId } : conversationId ? { conversationId } : null}
+          />
+        }
+        sub={t('social.chat.subhead')}
+        title={t('social.chat.title')}
+      />
 
       <div className="flex h-[70vh] gap-4">
         <aside className={cx('w-full shrink-0 md:w-80', selected && 'hidden md:block')}>

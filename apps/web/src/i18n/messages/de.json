@@ -490,21 +490,13 @@
     "expandSection": "{{section}} ausklappen",
     "collapseSection": "{{section}} einklappen"
   },
-  "chatdock": {
-    "toggle": "Chat",
-    "toggleUnread": "Chat (ungelesene Nachrichten)",
-    "close": "Chat schließen",
-    "tab": {
-      "chats": "Chats",
-      "ask": "BetterTrack fragen"
-    },
+  "askdock": {
+    "close": "BetterTrack fragen schließen",
+    "composerPlaceholder": "Frag etwas zu deinen Portfolios",
+    "send": "Senden",
+    "hint": "Noch nicht live — hier wird die KI-Konversation laufen.",
     "aria": {
-      "region": "Chat-Dock",
-      "tabs": "Bereiche im Chat-Dock"
-    },
-    "ask": {
-      "composerPlaceholder": "Frag etwas zu deinen Portfolios",
-      "hint": "Noch nicht live — hier wird die KI-Konversation laufen."
+      "region": "Bereich „BetterTrack fragen“"
     }
   },
   "footer": {
@@ -3145,7 +3137,9 @@
         "empty": "Du hast noch nichts zum Teilen."
       },
       "deletedUser": "Gelöschtes Konto",
-      "deletedClosed": "Dieses Konto existiert nicht mehr. Die Unterhaltung ist geschlossen, dein Verlauf bleibt aber lesbar."
+      "deletedClosed": "Dieses Konto existiert nicht mehr. Die Unterhaltung ist geschlossen, dein Verlauf bleibt aber lesbar.",
+      "popout": "Neues Fenster",
+      "popoutHint": "Öffnet den Chat in einem eigenen Fenster"
     },
     "itemFollow": {
       "follow": "Element folgen",
