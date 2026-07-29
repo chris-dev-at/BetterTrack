@@ -45,7 +45,7 @@
   --bt-shadow-menu: 0 10px 34px rgba(0, 0, 0, 0.45);
   --bt-shadow-overlay: 0 28px 80px rgba(0, 0, 0, 0.55);
   /* Frame metrics */
-  --bt-rail-w: 248px;
+  --bt-rail-w: 260px;
   --bt-rail-w-collapsed: 64px;
   --bt-topbar-h: 60px;
   --bt-gutter: 48px;
@@ -210,20 +210,22 @@
   flex: 1 1 auto;
 }
 
+/* Main destinations read a clear step above the tree children: larger, bolder,
+   brighter ink. The children stay 12.5px/muted behind their guide line. */
 .bt-rail-item {
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 34px;
-  padding: 6px 9px;
+  min-height: 38px;
+  padding: 7px 9px;
   border: 0;
   border-radius: 6px;
   background: none;
-  color: var(--bt-muted);
+  color: var(--bt-text-soft);
   font: inherit;
-  font-size: 13px;
-  font-weight: 520;
+  font-size: 13.5px;
+  font-weight: 600;
   text-align: left;
   text-decoration: none;
   white-space: nowrap;
@@ -235,7 +237,7 @@
 
 .bt-rail-item:hover {
   background: var(--bt-surface-soft);
-  color: var(--bt-text-soft);
+  color: var(--bt-text);
 }
 
 .bt-rail-item.is-active {
@@ -1718,7 +1720,7 @@
   position: absolute;
   top: 3px;
   bottom: 3px;
-  left: 17.5px;
+  left: 18px;
   width: 1px;
   background: var(--bt-border-strong);
 }
@@ -2315,6 +2317,9 @@
 @media (min-width: 900px) {
   .bt-gate--split {
     display: grid;
+    /* The base gate centers its flex children; as a grid both panes must
+       stretch the full row height or they collapse to centered bands. */
+    align-items: stretch;
     grid-template-columns: minmax(320px, 40%) minmax(0, 1fr);
     height: 100vh;
     height: 100dvh;

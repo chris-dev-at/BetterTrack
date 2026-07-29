@@ -31,9 +31,10 @@ import {
  * R2: the four sections with sub-navigation are expandable groups whose
  * children come from `sectionNav.ts` — the same table the in-page strips read.
  * A group row navigates to its section root *and* opens; the chevron beside it
- * only opens/closes. The active route's group opens itself and nothing ever
- * auto-closes, so a tree the user opened stays open. Both the collapse
- * preference and the open groups persist in `localStorage`.
+ * only opens/closes. The rail is an accordion: the active route's group opens
+ * itself and closes the previous one, and routes outside the sections (Home,
+ * Control Center) leave the open tree exactly as it is. Both the collapse
+ * preference and the open group persist in `localStorage`.
  */
 
 const RAIL_STORAGE_KEY = 'bt.rail';
@@ -144,7 +145,7 @@ function RailItem({
       title={collapsed ? label : undefined}
       to={item.to}
     >
-      <Icon name={item.icon} size={17} />
+      <Icon name={item.icon} size={18} />
       <span className="bt-rail-item__label">{label}</span>
     </NavLink>
   );
@@ -200,7 +201,7 @@ function RailGroup({
           title={collapsed ? label : undefined}
           to={item.to}
         >
-          <Icon name={item.icon} size={17} />
+          <Icon name={item.icon} size={18} />
           <span className="bt-rail-item__label">{label}</span>
         </Link>
         <button
