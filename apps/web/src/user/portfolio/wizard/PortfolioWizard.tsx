@@ -1,0 +1,229 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
+
+import type { PortfolioSummary } from '@bettertrack/contracts';
+
+import { useT } from '../../../i18n';
+import { ApiError } from '../../../lib/apiClient';
+import { createPortfolio } from '../../../lib/portfolioApi';
+import { Button, ODialog } from '../../../ui/origin';
+import { DEFAULT_PORTFOLIO_KIND, setPortfolioKind } from '../portfolioKinds';
+import { PORTFOLIO_WIZARD_STEPS } from './steps';
+import type { PortfolioDraft, PortfolioWizardStepReport } from './types';
+
+/**
+ * The add-portfolio wizard (PROJECTPLAN.md §6.8) — the single "Add portfolio"
+ * entry point in the switcher footer.
+ *
+ * A popup-scale dialog holding one question at a time: a slim dot stepper, the
+ * question, that step's own control, and exactly one gold primary. Steps live in
+ * `stepMeta.ts` + `steps.ts` and know nothing about the API; this frame owns the
+ * chrome, the draft and every write.
+ *
+ * WHERE CREATION HAPPENS. Nothing exists server-side until Continue is pressed
+ * on the **book** step — the first moment all three answers are in and, on the
+ * shared branch, the moment we learn the wizard must not create a plain
+ * portfolio at all (the MIRRORCHAIN flow creates its own). That makes Escape
+ * safe on every earlier step: there is nothing to undo.
+ *
+ * CREATION HAPPENS ONCE, and the guard is a ref rather than the mutation's
+ * `isPending`: pending only becomes true on the next render, so a double-click
+ * or a held Enter would otherwise fire a second POST inside the same tick. The
+ * ref is released only when the create *failed*, which is also why the terminal
+ * step has no Back — once the portfolio exists, changing it is a deliberate trip
+ * to its settings tab, exactly as the rest of this surface treats it.
+ *
+ * The shared branch hands off to the existing create-chain → invite-a-friend
+ * dialogs, unchanged, through `onSharedBook` — see `PortfolioSwitcher`.
+ */
+export function PortfolioWizard({
+  onClose,
+  onCreated,
+  onSharedBook,
+}: {
+  onClose: () => void;
+  /** A plain portfolio was created and the user is done: activate it. */
+  onCreated: (portfolio: PortfolioSummary) => void;
+  /**
+   * The user wants a group book: hand off to the MIRRORCHAIN create flow (§11),
+   * carrying the name they already typed so it is not asked for twice.
+   */
+  onSharedBook: (name: string) => void;
+}) {
+  const t = useT();
+  const [index, setIndex] = useState(0);
+  const [draft, setDraft] = useState<PortfolioDraft>({
+    name: '',
+    kind: DEFAULT_PORTFOLIO_KIND,
+    book: 'solo',
+  });
+  const [reported, setReported] = useState<PortfolioWizardStepReport>({ ready: false });
+  const [created, setCreated] = useState<PortfolioSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  /** Synchronous once-only latch for the POST — see the note above. */
+  const creatingRef = useRef(false);
+
+  const step = PORTFOLIO_WIZARD_STEPS[index];
+  const total = PORTFOLIO_WIZARD_STEPS.length;
+
+  // Stable identities: steps list both in effect deps (see types.ts).
+  const patch = useCallback(
+    (next: Partial<PortfolioDraft>) => setDraft((current) => ({ ...current, ...next })),
+    [],
+  );
+  const report = useCallback((next: PortfolioWizardStepReport) => setReported(next), []);
+
+  /**
+   * Create the portfolio and write its icon through the same store the Settings
+   * picker uses — one code path for "this portfolio's icon".
+   */
+  const commit = useMutation({
+    mutationFn: async (): Promise<PortfolioSummary> => {
+      const portfolio = await createPortfolio(draft.name.trim());
+      setPortfolioKind(portfolio.id, draft.kind);
+      return portfolio;
+    },
+    onSuccess: (portfolio) => {
+      setError(null);
+      setCreated(portfolio);
+      goTo(index + 1);
+    },
+    onError: (err) => {
+      // Nothing was created, so let the next attempt through.
+      creatingRef.current = false;
+      // A name clash is only fixable on the name step, so land the user there
+      // with the message rather than stranding them on a step that cannot help.
+      setError(
+        err instanceof ApiError && err.code === 'PORTFOLIO_NAME_TAKEN'
+          ? t('portfolio.switcher.nameTakenError')
+          : t('portfolio.switcher.createError'),
+      );
+      goTo(0);
+    },
+  });
+
+  function goTo(nextIndex: number) {
+    setReported({ ready: false });
+    setIndex(Math.max(0, Math.min(nextIndex, total - 1)));
+  }
+
+  /** Continue — and Enter, since the panel is a form. */
+  function advance() {
+    if (!step || reported.busy || commit.isPending) return;
+    if (step.terminal) {
+      if (created) onCreated(created);
+      onClose();
+      return;
+    }
+    if (step.id === 'book') {
+      if (draft.book === 'shared') {
+        onSharedBook(draft.name.trim());
+        return;
+      }
+      if (creatingRef.current || created !== null) return;
+      creatingRef.current = true;
+      commit.mutate();
+      return;
+    }
+    goTo(index + 1);
+  }
+
+  // Hand focus to the step's own control (the checked radio, else the field),
+  // falling back to the primary on a read-only step. Runs after ODialog's own
+  // mount focus — parent effects flush after child effects — so this wins.
+  useEffect(() => {
+    const target =
+      bodyRef.current?.querySelector<HTMLElement>('[aria-checked="true"], input, button') ??
+      formRef.current?.querySelector<HTMLElement>('button[type="submit"]');
+    target?.focus();
+  }, [index]);
+
+  // Keep Tab inside the dialog. ODialog restores focus on close and closes on
+  // Escape; the cycle is owned here rather than bolted onto a primitive every
+  // other surface shares.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Tab') return;
+      const panel = formRef.current?.closest('[role="dialog"]');
+      if (!panel) return;
+      const nodes = [
+        ...panel.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((node) => !node.hasAttribute('disabled'));
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      if (!first || !last) return;
+      const inside = panel.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === first || !inside)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !inside)) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  if (!step) return null;
+  const { Component } = step;
+  const busy = commit.isPending || Boolean(reported.busy);
+
+  return (
+    <ODialog onClose={onClose} open title={t('portfolio.wizard.title')}>
+      <form
+        className="bt-pfw"
+        onSubmit={(event) => {
+          event.preventDefault();
+          advance();
+        }}
+        ref={formRef}
+      >
+        <div className="bt-pfw__stepper">
+          <div aria-hidden="true" className="bt-pfw__dots">
+            {PORTFOLIO_WIZARD_STEPS.map((entry, position) => (
+              <span
+                className="bt-pfw__dot"
+                data-state={position === index ? 'current' : position < index ? 'done' : 'upcoming'}
+                key={entry.id}
+              />
+            ))}
+          </div>
+          <p className="bt-pfw__stepnow">
+            {t('portfolio.wizard.stepOf', { current: index + 1, total })}
+            {' · '}
+            {t(step.labelKey)}
+          </p>
+        </div>
+
+        {/* Keyed so each step mounts fresh — no state leaks between questions. */}
+        <div className="bt-pfw__body" key={step.id} ref={bodyRef}>
+          <h3 className="bt-pfw__q">{t(step.titleKey)}</h3>
+          {step.hintKey ? <p className="bt-pfw__hint">{t(step.hintKey)}</p> : null}
+          <Component created={created} draft={draft} error={error} patch={patch} report={report} />
+        </div>
+
+        <div className="bt-pfw__foot">
+          {index > 0 && !step.terminal ? (
+            <Button disabled={busy} onClick={() => goTo(index - 1)} type="button" variant="quiet">
+              {t('common.back')}
+            </Button>
+          ) : (
+            <span />
+          )}
+          <Button disabled={!reported.ready || busy} type="submit" variant="primary">
+            {busy
+              ? t('common.saving')
+              : step.primaryKey
+                ? t(step.primaryKey)
+                : t('common.continue')}
+          </Button>
+        </div>
+      </form>
+    </ODialog>
+  );
+}

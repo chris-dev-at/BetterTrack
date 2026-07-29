@@ -1835,8 +1835,6 @@
       "fallbackName": "Portfolio",
       "defaultBadge": "Standard",
       "menuAriaLabel": "Portfolios",
-      "newPortfolio": "+ Neues Portfolio",
-      "newGroupPortfolio": "+ Neues Gruppenportfolio",
       "renameCurrent": "Aktuelles umbenennen",
       "archiveCurrent": "Aktuelles archivieren",
       "archiveDisabledHint": "Du kannst dein einziges Portfolio nicht archivieren",
@@ -1849,12 +1847,10 @@
       "archivedDialogDescription": "Stelle ein Portfolio wieder her, um es zurück in deine Liste zu bringen.",
       "noArchived": "Keine archivierten Portfolios.",
       "restore": "Wiederherstellen",
-      "createTitle": "Neues Portfolio",
       "renameTitle": "Portfolio umbenennen",
       "nameLabel": "Name",
       "nameAriaLabel": "Portfolioname",
       "namePlaceholder": "z. B. Altersvorsorge",
-      "create": "Erstellen",
       "nameTakenError": "Du hast bereits ein Portfolio mit diesem Namen.",
       "createError": "Das Portfolio konnte nicht erstellt werden. Bitte versuche es erneut.",
       "renameError": "Das Portfolio konnte nicht umbenannt werden. Bitte versuche es erneut.",
@@ -1878,7 +1874,44 @@
       "searchPlaceholder": "Portfolios durchsuchen",
       "searchAriaLabel": "Portfolios durchsuchen",
       "noMatches": "Keine Treffer.",
-      "settingsMenuItem": "Portfolio-Einstellungen"
+      "settingsMenuItem": "Portfolio-Einstellungen",
+      "addPortfolio": "Portfolio hinzufügen"
+    },
+    "wizard": {
+      "title": "Portfolio hinzufügen",
+      "stepOf": "Schritt {{current}} von {{total}}",
+      "name": {
+        "label": "Name",
+        "title": "Wie heißt dieses Portfolio?"
+      },
+      "icon": {
+        "label": "Symbol",
+        "title": "Wähle sein Symbol",
+        "hint": "Färbt es überall, wo es auftaucht. Jederzeit änderbar."
+      },
+      "book": {
+        "label": "Buch",
+        "title": "Wer führt dieses Buch?",
+        "solo": {
+          "title": "Nur ich",
+          "hint": "Nur du siehst und bearbeitest es."
+        },
+        "shared": {
+          "title": "Mit Personen geteilt",
+          "hint": "Alle bearbeiten dasselbe Buch. Es trägt das Gruppensymbol."
+        }
+      },
+      "done": {
+        "label": "Fertig",
+        "title": "Portfolio erstellt",
+        "primary": "Portfolio öffnen"
+      },
+      "parked": {
+        "currency": "Eigene Basiswährung",
+        "template": "Mit einer Vorlage starten",
+        "balances": "Anfangsbestände",
+        "import": "Broker-Datei importieren"
+      }
     },
     "cash": {
       "title": "Bargeldbestand",
