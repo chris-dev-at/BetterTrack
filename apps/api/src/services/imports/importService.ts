@@ -69,7 +69,8 @@ export interface ImportServiceDeps {
   logger?: Logger;
   /**
    * Shared process-local budget for import-driven catalog/provider resolution.
-   * Tests may inject a recording queue; production uses the serialized default.
+   * Tests may inject a recording queue; production admits four concurrent
+   * resolution chains so one slow import cannot block every other user.
    */
   resolutionQueue?: RequestQueue;
 }
@@ -185,10 +186,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
   const registry = createMapperRegistry(deps.mappers);
   // One queue per service instance is shared by every concurrent import request.
   // Provider clients use the same RequestQueue primitive for their own outbound
-  // concurrency/spacing/backoff policy; this outer queue serializes whole
+  // concurrency/spacing/backoff policy; this outer queue caps concurrent
   // import-driven resolution chains and never retries business/search failures.
   const resolutionQueue =
-    deps.resolutionQueue ?? createRequestQueue({ concurrency: 1, minSpacingMs: 0, maxRetries: 0 });
+    deps.resolutionQueue ?? createRequestQueue({ concurrency: 4, minSpacingMs: 0, maxRetries: 0 });
 
   async function requireOwnedPortfolio(userId: string, portfolioId: string): Promise<void> {
     const owned = await portfolioRepo.findByIdForUser(userId, portfolioId);
@@ -202,7 +203,9 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
    * security name. When the first pass misses and the search kicked off a
    * background provider enrichment, wait for it once and retry — a fresh
    * instrument the user never opened can then still resolve. Anything less than
-   * an exact match returns null (→ `unmapped`, never a silent guess).
+   * an exact match returns null (→ `unmapped`, never a silent guess). Once the
+   * batch's wait budget is exhausted, every remaining local lookup still runs;
+   * only the provider wait + retry is skipped.
    */
   async function resolveInstrument(
     userId: string,
@@ -225,10 +228,8 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     for (const attempt of attempts) {
       let result = await search.search(userId, attempt.query);
       let hit = result.results.find(attempt.matches);
-      if (!hit && result.enriching) {
+      if (!hit && result.enriching && enrichmentBudget.remainingMs > 0) {
         const waitMs = enrichmentBudget.remainingMs;
-        if (waitMs <= 0) return null;
-
         const startedAt = Date.now();
         let timer: ReturnType<typeof setTimeout> | undefined;
         const settled = await Promise.race([
@@ -245,10 +246,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         );
         if (!settled) {
           enrichmentBudget.remainingMs = 0;
-          return null;
+        } else {
+          result = await search.search(userId, attempt.query);
+          hit = result.results.find(attempt.matches);
         }
-        result = await search.search(userId, attempt.query);
-        hit = result.results.find(attempt.matches);
       }
       if (hit) return hit;
     }
@@ -418,7 +419,6 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         remainingMs: IMPORT_ENRICHMENT_WAIT_BUDGET_MS,
       };
       for (const [key, row] of instruments) {
-        if (enrichmentBudget.remainingMs <= 0) break;
         resolutions.set(
           key,
           await resolutionQueue.run(() => resolveInstrument(userId, row, enrichmentBudget)),

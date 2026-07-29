@@ -40,8 +40,9 @@ export function createImportsRouter(ctx: AppContext): Router {
   // below anything worth streaming to disk, and staging wants the text anyway.
   // Multipart budget: two text fields (portfolioId + optional brokerId), one
   // file, a parts-limit sentinel of four (Busboy emits at equality, so this
-  // admits exactly the three allowed parts), 1,000,000 bytes per field, and 32
-  // header pairs per part (well above browser form data's usual 1–2).
+  // admits exactly the three allowed parts), a field-size sentinel of 1,000,001
+  // (Busboy truncates at equality, so this admits 1,000,000 payload bytes), and
+  // 32 header pairs per part (well above browser form data's usual 1–2).
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -49,7 +50,7 @@ export function createImportsRouter(ctx: AppContext): Router {
       files: 1,
       fields: 2,
       parts: 4,
-      fieldSize: 1_000_000,
+      fieldSize: 1_000_001,
       headerPairs: 32,
     },
   });

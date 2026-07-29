@@ -86,8 +86,9 @@ export function createExpensesRouter(ctx: AppContext): Router {
   // files are capped well below anything worth streaming to disk (§13.5 V5-P9).
   // Multipart budget: two text fields (bankId + optional overrides), one file,
   // a parts-limit sentinel of four (Busboy emits at equality, so this admits
-  // exactly the three allowed parts), 1,000,000 bytes per field (the overrides
-  // contract maximum), and 32 header pairs per part (normally just 1–2).
+  // exactly the three allowed parts), a field-size sentinel of 1,000,001
+  // (Busboy truncates at equality, so this admits the overrides contract's
+  // 1,000,000-byte maximum), and 32 header pairs per part (normally just 1–2).
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -95,7 +96,7 @@ export function createExpensesRouter(ctx: AppContext): Router {
       files: 1,
       fields: 2,
       parts: 4,
-      fieldSize: 1_000_000,
+      fieldSize: 1_000_001,
       headerPairs: 32,
     },
   });

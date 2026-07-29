@@ -337,7 +337,7 @@ describe('POST /imports — staged preview', () => {
     expect(queuedResolutions).toBe(IMPORT_MAX_DISTINCT_INSTRUMENTS);
   });
 
-  it('bounds the whole batch enrichment wait when the provider stays slow', async () => {
+  it('bounds the whole batch enrichment wait while resolving later local identities', async () => {
     const providerStarted = deferred<void>();
     const providerResult = deferred<AssetSearchResult[]>();
     const marketData = createStubMarketData({
@@ -348,6 +348,7 @@ describe('POST /imports — staged preview', () => {
     });
     harness = await createTestApp({ marketData });
     const { user, pid } = await setup();
+    const localAsset = await seedAsset('SLOW2.DE', 'Slow Two AG');
     const csv = [
       HEADER,
       '2024-01-15;Kauf;Slow One AG;ZZ0000000001;1;10,00;0;-10,00;EUR',
@@ -356,6 +357,7 @@ describe('POST /imports — staged preview', () => {
 
     vi.useFakeTimers();
     try {
+      const startedAt = Date.now();
       const pending = harness.ctx.imports.createBatch(user.id, {
         portfolioId: pid,
         filename: 'slow-provider.csv',
@@ -366,10 +368,9 @@ describe('POST /imports — staged preview', () => {
       await vi.advanceTimersByTimeAsync(IMPORT_ENRICHMENT_WAIT_BUDGET_MS);
 
       const preview = await pending;
-      expect(preview.rows.map((row) => row.flag)).toEqual(['unmapped', 'unmapped']);
-      // The timeout stops the batch before the second distinct identity can
-      // schedule another background provider search.
-      expect(marketData.calls.search).toBe(1);
+      expect(Date.now() - startedAt).toBeLessThanOrEqual(IMPORT_ENRICHMENT_WAIT_BUDGET_MS);
+      expect(preview.rows.map((row) => row.flag)).toEqual(['unmapped', 'mapped']);
+      expect(preview.rows[1]?.asset?.id).toBe(localAsset.id);
     } finally {
       providerResult.resolve([]);
       await harness.ctx.search.enrichmentSettled();
