@@ -63,6 +63,7 @@ import { PublicSharePage } from './social/PublicSharePage';
 import { PublicProfileViewPage } from './social/PublicProfileViewPage';
 import { ProfileSettingsPage } from './social/ProfileSettingsPage';
 import { ChatPage } from './social/ChatPage';
+import { ChatWindowPage } from './social/ChatWindowPage';
 import { HomePage } from './home/HomePage';
 import { AskPage, DeveloperPlatformPage, ReviewPage } from './hub/HubPages';
 import { ControlCenterOverlay } from './control/ControlCenterOverlay';
@@ -154,6 +155,11 @@ function UserShell() {
         <Route path="workbench/blueprints/:id/edit" element={<ConglomerateBuilderPage />} />
         {/* Print-to-PDF tax report (§13.5 V5-P4b) — chrome-free document. */}
         <Route path="portfolio/tax/print" element={<TaxReportPrintPage />} />
+        {/* Popped-out friend chat (R2) — a chrome-free second-screen window.
+            Deep-linkable and refresh-safe: the open thread is in the URL. */}
+        <Route path="chat-window" element={<ChatWindowPage />} />
+        <Route path="chat-window/c/:conversationId" element={<ChatWindowPage />} />
+        <Route path="chat-window/:userId" element={<ChatWindowPage />} />
         <Route element={<OriginShell />}>
           {/* ── Home: the scoped command center ── */}
           <Route index element={<HomePage />} />

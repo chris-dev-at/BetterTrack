@@ -504,21 +504,13 @@
     "expandSection": "Expand {{section}}",
     "collapseSection": "Collapse {{section}}"
   },
-  "chatdock": {
-    "toggle": "Chat",
-    "toggleUnread": "Chat (unread messages)",
-    "close": "Close chat",
-    "tab": {
-      "chats": "Chats",
-      "ask": "Ask BetterTrack"
-    },
+  "askdock": {
+    "close": "Close Ask BetterTrack",
+    "composerPlaceholder": "Ask about your portfolios",
+    "send": "Send",
+    "hint": "Not live yet — the AI conversation will run here.",
     "aria": {
-      "region": "Chat dock",
-      "tabs": "Chat dock sections"
-    },
-    "ask": {
-      "composerPlaceholder": "Ask about your portfolios",
-      "hint": "Not live yet — the AI conversation will run here."
+      "region": "Ask BetterTrack panel"
     }
   },
   "footer": {
@@ -3159,7 +3151,9 @@
         "empty": "You have nothing to share yet."
       },
       "deletedUser": "Deleted user",
-      "deletedClosed": "This account no longer exists. The conversation is closed, but your history stays readable."
+      "deletedClosed": "This account no longer exists. The conversation is closed, but your history stays readable.",
+      "popout": "Pop out",
+      "popoutHint": "Open the chat in a separate window"
     },
     "itemFollow": {
       "follow": "Follow item",

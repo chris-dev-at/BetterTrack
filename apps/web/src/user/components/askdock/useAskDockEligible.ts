@@ -1,19 +1,19 @@
 import { useSyncExternalStore } from 'react';
 
 /**
- * The dock is a desktop luxury. Below this width there is no room for a 380px
- * panel beside a working canvas, so the topbar toggle NAVIGATES to
- * `/people/chat` instead of opening anything — there is deliberately no mobile
- * dock (the page already has its own responsive master-detail layout).
+ * The floating panel is a desktop luxury. Below this width there is no room to
+ * overlay a ~400px card on a working canvas, so the rail's Ask row stays a plain
+ * link to the `/ask` page instead of becoming a toggle — the route keeps working
+ * everywhere, so nothing is ever unreachable.
  */
-export const DOCK_MIN_WIDTH = 900;
+export const ASK_DOCK_MIN_WIDTH = 900;
 
-const QUERY = `(min-width: ${DOCK_MIN_WIDTH}px)`;
+const QUERY = `(min-width: ${ASK_DOCK_MIN_WIDTH}px)`;
 
 /** `matchMedia` where the browser has it, the raw width where it doesn't (jsdom). */
 function read(): boolean {
   if (typeof window.matchMedia === 'function') return window.matchMedia(QUERY).matches;
-  return window.innerWidth >= DOCK_MIN_WIDTH;
+  return window.innerWidth >= ASK_DOCK_MIN_WIDTH;
 }
 
 function subscribe(listener: () => void): () => void {
@@ -26,7 +26,7 @@ function subscribe(listener: () => void): () => void {
   return () => window.removeEventListener('resize', listener);
 }
 
-/** True while the viewport is wide enough for the dock to make sense. */
-export function useDockEligible(): boolean {
+/** True while the viewport is wide enough for the floating panel to make sense. */
+export function useAskDockEligible(): boolean {
   return useSyncExternalStore(subscribe, read, () => true);
 }

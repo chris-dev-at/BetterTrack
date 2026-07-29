@@ -18,7 +18,7 @@ import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { Avatar } from './Avatar';
-import { ChatDock, ChatDockToggle } from './chatdock';
+import { ASK_DOCK_ID, AskDock, toggleAskDock, useAskDockEligible, useAskDockOpen } from './askdock';
 import { CmdKPalette } from './CmdKPalette';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
@@ -130,6 +130,48 @@ function RailItem({
       <Icon name={item.icon} size={18} />
       <span className="bt-rail-item__label">{label}</span>
     </NavLink>
+  );
+}
+
+/**
+ * The Ask BetterTrack utility row (R2). On a wide viewport it TOGGLES the
+ * floating AI panel instead of navigating — same icon, same label, same
+ * `bt-rail-item` styling as its neighbours, with `aria-expanded` carrying the
+ * state and an open panel lighting the row the way an active route would.
+ * Narrow viewports fall through to the plain link, because the panel doesn't
+ * exist there and `/ask` must stay reachable from the rail either way.
+ */
+function RailAskToggle({
+  item,
+  pathname,
+  collapsed,
+  label,
+}: {
+  item: SuiteItem;
+  pathname: string;
+  collapsed: boolean;
+  label: string;
+}) {
+  const open = useAskDockOpen();
+  const eligible = useAskDockEligible();
+
+  if (!eligible) {
+    return <RailItem collapsed={collapsed} item={item} label={label} pathname={pathname} />;
+  }
+
+  const active = open || isDestinationActive(item, pathname);
+  return (
+    <button
+      aria-controls={ASK_DOCK_ID}
+      aria-expanded={open}
+      className={cx('bt-rail-item', active && 'is-active')}
+      onClick={toggleAskDock}
+      title={collapsed ? label : undefined}
+      type="button"
+    >
+      <Icon name={item.icon} size={18} />
+      <span className="bt-rail-item__label">{label}</span>
+    </button>
   );
 }
 
@@ -549,15 +591,19 @@ export function OriginShell() {
           </nav>
           <div className="bt-rail__rule" />
           <nav aria-label={t('nav.utilities')} className="bt-rail__group">
-            {UTILITY_ITEMS.map((item) => (
-              <RailItem
-                collapsed={collapsed}
-                item={item}
-                key={item.to}
-                label={t(item.labelKey)}
-                pathname={pathname}
-              />
-            ))}
+            {UTILITY_ITEMS.map((item) => {
+              // Ask BetterTrack is the floating panel's trigger, not a link.
+              const Row = item.to === '/ask' ? RailAskToggle : RailItem;
+              return (
+                <Row
+                  collapsed={collapsed}
+                  item={item}
+                  key={item.to}
+                  label={t(item.labelKey)}
+                  pathname={pathname}
+                />
+              );
+            })}
           </nav>
           <div className="bt-rail__spacer" />
           {/* The collapse control lives at the foot of the rail it controls —
@@ -606,7 +652,6 @@ export function OriginShell() {
               variant="quiet"
             />
             <CreateMenu />
-            <ChatDockToggle />
             <NotificationBell />
           </header>
 
@@ -661,9 +706,9 @@ export function OriginShell() {
         })}
       </nav>
 
-      {/* Non-modal right-side dock: mounted at the shell root so it overlays the
-          canvas without the page losing interactivity (see ChatDock). */}
-      <ChatDock />
+      {/* Non-modal floating AI panel: mounted at the shell root so it overlays
+          the canvas without the page losing interactivity (see AskDock). */}
+      <AskDock />
 
       <CmdKPalette isOpen={paletteOpen} onClose={closePalette} />
     </div>
