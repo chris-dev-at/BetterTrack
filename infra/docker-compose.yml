@@ -94,6 +94,9 @@ services:
       BT_DATA_ENCRYPTION_KEY_ID: '${BT_DATA_ENCRYPTION_KEY_ID:?set BT_DATA_ENCRYPTION_KEY_ID}'
       BT_DATA_ENCRYPTION_KEY: '${BT_DATA_ENCRYPTION_KEY:?set BT_DATA_ENCRYPTION_KEY}'
       BT_DATA_ENCRYPTION_DECRYPT_KEYS: '${BT_DATA_ENCRYPTION_DECRYPT_KEYS:-}'
+      # Shared with the worker below: ready export rows store this exact path,
+      # so both containers must resolve it through the same named volume.
+      BT_EXPORT_DIR: '/var/lib/bettertrack/exports'
       # Topology (§11): the api derives api/web/admin origins → CORS + cookies.
       BT_MODE: '${BT_MODE:-subdomains}'
       BT_DOMAIN: '${BT_DOMAIN:-localhost}'
@@ -150,15 +153,17 @@ services:
       BT_GRAFANA_INTERNAL_URL: '${BT_GRAFANA_INTERNAL_URL:-http://grafana:3000}'
       BT_PROMETHEUS_INTERNAL_URL: '${BT_PROMETHEUS_INTERNAL_URL:-http://prometheus:9090}'
       BT_GRAFANA_PUBLIC_URL: '${BT_GRAFANA_PUBLIC_URL:-}'
+    volumes:
+      - exportdata:/var/lib/bettertrack/exports
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/api/v1/health || exit 1']
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/api/v1/health/ready || exit 1']
       interval: 10s
-      timeout: 5s
+      timeout: 3s
       retries: 5
       start_period: 20s
 
@@ -183,6 +188,7 @@ services:
       BT_DATA_ENCRYPTION_KEY_ID: '${BT_DATA_ENCRYPTION_KEY_ID:?set BT_DATA_ENCRYPTION_KEY_ID}'
       BT_DATA_ENCRYPTION_KEY: '${BT_DATA_ENCRYPTION_KEY:?set BT_DATA_ENCRYPTION_KEY}'
       BT_DATA_ENCRYPTION_DECRYPT_KEYS: '${BT_DATA_ENCRYPTION_DECRYPT_KEYS:-}'
+      BT_EXPORT_DIR: '/var/lib/bettertrack/exports'
       # Topology (§11): the worker generates the same origins/links as the api
       # (share links, email URLs) so they must match.
       BT_MODE: '${BT_MODE:-subdomains}'
@@ -229,11 +235,21 @@ services:
       BT_METRICS_ENABLED: '${BT_METRICS_ENABLED:-true}'
       BT_METRICS_HOST: '${BT_METRICS_HOST:-0.0.0.0}'
       BT_METRICS_PORT: '${BT_METRICS_PORT:-9464}'
+    volumes:
+      - exportdata:/var/lib/bettertrack/exports
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', 'dist/scripts/workerHealth.js']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Three heartbeat intervals: enough for scheduler registration and its
+      # first proof, bounded so a loop that never starts becomes unhealthy.
+      start_period: 3m
 
   db:
     image: postgres:17
@@ -390,6 +406,7 @@ services:
 volumes:
   pgdata:
   redisdata:
+  exportdata:
   pgbackups:
   promdata:
   grafanadata:
