@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+// Aliased: the bare `MouseEvent` name is the DOM one the popover
+// document-listeners below are typed against.
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 
 import { useI18n } from '../../i18n';
@@ -160,11 +168,14 @@ function RailGroup({
   const active = isDestinationActive(item, pathname);
   const childActive =
     !collapsed && SECTION_NAV[section].children.some((child) => isChildActive(child, pathname));
-  // Clicking the row of the ALREADY-SELECTED section toggles its dropdown;
-  // clicking any other row only navigates — the tree there opens or not
-  // according to the sticky expansion preference the shell carries.
-  const onRowClick = () => {
-    if (active) onToggle();
+  // Clicking the row of the ALREADY-SELECTED section ONLY toggles its dropdown
+  // (owner) — it does not yank you from, say, Cash flow back to Overview; the
+  // tree's own "Overview" child is how you get there. Any other row navigates,
+  // and the tree opens or not per the shell's sticky expansion preference.
+  const onRowClick = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (!active) return;
+    event.preventDefault();
+    onToggle();
   };
   const panelId = `bt-rail-group-${section}`;
 

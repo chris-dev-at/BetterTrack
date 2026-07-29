@@ -159,11 +159,16 @@ test('trees start closed; clicking the selected section row toggles its tree', a
     );
   }
 
-  // Workbench is the selected item — clicking it toggles the dropdown open.
+  // Workbench is the selected item — clicking it toggles the dropdown open…
   await user.click(within(rail).getByRole('link', { name: 'Workbench' }));
   expect(screen.getByRole('button', { name: 'Collapse Workbench' })).toHaveAttribute(
     'aria-expanded',
     'true',
+  );
+  // …and does NOT navigate away from the child page you were on.
+  expect(within(rail).getByRole('link', { name: 'Alerts' })).toHaveAttribute(
+    'aria-current',
+    'page',
   );
 });
 
@@ -439,7 +444,10 @@ test('the settings redirects carry the query string onto the panel', async () =>
     </MemoryRouter>,
   );
 
-  await screen.findByRole('dialog', { name: 'Control Center' });
+  // Generous timeout: the overlay is a lazy route, and resolving its chunk
+  // while the rest of this file's shell renders compete for the event loop can
+  // exceed the 1s default.
+  await screen.findByRole('dialog', { name: 'Control Center' }, { timeout: 5000 });
   expect(screen.getByTestId('location')).toHaveTextContent('/control/api?google=linked');
 });
 

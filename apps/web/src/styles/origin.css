@@ -1795,9 +1795,12 @@
   color: var(--bt-text-soft);
 }
 
+/* The open child is marked by INK ALONE — its group row already carries a
+   filled surface, and two stacked grey fills read as one muddy block. */
 .bt-rail-child.is-active {
-  background: var(--bt-surface-strong);
+  background: none;
   color: var(--bt-text);
+  font-weight: 600;
 }
 
 .bt-rail-child__label {
