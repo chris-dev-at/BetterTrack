@@ -18,14 +18,6 @@ import fixture from './vectors.fixture.json';
 
 const envelope = base64ToBytes(fixture.initial.envelopeBase64, 'envelope-invalid');
 
-// Every unlock below derives the real production Argon2id profile (64 MiB,
-// t=3) and then unwraps through WebCrypto, which costs seconds of wall clock on
-// a CI runner shared with the rest of the suite. The 1s testing-library default
-// expires mid-unlock and reports the still-locked DOM as a provider defect, so
-// each wait behind an unlock gets a KDF-sized budget instead. The per-test
-// ceiling backing it lives in vite.config.ts.
-const UNLOCK_WAIT = { timeout: 15_000 } as const;
-
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
 });
@@ -124,14 +116,14 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
     );
 
     await userEvent.setup().click(screen.getByRole('button', { name: 'unlock' }));
-    expect(await screen.findByText('unlocked', undefined, UNLOCK_WAIT)).toBeInTheDocument();
+    expect(await screen.findByText('unlocked')).toBeInTheDocument();
 
     expect(events).toEqual(['authorize', 'drive-read', 'runtime']);
     expect(serverRead).not.toHaveBeenCalled();
     expect(createRuntime).toHaveBeenCalledTimes(1);
 
     rendered.unmount();
-    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1), UNLOCK_WAIT);
+    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
     expect(tokens.clear).toHaveBeenCalled();
   });
 
@@ -184,16 +176,16 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
     );
 
     await userEvent.setup().click(screen.getByRole('button', { name: 'unlock' }));
-    await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(1), UNLOCK_WAIT);
+    await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(1));
 
     rendered.rerender(
       <VaultRuntimeProvider authenticated userId={secondUser} dependencies={dependencies}>
         <UnlockHarness driveOnly={false} />
       </VaultRuntimeProvider>,
     );
-    await waitFor(() => expect(screen.getByText('no connection')).toBeInTheDocument(), UNLOCK_WAIT);
+    await waitFor(() => expect(screen.getByText('no connection')).toBeInTheDocument());
     await userEvent.setup().click(screen.getByRole('button', { name: 'unlocked' }));
-    await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(2), UNLOCK_WAIT);
+    await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(2));
 
     expect(runtimeOwners).toEqual([firstUser, secondUser]);
     expect(driveHomes).toHaveLength(2);
@@ -253,11 +245,11 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
 
       await userEvent.setup().click(screen.getByRole('button', { name: 'unlock' }));
       if (stage === 'authorization') {
-        await waitFor(() => expect(tokens.authorize).toHaveBeenCalledTimes(1), UNLOCK_WAIT);
+        await waitFor(() => expect(tokens.authorize).toHaveBeenCalledTimes(1));
       } else if (stage === 'envelope read') {
-        await waitFor(() => expect(readEnvelope).toHaveBeenCalledTimes(1), UNLOCK_WAIT);
+        await waitFor(() => expect(readEnvelope).toHaveBeenCalledTimes(1));
       } else {
-        await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(1), UNLOCK_WAIT);
+        await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(1));
       }
 
       rendered.rerender(
@@ -265,15 +257,13 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
           <UnlockHarness driveOnly={false} />
         </VaultRuntimeProvider>,
       );
-      await waitFor(() => expect(tokens.clear).toHaveBeenCalled(), UNLOCK_WAIT);
+      await waitFor(() => expect(tokens.clear).toHaveBeenCalled());
 
       if (stage === 'authorization') authorization.resolve(okToken);
       else if (stage === 'envelope read') envelopeRead.resolve(envelope);
       else runtimeReady.resolve();
 
-      expect(
-        await screen.findByRole('button', { name: 'rejected' }, UNLOCK_WAIT),
-      ).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'rejected' })).toBeInTheDocument();
       expect(screen.getByText('no connection')).toBeInTheDocument();
       if (stage === 'authorization') expect(readEnvelope).not.toHaveBeenCalled();
       if (stage !== 'runtime readiness') expect(createRuntime).not.toHaveBeenCalled();

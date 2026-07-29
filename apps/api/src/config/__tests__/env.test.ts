@@ -28,8 +28,13 @@ function config(env: NodeJS.ProcessEnv) {
 }
 
 describe('production session-secret safety', () => {
-  it('rejects the published production placeholder instead of accepting it by length', () => {
-    expect(() => config({ SESSION_SECRET: 'CHANGE_ME_64_RANDOM_HEX_BYTES' })).toThrow(
+  it.each([
+    'CHANGE_ME_64_RANDOM_HEX_BYTES',
+    '<strong password>',
+    '<openssl rand -hex 64>',
+    'CHANGE_ME_64_RANDOM_HEX_BYTES_PLEASE',
+  ])('rejects a published production placeholder instead of accepting it by length', (secret) => {
+    expect(() => config({ SESSION_SECRET: secret })).toThrow(
       'SESSION_SECRET: replace the example placeholder before production',
     );
   });

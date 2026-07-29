@@ -114,6 +114,7 @@ describe('seed command credential gates', () => {
     const placeholders = new Set([
       ...KNOWN_SECRET_PLACEHOLDERS,
       'CHANGE_ME_IMMEDIATELY_AFTER_FIRST_LOGIN',
+      'CHANGE_ME_64_RANDOM_HEX_BYTES_PLEASE',
     ]);
 
     for (const password of placeholders) {
@@ -294,5 +295,19 @@ describe('demo seed opt-in and output safety', () => {
     expect(commandOutput).not.toContain(adminPassword);
     expect(commandOutput).not.toContain(demoPassword);
     expect(commandOutput).not.toContain('Temporary password');
+  });
+
+  it('reports an unexpected error type without exposing its message', async () => {
+    const sensitiveDetail = 'postgres://operator:secret@example.test/bettertrack';
+    const test = harness();
+    test.dependencies.users.findByEmail = async () => {
+      const error = new Error(`connection refused: ${sensitiveDetail}`);
+      error.name = 'PostgresError';
+      throw error;
+    };
+
+    expect(await runSeedCommand(options(), test.dependencies, test.output)).toBe(1);
+    expect(test.errors.join('\n')).toContain('PostgresError');
+    expect(test.errors.join('\n')).not.toContain(sensitiveDetail);
   });
 });

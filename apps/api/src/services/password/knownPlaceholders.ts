@@ -4,6 +4,8 @@
  * rejects the same known values without ever echoing them back to an operator.
  */
 export const KNOWN_SECRET_PLACEHOLDERS: ReadonlySet<string> = new Set([
+  '<openssl rand -hex 64>',
+  '<strong password>',
   'change_me_immediately_after_first_login',
   'change_me_strong_password',
   'change_me_64_random_hex_bytes',
@@ -13,7 +15,10 @@ export const KNOWN_SECRET_PLACEHOLDERS: ReadonlySet<string> = new Set([
   'your-16-char-app-password',
 ]);
 
-/** Case-insensitive, whitespace-tolerant known-placeholder check. */
+const CHANGE_ME_PLACEHOLDER_PREFIX = /^change(?:_|-)me(?:$|[_-])/;
+
+/** Case-insensitive, whitespace-tolerant published-placeholder check. */
 export function isKnownSecretPlaceholder(value: string): boolean {
-  return KNOWN_SECRET_PLACEHOLDERS.has(value.trim().toLowerCase());
+  const normalized = value.trim().toLowerCase();
+  return KNOWN_SECRET_PLACEHOLDERS.has(normalized) || CHANGE_ME_PLACEHOLDER_PREFIX.test(normalized);
 }

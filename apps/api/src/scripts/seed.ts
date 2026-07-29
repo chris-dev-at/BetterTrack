@@ -203,7 +203,11 @@ function safeSeedError(error: unknown): string {
   if (error instanceof Error && error.message.startsWith('Invalid environment configuration:')) {
     return error.message;
   }
-  return 'Seed failed unexpectedly. Check database connectivity and retry; no credential values were printed.';
+  const errorName =
+    error instanceof Error && /^[a-z][a-z0-9_.-]{0,63}$/i.test(error.name)
+      ? error.name
+      : 'UnknownError';
+  return `Seed failed unexpectedly (${errorName}). Check database connectivity and retry; no credential values were printed.`;
 }
 
 /** Convert seed failures into a non-zero command result with secret-safe output. */
