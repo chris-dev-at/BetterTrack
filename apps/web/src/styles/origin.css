@@ -222,6 +222,11 @@
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--bt-border-strong) transparent;
+  /* The active edge dash hangs 10px LEFT of the rows; fold that gutter into
+     this scroll container's padding box so the overflow clip can't eat it
+     (net zero visual shift: -10px margin against +10px padding). */
+  margin-left: -10px;
+  padding-left: 10px;
 }
 
 /* Main destinations read a step above the tree children — brighter ink, a bit
@@ -317,6 +322,11 @@
 
 .bt-shell[data-rail='collapsed'] .bt-rail {
   padding-inline: 8px;
+}
+
+.bt-shell[data-rail='collapsed'] .bt-rail__brand {
+  justify-content: center;
+  padding-inline: 0;
 }
 
 .bt-shell[data-rail='collapsed'] .bt-rail-item {
