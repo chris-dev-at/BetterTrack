@@ -160,6 +160,10 @@ function RailGroup({
   const active = isDestinationActive(item, pathname);
   const childActive =
     !collapsed && SECTION_NAV[section].children.some((child) => isChildActive(child, pathname));
+  // Clicking the row usually navigates + opens; when it would navigate NOWHERE
+  // (already at the section root) it toggles the dropdown instead (owner), and
+  // the route-sync effect can't fight it because the pathname doesn't change.
+  const atRoot = pathname === item.to;
   const panelId = `bt-rail-group-${section}`;
 
   return (
@@ -171,7 +175,7 @@ function RailGroup({
         <Link
           aria-current={active && !childActive ? 'page' : undefined}
           className="bt-rail-item__link"
-          onClick={onExpand}
+          onClick={atRoot ? onToggle : onExpand}
           title={collapsed ? label : undefined}
           to={item.to}
         >

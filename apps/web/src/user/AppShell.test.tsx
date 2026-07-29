@@ -185,6 +185,32 @@ test('the chevron toggles without navigating; leaving the sections minimizes all
   }
 });
 
+test('clicking the open section row toggles its dropdown when already at the root', async () => {
+  const user = userEvent.setup();
+  renderAt('/portfolio');
+
+  const rail = await findRail();
+  const row = within(rail).getByRole('link', { name: 'Portfolio' });
+  expect(screen.getByRole('button', { name: 'Collapse Portfolio' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+
+  // Already at /portfolio: the click navigates nowhere, so it collapses…
+  await user.click(row);
+  expect(screen.getByRole('button', { name: 'Expand Portfolio' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+
+  // …and the next one opens again.
+  await user.click(row);
+  expect(screen.getByRole('button', { name: 'Collapse Portfolio' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+});
+
 test('the rail is an accordion — expanding one group closes the other', async () => {
   const user = userEvent.setup();
   renderAt('/portfolio');
