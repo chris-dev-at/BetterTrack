@@ -711,6 +711,12 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'Health checks are operational diagnostics, not portfolio data.',
   ),
   serviceExemption(
+    'readiness',
+    ['*'],
+    'kept',
+    'Readiness checks are dependency diagnostics, not portfolio data.',
+  ),
+  serviceExemption(
     'problems',
     ['*'],
     'kept',
@@ -1161,6 +1167,7 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
   ...keptRoutes('Public deployment metadata contains no account data.', [
     { exact: '/version' },
     { exact: '/health' },
+    { exact: '/health/ready' },
     { exact: '/feature-flags' },
   ]),
   ...keptRoutes('Catalog search is provenance-filtered and has no server portfolio read.', [
