@@ -9,6 +9,7 @@ import { cx } from '../../lib/cx';
 import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
+import { Avatar } from './Avatar';
 import { CmdKPalette } from './CmdKPalette';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
@@ -24,11 +25,12 @@ import { isChildActive, SECTION_NAV, useRailNavChildren, type SectionKey } from 
  *
  * R2: the four sections with sub-navigation are expandable groups whose
  * children come from `sectionNav.ts` — the same table the in-page strips read.
- * A group row navigates to its section root *and* opens; the chevron beside it
- * only opens/closes. The rail is an accordion whose open tree FOLLOWS the
- * route: inside a section exactly that section's dropdown is open, outside the
- * sections (Home, Control Center, …) everything is minimized. Only the
- * collapse preference persists in `localStorage`.
+ * A group row navigates to its section; clicking the row of the section you are
+ * already in — or its chevron — opens/closes that section's tree. At most one
+ * tree is open and it is always the active section's, so Home and the utility
+ * destinations show everything minimized. Expanded-ness itself is sticky: it
+ * rides along as you move between sections until you toggle it off. Only the
+ * rail-collapse preference persists in `localStorage`.
  */
 
 const RAIL_STORAGE_KEY = 'bt.rail';
@@ -159,8 +161,8 @@ function RailGroup({
   const childActive =
     !collapsed && SECTION_NAV[section].children.some((child) => isChildActive(child, pathname));
   // Clicking the row of the ALREADY-SELECTED section toggles its dropdown;
-  // clicking any other row just navigates there, tree closed (owner: "default
-  // state is closed when item is freshly selected").
+  // clicking any other row only navigates — the tree there opens or not
+  // according to the sticky expansion preference the shell carries.
   const onRowClick = () => {
     if (active) onToggle();
   };
@@ -276,9 +278,10 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
-        <span aria-hidden className="bt-avatar">
-          {name.charAt(0).toUpperCase()}
-        </span>
+        {/* The account row wears the user's real public-profile icon (owner) —
+            the same curated avatar every social surface shows, so the rail and
+            the profile can never disagree. */}
+        <Avatar iconId={user?.profileIcon} name={name} size="sm" />
         <span className="bt-rail__account-name">{name}</span>
         <Icon className="bt-rail__account-more" name="more" size={15} />
       </button>
@@ -446,23 +449,31 @@ export function OriginShell() {
       return false;
     }
   });
-  // Dropdowns are CLOSED by default (owner): navigation never auto-opens a
-  // tree — opening is explicit (double-click on the row, or the chevron).
-  // Leaving the open tree's section closes it, so at most the active
-  // section's tree can be open and Home always shows everything minimized.
+  // At most ONE tree is open, and it is always the active section's.
   const [openGroup, setOpenGroup] = useState<SectionKey | null>(null);
+  // Whether trees are shown expanded — a sticky preference that RIDES ALONG on
+  // navigation (owner): leave an expanded section and the next one you select
+  // is expanded too; leave a closed one and the next stays closed. Closed on a
+  // first visit; only an explicit toggle changes it. A ref, not state: it never
+  // needs to trigger a render of its own, and keeping it out of the navigation
+  // effect's deps is what stops a toggle from re-running that effect.
+  const expandedPrefRef = useRef(false);
 
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   const closePalette = useCallback(() => setPaletteOpen(false), []);
 
   useEffect(() => {
     const section = activeSection(pathname);
-    setOpenGroup((previous) => (previous === section ? previous : null));
+    setOpenGroup(section !== null && expandedPrefRef.current ? section : null);
   }, [pathname]);
 
   const toggleGroup = useCallback(
-    (section: SectionKey) => setOpenGroup((previous) => (previous === section ? null : section)),
-    [],
+    (section: SectionKey) => {
+      const next = openGroup === section ? null : section;
+      expandedPrefRef.current = next !== null;
+      setOpenGroup(next);
+    },
+    [openGroup],
   );
 
   useEffect(() => {

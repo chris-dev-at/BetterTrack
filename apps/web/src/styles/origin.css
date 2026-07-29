@@ -242,7 +242,9 @@
   border: 0;
   border-radius: 6px;
   background: none;
-  color: var(--bt-text-soft);
+  /* Unselected rows sit a step back in muted ink; only the active row (and a
+     hovered one) goes bright, so "where am I" reads without counting. */
+  color: var(--bt-muted);
   font: inherit;
   font-size: 13px;
   font-weight: 560;
@@ -257,7 +259,7 @@
 
 .bt-rail-item:hover {
   background: var(--bt-surface-soft);
-  color: var(--bt-text);
+  color: var(--bt-text-soft);
 }
 
 .bt-rail-item.is-active {
@@ -1708,15 +1710,12 @@
   background: none;
   color: var(--bt-faint);
   cursor: pointer;
-  transition:
-    background var(--bt-t-fast),
-    color var(--bt-t-fast);
+  transition: color var(--bt-t-fast);
 }
 
-.bt-rail-item__chevron:hover {
-  background: var(--bt-surface-hover);
-  color: var(--bt-text-soft);
-}
+/* No hover treatment of its own: a highlighted chevron reads as "click HERE to
+   expand" when the whole row already does that (owner). It stays a real button
+   for keyboard and screen-reader users; the rotation is its only feedback. */
 
 .bt-rail-item__chevron > svg {
   transition: transform var(--bt-t-fast);

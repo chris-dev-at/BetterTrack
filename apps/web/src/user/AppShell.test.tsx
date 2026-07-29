@@ -218,6 +218,41 @@ test('a freshly selected section starts closed; re-clicks toggle open and shut',
   );
 });
 
+test('expanded-ness rides along between sections, in both directions', async () => {
+  const user = userEvent.setup();
+  renderAt('/');
+
+  const rail = await findRail();
+
+  // Home → Portfolio: nothing was expanded, so Portfolio arrives closed.
+  await user.click(within(rail).getByRole('link', { name: 'Portfolio' }));
+  expect(screen.getByRole('button', { name: 'Expand Portfolio' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+
+  // Expand it, then move to Assets: Assets arrives EXPANDED.
+  await user.click(screen.getByRole('button', { name: 'Expand Portfolio' }));
+  await user.click(within(rail).getByRole('link', { name: 'Assets' }));
+  expect(screen.getByRole('button', { name: 'Collapse Assets' })).toHaveAttribute(
+    'aria-expanded',
+    'true',
+  );
+  // Only the active section's tree is open — never two at once.
+  expect(screen.getByRole('button', { name: 'Expand Portfolio' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+
+  // Close it here, then move on: the next section arrives closed again.
+  await user.click(screen.getByRole('button', { name: 'Collapse Assets' }));
+  await user.click(within(rail).getByRole('link', { name: 'People' }));
+  expect(screen.getByRole('button', { name: 'Expand People' })).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+});
+
 test('the rail is an accordion — expanding one group closes the other', async () => {
   const user = userEvent.setup();
   renderAt('/portfolio');
