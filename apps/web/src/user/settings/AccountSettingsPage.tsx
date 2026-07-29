@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -26,6 +26,12 @@ import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { Button, Field, Input, SectionHead, Select } from '../../ui/origin';
 import { Alert } from '../components/ui';
+import { vaultMoneyErrorKey } from '../vault/engine/errorCopy';
+import type { VaultMoneyFailure } from '../vault/engine/errors';
+import { useVaultMoneySession } from '../vault/engine/VaultMoneyEngineProvider';
+import { createClientCleartextExport } from '../vault/export/cleartext';
+import { deliverClientDownload } from '../vault/export/deliver';
+import { usePrivacyMode } from '../vault/usePrivacyMode';
 
 const ME_KEY = ['auth', 'me'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
@@ -451,6 +457,90 @@ function ExportDataSection() {
 }
 
 /**
+ * Client-side cleartext export for paranoid accounts (PD7, paranoid design
+ * §12): a JSON + CSV zip built entirely in browser memory from the unlocked
+ * vault — the server never sees cleartext portfolio data, and nothing is
+ * persisted beyond the transient download. Locked vaults cannot export.
+ */
+function CleartextExportSection() {
+  const t = useT();
+  const { locale } = useI18n();
+  const session = useVaultMoneySession();
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<VaultMoneyFailure | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Locking drops `session` while this section stays mounted, and leaving the
+  // page unmounts it — both must abort an in-flight generation before any
+  // bytes are handed over, so the cleanup is keyed on the session identity.
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+    },
+    [session],
+  );
+
+  const exportLocale = locale === 'de' ? 'de' : 'en';
+
+  async function onExport() {
+    if (session === null || busy) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setBusy(true);
+    setFailure(null);
+    try {
+      const result = await createClientCleartextExport(session.sync, {
+        locale: exportLocale,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      if (!result.ok) {
+        setFailure(result.error);
+        return;
+      }
+      deliverClientDownload(result.value.bytes, result.value.mediaType, result.value.filename);
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="bt-h3">{t('settings.export.cleartext.title')}</h3>
+        <p className="bt-meta">{t('settings.export.cleartext.description')}</p>
+      </div>
+
+      {failure ? <Alert tone="error">{t(vaultMoneyErrorKey(failure))}</Alert> : null}
+
+      {session === null ? (
+        <Alert tone="info">{t('settings.export.cleartext.locked')}</Alert>
+      ) : (
+        <div>
+          <Button type="button" onClick={() => void onExport()} disabled={busy}>
+            {busy
+              ? t('settings.export.cleartext.generating')
+              : t('settings.export.cleartext.button')}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Paranoid-only: normal accounts keep exactly the single server export block. */
+function CleartextExportGate() {
+  const privacy = usePrivacyMode();
+  if (privacy.privacyMode !== 'paranoid') return null;
+  return (
+    <section className="bt-band__row">
+      <CleartextExportSection />
+    </section>
+  );
+}
+
+/**
  * Settings → Account (PROJECTPLAN.md §6.11, §13.3 V3-P1). Shows the identity read
  * from `GET /auth/me` (username, email, member-since), a change-password form, the
  * display-language and base-currency pickers, and a signpost to the Socials tab
@@ -517,6 +607,8 @@ export function AccountSettingsPage() {
         <section className="bt-band__row">
           <ExportDataSection />
         </section>
+
+        <CleartextExportGate />
       </div>
 
       <section
