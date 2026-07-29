@@ -1,5 +1,14 @@
-import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,20 +52,29 @@ function render(raw: string, env: Record<string, string>): string {
   return raw.replace(/\$\{(\w+)\}/g, (match, name: string) => env[name] ?? match);
 }
 
-function composeLandingEnvironment(hostEnv: Record<string, string>): Record<string, string> {
+/**
+ * Read the SHIPPED Compose `environment:` block of one service and resolve its
+ * `${VAR:-default}` interpolations against a host env. This is what makes the
+ * entrypoint tests below regression tests for the wiring itself: a variable the
+ * front proxy needs but Compose never passes shows up as a missing key here.
+ */
+function composeServiceEnvironment(
+  service: string,
+  nextService: string,
+  hostEnv: Record<string, string>,
+): Record<string, string> {
   const compose = readInfra('docker-compose.yml');
-  const landingStart = compose.indexOf('\n  landing:\n');
-  const apiStart = compose.indexOf('\n  api:\n', landingStart);
-  if (landingStart < 0 || apiStart < 0) throw new Error('landing Compose service not found');
+  const start = compose.indexOf(`\n  ${service}:\n`);
+  const end = compose.indexOf(`\n  ${nextService}:\n`, start);
+  if (start < 0 || end < 0) throw new Error(`${service} Compose service not found`);
 
-  const landingService = compose.slice(landingStart, apiStart);
-  const entries = [...landingService.matchAll(/^ {6}([A-Z][A-Z0-9_]*): '([^']*)'$/gm)];
+  const entries = [...compose.slice(start, end).matchAll(/^ {6}([A-Z][A-Z0-9_]*): '([^']*)'$/gm)];
   return Object.fromEntries(
     entries.map((entry) => {
       const name = entry[1];
       const rawValue = entry[2];
       if (name === undefined || rawValue === undefined) {
-        throw new Error('invalid landing Compose environment entry');
+        throw new Error(`invalid ${service} Compose environment entry`);
       }
       return [
         name,
@@ -67,6 +85,14 @@ function composeLandingEnvironment(hostEnv: Record<string, string>): Record<stri
       ];
     }),
   );
+}
+
+function composeLandingEnvironment(hostEnv: Record<string, string>): Record<string, string> {
+  return composeServiceEnvironment('landing', 'api', hostEnv);
+}
+
+function composeWebEnvironment(hostEnv: Record<string, string>): Record<string, string> {
+  return composeServiceEnvironment('web', 'landing', hostEnv);
 }
 
 function renderLandingEntrypoint(env: Record<string, string>): string {
@@ -112,6 +138,88 @@ function renderLandingEntrypoint(env: Record<string, string>): string {
   }
 }
 
+interface WebEntrypointRun {
+  status: number;
+  stderr: string;
+  /** null when the entrypoint refused to boot before rendering. */
+  policy: string | null;
+  defaultConf: string | null;
+  hsts: string | null;
+}
+
+/**
+ * Execute the REAL `infra/nginx/docker-entrypoint.sh` against an isolated nginx
+ * tree. The `render()` helper above only emulates envsubst, so it cannot catch a
+ * derivation or validation bug in the entrypoint itself — this harness runs the
+ * shipped script, with `nginx` stubbed (the script ends in `exec nginx`) and a
+ * faithful stand-in for gettext's restricted `envsubst '<shell-format>'`.
+ */
+function runWebEntrypoint(env: Record<string, string>): WebEntrypointRun {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'bettertrack-web-topology-'));
+  const nginxRoot = resolve(temporaryRoot, 'etc-nginx');
+  const binRoot = resolve(temporaryRoot, 'bin');
+  mkdirSync(resolve(nginxRoot, 'conf.d'), { recursive: true });
+  mkdirSync(binRoot);
+  // Same wholesale copy apps/web/Dockerfile makes into /etc/nginx/bt-templates.
+  cpSync(resolve(infraDir, 'nginx/templates'), resolve(nginxRoot, 'bt-templates'), {
+    recursive: true,
+  });
+  writeFileSync(
+    resolve(binRoot, 'envsubst'),
+    [
+      '#!/usr/bin/env node',
+      "const names = [...(process.argv[2] ?? '').matchAll(/\\$\\{(\\w+)\\}/g)].map((m) => m[1]);",
+      "let input = '';",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => { input += chunk; });",
+      "process.stdin.on('end', () => {",
+      '  for (const name of names) {',
+      "    input = input.replaceAll('${' + name + '}', process.env[name] ?? '');",
+      '  }',
+      '  process.stdout.write(input);',
+      '});',
+      '',
+    ].join('\n'),
+  );
+  writeFileSync(resolve(binRoot, 'nginx'), '#!/bin/sh\nexit 0\n');
+  chmodSync(resolve(binRoot, 'envsubst'), 0o755);
+  chmodSync(resolve(binRoot, 'nginx'), 0o755);
+
+  // Drop inherited BT_* vars so only the Compose-derived env under test applies.
+  const baseEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith('BT_')),
+  );
+
+  try {
+    const result = spawnSync('sh', [resolve(infraDir, 'nginx/docker-entrypoint.sh')], {
+      env: {
+        ...baseEnv,
+        ...env,
+        BT_NGINX_CONF_ROOT: nginxRoot,
+        PATH: `${binRoot}:${process.env.PATH ?? ''}`,
+      },
+      encoding: 'utf8',
+    });
+    const read = (relative: string): string | null => {
+      const path = resolve(nginxRoot, relative);
+      return existsSync(path) ? readFileSync(path, 'utf8') : null;
+    };
+    return {
+      status: result.status ?? -1,
+      stderr: result.stderr ?? '',
+      policy: read('bt-includes/static-security-headers.conf'),
+      defaultConf: read('conf.d/default.conf'),
+      hsts: read('bt-includes/static-hsts.conf'),
+    };
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+function contentSecurityPolicy(rendered: string | null): string {
+  return rendered?.match(/add_header Content-Security-Policy "([^"]+)"/)?.[1] ?? '';
+}
+
 const SECURITY_INCLUDE = 'include /etc/nginx/bt-includes/static-security-headers.conf;';
 const CONDITIONAL_HSTS_INCLUDE = 'include /etc/nginx/bt-includes/static-hsts.conf;';
 
@@ -125,6 +233,9 @@ const SUBDOMAINS_ENV: Record<string, string> = {
   LANDING_UPSTREAM: 'landing:80',
   API_ORIGIN: 'https://api.track.example.at',
   WS_ORIGIN: 'wss://api.track.example.at',
+  // Rendered empty unless BT_GRAFANA_PUBLIC_URL is configured; the entrypoint
+  // suite below covers the configured shape against the real script.
+  GRAFANA_FRAME_SRC: '',
 };
 
 const PORTS_ENV: Record<string, string> = {
@@ -137,6 +248,7 @@ const PORTS_ENV: Record<string, string> = {
   LANDING_UPSTREAM: 'landing:80',
   API_ORIGIN: 'http://track.example.at:3000',
   WS_ORIGIN: 'ws://track.example.at:3000',
+  GRAFANA_FRAME_SRC: '',
 };
 
 describe('subdomains template', () => {
@@ -237,16 +349,24 @@ describe('static browser security policy', () => {
   });
 
   it('renders HSTS only into a deployment whose public scheme is HTTPS', () => {
-    const entrypoint = readInfra('nginx/docker-entrypoint.sh');
     const hsts = readInfra('nginx/templates/includes/static-hsts.conf');
-
     expect(hsts).toContain('add_header Strict-Transport-Security "max-age=31536000" always;');
     expect(rawPolicy).not.toContain('Strict-Transport-Security');
-    expect(entrypoint).toContain('if [ "$SCHEME" = "https" ]; then');
-    expect(entrypoint).toContain(
-      'cp /etc/nginx/bt-templates/includes/static-hsts.conf "$INCLUDE_DIR/static-hsts.conf"',
+
+    // Behavior, not source text: run the shipped entrypoint in both schemes.
+    const secure = runWebEntrypoint(
+      composeWebEnvironment({ BT_MODE: 'subdomains', BT_DOMAIN: 'bettertrack.at' }),
     );
-    expect(entrypoint).toContain(': > "$INCLUDE_DIR/static-hsts.conf"');
+    expect(secure.status).toBe(0);
+    expect(secure.hsts).toContain(
+      'add_header Strict-Transport-Security "max-age=31536000" always;',
+    );
+
+    const plain = runWebEntrypoint(
+      composeWebEnvironment({ BT_MODE: 'ports', BT_DOMAIN: 'track.lan' }),
+    );
+    expect(plain.status).toBe(0);
+    expect(plain.hsts?.trim()).toBe('');
   });
 
   it('keeps the live TLS edge on the shared baseline and explicit HSTS', () => {
@@ -265,6 +385,158 @@ describe('static browser security policy', () => {
       expect(scripts.every((tag) => /\bsrc=/.test(tag))).toBe(true);
       expect(html).toContain('<script src="/landing.js"></script>');
     }
+  });
+});
+
+describe('shipped web Compose topology → rendered browser policy', () => {
+  it('passes every policy-interpolated origin variable to the front proxy', () => {
+    // The CSP is rendered by THIS service at container start, so a variable the
+    // policy interpolates must be in its own environment block — the api's copy
+    // does not reach nginx (the round-2 landing regression, one layer over).
+    const shipped = composeWebEnvironment({});
+    expect(Object.keys(shipped)).toContain('BT_API_ORIGIN');
+    expect(Object.keys(shipped)).toContain('BT_GRAFANA_PUBLIC_URL');
+    expect(shipped['BT_GRAFANA_PUBLIC_URL']).toBe('');
+    expect(
+      composeWebEnvironment({ BT_GRAFANA_PUBLIC_URL: 'https://grafana.bettertrack.at' })[
+        'BT_GRAFANA_PUBLIC_URL'
+      ],
+    ).toBe('https://grafana.bettertrack.at');
+  });
+
+  it('renders the deployment policy and layout together with no Grafana source when unset', () => {
+    const rendered = runWebEntrypoint(
+      composeWebEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'money.example.net',
+        BT_SUB_API: 'gateway',
+      }),
+    );
+
+    expect(rendered.status).toBe(0);
+    const csp = contentSecurityPolicy(rendered.policy);
+    expect(csp).toContain(
+      "connect-src 'self' https://gateway.money.example.net wss://gateway.money.example.net",
+    );
+    expect(csp).toContain(
+      "frame-src 'self' https://gateway.money.example.net https://accounts.google.com;",
+    );
+    // No unset variable, no separator artifact from the optional source.
+    expect(csp).not.toMatch(/\$\{/);
+    expect(csp).not.toContain('  ');
+    expect(csp).not.toContain(' ;');
+    expect(rendered.defaultConf).toContain('server_name gateway.money.example.net;');
+    expect(rendered.defaultConf).not.toMatch(/\$\{(BT_|API_|LANDING_|WS_|GRAFANA_)/);
+  });
+
+  it('allows exactly the configured Grafana subdomain in frame-src', () => {
+    const rendered = runWebEntrypoint(
+      composeWebEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'bettertrack.at',
+        BT_GRAFANA_PUBLIC_URL: 'https://grafana.bettertrack.at',
+      }),
+    );
+
+    expect(rendered.status).toBe(0);
+    expect(contentSecurityPolicy(rendered.policy)).toContain(
+      "frame-src 'self' https://api.bettertrack.at https://accounts.google.com https://grafana.bettertrack.at;",
+    );
+    // Narrowed, never reopened to the whole https web.
+    expect(contentSecurityPolicy(rendered.policy)).not.toMatch(/frame-src[^;]*\shttps:(?:\s|;|$)/);
+  });
+
+  it('reduces a Grafana URL with port, path, query and fragment to its origin', () => {
+    const rendered = runWebEntrypoint(
+      composeWebEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'bettertrack.at',
+        BT_GRAFANA_PUBLIC_URL: 'HTTPS://obs.example.com:8443/grafana/?kiosk#panel',
+      }),
+    );
+
+    expect(rendered.status).toBe(0);
+    expect(contentSecurityPolicy(rendered.policy)).toContain(
+      "frame-src 'self' https://api.bettertrack.at https://accounts.google.com https://obs.example.com:8443;",
+    );
+  });
+
+  it('derives ports-mode sources, including a plain-HTTP Grafana origin', () => {
+    const rendered = runWebEntrypoint(
+      composeWebEnvironment({
+        BT_MODE: 'ports',
+        BT_DOMAIN: 'track.lan',
+        BT_PORT_API: '4300',
+        BT_GRAFANA_PUBLIC_URL: 'http://track.lan:3001/grafana',
+      }),
+    );
+
+    expect(rendered.status).toBe(0);
+    const csp = contentSecurityPolicy(rendered.policy);
+    expect(csp).toContain("connect-src 'self' http://track.lan:4300 ws://track.lan:4300");
+    expect(csp).toContain(
+      "frame-src 'self' http://track.lan:4300 https://accounts.google.com http://track.lan:3001;",
+    );
+  });
+
+  it('honors the explicit API origin override and derives the websocket source from it', () => {
+    const rendered = runWebEntrypoint(
+      composeWebEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'internal.example.net',
+        BT_API_ORIGIN: 'https://public-api.example.net/',
+      }),
+    );
+
+    expect(rendered.status).toBe(0);
+    const csp = contentSecurityPolicy(rendered.policy);
+    expect(csp).toContain(
+      "connect-src 'self' https://public-api.example.net wss://public-api.example.net",
+    );
+    expect(csp).toContain("frame-src 'self' https://public-api.example.net ");
+  });
+
+  it.each(['', '   '])(
+    'treats a blank Grafana public URL (%j) as unset, exactly like the api config does',
+    (blank) => {
+      const rendered = runWebEntrypoint(
+        composeWebEnvironment({
+          BT_MODE: 'subdomains',
+          BT_DOMAIN: 'bettertrack.at',
+          BT_GRAFANA_PUBLIC_URL: blank,
+        }),
+      );
+
+      expect(rendered.status).toBe(0);
+      expect(contentSecurityPolicy(rendered.policy)).toContain(
+        "frame-src 'self' https://api.bettertrack.at https://accounts.google.com;",
+      );
+    },
+  );
+
+  it.each([
+    'grafana.bettertrack.at',
+    'javascript:alert(1)',
+    'data:text/html,<iframe src="x">',
+    'https://grafana.bettertrack.at; script-src *',
+    'https://grafana.bettertrack.at" always; add_header X-Injected "1',
+    'https://grafana bettertrack.at',
+    'https://user:secret@grafana.bettertrack.at',
+    'https://*.bettertrack.at',
+  ])('refuses to boot on a Grafana public URL that could corrupt the policy (%j)', (value) => {
+    const rendered = runWebEntrypoint(
+      composeWebEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'bettertrack.at',
+        BT_GRAFANA_PUBLIC_URL: value,
+      }),
+    );
+
+    expect(rendered.status).not.toBe(0);
+    expect(rendered.stderr).toContain('BT_GRAFANA_PUBLIC_URL');
+    // Nothing rendered at all: a bad value never reaches a header.
+    expect(rendered.policy).toBeNull();
+    expect(rendered.defaultConf).toBeNull();
   });
 });
 

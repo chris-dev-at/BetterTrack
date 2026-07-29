@@ -6,9 +6,33 @@
 # inline style attributes at runtime, so style-src deliberately allows
 # 'unsafe-inline'. Scripts stay external: script-src never permits inline code
 # or eval. Google Identity Services is loaded only for the user-authorized Drive
-# connection; API/Socket.IO, Drive, Grafana, chart images, workers, and the PWA
-# path are explicitly covered below.
-add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self' https://accounts.google.com; script-src 'self' https://accounts.google.com; style-src 'self' 'unsafe-inline' https://accounts.google.com; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' ${API_ORIGIN} ${WS_ORIGIN} https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com; frame-src 'self' ${API_ORIGIN} https://accounts.google.com; worker-src 'self' blob:; manifest-src 'self'" always;
+# connection; API/Socket.IO, Drive, chart images, workers, and the PWA path are
+# explicitly covered below.
+#
+# Every env-configurable origin THE BROWSER TOUCHES is accounted for here — the
+# policy is derived from that set, not hand-picked (rendered by
+# infra/nginx/docker-entrypoint.sh):
+#   BT_API_ORIGIN / BT_MODE+BT_DOMAIN+BT_SUB_API|BT_PORT_API → ${API_ORIGIN} in
+#     connect-src (XHR) and frame-src (the admin-proxied Grafana embed), plus the
+#     derived ${WS_ORIGIN} in connect-src (Socket.IO; a wss:// URL is NOT matched
+#     by an https:// source expression under CSP3, so it needs its own source).
+#   BT_GRAFANA_PUBLIC_URL → ${GRAFANA_FRAME_SRC} in frame-src. Grafana is covered
+#     CONDITIONALLY: this variable renders empty unless the auth-gated-subdomain
+#     path is configured, in which case exactly that origin is allowed (the
+#     unconfigured deploy embeds the admin proxy under ${API_ORIGIN} instead).
+#   BT_WEB_ORIGIN / BT_ADMIN_ORIGIN / BT_PRODUCT_ORIGIN / BT_MOBILE_ORIGIN /
+#     APP_ORIGIN (split hosting) → each is the origin a document is SERVED from,
+#     so 'self' covers it whichever host this proxy is answering for; the only
+#     cross-origin traffic between them is anchor navigation, which this policy
+#     does not restrict (no form posts, no fetches).
+#   BT_GOOGLE_AUTHORIZE_ENDPOINT / BT_GOOGLE_TOKEN_ENDPOINT / BT_GOOGLE_JWKS_URI
+#     → server-side only (apps/api/src/services/auth/googleVerifier.ts). Google
+#     login leaves via a top-level anchor navigation, which CSP does not govern;
+#     the browser-side GIS/Drive flow uses the fixed accounts.google.com /
+#     oauth2.googleapis.com / www.googleapis.com origins listed below.
+#   BT_OLLAMA_ENDPOINT, BT_GRAFANA_INTERNAL_URL, BT_PROMETHEUS_INTERNAL_URL →
+#     API-side only, never fetched by a browser.
+add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self' https://accounts.google.com; script-src 'self' https://accounts.google.com; style-src 'self' 'unsafe-inline' https://accounts.google.com; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' ${API_ORIGIN} ${WS_ORIGIN} https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com; frame-src 'self' ${API_ORIGIN} https://accounts.google.com${GRAFANA_FRAME_SRC}; worker-src 'self' blob:; manifest-src 'self'" always;
 add_header X-Content-Type-Options "nosniff" always;
 add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
