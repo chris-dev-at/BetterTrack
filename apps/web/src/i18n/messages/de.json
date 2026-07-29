@@ -490,6 +490,23 @@
     "expandSection": "{{section}} ausklappen",
     "collapseSection": "{{section}} einklappen"
   },
+  "chatdock": {
+    "toggle": "Chat",
+    "toggleUnread": "Chat (ungelesene Nachrichten)",
+    "close": "Chat schließen",
+    "tab": {
+      "chats": "Chats",
+      "ask": "BetterTrack fragen"
+    },
+    "aria": {
+      "region": "Chat-Dock",
+      "tabs": "Bereiche im Chat-Dock"
+    },
+    "ask": {
+      "composerPlaceholder": "Frag etwas zu deinen Portfolios",
+      "hint": "Noch nicht live — hier wird die KI-Konversation laufen."
+    }
+  },
   "footer": {
     "legal": "Rechtliches",
     "terms": "Nutzungsbedingungen",

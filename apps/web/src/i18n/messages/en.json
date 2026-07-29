@@ -490,6 +490,23 @@
     "expandSection": "Expand {{section}}",
     "collapseSection": "Collapse {{section}}"
   },
+  "chatdock": {
+    "toggle": "Chat",
+    "toggleUnread": "Chat (unread messages)",
+    "close": "Close chat",
+    "tab": {
+      "chats": "Chats",
+      "ask": "Ask BetterTrack"
+    },
+    "aria": {
+      "region": "Chat dock",
+      "tabs": "Chat dock sections"
+    },
+    "ask": {
+      "composerPlaceholder": "Ask about your portfolios",
+      "hint": "Not live yet — the AI conversation will run here."
+    }
+  },
   "footer": {
     "legal": "Legal",
     "terms": "Terms of Service",
