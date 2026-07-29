@@ -10,6 +10,18 @@ import { apiBaseUrl } from './runtimeConfig';
  */
 const API_BASE = apiBaseUrl();
 
+/**
+ * Build a browser URL for a server-owned asset path. Reject absolute and
+ * protocol-relative input so an API payload can never turn this helper into a
+ * third-party request primitive.
+ */
+export function apiAssetUrl(path: string): string | null {
+  if (!path.startsWith('/') || path.startsWith('//') || !/^\/[A-Za-z0-9/_-]+$/.test(path)) {
+    return null;
+  }
+  return `${API_BASE}${path}`;
+}
+
 /** The CSRF belt-and-suspenders header the API requires on every mutation (§10). */
 const CSRF_HEADER = 'X-Requested-With';
 const CSRF_VALUE = 'BetterTrack';
