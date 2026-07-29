@@ -245,6 +245,15 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     },
   );
 
+  // ── First-run setup (§6.12) ────────────────────────────────────────────────
+  // Mark the caller's setup run as done — finished or dismissed. Idempotent and
+  // set-once (see `userRepo.markFirstRunCompleted`), so a replay is harmless. It
+  // only ever affects the caller's own row; there is no id in the payload.
+  router.post('/first-run/complete', requireAuth, async (req, res) => {
+    const user = await ctx.auth.completeFirstRun(req.authUser!.id);
+    res.json(toMeResponseFromRow(user));
+  });
+
   // ── PIN gate (§6.1, §8, #361) ──────────────────────────────────────────────
   // Status: whether a web PIN is set, so a client (the mobile app-lock) can hide
   // "Use my BetterTrack PIN" until one exists. Callable by cookie session or by a

@@ -250,6 +250,9 @@ test('invite accept: a valid token shows the fixed email and creates the account
     id: 'user-2',
     email: 'newbie@bettertrack.test',
     username: 'newbie',
+    // Brand-new account: FirstRunGate diverts it to setup. Set here rather than
+    // on `member`, which stands for an established user in every other test.
+    firstRunCompletedAt: null,
   });
 
   const user = userEvent.setup();

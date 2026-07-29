@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
 import { useT } from '../../i18n';
+import { useAuth } from '../AuthContext';
 import { Button } from '../components/ui';
 import { markFirstRunDone, markFirstRunStep } from './firstRunStorage';
 import { FIRST_RUN_STEPS } from './steps';
@@ -31,6 +32,7 @@ const UNREPORTED: FirstRunStepReport = { status: 'skipped', busy: false };
 export function WelcomePage() {
   const t = useT();
   const navigate = useNavigate();
+  const { completeFirstRun } = useAuth();
 
   const [index, setIndex] = useState(0);
   const [reported, setReported] = useState<FirstRunStepReport>(UNREPORTED);
@@ -41,8 +43,16 @@ export function WelcomePage() {
   // Stable identity: steps list this in effect deps (see FirstRunStepProps).
   const report = useCallback((next: FirstRunStepReport) => setReported(next), []);
 
+  /**
+   * Close the run out and open the app. Records locally AND server-side: the
+   * local flag keeps this device out of the gate even if the request fails, the
+   * server flag is what stops the wizard reappearing on the next device.
+   * `completeFirstRun` stamps the in-memory user first and swallows failures, so
+   * leaving is never blocked on the network.
+   */
   function leave() {
     markFirstRunDone();
+    void completeFirstRun();
     navigate('/', { replace: true });
   }
 

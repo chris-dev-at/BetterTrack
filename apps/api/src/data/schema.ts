@@ -208,6 +208,14 @@ export const users = pgTable(
     paranoidMediaSet: text('paranoid_media_set').array(),
     paranoidDriveAttestedVersion: integer('paranoid_drive_attested_version'),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
+    // When the account finished (or dismissed) first-run setup — `null` means it
+    // has never been through it. Deliberately NOT derivable from `lastLoginAt`:
+    // every sign-in path stamps that before the response body is built, so it is
+    // already non-null on a user's very first `/auth/me`. This column is the only
+    // signal that survives across devices, so the wizard reaches an account no
+    // matter how it came to exist (§6.12: self-registration, invite acceptance,
+    // an approved application, or an admin-created user).
+    firstRunCompletedAt: timestamp('first_run_completed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

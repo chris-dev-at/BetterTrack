@@ -519,6 +519,13 @@
       "when": 1785181342012,
       "tag": "0073_account_security_generation",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1785181402012,
+      "tag": "0074_first_run_completion",
+      "breakpoints": true
     }
   ]
 }

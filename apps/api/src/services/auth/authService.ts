@@ -281,6 +281,12 @@ export interface AuthService {
    * device id is null/unknown.
    */
   forgetDevice(deviceId: string | null, ip?: string | null): Promise<void>;
+  /**
+   * Record that first-run setup is done for this account — finished or dismissed
+   * (§6.12). Set-once and idempotent: replaying it never moves the stored
+   * timestamp, so a double-clicked "Do this later" is harmless.
+   */
+  completeFirstRun(userId: string): Promise<UserRow>;
   /** Enable the PIN or change it to a new value (§6.1). */
   setPin(userId: string, pin: string, ip?: string | null): Promise<UserRow>;
   /** Turn the PIN gate off (§6.1). */
@@ -1530,6 +1536,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           ip,
         });
       }
+    },
+
+    async completeFirstRun(userId) {
+      const user = await userRepo.findById(userId);
+      if (!user) throw unauthorized();
+      // Not audited: this is a UI progress flag with no security meaning — it
+      // grants nothing and gates nothing but a client-side redirect.
+      const updated = await userRepo.markFirstRunCompleted(user.id, new Date());
+      return updated ?? user;
     },
 
     async setPin(userId, pin, ip) {

@@ -32,6 +32,9 @@ const user: MeResponse = {
   baseCurrency: 'EUR',
   locale: 'en',
   lastLoginAt: null,
+  // A freshly created account has never been through setup — this null is what
+  // FirstRunGate diverts on, in every registration mode (§6.12).
+  firstRunCompletedAt: null,
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
