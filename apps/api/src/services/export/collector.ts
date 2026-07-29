@@ -60,9 +60,9 @@ export interface CollectedExport {
 /**
  * Columns never written to an export, matched by their (camelCase) property name
  * as Drizzle returns them: password/token/secret hashes, the raw legacy share
- * token, and the federated `subject` (an opaque provider id). Stripping is by
- * key name so a future sensitive column on an already-exported table is dropped
- * by default rather than leaked.
+ * token, opaque binary caches, and the federated `subject` (an opaque provider
+ * id). Stripping is by key name so a future sensitive column on an
+ * already-exported table is dropped by default rather than leaked.
  */
 const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   'passwordHash',
@@ -71,6 +71,7 @@ const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   'pinHash',
   'tokenHash',
   'clientSecretHash',
+  'logoBytes',
   'codeHash',
   'downloadTokenHash',
   'token',

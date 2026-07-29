@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { adminHealthResponseSchema } from '@bettertrack/contracts';
 
+import {
+  createHealthService,
+  WORKER_HEARTBEAT_STARTUP_GRACE_MS,
+} from '../services/health/healthService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -63,6 +67,33 @@ describe('admin health + queue inspector', () => {
     expect(body.status).toBe('degraded');
     // The database is still up, so it is not a hard `down`.
     expect(body.components.database.status).toBe('ok');
+  });
+
+  it('reports a heartbeat that was never created after startup grace as degraded', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    let now = 1_000_000;
+    harness.ctx.health = createHealthService({
+      config: harness.ctx.config,
+      db: harness.db,
+      redis: harness.ctx.redis,
+      marketData: harness.ctx.marketData,
+      queues: harness.ctx.queues,
+      gateway: harness.ctx.realtime,
+      now: () => now,
+    });
+    now += WORKER_HEARTBEAT_STARTUP_GRACE_MS + 1;
+
+    const res = await agent.get('/api/v1/admin/health');
+
+    expect(res.status).toBe(200);
+    const body = adminHealthResponseSchema.parse(res.body);
+    expect(body.components.queues.heartbeat).toEqual({
+      status: 'degraded',
+      ageSeconds: null,
+    });
+    expect(body.components.queues.status).toBe('degraded');
+    expect(body.status).toBe('degraded');
   });
 
   it('404s the queue inspector for anonymous and user-kind callers (no leak), not for admins', async () => {

@@ -136,6 +136,40 @@ export function createClientTaxEngine(
   };
 }
 
+export interface ClientTaxYearsOverview {
+  /** The portfolio's effective vault-held tax mode. */
+  mode: TaxMode;
+  /** Vienna calendar years carrying sells, dividends, or tax cash movements — newest first. */
+  years: number[];
+}
+
+/** The paranoid tax page's year index: vault-held mode plus the activity years. */
+export function clientTaxYears(
+  sync: VaultSyncEngine,
+  portfolioId: string,
+): VaultMoneyOutcome<ClientTaxYearsOverview> {
+  try {
+    const snapshot = validatedVaultSnapshot(sync);
+    const model = readPortfolioModel(snapshot.document, portfolioId);
+    const settings = effectiveTaxSettings(snapshot.document, model);
+    const years = new Set<number>();
+    for (const transaction of model.transactions) {
+      if (transaction.side === 'sell') years.add(viennaYearOf(transaction.executedAt));
+    }
+    for (const dividend of model.dividends) years.add(viennaYearOf(dividend.executedAt));
+    for (const movement of model.cashMovements) {
+      if (movement.taxYear !== null) years.add(movement.taxYear);
+    }
+    assertVaultSnapshotCurrent(sync, snapshot);
+    return {
+      ok: true,
+      value: { mode: settings.mode, years: [...years].sort((left, right) => right - left) },
+    };
+  } catch (cause) {
+    return { ok: false, error: asMoneyFailure(cause) };
+  }
+}
+
 async function taxableTransactions(
   model: ClientPortfolioModel,
   market: MarketDataSource,
