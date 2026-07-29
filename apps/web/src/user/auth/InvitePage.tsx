@@ -92,7 +92,9 @@ export function InvitePage() {
     setSubmitting(true);
     try {
       await acceptInvite({ token, username, password });
-      navigate('/', { replace: true });
+      // Accepting an invite creates the account, so it is a first run exactly
+      // like /register — and in an invite-only deployment it is the ONLY way in.
+      navigate('/welcome', { replace: true });
     } catch (err) {
       setError(acceptErrorMessage(t, err));
     } finally {

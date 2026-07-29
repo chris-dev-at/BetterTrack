@@ -217,6 +217,13 @@ export const COMMANDS: readonly CommandEntry[] = [
     extra: ['ai', 'ki', 'assistant'],
   },
   { labelKey: 'nav.review', to: '/review', group: 'navigate', icon: 'inbox', parked: true },
+  {
+    labelKey: 'firstrun.command.runAgain',
+    to: '/welcome',
+    group: 'navigate',
+    icon: 'target',
+    extra: ['setup', 'onboarding', 'wizard', 'welcome', 'einrichtung', 'assistent'],
+  },
 
   // ── Create intents ──
   {

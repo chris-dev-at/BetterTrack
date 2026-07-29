@@ -4196,5 +4196,91 @@
     "create": "Neu",
     "control": "Kontrollzentrum",
     "commandsAria": "Befehle"
+  },
+  "firstrun": {
+    "stepOf": "Schritt {{current}} von {{total}}",
+    "later": "Später erledigen",
+    "finish": "Zu BetterTrack",
+    "parkedFlag": "In Arbeit",
+    "command": {
+      "runAgain": "Einrichtung erneut starten"
+    },
+    "profile": {
+      "label": "Du",
+      "title": "Bist das du?",
+      "hint": "Name und Adresse, mit denen dein Konto angelegt wurde.",
+      "nameLabel": "Anzeigename",
+      "nameParked": "Das Umbenennen kommt mit der Profilbearbeitung.",
+      "emailLabel": "E-Mail"
+    },
+    "verifyEmail": {
+      "label": "E-Mail",
+      "title": "E-Mail bestätigen",
+      "verified": "{{email}} kam bestätigt von Google — hier ist nichts zu tun.",
+      "parkedNote": "Kommt mit dem E-Mail-Versand.",
+      "codeLabel": "Bestätigungscode",
+      "codeHint": "Sobald der Versand läuft, geht ein Code an {{email}}."
+    },
+    "security": {
+      "label": "Sicherheit",
+      "title": "Ein zweites Schloss?",
+      "hint": "Beides ist freiwillig und kann warten.",
+      "setUp": "Einrichten",
+      "on": "Aktiv",
+      "pin": {
+        "title": "App-PIN",
+        "description": "Vier Ziffern, um BetterTrack auf diesem Gerät zu entsperren.",
+        "newLabel": "Neue PIN",
+        "confirmLabel": "PIN bestätigen",
+        "save": "PIN speichern",
+        "mismatch": "Die beiden PINs stimmen nicht überein.",
+        "rateLimited": "Zu viele Versuche. Bitte gleich noch einmal probieren.",
+        "failed": "Die PIN konnte nicht gespeichert werden."
+      },
+      "twoFactor": {
+        "title": "Zwei-Faktor-Authentifizierung",
+        "description": "Bei jeder Anmeldung ein Code aus deiner Authenticator-App.",
+        "scan": "Scanne das mit deiner Authenticator-App.",
+        "qrAria": "QR-Code zur Authenticator-Einrichtung",
+        "manualToggle": "Schlüssel manuell eingeben",
+        "codeLabel": "Code aus deiner App",
+        "confirm": "Aktivieren",
+        "invalidCode": "Dieser Code ist falsch oder abgelaufen.",
+        "rateLimited": "Zu viele Codes. Bitte gleich noch einmal probieren.",
+        "enrollError": "Die Einrichtung konnte nicht gestartet werden.",
+        "enabled": "Die Zwei-Faktor-Authentifizierung ist aktiv."
+      },
+      "recoveryCodes": {
+        "description": "Bewahre sie sicher auf. Jeder Code meldet dich einmal an, falls du deine App verlierst.",
+        "saved": "Ich habe sie gespeichert"
+      }
+    },
+    "preferences": {
+      "label": "Einstellungen",
+      "title": "Sprache und Währung",
+      "languageLabel": "Sprache",
+      "currencyLabel": "Basiswährung",
+      "currencyHint": "Jede Summe wird in diese Währung umgerechnet."
+    },
+    "tax": {
+      "label": "Steuern",
+      "title": "Wie sollen Steuern behandelt werden?",
+      "hint": "Das wird die Vorgabe für neue Portfolios — du kannst sie jederzeit ändern.",
+      "groupAria": "Steuerbehandlung"
+    },
+    "publicProfile": {
+      "label": "Profil",
+      "title": "Dein öffentliches Profil",
+      "pictureParked": "Ein Bild auszuwählen kommt später.",
+      "toggleLabel": "Mein Profil öffentlich machen",
+      "toggleHint": "Alle können sehen, was du öffentlich geteilt hast.",
+      "acknowledge": "Ich verstehe das und möchte ein öffentliches Profil."
+    },
+    "done": {
+      "label": "Fertig",
+      "title": "Du bist eingerichtet",
+      "set": "Erledigt",
+      "later": "Später"
+    }
   }
 }

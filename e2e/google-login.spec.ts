@@ -9,6 +9,7 @@ import {
 import { getRegistrationMode, loginAsAdmin, setRegistrationMode } from './support/adminApi';
 import { passwordSignIn as submitPasswordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL, FAKE_GOOGLE_URL } from './support/config';
+import { dismissFirstRun } from './support/flows';
 import { provisionUser } from './support/users';
 
 /**
@@ -181,7 +182,9 @@ test('google login: open mode registers a brand-new verified identity', async ({
     await page.getByLabel('Password').fill(ACCOUNT_PASSWORD);
     await page.getByRole('button', { name: 'Create account' }).click();
 
-    // Open mode signs the freshly-registered account straight in.
+    // Open mode signs the freshly-registered account straight in — a brand-new
+    // account, so it opens on first-run setup before the app.
+    await dismissFirstRun(page);
     await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({
       timeout: 30_000,
     });
