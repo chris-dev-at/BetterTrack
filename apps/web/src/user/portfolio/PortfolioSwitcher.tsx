@@ -1,32 +1,29 @@
-import { useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
-import {
-  archivePortfolio,
-  createPortfolio,
-  deletePortfolio,
-  listPortfolios,
-  restorePortfolio,
-  updatePortfolio,
-} from '../../lib/portfolioApi';
-import { Skeleton } from '../../ui';
+import { createPortfolio, listPortfolios } from '../../lib/portfolioApi';
+import { Icon } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 import { CreateChainDialog, MirrorInviteStepDialog } from './MirrorchainPanel';
+import { DEFAULT_PORTFOLIO_KIND, portfolioIconName, usePortfolioKinds } from './portfolioKinds';
 
 /**
- * Portfolio switcher (PROJECTPLAN.md §6.8, §13.2 V2-P8). Replaces the V1
- * "Coming soon" placeholder with real multi-portfolio management: it lists the
- * user's **active** portfolios, switches the active one via the `?portfolio=`
- * routing param (so every scoped view below the layout follows), and offers
- * New / Rename / Archive / Delete plus an Archived list to restore from.
- * Archive is the soft, restorable option; Delete is the hard, permanent one —
- * a type-to-confirm dialog (the #362 account-deletion pattern) gates it.
+ * Portfolio switcher (PROJECTPLAN.md §6.8, §13.2 V2-P8). A **selector, not a
+ * management menu**: it lists the user's active portfolios with their kind icon
+ * (see `portfolioKinds.ts`), switches the active one via the `?portfolio=`
+ * routing param (so every scoped view below the layout follows), filters by name
+ * once the list outgrows the eye, and creates portfolios — plain or group.
+ *
+ * Rename / Archive / Delete / Archived live on `PortfolioSettingsPage`
+ * (`/portfolio/settings`), reachable from this menu's footer: changing or
+ * destroying a portfolio is a deliberate trip to its settings tab, never a slip
+ * in a dropdown you opened to switch.
  *
  * The active portfolio lives in the URL, not in component state, so it survives
  * navigation across the section subnav and is shared with {@link PortfolioPage}
@@ -38,6 +35,9 @@ import { CreateChainDialog, MirrorInviteStepDialog } from './MirrorchainPanel';
 
 /** The `?portfolio=<id>` search-param key that names the active portfolio. */
 export const ACTIVE_PORTFOLIO_PARAM = 'portfolio';
+
+/** Above this many portfolios the dropdown grows a search field. */
+const SEARCH_THRESHOLD = 6;
 
 /** sessionStorage key for the last active portfolio — session-scoped on purpose. */
 const LAST_ACTIVE_STORAGE_KEY = 'bt.portfolio.last';
@@ -97,23 +97,24 @@ export function promotedDefaultName(
   return remaining[0]?.name ?? null;
 }
 
+/** The `?portfolio=<id>` search string that pins one portfolio onto a link. */
+export function portfolioSearch(portfolioId: string | null | undefined): string {
+  return portfolioId ? `?${ACTIVE_PORTFOLIO_PARAM}=${encodeURIComponent(portfolioId)}` : '';
+}
+
 const inputClass = cx(
   'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
   'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
   'focus:outline-none focus:ring-2 focus:ring-sky-500',
 );
 
-type NameDialogState = { mode: 'create' } | { mode: 'rename'; portfolio: PortfolioSummary };
-
 export function PortfolioSwitcher() {
   const t = useT();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState(false);
-  const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
-  const [archivedOpen, setArchivedOpen] = useState(false);
-  const [confirmArchive, setConfirmArchive] = useState<PortfolioSummary | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<PortfolioSummary | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
   // Create-group-portfolio flow (V5-P7 §11): the "New group portfolio" menu
   // item opens CreateChainDialog; on success we chain straight into the
@@ -138,23 +139,31 @@ export function PortfolioSwitcher() {
     };
   }, [open]);
 
+  // Every open starts unfiltered — a filter left over from last time would hide
+  // the portfolio the user came to pick.
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
+
   const activeQuery = useQuery({
     queryKey: ['portfolios'],
     queryFn: ({ signal }) => listPortfolios(signal),
     staleTime: 60_000,
   });
-  const portfolios = activeQuery.data?.portfolios ?? [];
+  const portfolios = useMemo(() => activeQuery.data?.portfolios ?? [], [activeQuery.data]);
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
   const active = resolveActivePortfolio(portfolios, param);
+  const kinds = usePortfolioKinds();
 
-  // The archived list is only fetched when its dialog opens.
-  const archivedQuery = useQuery({
-    queryKey: ['portfolios', 'archived'],
-    queryFn: ({ signal }) => listPortfolios(signal, true),
-    enabled: archivedOpen,
-    staleTime: 60_000,
-  });
-  const archived = (archivedQuery.data?.portfolios ?? []).filter((p) => p.archivedAt !== null);
+  const searchable = portfolios.length > SEARCH_THRESHOLD;
+  const needle = query.trim().toLocaleLowerCase();
+  const visible = useMemo(
+    () =>
+      needle === ''
+        ? portfolios
+        : portfolios.filter((p) => p.name.toLocaleLowerCase().includes(needle)),
+    [portfolios, needle],
+  );
 
   // Any explicit selection — a click here or a param'd deep link (⌘K, Home
   // shortcuts) — becomes the session's remembered portfolio, so coming back to
@@ -175,18 +184,6 @@ export function PortfolioSwitcher() {
     );
   }
 
-  function clearActive() {
-    rememberActivePortfolio(null);
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.delete(ACTIVE_PORTFOLIO_PARAM);
-        return next;
-      },
-      { replace: true },
-    );
-  }
-
   const refetchLists = () => {
     void queryClient.invalidateQueries({ queryKey: ['portfolios'] });
     void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
@@ -196,7 +193,7 @@ export function PortfolioSwitcher() {
     mutationFn: (name: string) => createPortfolio(name),
     onSuccess: (created) => {
       setActionError(null);
-      setNameDialog(null);
+      setCreateOpen(false);
       refetchLists();
       setActive(created.id); // jump straight to the new portfolio
     },
@@ -208,70 +205,9 @@ export function PortfolioSwitcher() {
       ),
   });
 
-  const renameMutation = useMutation({
-    mutationFn: ({ id, name }: { id: string; name: string }) => updatePortfolio(id, { name }),
-    onSuccess: () => {
-      setActionError(null);
-      setNameDialog(null);
-      refetchLists();
-    },
-    onError: (err) =>
-      setActionError(
-        err instanceof ApiError && err.code === 'PORTFOLIO_NAME_TAKEN'
-          ? t('portfolio.switcher.nameTakenError')
-          : t('portfolio.switcher.renameError'),
-      ),
-  });
-
-  const archiveMutation = useMutation({
-    mutationFn: (id: string) => archivePortfolio(id),
-    onSuccess: (_res, id) => {
-      setActionError(null);
-      setConfirmArchive(null);
-      // If the archived one was active, drop the param so the view falls back
-      // to the default (the switcher re-resolves it below).
-      if (param === id) clearActive();
-      refetchLists();
-    },
-    onError: (err) =>
-      setActionError(
-        err instanceof ApiError && err.code === 'LAST_ACTIVE_PORTFOLIO'
-          ? err.message
-          : t('portfolio.switcher.archiveError'),
-      ),
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => deletePortfolio(id),
-    onSuccess: (_res, id) => {
-      setActionError(null);
-      setConfirmDelete(null);
-      // The portfolio is gone: if it was the active one, drop the param so the
-      // view navigates away to the (auto-promoted) default — the switcher
-      // re-resolves it below.
-      if (param === id) clearActive();
-      refetchLists();
-    },
-    onError: (err) =>
-      setActionError(
-        err instanceof ApiError && err.code === 'LAST_ACTIVE_PORTFOLIO'
-          ? err.message
-          : t('portfolio.switcher.deleteError'),
-      ),
-  });
-
-  const restoreMutation = useMutation({
-    mutationFn: (id: string) => restorePortfolio(id),
-    onSuccess: () => {
-      setActionError(null);
-      refetchLists();
-      void queryClient.invalidateQueries({ queryKey: ['portfolios', 'archived'] });
-    },
-    onError: () => setActionError(t('portfolio.switcher.restoreError')),
-  });
-
-  const itemClass = 'bt-menu-item justify-between';
-  const onlyOneActive = portfolios.length <= 1;
+  const triggerIcon = active
+    ? portfolioIconName(active, kinds[active.id] ?? DEFAULT_PORTFOLIO_KIND)
+    : 'portfolios';
 
   return (
     <div ref={rootRef} className="relative inline-block">
@@ -281,61 +217,73 @@ export function PortfolioSwitcher() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={t('portfolio.switcher.triggerAriaLabel')}
-        className="bt-btn"
-        style={{ fontWeight: 600 }}
+        className="bt-btn bt-btn--quiet bt-portfolio-trigger"
       >
+        <Icon name={triggerIcon} size={16} />
         <span className="max-w-[12rem] truncate">
           {active?.name ?? t('portfolio.switcher.fallbackName')}
         </span>
         {active?.isDefault ? (
-          <span
-            className="bt-badge"
-            style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}
-          >
+          <span className="bt-badge bt-portfolio-default">
             {t('portfolio.switcher.defaultBadge')}
           </span>
         ) : null}
-        <span aria-hidden="true" className="bt-muted">
-          ▾
-        </span>
+        <Icon className="bt-muted" name="chevron-down" size={14} />
       </button>
 
       {open ? (
         <div
           role="menu"
           aria-label={t('portfolio.switcher.menuAriaLabel')}
-          className="bt-popover"
-          style={{ left: 0, top: 'calc(100% + 6px)', width: 268 }}
+          className="bt-popover bt-portfolio-menu"
+          style={{ left: 0, top: 'calc(100% + 6px)' }}
         >
-          <div className="max-h-64 overflow-y-auto py-1">
-            {portfolios.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                role="menuitemradio"
-                aria-checked={p.id === active?.id}
-                onClick={() => {
-                  setActive(p.id);
-                  setOpen(false);
-                }}
-                className={itemClass}
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <span aria-hidden="true" className="bt-gold w-3 shrink-0">
-                    {p.id === active?.id ? '✓' : ''}
-                  </span>
-                  <span className="truncate">{p.name}</span>
-                </span>
-                {p.isDefault ? (
-                  <span
-                    className="bt-badge shrink-0"
-                    style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}
+          {searchable ? (
+            <div className="bt-portfolio-search" role="none">
+              <Icon name="search" size={14} />
+              <input
+                type="search"
+                value={query}
+                autoFocus
+                onChange={(e) => setQuery(e.target.value)}
+                aria-label={t('portfolio.switcher.searchAriaLabel')}
+                placeholder={t('portfolio.switcher.searchPlaceholder')}
+              />
+            </div>
+          ) : null}
+
+          <div className="bt-portfolio-list">
+            {visible.length === 0 ? (
+              <p className="bt-portfolio-empty">{t('portfolio.switcher.noMatches')}</p>
+            ) : (
+              visible.map((p) => {
+                const selected = p.id === active?.id;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    onClick={() => {
+                      setActive(p.id);
+                      setOpen(false);
+                    }}
+                    className="bt-menu-item bt-portfolio-option"
                   >
-                    {t('portfolio.switcher.defaultBadge')}
-                  </span>
-                ) : null}
-              </button>
-            ))}
+                    <Icon name={portfolioIconName(p, kinds[p.id] ?? DEFAULT_PORTFOLIO_KIND)} />
+                    <span className="truncate">{p.name}</span>
+                    {p.isDefault ? (
+                      <span className="bt-badge bt-portfolio-default">
+                        {t('portfolio.switcher.defaultBadge')}
+                      </span>
+                    ) : null}
+                    {selected ? (
+                      <Icon className="bt-gold bt-portfolio-check" name="check" size={15} />
+                    ) : null}
+                  </button>
+                );
+              })
+            )}
           </div>
 
           <div className="bt-menu-rule" />
@@ -345,11 +293,12 @@ export function PortfolioSwitcher() {
               role="menuitem"
               onClick={() => {
                 setActionError(null);
-                setNameDialog({ mode: 'create' });
+                setCreateOpen(true);
                 setOpen(false);
               }}
-              className={itemClass}
+              className="bt-menu-item"
             >
+              <Icon name="plus" size={15} />
               {t('portfolio.switcher.newPortfolio')}
             </button>
             <button
@@ -360,150 +309,39 @@ export function PortfolioSwitcher() {
                 setCreateChainOpen(true);
                 setOpen(false);
               }}
-              className={itemClass}
+              className="bt-menu-item"
             >
+              <Icon name="users" size={15} />
               {t('portfolio.switcher.newGroupPortfolio')}
             </button>
-            <button
-              type="button"
+            <Link
               role="menuitem"
-              disabled={!active}
-              onClick={() => {
-                if (!active) return;
-                setActionError(null);
-                setNameDialog({ mode: 'rename', portfolio: active });
-                setOpen(false);
-              }}
-              className={cx(itemClass, 'disabled:cursor-not-allowed disabled:opacity-40')}
+              to={{ pathname: '/portfolio/settings', search: portfolioSearch(active?.id) }}
+              onClick={() => setOpen(false)}
+              className="bt-menu-item"
             >
-              {t('portfolio.switcher.renameCurrent')}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!active || onlyOneActive}
-              title={onlyOneActive ? t('portfolio.switcher.archiveDisabledHint') : undefined}
-              onClick={() => {
-                if (!active) return;
-                setActionError(null);
-                setConfirmArchive(active);
-                setOpen(false);
-              }}
-              className={cx(itemClass, 'disabled:cursor-not-allowed disabled:opacity-40')}
-            >
-              {t('portfolio.switcher.archiveCurrent')}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!active || onlyOneActive}
-              title={onlyOneActive ? t('portfolio.switcher.deleteDisabledHint') : undefined}
-              onClick={() => {
-                if (!active) return;
-                setActionError(null);
-                setConfirmDelete(active);
-                setOpen(false);
-              }}
-              className={cx(
-                itemClass,
-                'is-danger',
-                'disabled:cursor-not-allowed disabled:opacity-40',
-              )}
-            >
-              {t('portfolio.switcher.deleteCurrent')}
-            </button>
-          </div>
-
-          <div className="bt-menu-rule" />
-          <div>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setActionError(null);
-                setArchivedOpen(true);
-                setOpen(false);
-              }}
-              className={itemClass}
-            >
-              {t('portfolio.switcher.archivedMenuItem')}
-            </button>
+              <Icon name="settings" size={15} />
+              {t('portfolio.switcher.settingsMenuItem')}
+            </Link>
           </div>
         </div>
       ) : null}
 
-      {actionError && !nameDialog && !confirmArchive && !confirmDelete && !archivedOpen ? (
+      {actionError && !createOpen ? (
         <div className="absolute left-0 top-full z-30 mt-2 w-64">
           <Alert tone="error">{actionError}</Alert>
         </div>
       ) : null}
 
-      {nameDialog ? (
-        <NameDialog
-          mode={nameDialog.mode}
-          initialName={nameDialog.mode === 'rename' ? nameDialog.portfolio.name : ''}
-          submitting={createMutation.isPending || renameMutation.isPending}
+      {createOpen ? (
+        <NewPortfolioDialog
+          submitting={createMutation.isPending}
           error={actionError}
           onClose={() => {
-            setNameDialog(null);
+            setCreateOpen(false);
             setActionError(null);
           }}
-          onSubmit={(name) => {
-            if (nameDialog.mode === 'create') createMutation.mutate(name);
-            else renameMutation.mutate({ id: nameDialog.portfolio.id, name });
-          }}
-        />
-      ) : null}
-
-      {confirmArchive ? (
-        <Dialog
-          title={t('portfolio.switcher.archiveDialogTitle')}
-          description={t('portfolio.switcher.archiveDialogDescription', {
-            name: confirmArchive.name,
-          })}
-          onClose={() => {
-            setConfirmArchive(null);
-            setActionError(null);
-          }}
-          widthClassName="max-w-md"
-        >
-          <div className="flex flex-col gap-4">
-            {actionError ? <Alert tone="error">{actionError}</Alert> : null}
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setConfirmArchive(null);
-                  setActionError(null);
-                }}
-                disabled={archiveMutation.isPending}
-              >
-                {t('common.cancel')}
-              </Button>
-              <Button
-                onClick={() => archiveMutation.mutate(confirmArchive.id)}
-                disabled={archiveMutation.isPending}
-              >
-                {archiveMutation.isPending
-                  ? t('portfolio.switcher.archiving')
-                  : t('portfolio.switcher.archive')}
-              </Button>
-            </div>
-          </div>
-        </Dialog>
-      ) : null}
-
-      {confirmDelete ? (
-        <DeletePortfolioDialog
-          portfolio={confirmDelete}
-          promotedDefault={promotedDefaultName(portfolios, confirmDelete)}
-          submitting={deleteMutation.isPending}
-          error={actionError}
-          onClose={() => {
-            setConfirmDelete(null);
-            setActionError(null);
-          }}
-          onConfirm={() => deleteMutation.mutate(confirmDelete.id)}
+          onSubmit={(name) => createMutation.mutate(name)}
         />
       ) : null}
 
@@ -528,83 +366,29 @@ export function PortfolioSwitcher() {
           }}
         />
       ) : null}
-
-      {archivedOpen ? (
-        <Dialog
-          title={t('portfolio.switcher.archivedDialogTitle')}
-          description={t('portfolio.switcher.archivedDialogDescription')}
-          onClose={() => {
-            setArchivedOpen(false);
-            setActionError(null);
-          }}
-          widthClassName="max-w-md"
-        >
-          <div className="flex flex-col gap-3">
-            {actionError ? <Alert tone="error">{actionError}</Alert> : null}
-            {archivedQuery.isLoading ? (
-              <div className="flex flex-col gap-2">
-                <Skeleton height="h-10" />
-                <Skeleton height="h-10" />
-              </div>
-            ) : archived.length === 0 ? (
-              <p className="text-sm text-neutral-500">{t('portfolio.switcher.noArchived')}</p>
-            ) : (
-              <ul className="flex flex-col gap-2">
-                {archived.map((p) => (
-                  <li
-                    key={p.id}
-                    className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-950/40 px-3 py-2"
-                  >
-                    <span className="min-w-0 truncate text-sm text-neutral-200">{p.name}</span>
-                    <Button
-                      variant="secondary"
-                      onClick={() => restoreMutation.mutate(p.id)}
-                      disabled={restoreMutation.isPending}
-                    >
-                      {t('portfolio.switcher.restore')}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </Dialog>
-      ) : null}
     </div>
   );
 }
 
-/** New / Rename portfolio dialog — a single trimmed-name text field. */
-function NameDialog({
-  mode,
-  initialName,
+/** New-portfolio dialog — a single trimmed-name text field. */
+function NewPortfolioDialog({
   submitting,
   error,
   onClose,
   onSubmit,
 }: {
-  mode: 'create' | 'rename';
-  initialName: string;
   submitting: boolean;
   error: string | null;
   onClose: () => void;
   onSubmit: (name: string) => void;
 }) {
   const t = useT();
-  const [name, setName] = useState(initialName);
+  const [name, setName] = useState('');
   const trimmed = name.trim();
   const valid = trimmed.length > 0 && trimmed.length <= 120;
 
   return (
-    <Dialog
-      title={
-        mode === 'create'
-          ? t('portfolio.switcher.createTitle')
-          : t('portfolio.switcher.renameTitle')
-      }
-      onClose={onClose}
-      widthClassName="max-w-md"
-    >
+    <Dialog title={t('portfolio.switcher.createTitle')} onClose={onClose} widthClassName="max-w-md">
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -635,103 +419,7 @@ function NameDialog({
             {t('common.cancel')}
           </Button>
           <Button type="submit" disabled={!valid || submitting}>
-            {submitting
-              ? t('common.saving')
-              : mode === 'create'
-                ? t('portfolio.switcher.create')
-                : t('common.save')}
-          </Button>
-        </div>
-      </form>
-    </Dialog>
-  );
-}
-
-/**
- * Permanent-delete confirmation (the #362 account-deletion safety pattern): an
- * explicit consequence list plus a field where the exact portfolio name must be
- * typed before the destructive button enables. When the deleted portfolio is the
- * current default, it also names the portfolio that auto-promotes to default.
- */
-function DeletePortfolioDialog({
-  portfolio,
-  promotedDefault,
-  submitting,
-  error,
-  onClose,
-  onConfirm,
-}: {
-  portfolio: PortfolioSummary;
-  promotedDefault: string | null;
-  submitting: boolean;
-  error: string | null;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  const t = useT();
-  const [typed, setTyped] = useState('');
-  // Exact, case-sensitive match on the trimmed input — the destructive button
-  // stays disabled until the name is typed verbatim.
-  const confirmed = typed.trim() === portfolio.name;
-
-  return (
-    <Dialog
-      title={t('portfolio.switcher.deleteDialogTitle')}
-      description={t('portfolio.switcher.deleteDialogDescription', { name: portfolio.name })}
-      onClose={onClose}
-      widthClassName="max-w-md"
-    >
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (confirmed && !submitting) onConfirm();
-        }}
-        className="flex flex-col gap-4"
-      >
-        <Alert tone="error">
-          <span className="font-semibold">{t('portfolio.switcher.deleteWarningHeadline')}</span>
-          <ul className="mt-2 list-disc pl-5 text-sm">
-            <li>{t('portfolio.switcher.deleteWarningTransactions')}</li>
-            <li>{t('portfolio.switcher.deleteWarningCash')}</li>
-            <li>{t('portfolio.switcher.deleteWarningShares')}</li>
-            <li>{t('portfolio.switcher.deleteWarningTax')}</li>
-          </ul>
-        </Alert>
-
-        {promotedDefault ? (
-          <p className="text-sm text-neutral-400">
-            {t('portfolio.switcher.deletePromotesDefault', { name: promotedDefault })}
-          </p>
-        ) : null}
-
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.switcher.deleteConfirmLabel', { name: portfolio.name })}
-          </span>
-          <input
-            type="text"
-            value={typed}
-            autoFocus
-            autoComplete="off"
-            onChange={(e) => setTyped(e.target.value)}
-            aria-label={t('portfolio.switcher.deleteConfirmAriaLabel')}
-            className={inputClass}
-          />
-        </label>
-
-        {error ? <Alert tone="error">{error}</Alert> : null}
-
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose} disabled={submitting}>
-            {t('common.cancel')}
-          </Button>
-          <Button
-            type="submit"
-            variant="secondary"
-            className="bt-btn--danger"
-            disabled={!confirmed || submitting}
-          >
-            {submitting ? t('portfolio.switcher.deleting') : t('portfolio.switcher.delete')}
+            {submitting ? t('common.saving') : t('portfolio.switcher.create')}
           </Button>
         </div>
       </form>

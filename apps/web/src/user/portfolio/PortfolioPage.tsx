@@ -51,12 +51,10 @@ import { CashDialog } from './CashDialog';
 import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
 import { CustomInvestmentDialog } from './CustomInvestmentDialog';
 import {
-  ConvertChainDialog,
   MemberSheet,
   MirrorAttributionChip,
   MirrorAvatarStack,
   MirrorForkProvenanceLine,
-  MirrorInviteStepDialog,
 } from './MirrorchainPanel';
 
 // ─── Range mapping ──────────────────────────────────────────────────────────
@@ -1051,10 +1049,6 @@ export function PortfolioPage() {
   const [cashDialogKind, setCashDialogKind] = useState<'deposit' | 'withdrawal' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [memberSheetOpen, setMemberSheetOpen] = useState(false);
-  const [convertOpen, setConvertOpen] = useState(false);
-  // After Convert succeeds, jump straight to the friend-picker invite step
-  // (§4/§11 zero-config AC) — NOT the full member sheet.
-  const [inviteStepChainId, setInviteStepChainId] = useState<string | null>(null);
 
   // The API is portfolio_id-scoped (§6.8): resolve the active portfolio, then
   // thread its id through every scoped read/write. The active one is named by
@@ -1257,28 +1251,6 @@ export function PortfolioPage() {
             onClose={() => setMemberSheetOpen(false)}
           />
         ) : null}
-        {convertOpen && portfolio && !portfolio.mirror ? (
-          <ConvertChainDialog
-            portfolioId={portfolio.id}
-            portfolioName={portfolio.name}
-            onClose={() => setConvertOpen(false)}
-            onConverted={(chainId) => {
-              setConvertOpen(false);
-              refetchAll();
-              setInviteStepChainId(chainId);
-            }}
-          />
-        ) : null}
-        {inviteStepChainId ? (
-          <MirrorInviteStepDialog
-            chainId={inviteStepChainId}
-            onClose={() => setInviteStepChainId(null)}
-            onDone={() => {
-              setInviteStepChainId(null);
-              refetchAll();
-            }}
-          />
-        ) : null}
       </>
     );
   }
@@ -1288,7 +1260,6 @@ export function PortfolioPage() {
       <PageHeader
         onRecord={() => setTxnDialog({ kind: 'create' })}
         onNewCustom={() => setCustomOpen(true)}
-        onMakeGroup={portfolio && !portfolio.mirror ? () => setConvertOpen(true) : undefined}
       />
 
       <RecategorizeBanner />
@@ -1422,29 +1393,19 @@ export function PortfolioPage() {
   );
 }
 
-function PageHeader({
-  onRecord,
-  onNewCustom,
-  onMakeGroup,
-}: {
-  onRecord: () => void;
-  onNewCustom: () => void;
-  /**
-   * MIRRORCHAIN (V5-P7 M5, design §11): "Make this a group portfolio" — the
-   * convert entry point on an existing non-chain portfolio. Absent (no button)
-   * when the active portfolio is already a synced copy (design §1 uniqueness)
-   * or when the page has no active portfolio (loading/error).
-   */
-  onMakeGroup?: () => void;
-}) {
+/**
+ * MIRRORCHAIN (V5-P7 M5, design §11): the "Make this a group portfolio" convert
+ * entry point used to stand permanently in these actions. It is a once-in-a-
+ * portfolio's-life decision, so it moved to the Settings tab
+ * (`PortfolioSettingsPage`) — the overview header keeps only the two things you
+ * do every day. Chain *status* (avatar stack → member sheet) still lives here.
+ */
+function PageHeader({ onRecord, onNewCustom }: { onRecord: () => void; onNewCustom: () => void }) {
   const t = useT();
   return (
     <PageHead
       actions={
         <>
-          {onMakeGroup ? (
-            <Button onClick={onMakeGroup}>{t('mirrorchain.actions.makeGroup')}</Button>
-          ) : null}
           <Button onClick={onNewCustom}>{t('portfolio.overview.newCustomButton')}</Button>
           <Button onClick={onRecord} variant="primary">
             {t('portfolio.overview.recordButton')}

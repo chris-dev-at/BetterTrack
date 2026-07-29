@@ -37,16 +37,6 @@ export const PARKED_PAGES = {
     pointCount: 3,
     links: [{ to: '/people', labelKey: 'parked.links.friends' }],
   },
-  portfolioSettings: {
-    key: 'portfolioSettings',
-    pointCount: 3,
-    links: [
-      { to: '/control/portfolio-defaults', labelKey: 'parked.links.taxDefaults' },
-      { to: '/portfolio/structure', labelKey: 'parked.links.structure' },
-      { to: '/portfolio/events', labelKey: 'parked.links.events' },
-      { to: '/portfolio/health', labelKey: 'parked.links.health' },
-    ],
-  },
   portfolioEvents: { key: 'portfolioEvents', pointCount: 3 },
   portfolioStructure: { key: 'portfolioStructure', pointCount: 3 },
   dataHealth: { key: 'dataHealth', pointCount: 4 },

@@ -1851,7 +1851,11 @@
       "deleteConfirmAriaLabel": "Bestätigung des Portfolionamens",
       "deleting": "Wird gelöscht…",
       "delete": "Endgültig löschen",
-      "deleteError": "Das Portfolio konnte nicht gelöscht werden. Bitte versuche es erneut."
+      "deleteError": "Das Portfolio konnte nicht gelöscht werden. Bitte versuche es erneut.",
+      "searchPlaceholder": "Portfolios durchsuchen",
+      "searchAriaLabel": "Portfolios durchsuchen",
+      "noMatches": "Keine Treffer.",
+      "settingsMenuItem": "Portfolio-Einstellungen"
     },
     "cash": {
       "title": "Bargeldbestand",
@@ -2121,6 +2125,32 @@
       "files": "Dateien",
       "people": "Personen",
       "settings": "Einstellungen"
+    },
+    "kinds": {
+      "private": "Privat",
+      "family": "Familie",
+      "business": "Geschäftlich",
+      "savings": "Sparen",
+      "property": "Immobilien",
+      "group": "Gruppe"
+    },
+    "settings": {
+      "title": "Portfolio-Einstellungen",
+      "subtitle": "Verwalte dieses Portfolio.",
+      "loadError": "Dieses Portfolio konnte nicht geladen werden.",
+      "generalHeading": "Allgemein",
+      "nameSaved": "Gespeichert.",
+      "kindLabel": "Art",
+      "kindHint": "Legt das Symbol in der Portfolio-Auswahl fest. Nur auf diesem Gerät gespeichert.",
+      "groupHeading": "Gruppenportfolio",
+      "groupHint": "Teile dieses Portfolio mit Freunden — ihr führt dasselbe Buch.",
+      "groupActive": "{{name}} · {{count}} Mitglieder",
+      "manageGroup": "Gruppe verwalten",
+      "dangerHeading": "Gefahrenzone",
+      "archiveAction": "Dieses Portfolio archivieren",
+      "archiveHint": "Aus deiner Liste ausgeblendet. Jederzeit wiederherstellbar.",
+      "deleteAction": "Dieses Portfolio löschen",
+      "deleteHint": "Endgültig. Alles darin wird entfernt."
     }
   },
   "workboard": {
@@ -4166,13 +4196,6 @@
       "p1": "Eigentümer-, Verwalter- und Betrachter-Rollen je Portfolio",
       "p2": "Freigaberegeln für folgenreiche Änderungen",
       "p3": "Zugriff und Aktivität in einer Audit-Ansicht"
-    },
-    "portfolioSettings": {
-      "title": "Portfolio-Einstellungen",
-      "body": "Identität, Berechnung und Lebenszyklus dieses Portfolios — Basiswährung, Steuermodell, Datenhoheit, Archivieren und Aufteilen.",
-      "p1": "Name, Währung und Berechnungseinstellungen",
-      "p2": "Steuermodell-Overrides je Portfolio",
-      "p3": "Archivieren, Duplizieren, Aufteilen und Zusammenführen"
     },
     "portfolioEvents": {
       "title": "Ereignisse",

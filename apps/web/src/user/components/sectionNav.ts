@@ -67,7 +67,7 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
       { to: '/portfolio/automate', labelKey: 'portfolio.tabs.automate', parked: true },
       { to: '/portfolio/files', labelKey: 'portfolio.tabs.files', parked: true },
       { to: '/portfolio/people', labelKey: 'portfolio.tabs.people', parked: true },
-      { to: '/portfolio/settings', labelKey: 'portfolio.tabs.settings', parked: true },
+      { to: '/portfolio/settings', labelKey: 'portfolio.tabs.settings' },
     ],
   },
   workbench: {

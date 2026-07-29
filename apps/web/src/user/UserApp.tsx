@@ -27,6 +27,7 @@ import { CategoriesPage as ExpenseCategoriesPage } from './expenses/CategoriesPa
 import { RulesPage as ExpenseRulesPage } from './expenses/RulesPage';
 import { ImportPage as ExpenseImportPage } from './expenses/ImportPage';
 import { PortfolioPage } from './portfolio/PortfolioPage';
+import { PortfolioSettingsPage } from './portfolio/PortfolioSettingsPage';
 import { AnalyticsPage } from './portfolio/analytics/AnalyticsPage';
 import { CashSourcesPage } from './portfolio/CashSourcesPage';
 import { ImportPage } from './portfolio/ImportPage';
@@ -179,7 +180,7 @@ function UserShell() {
             <Route path="automate" element={<ParkedPage page="automate" />} />
             <Route path="files" element={<ParkedPage page="portfolioFiles" />} />
             <Route path="people" element={<ParkedPage page="portfolioPeople" />} />
-            <Route path="settings" element={<ParkedPage page="portfolioSettings" />} />
+            <Route path="settings" element={<PortfolioSettingsPage />} />
             {/* Parked deep surfaces reached from their parent workspaces. */}
             <Route path="events" element={<ParkedPage page="portfolioEvents" />} />
             <Route path="structure" element={<ParkedPage page="portfolioStructure" />} />

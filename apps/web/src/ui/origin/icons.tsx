@@ -453,6 +453,60 @@ const PATHS: Record<string, ReactNode> = {
       <path d="m14.5 10-2 2 2 2" />
     </>
   ),
+  // ── Portfolio kinds (R2) — one glyph per `portfolioKinds.ts` kind, plus the
+  // group (MIRRORCHAIN) trio. Appended at the end on purpose: new entries never
+  // shift the existing map, keeping parallel branches merge-clean.
+  'user-lock': (
+    <>
+      <circle cx="10" cy="8" r="3.2" />
+      <path d="M4.2 19.2c.7-3.1 3-4.7 5.8-4.7.6 0 1.2.1 1.8.2" />
+      <rect x="13.5" y="15" width="7" height="5.5" rx="1" />
+      <path d="M15.3 15v-1.4a1.7 1.7 0 0 1 3.4 0V15" />
+    </>
+  ),
+  family: (
+    <>
+      <circle cx="7.8" cy="7" r="2.7" />
+      <path d="M3.4 19c.5-3.2 2.2-4.9 4.4-4.9s3.9 1.7 4.4 4.9" />
+      <circle cx="16.6" cy="10.8" r="2.1" />
+      <path d="M13.3 19c.4-2.5 1.6-3.8 3.3-3.8s2.9 1.3 3.3 3.8" />
+    </>
+  ),
+  briefcase: (
+    <>
+      <rect x="3.5" y="7.5" width="17" height="11.5" rx="1.5" />
+      <path d="M8.5 7.5V6A1.5 1.5 0 0 1 10 4.5h4A1.5 1.5 0 0 1 15.5 6v1.5" />
+      <path d="M3.5 12.5h17" />
+      <path d="M10.5 12.5v1.6h3v-1.6" />
+    </>
+  ),
+  'piggy-bank': (
+    <>
+      <path d="M4.5 13.8a6.3 6.3 0 0 1 6.3-6.3h2.6a6.3 6.3 0 0 1 5.8 3.9h1.6a.8.8 0 0 1 .8.8v2a.8.8 0 0 1-.8.8h-1.5a6.3 6.3 0 0 1-2 2.4V20h-2.8v-1.2h-3.6V20H7.9v-2.3a6.3 6.3 0 0 1-3.4-3.9Z" />
+      <path d="M10.8 7.6 9.4 4.8a4.3 4.3 0 0 0-2.5 3.1" />
+      <path d="M13.4 11.2h2.9" />
+      <circle cx="9" cy="13" r="0.6" fill="currentColor" stroke="none" />
+    </>
+  ),
+  building: (
+    <>
+      <path d="M4.5 20V6.3a1 1 0 0 1 .7-1l7-2.1a1 1 0 0 1 1.3 1V20" />
+      <path d="M13.5 9.5h4.8a1 1 0 0 1 1 1V20" />
+      <path d="M3 20h18" />
+      <path d="M7.6 8.4h2.4M7.6 11.9h2.4M7.6 15.4h2.4" />
+      <path d="M15.2 13h1.6M15.2 16.5h1.6" />
+    </>
+  ),
+  users: (
+    <>
+      <circle cx="12" cy="8.2" r="2.7" />
+      <path d="M7.9 18.8c.5-2.9 2.1-4.4 4.1-4.4s3.6 1.5 4.1 4.4" />
+      <circle cx="5.4" cy="9.6" r="2.1" />
+      <path d="M2 17.2c.4-2.4 1.6-3.7 3.4-3.7" />
+      <circle cx="18.6" cy="9.6" r="2.1" />
+      <path d="M22 17.2c-.4-2.4-1.6-3.7-3.4-3.7" />
+    </>
+  ),
 };
 
 export type IconName = keyof typeof PATHS;
@@ -469,6 +523,10 @@ export function Icon({ name, size = 18, ...rest }: IconProps) {
   return (
     <svg
       aria-hidden={rest['aria-label'] ? undefined : true}
+      // Which glyph rendered, as inert metadata: lets tests and e2e assert
+      // icon-carried meaning (a portfolio's kind, say) without giving a
+      // decorative glyph an accessible name it would then leak into its row.
+      data-icon={name}
       fill="none"
       height={size}
       stroke="currentColor"
