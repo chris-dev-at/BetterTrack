@@ -196,6 +196,20 @@
       "errorAccountDisabled": "This account has been suspended. Please contact the administrator.",
       "errorAdmin": "Google sign-in isn't available for administrator accounts. Please sign in with your password.",
       "errorAlreadyLinked": "That Google account is already linked to another user."
+    },
+    "figures": {
+      "valueLabel": "TOTAL VALUE",
+      "valueAmount": "€128,400",
+      "valueDelta": "+1.2% today",
+      "nestParent": "Main portfolio",
+      "nestParentValue": "€96,120",
+      "nestChild": "Savings",
+      "nestChildValue": "€21,480",
+      "nestChildTwo": "Property",
+      "nestChildTwoValue": "€10,800",
+      "sharedTitle": "Shared portfolio",
+      "sharedMeta": "Two people · one ledger",
+      "trendLabel": "THIS MONTH"
     }
   },
   "common": {

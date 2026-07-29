@@ -3,6 +3,7 @@ import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, ReactNod
 import { useT } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { TAGLINE } from '../../ui/Disclaimer';
+import { AuthFigures } from './AuthFigures';
 
 /*
  * Legacy shared primitives, reskinned onto the Origin design system
@@ -193,6 +194,7 @@ export function AuthCard({ subtitle, children }: { subtitle: string; children: R
       {/* Brand panel — decorative twin of the card's own wordmark, so it is
           hidden from assistive tech: the card below always announces the mark. */}
       <aside className="bt-gate__brandpanel" aria-hidden="true">
+        <AuthFigures />
         <Wordmark edition="Web" className="bt-gate__mark" />
         <p className="bt-gate__tagline">{TAGLINE}</p>
       </aside>

@@ -3746,3 +3746,256 @@
     transition: none;
   }
 }
+
+/* ===== R2: auth figures ====================================================
+ * Decorative product figures on the split auth panel: four small cards drifting
+ * over the graphite, arranged as a loose diagonal that leads the eye toward the
+ * form column. Only ever visible where the split exists (≥900px) — the panel
+ * itself is display:none below that, so no query is needed here.
+ *
+ * Every card is a flat surface with a 1px rule and a soft shadow; no nested
+ * cards, no gold (the wordmark below owns the brand colour). Money is tabular.
+ * The drift is slow and staggered — depth, not animation — and stops entirely
+ * under prefers-reduced-motion.
+ * ========================================================================== */
+
+/* One cluster, not four scattered cards: a fixed-width stage the cards cascade
+   inside, each overlapping the one before it so they read as a stack with
+   depth. Sits in the panel's upper two-thirds; the wordmark owns the foot. */
+.bt-authfig {
+  position: absolute;
+  top: clamp(52px, 13vh, 148px);
+  left: clamp(30px, 5vw, 66px);
+  width: min(384px, 86%);
+  height: 374px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A soft lift under the cluster so it sits on light rather than on nothing. */
+.bt-authfig::before {
+  content: '';
+  position: absolute;
+  inset: -14% -18% -22%;
+  background: radial-gradient(58% 52% at 42% 44%, rgb(255 255 255 / 4.5%), transparent 72%);
+}
+
+.bt-authfig__card {
+  position: absolute;
+  display: flex;
+  background: color-mix(in srgb, var(--bt-surface) 88%, transparent);
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 8px;
+  box-shadow: 0 18px 38px -26px rgb(0 0 0 / 62%);
+  backdrop-filter: blur(2px);
+  animation: bt-authfig-drift 24s ease-in-out infinite alternate;
+}
+
+/* 1 — what everything is worth. */
+.bt-authfig__value {
+  top: 0;
+  left: 0;
+  z-index: 3;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 15px 13px;
+  min-width: 186px;
+}
+
+.bt-authfig__label {
+  color: var(--bt-faint);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.bt-authfig__amount {
+  color: var(--bt-text);
+  font-size: 25px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.bt-authfig__pill {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* 2 — portfolios nest, behind the rail's own hairline guide. */
+.bt-authfig__nest {
+  top: 78px;
+  left: 118px;
+  z-index: 4;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 14px 12px;
+  min-width: 224px;
+  animation-duration: 29s;
+  animation-delay: -6s;
+}
+
+.bt-authfig__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--bt-text-soft);
+  font-size: 12.5px;
+  font-weight: 560;
+}
+
+.bt-authfig__row > svg {
+  flex: none;
+  color: var(--bt-muted);
+}
+
+.bt-authfig__rowlabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-authfig__rowvalue {
+  color: var(--bt-muted);
+  font-size: 12px;
+}
+
+.bt-authfig__children {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 7px;
+  padding-left: 14px;
+}
+
+.bt-authfig__children::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  width: 1px;
+  background: var(--bt-border-strong);
+}
+
+.bt-authfig__row--child {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--bt-muted);
+}
+
+/* 3 — one ledger, two people. */
+.bt-authfig__shared {
+  top: 226px;
+  left: 2px;
+  z-index: 3;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  min-width: 200px;
+  animation-duration: 21s;
+  animation-delay: -13s;
+}
+
+.bt-authfig__faces {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--bt-surface-strong);
+  color: var(--bt-blue);
+}
+
+.bt-authfig__stack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.bt-authfig__title {
+  color: var(--bt-text-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.bt-authfig__meta {
+  color: var(--bt-faint);
+  font-size: 11.5px;
+}
+
+/* 4 — the month, drawn. */
+.bt-authfig__trend {
+  top: 246px;
+  left: 210px;
+  z-index: 2;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 14px 12px;
+  width: 158px;
+  animation-duration: 26s;
+  animation-delay: -3s;
+}
+
+.bt-authfig__spark {
+  display: block;
+  width: 100%;
+  height: 30px;
+  overflow: visible;
+}
+
+@keyframes bt-authfig-drift {
+  from {
+    translate: 0 0;
+  }
+  to {
+    translate: 0 -9px;
+  }
+}
+
+/* Tight panels (900–1100px): trade the outer offsets for room. */
+@media (max-width: 1100px) {
+  .bt-authfig {
+    height: 342px;
+  }
+
+  .bt-authfig__value {
+    min-width: 166px;
+  }
+
+  .bt-authfig__nest {
+    left: 92px;
+    min-width: 202px;
+  }
+
+  .bt-authfig__shared {
+    top: 208px;
+    min-width: 0;
+  }
+
+  /* The shared card sits above the trend card, so at this width the trend must
+     start clear of it or its label gets covered. */
+  .bt-authfig__trend {
+    top: 238px;
+    left: 200px;
+    width: 132px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-authfig__card {
+    animation: none;
+  }
+}

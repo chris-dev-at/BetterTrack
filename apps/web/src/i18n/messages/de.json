@@ -196,6 +196,20 @@
       "errorAccountDisabled": "Dieses Konto wurde gesperrt. Bitte wende dich an den Administrator.",
       "errorAdmin": "Die Google-Anmeldung ist für Administratorkonten nicht verfügbar. Bitte melde dich mit deinem Passwort an.",
       "errorAlreadyLinked": "Dieses Google-Konto ist bereits mit einem anderen Benutzer verknüpft."
+    },
+    "figures": {
+      "valueLabel": "GESAMTWERT",
+      "valueAmount": "128.400 €",
+      "valueDelta": "+1,2 % heute",
+      "nestParent": "Haupt-Portfolio",
+      "nestParentValue": "96.120 €",
+      "nestChild": "Sparen",
+      "nestChildValue": "21.480 €",
+      "nestChildTwo": "Immobilie",
+      "nestChildTwoValue": "10.800 €",
+      "sharedTitle": "Gemeinsames Portfolio",
+      "sharedMeta": "Zwei Personen · ein Buch",
+      "trendLabel": "DIESER MONAT"
     }
   },
   "common": {
