@@ -94,6 +94,7 @@ import {
 } from '../services/admin/adminTwoFactorService';
 import { createApiKeyService, type ApiKeyService } from '../services/apiKeys/apiKeyService';
 import { createOAuthService, type OAuthService } from '../services/oauth/oauthService';
+import type { OAuthLogoFetcher } from '../services/oauth/oauthLogo';
 import { createAppSettingsService } from '../services/appSettings/appSettingsService';
 import {
   createFeatureFlagService,
@@ -579,6 +580,8 @@ export interface BuildContextDeps {
    * only ever reaches the configured local endpoint (LOCAL AI ONLY).
    */
   aiFetch?: typeof fetch;
+  /** Test seam for save-time OAuth logo fetching; production uses guarded HTTPS. */
+  oauthLogoFetcher?: OAuthLogoFetcher;
 }
 
 /** Composition root: repositories → services → context. */
@@ -665,6 +668,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     userRepo,
     events,
     logger,
+    logoFetcher: deps.oauthLogoFetcher,
   });
   const passwordHasher = deps.passwordHasher ?? createPasswordHasher();
 

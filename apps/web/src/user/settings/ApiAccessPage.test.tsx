@@ -48,7 +48,7 @@ const CREATED_CLIENT: CreateOAuthClientResponse = {
     scopes: ['portfolio:read'],
     public: false,
     firstParty: false,
-    logoUrl: null,
+    logoPath: null,
     createdAt: '2026-07-05T08:00:00.000Z',
   },
   clientSecret: 'bts_shown_once_client_secret',

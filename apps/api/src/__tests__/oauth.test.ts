@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   OAUTH_ACCESS_TOKEN_PREFIX,
@@ -27,12 +27,19 @@ import {
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createAuditService } from '../services/audit/auditService';
 import { hashToken } from '../services/crypto/tokens';
+import {
+  OAUTH_LOGO_MAX_BYTES,
+  createOAuthLogoFetcher,
+  type OAuthLogoFetcher,
+  type OAuthLogoTransport,
+} from '../services/oauth/oauthLogo';
 import { createOAuthService } from '../services/oauth/oauthService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const HTTPS_REDIRECT = 'https://app.example/callback';
 const NATIVE_REDIRECT = 'myapp://callback';
+const PNG_LOGO = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 
 let harness: TestHarness;
 
@@ -62,12 +69,14 @@ interface RegisteredClient {
   agent: Agent;
   clientId: string;
   clientSecret: string | null;
+  logoPath: string | null;
 }
 
 async function registerClient(opts: {
   scopes?: string[];
   redirectUris?: string[];
   public?: boolean;
+  logoUrl?: string;
 }): Promise<RegisteredClient> {
   const user = await harness.seedUser({
     email: `owner-${randomBytes(4).toString('hex')}@bettertrack.test`,
@@ -82,10 +91,16 @@ async function registerClient(opts: {
       redirectUris: opts.redirectUris ?? [HTTPS_REDIRECT],
       scopes: opts.scopes ?? ['portfolio:read'],
       public: opts.public ?? false,
+      logoUrl: opts.logoUrl,
     });
   expect(res.status).toBe(201);
   const parsed = createOAuthClientResponseSchema.parse(res.body);
-  return { agent, clientId: parsed.client.clientId, clientSecret: parsed.clientSecret };
+  return {
+    agent,
+    clientId: parsed.client.clientId,
+    clientSecret: parsed.clientSecret,
+    logoPath: parsed.client.logoPath,
+  };
 }
 
 /** Register a first-party (admin-managed) client via the admin endpoint. */
@@ -213,12 +228,68 @@ async function auditActions(): Promise<string[]> {
   return rows.map((r) => r.action);
 }
 
+describe('OAuth logo fetch hardening', () => {
+  const resolved = (sourceUrl: string) =>
+    Promise.resolve({
+      url: new URL(sourceUrl),
+      addresses: [{ address: '93.184.216.34', family: 4 }],
+    });
+
+  it('runs the shared outbound-URL guard before transport and blocks private destinations', async () => {
+    const transport: OAuthLogoTransport = vi.fn(async () => ({
+      statusCode: 200,
+      contentType: 'image/png',
+      contentLength: String(PNG_LOGO.length),
+      body: PNG_LOGO,
+    }));
+    const fetcher = createOAuthLogoFetcher({ transport });
+
+    await expect(fetcher.fetch('https://127.0.0.1/logo.png')).resolves.toBeNull();
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it('accepts allowlisted raster bytes at the cap and rejects SVG or oversized bodies', async () => {
+    const atCap = Buffer.alloc(OAUTH_LOGO_MAX_BYTES);
+    PNG_LOGO.copy(atCap);
+    const transport = vi.fn<OAuthLogoTransport>();
+    const fetcher = createOAuthLogoFetcher({ resolveUrl: resolved, transport });
+
+    transport.mockResolvedValueOnce({
+      statusCode: 200,
+      contentType: 'image/png; charset=binary',
+      contentLength: String(atCap.length),
+      body: atCap,
+    });
+    await expect(fetcher.fetch('https://logos.example/valid.png')).resolves.toEqual({
+      contentType: 'image/png',
+      bytes: atCap,
+    });
+
+    transport.mockResolvedValueOnce({
+      statusCode: 200,
+      contentType: 'image/svg+xml',
+      contentLength: '11',
+      body: Buffer.from('<svg></svg>'),
+    });
+    await expect(fetcher.fetch('https://logos.example/vector.svg')).resolves.toBeNull();
+
+    transport.mockResolvedValueOnce({
+      statusCode: 200,
+      contentType: 'image/png',
+      contentLength: String(OAUTH_LOGO_MAX_BYTES + 1),
+      body: Buffer.concat([atCap, Buffer.from([0])]),
+    });
+    await expect(fetcher.fetch('https://logos.example/oversized.png')).resolves.toBeNull();
+  });
+});
+
 describe('OAuth client registration', () => {
   it('mints a client_id + one-time client_secret and stores only the hash', async () => {
-    const { clientId, clientSecret } = await registerClient({});
+    const { clientId, clientSecret, logoPath } = await registerClient({});
     expect(clientId.startsWith(OAUTH_CLIENT_ID_PREFIX)).toBe(true);
     expect(clientSecret).toBeTruthy();
     expect(clientSecret!.startsWith(OAUTH_CLIENT_SECRET_PREFIX)).toBe(true);
+    expect(logoPath).toBeNull();
 
     const [row] = await harness.db
       .select()
@@ -226,6 +297,8 @@ describe('OAuth client registration', () => {
       .where(eq(schema.oauthClients.clientId, clientId));
     expect(row!.clientSecretHash).toBe(hashToken(clientSecret!));
     expect(row!.clientSecretHash).not.toBe(clientSecret);
+    expect(row!.logoBytes).toBeNull();
+    expect(row!.logoContentType).toBeNull();
     expect(await auditActions()).toContain('oauth.client_registered');
   });
 
@@ -242,6 +315,95 @@ describe('OAuth client registration', () => {
       .set(...XRW)
       .send({ name: 'x', redirectUris: ['http://evil.example/cb'], scopes: ['portfolio:read'] });
     expect(res.status).toBe(400);
+  });
+
+  it('fetches a valid logo once at save time and serves only cached first-party bytes', async () => {
+    const logoFetcher: OAuthLogoFetcher = {
+      fetch: vi.fn(async () => ({ bytes: PNG_LOGO, contentType: 'image/png' as const })),
+    };
+    harness = await createTestApp({ oauthLogoFetcher: logoFetcher });
+    const sourceUrl = 'https://logos.example/partner.png';
+    const { agent, clientId, logoPath } = await registerClient({
+      logoUrl: sourceUrl,
+      public: true,
+    });
+
+    expect(logoFetcher.fetch).toHaveBeenCalledOnce();
+    expect(logoFetcher.fetch).toHaveBeenCalledWith(sourceUrl);
+    expect(logoPath).toBe(`/oauth/client-logos/${clientId}`);
+
+    const { challenge } = pkce();
+    const detailsRes = await agent.get('/api/v1/oauth/authorization-details').query({
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    expect(detailsRes.status).toBe(200);
+    const details = oauthAuthorizationDetailsResponseSchema.parse(detailsRes.body);
+    expect(details.client.logoPath).toBe(`/oauth/client-logos/${clientId}`);
+    expect(JSON.stringify(detailsRes.body)).not.toContain(sourceUrl);
+
+    const logoRes = await request(harness.app).get(`/api/v1/oauth/client-logos/${clientId}`);
+    expect(logoRes.status).toBe(200);
+    expect(logoRes.headers['content-type']).toMatch(/^image\/png/);
+    expect(logoRes.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+    expect(logoRes.headers['cross-origin-resource-policy']).toBe('cross-origin');
+    expect(logoRes.body).toEqual(PNG_LOGO);
+
+    // Metadata, authorize/token, grant-list and bearer-auth reads must never
+    // deserialize the cached blob. Only the dedicated logo lookup selects it.
+    const repo = createOAuthRepository(harness.db);
+    const [stored] = await harness.db
+      .select()
+      .from(schema.oauthClients)
+      .where(eq(schema.oauthClients.clientId, clientId));
+    const listed = await repo.listClientsForUser(stored!.userId!);
+    expect(listed.find((client) => client.clientId === clientId)).toMatchObject({
+      hasLogo: true,
+    });
+    expect(listed.find((client) => client.clientId === clientId)).not.toHaveProperty('logoBytes');
+
+    const lookup = await repo.findClientByClientId(clientId);
+    expect(lookup).toMatchObject({ hasLogo: true });
+    expect(lookup).not.toHaveProperty('logoBytes');
+
+    const { access } = await consentAndToken(agent, clientId, 'portfolio:read');
+    const grants = await repo.listGrantsForUser(stored!.userId!);
+    expect(grants[0]!.client).not.toHaveProperty('logoBytes');
+    const bearerRow = await repo.findAccessTokenByHash(hashToken(access));
+    expect(bearerRow!.client).toEqual({ scopes: ['portfolio:read'] });
+  });
+
+  it('keeps registration working, retains the server-only source and returns the placeholder state when logo fetch fails', async () => {
+    const logoFetcher: OAuthLogoFetcher = {
+      fetch: vi.fn(async () => null),
+    };
+    harness = await createTestApp({ oauthLogoFetcher: logoFetcher });
+    const sourceUrl = 'https://blocked.example/logo.png';
+    const { agent, clientId, logoPath } = await registerClient({ logoUrl: sourceUrl });
+
+    expect(logoPath).toBeNull();
+    const [row] = await harness.db
+      .select()
+      .from(schema.oauthClients)
+      .where(eq(schema.oauthClients.clientId, clientId));
+    expect(row!.logoUrl).toBe(sourceUrl);
+    expect(row!.logoBytes).toBeNull();
+
+    const detailsRes = await agent.get('/api/v1/oauth/authorization-details').query({
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+    });
+    expect(detailsRes.status).toBe(200);
+    expect(
+      oauthAuthorizationDetailsResponseSchema.parse(detailsRes.body).client.logoPath,
+    ).toBeNull();
+    expect((await request(harness.app).get(`/api/v1/oauth/client-logos/${clientId}`)).status).toBe(
+      404,
+    );
   });
 });
 
@@ -265,7 +427,7 @@ describe('first-party (admin-managed) OAuth apps', () => {
     expect(detailsRes.status).toBe(200);
     const details = oauthAuthorizationDetailsResponseSchema.parse(detailsRes.body);
     expect(details.client.firstParty).toBe(true);
-    expect(details.client.logoUrl).toBeNull();
+    expect(details.client.logoPath).toBeNull();
 
     const { code } = await approveAndGetCode(agent, {
       client_id: clientId,
@@ -388,6 +550,7 @@ describe('OAuth authorization-code + PKCE round-trip', () => {
     const parsed = oauthAuthorizationDetailsResponseSchema.parse(details.body);
     expect(parsed.state).toBe('mobile-state');
     expect(parsed.client.clientId).toBe(clientId);
+    expect(parsed.client.logoPath).toBeNull();
     expect(parsed.scopes.map((s) => s.scope)).toEqual(['portfolio:read', 'workboard:read']);
     expect(parsed.scopes[0]!.label.length).toBeGreaterThan(0);
 
