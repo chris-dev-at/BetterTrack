@@ -28,6 +28,8 @@ import {
 
 import type {
   OAuthAuthorizationCodeExchange,
+  OAuthClientListRow,
+  OAuthClientLookupRow,
   OAuthRepository,
 } from '../../data/repositories/oauthRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
@@ -173,7 +175,7 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
-function toClientSummary(row: OAuthClientRow): OAuthClientSummary {
+function toClientSummary(row: OAuthClientRow | OAuthClientListRow): OAuthClientSummary {
   return {
     id: row.id,
     clientId: row.clientId,
@@ -187,13 +189,18 @@ function toClientSummary(row: OAuthClientRow): OAuthClientSummary {
   };
 }
 
-function logoPathFor(row: OAuthClientRow): string | null {
-  if (row.isFirstParty || !row.logoBytes || !row.logoContentType) return null;
+type OAuthClientLogoState =
+  | Pick<OAuthClientRow, 'clientId' | 'isFirstParty' | 'logoBytes' | 'logoContentType'>
+  | (Pick<OAuthClientRow, 'clientId' | 'isFirstParty'> & { hasLogo: boolean });
+
+function logoPathFor(row: OAuthClientLogoState): string | null {
+  const hasLogo = 'hasLogo' in row ? row.hasLogo : Boolean(row.logoBytes && row.logoContentType);
+  if (row.isFirstParty || !hasLogo) return null;
   return `/oauth/client-logos/${row.clientId}`;
 }
 
 /** Parse the space-delimited `scope` param into a validated, client-allowed set. */
-function parseScopes(scope: string, client: OAuthClientRow): ApiKeyScope[] {
+function parseScopes(scope: string, client: Pick<OAuthClientRow, 'scopes'>): ApiKeyScope[] {
   const requested = scope.split(/\s+/).filter(Boolean);
   if (requested.length === 0) {
     throw badRequest('At least one scope is required.', 'INVALID_SCOPE');
@@ -298,7 +305,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     scope: string;
     codeChallenge?: string;
     codeChallengeMethod?: string;
-  }): Promise<{ client: OAuthClientRow; scopes: ApiKeyScope[] }> {
+  }): Promise<{ client: OAuthClientLookupRow; scopes: ApiKeyScope[] }> {
     const client = await repo.findClientByClientId(input.clientId);
     if (!client) {
       throw badRequest('Unknown client.', 'INVALID_CLIENT');
@@ -361,7 +368,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
   async function authenticateClient(input: {
     clientId: string;
     clientSecret?: string;
-  }): Promise<OAuthClientRow> {
+  }): Promise<OAuthClientLookupRow> {
     const client = await repo.findClientByClientId(input.clientId);
     if (!client) {
       throw badRequest('Unknown client.', 'INVALID_CLIENT');
@@ -422,8 +429,9 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       isPublic: input.isPublic,
       isFirstParty: input.isFirstParty,
       // First-party apps render the BetterTrack mark, so a logo is never stored.
-      // Failed source URLs are not retained, avoiding any future accidental retry.
-      logoUrl: logo ? input.logoUrl : null,
+      // Keep a third-party source server-side even when the one save-time fetch
+      // fails, so a future explicit retry/update can recover without losing it.
+      logoUrl: input.isFirstParty ? null : (input.logoUrl ?? null),
       logoBytes: logo?.bytes ?? null,
       logoContentType: logo?.contentType ?? null,
     });

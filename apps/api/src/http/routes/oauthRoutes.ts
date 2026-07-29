@@ -31,6 +31,8 @@ export function createOAuthPublicRouter(ctx: AppContext): Router {
 
   // GET /oauth/client-logos/:clientId — public, immutable raster bytes fetched
   // once at client-save time. This endpoint never contacts the registered URL.
+  // If logo mutation is added, version this path by a content hash before
+  // retaining the one-year `immutable` cache policy below.
   router.get(
     '/client-logos/:clientId',
     validateParams(oauthClientLogoParamsSchema),

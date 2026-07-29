@@ -323,16 +323,22 @@ describe('OAuth client registration', () => {
     };
     harness = await createTestApp({ oauthLogoFetcher: logoFetcher });
     const sourceUrl = 'https://logos.example/partner.png';
-    const { agent, clientId, logoPath } = await registerClient({ logoUrl: sourceUrl });
+    const { agent, clientId, logoPath } = await registerClient({
+      logoUrl: sourceUrl,
+      public: true,
+    });
 
     expect(logoFetcher.fetch).toHaveBeenCalledOnce();
     expect(logoFetcher.fetch).toHaveBeenCalledWith(sourceUrl);
     expect(logoPath).toBe(`/oauth/client-logos/${clientId}`);
 
+    const { challenge } = pkce();
     const detailsRes = await agent.get('/api/v1/oauth/authorization-details').query({
       client_id: clientId,
       redirect_uri: HTTPS_REDIRECT,
       scope: 'portfolio:read',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
     });
     expect(detailsRes.status).toBe(200);
     const details = oauthAuthorizationDetailsResponseSchema.parse(detailsRes.body);
@@ -345,9 +351,32 @@ describe('OAuth client registration', () => {
     expect(logoRes.headers['cache-control']).toBe('public, max-age=31536000, immutable');
     expect(logoRes.headers['cross-origin-resource-policy']).toBe('cross-origin');
     expect(logoRes.body).toEqual(PNG_LOGO);
+
+    // Metadata, authorize/token, grant-list and bearer-auth reads must never
+    // deserialize the cached blob. Only the dedicated logo lookup selects it.
+    const repo = createOAuthRepository(harness.db);
+    const [stored] = await harness.db
+      .select()
+      .from(schema.oauthClients)
+      .where(eq(schema.oauthClients.clientId, clientId));
+    const listed = await repo.listClientsForUser(stored!.userId!);
+    expect(listed.find((client) => client.clientId === clientId)).toMatchObject({
+      hasLogo: true,
+    });
+    expect(listed.find((client) => client.clientId === clientId)).not.toHaveProperty('logoBytes');
+
+    const lookup = await repo.findClientByClientId(clientId);
+    expect(lookup).toMatchObject({ hasLogo: true });
+    expect(lookup).not.toHaveProperty('logoBytes');
+
+    const { access } = await consentAndToken(agent, clientId, 'portfolio:read');
+    const grants = await repo.listGrantsForUser(stored!.userId!);
+    expect(grants[0]!.client).not.toHaveProperty('logoBytes');
+    const bearerRow = await repo.findAccessTokenByHash(hashToken(access));
+    expect(bearerRow!.client).toEqual({ scopes: ['portfolio:read'] });
   });
 
-  it('keeps registration working and returns the placeholder state when logo fetch fails', async () => {
+  it('keeps registration working, retains the server-only source and returns the placeholder state when logo fetch fails', async () => {
     const logoFetcher: OAuthLogoFetcher = {
       fetch: vi.fn(async () => null),
     };
@@ -360,7 +389,7 @@ describe('OAuth client registration', () => {
       .select()
       .from(schema.oauthClients)
       .where(eq(schema.oauthClients.clientId, clientId));
-    expect(row!.logoUrl).toBeNull();
+    expect(row!.logoUrl).toBe(sourceUrl);
     expect(row!.logoBytes).toBeNull();
 
     const detailsRes = await agent.get('/api/v1/oauth/authorization-details').query({

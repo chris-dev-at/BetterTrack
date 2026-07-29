@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -38,6 +38,57 @@ export interface CreateOAuthClientInput {
   logoBytes?: Buffer | null;
   logoContentType?: string | null;
 }
+
+/**
+ * Browser/API-facing client metadata. Logo bytes deliberately stay out of list
+ * queries; callers need only know whether the dedicated byte endpoint exists.
+ */
+export type OAuthClientListRow = Pick<
+  OAuthClientRow,
+  'id' | 'clientId' | 'name' | 'redirectUris' | 'scopes' | 'isPublic' | 'isFirstParty' | 'createdAt'
+> & { hasLogo: boolean };
+
+/**
+ * Client fields needed by authorize/token flows. This is intentionally narrower
+ * than OAuthClientRow so a token exchange can never pull the cached logo blob.
+ */
+export type OAuthClientLookupRow = Pick<
+  OAuthClientRow,
+  | 'id'
+  | 'clientId'
+  | 'name'
+  | 'clientSecretHash'
+  | 'redirectUris'
+  | 'scopes'
+  | 'isPublic'
+  | 'isFirstParty'
+> & { hasLogo: boolean };
+
+export type OAuthGrantClientRow = Pick<OAuthClientRow, 'clientId' | 'name' | 'scopes'>;
+
+const oauthClientListSelection = {
+  id: oauthClients.id,
+  clientId: oauthClients.clientId,
+  name: oauthClients.name,
+  redirectUris: oauthClients.redirectUris,
+  scopes: oauthClients.scopes,
+  isPublic: oauthClients.isPublic,
+  isFirstParty: oauthClients.isFirstParty,
+  createdAt: oauthClients.createdAt,
+  hasLogo: sql<boolean>`${oauthClients.logoBytes} IS NOT NULL`,
+} as const;
+
+const oauthClientLookupSelection = {
+  id: oauthClients.id,
+  clientId: oauthClients.clientId,
+  name: oauthClients.name,
+  clientSecretHash: oauthClients.clientSecretHash,
+  redirectUris: oauthClients.redirectUris,
+  scopes: oauthClients.scopes,
+  isPublic: oauthClients.isPublic,
+  isFirstParty: oauthClients.isFirstParty,
+  hasLogo: sql<boolean>`${oauthClients.logoBytes} IS NOT NULL`,
+} as const;
 
 export interface CreateOAuthAuthCodeInput {
   codeHash: string;
@@ -162,9 +213,9 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
-    async listClientsForUser(userId: string): Promise<OAuthClientRow[]> {
+    async listClientsForUser(userId: string): Promise<OAuthClientListRow[]> {
       return db
-        .select()
+        .select(oauthClientListSelection)
         .from(oauthClients)
         .where(eq(oauthClients.userId, userId))
         .orderBy(desc(oauthClients.createdAt));
@@ -172,9 +223,9 @@ export function createOAuthRepository(db: Database) {
 
     // ── First-party (admin-managed) clients ─────────────────────────────────
     /** Every admin-registered first-party app (owned by the system, not a user). */
-    async listFirstPartyClients(): Promise<OAuthClientRow[]> {
+    async listFirstPartyClients(): Promise<OAuthClientListRow[]> {
       return db
-        .select()
+        .select(oauthClientListSelection)
         .from(oauthClients)
         .where(eq(oauthClients.isFirstParty, true))
         .orderBy(desc(oauthClients.createdAt));
@@ -276,9 +327,9 @@ export function createOAuthRepository(db: Database) {
     },
 
     /** Resolve a client by its public `btc_…` identifier (authorize/token flows). */
-    async findClientByClientId(clientId: string): Promise<OAuthClientRow | undefined> {
+    async findClientByClientId(clientId: string): Promise<OAuthClientLookupRow | undefined> {
       const [row] = await db
-        .select()
+        .select(oauthClientLookupSelection)
         .from(oauthClients)
         .where(eq(oauthClients.clientId, clientId))
         .limit(1);
@@ -335,9 +386,16 @@ export function createOAuthRepository(db: Database) {
     /** The caller's active grants joined to the granting app's name + public id. */
     async listGrantsForUser(
       userId: string,
-    ): Promise<{ grant: OAuthGrantRow; client: OAuthClientRow }[]> {
+    ): Promise<{ grant: OAuthGrantRow; client: OAuthGrantClientRow }[]> {
       return db
-        .select({ grant: oauthGrants, client: oauthClients })
+        .select({
+          grant: oauthGrants,
+          client: {
+            clientId: oauthClients.clientId,
+            name: oauthClients.name,
+            scopes: oauthClients.scopes,
+          },
+        })
         .from(oauthGrants)
         .innerJoin(oauthClients, eq(oauthGrants.clientId, oauthClients.id))
         .where(and(eq(oauthGrants.userId, userId), isNull(oauthGrants.revokedAt)))
@@ -450,14 +508,22 @@ export function createOAuthRepository(db: Database) {
      * removed from the app is denied immediately; a scope added to the app is not
      * silently granted to a token that never consented to it).
      */
-    async findAccessTokenByHash(
-      tokenHash: string,
-    ): Promise<
-      | { token: OAuthAccessTokenRow; grant: OAuthGrantRow; user: UserRow; client: OAuthClientRow }
+    async findAccessTokenByHash(tokenHash: string): Promise<
+      | {
+          token: OAuthAccessTokenRow;
+          grant: OAuthGrantRow;
+          user: UserRow;
+          client: Pick<OAuthClientRow, 'scopes'>;
+        }
       | undefined
     > {
       const [row] = await db
-        .select({ token: oauthAccessTokens, grant: oauthGrants, user: users, client: oauthClients })
+        .select({
+          token: oauthAccessTokens,
+          grant: oauthGrants,
+          user: users,
+          client: { scopes: oauthClients.scopes },
+        })
         .from(oauthAccessTokens)
         .innerJoin(oauthGrants, eq(oauthAccessTokens.grantId, oauthGrants.id))
         .innerJoin(users, eq(oauthGrants.userId, users.id))
