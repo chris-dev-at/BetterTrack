@@ -307,7 +307,7 @@ async function rehydrateReachableState(
   }
 }
 
-async function arrangeScaleEightRoundingBatch(): Promise<{
+async function arrangeScaleEightRoundingBatch(replaceWithServerVault = true): Promise<{
   harness: TestHarness;
   userId: string;
   portfolioId: string;
@@ -343,7 +343,9 @@ async function arrangeScaleEightRoundingBatch(): Promise<{
   if (!sell) throw new Error('expected persisted sell');
   expect(sell.data.quantity).toBe('1.00000001');
 
-  await replaceNormalRowsWithServerVault(harness, user.id);
+  if (replaceWithServerVault) {
+    await replaceNormalRowsWithServerVault(harness, user.id);
+  }
   return { harness, userId: user.id, portfolioId, document, sell };
 }
 
@@ -949,6 +951,199 @@ describe('paranoid rehydration transaction-quantity differential conformance', (
     } finally {
       mutationTransaction.mockRestore();
     }
+  });
+
+  it('rejects a solvent inverse dependency whose source tags cannot share a normal CREATE', async () => {
+    const arranged = await arrangeScaleEightRoundingBatch(false);
+    const inverseAssetId = '018f0000-0630-7000-8000-000000000632';
+    await seedGlobalAsset(arranged.harness, inverseAssetId, 'SOLVENT-INVERSE-SOURCES');
+    await arranged.harness.ctx.portfolio.createTransactions(
+      arranged.userId,
+      arranged.portfolioId,
+      [
+        {
+          assetId: inverseAssetId,
+          side: 'sell',
+          quantity: 1,
+          price: 11,
+          fee: 0,
+          executedAt: '2026-07-23T10:03:00.000Z',
+        },
+        {
+          assetId: inverseAssetId,
+          side: 'buy',
+          quantity: 1,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-23T10:02:00.000Z',
+        },
+      ],
+      { source: 'import:flatex' },
+    );
+
+    const document = await capturePortfolioDocument(arranged.harness, arranged.portfolioId);
+    const inverseRows = quantityEntities(document).filter(
+      (transaction) => transaction.data.assetId === inverseAssetId,
+    );
+    const impossibleSell = inverseRows.find((transaction) => transaction.data.side === 'sell');
+    const laterBuy = inverseRows.find((transaction) => transaction.data.side === 'buy');
+    if (!impossibleSell || !laterBuy) throw new Error('expected the inverse CREATE rows');
+    expect(impossibleSell.id < laterBuy.id).toBe(true);
+    // Mutate only the later row's immutable batch tag. Chronological replay
+    // remains solvent, but no normal lifecycle can now share the inverse pair
+    // in the one CREATE required to admit the earlier sell.
+    laterBuy.data.source = 'import:ibkr';
+
+    await replaceNormalRowsWithServerVault(arranged.harness, arranged.userId);
+    const mutationTransaction = vi.spyOn(arranged.harness.db, 'transaction');
+    try {
+      await expect(
+        createParanoidRehydrationService({ db: arranged.harness.db }).rehydrate(arranged.userId, {
+          rehydrationId: FIRST_REHYDRATION_ID,
+          document,
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_CASH_LEDGER',
+        message: expect.stringContaining(quantityField(impossibleSell)),
+      });
+      expect(mutationTransaction).not.toHaveBeenCalled();
+      expect(
+        await arranged.harness.db
+          .select()
+          .from(portfolios)
+          .where(eq(portfolios.userId, arranged.userId)),
+      ).toEqual([]);
+      expect(await arranged.harness.db.select().from(transactions)).toEqual([]);
+    } finally {
+      mutationTransaction.mockRestore();
+    }
+  });
+
+  it('rehydrates a solvent inverse dependency written by one compatible normal CREATE', async () => {
+    const arranged = await arrangeScaleEightRoundingBatch(false);
+    const inverseAssetId = '018f0000-0630-7000-8000-000000000642';
+    await seedGlobalAsset(arranged.harness, inverseAssetId, 'COMPATIBLE-INVERSE-SOURCES');
+    await arranged.harness.ctx.portfolio.createTransactions(
+      arranged.userId,
+      arranged.portfolioId,
+      [
+        {
+          assetId: inverseAssetId,
+          side: 'sell',
+          quantity: 1,
+          price: 11,
+          fee: 0,
+          executedAt: '2026-07-23T10:03:00.000Z',
+        },
+        {
+          assetId: inverseAssetId,
+          side: 'buy',
+          quantity: 1,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-23T10:02:00.000Z',
+        },
+      ],
+      { source: 'import:flatex' },
+    );
+
+    const document = await capturePortfolioDocument(arranged.harness, arranged.portfolioId);
+    const inverseRows = quantityEntities(document).filter(
+      (transaction) => transaction.data.assetId === inverseAssetId,
+    );
+    const inverseSell = inverseRows.find((transaction) => transaction.data.side === 'sell');
+    const inverseBuy = inverseRows.find((transaction) => transaction.data.side === 'buy');
+    if (!inverseSell || !inverseBuy) throw new Error('expected the inverse normal CREATE rows');
+    expect(inverseSell.id < inverseBuy.id).toBe(true);
+    expect(inverseRows.every((transaction) => transaction.data.source === 'import:flatex')).toBe(
+      true,
+    );
+
+    await replaceNormalRowsWithServerVault(arranged.harness, arranged.userId);
+    await rehydrateReachableState(
+      arranged.harness,
+      arranged.userId,
+      document,
+      FIRST_REHYDRATION_ID,
+      'compatible same-source inverse normal CREATE',
+    );
+    expect(
+      await arranged.harness.db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.portfolioId, arranged.portfolioId)),
+    ).toHaveLength(4);
+  });
+
+  it('does not invent a CREATE dependency for an earlier allow-uncovered sale', async () => {
+    const arranged = await arrangeScaleEightRoundingBatch(false);
+    const uncoveredAssetId = '018f0000-0630-7000-8000-000000000652';
+    await seedGlobalAsset(arranged.harness, uncoveredAssetId, 'UNCOVERED-INVERSE-SOURCES');
+    await arranged.harness.ctx.portfolio.createTransactions(
+      arranged.userId,
+      arranged.portfolioId,
+      [
+        {
+          assetId: uncoveredAssetId,
+          side: 'sell',
+          quantity: 1,
+          price: 11,
+          fee: 0,
+          executedAt: '2026-07-23T10:03:00.000Z',
+          allowUncovered: true,
+        },
+      ],
+      { source: 'import:flatex' },
+    );
+    // This later, differently sourced call backdates a buy ahead of the sale.
+    // The earlier sale never depended on it: allowUncovered made the original
+    // zero-holding write independently admissible.
+    await arranged.harness.ctx.portfolio.createTransactions(
+      arranged.userId,
+      arranged.portfolioId,
+      [
+        {
+          assetId: uncoveredAssetId,
+          side: 'buy',
+          quantity: 1,
+          price: 10,
+          fee: 0,
+          executedAt: '2026-07-23T10:02:00.000Z',
+        },
+      ],
+      { source: 'import:ibkr' },
+    );
+
+    const document = await capturePortfolioDocument(arranged.harness, arranged.portfolioId);
+    const uncoveredRows = quantityEntities(document).filter(
+      (transaction) => transaction.data.assetId === uncoveredAssetId,
+    );
+    const uncoveredSell = uncoveredRows.find((transaction) => transaction.data.side === 'sell');
+    const backdatedBuy = uncoveredRows.find((transaction) => transaction.data.side === 'buy');
+    if (!uncoveredSell || !backdatedBuy) {
+      throw new Error('expected the allow-uncovered lifecycle rows');
+    }
+    expect(uncoveredSell.id < backdatedBuy.id).toBe(true);
+    expect(uncoveredSell.data).toMatchObject({
+      allowUncovered: true,
+      source: 'import:flatex',
+    });
+    expect(backdatedBuy.data.source).toBe('import:ibkr');
+
+    await replaceNormalRowsWithServerVault(arranged.harness, arranged.userId);
+    await rehydrateReachableState(
+      arranged.harness,
+      arranged.userId,
+      document,
+      FIRST_REHYDRATION_ID,
+      'independently admitted allow-uncovered sale before a backdated buy',
+    );
+    expect(
+      await arranged.harness.db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.portfolioId, arranged.portfolioId)),
+    ).toHaveLength(4);
   });
 
   it('rejects a mixed-source rounding pair outside the bounded CREATE witness before restore writes', async () => {

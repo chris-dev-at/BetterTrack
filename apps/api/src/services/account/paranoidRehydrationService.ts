@@ -231,6 +231,12 @@ interface QuantityReplayRow {
   transaction: EntityOf<'transaction'>;
   quantity: bigint;
   readbackQuantity: number;
+  /**
+   * Repository readback expressed again at the storage scale. This collapses
+   * exact strict-v1 quantities that the public Number surface cannot
+   * distinguish, while retaining integer arithmetic for write-prefix proofs.
+   */
+  readbackStorageQuantity: bigint;
   normalInputQuantity: number | null;
   /** Lowercase fixed-width UUID key used only by the bounded radix passes. */
   uuidOrderKey: string;
@@ -574,6 +580,251 @@ function updateReadbackEpoch(
   return replayNormalQuantity(row, row.readbackQuantity, held);
 }
 
+interface HoldingReplayTransform {
+  /**
+   * Smallest entering holding that lets every uncovered-disabled sale replay.
+   */
+  readonly required: bigint;
+  /**
+   * Linear branch of the final holding: `entering + offset`.
+   */
+  readonly offset: bigint;
+  /**
+   * Saturation floor introduced by uncovered sales.
+   */
+  readonly floor: bigint;
+}
+
+interface FixedPrefixSolvencyTree {
+  readonly leafBase: number;
+  readonly required: bigint[];
+  readonly offsets: bigint[];
+  readonly floors: bigint[];
+}
+
+interface InverseWriteGroup {
+  readonly rows: readonly QuantityReplayRow[];
+  readonly tree: FixedPrefixSolvencyTree;
+  invalidStart: number;
+  invalidSell: QuantityReplayRow | null;
+}
+
+interface InverseWriteLocator {
+  readonly group: InverseWriteGroup;
+  readonly chronologicalIndex: number;
+}
+
+/**
+ * JavaScript arrays have a fixed 32-bit index space. A dense prefix tree
+ * therefore performs at most 32 parent merges for one activated transaction,
+ * independent of supplied history length. Together with linear storage this is
+ * a fixed-width O(rows) proof, not a CREATE-span search.
+ */
+const FIXED_PREFIX_TREE_MAX_LEVELS = 32;
+
+/**
+ * Compose two chronological quantity reducers. For every entering holding at
+ * or above `required`, a summary returns
+ * `max(entering + offset, floor)`. This compact form is closed under buys,
+ * ordinary sells, and the saturating `allowUncovered` sell transition.
+ */
+function composeHoldingReplay(
+  left: HoldingReplayTransform,
+  right: HoldingReplayTransform,
+): HoldingReplayTransform {
+  const requiredThroughLeft = left.floor >= right.required ? 0n : right.required - left.offset;
+  return {
+    required: left.required >= requiredThroughLeft ? left.required : requiredThroughLeft,
+    offset: left.offset + right.offset,
+    floor: left.floor + right.offset >= right.floor ? left.floor + right.offset : right.floor,
+  };
+}
+
+function holdingReplayForRow(row: QuantityReplayRow): HoldingReplayTransform {
+  const quantity = row.readbackStorageQuantity;
+  if (row.transaction.data.side === 'buy') {
+    return {
+      required: 0n,
+      offset: quantity,
+      floor: quantity,
+    };
+  }
+  return {
+    required: row.transaction.data.allowUncovered ? 0n : quantity,
+    offset: -quantity,
+    floor: 0n,
+  };
+}
+
+function createFixedPrefixSolvencyTree(length: number): FixedPrefixSolvencyTree {
+  let leafBase = 1;
+  let levels = 0;
+  while (leafBase < length) {
+    leafBase *= 2;
+    levels += 1;
+  }
+  if (levels > FIXED_PREFIX_TREE_MAX_LEVELS) {
+    throw new Error('transaction quantity write-prefix index exceeds the fixed proof width');
+  }
+  return {
+    leafBase,
+    required: new Array<bigint>(leafBase * 2).fill(0n),
+    offsets: new Array<bigint>(leafBase * 2).fill(0n),
+    floors: new Array<bigint>(leafBase * 2).fill(0n),
+  };
+}
+
+function activateFixedPrefixRow(
+  tree: FixedPrefixSolvencyTree,
+  chronologicalIndex: number,
+  row: QuantityReplayRow,
+): void {
+  let node = tree.leafBase + chronologicalIndex;
+  const leaf = holdingReplayForRow(row);
+  tree.required[node] = leaf.required;
+  tree.offsets[node] = leaf.offset;
+  tree.floors[node] = leaf.floor;
+  node = Math.floor(node / 2);
+
+  let levels = 0;
+  while (node >= 1) {
+    const left = node * 2;
+    const right = left + 1;
+    const replay = composeHoldingReplay(
+      {
+        required: tree.required[left]!,
+        offset: tree.offsets[left]!,
+        floor: tree.floors[left]!,
+      },
+      {
+        required: tree.required[right]!,
+        offset: tree.offsets[right]!,
+        floor: tree.floors[right]!,
+      },
+    );
+    tree.required[node] = replay.required;
+    tree.offsets[node] = replay.offset;
+    tree.floors[node] = replay.floor;
+    node = Math.floor(node / 2);
+    levels += 1;
+  }
+  if (levels > FIXED_PREFIX_TREE_MAX_LEVELS) {
+    throw new Error('transaction quantity write-prefix proof exceeded its fixed merge bound');
+  }
+}
+
+function fixedPrefixIsSolvent(tree: FixedPrefixSolvencyTree): boolean {
+  return tree.required[1] === 0n;
+}
+
+/**
+ * A chronologically solvent final group can still be impossible in UUID write
+ * history: an uncovered-disabled sell may have been recorded before the
+ * backdated buy that funds it. Every invalid write prefix must stay inside the
+ * one normal CREATE that a later row repairs.
+ *
+ * Build one compact chronological reducer per asset group, then activate its
+ * rows in document write order. Each activation updates a fixed-width prefix
+ * tree, so an invalid-prefix interval is found directly without enumerating or
+ * replaying candidate spans. `allowUncovered` remains a saturating transition
+ * that never invents a funding dependency. A final exact storage shortfall is
+ * left to the public-input proof in {@link collectNormalCreateWitnesses}; any
+ * inverse interval repaired before it still produces its own witness here.
+ */
+function collectInverseWriteOrderWitnesses(
+  groups: readonly (readonly QuantityReplayRow[])[],
+  writeHistory: readonly QuantityReplayRow[],
+  legacyCutoff: number,
+  normalCreateWitnesses: readonly NormalCreateWitness[],
+): readonly NormalCreateWitness[] {
+  const witnesses: NormalCreateWitness[] = [];
+  const locatorsByWriteOrder: Array<InverseWriteLocator | undefined> = new Array(
+    writeHistory.length,
+  );
+  const inverseGroups: InverseWriteGroup[] = [];
+
+  for (const rows of groups) {
+    const inverseGroup: InverseWriteGroup = {
+      rows,
+      tree: createFixedPrefixSolvencyTree(rows.length),
+      invalidStart: -1,
+      invalidSell: null,
+    };
+    inverseGroups.push(inverseGroup);
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index]!;
+      if (row.writeOrder < legacyCutoff) {
+        activateFixedPrefixRow(inverseGroup.tree, index, row);
+      } else {
+        locatorsByWriteOrder[row.writeOrder] = {
+          group: inverseGroup,
+          chronologicalIndex: index,
+        };
+      }
+    }
+    if (!fixedPrefixIsSolvent(inverseGroup.tree)) {
+      const rejected =
+        rows.find((row) => row.writeOrder < legacyCutoff && row.transaction.data.side === 'sell') ??
+        rows[0]!;
+      throw quantityReachabilityError(
+        rejected,
+        'transaction quantity cannot replay from the strict-prefix repository readback',
+      );
+    }
+  }
+
+  for (const row of writeHistory) {
+    if (row.writeOrder < legacyCutoff) continue;
+    const locator = locatorsByWriteOrder[row.writeOrder];
+    if (!locator) continue;
+    const { group, chronologicalIndex } = locator;
+    activateFixedPrefixRow(group.tree, chronologicalIndex, row);
+    if (!fixedPrefixIsSolvent(group.tree)) {
+      if (group.invalidStart === -1) {
+        group.invalidStart = row.writeOrder;
+        group.invalidSell = row;
+      }
+      continue;
+    }
+    if (group.invalidStart !== -1) {
+      witnesses.push({
+        start: group.invalidStart,
+        end: row.writeOrder,
+        sell: group.invalidSell ?? row,
+      });
+      group.invalidStart = -1;
+      group.invalidSell = null;
+    }
+  }
+
+  const normalWitnessEndByGroup = new Map<string, number>();
+  for (const witness of normalCreateWitnesses) {
+    const key = portfolioAssetKey(witness.sell.transaction);
+    normalWitnessEndByGroup.set(key, Math.max(normalWitnessEndByGroup.get(key) ?? -1, witness.end));
+  }
+  for (const group of inverseGroups) {
+    if (group.invalidStart === -1) continue;
+    const rejected = group.invalidSell ?? group.rows[0]!;
+    const normalWitnessEnd = normalWitnessEndByGroup.get(portfolioAssetKey(rejected.transaction));
+    if (normalWitnessEnd === undefined || normalWitnessEnd < group.invalidStart) {
+      throw quantityReachabilityError(
+        rejected,
+        'transaction quantity cannot replay from repository readback in UUID write order',
+      );
+    }
+    // A raw-input storage witness can leave the persisted write prefix exactly
+    // insolvent. If another inverse dependency is still open at that point,
+    // they must be one CREATE; otherwise a later same-asset call would have
+    // revalidated the invalid repository state and rejected it.
+    witnesses.push({
+      start: group.invalidStart,
+      end: normalWitnessEnd,
+      sell: rejected,
+    });
+  }
+  return witnesses;
+}
+
 /**
  * Stream each chronological asset group once. A one-quantum persisted sell can
  * be admitted only when its post-cutoff CREATE epoch replays from public inputs
@@ -895,6 +1146,7 @@ function storageRoundingSellIdsFor(
 ): ReadonlySet<string> {
   const unorderedRows = transactions.map((transaction): QuantityReplayRow => {
     const quantity = quantizedTransactionQuantity(transaction.data.quantity);
+    const readbackQuantity = Number(fixedScaleDecimal(quantity, 8));
     const normalInputQuantity = quantityNumberPreimage(
       quantity,
       transaction.data.side === 'buy' ? 'upper' : 'lower',
@@ -902,7 +1154,12 @@ function storageRoundingSellIdsFor(
     return {
       transaction,
       quantity,
-      readbackQuantity: Number(fixedScaleDecimal(quantity, 8)),
+      readbackQuantity,
+      readbackStorageQuantity: persistedNumber(
+        readbackQuantity,
+        8,
+        `transaction[${transaction.id}].quantity`,
+      ),
       normalInputQuantity,
       uuidOrderKey: transaction.id.toLowerCase(),
       executedAtOrderKey: normalizeExecutedAtOrderKey(transaction.data.executedAt),
@@ -1039,7 +1296,13 @@ function storageRoundingSellIdsFor(
     storageRoundingSellIds,
     legacyCutoff,
   );
-  validateNormalCreateWitnesses(createWitnesses, rows);
+  const inverseWriteOrderWitnesses = collectInverseWriteOrderWitnesses(
+    replayGroups,
+    rows,
+    legacyCutoff,
+    createWitnesses,
+  );
+  validateNormalCreateWitnesses([...createWitnesses, ...inverseWriteOrderWitnesses], rows);
   testOnlyObserveQuantityReachabilityOrder?.({
     transactionRows: rows.length,
     writeOrderKeyPasses,
