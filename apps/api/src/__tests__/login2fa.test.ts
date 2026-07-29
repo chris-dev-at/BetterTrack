@@ -153,6 +153,44 @@ describe('login 2FA challenge (§6.1, §13.2 V2-P5)', () => {
     expect(await auditCount(harness, user.id, 'login.success')).toBeGreaterThanOrEqual(1);
   });
 
+  it('atomically rejects a concurrent replay of one valid pending challenge', async () => {
+    const { user, secret } = await setup();
+    const challenge = twoFactorChallengeResponseSchema.parse(
+      (await login(harness.app, user.email, user.password)).body,
+    );
+
+    // Hold both requests at factor verification so they have both loaded the
+    // pending state. Before the atomic claim, this deterministically let both
+    // requests mint separate sessions from one password + TOTP proof.
+    const verifyTotp = harness.ctx.twoFactor.verifyTotpCode.bind(harness.ctx.twoFactor);
+    let arrived = 0;
+    let release!: () => void;
+    const bothArrived = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    harness.ctx.twoFactor.verifyTotpCode = async (...args) => {
+      const valid = await verifyTotp(...args);
+      arrived += 1;
+      if (arrived === 2) release();
+      await bothArrived;
+      return valid;
+    };
+
+    const verify = () =>
+      request(harness.app)
+        .post('/api/v1/auth/2fa/verify')
+        .set(...XRW)
+        .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) });
+    const responses = await Promise.all([verify(), verify()]);
+
+    const accepted = responses.filter((response) => response.status === 200);
+    const rejected = responses.filter((response) => response.status === 401);
+    expect(accepted).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.body.error.code).toBe('TWO_FACTOR_PENDING_INVALID');
+    expect(responses.filter(setsSessionCookie)).toHaveLength(1);
+  });
+
   it('unlocks with a recovery code and consumes it single-use', async () => {
     const { user, recoveryCodes } = await setup();
     const code = recoveryCodes[0]!;

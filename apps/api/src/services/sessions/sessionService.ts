@@ -12,6 +12,18 @@ export interface SessionData {
    * auth resolution rather than normalized to the current database value.
    */
   securityGeneration: number;
+  /**
+   * First-factor path that minted this server-side session. Admin authorization
+   * accepts only an explicit password login; `unknown` is the fail-closed value
+   * for internal/legacy callers that did not identify their authentication path.
+   */
+  authenticationMethod?: SessionAuthenticationMethod;
+  /**
+   * Second-factor proof established for THIS session. It is deliberately stored
+   * beside the opaque session id instead of inferred from account enrollment:
+   * another browser enabling or verifying MFA must never assure this session.
+   */
+  mfaAssurance?: SessionMfaAssurance;
   createdAt: number;
   /** Last time the window was reset — on login (create) or PIN verify (renew). */
   renewedAt: number;
@@ -24,6 +36,58 @@ export interface SessionData {
    */
   persistent?: boolean;
 }
+
+export const SESSION_AUTHENTICATION_METHODS = [
+  'password',
+  'password_reset',
+  'registration',
+  'google',
+  'passkey',
+  'pin',
+  'unknown',
+] as const;
+export type SessionAuthenticationMethod = (typeof SESSION_AUTHENTICATION_METHODS)[number];
+
+export const SESSION_MFA_METHODS = ['totp', 'email', 'recovery'] as const;
+export type SessionMfaMethod = (typeof SESSION_MFA_METHODS)[number];
+
+export interface SessionMfaAssurance {
+  method: SessionMfaMethod;
+  /** Epoch milliseconds when the second factor completed. No step-up window is derived from it. */
+  verifiedAt: number;
+}
+
+export interface SessionAuthentication {
+  method: SessionAuthenticationMethod;
+  mfaAssurance?: SessionMfaAssurance;
+}
+
+const isOneOf = <T extends string>(values: readonly T[], value: unknown): value is T =>
+  typeof value === 'string' && values.includes(value as T);
+
+/** Parse the stored first-factor marker without normalizing a legacy session. */
+export const authenticationMethodOf = (
+  data: Pick<SessionData, 'authenticationMethod'>,
+): SessionAuthenticationMethod | null =>
+  isOneOf(SESSION_AUTHENTICATION_METHODS, data.authenticationMethod)
+    ? data.authenticationMethod
+    : null;
+
+/** Parse the current-session MFA proof; malformed/legacy state fails closed. */
+export const mfaAssuranceOf = (
+  data: Pick<SessionData, 'mfaAssurance'>,
+): SessionMfaAssurance | null => {
+  const assurance = data.mfaAssurance;
+  if (
+    !assurance ||
+    !isOneOf(SESSION_MFA_METHODS, assurance.method) ||
+    !Number.isSafeInteger(assurance.verifiedAt) ||
+    assurance.verifiedAt < 0
+  ) {
+    return null;
+  }
+  return assurance;
+};
 
 /** Generation proof carried by a bearer-authenticated security mutation. */
 export interface BearerSecurityMutationContext {
@@ -88,7 +152,12 @@ export interface SessionService {
    * persistent session gets the fixed 30-day window; an ephemeral one gets a
    * sliding idle window hard-capped from now (V4-P2b, §399 §A).
    */
-  create(userId: string, securityGeneration: number, persistent?: boolean): Promise<string>;
+  create(
+    userId: string,
+    securityGeneration: number,
+    persistent?: boolean,
+    authentication?: SessionAuthentication,
+  ): Promise<string>;
   get(sessionId: string): Promise<SessionData | null>;
   /** Reset the session's window (login / PIN verify), honouring its persistence. False if already gone. */
   renew(sessionId: string): Promise<boolean>;
@@ -206,15 +275,28 @@ export function createSessionService(
         ? data.renewedAt + ttlSeconds * 1000
         : data.createdAt + ephemeralCapMs;
     },
-    async create(userId, securityGeneration, persistent = true) {
+    async create(
+      userId,
+      securityGeneration,
+      persistent = true,
+      authentication = { method: 'unknown' },
+    ) {
       if (!Number.isSafeInteger(securityGeneration) || securityGeneration < 0) {
         throw new Error('A valid account security generation is required to create a session.');
+      }
+      if (!isOneOf(SESSION_AUTHENTICATION_METHODS, authentication.method)) {
+        throw new Error('A valid authentication method is required to create a session.');
+      }
+      if (authentication.mfaAssurance && !mfaAssuranceOf(authentication)) {
+        throw new Error('A valid MFA assurance is required to create an assured session.');
       }
       const sessionId = randomBytes(32).toString('base64url');
       const now = clock();
       const data: SessionData = {
         userId,
         securityGeneration,
+        authenticationMethod: authentication.method,
+        ...(authentication.mfaAssurance ? { mfaAssurance: authentication.mfaAssurance } : {}),
         createdAt: now,
         renewedAt: now,
         persistent,
