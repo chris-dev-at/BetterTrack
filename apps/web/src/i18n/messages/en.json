@@ -3963,7 +3963,11 @@
     "groups": {
       "account": "Account",
       "data": "Data",
-      "developer": "Developer platform"
+      "developer": "Developer platform",
+      "preferences": "Preferences",
+      "security": "Security",
+      "automation": "Data & automation",
+      "links": "Pages"
     },
     "account": "Account",
     "accountSub": "Profile, email, language, password",
@@ -3992,7 +3996,16 @@
     "mcp": "MCP",
     "mcpSub": "Model Context Protocol access",
     "logs": "Request logs",
-    "logsSub": "Inspect API activity"
+    "logsSub": "Inspect API activity",
+    "deleteAccount": "Delete account",
+    "portfolioDefaults": "Portfolio defaults",
+    "oauthApps": "OAuth apps",
+    "oauthAppsSub": "Third-party apps you registered",
+    "navAria": "Control Center panels",
+    "filterAria": "Filter panels",
+    "filterPlaceholder": "Filter…",
+    "noMatches": "No panel matches.",
+    "leavesPopup": "Opens as its own page"
   },
   "privacy": {
     "title": "Privacy modes",

@@ -41,7 +41,7 @@ export const PARKED_PAGES = {
     key: 'portfolioSettings',
     pointCount: 3,
     links: [
-      { to: '/settings/taxes', labelKey: 'parked.links.taxDefaults' },
+      { to: '/control/portfolio-defaults', labelKey: 'parked.links.taxDefaults' },
       { to: '/portfolio/structure', labelKey: 'parked.links.structure' },
       { to: '/portfolio/events', labelKey: 'parked.links.events' },
       { to: '/portfolio/health', labelKey: 'parked.links.health' },
@@ -85,12 +85,14 @@ export const PARKED_PAGES = {
   dataManagement: {
     key: 'dataManagement',
     pointCount: 3,
-    links: [{ to: '/settings/imports', labelKey: 'parked.links.importsExports' }],
+    // The Coming-Soon "Imports & exports" settings stub is gone (R2) — point at
+    // the live broker/CSV import instead of a page that redirects back here.
+    links: [{ to: '/portfolio/import', labelKey: 'parked.links.importsExports' }],
   },
   paranoid: {
     key: 'paranoid',
     pointCount: 4,
-    links: [{ to: '/settings/security', labelKey: 'parked.links.security' }],
+    links: [{ to: '/control/security', labelKey: 'parked.links.security' }],
   },
   mcp: { key: 'mcp', pointCount: 3 },
   developerLogs: { key: 'developerLogs', pointCount: 3 },

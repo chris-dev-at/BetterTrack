@@ -686,10 +686,8 @@ export function ConnectionsPage({
     driveUnlock === undefined ? (runtime?.unlockWithPassphrase ?? null) : driveUnlock;
   return (
     <div className="flex flex-col gap-5">
-      <SectionHead
-        sub={t('settings.connections.subtitle')}
-        title={t('settings.connections.title')}
-      />
+      {/* Terse (R2): the panel is named in the Control Center nav — no restating it. */}
+      <SectionHead title={t('settings.connections.title')} />
 
       <GoogleSection />
 

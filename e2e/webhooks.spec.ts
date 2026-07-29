@@ -53,13 +53,13 @@ const DELIVERY_HEADER = WEBHOOK_DELIVERY_HEADER.toLowerCase();
 test.use({ trace: 'off' });
 
 /**
- * Drive the real Settings → API Access UI to create ONE webhook subscribed to
- * "Price alert triggered", pointed at the local receiver. Dismisses the one-time
- * secret modal WITHOUT reading its plaintext (the harness decrypts the stored
- * secret instead).
+ * Drive the real Control Center → Webhooks panel to create ONE webhook
+ * subscribed to "Price alert triggered", pointed at the local receiver.
+ * Dismisses the one-time secret modal WITHOUT reading its plaintext (the
+ * harness decrypts the stored secret instead).
  */
 async function createWebhookViaSettings(page: Page, receiver: CaptureReceiver): Promise<void> {
-  await page.goto('/settings/api');
+  await page.goto('/control/webhooks');
   const toggle = page.locator('button[aria-expanded]').filter({ hasText: 'Webhooks' });
   await expect(toggle).toBeVisible({ timeout: 15_000 });
   await toggle.click();
@@ -121,9 +121,9 @@ test('webhooks: a Settings-created webhook delivers a verifiable signed payload'
     expect(payload.id).toBe(deliveryId);
     expect(payload.type).toBe('alert.triggered');
 
-    // The delivery-log surfaces the success in the Settings UI.
+    // The delivery-log surfaces the success in the Control Center.
     const page = owner.page;
-    await page.goto('/settings/api');
+    await page.goto('/control/webhooks');
     const toggle = page.locator('button[aria-expanded]').filter({ hasText: 'Webhooks' });
     await toggle.click();
     const row = page.getByRole('listitem').filter({ hasText: receiver.url });
@@ -187,9 +187,9 @@ test('webhooks: a dead receiver retries, auto-disables, and re-enables from Sett
     expect(disabled.disabledReason).toBe('auto');
     expect(disabled.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD);
 
-    // The Settings UI shows the auto-disabled state; the user re-enables it there.
+    // The Control Center shows the auto-disabled state; the user re-enables it there.
     const page = owner.page;
-    await page.goto('/settings/api');
+    await page.goto('/control/webhooks');
     const toggle = page.locator('button[aria-expanded]').filter({ hasText: 'Webhooks' });
     await toggle.click();
     const row = page.getByRole('listitem').filter({ hasText: receiver.url });

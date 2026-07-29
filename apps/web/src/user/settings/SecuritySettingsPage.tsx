@@ -1322,7 +1322,8 @@ export function SecuritySettingsPage() {
 
   return (
     <div className="flex flex-col gap-5">
-      <SectionHead sub={t('settings.security.subtitle')} title={t('settings.security.title')} />
+      {/* Terse (R2): the panel is named in the Control Center nav — no restating it. */}
+      <SectionHead title={t('settings.security.title')} />
 
       <SessionInfo />
 

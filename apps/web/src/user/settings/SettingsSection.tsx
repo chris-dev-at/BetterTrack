@@ -1,6 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import { Outlet } from 'react-router-dom';
 
 import {
   NOTIFICATION_CADENCES,
@@ -51,52 +50,17 @@ import {
   webPushState,
   type WebPushState,
 } from '../../lib/webPushClient';
-import { ComingSoon, EmptyState, Skeleton } from '../../ui';
+import { EmptyState, Skeleton } from '../../ui';
 import { Badge, Button, Input, SectionHead, Select } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
 import { Alert, cx } from '../components/ui';
-import { LocalNav, type LocalNavItem } from '../components/LocalNav';
 
-export { AccountSettingsPage } from './AccountSettingsPage';
-export { ApiAccessPage } from './ApiAccessPage';
-export { ConnectionsPage } from './ConnectionsPage';
-export { NewPortfolioDefaultsPage } from './NewPortfolioDefaultsPage';
-export { SecuritySettingsPage } from './SecuritySettingsPage';
-
-/**
- * Settings section shell (PROJECTPLAN.md §6.11, §7.2), reached from the profile
- * menu. Subnav: Account · Notifications · Security · Taxes · Connections · API
- * Access, plus the Coming-Soon pages (Imports & Exports · Backups). `/settings`
- * redirects to `/settings/account`.
- */
-export function SettingsLayout() {
-  const t = useT();
-  const settingsSubnav: readonly LocalNavItem[] = [
-    { to: '/settings/account', label: t('settings.account.title') },
-    { to: '/settings/notifications', label: t('settings.notifications.title') },
-    { to: '/settings/security', label: t('settings.security.title') },
-    { to: '/settings/taxes', label: t('settings.newPortfolioDefaults.navLabel') },
-    { to: '/settings/imports', label: t('settings.section.importsExports'), parked: true },
-    { to: '/settings/connections', label: t('settings.section.connections') },
-    { to: '/settings/backups', label: t('settings.section.backups'), parked: true },
-    { to: '/settings/api', label: t('settings.api.title') },
-  ];
-
-  return (
-    <div className="flex flex-col gap-2">
-      <h1 className="bt-page-title" style={{ marginBottom: 12 }}>
-        {t('settings.layout.title')}
-      </h1>
-      <LocalNav ariaLabel={t('nav.section')} items={settingsSubnav} />
-      <Outlet />
-    </div>
-  );
-}
-
-// ─── V1 pages (built in the Settings phase) ───────────────────────────────────
+// ─── Notifications ────────────────────────────────────────────────────────────
 //
-// Account and Security live in dedicated files (re-exported above); the
-// Notifications panel stays here.
+// The standalone `/settings` shell is retired (R2): every settings surface is a
+// Control Center panel now (`../control/ControlCenterOverlay.tsx`), and each
+// page component lives in its own file. What remains here is the Notifications
+// panel — the matrix, the digest/quiet-hours blocks and the full list.
 
 const NOTIFICATION_SETTINGS_KEY = ['settings', 'notifications'] as const;
 
@@ -1531,27 +1495,5 @@ export function NotificationSettingsPage() {
 
       <NotificationList />
     </div>
-  );
-}
-
-// ─── Coming-Soon pages ────────────────────────────────────────────────────────
-
-export function ImportsExportsPage() {
-  const t = useT();
-  return (
-    <ComingSoon
-      title={t('settings.section.importsExports')}
-      description={t('settings.importsExports.description')}
-    />
-  );
-}
-
-export function BackupsPage() {
-  const t = useT();
-  return (
-    <ComingSoon
-      title={t('settings.section.backups')}
-      description={t('settings.backups.description')}
-    />
   );
 }

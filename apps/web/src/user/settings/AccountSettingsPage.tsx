@@ -437,7 +437,8 @@ export function AccountSettingsPage() {
 
   return (
     <div className="flex flex-col gap-7">
-      <SectionHead sub={t('settings.account.subtitle')} title={t('settings.account.title')} />
+      {/* Terse (R2): the panel is named in the Control Center nav — no restating it. */}
+      <SectionHead title={t('settings.account.title')} />
 
       {/* Identity reads as a stat strip, not a card: values first, labels quiet. */}
       <section>
