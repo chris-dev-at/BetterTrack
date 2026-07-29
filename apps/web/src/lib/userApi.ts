@@ -582,6 +582,10 @@ export async function getDataExportStatus(signal?: AbortSignal): Promise<ExportS
   return exportStatusResponseSchema.parse(data);
 }
 
+// A click queues download navigation for a later task. Keep the object URL alive
+// long enough for Safari/Firefox to start consuming it before releasing it.
+const EXPORT_OBJECT_URL_TTL_MS = 60_000;
+
 function exportFileName(response: Response): string {
   const disposition = response.headers.get('Content-Disposition') ?? '';
   const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
@@ -633,7 +637,7 @@ export async function downloadDataExport(body: ExportDownloadRequest): Promise<v
     link.click();
     link.remove();
   } finally {
-    URL.revokeObjectURL(url);
+    globalThis.setTimeout(() => URL.revokeObjectURL(url), EXPORT_OBJECT_URL_TTL_MS);
   }
 }
 

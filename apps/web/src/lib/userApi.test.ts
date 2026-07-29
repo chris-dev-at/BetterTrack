@@ -3,11 +3,13 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { downloadDataExport } from './userApi';
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 test('exchanges an export token in a POST body and downloads the binary response', async () => {
+  vi.useFakeTimers();
   const responseBlob = new Blob(['zip-bytes'], { type: 'application/zip' });
   const fetchMock = vi.fn().mockResolvedValue({
     ok: true,
@@ -49,6 +51,9 @@ test('exchanges an export token in a POST body and downloads the binary response
     href: 'blob:bettertrack-export',
     download: 'bettertrack-export-2026-07-29.zip',
   });
-  expect(revokeObjectURL).toHaveBeenCalledWith('blob:bettertrack-export');
+  expect(revokeObjectURL).not.toHaveBeenCalled();
   expect(document.querySelector('a[href="blob:bettertrack-export"]')).toBeNull();
+
+  vi.runOnlyPendingTimers();
+  expect(revokeObjectURL).toHaveBeenCalledWith('blob:bettertrack-export');
 });
