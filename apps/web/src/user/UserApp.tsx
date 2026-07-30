@@ -3,7 +3,7 @@ import { Suspense, lazy, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 
-import { I18nProvider, useI18n } from '../i18n';
+import { I18nProvider, useI18n, useT } from '../i18n';
 import { RealtimeProvider } from '../lib/realtime';
 
 import { AuthProvider, useAuth } from './AuthContext';
@@ -11,7 +11,7 @@ import { RequireUser } from './RequireUser';
 import { FirstRunGate } from './firstrun/FirstRunGate';
 import { OriginShell } from './components/OriginShell';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
-import { Splash, Toast } from './components/ui';
+import { AuthCard, Button, Splash, Toast } from './components/ui';
 import { ForcedPasswordChangePage } from './auth/ForcedPasswordChangePage';
 import { ForgotPasswordPage } from './auth/ForgotPasswordPage';
 import { InvitePage } from './auth/InvitePage';
@@ -116,9 +116,20 @@ function LegacyRedirect({ to, withSplat = false }: { to: string; withSplat?: boo
  * the full product structure is visible today.
  */
 function UserShell() {
-  const { status } = useAuth();
+  const t = useT();
+  const { status, retrySession } = useAuth();
 
   if (status === 'loading') return <Splash />;
+  if (status === 'session-unavailable') {
+    return (
+      <AuthCard subtitle={t('auth.common.sessionUnavailableTitle')}>
+        <div className="flex flex-col gap-4">
+          <p className="bt-soft text-sm">{t('auth.common.sessionUnavailableBody')}</p>
+          <Button onClick={retrySession}>{t('common.retry')}</Button>
+        </div>
+      </AuthCard>
+    );
+  }
   if (status === 'password-change-required') return <ForcedPasswordChangePage />;
   // PIN gate wraps the whole app while a PIN-enabled account hasn't been
   // unlocked this browsing session (§6.1) — the trap sits above routing.

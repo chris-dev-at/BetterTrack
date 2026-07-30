@@ -9,7 +9,12 @@ import type {
 } from '@bettertrack/contracts';
 
 import { useT, type TranslateFn } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
+import {
+  ApiError,
+  classifyApiError,
+  isApiOutage,
+  type ApiFailureClassification,
+} from '../../lib/apiClient';
 import {
   browserSupportsWebAuthn,
   isPasskeyCancellation,
@@ -128,8 +133,13 @@ export function LoginPage() {
   // — your PIN protects this" choice before the app opens (V4-P2b).
   const [persistChoice, setPersistChoice] = useState<MeResponse | null>(null);
   // The active registration mode (§13.4 V4-P4a): drives whether a "create an
-  // account" link is offered. Best-effort — a fetch failure just hides the link.
+  // account" link is offered. A discovery failure stays visible and retryable
+  // rather than silently implying that registration is closed.
   const [registrationMode, setRegistrationMode] = useState<RegistrationMode | null>(null);
+  const [registrationFailure, setRegistrationFailure] = useState<ApiFailureClassification | null>(
+    null,
+  );
+  const [registrationAttempt, setRegistrationAttempt] = useState(0);
   // Whether "Continue with Google" is offered (§13.4 V4-P4b) — env-gated on the
   // server. Best-effort like the mode: a fetch failure just hides the button.
   const [googleEnabled, setGoogleEnabled] = useState(false);
@@ -140,12 +150,21 @@ export function LoginPage() {
         const info = await userApi.getRegistrationInfo(controller.signal);
         setRegistrationMode(info.mode);
         setGoogleEnabled(info.googleEnabled);
-      } catch {
-        // Best-effort: a fetch failure just hides the "create an account" link.
+        setRegistrationFailure(null);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        setRegistrationFailure(classifyApiError(err));
       }
     })();
     return () => controller.abort();
-  }, []);
+  }, [registrationAttempt]);
+
+  const retryRegistrationInfo = () => {
+    setRegistrationMode(null);
+    setGoogleEnabled(false);
+    setRegistrationFailure(null);
+    setRegistrationAttempt((attempt) => attempt + 1);
+  };
 
   // A message bounced back from the Google callback (§13.4 V4-P4b): `?error=…`
   // for a failed sign-in, `?google=pending` for an approval-mode application.
@@ -221,7 +240,7 @@ export function LoginPage() {
         // Correct password but the account is suspended: a distinct message,
         // separate from bad-credentials and the rate-limit notice (§6.1, §16).
         setError(t('auth.login.accountDisabled'));
-      } else if (err instanceof ApiError && err.status >= 500) {
+      } else if (isApiOutage(err)) {
         setError(t('common.genericError'));
       } else {
         // Never distinguish "no such user" from "wrong password" (§6.1).
@@ -412,7 +431,14 @@ export function LoginPage() {
       {/* (3) Self-serve registration treatment (V4-P0 (f), §13.4): a designed,
           stand-out card, at the very bottom with an OR divider above it. Shown
           only when the instance allows registration and never in the OAuth flow. */}
-      {!oauthContext && registrationMode && registrationMode !== 'closed' ? (
+      {!oauthContext && registrationFailure ? (
+        <div className="bt-panel bt-panel--soft mt-5 flex flex-col items-center gap-3 p-4 text-center">
+          <p className="bt-soft text-sm">{t('auth.login.registrationUnavailable')}</p>
+          <Button variant="ghost" onClick={retryRegistrationInfo}>
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : !oauthContext && registrationMode && registrationMode !== 'closed' ? (
         <div className="mt-5 flex flex-col gap-4">
           <OrDivider label={t('common.or')} />
           <div className="bt-panel bt-panel--soft flex flex-col gap-3 p-4">

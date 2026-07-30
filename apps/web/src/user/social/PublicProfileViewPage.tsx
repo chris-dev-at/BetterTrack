@@ -7,12 +7,13 @@ import type { ShareKind } from '@bettertrack/contracts';
 
 import { getPublicProfile, getPublicProfileItem } from '../../lib/socialApi';
 import { formatMoney, formatPercent } from '../../lib/format';
+import { classifyApiError } from '../../lib/apiClient';
 import { useT } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { PriceChart } from '../../ui/charts';
 import { Avatar } from '../components/Avatar';
 import { Icon } from '../../ui/origin';
-import { Splash } from '../components/ui';
+import { Button, Splash } from '../components/ui';
 import { AlertFollowToggle, AutoFollowToggle, FollowButton } from './FollowButton';
 import { ItemFollowButton } from './ItemFollowButton';
 import { KindTile } from './SharedPeople';
@@ -128,7 +129,17 @@ function ProfileItemCard({
           {detail.isLoading ? (
             <p className="bt-meta">{t('publicShare.loading')}</p>
           ) : detail.isError || !detail.data ? (
-            <p className="bt-meta">{t('publicShare.notFound')}</p>
+            classifyApiError(detail.error, ['PROFILE_NOT_FOUND', 'NOT_FOUND']) ===
+            'confirmed-domain-outcome' ? (
+              <p className="bt-meta">{t('publicShare.notFound')}</p>
+            ) : (
+              <div className="flex flex-col items-start gap-3">
+                <p className="bt-meta">{t('profile.itemTemporarilyUnavailable')}</p>
+                <Button disabled={detail.isFetching} onClick={() => void detail.refetch()}>
+                  {t('common.retry')}
+                </Button>
+              </div>
+            )
           ) : detail.data.kind === 'portfolio' ? (
             <div className="flex flex-col gap-4">
               {detail.data.portfolio.history.points.length > 0 ? (
@@ -225,7 +236,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 export function PublicProfileViewPage() {
   const t = useT();
   const { username = '' } = useParams<{ username: string }>();
-  const { data, isLoading, isError } = useQuery({
+  const { data, error, isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['public-profile', username],
     queryFn: ({ signal }) => getPublicProfile(username, signal),
     retry: false,
@@ -235,6 +246,18 @@ export function PublicProfileViewPage() {
   if (isLoading) return <Splash label={t('publicShare.loading')} />;
 
   if (isError || !data) {
+    if (classifyApiError(error, ['PROFILE_NOT_FOUND']) !== 'confirmed-domain-outcome') {
+      return (
+        <Shell>
+          <div className="flex flex-col items-start gap-4">
+            <p className="bt-soft">{t('profile.temporarilyUnavailable')}</p>
+            <Button disabled={isFetching} onClick={() => void refetch()}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        </Shell>
+      );
+    }
     return (
       <Shell>
         <p className="bt-soft">{t('profile.notAvailable')}</p>
