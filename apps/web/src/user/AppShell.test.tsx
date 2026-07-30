@@ -75,15 +75,6 @@ async function findRail(): Promise<HTMLElement> {
 }
 
 /**
- * A Control Center deep link crosses the auth gate and a legacy redirect before
- * its portalled dialog mounts. Under a busy CI worker that can legitimately
- * take longer than Testing Library's one-second async-query default.
- */
-async function findControlCenter(): Promise<HTMLElement> {
-  return screen.findByRole('dialog', { name: 'Control Center' }, { timeout: 5000 });
-}
-
-/**
  * The rail's top-level destination rows. Section groups render their children
  * inside the same nav — CSS hides a closed tree, but jsdom applies no CSS, so
  * the sub-rows are filtered out here by their container.
@@ -541,7 +532,7 @@ test('the command shortcut still opens over the Control Center, which is modal b
   // the entire hub — but it portals to <body> without inerting the shell, and
   // the palette layers above it (z-index 76 vs 71), so the shortcut must work.
   renderAt('/control/profile');
-  await findControlCenter();
+  await screen.findByRole('dialog', { name: 'Control Center' });
   expect(document.querySelector('[inert]')).toBeNull();
 
   fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
@@ -617,7 +608,7 @@ test.each([
 ])('%s opens the Control Center on the %s panel', async (path, panel) => {
   renderAt(path);
 
-  const dialog = await findControlCenter();
+  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
   expect(within(dialog).getByRole('link', { name: panel, current: 'page' })).toBeInTheDocument();
 });
 
@@ -643,14 +634,17 @@ test('the settings redirects carry the query string onto the panel', async () =>
     </MemoryRouter>,
   );
 
-  await findControlCenter();
+  // Generous timeout: the overlay is a lazy route, and resolving its chunk
+  // while the rest of this file's shell renders compete for the event loop can
+  // exceed the 1s default.
+  await screen.findByRole('dialog', { name: 'Control Center' }, { timeout: 5000 });
   expect(screen.getByTestId('location')).toHaveTextContent('/control/api?google=linked');
 });
 
 test('`/developer` is its own page, linked out of the Control Center', async () => {
   renderAt('/control');
 
-  const dialog = await findControlCenter();
+  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
   expect(within(dialog).getByRole('link', { name: 'Developer overview' })).toHaveAttribute(
     'href',
     '/developer',
