@@ -4509,6 +4509,7 @@
     "profile": {
       "label": "Du",
       "title": "Bist das du?",
+      "hint": "Name und Adresse, mit denen dein Konto erstellt wurde.",
       "nameLabel": "Anzeigename",
       "nameParked": "Das Umbenennen kommt mit der Profilbearbeitung.",
       "emailLabel": "E-Mail"

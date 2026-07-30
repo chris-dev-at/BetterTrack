@@ -4509,6 +4509,7 @@
     "profile": {
       "label": "You",
       "title": "Is this you?",
+      "hint": "The name and address your account was created with.",
       "nameLabel": "Display name",
       "nameParked": "Renaming arrives with profile editing.",
       "emailLabel": "Email"
