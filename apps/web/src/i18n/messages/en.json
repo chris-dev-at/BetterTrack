@@ -4056,7 +4056,7 @@
       },
       "performanceChart": {
         "title": "Performance",
-        "description": "One portfolio's value over time",
+        "description": "One portfolio over time — value, or its time-weighted return.",
         "empty": "No portfolio to chart yet.",
         "ariaLabel": "Value over time for {{name}}",
         "ariaLabelReturn": "Time-weighted return over time for {{name}}",

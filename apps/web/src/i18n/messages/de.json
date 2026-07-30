@@ -4056,7 +4056,7 @@
       },
       "performanceChart": {
         "title": "Performance",
-        "description": "Der Wertverlauf eines Portfolios",
+        "description": "Ein Portfolio im Zeitverlauf — Wert oder zeitgewichtete Rendite.",
         "empty": "Noch kein Portfolio zum Anzeigen.",
         "ariaLabel": "Wertverlauf von {{name}}",
         "ariaLabelReturn": "Zeitgewichtete Rendite von {{name}} im Zeitverlauf",
