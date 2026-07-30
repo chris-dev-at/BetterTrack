@@ -182,7 +182,8 @@
       "revokeHint": ". You can revoke this access anytime in Settings → API Access.",
       "authorizing": "Authorizing…",
       "approve": "Approve",
-      "approveError": "Could not complete authorization. Please try again."
+      "approveError": "Could not complete authorization. Please try again.",
+      "denyError": "Could not safely return to the requesting app. No access was granted."
     },
     "google": {
       "button": "Continue with Google",

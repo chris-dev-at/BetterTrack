@@ -13,6 +13,7 @@ import {
   createOAuthClientResponseSchema,
   oauthAuthorizationDetailsResponseSchema,
   oauthClientSummarySchema,
+  oauthDenyResponseSchema,
   oauthGrantListResponseSchema,
   oauthTokenResponseSchema,
   type OAuthClientSummary,
@@ -473,6 +474,101 @@ describe('first-party (admin-managed) OAuth apps', () => {
         public: true,
       });
     expect(forbidden.status).toBe(404);
+  });
+});
+
+describe('OAuth authorization denial', () => {
+  it('returns access_denied with the original state, issues no code, and leaves approval unchanged', async () => {
+    const redirectUri = `${HTTPS_REDIRECT}?channel=web`;
+    const { agent, clientId } = await registerClient({
+      scopes: ['portfolio:read'],
+      redirectUris: [redirectUri],
+    });
+    const authorizeParams = {
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      scope: 'portfolio:read',
+      state: 'original-state',
+    };
+
+    const denied = await agent
+      .post('/api/v1/oauth/deny')
+      .set(...XRW)
+      .send(authorizeParams);
+    expect(denied.status).toBe(200);
+    const deniedUrl = new URL(oauthDenyResponseSchema.parse(denied.body).redirectTo);
+    expect(deniedUrl.origin + deniedUrl.pathname).toBe(HTTPS_REDIRECT);
+    expect(deniedUrl.searchParams.get('channel')).toBe('web');
+    expect(deniedUrl.searchParams.get('error')).toBe('access_denied');
+    expect(deniedUrl.searchParams.get('state')).toBe('original-state');
+    expect(deniedUrl.searchParams.has('code')).toBe(false);
+    expect(await harness.db.select().from(schema.oauthAuthCodes)).toHaveLength(0);
+
+    const { code, redirectTo } = await approveAndGetCode(agent, authorizeParams);
+    const approvedUrl = new URL(redirectTo);
+    expect(approvedUrl.searchParams.get('code')).toBe(code);
+    expect(approvedUrl.searchParams.get('state')).toBe('original-state');
+    expect(approvedUrl.searchParams.has('error')).toBe(false);
+  });
+
+  it('rejects an unknown client without returning a redirect target', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const denied = await agent
+      .post('/api/v1/oauth/deny')
+      .set(...XRW)
+      .send({
+        client_id: 'btc_unknown',
+        redirect_uri: HTTPS_REDIRECT,
+        scope: 'portfolio:read',
+        state: 'untrusted-state',
+      });
+
+    expect(denied.status).toBe(400);
+    expect(denied.body.error.code).toBe('INVALID_CLIENT');
+    expect(denied.body.redirectTo).toBeUndefined();
+  });
+
+  it('rejects a mismatched redirect URI without reflecting it', async () => {
+    const { agent, clientId } = await registerClient({ scopes: ['portfolio:read'] });
+    const unregistered = 'https://evil.example/callback';
+    const denied = await agent
+      .post('/api/v1/oauth/deny')
+      .set(...XRW)
+      .send({
+        client_id: clientId,
+        redirect_uri: unregistered,
+        scope: 'portfolio:read',
+        state: 'untrusted-state',
+      });
+
+    expect(denied.status).toBe(400);
+    expect(denied.body.error.code).toBe('INVALID_REDIRECT_URI');
+    expect(JSON.stringify(denied.body)).not.toContain(unregistered);
+  });
+
+  it('returns a first-party denial to its registered approval callback', async () => {
+    const { clientId } = await registerFirstPartyClient({
+      scopes: ['portfolio:read'],
+      public: false,
+    });
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const denied = await agent
+      .post('/api/v1/oauth/deny')
+      .set(...XRW)
+      .send({
+        client_id: clientId,
+        redirect_uri: HTTPS_REDIRECT,
+        scope: 'portfolio:read',
+        state: 'first-party-state',
+      });
+
+    expect(denied.status).toBe(200);
+    const deniedUrl = new URL(oauthDenyResponseSchema.parse(denied.body).redirectTo);
+    expect(deniedUrl.origin + deniedUrl.pathname).toBe(HTTPS_REDIRECT);
+    expect(deniedUrl.searchParams.get('error')).toBe('access_denied');
+    expect(deniedUrl.searchParams.get('state')).toBe('first-party-state');
   });
 });
 
