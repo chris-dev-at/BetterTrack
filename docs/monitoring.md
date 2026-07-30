@@ -140,6 +140,14 @@ BT_GRAFANA_PUBLIC_URL=https://grafana.<your-domain>
 More infra (DNS/SSL/edge conf), but Grafana keeps its own auth boundary and the
 admin API is not in the request path. Prometheus stays internal.
 
+The `web` front proxy reads the same variable from the shared `.env` and renders
+its **origin** into the static `Content-Security-Policy` (`frame-src`) at
+container start — that is what allows the browser to embed this host at all.
+Give it a plain origin, optionally with a port (`https://grafana.<your-domain>`,
+`https://obs.<your-domain>:8443`); a path is accepted and reduced to the origin.
+A value that is not `http(s)://host[:port]` fails `web` startup with an explicit
+message instead of shipping a corrupted policy.
+
 ## Admin Diagnostics panel
 
 Admin → **Diagnostics → Monitoring** (`/admin/monitoring`) shows, all read-only

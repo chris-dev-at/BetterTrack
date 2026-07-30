@@ -37,22 +37,33 @@ server {
     }
 }
 
+# Plain port layouts do not inherit the live edge's http-level noindex map, so
+# unlike the subdomains template they need no compensating X-Robots-Tag header.
 # ── Web port → user SPA ─────────────────────────────────────────────────────
 server {
     listen ${BT_PORT_WEB} default_server;
 
     root /usr/share/nginx/html;
     index index.html;
+    include /etc/nginx/bt-includes/static-security-headers.conf;
+    # Empty in the default HTTP layout; populated only when BT_TLS=true.
+    include /etc/nginx/bt-includes/static-hsts.conf;
 
     # Per-origin runtime config (§7.1): app kind + cross-origin API origin.
     location = /config.js {
         default_type application/javascript;
+        # Cache-Control is also an add_header, so repeat the shared policy here
+        # instead of losing every inherited browser header.
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "no-store";
         return 200 'window.__BT__ = { app: "user", apiOrigin: "${API_ORIGIN}" };';
     }
 
     location ~* \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {
         expires max;
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "public, max-age=31536000, immutable";
         try_files $uri =404;
     }
@@ -68,15 +79,22 @@ server {
 
     root /usr/share/nginx/html;
     index index.html;
+    # Deliberately identical to the user SPA baseline above.
+    include /etc/nginx/bt-includes/static-security-headers.conf;
+    include /etc/nginx/bt-includes/static-hsts.conf;
 
     location = /config.js {
         default_type application/javascript;
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "no-store";
         return 200 'window.__BT__ = { app: "admin", apiOrigin: "${API_ORIGIN}" };';
     }
 
     location ~* \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {
         expires max;
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "public, max-age=31536000, immutable";
         try_files $uri =404;
     }
@@ -89,6 +107,8 @@ server {
 # ── Product port → static product landing (landing container) ────────────────
 server {
     listen ${BT_PORT_PRODUCT};
+    include /etc/nginx/bt-includes/static-security-headers.conf;
+    include /etc/nginx/bt-includes/static-hsts.conf;
 
     location / {
         proxy_pass http://${LANDING_UPSTREAM};
@@ -103,6 +123,8 @@ server {
 # ── Mobile port → static mobile placeholder (landing container) ──────────────
 server {
     listen ${BT_PORT_MOBILE};
+    include /etc/nginx/bt-includes/static-security-headers.conf;
+    include /etc/nginx/bt-includes/static-hsts.conf;
 
     # Same shared static container as the product port; only the root document
     # differs, so `/` maps to mobile.html and everything else passes through.
