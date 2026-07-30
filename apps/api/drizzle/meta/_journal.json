@@ -526,6 +526,20 @@
       "when": 1785352954714,
       "tag": "0074_oauth_client_logo_cache",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1785360000000,
+      "tag": "0075_first_run_completion",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1785377115695,
+      "tag": "0076_cash_fusion",
+      "breakpoints": true
     }
   ]
 }

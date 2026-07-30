@@ -69,6 +69,7 @@ export function toAuthUser(row: UserRow): AuthUser {
     discreetMode: row.discreetMode,
     privacyMode: row.privacyMode,
     lastLoginAt: row.lastLoginAt,
+    firstRunCompletedAt: row.firstRunCompletedAt,
     createdAt: row.createdAt,
   };
 }
@@ -88,6 +89,7 @@ export function toMeResponse(user: AuthUser): MeResponse {
     profileIcon: user.profileIcon,
     discreetMode: user.discreetMode,
     lastLoginAt: toIso(user.lastLoginAt),
+    firstRunCompletedAt: toIso(user.firstRunCompletedAt),
     createdAt: toIsoRequired(user.createdAt),
   };
 }

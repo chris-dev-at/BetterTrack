@@ -266,6 +266,8 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
         executedAt: AT,
         note: null,
         source: 'manual',
+        dedupHash: null,
+        originalCurrency: null,
         createdAt: AT,
       }),
     ];
@@ -992,6 +994,8 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
           executedAt: '2026-07-25T07:00:00.000Z',
           note: null,
           source: 'manual',
+          dedupHash: null,
+          originalCurrency: null,
           createdAt: AT,
         }),
         vaultEntity(GENERATED_IDS[3], {
@@ -1007,6 +1011,8 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
           executedAt: '2026-07-25T09:00:00.000Z',
           note: null,
           source: 'manual',
+          dedupHash: null,
+          originalCurrency: null,
           createdAt: AT,
         }),
       ];
@@ -1371,6 +1377,8 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
         executedAt: '2026-07-25T08:00:00.000Z',
         note: null,
         source: 'manual',
+        dedupHash: null,
+        originalCurrency: null,
         createdAt: '2026-07-25T08:00:00.000Z',
       }),
       vaultEntity(buyMovementId, {
@@ -1386,6 +1394,8 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
         executedAt: '2026-07-25T09:00:00.000Z',
         note: null,
         source: 'manual',
+        dedupHash: null,
+        originalCurrency: null,
         createdAt: '2026-07-25T09:00:00.000Z',
       }),
     ];
@@ -1908,6 +1918,8 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
           executedAt: '2026-07-25T08:00:00.000Z',
           note: null,
           source: 'manual',
+          dedupHash: null,
+          originalCurrency: null,
           createdAt: '2026-07-25T08:00:00.000Z',
         }),
         vaultEntity(buyMovementId, {
@@ -1923,6 +1935,8 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
           executedAt: '2026-07-25T09:00:00.000Z',
           note: null,
           source: 'manual',
+          dedupHash: null,
+          originalCurrency: null,
           createdAt: '2026-07-25T09:00:00.000Z',
         }),
       ];

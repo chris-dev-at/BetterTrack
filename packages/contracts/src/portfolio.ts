@@ -961,6 +961,16 @@ export const cashMovementSchema = z
      * are re-derived per copy and never replicated (design §1).
      */
     mirror: mirrorRowInfoSchema.optional(),
+    /**
+     * Cash-flow overlay (V5 cash fusion, `./cash`). ADDITIVE and optional so
+     * every pre-fusion fixture and client still parses: `tags` is the movement's
+     * flat tag set (absent until a surface serves it, `[]` = untagged);
+     * `originalCurrency` is set only when the row entered from a non-EUR feed and
+     * its magnitude was carried over 1:1 — `amountEur` stays authoritative and
+     * the ledger never converts.
+     */
+    tags: z.array(z.string().uuid()).optional(),
+    originalCurrency: z.string().nullable().optional(),
   })
   .strict();
 export type CashMovement = z.infer<typeof cashMovementSchema>;

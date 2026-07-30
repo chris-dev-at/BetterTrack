@@ -208,6 +208,14 @@ export const users = pgTable(
     paranoidMediaSet: text('paranoid_media_set').array(),
     paranoidDriveAttestedVersion: integer('paranoid_drive_attested_version'),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
+    // When the account finished (or dismissed) first-run setup — `null` means it
+    // has never been through it. Deliberately NOT derivable from `lastLoginAt`:
+    // every sign-in path stamps that before the response body is built, so it is
+    // already non-null on a user's very first `/auth/me`. This column is the only
+    // signal that survives across devices, so the wizard reaches an account no
+    // matter how it came to exist (§6.12: self-registration, invite acceptance,
+    // an approved application, or an admin-created user).
+    firstRunCompletedAt: timestamp('first_run_completed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1418,11 +1426,27 @@ export const portfolioCashMovements = pgTable(
     // transaction's or dividend's tag; an external deposit/withdrawal takes the
     // tag of the write path. Server-assigned only; validated in contracts.
     source: text('source').notNull().default('manual'),
+    // Statement-import idempotency key (V5 cash fusion, migration 0075) — the
+    // column `expense_transactions.dedup_hash` becomes when a spend/income row
+    // lands in the cash ledger. NULL on every hand-entered / engine-posted
+    // movement (buys, dividends, tax settlements, manual deposits), and NULLs
+    // are distinct in a unique index, so only import rows are ever deduped.
+    // Scoped per PORTFOLIO, not per user: a portfolio is one ledger, and the
+    // same bank statement legitimately applies to two different ledgers.
+    dedupHash: text('dedup_hash'),
+    // Provenance for a row that entered from a NON-EUR feed (V5 cash fusion).
+    // `amount_eur` remains the single authoritative signed EUR figure and the
+    // cash ledger NEVER reads this column; NULL means the amount is genuinely
+    // EUR. A non-NULL value marks a magnitude carried over 1:1 from a
+    // currency-naive source that still needs an FX pass — the CHECK keeps a
+    // redundant 'EUR' out so "NULL means EUR" stays a true invariant.
+    originalCurrency: char('original_currency', { length: 3 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('portfolio_cash_movements_portfolio_idx').on(t.portfolioId, t.executedAt),
     index('portfolio_cash_movements_source_idx').on(t.sourceId, t.executedAt),
+    uniqueIndex('portfolio_cash_movements_dedup_unique').on(t.portfolioId, t.dedupHash),
     // Defense-in-depth mirror of domain/cashLedger's CASH_MOVEMENT_SIGN: the
     // amount's sign must match the kind, and never zero (the ledger never guesses).
     check(
@@ -1446,8 +1470,265 @@ export const portfolioCashMovements = pgTable(
       'portfolio_cash_movements_dividend_link',
       sql`${t.kind} <> 'dividend' or ${t.dividendId} is not null`,
     ),
+    check(
+      'portfolio_cash_movements_original_currency_not_eur',
+      sql`${t.originalCurrency} is null or ${t.originalCurrency} <> 'EUR'`,
+    ),
   ],
 );
+
+/**
+ * CASH FLOW — tags, budgets and rules on the PORTFOLIO cash ledger (V5 cash
+ * fusion, migration 0075). This replaces the user-scoped `expense_*` island:
+ * there is no global user-level cash any more, every movement of money lives in
+ * a portfolio, and the classification layer hangs off
+ * {@link portfolioCashMovements} instead of a parallel transaction table.
+ *
+ * The three structural decisions, all owner-set:
+ *  - **Tags, not categories.** A movement carries MANY tags and tags do NOT
+ *    nest: "Food" and "Groceries" are two flat labels on the same row, and a
+ *    budget on "Food" counts every row carrying Food regardless of what else it
+ *    carries. That is why the link is a join table and not a `category_id`.
+ *  - **Tags are per USER, budgets are per PORTFOLIO.** A tag is a reusable
+ *    label, so it is defined once per account and used in any of that account's
+ *    portfolios; a budget is money, so it is scoped to the portfolio whose
+ *    ledger it measures. Cross-portfolio budgets arrive later through portfolio
+ *    nesting (which does not exist yet).
+ *  - **System tags are app-owned**, exactly like a transaction's `source` tag:
+ *    the engine assigns them from the movement's `kind`, `system_key` is their
+ *    stable identity across renames, and the service refuses to delete one.
+ *
+ * OWNERSHIP INVARIANT (§10) — no FK can express it, so the repository MUST:
+ * a `cash_movement_tags` row is only legal when the tag's `user_id` and the
+ * movement's `portfolio.user_id` are the SAME account. Tags reach users
+ * directly, movements only through `portfolios`, so Postgres cannot join the
+ * two in a constraint. Every write path scopes BOTH sides to the caller.
+ */
+export const cashRuleMatchEnum = pgEnum('cash_rule_match', [
+  'contains',
+  'equals',
+  'starts_with',
+  'regex',
+]);
+
+/**
+ * `cash_tags` — one flat, reusable label per (user, name). Uniqueness is
+ * case-INSENSITIVE (mirrors `watchlists_user_name_lower_unique`): "Food" and
+ * "food" are one tag, because two tags a user cannot tell apart silently split
+ * every budget that counts them.
+ *
+ * `color` survives from `expense_categories.color` on purpose — the spend
+ * donut/trend surfaces already render a per-bucket tint, and dropping the column
+ * would discard the palette the user built before it can be re-shown.
+ *
+ * `system` + `system_key`: an app-owned tag the engine assigns and the user
+ * cannot delete. The CHECK ties the two together so "system" can never be a
+ * loose boolean, and UNIQUE(user, system_key) is what makes seeding idempotent
+ * (`ON CONFLICT DO NOTHING`).
+ *
+ * DELETION IS HARD, deliberately. A tag holds no money and no history: removing
+ * one strips a label off rows whose amounts, dates and sources are untouched, so
+ * there is nothing to preserve — unlike a cash source (soft-archived because the
+ * ledger attributes movements to it) or a portfolio. A `deleted_at` would have to
+ * be threaded through every uniqueness and lookup predicate to buy nothing, and
+ * would leave budgets pointing at labels the user believes are gone. Deleting a
+ * tag therefore cascades its movement links, its rule links and its budgets away
+ * — the same semantics `expense_categories` had (delete cascaded the budget and
+ * the rules; only the transaction survived, un-categorized).
+ */
+export const cashTags = pgTable(
+  'cash_tags',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    color: text('color').notNull().default('#64748b'),
+    system: boolean('system').notNull().default(false),
+    // Stable identity of an app-owned tag (`investment`, `dividend`, `tax`, …),
+    // NULL for user tags. The engine resolves tags by this key, never by name,
+    // so renaming/translating a system tag never breaks assignment.
+    systemKey: text('system_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('cash_tags_user_idx').on(t.userId),
+    uniqueIndex('cash_tags_user_name_lower_unique').on(t.userId, sql`lower(${t.name})`),
+    // NULLs are distinct, so this constrains system tags only — one row per
+    // (user, system_key), which is the seed's idempotency key.
+    uniqueIndex('cash_tags_user_system_key_unique').on(t.userId, t.systemKey),
+    check('cash_tags_system_key_iff_system', sql`${t.system} = (${t.systemKey} is not null)`),
+  ],
+);
+
+/**
+ * `cash_movement_tags` — the many-to-many link that makes multi-tagging real.
+ * Both sides cascade: deleting the movement (or the transaction/dividend whose
+ * cascade removes it) drops its labels, and deleting a tag unlabels its rows
+ * without touching a cent. UNIQUE(movement, tag) makes re-tagging idempotent.
+ * See the ownership invariant on the section comment above.
+ */
+export const cashMovementTags = pgTable(
+  'cash_movement_tags',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    movementId: uuid('movement_id')
+      .notNull()
+      .references(() => portfolioCashMovements.id, { onDelete: 'cascade' }),
+    tagId: uuid('tag_id')
+      .notNull()
+      .references(() => cashTags.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('cash_movement_tags_movement_tag_unique').on(t.movementId, t.tagId),
+    // Reverse lookup: "every movement carrying tag X" is the budget/dashboard query.
+    index('cash_movement_tags_tag_idx').on(t.tagId),
+  ],
+);
+
+/**
+ * `cash_budgets` — a monthly spend target for one tag inside one portfolio.
+ *
+ * `period_key` is NULLABLE and that nullability is the whole design:
+ *  - `NULL` = the RECURRING monthly target — exactly what `expense_budgets`
+ *    was (it had no period column at all; one row per category, re-evaluated
+ *    every month, with `expense_budget_fires` recording which months fired).
+ *    A lossless migration needs this: the old rows have no month to move into,
+ *    and inventing one would be fabricated data.
+ *  - `'YYYY-MM'` = a single-month override ("December is different").
+ *
+ * Two unique indexes rather than one, because NULLs are distinct in a Postgres
+ * unique index: without the partial index a tag could hold two recurring
+ * budgets, and "unique per portfolio+tag+period" would quietly not hold.
+ *
+ * Scoped by `portfolio_id` alone — the owner is `portfolios.user_id`, exactly
+ * like every other portfolio-scoped table (`portfolio_cash_movements` carries no
+ * `user_id` either). A redundant owner column would be a second source of truth.
+ */
+export const cashBudgets = pgTable(
+  'cash_budgets',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    portfolioId: uuid('portfolio_id')
+      .notNull()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    tagId: uuid('tag_id')
+      .notNull()
+      .references(() => cashTags.id, { onDelete: 'cascade' }),
+    periodKey: varchar('period_key', { length: 7 }),
+    amount: numeric('amount', { precision: 20, scale: 2 }).notNull(),
+    currency: char('currency', { length: 3 }).notNull().default('EUR'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('cash_budgets_portfolio_idx').on(t.portfolioId),
+    index('cash_budgets_tag_idx').on(t.tagId),
+    uniqueIndex('cash_budgets_portfolio_tag_period_unique').on(t.portfolioId, t.tagId, t.periodKey),
+    uniqueIndex('cash_budgets_portfolio_tag_recurring_unique')
+      .on(t.portfolioId, t.tagId)
+      .where(sql`${t.periodKey} is null`),
+    check('cash_budgets_amount_positive', sql`${t.amount} > 0`),
+    check(
+      'cash_budgets_period_key_format',
+      sql`${t.periodKey} is null or ${t.periodKey} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`,
+    ),
+  ],
+);
+
+/**
+ * `cash_budget_fires` — the per-(budget, period) exactly-once alert marker,
+ * carried forward from `expense_budget_fires` verbatim so the notification path
+ * can be re-pointed at this table later without a second migration.
+ *
+ * IDEMPOTENCY KEY: UNIQUE(budget_id, period_key). The alert job claims a period
+ * with `INSERT … ON CONFLICT DO NOTHING` BEFORE notifying, so a blown budget
+ * fires exactly one alert per month no matter how many times the evaluator runs
+ * (same contract as `standing_order_runs`).
+ */
+export const cashBudgetFires = pgTable(
+  'cash_budget_fires',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    budgetId: uuid('budget_id')
+      .notNull()
+      .references(() => cashBudgets.id, { onDelete: 'cascade' }),
+    periodKey: varchar('period_key', { length: 7 }).notNull(),
+    firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('cash_budget_fires_period_unique').on(t.budgetId, t.periodKey)],
+);
+
+/**
+ * `cash_rules` — description-matching auto-tagging. A rule tests a movement's
+ * `note` (the text `expense_transactions.description` migrates into) and, on a
+ * match, applies ALL of its tags via {@link cashRuleTags}.
+ *
+ * FIRST-MATCH SEMANTICS ARE UNCHANGED from `expense_rules`: rules are evaluated
+ * by ascending `priority`, the first matching rule applies its tag set and
+ * evaluation stops. Multi-tag rules make a union-of-all-matches tempting, but
+ * then no single rule "wins" — a user could not explain, undo or reorder a
+ * result, and the ordering column would become decorative. Multiple tags per
+ * rule already cover the real case ("REWE → Food + Groceries").
+ *
+ * Per-USER like the tags they assign, not per-portfolio: a rule is matching
+ * config, and the same merchant means the same thing in every ledger the user
+ * owns. Which movements a run applies to stays the caller's choice.
+ */
+export const cashRules = pgTable(
+  'cash_rules',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    matchType: cashRuleMatchEnum('match_type').notNull().default('contains'),
+    pattern: text('pattern').notNull(),
+    priority: integer('priority').notNull().default(0),
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('cash_rules_user_idx').on(t.userId),
+    index('cash_rules_user_priority_idx').on(t.userId, t.priority),
+  ],
+);
+
+/** `cash_rule_tags` — the tag set one rule applies (many tags, both sides cascade). */
+export const cashRuleTags = pgTable(
+  'cash_rule_tags',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    ruleId: uuid('rule_id')
+      .notNull()
+      .references(() => cashRules.id, { onDelete: 'cascade' }),
+    tagId: uuid('tag_id')
+      .notNull()
+      .references(() => cashTags.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('cash_rule_tags_rule_tag_unique').on(t.ruleId, t.tagId),
+    index('cash_rule_tags_tag_idx').on(t.tagId),
+  ],
+);
+
+export type CashTagRow = typeof cashTags.$inferSelect;
+export type NewCashTagRow = typeof cashTags.$inferInsert;
+export type CashMovementTagRow = typeof cashMovementTags.$inferSelect;
+export type NewCashMovementTagRow = typeof cashMovementTags.$inferInsert;
+export type CashBudgetRow = typeof cashBudgets.$inferSelect;
+export type NewCashBudgetRow = typeof cashBudgets.$inferInsert;
+export type CashBudgetFireRow = typeof cashBudgetFires.$inferSelect;
+export type NewCashBudgetFireRow = typeof cashBudgetFires.$inferInsert;
+export type CashRuleRow = typeof cashRules.$inferSelect;
+export type NewCashRuleRow = typeof cashRules.$inferInsert;
+export type CashRuleTagRow = typeof cashRuleTags.$inferSelect;
+export type NewCashRuleTagRow = typeof cashRuleTags.$inferInsert;
 
 /**
  * Precomputed per-portfolio daily series (V5-P1 arc a, issue #553): one row per
@@ -3406,6 +3687,12 @@ export const schema = {
   portfolioCashSources,
   dividends,
   portfolioCashMovements,
+  cashTags,
+  cashMovementTags,
+  cashBudgets,
+  cashBudgetFires,
+  cashRules,
+  cashRuleTags,
   portfolioDailySnapshots,
   portfolioSnapshotState,
   userTaxSettings,
@@ -3469,6 +3756,7 @@ export const schema = {
   portfolioVisibilityEnum,
   cashMovementKindEnum,
   cashSourceTypeEnum,
+  cashRuleMatchEnum,
   privacyModeEnum,
   problemKindEnum,
   problemStatusEnum,

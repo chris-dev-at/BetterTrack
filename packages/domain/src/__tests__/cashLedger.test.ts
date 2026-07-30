@@ -469,6 +469,27 @@ describe('isExternalCashMovement', () => {
       expect(typeof isExternalCashMovement(kind)).toBe('boolean');
     }
   });
+
+  it('pins the classification of EVERY kind, so a new one cannot default in silently', () => {
+    // `isExternalCashMovement` is a whitelist test: a 10th kind added to
+    // CASH_MOVEMENT_KINDS would be internal by omission, with no failing test to
+    // notice. This table makes that decision explicit — extend it deliberately.
+    const expected: Readonly<Record<CashMovementKind, boolean>> = {
+      deposit: true,
+      withdrawal: true,
+      buy: false,
+      sell_proceeds: false,
+      transfer_out: false,
+      transfer_in: false,
+      dividend: false,
+      tax_withholding: false,
+      tax_refund: false,
+    };
+    expect(Object.keys(expected).sort()).toEqual([...CASH_MOVEMENT_KINDS].sort());
+    for (const kind of CASH_MOVEMENT_KINDS) {
+      expect(isExternalCashMovement(kind)).toBe(expected[kind]);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -837,6 +858,89 @@ describe('pairedTransferMovements', () => {
       externalCashFlowsForTwr(after),
     );
     expect(perfAfter).toEqual(perfBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V3-P4 tax kinds are TWR-INTERNAL (§16 2026-07-08 point 6): performance reads
+// inclusive of dividend income and net of taxes, exactly as it reads net of fees
+// ---------------------------------------------------------------------------
+
+describe('TWR treatment of dividends and tax settlements', () => {
+  // 1 000 € of shares, bought from cash on the 6th and held flat all week, so
+  // every later move in the curve comes from the tax kinds under test.
+  const holdingsValues: ValuePoint[] = [
+    { date: '2026-01-06', valueEur: 1000 },
+    { date: '2026-01-07', valueEur: 1000 },
+    { date: '2026-01-08', valueEur: 1000 },
+  ];
+  const funded: CashMovement[] = [
+    mv('deposit', 1000, '2026-01-05T09:00:00Z'),
+    mv('buy', -1000, '2026-01-06T10:00:00Z'),
+  ];
+
+  /** The performance curve the overview plots, from the ledger alone. */
+  function perfFor(movements: CashMovement[]) {
+    return timeWeightedReturn(
+      netWorthSeries({ holdingsValues, movements, today: '2026-01-08' }),
+      externalCashFlowsForTwr(movements),
+    );
+  }
+
+  it('a dividend MOVES the line: it is income the holdings generated, not new money', () => {
+    // 50 € lands in cash with the shares unchanged: net worth 1 000 → 1 050 and
+    // no external flow explains it, so it is a real +5 %.
+    const perf = perfFor([...funded, mv('dividend', 50, '2026-01-07T10:00:00Z')]);
+    expect(perf.at(-1)!.pct).toBeCloseTo(5, 9);
+  });
+
+  it('counterfactual: classifying that dividend as a deposit would erase the income', () => {
+    // The exact bug the internal classification prevents — same net-worth curve,
+    // the dividend neutralized out of it, and the +5 % silently gone.
+    const movements = [...funded, mv('dividend', 50, '2026-01-07T10:00:00Z')];
+    const misclassified = [
+      ...externalCashFlowsForTwr(movements),
+      { date: '2026-01-07', flowEur: 50 },
+    ];
+    const corrupted = timeWeightedReturn(
+      netWorthSeries({ holdingsValues, movements, today: '2026-01-08' }),
+      misclassified,
+    );
+    expect(corrupted.at(-1)!.pct).toBeCloseTo(0, 9);
+  });
+
+  it('withheld tax drags the line — the curve reads NET of tax', () => {
+    // 50 € dividend, then 13.75 € KESt withheld against it: the portfolio kept
+    // 36.25 € of the income, and that is exactly what the return shows.
+    const perf = perfFor([
+      ...funded,
+      mv('dividend', 50, '2026-01-07T10:00:00Z'),
+      mv('tax_withholding', -13.75, '2026-01-08T10:00:00Z'),
+    ]);
+    expect(perf.at(-1)!.pct).toBeCloseTo(3.625, 9);
+  });
+
+  it('a tax refund lifts the line back, symmetrically', () => {
+    const perf = perfFor([
+      ...funded,
+      mv('dividend', 50, '2026-01-07T10:00:00Z'),
+      mv('tax_withholding', -13.75, '2026-01-07T11:00:00Z'),
+      mv('tax_refund', 13.75, '2026-01-08T10:00:00Z'),
+    ]);
+    expect(perf.at(-1)!.pct).toBeCloseTo(5, 9);
+  });
+
+  it('none of the three kinds is ever an external flow', () => {
+    expect(isExternalCashMovement('dividend')).toBe(false);
+    expect(isExternalCashMovement('tax_withholding')).toBe(false);
+    expect(isExternalCashMovement('tax_refund')).toBe(false);
+    expect(
+      externalCashFlowsForTwr([
+        mv('dividend', 50, '2026-01-07T10:00:00Z'),
+        mv('tax_withholding', -13.75, '2026-01-08T10:00:00Z'),
+        mv('tax_refund', 5, '2026-01-08T11:00:00Z'),
+      ]),
+    ).toEqual([]);
   });
 });
 
