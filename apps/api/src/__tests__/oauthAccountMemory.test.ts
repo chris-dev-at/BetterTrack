@@ -8,6 +8,8 @@ import {
   PIN_TOKEN_ACCOUNT_NAMESPACE,
   pinQuickAuthMarkerKey,
   rememberedDeviceKey,
+  rememberedDevicesForUserKey,
+  REMEMBERED_DEVICE_TTL_SECONDS,
 } from '../services/auth/loginThrottle';
 import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -82,15 +84,41 @@ describe('POST /auth/remembered-device — remember this device (PIN users only)
     ]);
   });
 
-  it('binds the device to the user in Redis with no TTL (until cleared)', async () => {
+  it('binds the device with the cookie lifetime and indexes it by user for deletion', async () => {
     const { user, cookie } = await rememberPinUser();
     // The cookie value is the signed `s:<deviceId>.<sig>` form; derive the raw id
     // from the binding via the plaintext service call instead of parsing the sig.
     const direct = await harness.ctx.auth.rememberDevice(user.id);
     expect(await harness.ctx.redis.get(rememberedDeviceKey(direct.deviceId))).toBe(user.id);
-    // No expiry set — "until cleared" (owner). -1 = key exists with no TTL.
-    expect(await harness.ctx.redis.ttl(rememberedDeviceKey(direct.deviceId))).toBe(-1);
+    expect(await harness.ctx.redis.ttl(rememberedDeviceKey(direct.deviceId))).toBe(
+      REMEMBERED_DEVICE_TTL_SECONDS,
+    );
+    expect(await harness.ctx.redis.smembers(rememberedDevicesForUserKey(user.id))).toContain(
+      direct.deviceId,
+    );
+    expect(await harness.ctx.redis.ttl(rememberedDevicesForUserKey(user.id))).toBe(
+      REMEMBERED_DEVICE_TTL_SECONDS,
+    );
     expect(cookie).toContain(`${REMEMBERED_DEVICE_COOKIE}=`);
+  });
+
+  it('lazily indexes a legacy immortal binding and gives it the bounded lifetime', async () => {
+    const user = await harness.seedUser();
+    await harness.ctx.auth.setPin(user.id, PIN);
+    const deviceId = 'legacy-device-without-retention';
+    await harness.ctx.redis.set(rememberedDeviceKey(deviceId), user.id);
+    expect(await harness.ctx.redis.ttl(rememberedDeviceKey(deviceId))).toBe(-1);
+
+    await expect(harness.ctx.auth.quickAuth({ deviceId })).resolves.toEqual({
+      status: 'pin_required',
+    });
+
+    expect(await harness.ctx.redis.ttl(rememberedDeviceKey(deviceId))).toBe(
+      REMEMBERED_DEVICE_TTL_SECONDS,
+    );
+    expect(await harness.ctx.redis.smembers(rememberedDevicesForUserKey(user.id))).toContain(
+      deviceId,
+    );
   });
 
   it('refuses to remember a PIN-less account (only PIN users can be remembered)', async () => {
@@ -267,6 +295,9 @@ describe('DELETE /auth/remembered-device — "Another account" / forget', () => 
 
     expect(await harness.ctx.redis.get(rememberedDeviceKey(deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(deviceId))).toBeNull();
+    expect(await harness.ctx.redis.smembers(rememberedDevicesForUserKey(user.id))).not.toContain(
+      deviceId,
+    );
   });
 
   it('is a no-op (200) when the device is not remembered', async () => {

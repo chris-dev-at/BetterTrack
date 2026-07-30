@@ -12,6 +12,11 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import {
+  pinQuickAuthMarkerKey,
+  rememberedDeviceKey,
+  rememberedDevicesForUserKey,
+} from '../services/auth/loginThrottle';
 import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -294,7 +299,37 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
     const entry = audits.find((a) => a.action === 'user.deleted' && a.targetId === user.id);
     expect(entry).toBeDefined();
     expect(entry!.actorId).toBeNull();
-    expect(entry!.meta).toMatchObject({ username: user.username, via: 'self' });
+    expect(entry!.meta).toEqual({ via: 'self' });
+    expect(JSON.stringify(entry!.meta)).not.toContain(user.username);
+  });
+
+  it('removes every remembered-device binding and its quick-auth marker', async () => {
+    const user = await seedPerson('forgotten_devices');
+    await harness.ctx.auth.setPin(user.id, '4242');
+    const first = await harness.ctx.auth.rememberDevice(user.id);
+    const second = await harness.ctx.auth.rememberDevice(user.id);
+    const legacyDeviceId = 'legacy-unindexed-device';
+    await harness.ctx.redis.set(rememberedDeviceKey(legacyDeviceId), user.id);
+    await harness.ctx.redis.set(pinQuickAuthMarkerKey(first.deviceId), '1');
+    await harness.ctx.redis.set(pinQuickAuthMarkerKey(second.deviceId), '1');
+    await harness.ctx.redis.set(pinQuickAuthMarkerKey(legacyDeviceId), '1');
+
+    expect((await harness.ctx.redis.smembers(rememberedDevicesForUserKey(user.id))).sort()).toEqual(
+      [first.deviceId, second.deviceId].sort(),
+    );
+
+    await deleteAccount(user.agent, {
+      confirmUsername: user.username,
+      password: user.password,
+    }).expect(200);
+
+    expect(await harness.ctx.redis.get(rememberedDeviceKey(first.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(rememberedDeviceKey(second.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(rememberedDeviceKey(legacyDeviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(first.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(second.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(legacyDeviceId))).toBeNull();
+    expect(await harness.ctx.redis.exists(rememberedDevicesForUserKey(user.id))).toBe(0);
   });
 
   it('cascades the current encrypted vault and every historical generation', async () => {

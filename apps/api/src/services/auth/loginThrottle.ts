@@ -75,12 +75,18 @@ export const PIN_FALLBACK_THRESHOLD = 5;
  * OAuth account memory + PIN quick re-auth (§16, owner spec #399 §B, V4-P2b).
  * A device that a PIN user opted to be remembered on holds a signed httpOnly
  * `bt_rdid` cookie whose opaque device id maps to that user here — the server-
- * side binding for the quick re-auth flow. No TTL: the memory persists until the
- * user chooses "Another account" or logs out-all — never an automatic expiry
- * (owner: "until cleared"). The value is the user id (the device is bound to one
- * account at a time); re-remembering a device overwrites it.
+ * side binding for the quick re-auth flow. The binding expires with the
+ * browser's 400-day remembered-device cookie, so abandoned mappings cannot
+ * survive forever. The value is the user id (the device is bound to one account
+ * at a time).
  */
 export const rememberedDeviceKey = (deviceId: string) => `remember_dev:${deviceId}`;
+
+/** Reverse index that lets account deletion enumerate every remembered device. */
+export const rememberedDevicesForUserKey = (userId: string) => `remember_dev_user:${userId}`;
+
+/** Matches the fixed 400-day lifetime of the signed `bt_rdid` browser cookie. */
+export const REMEMBERED_DEVICE_TTL_SECONDS = 400 * 24 * 60 * 60;
 
 /**
  * Marks that this remembered device recently proved its PIN, so the next OAuth

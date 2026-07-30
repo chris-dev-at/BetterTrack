@@ -1,4 +1,4 @@
-import { desc, eq, lt, and } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { emailLog, type EmailLogRow } from '../schema';
@@ -65,6 +65,25 @@ export function createEmailLogRepository(db: Database) {
     /** Same, scoped to a single user's sends. */
     listForUser: (userId: string, limit: number, cursor?: string): Promise<EmailLogPage> =>
       page({ limit, cursor, userId }),
+
+    /**
+     * Delete at most `limit` oldest rows before `cutoff`. The scheduled
+     * retention sweep repeats this bounded statement until it returns fewer
+     * than `limit`, avoiding one unbounded full-table delete.
+     */
+    async deleteOlderThan(cutoff: Date, limit: number): Promise<number> {
+      const candidates = db
+        .select({ id: emailLog.id })
+        .from(emailLog)
+        .where(lt(emailLog.createdAt, cutoff))
+        .orderBy(asc(emailLog.createdAt), asc(emailLog.id))
+        .limit(limit);
+      const deleted = await db
+        .delete(emailLog)
+        .where(inArray(emailLog.id, candidates))
+        .returning({ id: emailLog.id });
+      return deleted.length;
+    },
   };
 }
 

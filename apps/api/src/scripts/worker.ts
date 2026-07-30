@@ -47,6 +47,7 @@ import {
   createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
   createApiKeyRequestLogCleanupJob,
+  createDataRetentionCleanupJob,
   createNotificationsDispatchJob,
   createDigestDailyJob,
   createDigestWeeklyJob,
@@ -577,6 +578,14 @@ const definitions = assembleRegisteredJobDefinitions({
   // bounded per-key request-log audit trail.
   createApiKeyRequestLogCleanupJob: createApiKeyRequestLogCleanupJob({
     requestLog: createApiKeyRequestLogRepository(db),
+  }),
+  // V5-P14 PL-01: bounded daily retention sweep over identifying operational
+  // trails. A zero-day config keeps that table forever and skips its branch.
+  createDataRetentionCleanupJob: createDataRetentionCleanupJob({
+    audit: createAuditRepository(db),
+    emailLog: createEmailLogRepository(db),
+    auditRetentionDays: config.retention.auditDays,
+    emailLogRetentionDays: config.retention.emailLogDays,
   }),
 });
 

@@ -56,6 +56,8 @@ import {
   pinQuickAuthMarkerKey,
   PIN_TOKEN_ACCOUNT_NAMESPACE,
   rememberedDeviceKey,
+  rememberedDevicesForUserKey,
+  REMEMBERED_DEVICE_TTL_SECONDS,
   TWO_FACTOR_ACCOUNT_NAMESPACE,
 } from './loginThrottle';
 import type { TwoFactorService } from './twoFactorService';
@@ -276,10 +278,10 @@ export interface AuthService {
   quickAuth(input: QuickAuthInput): Promise<QuickAuthResult>;
   /**
    * Remember this device for OAuth PIN quick re-auth (§399 §B). Mints an opaque
-   * device id bound to the user in Redis (no TTL — "until cleared") and returns it
-   * (for the `bt_rdid` cookie) plus the identity the client stores (username +
-   * avatar + user id, never a token). PIN users only — throws `PIN_NOT_ENABLED`
-   * for a PIN-less account, which can never be remembered.
+   * device id bound to the user in Redis for the lifetime of the signed browser
+   * cookie and adds it to the user's deletion index. Returns the id plus the
+   * identity the client stores (username + avatar + user id, never a token).
+   * PIN users only — throws `PIN_NOT_ENABLED` for a PIN-less account.
    */
   rememberDevice(
     userId: string,
@@ -1506,8 +1508,24 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // memory is dead: clear the binding + window and fall back to full login.
       if (!user || user.status !== 'active' || !user.pinEnabled || !user.pinHash) {
         await redis.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+        if (boundUserId) {
+          await redis.srem(rememberedDevicesForUserKey(boundUserId), deviceId);
+        }
         throw unknownDevice();
       }
+
+      // Upgrade pre-retention bindings lazily when their browser next uses
+      // quick auth: make them enumerable and add the cookie-aligned TTL only
+      // when the legacy key is still immortal.
+      const bindingTtl = await redis.ttl(rememberedDeviceKey(deviceId));
+      const lifecycle = redis
+        .multi()
+        .sadd(rememberedDevicesForUserKey(user.id), deviceId)
+        .expire(rememberedDevicesForUserKey(user.id), REMEMBERED_DEVICE_TTL_SECONDS);
+      if (bindingTtl === -1) {
+        lifecycle.expire(rememberedDeviceKey(deviceId), REMEMBERED_DEVICE_TTL_SECONDS);
+      }
+      await lifecycle.exec();
 
       // Probe (no PIN entered): auto-pass ONLY while the quick-auth window from a
       // recent PIN entry is still open (owner: "tapping your name while the PIN
@@ -1568,11 +1586,16 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw badRequest('A PIN is required to remember this device.', 'PIN_NOT_ENABLED');
       }
       // Opaque, high-entropy device id — the value of the signed `bt_rdid` cookie.
-      // Stored with NO TTL: the memory persists until "Another account" / forget
-      // (owner: "until cleared — no automatic expiry"). The cookie is signed, so
-      // its integrity is guarded even though the id is stored raw (like a session).
+      // The binding and reverse index expire with the signed browser cookie.
+      // This preserves long-lived account memory while bounding abandoned
+      // server state and making every live binding enumerable for deletion.
       const deviceId = generateToken().token;
-      await redis.set(rememberedDeviceKey(deviceId), user.id);
+      await redis
+        .multi()
+        .set(rememberedDeviceKey(deviceId), user.id, 'EX', REMEMBERED_DEVICE_TTL_SECONDS)
+        .sadd(rememberedDevicesForUserKey(user.id), deviceId)
+        .expire(rememberedDevicesForUserKey(user.id), REMEMBERED_DEVICE_TTL_SECONDS)
+        .exec();
       await audit.record({
         actorId: user.id,
         action: AuditAction.RememberedDeviceCreated,
@@ -1593,6 +1616,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const boundUserId = await redis.get(rememberedDeviceKey(deviceId));
       await redis.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
       if (boundUserId) {
+        await redis.srem(rememberedDevicesForUserKey(boundUserId), deviceId);
         await audit.record({
           actorId: boundUserId,
           action: AuditAction.RememberedDeviceForgotten,

@@ -9,7 +9,12 @@ import { badRequest, tooManyRequests, unauthorized } from '../../errors';
 import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
-import { ACCOUNT_DELETE_NAMESPACE } from '../auth/loginThrottle';
+import {
+  ACCOUNT_DELETE_NAMESPACE,
+  pinQuickAuthMarkerKey,
+  rememberedDeviceKey,
+  rememberedDevicesForUserKey,
+} from '../auth/loginThrottle';
 import type { TwoFactorService } from '../auth/twoFactorService';
 import type { MirrorService } from '../mirror/mirrorService';
 import type { PasswordHasher } from '../password/passwordHasher';
@@ -100,6 +105,35 @@ export function createAccountDeletionService(
     config.rateLimits.loginAccount,
   );
 
+  async function removeRememberedDeviceBindings(userId: string): Promise<void> {
+    const indexKey = rememberedDevicesForUserKey(userId);
+    const deviceIds = new Set(await redis.smembers(indexKey));
+
+    // Compatibility for bindings written before the reverse index existed.
+    // SCAN stays bounded/non-blocking and can be removed after the 400-day
+    // legacy horizon; new and lazily-used bindings come from the O(1) index.
+    let cursor = '0';
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', 'remember_dev:*', 'COUNT', 100);
+      if (keys.length > 0) {
+        const userIds = await redis.mget(...keys);
+        for (const [index, rememberedUserId] of userIds.entries()) {
+          if (rememberedUserId === userId) {
+            deviceIds.add(keys[index]!.slice('remember_dev:'.length));
+          }
+        }
+      }
+      cursor = nextCursor;
+    } while (cursor !== '0');
+
+    const transaction = redis.multi();
+    for (const deviceId of deviceIds) {
+      transaction.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+    }
+    transaction.del(indexKey);
+    await transaction.exec();
+  }
+
   /** Count one failed re-auth, audit it, and raise the right error. */
   async function failReauth(userId: string, ip: string | null | undefined, kind: string) {
     const decision = await throttle.consume(userId);
@@ -178,6 +212,7 @@ export function createAccountDeletionService(
       // credentials need no separate revocation: their rows cascade, and the
       // bearer lookup resolves from the DB per request.
       await sessions.destroyAllForUser(userId);
+      await removeRememberedDeviceBindings(userId);
       // MIRRORCHAIN §7: hand off owned group portfolios (transfer-on-delete to
       // the oldest manager, or dissolve) in the SAME pre-delete slot, so the
       // subsequent row delete only cascades this member's own copy away and
@@ -190,14 +225,15 @@ export function createAccountDeletionService(
       await invalidateAllRealtimePrincipals(userId);
       await chatRepo.purgeOrphanedConversations();
 
-      // The account is gone, so the trail carries no actor FK — only the
-      // username (PII is email-only, §11 Privacy), matching the admin delete.
+      // The account is gone, so the trail carries no actor FK or copied direct
+      // identifier. The opaque target UUID is enough to correlate this event
+      // until the audit-retention sweep removes it.
       await audit.record({
         action: AuditAction.UserDeleted,
         targetType: 'user',
         targetId: userId,
         ip,
-        meta: { username: user.username, via: 'self' },
+        meta: { via: 'self' },
       });
     },
   };

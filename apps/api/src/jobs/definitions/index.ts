@@ -84,6 +84,14 @@ export {
   API_KEY_REQUEST_LOG_CLEANUP_TZ,
   type ApiKeyRequestLogCleanupJobDeps,
 } from './apiKeyJobs';
+export {
+  createDataRetentionCleanupJob,
+  DATA_RETENTION_DELETE_BATCH_SIZE,
+  DATA_RETENTION_CLEANUP_SCHEDULER_ID,
+  DATA_RETENTION_CLEANUP_CRON,
+  DATA_RETENTION_CLEANUP_TZ,
+  type DataRetentionCleanupJobDeps,
+} from './retentionJobs';
 
 export {
   createDigestDailyJob,
