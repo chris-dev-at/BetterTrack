@@ -80,7 +80,10 @@ export const PIN_FALLBACK_THRESHOLD = 5;
  * survive forever. The value is the user id (the device is bound to one account
  * at a time).
  */
-export const rememberedDeviceKey = (deviceId: string) => `remember_dev:${deviceId}`;
+const REMEMBERED_DEVICE_KEY_PREFIX = 'remember_dev:';
+
+export const rememberedDeviceKey = (deviceId: string) =>
+  `${REMEMBERED_DEVICE_KEY_PREFIX}${deviceId}`;
 
 /** Reverse index that lets account deletion enumerate every remembered device. */
 export const rememberedDevicesForUserKey = (userId: string) => `remember_dev_user:${userId}`;
@@ -98,6 +101,60 @@ export const REMEMBERED_DEVICE_TTL_SECONDS = 400 * 24 * 60 * 60;
  * refreshes it, so the window measures time since the last actual PIN.
  */
 export const pinQuickAuthMarkerKey = (deviceId: string) => `pin_quick_ok:${deviceId}`;
+
+const REMEMBERED_DEVICE_SCAN_COUNT = 100;
+const REMEMBERED_DEVICE_DELETE_BATCH_SIZE = 100;
+
+/**
+ * Remove every remembered-device binding owned by a deleted account.
+ *
+ * Current bindings are enumerable through the reverse index. Bindings created
+ * before that index existed can remain immortal until they are used, so the
+ * compatibility scan must stay until a dedicated migration expires or removes
+ * every legacy key. Small SCAN pages and bounded deletion transactions keep the
+ * request from issuing one unbounded Redis command batch.
+ */
+export async function removeRememberedDeviceBindings(redis: Redis, userId: string): Promise<void> {
+  const indexKey = rememberedDevicesForUserKey(userId);
+  const deviceIds = new Set(await redis.smembers(indexKey));
+
+  let cursor = '0';
+  do {
+    const [nextCursor, keys] = await redis.scan(
+      cursor,
+      'MATCH',
+      `${REMEMBERED_DEVICE_KEY_PREFIX}*`,
+      'COUNT',
+      REMEMBERED_DEVICE_SCAN_COUNT,
+    );
+    if (keys.length > 0) {
+      const userIds = await redis.mget(...keys);
+      for (const [index, rememberedUserId] of userIds.entries()) {
+        if (rememberedUserId === userId) {
+          deviceIds.add(keys[index]!.slice(REMEMBERED_DEVICE_KEY_PREFIX.length));
+        }
+      }
+    }
+    cursor = nextCursor;
+  } while (cursor !== '0');
+
+  const orderedDeviceIds = [...deviceIds];
+  for (
+    let start = 0;
+    start < orderedDeviceIds.length;
+    start += REMEMBERED_DEVICE_DELETE_BATCH_SIZE
+  ) {
+    const transaction = redis.multi();
+    for (const deviceId of orderedDeviceIds.slice(
+      start,
+      start + REMEMBERED_DEVICE_DELETE_BATCH_SIZE,
+    )) {
+      transaction.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+    }
+    await transaction.exec();
+  }
+  await redis.del(indexKey);
+}
 
 /**
  * Length of the quick re-auth auto-pass window, in seconds (~15 min, owner spec

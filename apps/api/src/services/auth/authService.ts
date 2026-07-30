@@ -1514,18 +1514,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw unknownDevice();
       }
 
-      // Upgrade pre-retention bindings lazily when their browser next uses
-      // quick auth: make them enumerable and add the cookie-aligned TTL only
-      // when the legacy key is still immortal.
-      const bindingTtl = await redis.ttl(rememberedDeviceKey(deviceId));
-      const lifecycle = redis
+      // Make pre-retention bindings enumerable and keep both server-side keys
+      // aligned with the browser cookie, whose lifetime slides after a
+      // successful quick re-auth.
+      await redis
         .multi()
         .sadd(rememberedDevicesForUserKey(user.id), deviceId)
-        .expire(rememberedDevicesForUserKey(user.id), REMEMBERED_DEVICE_TTL_SECONDS);
-      if (bindingTtl === -1) {
-        lifecycle.expire(rememberedDeviceKey(deviceId), REMEMBERED_DEVICE_TTL_SECONDS);
-      }
-      await lifecycle.exec();
+        .expire(rememberedDevicesForUserKey(user.id), REMEMBERED_DEVICE_TTL_SECONDS)
+        .expire(rememberedDeviceKey(deviceId), REMEMBERED_DEVICE_TTL_SECONDS)
+        .exec();
 
       // Probe (no PIN entered): auto-pass ONLY while the quick-auth window from a
       // recent PIN entry is still open (owner: "tapping your name while the PIN

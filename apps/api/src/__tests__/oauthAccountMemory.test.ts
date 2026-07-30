@@ -119,6 +119,20 @@ describe('POST /auth/remembered-device — remember this device (PIN users only)
     expect(await harness.ctx.redis.smembers(rememberedDevicesForUserKey(user.id))).toContain(
       deviceId,
     );
+
+    // A later quick auth must slide the binding lifetime with the cookie. This
+    // protects an actively used remembered device from expiring on day 400.
+    await harness.ctx.redis.expire(rememberedDeviceKey(deviceId), 60);
+    await harness.ctx.redis.expire(rememberedDevicesForUserKey(user.id), 60);
+    await expect(harness.ctx.auth.quickAuth({ deviceId })).resolves.toEqual({
+      status: 'pin_required',
+    });
+    expect(await harness.ctx.redis.ttl(rememberedDeviceKey(deviceId))).toBe(
+      REMEMBERED_DEVICE_TTL_SECONDS,
+    );
+    expect(await harness.ctx.redis.ttl(rememberedDevicesForUserKey(user.id))).toBe(
+      REMEMBERED_DEVICE_TTL_SECONDS,
+    );
   });
 
   it('refuses to remember a PIN-less account (only PIN users can be remembered)', async () => {
