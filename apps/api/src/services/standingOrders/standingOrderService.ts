@@ -18,6 +18,7 @@ import type {
 import type { TransactionRepository } from '../../data/repositories/transactionRepository';
 import { badRequest, notFound } from '../../errors';
 import type { Logger } from '../../logger';
+import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { MarketDataService } from '../../providers';
 import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 import {
@@ -73,6 +74,11 @@ export interface StandingOrderServiceDeps {
   /** Timezone for calendar-day resolution; defaults to {@link STANDING_ORDERS_SCAN_TZ}. */
   timezone?: string;
   logger?: Logger;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'isParanoid' | 'runAllowed'>;
+  /** Registry-branded worker filter for the `standingOrders.process` scan. */
+  isParanoidForProcessing?: (userId: string) => Promise<boolean>;
+  /** Registry-bound transition lock held across one order's complete booking path. */
+  runIfAllowedForProcessing?: (userId: string, action: () => Promise<void>) => Promise<boolean>;
 }
 
 /** Outcome tallies for one scan, surfaced to the job log. */
@@ -127,6 +133,22 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
   } = deps;
   const now = deps.now ?? Date.now;
   const timezone = deps.timezone ?? STANDING_ORDERS_SCAN_TZ;
+  const isParanoidForProcessing =
+    deps.isParanoidForProcessing ??
+    (deps.paranoid ? (userId: string) => deps.paranoid!.isParanoid(userId) : undefined);
+  const runIfAllowedForProcessing =
+    deps.runIfAllowedForProcessing ??
+    (deps.paranoid
+      ? async (userId: string, action: () => Promise<void>) => {
+          try {
+            await deps.paranoid!.runAllowed(userId, 'standingOrderExecution', action);
+            return true;
+          } catch (error) {
+            if (error instanceof ParanoidModeError) return false;
+            throw error;
+          }
+        }
+      : undefined);
 
   function toDto(record: StandingOrderWithAsset, today: string): StandingOrder {
     return {
@@ -165,17 +187,20 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
 
   return {
     async list(userId, opts) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       const today = calendarDayInTimezone(now(), timezone);
       const records = await repo.listForUser(userId, { portfolioId: opts?.portfolioId });
       return { orders: records.map((r) => toDto(r, today)) };
     },
 
     async get(userId, id) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       const record = await requireOwnedOrder(userId, id);
       return toDto(record, calendarDayInTimezone(now(), timezone));
     },
 
     async create(userId, input) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       // Ownership: the target portfolio must be the caller's own (§8/§10).
       const portfolio = await portfolioRepo.findByIdForUser(userId, input.portfolioId);
       if (!portfolio) throw notFound('Portfolio not found.');
@@ -217,6 +242,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     },
 
     async update(userId, id, patch) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       const existing = await requireOwnedOrder(userId, id);
       const endDate = patch.endDate === undefined ? existing.endDate : patch.endDate;
       if (endDate !== null && endDate < existing.startDate) {
@@ -235,6 +261,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     },
 
     async pause(userId, id) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       await requireOwnedOrder(userId, id);
       const record = await repo.setStatus(userId, id, 'paused');
       if (!record) throw ORDER_NOT_FOUND();
@@ -242,6 +269,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     },
 
     async resume(userId, id) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       await requireOwnedOrder(userId, id);
       const record = await repo.setStatus(userId, id, 'active');
       if (!record) throw ORDER_NOT_FOUND();
@@ -249,6 +277,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     },
 
     async remove(userId, id) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       const removed = await repo.remove(userId, id);
       if (!removed) throw ORDER_NOT_FOUND();
     },
@@ -266,73 +295,84 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       };
 
       for (const order of orders) {
-        const due = dueOccurrence(specOf(order), today);
-        if (due === null) continue;
-        // Fast path: this exact period (or a later one) is already booked. The
-        // claim below is the authoritative guard; this just avoids a needless
-        // quote fetch on the common already-booked case.
-        if (order.lastPeriodKey !== null && order.lastPeriodKey >= due) continue;
+        // Definitions are vault-owned in paranoid mode. A row seen by a stale
+        // worker around the enable transaction is skipped before quote, claim,
+        // ledger write, or snapshot invalidation.
+        if (await isParanoidForProcessing?.(order.userId)) continue;
+        const processOrder = async () => {
+          const due = dueOccurrence(specOf(order), today);
+          if (due === null) return;
+          // Fast path: this exact period (or a later one) is already booked. The
+          // claim below is the authoritative guard; this just avoids a needless
+          // quote fetch on the common already-booked case.
+          if (order.lastPeriodKey !== null && order.lastPeriodKey >= due) return;
 
-        const skipped = skippedPeriodCount(specOf(order), order.lastPeriodKey, due);
-        if (skipped > 0) {
-          logger?.info(
-            { orderId: order.id, from: order.lastPeriodKey, due, skipped },
-            'standing order: catching up — booking newest period only, skipping older',
-          );
-        }
-
-        // Retriable pre-checks BEFORE claiming, so a failure never claims the
-        // period and it retries cleanly next run (no double-book risk).
-        let bookPrice: number | null = null;
-        try {
-          if (order.kind === 'buy-asset') {
-            bookPrice = await resolveQuotePrice(order);
-          } else if (order.kind === 'cash-deduct') {
-            await assertCashCovers(order);
+          const skipped = skippedPeriodCount(specOf(order), order.lastPeriodKey, due);
+          if (skipped > 0) {
+            logger?.info(
+              { orderId: order.id, from: order.lastPeriodKey, due, skipped },
+              'standing order: catching up — booking newest period only, skipping older',
+            );
           }
-        } catch (err) {
-          result.deferred += 1;
-          logger?.warn(
-            { orderId: order.id, kind: order.kind, due, err },
-            'standing order: period deferred (provider failure / insufficient cash), will retry',
-          );
-          continue;
-        }
 
-        const claimed = await repo.claimPeriod(order.id, due);
-        if (!claimed) {
-          result.skippedDuplicate += 1;
-          continue;
-        }
+          // Retriable pre-checks BEFORE claiming, so a failure never claims the
+          // period and it retries cleanly next run (no double-book risk).
+          let bookPrice: number | null = null;
+          try {
+            if (order.kind === 'buy-asset') {
+              bookPrice = await resolveQuotePrice(order);
+            } else if (order.kind === 'cash-deduct') {
+              await assertCashCovers(order);
+            }
+          } catch (err) {
+            result.deferred += 1;
+            logger?.warn(
+              { orderId: order.id, kind: order.kind, due, err },
+              'standing order: period deferred (provider failure / insufficient cash), will retry',
+            );
+            return;
+          }
 
-        try {
-          await bookRow(order, bookPrice, executedAt);
-        } catch (err) {
-          // The claim stays as a tombstone (not retried) — booking at-most-once
-          // is safer for money than risking a double-book on retry.
-          logger?.error(
-            { orderId: order.id, kind: order.kind, due, err },
-            'standing order: booking failed AFTER claim; period will not retry',
-          );
-          continue;
-        }
+          const claimed = await repo.claimPeriod(order.id, due);
+          if (!claimed) {
+            result.skippedDuplicate += 1;
+            return;
+          }
 
-        // Bookkeeping + snapshot invalidation are best-effort — the ledger row is
-        // already durable; a hiccup here self-heals (next run / nightly reroll).
-        try {
-          await repo.markBooked(order.id, due, executedAt);
-        } catch (err) {
-          logger?.warn({ orderId: order.id, due, err }, 'standing order: markBooked failed');
+          try {
+            await bookRow(order, bookPrice, executedAt);
+          } catch (err) {
+            // The claim stays as a tombstone (not retried) — booking at-most-once
+            // is safer for money than risking a double-book on retry.
+            logger?.error(
+              { orderId: order.id, kind: order.kind, due, err },
+              'standing order: booking failed AFTER claim; period will not retry',
+            );
+            return;
+          }
+
+          // Bookkeeping + snapshot invalidation are best-effort — the ledger row is
+          // already durable; a hiccup here self-heals (next run / nightly reroll).
+          try {
+            await repo.markBooked(order.id, due, executedAt);
+          } catch (err) {
+            logger?.warn({ orderId: order.id, due, err }, 'standing order: markBooked failed');
+          }
+          try {
+            await snapshots.invalidate(order.portfolioId, dayOf(executedAt));
+          } catch (err) {
+            logger?.warn(
+              { orderId: order.id, due, err },
+              'standing order: snapshot invalidation failed',
+            );
+          }
+          result.booked += 1;
+        };
+        if (runIfAllowedForProcessing) {
+          await runIfAllowedForProcessing(order.userId, processOrder);
+        } else {
+          await processOrder();
         }
-        try {
-          await snapshots.invalidate(order.portfolioId, dayOf(executedAt));
-        } catch (err) {
-          logger?.warn(
-            { orderId: order.id, due, err },
-            'standing order: snapshot invalidation failed',
-          );
-        }
-        result.booked += 1;
       }
 
       logger?.info(result, 'standing orders: scan complete');

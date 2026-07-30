@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { assets, conglomeratePositions, conglomerates } from '../schema';
@@ -125,7 +125,11 @@ export function createConglomerateRepository(db: Database) {
      * is unknown *or* belongs to another user. Positions are joined to their
      * asset identity and ordered by `sortOrder`.
      */
-    async findByIdForOwner(ownerId: string, id: string): Promise<ConglomerateDetailRow | null> {
+    async findByIdForOwner(
+      ownerId: string,
+      id: string,
+      options?: { globalAssetMetadataOnly?: boolean },
+    ): Promise<ConglomerateDetailRow | null> {
       const headRows = await db
         .select({
           id: conglomerates.id,
@@ -154,7 +158,13 @@ export function createConglomerateRepository(db: Database) {
           type: assets.type,
         })
         .from(conglomeratePositions)
-        .leftJoin(assets, eq(conglomeratePositions.assetId, assets.id))
+        .leftJoin(
+          assets,
+          and(
+            eq(conglomeratePositions.assetId, assets.id),
+            options?.globalAssetMetadataOnly ? isNull(assets.ownerId) : undefined,
+          ),
+        )
         .where(eq(conglomeratePositions.conglomerateId, id))
         .orderBy(asc(conglomeratePositions.sortOrder));
 
@@ -196,15 +206,19 @@ export function createConglomerateRepository(db: Database) {
             sortOrder: r.sortOrder,
             child,
           });
-        } else if (r.assetId !== null && r.symbol !== null) {
+        } else if (r.assetId !== null) {
           positions.push({
             kind: 'asset',
             assetId: r.assetId,
             weightPct: Number(r.weightPct),
             sortOrder: r.sortOrder,
             asset: {
-              symbol: r.symbol,
-              name: r.name ?? r.symbol,
+              // Structure-only paranoid backtests deliberately retain the id/
+              // weight edge while refusing to select custom-asset metadata.
+              // The global-only asset lookup then turns that edge into the
+              // established opaque ASSET_NOT_FOUND before provider history.
+              symbol: r.symbol ?? '',
+              name: r.name ?? r.symbol ?? '',
               currency: r.currency ?? 'EUR',
               type: r.type ?? 'stock',
             },
@@ -293,7 +307,11 @@ export function createConglomerateRepository(db: Database) {
      * omitted, so it can never be embedded into a Conglomerate and leaked —
      * mirrors `portfolioService.loadVisibleAssets`, no IDOR (§8, §10).
      */
-    async visibleAssetIds(ownerId: string, ids: readonly string[]): Promise<Set<string>> {
+    async visibleAssetIds(
+      ownerId: string,
+      ids: readonly string[],
+      options?: { includeCustomAssets?: boolean },
+    ): Promise<Set<string>> {
       if (ids.length === 0) return new Set();
       const rows = await db
         .select({ id: assets.id })
@@ -301,9 +319,31 @@ export function createConglomerateRepository(db: Database) {
         .where(
           and(
             inArray(assets.id, [...ids]),
-            sql`(${assets.ownerId} is null or ${assets.ownerId} = ${ownerId})`,
+            // `includeCustomAssets: false` narrows visibility to GLOBAL market
+            // assets, so a paranoid account cannot embed (or re-embed) its own
+            // custom asset and the service 404s it exactly like a foreign one.
+            options?.includeCustomAssets === false
+              ? isNull(assets.ownerId)
+              : sql`(${assets.ownerId} is null or ${assets.ownerId} = ${ownerId})`,
           ),
         );
+      return new Set(rows.map((r) => r.id));
+    },
+
+    /**
+     * The owner's conglomerates that DIRECTLY embed at least one of the
+     * owner's own custom assets. Identity only — no name, no asset metadata —
+     * so the paranoid branch can decide what to refuse before reading content.
+     * Transitive taint through nesting is resolved by the service over
+     * {@link nestingEdges}.
+     */
+    async ownedAssetConglomerateIds(ownerId: string): Promise<Set<string>> {
+      const rows = await db
+        .selectDistinct({ id: conglomeratePositions.conglomerateId })
+        .from(conglomeratePositions)
+        .innerJoin(conglomerates, eq(conglomeratePositions.conglomerateId, conglomerates.id))
+        .innerJoin(assets, eq(conglomeratePositions.assetId, assets.id))
+        .where(and(eq(conglomerates.ownerId, ownerId), eq(assets.ownerId, ownerId)));
       return new Set(rows.map((r) => r.id));
     },
 

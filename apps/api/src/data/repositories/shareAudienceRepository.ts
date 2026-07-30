@@ -257,7 +257,71 @@ export function createShareAudienceRepository(db: Database) {
 
     // ── Shared With Me listings (same authorization, as a set) ──────────────
 
-    async listFriendPortfolios(viewerId: string): Promise<FriendPortfolioRow[]> {
+    /**
+     * Discover only the account ids that may contribute rows to Shared With Me.
+     * This intentionally selects no subject/profile fields: callers use it to
+     * acquire the optional owner privacy locks before the enriched list query.
+     */
+    async listFriendShareOwnerIds(viewerId: string): Promise<string[]> {
+      const [portfolioOwners, conglomerateOwners, watchlistOwners, ideaOwners] = await Promise.all([
+        db
+          .selectDistinct({ ownerId: portfolios.userId })
+          .from(portfolios)
+          .innerJoin(users, and(eq(users.id, portfolios.userId), eq(users.status, 'active')))
+          .innerJoin(
+            shareAudiences,
+            and(eq(shareAudiences.kind, 'portfolio'), eq(shareAudiences.subjectId, portfolios.id)),
+          )
+          .innerJoin(friendships, friendshipWith(viewerId, portfolios.userId))
+          .where(and(isNull(portfolios.archivedAt), audienceGrants(viewerId))),
+        db
+          .selectDistinct({ ownerId: conglomerates.ownerId })
+          .from(conglomerates)
+          .innerJoin(users, and(eq(users.id, conglomerates.ownerId), eq(users.status, 'active')))
+          .innerJoin(
+            shareAudiences,
+            and(
+              eq(shareAudiences.kind, 'conglomerate'),
+              eq(shareAudiences.subjectId, conglomerates.id),
+            ),
+          )
+          .innerJoin(friendships, friendshipWith(viewerId, conglomerates.ownerId))
+          .where(audienceGrants(viewerId)),
+        db
+          .selectDistinct({ ownerId: watchlists.userId })
+          .from(watchlists)
+          .innerJoin(users, and(eq(users.id, watchlists.userId), eq(users.status, 'active')))
+          .innerJoin(
+            shareAudiences,
+            and(eq(shareAudiences.kind, 'watchlist'), eq(shareAudiences.subjectId, watchlists.id)),
+          )
+          .innerJoin(friendships, friendshipWith(viewerId, watchlists.userId))
+          .where(audienceGrants(viewerId)),
+        db
+          .selectDistinct({ ownerId: ideas.ownerId })
+          .from(ideas)
+          .innerJoin(users, and(eq(users.id, ideas.ownerId), eq(users.status, 'active')))
+          .innerJoin(
+            shareAudiences,
+            and(eq(shareAudiences.kind, 'idea'), eq(shareAudiences.subjectId, ideas.id)),
+          )
+          .innerJoin(friendships, friendshipWith(viewerId, ideas.ownerId))
+          .where(audienceGrants(viewerId)),
+      ]);
+      return [
+        ...new Set(
+          [...portfolioOwners, ...conglomerateOwners, ...watchlistOwners, ...ideaOwners].map(
+            (row) => row.ownerId,
+          ),
+        ),
+      ];
+    },
+
+    async listFriendPortfolios(
+      viewerId: string,
+      ownerIds?: readonly string[],
+    ): Promise<FriendPortfolioRow[]> {
+      if (ownerIds?.length === 0) return [];
       return db
         .select({
           portfolioId: portfolios.id,
@@ -273,11 +337,21 @@ export function createShareAudienceRepository(db: Database) {
           and(eq(shareAudiences.kind, 'portfolio'), eq(shareAudiences.subjectId, portfolios.id)),
         )
         .innerJoin(friendships, friendshipWith(viewerId, portfolios.userId))
-        .where(and(isNull(portfolios.archivedAt), audienceGrants(viewerId)))
+        .where(
+          and(
+            isNull(portfolios.archivedAt),
+            audienceGrants(viewerId),
+            ownerIds ? inArray(portfolios.userId, [...ownerIds]) : undefined,
+          ),
+        )
         .orderBy(asc(users.username), asc(portfolios.name));
     },
 
-    async listFriendConglomerates(viewerId: string): Promise<FriendConglomerateRow[]> {
+    async listFriendConglomerates(
+      viewerId: string,
+      ownerIds?: readonly string[],
+    ): Promise<FriendConglomerateRow[]> {
+      if (ownerIds?.length === 0) return [];
       return db
         .select({
           conglomerateId: conglomerates.id,
@@ -301,11 +375,20 @@ export function createShareAudienceRepository(db: Database) {
           ),
         )
         .innerJoin(friendships, friendshipWith(viewerId, conglomerates.ownerId))
-        .where(audienceGrants(viewerId))
+        .where(
+          and(
+            audienceGrants(viewerId),
+            ownerIds ? inArray(conglomerates.ownerId, [...ownerIds]) : undefined,
+          ),
+        )
         .orderBy(asc(users.username), asc(conglomerates.name));
     },
 
-    async listFriendWatchlists(viewerId: string): Promise<FriendWatchlistRow[]> {
+    async listFriendWatchlists(
+      viewerId: string,
+      ownerIds?: readonly string[],
+    ): Promise<FriendWatchlistRow[]> {
+      if (ownerIds?.length === 0) return [];
       return db
         .select({
           watchlistId: watchlists.id,
@@ -325,11 +408,20 @@ export function createShareAudienceRepository(db: Database) {
           and(eq(shareAudiences.kind, 'watchlist'), eq(shareAudiences.subjectId, watchlists.id)),
         )
         .innerJoin(friendships, friendshipWith(viewerId, watchlists.userId))
-        .where(audienceGrants(viewerId))
+        .where(
+          and(
+            audienceGrants(viewerId),
+            ownerIds ? inArray(watchlists.userId, [...ownerIds]) : undefined,
+          ),
+        )
         .orderBy(asc(users.username), asc(watchlists.name));
     },
 
-    async listFriendIdeas(viewerId: string): Promise<FriendIdeaRow[]> {
+    async listFriendIdeas(
+      viewerId: string,
+      ownerIds?: readonly string[],
+    ): Promise<FriendIdeaRow[]> {
+      if (ownerIds?.length === 0) return [];
       return db
         .select({
           ideaId: ideas.id,
@@ -346,7 +438,12 @@ export function createShareAudienceRepository(db: Database) {
           and(eq(shareAudiences.kind, 'idea'), eq(shareAudiences.subjectId, ideas.id)),
         )
         .innerJoin(friendships, friendshipWith(viewerId, ideas.ownerId))
-        .where(audienceGrants(viewerId))
+        .where(
+          and(
+            audienceGrants(viewerId),
+            ownerIds ? inArray(ideas.ownerId, [...ownerIds]) : undefined,
+          ),
+        )
         .orderBy(asc(users.username), asc(ideas.name));
     },
 
@@ -641,6 +738,40 @@ export function createShareAudienceRepository(db: Database) {
         .where(eq(watchlists.id, subjectId))
         .limit(1);
       return row;
+    },
+
+    /** Authoritative owner lookup for multi-principal privacy guards. */
+    async getSubjectOwner(kind: ShareKind, subjectId: string): Promise<string | undefined> {
+      if (kind === 'idea') {
+        const [row] = await db
+          .select({ ownerId: ideas.ownerId })
+          .from(ideas)
+          .where(eq(ideas.id, subjectId))
+          .limit(1);
+        return row?.ownerId;
+      }
+      if (kind === 'portfolio') {
+        const [row] = await db
+          .select({ ownerId: portfolios.userId })
+          .from(portfolios)
+          .where(eq(portfolios.id, subjectId))
+          .limit(1);
+        return row?.ownerId;
+      }
+      if (kind === 'conglomerate') {
+        const [row] = await db
+          .select({ ownerId: conglomerates.ownerId })
+          .from(conglomerates)
+          .where(eq(conglomerates.id, subjectId))
+          .limit(1);
+        return row?.ownerId;
+      }
+      const [row] = await db
+        .select({ ownerId: watchlists.userId })
+        .from(watchlists)
+        .where(eq(watchlists.id, subjectId))
+        .limit(1);
+      return row?.ownerId;
     },
 
     // ── Owner-facing audience management ────────────────────────────────────

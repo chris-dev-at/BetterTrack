@@ -402,6 +402,10 @@ describe('POST /imports — staged preview', () => {
     );
     const search: SearchService = {
       search: searchCatalog,
+      searchWithFreshness: async (userId, query) => ({
+        ...(await searchCatalog(userId, query)),
+        freshness: null,
+      }),
       catalogFreshness: async () => null,
       enrichmentSettled: async () => {},
     };
@@ -541,6 +545,10 @@ describe('POST /imports — staged preview', () => {
     );
     const search: SearchService = {
       search: searchCatalog,
+      searchWithFreshness: async (userId, query) => ({
+        ...(await searchCatalog(userId, query)),
+        freshness: null,
+      }),
       catalogFreshness: async () => null,
       enrichmentSettled: async () => {},
     };

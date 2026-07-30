@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, ne } from 'drizzle-orm';
 
 import type { AlertKind, AlertStatus } from '@bettertrack/contracts';
 
@@ -78,6 +78,11 @@ export interface CreateAlertInput {
   repeat: boolean;
 }
 
+export interface AlertAssetVisibilityOptions {
+  /** False restricts CRUD joins to global market assets before identity is selected. */
+  includeCustomAssets?: boolean;
+}
+
 const CRUD_COLUMNS = {
   id: alerts.id,
   userId: alerts.userId,
@@ -131,6 +136,19 @@ function toRecord(row: CrudRow): AlertRecord {
   };
 }
 
+type ActiveAlertRow = Omit<ActiveAlert, 'threshold' | 'refPrice'> & {
+  threshold: string;
+  refPrice: string | null;
+};
+
+function toActiveAlert(row: ActiveAlertRow): ActiveAlert {
+  return {
+    ...row,
+    threshold: Number(row.threshold),
+    refPrice: row.refPrice === null ? null : Number(row.refPrice),
+  };
+}
+
 export function createAlertRepository(db: Database) {
   return {
     /** Create an alert. `status` starts `active`; `refPrice` is caller-captured. */
@@ -154,23 +172,41 @@ export function createAlertRepository(db: Database) {
     },
 
     /** The caller's alerts, newest first, each with its asset identity. */
-    async listForUser(userId: string): Promise<AlertRecord[]> {
+    async listForUser(
+      userId: string,
+      options?: AlertAssetVisibilityOptions,
+    ): Promise<AlertRecord[]> {
       const rows = await db
         .select(CRUD_COLUMNS)
         .from(alerts)
         .innerJoin(assets, eq(alerts.assetId, assets.id))
-        .where(eq(alerts.userId, userId))
+        .where(
+          and(
+            eq(alerts.userId, userId),
+            options?.includeCustomAssets === false ? isNull(assets.ownerId) : undefined,
+          ),
+        )
         .orderBy(alerts.id);
       return rows.map((r) => toRecord(r as CrudRow)).reverse();
     },
 
     /** One owned alert, or null when the id is missing or another user's (§10). */
-    async findByIdForUser(userId: string, id: string): Promise<AlertRecord | null> {
+    async findByIdForUser(
+      userId: string,
+      id: string,
+      options?: AlertAssetVisibilityOptions,
+    ): Promise<AlertRecord | null> {
       const [row] = await db
         .select(CRUD_COLUMNS)
         .from(alerts)
         .innerJoin(assets, eq(alerts.assetId, assets.id))
-        .where(and(eq(alerts.id, id), eq(alerts.userId, userId)))
+        .where(
+          and(
+            eq(alerts.id, id),
+            eq(alerts.userId, userId),
+            options?.includeCustomAssets === false ? isNull(assets.ownerId) : undefined,
+          ),
+        )
         .limit(1);
       return row ? toRecord(row as CrudRow) : null;
     },
@@ -184,7 +220,9 @@ export function createAlertRepository(db: Database) {
       userId: string,
       id: string,
       patch: { threshold?: number; repeat?: boolean },
+      options?: AlertAssetVisibilityOptions,
     ): Promise<AlertRecord | null> {
+      if (!(await this.findByIdForUser(userId, id, options))) return null;
       const set: { threshold?: string; repeat?: boolean } = {};
       if (patch.threshold !== undefined) set.threshold = String(patch.threshold);
       if (patch.repeat !== undefined) set.repeat = patch.repeat;
@@ -196,18 +234,23 @@ export function createAlertRepository(db: Database) {
           .returning({ id: alerts.id });
         if (updated.length === 0) return null;
       }
-      return this.findByIdForUser(userId, id);
+      return this.findByIdForUser(userId, id, options);
     },
 
     /** Re-arm an owned alert: reset it to `active`. Returns null if not the caller's. */
-    async rearm(userId: string, id: string): Promise<AlertRecord | null> {
+    async rearm(
+      userId: string,
+      id: string,
+      options?: AlertAssetVisibilityOptions,
+    ): Promise<AlertRecord | null> {
+      if (!(await this.findByIdForUser(userId, id, options))) return null;
       const updated = await db
         .update(alerts)
         .set({ status: 'active' })
         .where(and(eq(alerts.id, id), eq(alerts.userId, userId)))
         .returning({ id: alerts.id });
       if (updated.length === 0) return null;
-      return this.findByIdForUser(userId, id);
+      return this.findByIdForUser(userId, id, options);
     },
 
     /** Delete an owned alert. Returns false when the id is not the caller's. */
@@ -221,8 +264,16 @@ export function createAlertRepository(db: Database) {
 
     // --- evaluator reads (system-wide, not user-scoped) --------------------
 
-    /** Every `active` alert joined with its asset's provider routing + identity. */
-    async listActiveWithAsset(): Promise<ActiveAlert[]> {
+    /**
+     * Every `active` alert joined with its asset's provider routing + identity.
+     *
+     * `includeCustomAssets: false` restricts the join to GLOBAL market assets
+     * before any identity column is selected — the evaluator's unguarded rail.
+     * An account-owned (custom) asset's symbol, name and manual provider ref
+     * are that account's own content, so the evaluator reads them only through
+     * {@link listActiveCustomAssetsForUser}, inside the owner's transition lock.
+     */
+    async listActiveWithAsset(options?: AlertAssetVisibilityOptions): Promise<ActiveAlert[]> {
       const rows = await db
         .select({
           id: alerts.id,
@@ -242,23 +293,84 @@ export function createAlertRepository(db: Database) {
         })
         .from(alerts)
         .innerJoin(assets, eq(alerts.assetId, assets.id))
-        .where(eq(alerts.status, 'active'));
-      return rows.map((r) => ({
-        id: r.id,
-        userId: r.userId,
-        assetId: r.assetId,
-        kind: r.kind,
-        threshold: Number(r.threshold),
-        refPrice: r.refPrice === null ? null : Number(r.refPrice),
-        repeat: r.repeat,
-        lastTriggeredAt: r.lastTriggeredAt,
-        providerId: r.providerId,
-        providerRef: r.providerRef,
-        symbol: r.symbol,
-        name: r.name,
-        currency: r.currency,
-        type: r.type,
-      }));
+        .where(
+          and(
+            eq(alerts.status, 'active'),
+            options?.includeCustomAssets === false ? isNull(assets.ownerId) : undefined,
+          ),
+        );
+      return rows.map(toActiveAlert);
+    },
+
+    /**
+     * The distinct accounts owning at least one `active` alert on one of THEIR
+     * OWN custom assets. Identity only: no alert rule, no asset identity and no
+     * provider ref is selected, so the evaluator can discover which accounts to
+     * lock without first reading killed content.
+     */
+    async listActiveCustomAssetOwnerIds(): Promise<string[]> {
+      const rows = await db
+        .selectDistinct({ userId: alerts.userId })
+        .from(alerts)
+        .innerJoin(assets, eq(alerts.assetId, assets.id))
+        .where(and(eq(alerts.status, 'active'), eq(assets.ownerId, alerts.userId)));
+      return rows.map((r) => r.userId);
+    },
+
+    /**
+     * The third rail, made explicit: `active` alerts whose asset is a CUSTOM
+     * asset owned by someone OTHER than the alert's owner. Neither evaluator
+     * rail can serve these — the global rail excludes owned assets and the
+     * per-owner rail only locks the alert's own account, which is not the
+     * account whose content the asset is. Unreachable today (alert creation is
+     * owner-scoped and chain assets are `MIRROR_ASSET_NOT_SYNCABLE`), so the
+     * fail-closed drop stands; counting it means the gap is logged rather than
+     * living implicitly between two `where` clauses.
+     */
+    async countActiveForeignCustomAssetAlerts(): Promise<number> {
+      const rows = await db
+        .select({ id: alerts.id })
+        .from(alerts)
+        .innerJoin(assets, eq(alerts.assetId, assets.id))
+        .where(
+          and(
+            eq(alerts.status, 'active'),
+            isNotNull(assets.ownerId),
+            ne(assets.ownerId, alerts.userId),
+          ),
+        );
+      return rows.length;
+    },
+
+    /**
+     * One account's `active` alerts on its OWN custom assets. The evaluator
+     * calls this only inside that account's transition lock, so a winning
+     * paranoid enable means the query never runs at all.
+     */
+    async listActiveCustomAssetsForUser(userId: string): Promise<ActiveAlert[]> {
+      const rows = await db
+        .select({
+          id: alerts.id,
+          userId: alerts.userId,
+          assetId: alerts.assetId,
+          kind: alerts.kind,
+          threshold: alerts.threshold,
+          refPrice: alerts.refPrice,
+          repeat: alerts.repeat,
+          lastTriggeredAt: alerts.lastTriggeredAt,
+          providerId: assets.providerId,
+          providerRef: assets.providerRef,
+          symbol: assets.symbol,
+          name: assets.name,
+          currency: assets.currency,
+          type: assets.type,
+        })
+        .from(alerts)
+        .innerJoin(assets, eq(alerts.assetId, assets.id))
+        .where(
+          and(eq(alerts.status, 'active'), eq(alerts.userId, userId), eq(assets.ownerId, userId)),
+        );
+      return rows.map(toActiveAlert);
     },
 
     /**

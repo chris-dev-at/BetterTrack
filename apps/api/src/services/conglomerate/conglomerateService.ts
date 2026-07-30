@@ -25,6 +25,7 @@ import {
 } from '../../domain/allocation';
 import { ApiError, badRequest, conflict, notFound, unprocessable } from '../../errors';
 import type { MarketDataService } from '../../providers';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { CurrencyService } from '../currency/currencyService';
 import type { AudienceService } from '../social/audienceService';
 import {
@@ -46,6 +47,13 @@ import {
 
 export interface ConglomerateServiceDeps {
   repo: ConglomerateRepository;
+  /**
+   * Scopes the otherwise-kept basket surfaces to GLOBAL market assets while the
+   * caller is paranoid. A conglomerate is private local structure, but a
+   * constituent may be the account's OWN custom asset — killed content — so
+   * every read/write that would surface or price one is scoped here.
+   */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowedWithOptional'>;
   /** Resolves a position's asset (owner-scoped) for its provider ref + native currency. */
   assetRepo: AssetRepository;
   /** Live quotes for the Invest Calculator (§6.7), cached/coalesced/serve-stale (§5.3). */
@@ -56,6 +64,8 @@ export interface ConglomerateServiceDeps {
   audience: AudienceService;
 }
 
+type ConglomerateMetadataPatch = Omit<UpdateConglomerateRequest, 'visibility'>;
+
 export interface ConglomerateService {
   list(ownerId: string): Promise<ConglomerateListResponse>;
   get(ownerId: string, id: string): Promise<ConglomerateDetail>;
@@ -63,7 +73,13 @@ export interface ConglomerateService {
   update(
     ownerId: string,
     id: string,
-    patch: UpdateConglomerateRequest,
+    patch: ConglomerateMetadataPatch,
+  ): Promise<ConglomerateDetail>;
+  /** Mixed metadata + legacy sharing mutation, guarded before either write. */
+  updateWithVisibility(
+    ownerId: string,
+    id: string,
+    patch: UpdateConglomerateRequest & { visibility: 'private' | 'friends' },
   ): Promise<ConglomerateDetail>;
   replacePositions(
     ownerId: string,
@@ -139,11 +155,88 @@ function toDetail(row: ConglomerateDetailRow): ConglomerateDetail {
 export function createConglomerateService(deps: ConglomerateServiceDeps): ConglomerateService {
   const { repo, assetRepo, marketData, currencyService, audience } = deps;
 
+  /**
+   * Run `action` with the asset provenance this caller may see, holding their
+   * transition lock for the whole call. Baskets built purely from global market
+   * assets stay fully usable in paranoid mode; anything touching the account's
+   * own custom assets is scoped out under the same lock, so a transition can
+   * never commit between the decision and response construction.
+   */
+  function withVisibleAssetScope<T>(
+    ownerId: string,
+    action: (includeCustomAssets: boolean) => Promise<T>,
+  ): Promise<T> {
+    if (!deps.paranoid) return action(true);
+    return deps.paranoid.runAllowedWithOptional([], [ownerId], 'portfolioServer', (normalUserIds) =>
+      action(normalUserIds.has(ownerId)),
+    );
+  }
+
+  /**
+   * The owner's conglomerates that resolve — directly or through nesting — to
+   * at least one of their own custom assets. In paranoid mode those baskets are
+   * not server-side readable: `list` omits them and every other branch returns
+   * the established opaque 404, exactly as if the id did not exist (§8, §10).
+   */
+  async function customAssetTaintedIds(ownerId: string): Promise<ReadonlySet<string>> {
+    const tainted = new Set(await repo.ownedAssetConglomerateIds(ownerId));
+    if (tainted.size === 0) return tainted;
+    // Propagate up the owner-local nesting graph: a parent that embeds a
+    // tainted child resolves to that custom asset too. Bounded by the graph
+    // size — each pass can only add ids, so it converges.
+    const edges = await repo.nestingEdges(ownerId);
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const edge of edges) {
+        if (tainted.has(edge.childId) && !tainted.has(edge.parentId)) {
+          tainted.add(edge.parentId);
+          changed = true;
+        }
+      }
+    }
+    return tainted;
+  }
+
+  /** 404 a basket that resolves to a custom asset while the caller is scoped out. */
+  async function assertReadable(
+    ownerId: string,
+    id: string,
+    includeCustomAssets: boolean,
+  ): Promise<void> {
+    if (includeCustomAssets) return;
+    if ((await customAssetTaintedIds(ownerId)).has(id)) throw NOT_FOUND();
+  }
+
   /** Fetch the detail after a mutation; the row must exist at this point. */
-  async function detailOrThrow(ownerId: string, id: string): Promise<ConglomerateDetail> {
-    const row = await repo.findByIdForOwner(ownerId, id);
+  async function detailOrThrow(
+    ownerId: string,
+    id: string,
+    includeCustomAssets = true,
+  ): Promise<ConglomerateDetail> {
+    const row = await repo.findByIdForOwner(ownerId, id, {
+      globalAssetMetadataOnly: !includeCustomAssets,
+    });
     if (!row) throw NOT_FOUND();
     return toDetail(row);
+  }
+
+  async function updateRecord(
+    ownerId: string,
+    id: string,
+    patch: UpdateConglomerateRequest,
+    includeCustomAssets = true,
+  ): Promise<ConglomerateDetail> {
+    let updated: boolean;
+    try {
+      updated = await repo.update(ownerId, id, patch);
+    } catch (err) {
+      if (err instanceof ConglomerateNameConflictError) {
+        throw conflict('A conglomerate with this name already exists.', 'CONGLOMERATE_NAME_TAKEN');
+      }
+      throw err;
+    }
+    if (!updated) throw NOT_FOUND();
+    return detailOrThrow(ownerId, id, includeCustomAssets);
   }
 
   /**
@@ -167,6 +260,7 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     ownerId: string,
     id: string,
     positions: readonly ReplacePositionInput[],
+    includeCustomAssets = true,
   ): Promise<void> {
     if (positions.length > MAX_POSITIONS) {
       throw badRequest(
@@ -195,7 +289,9 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     }
 
     if (seenAssets.size > 0) {
-      const visible = await repo.visibleAssetIds(ownerId, [...seenAssets]);
+      const visible = await repo.visibleAssetIds(ownerId, [...seenAssets], {
+        includeCustomAssets,
+      });
       for (const assetId of seenAssets) {
         if (!visible.has(assetId)) {
           throw notFound('One or more assets do not exist.', 'ASSET_NOT_FOUND');
@@ -231,16 +327,201 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     }
   }
 
+  async function activateScoped(
+    ownerId: string,
+    id: string,
+    includeCustomAssets: boolean,
+  ): Promise<ConglomerateDetail> {
+    await assertReadable(ownerId, id, includeCustomAssets);
+    const row = await repo.findByIdForOwner(ownerId, id, {
+      globalAssetMetadataOnly: !includeCustomAssets,
+    });
+    if (!row) throw NOT_FOUND();
+
+    if (row.positions.length < 1) {
+      throw badRequest(
+        'A conglomerate needs at least one position to activate.',
+        'ACTIVATION_INVALID',
+      );
+    }
+    const sum = row.positions.reduce((acc, p) => acc + p.weightPct, 0);
+    if (Math.abs(sum - ACTIVE_SUM) > SUM_TOLERANCE) {
+      throw badRequest(
+        'Weights must sum to 100% (±0.01) before a conglomerate can be activated.',
+        'ACTIVATION_INVALID',
+      );
+    }
+
+    const ok = await repo.setStatus(ownerId, id, 'active');
+    if (!ok) throw NOT_FOUND();
+    return detailOrThrow(ownerId, id, includeCustomAssets);
+  }
+
+  /**
+   * Invest Calculator (§6.7): fetch a current EUR-converted quote per position
+   * and hand the basket to the pure {@link allocateBudget} engine. The
+   * orchestration seam does all the I/O and FX — the domain does neither:
+   *
+   *  1. Load the Conglomerate owner-scoped — a foreign/unknown id is a 404,
+   *     never a 403 (no IDOR, §8).
+   *  2. For each position, resolve its asset (owner-scoped) for the provider
+   *     ref + native currency, fetch a quote through the market-data keystone
+   *     (§5.3), and convert it to EUR through the {@link CurrencyService} (§5.4)
+   *     **before** the engine sees any price. A quote served stale is surfaced
+   *     as a response flag, never an error; a quote that is wholly unavailable
+   *     is a 422 (the position cannot be priced).
+   *  3. Normalise the stored percent weights to fractions summing to ~1 — by
+   *     the basket's own weight sum, so both an active (Σ=100) and a draft
+   *     basket allocate proportionally; the engine re-normalises to exactly 1.
+   *  4. Run the engine and shape its result to the wire contract; an
+   *     {@link AllocationError} (e.g. a non-positive quote) becomes a 422.
+   *
+   * Scoped: a paranoid caller never reaches step 2 for one of their own custom
+   * assets — the basket 404s at step 1, so no manual valuation is ever quoted
+   * or run through the allocation engine server-side.
+   */
+  async function allocateScoped(
+    ownerId: string,
+    id: string,
+    req: AllocateRequest,
+    opts: { baseCurrency?: string } | undefined,
+    includeCustomAssets: boolean,
+  ): Promise<AllocateResponse> {
+    await assertReadable(ownerId, id, includeCustomAssets);
+    const fx =
+      opts?.baseCurrency === undefined
+        ? currencyService
+        : currencyService.withBase(opts.baseCurrency);
+    // Flatten first (V5-P6): a nested conglomerate allocates over its
+    // effective asset weights — the same shared resolution backtest uses.
+    // For a flat basket this is its own weights normalized by their sum, so
+    // both an active (Σ=100) and a draft basket allocate proportionally,
+    // exactly as before.
+    const flat = await flattenConglomerate(
+      (cid) =>
+        repo.findByIdForOwner(ownerId, cid, { globalAssetMetadataOnly: !includeCustomAssets }),
+      id,
+    );
+    if (!flat) throw NOT_FOUND();
+    if (flat.positions.length === 0) {
+      throw badRequest(
+        'This conglomerate has no positions to allocate a budget over.',
+        'ALLOCATION_NO_POSITIONS',
+      );
+    }
+
+    let anyStale = false;
+    const nameByAssetId = new Map<string, string>();
+    // Native (own-currency) price per asset — a transaction's `price` is
+    // recorded in the asset's native currency (`domain/holdings.ts`), so the
+    // bulk buy-flow prefill must carry this, not the EUR-converted costEur.
+    const nativeByAssetId = new Map<string, { price: number; currency: string }>();
+    const positions: AllocationPositionInput[] = [];
+    for (const pos of flat.positions) {
+      // The embedded position asset carries neither the provider ref nor is a
+      // full row, so re-resolve owner-scoped (a vanished/foreign asset 404s —
+      // nothing leaks, §10 — though positions are validated on write). The
+      // global-only lookup keeps a scoped-out custom asset indistinguishable.
+      const asset = await assetRepo.findByIdForUser(pos.assetId, ownerId, {
+        includeCustomAssets,
+      });
+      if (!asset) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
+      nameByAssetId.set(pos.assetId, asset.name);
+
+      let priceEur: number;
+      try {
+        const cached = await marketData.getQuote({
+          providerId: asset.providerId,
+          providerRef: asset.providerRef,
+        });
+        if (cached.stale) anyStale = true;
+        nativeByAssetId.set(pos.assetId, {
+          price: cached.value.price,
+          currency: asset.currency,
+        });
+        // Convert into the caller's base here, before the pure engine — the
+        // domain does no FX (§5.4); the budget is interpreted in the same base.
+        priceEur = await fx.toBase(cached.value.price, asset.currency);
+      } catch {
+        throw unprocessable(`No current quote available for ${asset.symbol}.`, 'NO_QUOTE');
+      }
+
+      positions.push({
+        assetId: pos.assetId,
+        symbol: asset.symbol,
+        // The flatten already normalized the vector to Σ=100.
+        weight: pos.weightPct / 100,
+        priceEur,
+      });
+    }
+
+    let result: AllocationResult;
+    try {
+      result = allocateBudget({
+        budgetEur: req.budgetEur,
+        mode: req.mode,
+        step: req.step,
+        atLeastOneShare: req.atLeastOneShare,
+        positions,
+      });
+    } catch (err) {
+      if (err instanceof AllocationError) {
+        throw unprocessable(err.message, 'ALLOCATION_INVALID');
+      }
+      throw err;
+    }
+
+    return {
+      positions: result.positions.map((line) => {
+        // Every input position was resolved and quoted above before the
+        // engine ran, so its native price/currency is always present here.
+        const native = nativeByAssetId.get(line.assetId)!;
+        const row: AllocateResponse['positions'][number] = {
+          assetId: line.assetId,
+          symbol: line.symbol,
+          name: nameByAssetId.get(line.assetId) ?? line.symbol,
+          qty: line.qty,
+          costEur: line.costEur,
+          nativePrice: native.price,
+          currency: native.currency,
+          actualPct: line.actualPct,
+          targetPct: line.targetPct,
+          deltaPp: line.deltaPp,
+        };
+        if (line.unbuyable) row.unbuyable = true;
+        if (line.note !== undefined) row.note = line.note;
+        return row;
+      }),
+      totalCostEur: result.totalCostEur,
+      leftoverEur: result.leftoverEur,
+      warnings: result.warnings,
+      stale: anyStale,
+      quoteNotice: anyStale
+        ? 'Some quotes are stale (market closed or the data provider is unreachable); showing the last known prices.'
+        : null,
+      baseCurrency: fx.baseCurrency,
+    };
+  }
+
   return {
     async list(ownerId) {
-      const rows = await repo.listForOwner(ownerId);
-      return { conglomerates: rows.map(toSummary) };
+      return withVisibleAssetScope(ownerId, async (includeCustomAssets) => {
+        const rows = await repo.listForOwner(ownerId);
+        if (includeCustomAssets) return { conglomerates: rows.map(toSummary) };
+        const tainted = await customAssetTaintedIds(ownerId);
+        return { conglomerates: rows.filter((row) => !tainted.has(row.id)).map(toSummary) };
+      });
     },
 
     async get(ownerId, id) {
-      const row = await repo.findByIdForOwner(ownerId, id);
-      if (!row) throw NOT_FOUND();
-      return toDetail(row);
+      return withVisibleAssetScope(ownerId, async (includeCustomAssets) => {
+        await assertReadable(ownerId, id, includeCustomAssets);
+        const row = await repo.findByIdForOwner(ownerId, id, {
+          globalAssetMetadataOnly: !includeCustomAssets,
+        });
+        if (!row) throw NOT_FOUND();
+        return toDetail(row);
+      });
     },
 
     async create(ownerId, input) {
@@ -263,58 +544,61 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     },
 
     async update(ownerId, id, patch) {
-      let updated: boolean;
-      try {
-        updated = await repo.update(ownerId, id, patch);
-      } catch (err) {
-        if (err instanceof ConglomerateNameConflictError) {
-          throw conflict(
-            'A conglomerate with this name already exists.',
-            'CONGLOMERATE_NAME_TAKEN',
-          );
-        }
-        throw err;
+      // Private local metadata stays usable in paranoid mode. A hand-crafted
+      // below-HTTP call must not smuggle the sharing-bearing legacy visibility
+      // field through this deliberately kept entry point.
+      if ('visibility' in patch) {
+        throw badRequest(
+          'Visibility changes require the guarded sharing mutation.',
+          'CONGLOMERATE_VISIBILITY_GUARD_REQUIRED',
+        );
       }
-      if (!updated) throw NOT_FOUND();
-      return detailOrThrow(ownerId, id);
+      return withVisibleAssetScope(ownerId, async (includeCustomAssets) => {
+        await assertReadable(ownerId, id, includeCustomAssets);
+        return updateRecord(ownerId, id, patch, includeCustomAssets);
+      });
+    },
+
+    async updateWithVisibility(ownerId, id, patch) {
+      return audience.withVisibilityMutation(
+        ownerId,
+        patch.visibility,
+        async (lockedRecipientIds) => {
+          const detail = await updateRecord(ownerId, id, patch);
+          await audience.applyVisibility(
+            ownerId,
+            'conglomerate',
+            id,
+            patch.visibility,
+            lockedRecipientIds,
+          );
+          return detail;
+        },
+      );
     },
 
     async replacePositions(ownerId, id, positions) {
-      await validatePositions(ownerId, id, positions);
-      const ok = await repo.replacePositions(
-        ownerId,
-        id,
-        positions.map((p) =>
-          'assetId' in p
-            ? { kind: 'asset' as const, assetId: p.assetId, weightPct: p.weightPct }
-            : { kind: 'conglomerate' as const, childId: p.childId, weightPct: p.weightPct },
-        ),
-      );
-      if (!ok) throw NOT_FOUND();
-      return detailOrThrow(ownerId, id);
+      return withVisibleAssetScope(ownerId, async (includeCustomAssets) => {
+        await assertReadable(ownerId, id, includeCustomAssets);
+        await validatePositions(ownerId, id, positions, includeCustomAssets);
+        const ok = await repo.replacePositions(
+          ownerId,
+          id,
+          positions.map((p) =>
+            'assetId' in p
+              ? { kind: 'asset' as const, assetId: p.assetId, weightPct: p.weightPct }
+              : { kind: 'conglomerate' as const, childId: p.childId, weightPct: p.weightPct },
+          ),
+        );
+        if (!ok) throw NOT_FOUND();
+        return detailOrThrow(ownerId, id, includeCustomAssets);
+      });
     },
 
     async activate(ownerId, id) {
-      const row = await repo.findByIdForOwner(ownerId, id);
-      if (!row) throw NOT_FOUND();
-
-      if (row.positions.length < 1) {
-        throw badRequest(
-          'A conglomerate needs at least one position to activate.',
-          'ACTIVATION_INVALID',
-        );
-      }
-      const sum = row.positions.reduce((acc, p) => acc + p.weightPct, 0);
-      if (Math.abs(sum - ACTIVE_SUM) > SUM_TOLERANCE) {
-        throw badRequest(
-          'Weights must sum to 100% (±0.01) before a conglomerate can be activated.',
-          'ACTIVATION_INVALID',
-        );
-      }
-
-      const ok = await repo.setStatus(ownerId, id, 'active');
-      if (!ok) throw NOT_FOUND();
-      return detailOrThrow(ownerId, id);
+      return withVisibleAssetScope(ownerId, (includeCustomAssets) =>
+        activateScoped(ownerId, id, includeCustomAssets),
+      );
     },
 
     async remove(ownerId, id) {
@@ -341,145 +625,32 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     },
 
     async resolved(ownerId, id) {
-      const flat = await flattenConglomerate((cid) => repo.findByIdForOwner(ownerId, cid), id);
-      if (!flat) throw NOT_FOUND();
-      return {
-        conglomerateId: id,
-        nested: flat.nested,
-        positions: flat.positions.map((p) => ({
-          assetId: p.assetId,
-          weightPct: p.weightPct,
-          asset: p.asset,
-        })),
-      };
+      return withVisibleAssetScope(ownerId, async (includeCustomAssets) => {
+        await assertReadable(ownerId, id, includeCustomAssets);
+        const flat = await flattenConglomerate(
+          (cid) =>
+            repo.findByIdForOwner(ownerId, cid, {
+              globalAssetMetadataOnly: !includeCustomAssets,
+            }),
+          id,
+        );
+        if (!flat) throw NOT_FOUND();
+        return {
+          conglomerateId: id,
+          nested: flat.nested,
+          positions: flat.positions.map((p) => ({
+            assetId: p.assetId,
+            weightPct: p.weightPct,
+            asset: p.asset,
+          })),
+        };
+      });
     },
 
-    /**
-     * Invest Calculator (§6.7): fetch a current EUR-converted quote per position
-     * and hand the basket to the pure {@link allocateBudget} engine. The
-     * orchestration seam does all the I/O and FX — the domain does neither:
-     *
-     *  1. Load the Conglomerate owner-scoped — a foreign/unknown id is a 404,
-     *     never a 403 (no IDOR, §8).
-     *  2. For each position, resolve its asset (owner-scoped) for the provider
-     *     ref + native currency, fetch a quote through the market-data keystone
-     *     (§5.3), and convert it to EUR through the {@link CurrencyService} (§5.4)
-     *     **before** the engine sees any price. A quote served stale is surfaced
-     *     as a response flag, never an error; a quote that is wholly unavailable
-     *     is a 422 (the position cannot be priced).
-     *  3. Normalise the stored percent weights to fractions summing to ~1 — by
-     *     the basket's own weight sum, so both an active (Σ=100) and a draft
-     *     basket allocate proportionally; the engine re-normalises to exactly 1.
-     *  4. Run the engine and shape its result to the wire contract; an
-     *     {@link AllocationError} (e.g. a non-positive quote) becomes a 422.
-     */
     async allocate(ownerId, id, req, opts) {
-      const fx =
-        opts?.baseCurrency === undefined
-          ? currencyService
-          : currencyService.withBase(opts.baseCurrency);
-      // Flatten first (V5-P6): a nested conglomerate allocates over its
-      // effective asset weights — the same shared resolution backtest uses.
-      // For a flat basket this is its own weights normalized by their sum, so
-      // both an active (Σ=100) and a draft basket allocate proportionally,
-      // exactly as before.
-      const flat = await flattenConglomerate((cid) => repo.findByIdForOwner(ownerId, cid), id);
-      if (!flat) throw NOT_FOUND();
-      if (flat.positions.length === 0) {
-        throw badRequest(
-          'This conglomerate has no positions to allocate a budget over.',
-          'ALLOCATION_NO_POSITIONS',
-        );
-      }
-
-      let anyStale = false;
-      const nameByAssetId = new Map<string, string>();
-      // Native (own-currency) price per asset — a transaction's `price` is
-      // recorded in the asset's native currency (`domain/holdings.ts`), so the
-      // bulk buy-flow prefill must carry this, not the EUR-converted costEur.
-      const nativeByAssetId = new Map<string, { price: number; currency: string }>();
-      const positions: AllocationPositionInput[] = [];
-      for (const pos of flat.positions) {
-        // The embedded position asset carries neither the provider ref nor is a
-        // full row, so re-resolve owner-scoped (a vanished/foreign asset 404s —
-        // nothing leaks, §10 — though positions are validated on write).
-        const asset = await assetRepo.findByIdForUser(pos.assetId, ownerId);
-        if (!asset) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
-        nameByAssetId.set(pos.assetId, asset.name);
-
-        let priceEur: number;
-        try {
-          const cached = await marketData.getQuote({
-            providerId: asset.providerId,
-            providerRef: asset.providerRef,
-          });
-          if (cached.stale) anyStale = true;
-          nativeByAssetId.set(pos.assetId, {
-            price: cached.value.price,
-            currency: asset.currency,
-          });
-          // Convert into the caller's base here, before the pure engine — the
-          // domain does no FX (§5.4); the budget is interpreted in the same base.
-          priceEur = await fx.toBase(cached.value.price, asset.currency);
-        } catch {
-          throw unprocessable(`No current quote available for ${asset.symbol}.`, 'NO_QUOTE');
-        }
-
-        positions.push({
-          assetId: pos.assetId,
-          symbol: asset.symbol,
-          // The flatten already normalized the vector to Σ=100.
-          weight: pos.weightPct / 100,
-          priceEur,
-        });
-      }
-
-      let result: AllocationResult;
-      try {
-        result = allocateBudget({
-          budgetEur: req.budgetEur,
-          mode: req.mode,
-          step: req.step,
-          atLeastOneShare: req.atLeastOneShare,
-          positions,
-        });
-      } catch (err) {
-        if (err instanceof AllocationError) {
-          throw unprocessable(err.message, 'ALLOCATION_INVALID');
-        }
-        throw err;
-      }
-
-      return {
-        positions: result.positions.map((line) => {
-          // Every input position was resolved and quoted above before the
-          // engine ran, so its native price/currency is always present here.
-          const native = nativeByAssetId.get(line.assetId)!;
-          const row: AllocateResponse['positions'][number] = {
-            assetId: line.assetId,
-            symbol: line.symbol,
-            name: nameByAssetId.get(line.assetId) ?? line.symbol,
-            qty: line.qty,
-            costEur: line.costEur,
-            nativePrice: native.price,
-            currency: native.currency,
-            actualPct: line.actualPct,
-            targetPct: line.targetPct,
-            deltaPp: line.deltaPp,
-          };
-          if (line.unbuyable) row.unbuyable = true;
-          if (line.note !== undefined) row.note = line.note;
-          return row;
-        }),
-        totalCostEur: result.totalCostEur,
-        leftoverEur: result.leftoverEur,
-        warnings: result.warnings,
-        stale: anyStale,
-        quoteNotice: anyStale
-          ? 'Some quotes are stale (market closed or the data provider is unreachable); showing the last known prices.'
-          : null,
-        baseCurrency: fx.baseCurrency,
-      };
+      return withVisibleAssetScope(ownerId, (includeCustomAssets) =>
+        allocateScoped(ownerId, id, req, opts, includeCustomAssets),
+      );
     },
   };
 }

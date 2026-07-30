@@ -369,7 +369,10 @@ export interface RealtimePrincipalInvalidatedEvent {
  * group row): `userId` is the recipient, `chainName` renders the notice without
  * a lookup, `actorUsername` names the member the notice is about (inviter,
  * joiner, leaver, removed member, new owner — empty for self-directed notices
- * like `mirror.removed`/`mirror.chain_dissolved`/`mirror.sync_stalled`), and
+ * like `mirror.removed`/`mirror.chain_dissolved`/`mirror.sync_stalled`).
+ * `actorId`, `ownerId`, and `subjectUserIds` are internal privacy principals:
+ * webhook enqueue and queued delivery revalidate all of them together with the
+ * recipient so a stale event cannot outlive any relevant account's transition.
  * `refId` is the occurrence discriminator the dispatcher folds into its dedupe
  * key (the invite id, the target member's id, or the stalled copy's watermark).
  * All render + email + matrix routing flow through the normal dispatcher, so
@@ -389,6 +392,12 @@ export interface MirrorNotificationEvent {
   userId: string;
   chainId: string;
   chainName: string;
+  /** Account that initiated the lifecycle action, where one still exists. */
+  actorId: string | null;
+  /** Chain owner relevant to the event at the point it was emitted. */
+  ownerId: string | null;
+  /** Other affected principals named or represented by the notice. */
+  subjectUserIds: string[];
   /** The member the notice is about; '' for a self-directed notice. */
   actorUsername: string;
   /** Occurrence discriminator for the dispatcher's (user, eventKey) dedupe. */

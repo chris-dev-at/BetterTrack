@@ -24,11 +24,15 @@ export const EARNINGS_REMINDER_CRON = '0 6 * * *';
 export const EARNINGS_REMINDER_TZ = 'Europe/Vienna';
 
 export interface EarningsReminderJobDeps {
-  intelRepo: Pick<MarketIntelRepository, 'listAllWatchAndHoldAssets'>;
+  intelRepo: Pick<
+    MarketIntelRepository,
+    'listAllWatchAssets' | 'listNormalUserIds' | 'listUserWatchAndHoldAssets'
+  >;
   marketData: Pick<MarketDataService, 'intelCapabilities' | 'getEarningsEvents'>;
   notify: NotificationCenter;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ the scan no-ops. */
   enabled: boolean;
+  runIfAllowed: (userId: string, action: () => Promise<void>) => Promise<boolean>;
   /** Injectable clock (tests). */
   now?: () => number;
 }
@@ -51,6 +55,7 @@ export function createEarningsReminderJob(
         redis: ctx.redis,
         notify: deps.notify,
         enabled: deps.enabled,
+        runIfAllowed: deps.runIfAllowed,
         logger: ctx.logger,
         now: () => (deps.now ? deps.now() : now),
       });

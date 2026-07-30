@@ -119,6 +119,7 @@ function buildInertContext(): AppContext {
     redis: {} as Redis,
     logger: createLogger(config),
     events: inertService('events'),
+    paranoidGuard: inertService('paranoidGuard'),
     auth: inertService('auth'),
     google: inertService('google'),
     twoFactor: inertService('twoFactor'),
