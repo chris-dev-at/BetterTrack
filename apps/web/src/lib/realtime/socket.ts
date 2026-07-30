@@ -20,6 +20,11 @@ export function createRealtimeSocket(): Socket {
     withCredentials: true,
     reconnectionDelayMax: 60_000,
   };
-  // Empty apiOrigin = same origin (dev Vite proxy / single-origin setups).
-  return apiOrigin ? io(apiOrigin, options) : io(options);
+  if (apiOrigin) return io(apiOrigin, options);
+
+  // A browser omits Origin from a same-origin polling GET, while the gateway's
+  // native/no-Origin policy requires bearer credentials. Start same-origin
+  // sessions with WebSocket instead: browsers attach Origin to that handshake,
+  // and both the Vite and single-origin production proxies support upgrades.
+  return io({ ...options, transports: ['websocket'] });
 }

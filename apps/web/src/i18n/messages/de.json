@@ -2071,6 +2071,7 @@
       "uploadCta": "Vorschau erstellen",
       "uploading": "Wird hochgeladen…",
       "uploadFailed": "Upload fehlgeschlagen.",
+      "tooManyInstruments": "Diese Datei enthält mehr als {{max}} verschiedene Instrumente — teile sie in Dateien mit höchstens {{max}} Instrumenten auf.",
       "previewTitle": "Vorschau: {{filename}}",
       "previewEmptyTitle": "Keine importierbaren Zeilen",
       "previewEmptyBody": "Diese Datei enthielt keine erkennbaren Zeilen — der Header passt möglicherweise nicht zu einem unterstützten Broker-Export.",
