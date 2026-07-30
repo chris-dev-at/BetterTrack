@@ -1,6 +1,6 @@
 import { eq, or } from 'drizzle-orm';
 import request from 'supertest';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   paranoidDisableResponseSchema,
@@ -679,6 +679,48 @@ describe('paranoid public transitions', () => {
       await harness.db.select().from(portfolios).where(eq(portfolios.id, RESTORED_PORTFOLIO_ID)),
     ).toHaveLength(1);
     expect(await harness.db.select().from(assets).where(eq(assets.id, ASSET_ID))).toHaveLength(1);
+  });
+});
+
+describe('admin metadata batching', () => {
+  it('costs the same number of reads for a whole page as for one account', async () => {
+    const accounts = [];
+    for (const index of [0, 1, 2, 3]) {
+      accounts.push(
+        await harness.seedUser({
+          email: `batch-${index}@bt.test`,
+          username: `batch_${index}`,
+        }),
+      );
+    }
+    const service = createParanoidTransitionService({
+      db: harness.db,
+      lockDb: harness.db,
+      rehydration: {
+        rehydrate: async () => {
+          throw new Error('metadata reads never rehydrate');
+        },
+      } satisfies ParanoidRehydrationService,
+      audit: { record: async () => undefined } as unknown as AuditService,
+    });
+
+    // The list path must take ONE privacy lock and a fixed set of queries. A
+    // per-user fan-out (one lock + three reads each) exhausts the connection
+    // pool in production, where each lock reserves a pooled connection.
+    const reads = vi.spyOn(harness.db, 'select');
+    const page = await service.adminMetadataMany(accounts.map((account) => account.id));
+    const pageReads = reads.mock.calls.length;
+    reads.mockClear();
+    const single = await service.adminMetadataMany([accounts[0]!.id]);
+    const singleReads = reads.mock.calls.length;
+    reads.mockRestore();
+
+    expect(page.size).toBe(accounts.length);
+    expect(single.size).toBe(1);
+    expect(singleReads).toBeGreaterThan(0);
+    expect(pageReads).toBe(singleReads);
+    expect(await service.adminMetadata(accounts[0]!.id)).toMatchObject({ privacyMode: 'normal' });
+    expect(await service.adminMetadata('018f0000-0000-7000-8000-0000000005ff')).toBeNull();
   });
 });
 

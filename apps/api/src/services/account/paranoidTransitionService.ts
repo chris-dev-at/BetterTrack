@@ -48,6 +48,13 @@ export class ParanoidTransitionError extends Error {
 
 export interface ParanoidTransitionServiceDeps {
   db: Database;
+  /**
+   * Dedicated privacy-lock pool handle. Admin metadata reads take their lock
+   * here and query on `db`, so an open lock transaction never waits on a
+   * connection its own callback needs. Defaults to `db` for the single-pool
+   * test harness.
+   */
+  lockDb?: Database;
   rehydration: ParanoidRehydrationService;
   audit: AuditService;
   now?: () => Date;
@@ -88,6 +95,13 @@ export interface ParanoidTransitionService {
   disable(userId: string, request: ParanoidDisableRequest): Promise<ParanoidDisableResponse>;
   /** Non-sensitive admin-only mode/media/blob metadata; never returns blob bytes. */
   adminMetadata(userId: string): Promise<ParanoidAdminMetadata | null>;
+  /**
+   * The same metadata for a whole page of accounts in one locked batch. List
+   * callers MUST use this instead of fanning {@link adminMetadata} out per row.
+   */
+  adminMetadataMany(
+    userIds: readonly string[],
+  ): Promise<ReadonlyMap<string, ParanoidAdminMetadata>>;
 }
 
 function sameMedia(left: readonly string[] | null, right: readonly string[]): boolean {
@@ -132,6 +146,7 @@ export function createParanoidTransitionService(
   deps: ParanoidTransitionServiceDeps,
 ): ParanoidTransitionService {
   const now = deps.now ?? (() => new Date());
+  const lockDb = deps.lockDb ?? deps.db;
   const stage = async (value: ParanoidEnableStage) => deps.afterEnableStage?.(value);
   const withTransitionTransaction =
     deps.withTransitionTransaction ?? withParanoidTransitionTransaction;
@@ -175,7 +190,12 @@ export function createParanoidTransitionService(
     });
 
   return {
-    adminMetadata: (userId) => getParanoidAdminMetadata(deps.db, userId),
+    adminMetadataMany: (userIds) => getParanoidAdminMetadata(deps.db, lockDb, userIds),
+
+    async adminMetadata(userId) {
+      const metadata = await getParanoidAdminMetadata(deps.db, lockDb, [userId]);
+      return metadata.get(userId) ?? null;
+    },
 
     async enable(userId, request) {
       const parsed = paranoidEnableRequestSchema.safeParse(request);

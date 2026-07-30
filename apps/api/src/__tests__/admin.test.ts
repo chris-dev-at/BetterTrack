@@ -383,6 +383,62 @@ describe('paranoid account administration (#730)', () => {
         .where(eq(schema.paranoidVaults.userId, target.id)),
     ).toEqual([{ version: 2 }]);
   });
+
+  it('maps batched metadata to the right account across a mixed page', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const normal = await harness.seedUser({
+      email: 'mixed-normal@bt.test',
+      username: 'mixed_normal',
+    });
+    const paranoid = await Promise.all([
+      harness.seedUser({ email: 'mixed-drive@bt.test', username: 'mixed_drive' }),
+      harness.seedUser({ email: 'mixed-server@bt.test', username: 'mixed_server' }),
+    ]);
+    // Drive-only: paranoid, but zero server bytes — no vault row, no history.
+    await harness.db
+      .update(schema.users)
+      .set({ privacyMode: 'paranoid', paranoidMediaSet: ['drive'] })
+      .where(eq(schema.users.id, paranoid[0]!.id));
+    await harness.db
+      .update(schema.users)
+      .set({ privacyMode: 'paranoid', paranoidMediaSet: ['server', 'drive'] })
+      .where(eq(schema.users.id, paranoid[1]!.id));
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: paranoid[1]!.id,
+      version: 7,
+      formatVersion: 1,
+      sizeBytes: 42,
+      blob: Buffer.from('server-ciphertext'),
+    });
+    await harness.db.insert(schema.paranoidVaultHistory).values(
+      [5, 6].map((version) => ({
+        userId: paranoid[1]!.id,
+        version,
+        formatVersion: 1,
+        sizeBytes: 41,
+        blob: Buffer.from(`history-${version}`),
+      })),
+    );
+
+    const response = await adminAgent.get('/api/v1/admin/users');
+    expect(response.status).toBe(200);
+    const body = adminUserListResponseSchema.parse(response.body);
+    const byId = new Map(body.users.map((user) => [user.id, user]));
+    expect(byId.get(normal.id)).not.toHaveProperty('paranoid');
+    expect(byId.get(paranoid[0]!.id)).toMatchObject({
+      privacyMode: 'paranoid',
+      paranoid: { mediaSet: ['drive'], vault: null, historyCount: 0 },
+    });
+    expect(byId.get(paranoid[1]!.id)).toMatchObject({
+      privacyMode: 'paranoid',
+      paranoid: {
+        mediaSet: ['server', 'drive'],
+        vault: { version: 7, sizeBytes: 42 },
+        historyCount: 2,
+      },
+    });
+  });
 });
 
 describe('Bull Board administrator boundary (#878)', () => {

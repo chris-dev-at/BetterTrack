@@ -29,6 +29,16 @@ export const paranoidDisableJsonLimitBytes = (vaultMaxBytes: number): number =>
   vaultMaxBytes + 64 * 1024;
 
 /**
+ * Bound how long one download may hold the account transition lock. The transfer
+ * streams inside that lock (a paranoid enable must not retire the archive
+ * mid-transfer), so an abandoned client would otherwise park a lock-pool
+ * connection idle-in-transaction — and block that account's enable — for as long
+ * as its socket stays open. This is an IDLE bound: a slow but progressing
+ * transfer keeps resetting it, only a stalled one is cut.
+ */
+export const EXPORT_DOWNLOAD_STALL_TIMEOUT_MS = 60_000;
+
+/**
  * Account-lifecycle endpoints (PROJECTPLAN.md §13.4). Two families:
  *
  * - **Self-service account deletion** (V4-P2c, #362): the shared capability
@@ -129,16 +139,40 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('Referrer-Policy', 'no-referrer');
       const { token } = req.valid?.body as ExportDownloadRequest;
-      await ctx.dataExport.withDownload(
-        { userId: req.authUser!.id, token },
-        (file) =>
-          new Promise<void>((resolve, reject) => {
-            res.download(file.filePath, file.fileName, (error) => {
-              if (error) reject(error);
-              else resolve();
-            });
-          }),
-      );
+      try {
+        await ctx.dataExport.withDownload(
+          { userId: req.authUser!.id, token },
+          (file) =>
+            new Promise<void>((resolve, reject) => {
+              let settled = false;
+              const finish = (error?: Error): void => {
+                if (settled) return;
+                settled = true;
+                res.setTimeout(0);
+                if (error) reject(error);
+                else resolve();
+              };
+              // The watchdog settles the promise itself rather than relying on
+              // the stream to call back after the socket dies: holding the
+              // account lock forever would be far worse than a spurious error.
+              res.setTimeout(EXPORT_DOWNLOAD_STALL_TIMEOUT_MS, () => {
+                const stalled = new Error('The export download stalled.');
+                res.destroy(stalled);
+                finish(stalled);
+              });
+              res.download(file.filePath, file.fileName, finish);
+            }),
+        );
+      } catch (error) {
+        // Token resolution fails before anything is written, so it still becomes
+        // the usual 404. Once the archive is on the wire the response is
+        // committed: an abort or a cut stall can only be logged.
+        if (!res.headersSent) throw error;
+        ctx.logger.warn(
+          { err: error instanceof Error ? error.message : 'unknown' },
+          'export download did not complete',
+        );
+      }
     },
   );
 

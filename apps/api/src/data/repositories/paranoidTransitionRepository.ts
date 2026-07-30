@@ -709,8 +709,10 @@ export function createParanoidTransitionTransactionRepository(
 
     async purgeVaultRows(userId) {
       assertPurgeCompleteness();
+      // Read the owner's portfolio ids once: the two portfolio-scoped id sets
+      // below derive from this list instead of re-selecting it per branch.
+      const portfolioIds = await portfolioIdsForUser(tx, userId);
       const [
-        portfolioIds,
         customAssetIds,
         standingOrderIds,
         importBatchIds,
@@ -719,9 +721,6 @@ export function createParanoidTransitionTransactionRepository(
         cashBudgetIds,
         cashRuleIds,
       ] = await Promise.all([
-        idsFor(
-          tx.select({ id: portfolios.id }).from(portfolios).where(eq(portfolios.userId, userId)),
-        ),
         idsFor(tx.select({ id: assets.id }).from(assets).where(eq(assets.ownerId, userId))),
         idsFor(
           tx
@@ -741,26 +740,22 @@ export function createParanoidTransitionTransactionRepository(
             .from(expenseBudgets)
             .where(eq(expenseBudgets.userId, userId)),
         ),
-        portfolioIdsForUser(tx, userId).then((ids) =>
-          ids.length === 0
-            ? []
-            : idsFor(
-                tx
-                  .select({ id: portfolioCashMovements.id })
-                  .from(portfolioCashMovements)
-                  .where(inArray(portfolioCashMovements.portfolioId, ids)),
-              ),
-        ),
-        portfolioIdsForUser(tx, userId).then((ids) =>
-          ids.length === 0
-            ? []
-            : idsFor(
-                tx
-                  .select({ id: cashBudgets.id })
-                  .from(cashBudgets)
-                  .where(inArray(cashBudgets.portfolioId, ids)),
-              ),
-        ),
+        portfolioIds.length === 0
+          ? []
+          : idsFor(
+              tx
+                .select({ id: portfolioCashMovements.id })
+                .from(portfolioCashMovements)
+                .where(inArray(portfolioCashMovements.portfolioId, portfolioIds)),
+            ),
+        portfolioIds.length === 0
+          ? []
+          : idsFor(
+              tx
+                .select({ id: cashBudgets.id })
+                .from(cashBudgets)
+                .where(inArray(cashBudgets.portfolioId, portfolioIds)),
+            ),
         idsFor(tx.select({ id: cashRules.id }).from(cashRules).where(eq(cashRules.userId, userId))),
       ]);
       const scope: PurgeScope = {
@@ -861,41 +856,68 @@ export async function withParanoidTransitionTransaction<T>(
   );
 }
 
+/**
+ * Batched admin-only mode/media/blob metadata. Two pool rules make this safe on
+ * the admin user list, which asks for every account at once:
+ *
+ *  1. The privacy lock is taken on the DEDICATED lock pool (`lockDb`) while the
+ *     reads run on the main pool. In production `withLockedPrivacyModes` opens a
+ *     transaction that reserves its connection for the whole callback, so a lock
+ *     and the reads it guards must never share a pool — otherwise N concurrent
+ *     calls exhaust that pool with transactions waiting on queries queued behind
+ *     the very connections those transactions hold (both pools cap at 10).
+ *  2. ONE lock and a fixed number of set-based queries cover the whole batch, so
+ *     the cost of an admin page is independent of the account count instead of
+ *     `1 lock + 3 round trips` per user.
+ *
+ * Ids that no longer resolve are simply absent from the returned map.
+ */
 export async function getParanoidAdminMetadata(
   db: Database,
-  userId: string,
-): Promise<ParanoidAdminMetadata | null> {
-  return withFreshLockedPrivacyModes(db, [userId], async () => {
-    const [user] = await db
-      .select({
-        privacyMode: users.privacyMode,
-        mediaSet: users.paranoidMediaSet,
-      })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-    if (!user) return null;
-    const [[vault], [history]] = await Promise.all([
+  lockDb: Database,
+  userIds: readonly string[],
+): Promise<Map<string, ParanoidAdminMetadata>> {
+  const ids = [...new Set(userIds)];
+  const metadata = new Map<string, ParanoidAdminMetadata>();
+  if (ids.length === 0) return metadata;
+  return withFreshLockedPrivacyModes(lockDb, ids, async () => {
+    const [accounts, vaults, histories] = await Promise.all([
       db
         .select({
+          id: users.id,
+          privacyMode: users.privacyMode,
+          mediaSet: users.paranoidMediaSet,
+        })
+        .from(users)
+        .where(inArray(users.id, ids)),
+      db
+        .select({
+          userId: paranoidVaults.userId,
           version: paranoidVaults.version,
           sizeBytes: paranoidVaults.sizeBytes,
           updatedAt: paranoidVaults.updatedAt,
         })
         .from(paranoidVaults)
-        .where(eq(paranoidVaults.userId, userId))
-        .limit(1),
+        .where(inArray(paranoidVaults.userId, ids)),
       db
-        .select({ value: count() })
+        .select({ userId: paranoidVaultHistory.userId, value: count() })
         .from(paranoidVaultHistory)
-        .where(eq(paranoidVaultHistory.userId, userId)),
+        .where(inArray(paranoidVaultHistory.userId, ids))
+        .groupBy(paranoidVaultHistory.userId),
     ]);
-    return {
-      privacyMode: user.privacyMode,
-      mediaSet: user.mediaSet as VaultMediaSet | null,
-      vault: vault ?? null,
-      historyCount: Number(history?.value ?? 0),
-    };
+    const vaultByUser = new Map(vaults.map(({ userId, ...vault }) => [userId, vault] as const));
+    const historyByUser = new Map(
+      histories.map((row) => [row.userId, Number(row.value ?? 0)] as const),
+    );
+    for (const account of accounts) {
+      metadata.set(account.id, {
+        privacyMode: account.privacyMode,
+        mediaSet: account.mediaSet as VaultMediaSet | null,
+        vault: vaultByUser.get(account.id) ?? null,
+        historyCount: historyByUser.get(account.id) ?? 0,
+      });
+    }
+    return metadata;
   });
 }
 

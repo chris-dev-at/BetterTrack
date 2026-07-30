@@ -353,6 +353,13 @@ audiences use mode-dependent exclusion rows during revocation so an implicit
 `all_friends`/friend-side `public_link` grant cannot silently reappear after
 disable; a later deliberate owner audience edit clears that exclusion.
 
+Revocation of INBOUND shares is permanent and one-directional: the account's
+membership rows in other users' audiences and friend groups are deleted, and
+disable restores none of them — each owner re-adds the account deliberately.
+Keeping a restore list would mean holding the very social graph the mode exists
+to remove, server-side, for the whole paranoid period. Logged as a plan
+deviation in PROJECTPLAN.md §16 (2026-07-30), owner ack pending.
+
 ## 8. The feature-kill list (exact, binding)
 
 Everything that depends on the server reading the portfolio is **absent by

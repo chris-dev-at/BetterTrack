@@ -1803,6 +1803,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const paranoidTransitions = createParanoidTransitionService({
     db,
+    // Admin metadata locks on the dedicated pool and reads on the main one, the
+    // same split every other privacy-lock call site uses.
+    lockDb: privacyLockDb,
     rehydration: paranoidRehydration,
     audit,
     beforeEnableCommit: async (userId, plan) => {

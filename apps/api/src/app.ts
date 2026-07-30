@@ -80,10 +80,13 @@ export function createApp(ctx: AppContext) {
   app.use((req, res, next) => {
     // The decrypted restore can be as large as the bounded encrypted envelope.
     // Defer that one parser to the route, after authentication + its vault rate
-    // limiter; every other JSON request keeps the 100 KiB global bound.
+    // limiter; every other JSON request keeps the 100 KiB global bound. Express
+    // routes case-insensitively by default, so match the same way — otherwise
+    // `/Disable` reaches the handler under the 100 KiB bound and 413s.
+    const path = req.path.toLowerCase();
     if (
       req.method === 'POST' &&
-      (req.path === PARANOID_DISABLE_HTTP_PATH || req.path === `${PARANOID_DISABLE_HTTP_PATH}/`)
+      (path === PARANOID_DISABLE_HTTP_PATH || path === `${PARANOID_DISABLE_HTTP_PATH}/`)
     ) {
       next();
       return;
