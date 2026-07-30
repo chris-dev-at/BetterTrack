@@ -27,7 +27,7 @@ import type {
 } from '@bettertrack/contracts';
 import { DEFAULT_PIN_WINDOW_MINUTES } from '@bettertrack/contracts';
 
-import { ApiError, setAuthResponsePolicy } from '../lib/apiClient';
+import { ApiError, isConfirmedUnauthorized, setAuthResponsePolicy } from '../lib/apiClient';
 import { setDiscreetMode, setMoneyCurrency } from '../lib/format';
 import { updateAccountSettings } from '../lib/settingsApi';
 import * as api from '../lib/userApi';
@@ -35,6 +35,8 @@ import { clearRememberedAccount, writeRememberedAccount } from './auth/remembere
 
 /**
  * `loading` — bootstrapping from the session cookie.
+ * `session-unavailable` — the backend could not confirm or reject the existing
+ *   session; the app holds the gate and offers a retry without signing out.
  * `anonymous` — no usable session; the guard sends `user` routes to `/login`.
  * `authenticated` — a normal session the app can use.
  * `password-change-required` — a live session whose user must change their
@@ -46,6 +48,7 @@ import { clearRememberedAccount, writeRememberedAccount } from './auth/remembere
  */
 export type AuthStatus =
   | 'loading'
+  | 'session-unavailable'
   | 'anonymous'
   | 'authenticated'
   | 'password-change-required'
@@ -191,6 +194,8 @@ interface AuthContextValue {
    *  forced-change state when we only learned of the lock from a `403` (the
    *  identity isn't disclosed until the password is changed). */
   user: MeResponse | null;
+  /** Retry a bootstrap whose outcome is unknown because the backend was unreachable. */
+  retrySession: () => void;
   login: (credentials: LoginRequest) => Promise<LoginOutcome>;
   /**
    * Complete a login 2FA challenge. On success the app lands authenticated,
@@ -299,6 +304,7 @@ const isPasswordChangeRequired = (err: unknown): boolean =>
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [user, setUser] = useState<MeResponse | null>(null);
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [rateLimitBanner, setRateLimitBanner] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -370,13 +376,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const retrySession = useCallback(() => {
+    setStatus('loading');
+    setBootstrapAttempt((attempt) => attempt + 1);
+  }, []);
+
   // Bootstrap from the session cookie. 401 → anonymous; a forced-change session
   // (403, or a stray must-change me) → the trap; 429 → hold the splash and retry
   // after `Retry-After` rather than mistaking a transient rate-limit for a
   // dropped session (the burst limiter can trip on a rapid multi-navigation
   // flurry, e.g. an e2e spec that hard-reloads `/people` several times
   // in a few seconds — falling through to anonymous would bounce the caller to
-  // `/login`); anything else → anonymous.
+  // `/login`). Outages preserve the identity, if already known, and hold a
+  // distinct retryable gate; they never manufacture a signed-out outcome.
   useEffect(() => {
     const controller = new AbortController();
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -408,9 +420,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           retryTimer = setTimeout(() => {
             void tryBootstrap();
           }, delayMs);
-        } else {
+        } else if (isConfirmedUnauthorized(err)) {
           setUser(null);
           setStatus('anonymous');
+        } else {
+          setStatus('session-unavailable');
         }
       }
     };
@@ -419,7 +433,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       controller.abort();
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [applyUser]);
+  }, [applyUser, bootstrapAttempt]);
 
   // Idle-lock timing (§6.1, §13.2 V2-P2; owner directive #304). While a PIN
   // account is authenticated, watch for real DOM activity and engage the gate
@@ -734,6 +748,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       status,
       user,
+      retrySession,
       login,
       verifyTwoFactor,
       adoptUser,
@@ -757,6 +772,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [
       status,
       user,
+      retrySession,
       login,
       verifyTwoFactor,
       adoptUser,

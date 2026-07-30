@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 
 import type { AdminInvite, CreateInviteResponse, InviteStatus } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
@@ -31,12 +32,14 @@ function errorMessage(err: unknown): string {
 }
 
 export function InvitesPage() {
+  const t = useT();
   const [email, setEmail] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<CreateInviteResponse | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [revoking, setRevoking] = useState<AdminInvite | null>(null);
 
   const invites = useResource((signal) => api.listInvites(signal), []);
 
@@ -57,11 +60,13 @@ export function InvitesPage() {
   }
 
   async function revoke(invite: AdminInvite) {
+    if (busyId !== null) return;
     setRowError(null);
     setBusyId(invite.id);
     try {
       await api.revokeInvite(invite.id);
       invites.reload();
+      setRevoking(null);
     } catch (err) {
       setRowError(errorMessage(err));
     } finally {
@@ -135,13 +140,39 @@ export function InvitesPage() {
                   <td className="px-4 py-3">
                     <div className="flex justify-end">
                       {invite.status === 'pending' ? (
-                        <Button
-                          variant="danger"
-                          disabled={busyId === invite.id}
-                          onClick={() => void revoke(invite)}
-                        >
-                          Revoke
-                        </Button>
+                        revoking?.id === invite.id ? (
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            <span className="text-xs text-neutral-400">
+                              {t('admin.confirmations.revokeInvite.prompt', {
+                                email: invite.email,
+                              })}
+                            </span>
+                            <Button
+                              variant="danger"
+                              disabled={busyId === invite.id}
+                              onClick={() => void revoke(invite)}
+                            >
+                              {busyId === invite.id
+                                ? t('admin.confirmations.revokeInvite.pending')
+                                : t('admin.confirmations.revokeInvite.confirm')}
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              disabled={busyId === invite.id}
+                              onClick={() => setRevoking(null)}
+                            >
+                              {t('common.cancel')}
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            variant="danger"
+                            disabled={busyId !== null}
+                            onClick={() => setRevoking(invite)}
+                          >
+                            {t('admin.actions.revoke')}
+                          </Button>
+                        )
                       ) : (
                         <span className="text-neutral-600">—</span>
                       )}
@@ -154,19 +185,48 @@ export function InvitesPage() {
         </div>
       )}
 
-      {created ? (
-        <Modal title="Invite created" onClose={() => setCreated(null)}>
-          <div className="flex flex-col gap-4">
-            <p className="text-sm text-neutral-400">
-              Share this one-time link with{' '}
-              <span className="text-neutral-200">{created.invite.email}</span>. It expires on{' '}
-              {formatDateTime(created.invite.expiresAt)} and is shown only once here.
-            </p>
-            <CopyField label="Invite URL" value={created.inviteUrl} />
-            <Button onClick={() => setCreated(null)}>Done</Button>
-          </div>
-        </Modal>
-      ) : null}
+      {created ? <CreatedInviteDialog result={created} onClose={() => setCreated(null)} /> : null}
     </div>
+  );
+}
+
+function CreatedInviteDialog({
+  result,
+  onClose,
+}: {
+  result: CreateInviteResponse;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [acknowledged, setAcknowledged] = useState(false);
+
+  return (
+    <Modal
+      title={t('admin.oneTimeCredentials.invite.title')}
+      onClose={onClose}
+      dismissable={acknowledged}
+    >
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-neutral-400">
+          {t('admin.oneTimeCredentials.invite.description', {
+            email: result.invite.email,
+            expiresAt: formatDateTime(result.invite.expiresAt),
+          })}
+        </p>
+        <CopyField
+          label={t('admin.oneTimeCredentials.invite.label')}
+          value={result.inviteUrl}
+          onCopied={() => setAcknowledged(true)}
+        />
+        <Button
+          onClick={() => {
+            setAcknowledged(true);
+            onClose();
+          }}
+        >
+          {t('common.savedOneTimeSecret')}
+        </Button>
+      </div>
+    </Modal>
   );
 }

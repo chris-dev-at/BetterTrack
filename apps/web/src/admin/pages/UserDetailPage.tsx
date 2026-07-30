@@ -208,16 +208,11 @@ export function UserDetailPage() {
       )}
 
       {dialog?.type === 'reset-done' && (
-        <Modal title="Password reset" onClose={() => setDialog(null)}>
-          <div className="flex flex-col gap-4">
-            <p className="text-sm text-neutral-400">
-              New temporary password for <span className="text-neutral-200">{user.email}</span>.
-              Shown only once; the user must change it on next login.
-            </p>
-            <CopyField label="Temporary password" value={dialog.result.tempPassword} />
-            <Button onClick={() => setDialog(null)}>Done</Button>
-          </div>
-        </Modal>
+        <ResetPasswordResultDialog
+          user={user}
+          result={dialog.result}
+          onClose={() => setDialog(null)}
+        />
       )}
 
       {dialog?.type === 'delete' && (
@@ -488,6 +483,48 @@ function ResetPasswordDialog({
             {submitting ? 'Resetting…' : 'Reset password'}
           </Button>
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ResetPasswordResultDialog({
+  user,
+  result,
+  onClose,
+}: {
+  user: AdminUser;
+  result: ResetPasswordResponse;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [acknowledged, setAcknowledged] = useState(false);
+
+  return (
+    <Modal
+      title={t('admin.oneTimeCredentials.temporaryPassword.resetTitle')}
+      onClose={onClose}
+      dismissable={acknowledged}
+    >
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-neutral-400">
+          {t('admin.oneTimeCredentials.temporaryPassword.description', {
+            email: user.email,
+          })}
+        </p>
+        <CopyField
+          label={t('admin.oneTimeCredentials.temporaryPassword.label')}
+          value={result.tempPassword}
+          onCopied={() => setAcknowledged(true)}
+        />
+        <Button
+          onClick={() => {
+            setAcknowledged(true);
+            onClose();
+          }}
+        >
+          {t('common.savedOneTimeSecret')}
+        </Button>
       </div>
     </Modal>
   );

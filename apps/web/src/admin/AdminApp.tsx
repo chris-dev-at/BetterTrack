@@ -1,9 +1,10 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 
-import { I18nProvider } from '../i18n';
+import { I18nProvider, useT } from '../i18n';
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { AdminLayout } from './components/AdminLayout';
+import { Button } from './components/ui';
 import { AccountDefaultsPage } from './pages/AccountDefaultsPage';
 import { AiSettingsPage } from './pages/AiSettingsPage';
 import { AnnouncementsPage } from './pages/AnnouncementsPage';
@@ -33,8 +34,23 @@ import { UsersPage } from './pages/UsersPage';
  * with no confirmed 2FA method into the mandatory-enrollment wizard (§6.12, #400).
  */
 function AdminShell() {
-  const { status } = useAuth();
+  const t = useT();
+  const { status, retrySession } = useAuth();
 
+  if (status === 'session-unavailable') {
+    return (
+      <main className="grid min-h-screen place-items-center bg-neutral-950 px-4">
+        <div
+          role="alert"
+          className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6 text-neutral-100"
+        >
+          <h1 className="text-xl font-semibold">{t('auth.common.sessionUnavailableTitle')}</h1>
+          <p className="text-sm text-neutral-400">{t('auth.common.sessionUnavailableBody')}</p>
+          <Button onClick={retrySession}>{t('common.retry')}</Button>
+        </div>
+      </main>
+    );
+  }
   if (status === 'password-change-required') return <ForcedPasswordChangePage />;
   if (status === 'two-factor-required') return <TwoFactorChallengePage />;
   if (status === 'two-factor-setup-required') return <TwoFactorSetupPage />;

@@ -24,6 +24,16 @@ beforeEach(() => {
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHORIZED', 'Not signed in.'));
 });
 
+test('renders a main landmark with one descriptive page heading', async () => {
+  vi.mocked(api.getVersion).mockRejectedValue(new ApiError(0, 'NETWORK_ERROR', 'offline'));
+
+  renderLogin();
+
+  await screen.findByRole('button', { name: 'Sign in' });
+  expect(screen.getByRole('main')).toBeInTheDocument();
+  expect(screen.getAllByRole('heading', { level: 1, name: 'Admin sign in' })).toHaveLength(1);
+});
+
 test('renders the web build sha in the footer, with no api segment on fetch failure', async () => {
   vi.mocked(api.getVersion).mockRejectedValue(new ApiError(0, 'NETWORK_ERROR', 'offline'));
 

@@ -75,6 +75,13 @@ describe('OAuthAppsPanel', () => {
     expect(await screen.findByText(CREATED_CLIENT.clientSecret!)).toBeInTheDocument();
     expect(screen.getByText(CREATED_CLIENT.client.clientId)).toBeInTheDocument();
     expect(screen.getByText(/won't be shown again/i)).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    expect(screen.getByText(CREATED_CLIENT.clientSecret!)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: "I've saved this" }));
+    await waitFor(() =>
+      expect(screen.queryByText(CREATED_CLIENT.clientSecret!)).not.toBeInTheDocument(),
+    );
   });
 
   test('registering an OAuth app with a write scope auto-selects and stores its read (#371)', async () => {

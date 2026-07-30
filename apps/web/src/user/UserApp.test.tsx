@@ -194,6 +194,29 @@ test('a 429 on the bootstrap /auth/me holds the splash and retries — never mis
   await waitFor(() => expect(api.getMe).toHaveBeenCalledTimes(2));
 });
 
+test.each([0, 500])(
+  'a status %i bootstrap outage offers retry without prompting for credentials',
+  async (status) => {
+    vi.mocked(api.getMe)
+      .mockRejectedValueOnce(
+        new ApiError(status, status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN', 'unavailable'),
+      )
+      .mockResolvedValueOnce(member);
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+    const user = userEvent.setup();
+
+    renderAt('/portfolio');
+
+    expect(await screen.findByText(/can’t verify your session right now/i)).toBeInTheDocument();
+    expect(screen.queryByText('Sign in to your account')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+    expect(api.getMe).toHaveBeenCalledTimes(2);
+  },
+);
+
 test('a must-change session is trapped, then released by a successful change', async () => {
   // A fresh load of a forced-change account: /auth/me responds 403.
   vi.mocked(api.getMe).mockRejectedValue(

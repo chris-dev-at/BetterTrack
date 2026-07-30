@@ -1,5 +1,13 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from 'react';
 import { Link } from 'react-router-dom';
 
 import {
@@ -633,6 +641,16 @@ function SharePickerDialog({
 
 // ── Thread ───────────────────────────────────────────────────────────────────
 
+function shouldAutofocusComposer(): boolean {
+  // Opening a thread must not summon the software keyboard on a phone or touch
+  // device. In browsers without media-query support, retain the desktop default.
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
+  return !(
+    window.matchMedia('(pointer: coarse)').matches ||
+    window.matchMedia('(max-width: 767px)').matches
+  );
+}
+
 function MessageComposer({
   onSendText,
   onSendChip,
@@ -646,15 +664,18 @@ function MessageComposer({
   const [text, setText] = useState('');
   const [shareOpen, setShareOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const hasBeenEnabledRef = useRef(false);
 
-  // Desktop-only surface: put the caret in the composer as soon as the thread
-  // opens, and return it whenever the input re-enables. The field is disabled
-  // while a send is in-flight (which drops focus and, on the click path, the
-  // send button steals it); one effect covers both cases because the input is
-  // enabled on mount and again once each send settles — so a rerender or the
-  // disabled→enabled toggle never leaves the user re-clicking the field.
+  // Desktop-only on first open: do not summon a phone's software keyboard.
+  // Once a user has interacted with the composer, returning focus after a send
+  // still makes retries and consecutive messages effortless on every device.
   useEffect(() => {
-    if (!disabled) inputRef.current?.focus();
+    if (disabled) return;
+    if (!hasBeenEnabledRef.current) {
+      hasBeenEnabledRef.current = true;
+      if (!shouldAutofocusComposer()) return;
+    }
+    inputRef.current?.focus();
   }, [disabled]);
 
   function submit(e: FormEvent) {
@@ -703,9 +724,17 @@ function MessageComposer({
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) submit(e);
+          if (
+            e.key === 'Enter' &&
+            !e.shiftKey &&
+            !e.nativeEvent.isComposing &&
+            e.nativeEvent.keyCode !== 229
+          ) {
+            submit(e);
+          }
         }}
         rows={1}
+        aria-label={t('social.chat.composerLabel')}
         placeholder={t('social.chat.composerPlaceholder')}
         disabled={disabled}
         className="bt-textarea max-h-32 flex-1 resize-none"
@@ -750,7 +779,11 @@ export function ChatThreadPane({
   const t = useT();
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const threadRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const previousNewestIdRef = useRef<string | undefined>(undefined);
+  const isNearBottomRef = useRef(true);
+  const [hasNewMessages, setHasNewMessages] = useState(false);
 
   // Resolve (or open) the conversation with this friend. A non-friend 404s.
   // A thread deep-linked by conversation id (a deleted partner, #362) skips the
@@ -799,15 +832,44 @@ export function ChatThreadPane({
     });
   }, [conversationId, newestId, queryClient]);
 
-  // Auto-scroll to the latest message.
-  useEffect(() => {
+  const scrollToLatest = useCallback(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
-  }, [newestId]);
+    isNearBottomRef.current = true;
+    setHasNewMessages(false);
+  }, []);
+
+  function handleThreadScroll() {
+    const thread = threadRef.current;
+    if (!thread) return;
+    const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight <= 48;
+    isNearBottomRef.current = nearBottom;
+    if (nearBottom) setHasNewMessages(false);
+  }
+
+  // Keep readers anchored only when they are already following the end of the
+  // conversation. Initial history and a just-sent message still land at the
+  // bottom; otherwise retain the reader's place and offer a compact jump back.
+  useEffect(() => {
+    if (!newestId) return;
+    const previousNewestId = previousNewestIdRef.current;
+    previousNewestIdRef.current = newestId;
+    if (previousNewestId === newestId) return;
+
+    if (previousNewestId === undefined || isNearBottomRef.current) {
+      scrollToLatest();
+      return;
+    }
+
+    setHasNewMessages(true);
+  }, [newestId, scrollToLatest]);
 
   const sendMutation = useMutation({
     mutationFn: (input: { body?: string; chip?: { kind: ChatChip['kind']; subjectId: string } }) =>
       sendChatMessage(conversationId!, input),
     onSuccess: () => {
+      // Sending is an explicit request to continue the conversation, even if
+      // the reader had been looking back through history.
+      scrollToLatest();
       if (conversationId)
         void queryClient.invalidateQueries({ queryKey: threadKey(conversationId) });
       void queryClient.invalidateQueries({ queryKey: CONVERSATIONS_KEY });
@@ -872,43 +934,66 @@ export function ChatThreadPane({
         </span>
       </div>
 
-      <div className="flex flex-1 flex-col gap-2 overflow-y-auto" style={{ padding: 16 }}>
-        {threadQuery.hasNextPage ? (
+      <div className="relative flex flex-1 overflow-hidden">
+        <div
+          ref={threadRef}
+          role="log"
+          aria-atomic="false"
+          aria-label={t('social.chat.logLabel', { username: otherName })}
+          aria-live="polite"
+          aria-relevant="additions text"
+          className="flex flex-1 flex-col gap-2 overflow-y-auto"
+          onScroll={handleThreadScroll}
+          style={{ padding: 16 }}
+        >
+          {threadQuery.hasNextPage ? (
+            <Button
+              className="mx-auto"
+              disabled={threadQuery.isFetchingNextPage}
+              onClick={() => void threadQuery.fetchNextPage()}
+              size="sm"
+              variant="quiet"
+            >
+              {t('social.chat.loadEarlier')}
+            </Button>
+          ) : null}
+
+          {threadQuery.isLoading ? (
+            <div className="flex flex-col gap-2">
+              <SkeletonBlock height={48} />
+              <SkeletonBlock height={48} />
+            </div>
+          ) : threadQuery.isError ? (
+            <Alert tone="error">{t('social.chat.error')}</Alert>
+          ) : messages.length === 0 ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+              <Avatar name={otherName} iconId={other?.profileIcon ?? null} size="lg" />
+              <p className="bt-h2">{t('social.chat.sayHi', { username: otherName })}</p>
+              <p className="bt-meta max-w-xs">{t('social.chat.sayHiBody')}</p>
+            </div>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {messages.map((m) => (
+                <li key={m.id}>
+                  <MessageBubble message={m} mine={m.senderId === user?.id} recipient={other} />
+                </li>
+              ))}
+            </ul>
+          )}
+          <div ref={bottomRef} aria-hidden="true" />
+        </div>
+
+        {hasNewMessages ? (
           <Button
-            className="mx-auto"
-            disabled={threadQuery.isFetchingNextPage}
-            onClick={() => void threadQuery.fetchNextPage()}
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 shadow-sm"
+            onClick={scrollToLatest}
             size="sm"
+            type="button"
             variant="quiet"
           >
-            {t('social.chat.loadEarlier')}
+            {t('social.chat.newMessages')}
           </Button>
         ) : null}
-
-        {threadQuery.isLoading ? (
-          <div className="flex flex-col gap-2">
-            <SkeletonBlock height={48} />
-            <SkeletonBlock height={48} />
-          </div>
-        ) : threadQuery.isError ? (
-          <Alert tone="error">{t('social.chat.error')}</Alert>
-        ) : messages.length === 0 ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-            <Avatar name={otherName} iconId={other?.profileIcon ?? null} size="lg" />
-            <p className="bt-h2">{t('social.chat.sayHi', { username: otherName })}</p>
-            <p className="bt-meta max-w-xs">{t('social.chat.sayHiBody')}</p>
-          </div>
-        ) : (
-          messages.map((m) => (
-            <MessageBubble
-              key={m.id}
-              message={m}
-              mine={m.senderId === user?.id}
-              recipient={other}
-            />
-          ))
-        )}
-        <div ref={bottomRef} />
       </div>
 
       {sendMutation.isError && !banned ? (
