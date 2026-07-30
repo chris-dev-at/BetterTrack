@@ -49,6 +49,11 @@ COPY --from=build --chown=bettertrack:bettertrack /app/apps/api/drizzle ./drizzl
 
 COPY --from=build --chown=bettertrack:bettertrack /app/apps/api/package.json ./
 
+# The runtime starts the already-built server with `node`; npm and npx are
+# build-only tools and retaining their bundled dependency tree needlessly grows
+# the attack surface of the production image.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 USER bettertrack
 EXPOSE 3000
 CMD ["node", "dist/server.js"]
