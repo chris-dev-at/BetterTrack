@@ -30,6 +30,15 @@ vi.mock('../../lib/workboardApi', () => ({
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
 }));
+vi.mock('../../lib/runtimeConfig', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/runtimeConfig')>();
+  return {
+    ...actual,
+    // Exercise the shipped plain-HTTP ports topology: the API asset is not
+    // same-origin because the SPA and API listen on different ports.
+    apiBaseUrl: () => 'http://track.lan:4300/api/v1',
+  };
+});
 
 import { ApiError } from '../../lib/apiClient';
 import { approveAuthorization, getAuthorizationDetails } from '../../lib/oauthApi';
@@ -170,7 +179,7 @@ test('third-party card shows the signed-in account plus Use another account, and
   );
 });
 
-test('client logos load only from the BetterTrack API path and fall back if that cache read fails', async () => {
+test('client logos load from the cross-port BetterTrack API and fall back if that cache read fails', async () => {
   vi.mocked(getAuthorizationDetails).mockResolvedValue({
     ...DETAILS,
     client: {
@@ -183,7 +192,10 @@ test('client logos load only from the BetterTrack API path and fall back if that
   await screen.findByText('Third-party app');
   const logo = document.querySelector('img');
   expect(logo).not.toBeNull();
-  expect(logo).toHaveAttribute('src', '/api/v1/oauth/client-logos/btc_charting_buddy');
+  expect(logo).toHaveAttribute(
+    'src',
+    'http://track.lan:4300/api/v1/oauth/client-logos/btc_charting_buddy',
+  );
   expect(logo?.getAttribute('src')).not.toContain('app.example.com');
 
   fireEvent.error(logo!);

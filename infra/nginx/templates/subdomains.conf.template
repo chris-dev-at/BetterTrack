@@ -44,17 +44,28 @@ server {
 
     root /usr/share/nginx/html;
     index index.html;
+    include /etc/nginx/bt-includes/static-security-headers.conf;
+    include /etc/nginx/bt-includes/static-hsts.conf;
+    # Preserve the live edge's SEO fence: server-level add_header directives
+    # replace its http-level X-Robots-Tag inheritance.
+    add_header X-Robots-Tag "noindex, nofollow" always;
 
     # Per-origin runtime config (§7.1): app kind + cross-origin API origin.
     # Overrides the default /public/config.js baked into the image.
     location = /config.js {
         default_type application/javascript;
+        # Cache-Control is also an add_header, so repeat the shared/TLS policy
+        # here instead of losing every inherited browser header.
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "no-store";
         return 200 'window.__BT__ = { app: "user", apiOrigin: "${API_ORIGIN}" };';
     }
 
     location ~* \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {
         expires max;
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "public, max-age=31536000, immutable";
         try_files $uri =404;
     }
@@ -71,15 +82,23 @@ server {
 
     root /usr/share/nginx/html;
     index index.html;
+    # Deliberately identical to the user SPA baseline above.
+    include /etc/nginx/bt-includes/static-security-headers.conf;
+    include /etc/nginx/bt-includes/static-hsts.conf;
+    add_header X-Robots-Tag "noindex, nofollow" always;
 
     location = /config.js {
         default_type application/javascript;
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "no-store";
         return 200 'window.__BT__ = { app: "admin", apiOrigin: "${API_ORIGIN}" };';
     }
 
     location ~* \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {
         expires max;
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "public, max-age=31536000, immutable";
         try_files $uri =404;
     }
@@ -93,6 +112,8 @@ server {
 server {
     listen 80;
     server_name ${BT_DOMAIN};
+    include /etc/nginx/bt-includes/static-security-headers.conf;
+    include /etc/nginx/bt-includes/static-hsts.conf;
 
     # The product page + its assets are static files in the `landing` container.
     location / {
@@ -109,6 +130,9 @@ server {
 server {
     listen 80;
     server_name ${BT_SUB_MOBILE}.${BT_DOMAIN};
+    include /etc/nginx/bt-includes/static-security-headers.conf;
+    include /etc/nginx/bt-includes/static-hsts.conf;
+    add_header X-Robots-Tag "noindex, nofollow" always;
 
     # The apex and mobile origins share one static container; only their root
     # documents differ, so mobile's `/` maps to mobile.html and everything else
