@@ -178,6 +178,11 @@ The rest of the product site (`index`, `features`, `security`, `roadmap`,
 `style.css`, images) intentionally remains control-dir-only for now; only the
 legal set is repo-canonical.
 
+The shared live-edge CSP blocks inline scripts. Before adopting a policy change,
+verify those control-dir-only product pages have externalized every script and
+inline event handler; the updater cannot inspect or rewrite files absent from
+this repository.
+
 ### Adopt (on the prod host)
 
 **Automatic** since the self-adopting pipeline: every subdirectory here is

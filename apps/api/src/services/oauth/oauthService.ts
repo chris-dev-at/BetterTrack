@@ -21,6 +21,8 @@ import {
   type OAuthAuthorizationDetailsQuery,
   type OAuthAuthorizationDetailsResponse,
   type OAuthClientSummary,
+  type OAuthDenyRequest,
+  type OAuthDenyResponse,
   type OAuthGrantSummary,
   type OAuthTokenRequest,
   type OAuthTokenResponse,
@@ -127,6 +129,8 @@ export interface OAuthService {
     body: OAuthApproveRequest;
     ip?: string | null;
   }): Promise<OAuthApproveResponse>;
+  /** User denied consent → return the validated callback with an OAuth error. */
+  deny(body: OAuthDenyRequest): Promise<OAuthDenyResponse>;
   /** Public token endpoint: authorization_code or refresh_token grant. */
   exchangeToken(input: {
     body: OAuthTokenRequest;
@@ -312,7 +316,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     );
   }
 
-  /** Shared authorize-request validation for both the consent read and approve. */
+  /** Shared authorize-request validation for the consent read, approve and deny paths. */
   async function validateAuthorize(input: {
     clientId: string;
     redirectUri: string;
@@ -715,6 +719,20 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       });
       const sep = body.redirect_uri.includes('?') ? '&' : '?';
       const params = new URLSearchParams({ code: code.token });
+      if (body.state) params.set('state', body.state);
+      return { redirectTo: `${body.redirect_uri}${sep}${params.toString()}` };
+    },
+
+    async deny(body) {
+      await validateAuthorize({
+        clientId: body.client_id,
+        redirectUri: body.redirect_uri,
+        scope: body.scope,
+        codeChallenge: body.code_challenge,
+        codeChallengeMethod: body.code_challenge_method,
+      });
+      const sep = body.redirect_uri.includes('?') ? '&' : '?';
+      const params = new URLSearchParams({ error: 'access_denied' });
       if (body.state) params.set('state', body.state);
       return { redirectTo: `${body.redirect_uri}${sep}${params.toString()}` };
     },

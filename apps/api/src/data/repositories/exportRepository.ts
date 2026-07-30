@@ -1,7 +1,11 @@
-import { and, desc, eq, gte, isNotNull, lte } from 'drizzle-orm';
+import { and, desc, eq, gt, isNotNull, lte } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { exportJobs, type ExportJobRow } from '../schema';
+import { exportJobs, users, type ExportJobRow } from '../schema';
+
+export type ExportJobReservation =
+  | { kind: 'created'; job: ExportJobRow }
+  | { kind: 'rate_limited'; latest: ExportJobRow };
 
 /**
  * Account data-export job persistence (§13.4 V4-P6a, #494). Owns the
@@ -12,8 +16,16 @@ import { exportJobs, type ExportJobRow } from '../schema';
  * never read another's job.
  */
 export interface ExportRepository {
-  /** Insert a fresh `pending` job for the user and return it. */
-  create(input: { userId: string; downloadTokenHash: string }): Promise<ExportJobRow>;
+  /**
+   * Atomically reserve the user's daily export slot and insert a fresh
+   * `pending` job. The stable user row is locked so concurrent first-time
+   * requests serialize even when there is no export row to lock yet.
+   */
+  reserveWithinRateLimit(input: {
+    userId: string;
+    downloadTokenHash: string;
+    since: Date;
+  }): Promise<ExportJobReservation>;
   /** The user's most recent job (any status), or null. */
   findLatestForUser(userId: string): Promise<ExportJobRow | null>;
   /** A job by id, scoped to its owner (foreign ids resolve to null). */
@@ -21,17 +33,15 @@ export interface ExportRepository {
   /** A job by id, regardless of owner — for the build job (which trusts its jobId). */
   findById(id: string): Promise<ExportJobRow | null>;
   /**
-   * A READY, unexpired job for the user matching the download-token hash. Any
-   * mismatch — foreign token, expired, not yet ready — resolves to null so the
-   * download fails closed.
+   * Atomically consume a READY, unexpired job's matching download-token hash.
+   * Any mismatch — foreign token, expired, replayed, not yet ready — resolves
+   * to null so the download fails closed.
    */
-  findDownloadable(input: {
+  consumeDownloadable(input: {
     userId: string;
     downloadTokenHash: string;
     now: Date;
   }): Promise<ExportJobRow | null>;
-  /** Whether the user has any job created at/after `since` (the 1/day gate). */
-  hasJobSince(userId: string, since: Date): Promise<boolean>;
   /** Mark a job ready with its on-disk file + download window. */
   markReady(input: {
     id: string;
@@ -50,9 +60,29 @@ export interface ExportRepository {
 
 export function createExportRepository(db: Database): ExportRepository {
   return {
-    async create({ userId, downloadTokenHash }) {
-      const [row] = await db.insert(exportJobs).values({ userId, downloadTokenHash }).returning();
-      return row!;
+    async reserveWithinRateLimit({ userId, downloadTokenHash, since }) {
+      return db.transaction(async (tx) => {
+        const [owner] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, userId))
+          .for('update');
+        if (!owner) throw new Error('Cannot create a data export for a missing user');
+
+        const [latest] = await tx
+          .select()
+          .from(exportJobs)
+          .where(eq(exportJobs.userId, userId))
+          .orderBy(desc(exportJobs.createdAt))
+          .limit(1);
+        if (latest && latest.status !== 'failed' && latest.createdAt.getTime() > since.getTime()) {
+          return { kind: 'rate_limited' as const, latest };
+        }
+
+        const [job] = await tx.insert(exportJobs).values({ userId, downloadTokenHash }).returning();
+        if (!job) throw new Error('Failed to create a data export job');
+        return { kind: 'created' as const, job };
+      });
     },
 
     async findLatestForUser(userId) {
@@ -79,33 +109,20 @@ export function createExportRepository(db: Database): ExportRepository {
       return row ?? null;
     },
 
-    async findDownloadable({ userId, downloadTokenHash, now }) {
+    async consumeDownloadable({ userId, downloadTokenHash, now }) {
       const [row] = await db
-        .select()
-        .from(exportJobs)
+        .update(exportJobs)
+        .set({ downloadTokenHash: null })
         .where(
           and(
             eq(exportJobs.userId, userId),
             eq(exportJobs.downloadTokenHash, downloadTokenHash),
             eq(exportJobs.status, 'ready'),
+            gt(exportJobs.expiresAt, now),
           ),
         )
-        .limit(1);
-      if (!row) return null;
-      // Expiry is enforced in code (not the WHERE) so an expired-but-present row
-      // still reads as "gone" the same way a missing one does — never a distinct
-      // signal to a probing caller.
-      if (!row.expiresAt || row.expiresAt.getTime() <= now.getTime()) return null;
-      return row;
-    },
-
-    async hasJobSince(userId, since) {
-      const [row] = await db
-        .select({ id: exportJobs.id })
-        .from(exportJobs)
-        .where(and(eq(exportJobs.userId, userId), gte(exportJobs.createdAt, since)))
-        .limit(1);
-      return Boolean(row);
+        .returning();
+      return row ?? null;
     },
 
     async markReady({ id, filePath, fileSize, expiresAt, readyAt }) {
