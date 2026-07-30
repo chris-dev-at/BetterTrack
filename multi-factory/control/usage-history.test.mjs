@@ -11,6 +11,7 @@ import {
   parseUsageHistoryHours,
   queryUsageHistory,
   sanitizeUsageHistoryEntry,
+  usageHistoryEntryToSnapshot,
   usageSnapshotToHistoryEntry,
 } from './usage-history.mjs';
 
@@ -98,8 +99,57 @@ test('history persistence is atomic, sampled and query-bounded', async () => {
   }
 });
 
-test('control server exposes only the bounded history query helper', async () => {
+test('control server exposes only the bounded account-scoped history query helper', async () => {
   const source = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
   assert.match(source, /url\.pathname === '\/api\/usage\/history'/);
-  assert.match(source, /queryUsageHistory\(USAGE_HISTORY_FILE/);
+  assert.match(source, /queryUsageHistory\(\s*usageHistoryFile\(credential\.profileId\)/);
+});
+
+test('a stored sample rehydrates into the snapshot the panel renders', () => {
+  const usage = {
+    fiveHour: { pct: 20, resetsAt: '2026-07-31T02:00:00.000Z' },
+    sevenDay: { pct: 85, resetsAt: '2026-08-05T11:00:00.000Z' },
+    scoped: [{ name: 'Opus 4.8', pct: 40 }],
+  };
+  const restored = usageHistoryEntryToSnapshot(usageSnapshotToHistoryEntry(usage, 1_700_000_000_000));
+  assert.deepEqual(restored.fiveHour, usage.fiveHour);
+  assert.deepEqual(restored.sevenDay, usage.sevenDay);
+  assert.deepEqual(restored.scoped, usage.scoped);
+  assert.equal(restored.sampledAt, 1_700_000_000_000);
+});
+
+test('an unusable stored sample yields no stale snapshot rather than a hollow one', () => {
+  assert.equal(usageHistoryEntryToSnapshot(undefined), null);
+  assert.equal(usageHistoryEntryToSnapshot({ at: 0, f5: 20 }), null);
+  assert.equal(usageHistoryEntryToSnapshot({ at: 1_700_000_000_000 }), null);
+});
+
+test('a throttled usage poll falls back to the profile-scoped stored sample', async () => {
+  const source = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
+  // The fallback must be keyed by the same cache key as the live poll: showing
+  // one account's figures under another account's name is worse than an error.
+  assert.match(source, /persistedUsageLastGood\(cacheKey\)/);
+  assert.match(source, /queryUsageHistory\(usageHistoryFile\(cacheKey\), 720\)/);
+  assert.match(source, /\{ \.\.\.lastGood, account, stale: true \}/);
+});
+
+test('a rate-limited usage poll honours Retry-After instead of a guessed backoff', async () => {
+  const source = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
+  // Anthropic returns an exact reset for /api/oauth/usage. Retrying before it
+  // burns calls that cannot succeed and keeps the panel unable to say when
+  // numbers come back.
+  assert.match(source, /function usageRetryMs\(res\)/);
+  assert.match(source, /res\.headers\?\.get\?\.\('retry-after'\)/);
+  assert.match(source, /if \(res\.status === 429\) ttl = usageRetryMs\(res\)/);
+  assert.match(source, /retryAt/);
+});
+
+test('usage is polled per account so every held subscription is visible', async () => {
+  const source = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
+  assert.match(source, /async function usageAccounts\(\)/);
+  assert.match(source, /accountUsage,/);
+  // The master lane must not be polled twice against a rate-limited endpoint:
+  // usageAccounts runs after usage() so it lands on the shared cache.
+  assert.match(source, /const accountUsage = await usageAccounts\(\)/);
+  assert.match(source, /usageForCredential\(await masterClaudeCredential\(\), 'master'\)/);
 });

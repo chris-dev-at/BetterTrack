@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 // multi-factory/control/server.mjs — ControlWebView backend (run on the HOST).
 //
-//   node multi-factory/control/server.mjs       →  http://127.0.0.1:8790
+//   node multi-factory/control/server.mjs       →  http://10.0.0.4:8790
 //
 // Zero-dependency Node (≥20). Serves the live dashboard (index.html + SSE) and
 // executes the owner's controls: start / dry-run / pause / unpause / stop /
 // down / mode changes (run | run-out | close-down). It is the host-side half of
 // the drain modes: when the master reports control/phase=drained it downs the
-// compose project automatically. Binds 127.0.0.1 only.
+// compose project automatically. Listens on LAN interfaces, then rejects any
+// non-private source and untrusted Host before routing the request.
 import { createServer } from 'node:http';
 import { execFile, spawn } from 'node:child_process';
 import { readFile, writeFile, readdir, stat, rename, mkdir, appendFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { buildUsageAnalytics, ledgerEquivalentUsd, parseUsageRange } from './usage-analytics.mjs';
@@ -42,6 +43,7 @@ import {
   appendUsageHistory,
   compactUsageHistoryFile,
   queryUsageHistory,
+  usageHistoryEntryToSnapshot,
 } from './usage-history.mjs';
 import {
   evaluateTimerTrigger,
@@ -51,22 +53,59 @@ import {
   usageResetReady,
   usageThresholdReached,
 } from './trigger-control.mjs';
+import {
+  CLAUDE_CREDENTIAL_SERVICES,
+  CLAUDE_FACTORY_ENV_PROFILE,
+  createClaudeCredentialStore,
+} from './claude-credentials.mjs';
+import { createClaudeLoginManager, scrubClaudeLoginEnv } from './claude-login.mjs';
+import {
+  isAllowedRequestHost,
+  isPrivateSource,
+  isSamePrivateOrigin,
+} from './local-control-security.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MF_DIR = resolve(__dirname, '..');
 const REPO_ROOT = resolve(MF_DIR, '..');
 const STATE = join(MF_DIR, 'state');
 const CONTROL = join(STATE, 'control');
+const AUTH_ROOT_PATH = join(MF_DIR, 'auth');
+const AUTH_ROOT = existsSync(AUTH_ROOT_PATH) ? realpathSync(AUTH_ROOT_PATH) : AUTH_ROOT_PATH;
 const LEDGER = join(REPO_ROOT, 'factory', 'usage', 'ledger.jsonl');
 const CONTROL_LOG = join(STATE, 'logs', 'control.log');
 const PROVIDER_TESTS_FILE = join(CONTROL, 'provider-tests.json');
 const CLAUDEX_MARKER = join(MF_DIR, 'auth', 'master', 'ccr', 'factory-status.json');
 const USAGE_HISTORY_FILE = join(CONTROL, 'usage-history.json');
 const PORT = Number(process.env.MF_CONTROL_PORT || 8790);
+const HOST = process.env.MF_CONTROL_HOST || '10.0.0.4';
 const MF_PROJECT = 'bettertrack-multifactory';
 const SF_PROJECT = 'bettertrack-factory';
 const inflight = new Map(); // operation name → started_at
 const mfExclusive = createExclusiveOperation();
+const claudeCredentials = createClaudeCredentialStore({ authRoot: AUTH_ROOT });
+const claudeLogin = createClaudeLoginManager({
+  store: claudeCredentials,
+  cwd: MF_DIR,
+});
+await claudeCredentials.materializeAll().catch(() => {
+  // The dashboard must still come up to surface/recover a credential-store
+  // problem. Runtime readiness remains fail-closed until materialization works.
+});
+process.once('exit', () => {
+  void claudeLogin.dispose();
+});
+let signalShutdownStarted = false;
+for (const [signal, exitCode] of [
+  ['SIGINT', 130],
+  ['SIGTERM', 143],
+]) {
+  process.once(signal, () => {
+    if (signalShutdownStarted) return;
+    signalShutdownStarted = true;
+    void claudeLogin.dispose().finally(() => process.exit(exitCode));
+  });
+}
 
 const run = (cmd, args, opts = {}) =>
   new Promise((res) => {
@@ -476,40 +515,161 @@ async function ledger() {
   }
 }
 
-// ---- subscription usage (5h window + weekly, via host OAuth token) --------------------
-// The token is read server-side (macOS keychain first, factory/.env as fallback)
-// and never leaves this process — the page only ever sees percentages/timestamps.
-let usageCache = { at: 0, ttl: 0, data: null };
-let usageLastGood = null;
+// ---- subscription usage (5h window + weekly, scoped to the master account) ------------
+// Credentials never leave this process. Named-profile readings are cached and
+// historized separately so switching accounts cannot splice two subscriptions
+// into one graph or display the previous account's stale fallback.
+const usageCaches = new Map();
+const usageLastGood = new Map();
+let factoryEnvOauthCache = { mtimeMs: null, token: null };
 // The oauth/usage endpoint rate-limits aggressively — poll at most every 5 min
 // (owner-approved drift of a few %) and serve the last good reading on errors.
 const USAGE_TTL = Number(process.env.MF_USAGE_TTL_MS || 300000);
-async function hostOauthToken() {
-  const r = await run('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w']);
-  if (r.ok) {
-    try {
-      const j = JSON.parse(r.stdout);
-      const t = j.claudeAiOauth?.accessToken || j.accessToken;
-      if (t) return t;
-    } catch {
-      /* fall through to .env */
+async function factoryEnvOauthToken() {
+  const envPath = join(REPO_ROOT, 'factory', '.env');
+  let token = null;
+  try {
+    const info = await stat(envPath);
+    if (factoryEnvOauthCache.mtimeMs === info.mtimeMs) return factoryEnvOauthCache.token;
+    const env = await readFile(envPath, 'utf8');
+    const match = /^\s*CLAUDE_CODE_OAUTH_TOKEN=(.*)$/m.exec(env);
+    if (match) {
+      token = match[1].trim();
+      if (
+        token.length >= 2 &&
+        ((token.startsWith('"') && token.endsWith('"')) ||
+          (token.startsWith("'") && token.endsWith("'")))
+      ) {
+        token = token.slice(1, -1);
+      }
+      if (!token) token = null;
     }
+    factoryEnvOauthCache = { mtimeMs: info.mtimeMs, token };
+  } catch {
+    factoryEnvOauthCache = { mtimeMs: null, token: null };
+  }
+  return token;
+}
+
+function unavailableClaudeCredentialState() {
+  return {
+    version: 1,
+    profiles: [],
+    assignments: {
+      default: 'factory-env',
+      master: null,
+      'worker-1': null,
+      'worker-2': null,
+      'worker-3': null,
+      'worker-4': null,
+    },
+    unavailable: true,
+    error: 'Claude credential storage is unavailable.',
+  };
+}
+
+async function publicClaudeCredentialState() {
+  try {
+    return await claudeCredentials.list();
+  } catch {
+    return unavailableClaudeCredentialState();
+  }
+}
+
+async function masterClaudeCredential() {
+  const publicState = await publicClaudeCredentialState();
+  if (publicState.unavailable) {
+    return {
+      token: null,
+      profileId: 'unavailable',
+      name: 'Claude credential unavailable',
+      source: 'unavailable',
+    };
+  }
+  const assignments = publicState.assignments || {};
+  const profileId = assignments.master || assignments.default || 'factory-env';
+  if (profileId !== 'factory-env') {
+    let token = null;
+    try {
+      token = await claudeCredentials.tokenForService('master');
+    } catch {
+      // Named selections fail closed. Never fall through to the legacy
+      // Factory .env account when the selected profile cannot be read.
+    }
+    const profile = (publicState.profiles || []).find((entry) => entry.id === profileId);
+    return {
+      token,
+      profileId,
+      name: profile?.name || 'Selected Claude account',
+      source: 'profile',
+    };
   }
   try {
-    const env = await readFile(join(REPO_ROOT, 'factory', '.env'), 'utf8');
-    const m = /^CLAUDE_CODE_OAUTH_TOKEN=(.+)$/m.exec(env);
-    if (m) return m[1].trim();
+    await claudeCredentials.tokenForService('master');
   } catch {
-    /* no fallback token */
+    return {
+      token: null,
+      profileId: 'factory-env',
+      name: 'Factory .env unavailable',
+      source: 'unavailable',
+    };
   }
-  return null;
+  return {
+    token: await factoryEnvOauthToken(),
+    profileId: 'factory-env',
+    name: 'Factory .env',
+    source: 'legacy',
+  };
 }
-async function usage() {
-  if (Date.now() - usageCache.at < (usageCache.ttl || USAGE_TTL) && usageCache.data)
-    return usageCache.data;
+
+function usageHistoryFile(profileId = 'factory-env') {
+  if (profileId === 'factory-env') return USAGE_HISTORY_FILE;
+  const safe = String(profileId).replace(/[^A-Za-z0-9_-]/g, '');
+  return join(CONTROL, `usage-history-claude-${safe || 'unknown'}.json`);
+}
+
+// Last-good telemetry for a profile, from disk. usageLastGood only survives as
+// long as this process does, so without this a restart during an upstream
+// throttle leaves the panel showing a raw status code with no numbers at all.
+// Strictly per profile: one account's figures must never stand in for another's.
+async function persistedUsageLastGood(cacheKey) {
+  try {
+    const { entries } = await queryUsageHistory(usageHistoryFile(cacheKey), 720);
+    const snapshot = usageHistoryEntryToSnapshot(entries[entries.length - 1]);
+    if (snapshot) usageLastGood.set(cacheKey, snapshot);
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+// Anthropic answers a throttled usage poll with an exact Retry-After. Guessing
+// a backoff instead both wastes calls into a closed window and leaves the panel
+// unable to say when numbers return, so honour the header and carry the deadline
+// through to the client.
+function usageRetryMs(res) {
+  const header = Number(res.headers?.get?.('retry-after'));
+  if (!Number.isFinite(header) || header <= 0) return 600000;
+  return Math.min(Math.max(header * 1000 + 5000, 60000), 3600000);
+}
+
+async function usageForCredential(credential, scope) {
+  const cacheKey = credential.profileId;
+  const cached = usageCaches.get(cacheKey);
+  if (cached && Date.now() - cached.at < (cached.ttl || USAGE_TTL) && cached.data)
+    return cached.data;
   let data = { error: 'no OAuth token found' };
-  let ttl = USAGE_TTL;
-  const token = await hostOauthToken();
+  // The endpoint's budget is per token and small — Anthropic has handed back
+  // Retry-After values up to an hour. The lane actually doing the work earns the
+  // fresh reading; a second account is a "how much is left over there" glance
+  // and does not justify spending the same rate on it.
+  let ttl = scope === 'master' ? USAGE_TTL : Math.max(USAGE_TTL * 3, 900000);
+  const token = credential.token;
+  const account = {
+    profileId: credential.profileId,
+    name: credential.name,
+    scope,
+  };
   if (token) {
     try {
       const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
@@ -528,28 +688,92 @@ async function usage() {
           scoped: (j.limits || [])
             .filter((l) => l.kind === 'weekly_scoped' && l.scope?.model?.display_name)
             .map((l) => ({ name: l.scope.model.display_name, pct: l.percent })),
+          account,
         };
       } else {
-        data = usageLastGood
-          ? { ...usageLastGood, stale: true }
-          : { error: `usage API ${res.status}` };
-        if (res.status === 429) ttl = 600000; // back off harder when rate-limited
+        if (res.status === 429) ttl = usageRetryMs(res);
+        const retryAt = res.status === 429 ? Date.now() + ttl : undefined;
+        const lastGood = usageLastGood.get(cacheKey) || (await persistedUsageLastGood(cacheKey));
+        data = lastGood
+          ? { ...lastGood, account, stale: true, ...(retryAt ? { retryAt } : {}) }
+          : { error: `usage API ${res.status}`, ...(retryAt ? { retryAt } : {}) };
       }
     } catch (e) {
-      data = usageLastGood
-        ? { ...usageLastGood, stale: true }
+      const lastGood = usageLastGood.get(cacheKey) || (await persistedUsageLastGood(cacheKey));
+      data = lastGood
+        ? { ...lastGood, account, stale: true }
         : { error: String(e.message || e).slice(0, 80) };
     }
   }
   if (!data.error && !data.stale) {
-    usageLastGood = data;
-    await appendUsageHistory(USAGE_HISTORY_FILE, data).catch(() => {});
+    usageLastGood.set(cacheKey, data);
+    const historyFile = usageHistoryFile(cacheKey);
+    await appendUsageHistory(historyFile, data).catch(() => {});
+    await compactUsageHistoryFile(historyFile).catch(() => {});
   }
-  usageCache = { at: Date.now(), ttl, data };
+  if (data.error) data = { ...data, account };
+  usageCaches.set(cacheKey, { at: Date.now(), ttl, data });
   return data;
 }
+
+async function usage() {
+  return usageForCredential(await masterClaudeCredential(), 'master');
+}
+
+// Every account the factory can currently draw on, not just the master lane's.
+// With work split across two subscriptions, "how much is left" is a question
+// about both of them, and the answer decides which one the owner assigns next.
+// Caching is shared with usage(): the master account is polled once, not twice.
+async function usageAccounts() {
+  const state = await publicClaudeCredentialState();
+  if (state.unavailable) return [];
+  const assignments = state.assignments || {};
+  const lanesFor = (profileId) =>
+    CLAUDE_CREDENTIAL_SERVICES.filter(
+      (service) => (assignments[service] ?? assignments.default) === profileId,
+    );
+  const selected = new Set(
+    CLAUDE_CREDENTIAL_SERVICES.map((service) => assignments[service] ?? assignments.default).filter(
+      Boolean,
+    ),
+  );
+  const wanted = [
+    ...(state.profiles || []).map((profile) => ({ profileId: profile.id, name: profile.name })),
+    ...(selected.has(CLAUDE_FACTORY_ENV_PROFILE)
+      ? [{ profileId: CLAUDE_FACTORY_ENV_PROFILE, name: 'Factory .env' }]
+      : []),
+  ];
+  return Promise.all(
+    wanted.map(async (entry) => {
+      let token = null;
+      try {
+        token =
+          entry.profileId === CLAUDE_FACTORY_ENV_PROFILE
+            ? await factoryEnvOauthToken()
+            : await claudeCredentials.tokenForProfile(entry.profileId);
+      } catch {
+        // An unreadable credential is reported as an account without telemetry,
+        // never as a missing account: the owner still needs to see it exists.
+      }
+      const usageData = await usageForCredential(
+        { ...entry, token, source: 'profile' },
+        'account',
+      ).catch(() => ({ error: 'usage unavailable' }));
+      return {
+        profileId: entry.profileId,
+        name: entry.name,
+        lanes: lanesFor(entry.profileId),
+        usage: usageData,
+      };
+    }),
+  );
+}
+
 compactUsageHistoryFile(USAGE_HISTORY_FILE).catch(() => {});
-const usageHistorySampler = setInterval(() => usage().catch(() => {}), Math.max(USAGE_TTL, 60_000));
+const usageHistorySampler = setInterval(
+  () => usageAccounts().catch(() => {}),
+  Math.max(USAGE_TTL, 60_000),
+);
 usageHistorySampler.unref();
 
 // ---- difficulty → model routing (state/control/models.json) ---------------------------
@@ -599,10 +823,10 @@ async function providerStatus(multiDocker) {
     existsSync(
       join(MF_DIR, 'auth', 'master', 'gemini', 'antigravity-cli', 'antigravity-oauth-token'),
     ) || existsSync(join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
-  // The expensive probes (keychain read for claude, `agy models` list) stay
-  // cached at 10 min.
+  // The expensive agy model probe stays cached at 10 min. Claude profile
+  // presence is a cheap private-file read and remains fresh after a login or
+  // assignment change.
   if (Date.now() - provCache.at >= 600000 || !provCache.data) {
-    const claude = !!(await hostOauthToken());
     let agyModels = provCache.data?.agyModels || [];
     const hostGemini = gemini || existsSync(join(home, '.gemini', 'oauth_creds.json'));
     if (hostGemini) {
@@ -615,8 +839,11 @@ async function providerStatus(multiDocker) {
         if (list.length) agyModels = list;
       }
     }
-    provCache = { at: Date.now(), data: { claudeConnected: claude, agyModels } };
+    provCache = { at: Date.now(), data: { agyModels } };
   }
+  const claudeState = await publicClaudeCredentialState();
+  const selectedClaude = await masterClaudeCredential();
+  const claudeConnected = !!selectedClaude.token;
   const marker = await readJson(CLAUDEX_MARKER);
   const persistedTests = (await readJson(PROVIDER_TESTS_FILE)) || {};
   const masterRunning = (multiDocker?.containers || []).some(
@@ -631,7 +858,11 @@ async function providerStatus(multiDocker) {
       masterRunning && containerCodex ? await claudexRuntimeProof(multiDocker) : undefined,
   });
   return {
-    claude: { connected: provCache.data.claudeConnected },
+    claude: {
+      connected: claudeConnected,
+      profileCount: (claudeState.profiles || []).length,
+      selectedProfileId: selectedClaude.profileId,
+    },
     codex: { connected: codex },
     claudex,
     gemini: { connected: gemini },
@@ -796,6 +1027,10 @@ async function snapshot() {
       readModels(),
     ]);
   const providers = await providerStatus(mf);
+  const claudeCredentialState = await publicClaudeCredentialState();
+  // After usage() above, so the master account's poll is a cache hit here
+  // rather than a second call into a rate-limited endpoint.
+  const accountUsage = await usageAccounts().catch(() => []);
   return {
     now: new Date().toISOString(),
     protocol: { ...protocol, masterActivity },
@@ -810,6 +1045,17 @@ async function snapshot() {
     models,
     providers,
     providerRegistry: publicProviderRegistry(),
+    credentials: {
+      version: 1,
+      providers: {
+        claude: {
+          ...claudeCredentialState,
+          accountUsage,
+          legacyConfigured: !!(await factoryEnvOauthToken()),
+          login: claudeLogin.publicState(),
+        },
+      },
+    },
   };
 }
 
@@ -849,6 +1095,47 @@ function spawnLogged(name, cmd, args, cwd) {
   return { ok: true, message: `${name} started (see state/logs/control.log)` };
 }
 
+async function testClaudeCredential({ profileId, model, effort }) {
+  let token = null;
+  try {
+    if (profileId === 'factory-env') token = await factoryEnvOauthToken();
+    else token = await claudeCredentials.tokenForProfile(profileId);
+  } catch {
+    return { ok: false, message: 'That Claude account has no usable credential.' };
+  }
+  if (!token) return { ok: false, message: 'That Claude account has no usable credential.' };
+
+  const selected = normalizeRouteEntry({
+    provider: 'claude',
+    model,
+    effort: effort || 'high',
+  });
+  if (!selected) return { ok: false, message: 'Invalid Claude model or effort.' };
+  const env = scrubClaudeLoginEnv(process.env);
+  env.CLAUDE_CODE_OAUTH_TOKEN = token;
+  env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
+  const result = await run(
+    'claude',
+    [
+      '-p',
+      'Reply with exactly: ok',
+      '--model',
+      selected.model,
+      ...(selected.effort ? ['--effort', selected.effort] : []),
+    ],
+    { timeout: 90000, cwd: MF_DIR, env },
+  );
+  return result.ok
+    ? {
+        ok: true,
+        message: `Claude account works via ${selected.model}${selected.effort ? ` @ ${selected.effort}` : ''}.`,
+      }
+    : {
+        ok: false,
+        message: 'Claude account test failed. Reconnect it or check its subscription access.',
+      };
+}
+
 async function doAction(action, payload = {}) {
   // Down-watchdog suppression: an owner-driven stop/down is not an incident;
   // any start re-arms the watchdog (see the factory-down watchdog section).
@@ -856,6 +1143,57 @@ async function doAction(action, payload = {}) {
   if (action === 'start' || action === 'restart' || action === 'start-dry')
     watchdogSuppressedByStop = false;
   switch (action) {
+    case 'claude-login-start':
+      return claudeLogin.start({ name: payload.name });
+    case 'claude-login-code':
+      return claudeLogin.submitCode(payload.code);
+    case 'claude-login-cancel':
+      return claudeLogin.cancel();
+    case 'claude-profile-assign': {
+      try {
+        const state = await claudeCredentials.assign({
+          target: payload.target,
+          profileId: payload.profileId == null ? null : String(payload.profileId),
+        });
+        if (payload.target === 'default' || payload.target === 'master') {
+          usageCaches.clear();
+        }
+        await clog(
+          `Claude account assignment ${String(payload.target)} → ${payload.profileId || 'inherit default'}`,
+        );
+        return {
+          ok: true,
+          message: `Claude account assigned to ${payload.target}; the next Claude role will use it.`,
+          state,
+        };
+      } catch {
+        return { ok: false, message: 'Claude account assignment is invalid.' };
+      }
+    }
+    case 'claude-profile-remove': {
+      try {
+        await claudeCredentials.remove(String(payload.profileId || ''));
+        await clog(`Claude account profile removed: ${String(payload.profileId || '')}`);
+        return { ok: true, message: 'Claude account removed from MultiFactory.' };
+      } catch {
+        return {
+          ok: false,
+          message: 'Claude account could not be removed. Clear its lane assignments first.',
+        };
+      }
+    }
+    case 'claude-profile-test': {
+      const routes = await readModels();
+      const route =
+        DIFFS.flatMap((difficulty) => entryRoutes(routes.difficulties[difficulty])).find(
+          (entry) => entry.provider === 'claude',
+        ) || defaultRouteForProvider('claude');
+      return testClaudeCredential({
+        profileId: String(payload.profileId || ''),
+        model: typeof payload.model === 'string' ? payload.model : route?.model,
+        effort: typeof payload.effort === 'string' ? payload.effort : route?.effort,
+      });
+    }
     case 'start':
       return spawnLogged('start', 'bash', ['autorun.sh'], MF_DIR);
     case 'restart':
@@ -1040,7 +1378,13 @@ async function doAction(action, payload = {}) {
       const selected = normalizeRouteEntry(requested);
       if (!selected) return { ok: false, message: 'invalid provider/model/effort' };
       let r;
-      if (p === 'claude')
+      if (p === 'claude') {
+        const credential = await masterClaudeCredential();
+        if (!credential.token)
+          return { ok: false, message: 'The master lane has no usable Claude credential.' };
+        const env = scrubClaudeLoginEnv(process.env);
+        env.CLAUDE_CODE_OAUTH_TOKEN = credential.token;
+        env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = '1';
         r = await run(
           'claude',
           [
@@ -1050,9 +1394,9 @@ async function doAction(action, payload = {}) {
             selected.model,
             ...(selected.effort ? ['--effort', selected.effort] : []),
           ],
-          { timeout: 90000, cwd: MF_DIR },
+          { timeout: 90000, cwd: MF_DIR, env },
         );
-      else if (p === 'codex')
+      } else if (p === 'codex')
         r = await run(
           'codex',
           [
@@ -1384,23 +1728,31 @@ setInterval(async () => {
 // MF_CONTROL_HOST, accept ONLY private/loopback sources — anything arriving
 // from a public address (e.g. an accidental router port-forward) is dropped
 // before any handler runs. The router forwards no 8790 today; this is the belt.
-const PRIVATE_SRC =
-  /^(::1|::ffff:)?(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.)/;
-function isPrivateSource(addr) {
-  if (!addr) return false;
-  const a = addr.replace(/^::ffff:/, '');
-  return a === '::1' || PRIVATE_SRC.test(a);
-}
-
+const CREDENTIAL_ACTIONS = new Set([
+  'claude-login-start',
+  'claude-login-code',
+  'claude-login-cancel',
+  'claude-profile-assign',
+  'claude-profile-remove',
+  'claude-profile-test',
+]);
 const handleRequest = async (req, res) => {
   if (!isPrivateSource(req.socket.remoteAddress)) {
     req.socket.destroy();
     return;
   }
+  if (!isAllowedRequestHost(req.headers.host, HOST)) {
+    res.writeHead(421, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('misdirected request');
+    return;
+  }
   const url = new URL(req.url, 'http://x');
   try {
     if (req.method === 'GET' && url.pathname === '/') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+      });
       res.end(readFileSync(join(__dirname, 'index.html')));
     } else if (
       req.method === 'GET' &&
@@ -1412,10 +1764,14 @@ const handleRequest = async (req, res) => {
       });
       res.end(readFileSync(join(__dirname, 'legacy.html')));
     } else if (req.method === 'GET' && url.pathname === '/api/usage/history') {
+      const credential = await masterClaudeCredential();
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify(
-          await queryUsageHistory(USAGE_HISTORY_FILE, url.searchParams.get('hours') || '168'),
+          await queryUsageHistory(
+            usageHistoryFile(credential.profileId),
+            url.searchParams.get('hours') || '168',
+          ),
         ),
       );
     } else if (req.method === 'GET' && url.pathname === '/api/usage') {
@@ -1456,6 +1812,25 @@ const handleRequest = async (req, res) => {
       req.on('end', async () => {
         try {
           const { action, ...payload } = JSON.parse(body || '{}');
+          if (CREDENTIAL_ACTIONS.has(action)) {
+            const jsonRequest = /^application\/json(?:;|$)/i.test(
+              String(req.headers['content-type'] || ''),
+            );
+            if (
+              !isPrivateSource(req.socket.remoteAddress) ||
+              !jsonRequest ||
+              !isSamePrivateOrigin(req.headers, HOST)
+            ) {
+              res.writeHead(403, { 'content-type': 'application/json' });
+              res.end(
+                JSON.stringify({
+                  ok: false,
+                  message: 'Claude account controls require this private-network dashboard origin.',
+                }),
+              );
+              return;
+            }
+          }
           const result = await doAction(String(action || ''), payload);
           res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json' });
           res.end(
@@ -1481,7 +1856,6 @@ const handleRequest = async (req, res) => {
 
 const server = createServer(handleRequest);
 
-const HOST = process.env.MF_CONTROL_HOST || '127.0.0.1';
 server.listen(PORT, HOST, () => {
   console.log(`multi-factory control → http://${HOST}:${PORT} (private-source-only guard active)`);
 });

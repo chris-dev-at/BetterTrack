@@ -341,6 +341,191 @@ unset FIXER_PROMPT
 
 echo "— difficulty routing (mflib.sh pure helpers)"
 . ./mflib.sh
+
+echo "— Claude named-account runtime selection"
+CLAUDE_RUNTIME_DIR=$T/claude-runtime
+CLAUDE_RUNTIME_TOKEN_FILE=$CLAUDE_RUNTIME_DIR/oauth-token
+CLAUDE_RUNTIME_PROFILE_FILE=$CLAUDE_RUNTIME_DIR/profile.json
+CLAUDE_RUNTIME_CAPTURE=$T/claude-runtime.capture
+CLAUDE_RUNTIME_LOG=$T/claude-runtime.log
+mkdir -p "$CLAUDE_RUNTIME_DIR"
+printf '%s\n' 'selected-profile-one' >"$CLAUDE_RUNTIME_TOKEN_FILE"
+cat >"$CLAUDE_RUNTIME_PROFILE_FILE" <<'JSON'
+{"version":1,"source":"profile","profileId":"00000000-0000-4000-8000-000000000001","name":"Second Claude account"}
+JSON
+(
+  export MF_CLAUDE_TOKEN_FILE=$CLAUDE_RUNTIME_TOKEN_FILE
+  export MF_CLAUDE_PROFILE_FILE=$CLAUDE_RUNTIME_PROFILE_FILE
+  # Pin the sandbox answer: the probe is host-dependent by design, and this
+  # battery is about credential precedence, not about where bwrap exists.
+  export MF_CLAUDE_ENV_SCRUB=1
+  export CLAUDE_CODE_OAUTH_TOKEN=legacy-factory-token
+  export ANTHROPIC_API_KEY=legacy-api-key
+  export ANTHROPIC_AUTH_TOKEN=legacy-auth-token
+  export ANTHROPIC_BASE_URL=https://legacy-anthropic.invalid
+  export ANTHROPIC_API_BASE_URL=https://legacy-api.invalid
+  export ANTHROPIC_CUSTOM_HEADERS='Authorization: legacy'
+  export ANTHROPIC_MODEL=legacy-model
+  export ANTHROPIC_SMALL_FAST_MODEL=legacy-fast-model
+  export CLAUDE_AGENT_API_BASE_URL=https://legacy-agent.invalid
+  export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+  export CLAUDE_CODE_OAUTH_REFRESH_TOKEN=legacy-refresh
+  export CLAUDE_CODE_OAUTH_SCOPES=user:inference
+  export CLAUDE_CODE_USE_BEDROCK=1
+  export CLAUDE_CODE_USE_FOUNDRY=1
+  export CLAUDE_CODE_USE_VERTEX=1
+  log(){ printf '%s\n' "$*" >>"$CLAUDE_RUNTIME_LOG"; }
+  claude_runtime_probe(){
+    printf 'before:%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
+    if [ -z "${ANTHROPIC_API_KEY+x}" ] \
+      && [ -z "${ANTHROPIC_AUTH_TOKEN+x}" ] \
+      && [ -z "${ANTHROPIC_BASE_URL+x}" ] \
+      && [ -z "${ANTHROPIC_API_BASE_URL+x}" ] \
+      && [ -z "${ANTHROPIC_CUSTOM_HEADERS+x}" ] \
+      && [ -z "${ANTHROPIC_MODEL+x}" ] \
+      && [ -z "${ANTHROPIC_SMALL_FAST_MODEL+x}" ] \
+      && [ -z "${CLAUDE_AGENT_API_BASE_URL+x}" ] \
+      && [ -z "${CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY+x}" ] \
+      && [ -z "${CLAUDE_CODE_OAUTH_REFRESH_TOKEN+x}" ] \
+      && [ -z "${CLAUDE_CODE_OAUTH_SCOPES+x}" ] \
+      && [ -z "${CLAUDE_CODE_USE_BEDROCK+x}" ] \
+      && [ -z "${CLAUDE_CODE_USE_FOUNDRY+x}" ] \
+      && [ -z "${CLAUDE_CODE_USE_VERTEX+x}" ] \
+      && [ "${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB:-}" = 1 ]; then
+      printf 'precedence:scrubbed\n'
+    else
+      printf 'precedence:leaked\n'
+    fi
+    # Simulate a dashboard assignment change while this role is still running.
+    printf '%s\n' 'selected-profile-two' >"$MF_CLAUDE_TOKEN_FILE"
+    printf 'after:%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
+  }
+  mf_with_claude_profile claude_runtime_probe >"$CLAUDE_RUNTIME_CAPTURE"
+)
+check "named Claude profile overrides env and scrubs higher-precedence credentials" \
+"before:selected-profile-one
+precedence:scrubbed
+after:selected-profile-one" "$(<"$CLAUDE_RUNTIME_CAPTURE")"
+check "named Claude profile logs only its safe label" \
+  "  ↳ Claude account: Second Claude account" "$(<"$CLAUDE_RUNTIME_LOG")"
+check "Claude profile tokens never enter the role log" 0 \
+  "$(grep -Ec 'selected-profile-(one|two)' "$CLAUDE_RUNTIME_LOG" || true)"
+
+# The subprocess env scrub is bubblewrap-backed on Linux. Demanding it where no
+# usable bwrap exists aborts the CLI before the first request, and cc() reads
+# that abort as exhausted capacity — the whole Claude side of the factory then
+# sleeps in 30-minute rounds against a perfectly good account. The flag must
+# track what the host can deliver, and must never be left for a CLI default.
+claude_scrub_probe(){ printf '%s' "${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB-unset}"; }
+scrub_run(){ # $1=MF_CLAUDE_ENV_SCRUB value ('-' leaves it unset)
+  (
+    export MF_CLAUDE_TOKEN_FILE=$CLAUDE_RUNTIME_TOKEN_FILE
+    export MF_CLAUDE_PROFILE_FILE=$CLAUDE_RUNTIME_PROFILE_FILE
+    [ "$1" = - ] && unset MF_CLAUDE_ENV_SCRUB || export MF_CLAUDE_ENV_SCRUB=$1
+    log(){ :; }
+    mf_with_claude_profile claude_scrub_probe
+  )
+}
+scrub_pinned(){ # $1=knob → "pinned" only when the flag came out 0 or 1
+  local seen; seen=$(scrub_run "$1")
+  case "$seen" in 0|1) printf pinned;; *) printf '%s' "$seen";; esac
+}
+check "sandboxless host does not demand the Claude subprocess env scrub" \
+  "0" "$(scrub_run 0)"
+check "an unresolvable scrub knob falls back to the probe, never to the raw value" \
+  "pinned" "$(scrub_pinned maybe)"
+check "the auto-probed scrub flag is always exported" \
+  "pinned" "$(scrub_pinned -)"
+leak_probe(){ printf '%s' "${ANTHROPIC_API_KEY-}"; }
+check "turning the scrub off never relaxes credential precedence" \
+  "" "$(
+    export MF_CLAUDE_TOKEN_FILE=$CLAUDE_RUNTIME_TOKEN_FILE
+    export MF_CLAUDE_PROFILE_FILE=$CLAUDE_RUNTIME_PROFILE_FILE
+    export MF_CLAUDE_ENV_SCRUB=0 ANTHROPIC_API_KEY=legacy-api-key
+    log(){ :; }
+    mf_with_claude_profile leak_probe
+  )"
+
+(
+  export MF_CLAUDE_TOKEN_FILE=$CLAUDE_RUNTIME_TOKEN_FILE
+  export MF_CLAUDE_PROFILE_FILE=$CLAUDE_RUNTIME_PROFILE_FILE
+  log(){ :; }
+  claude_next_role_probe(){ printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN"; }
+  mf_with_claude_profile claude_next_role_probe
+) >"$CLAUDE_RUNTIME_CAPTURE"
+check "next Claude role observes a changed profile materialization" \
+  "selected-profile-two" "$(<"$CLAUDE_RUNTIME_CAPTURE")"
+
+rm -f "$CLAUDE_RUNTIME_TOKEN_FILE"
+(
+  export MF_CLAUDE_TOKEN_FILE=$CLAUDE_RUNTIME_TOKEN_FILE
+  export MF_CLAUDE_PROFILE_FILE=$CLAUDE_RUNTIME_PROFILE_FILE
+  export CLAUDE_CODE_OAUTH_TOKEN=legacy-factory-token
+  export ANTHROPIC_API_KEY=legacy-api-key
+  log(){ :; }
+  claude_legacy_probe(){
+    printf '%s|%s' "$CLAUDE_CODE_OAUTH_TOKEN" "$ANTHROPIC_API_KEY"
+  }
+  mf_with_claude_profile claude_legacy_probe
+) >"$CLAUDE_RUNTIME_CAPTURE"
+CLAUDE_RUNTIME_MISSING_RC=$?
+check "missing selected Claude token fails closed" "1" "$CLAUDE_RUNTIME_MISSING_RC"
+check "missing selected Claude token never invokes the legacy credential path" \
+  "" "$(<"$CLAUDE_RUNTIME_CAPTURE")"
+
+mv "$CLAUDE_RUNTIME_PROFILE_FILE" "$CLAUDE_RUNTIME_PROFILE_FILE.saved"
+(
+  export MF_CLAUDE_TOKEN_FILE=$CLAUDE_RUNTIME_TOKEN_FILE
+  export MF_CLAUDE_PROFILE_FILE=$CLAUDE_RUNTIME_PROFILE_FILE
+  export MF_CLAUDE_PROFILE_REQUIRED=1
+  export CLAUDE_CODE_OAUTH_TOKEN=legacy-factory-token
+  log(){ :; }
+  mf_with_claude_profile true
+)
+CLAUDE_RUNTIME_MARKER_RC=$?
+mv "$CLAUDE_RUNTIME_PROFILE_FILE.saved" "$CLAUDE_RUNTIME_PROFILE_FILE"
+check "production runtime refuses a missing Claude selection marker" \
+  "1" "$CLAUDE_RUNTIME_MARKER_RC"
+
+printf '%s\n' 'selected-profile-three' >"$CLAUDE_RUNTIME_TOKEN_FILE"
+CLAUDE_RUNTIME_MODELS=$T/claude-runtime-models.json
+printf '%s\n' \
+  '{"difficulties":{"easy":{"provider":"claude","model":"claude-sonnet-5","effort":"high"}}}' \
+  >"$CLAUDE_RUNTIME_MODELS"
+(
+  export MF_CLAUDE_TOKEN_FILE=$CLAUDE_RUNTIME_TOKEN_FILE
+  export MF_CLAUDE_PROFILE_FILE=$CLAUDE_RUNTIME_PROFILE_FILE
+  export MF_MODELS_FILE=$CLAUDE_RUNTIME_MODELS
+  export ANTHROPIC_API_KEY=must-be-scrubbed
+  log(){ :; }
+  cc(){
+    if [ -z "${ANTHROPIC_API_KEY+x}" ]; then clean=scrubbed; else clean=leaked; fi
+    printf '%s|%s|%s|%s|%s|%s' \
+      "$1" "$2" "$CLAUDE_CODE_OAUTH_TOKEN" "$clean" "$CC_ROLE" "$CC_EFFORT"
+  }
+  mf_cc writer easy runtime-prompt
+) >"$CLAUDE_RUNTIME_CAPTURE"
+check "mf_cc dispatches native Claude through the selected account" \
+  "claude-sonnet-5|runtime-prompt|selected-profile-three|scrubbed|writer|high" \
+  "$(<"$CLAUDE_RUNTIME_CAPTURE")"
+
+(
+  export MF_CLAUDE_TOKEN_FILE=$CLAUDE_RUNTIME_TOKEN_FILE
+  export MF_CLAUDE_PROFILE_FILE=$CLAUDE_RUNTIME_PROFILE_FILE
+  export ANTHROPIC_AUTH_TOKEN=must-be-scrubbed
+  log(){ :; }
+  wait_for_capacity(){
+    if [ -z "${ANTHROPIC_AUTH_TOKEN+x}" ]; then clean=scrubbed; else clean=leaked; fi
+    printf '%s|%s|%s' "$1" "$CLAUDE_CODE_OAUTH_TOKEN" "$clean"
+  }
+  mf_wait_for_claude_capacity startup
+) >"$CLAUDE_RUNTIME_CAPTURE"
+check "master startup capacity check uses the selected Claude account" \
+  "startup|selected-profile-three|scrubbed" "$(<"$CLAUDE_RUNTIME_CAPTURE")"
+unset CLAUDE_RUNTIME_DIR CLAUDE_RUNTIME_TOKEN_FILE CLAUDE_RUNTIME_PROFILE_FILE
+unset CLAUDE_RUNTIME_CAPTURE CLAUDE_RUNTIME_LOG CLAUDE_RUNTIME_MODELS
+unset CLAUDE_RUNTIME_MISSING_RC CLAUDE_RUNTIME_MARKER_RC
+
 check "diff_next easy→normal" "normal" "$(diff_next easy)"
 check "diff_next intermediate→hard" "hard" "$(diff_next intermediate)"
 check "diff_next max stays max" "max" "$(diff_next max)"

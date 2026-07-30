@@ -260,11 +260,13 @@ bettertrack-multifactory pause`/`unpause` must behave like today (frozen runs
 
 ## 10. Token & capacity notes
 
-All containers share one subscription. `wait_for_capacity` in each worker
-independently is fine (they all sleep, all wake). Do not add polling LLM calls
-anywhere; scheduler and merger must stay token-free. Target: tokens/issue
-within ±10% of the single factory's ledger baseline (~$2.5–5 clean issues;
-check `factory/usage-report.sh`).
+Containers inherit one Claude subscription by default, but the named-account
+profile addendum in §15 can override the master or an individual worker.
+`wait_for_capacity` in each worker independently is fine (lanes on the same
+account sleep and wake together). Do not add polling LLM calls anywhere;
+scheduler and merger must stay token-free. Target: tokens/issue within ±10% of
+the single factory's ledger baseline (~$2.5–5 clean issues; check
+`factory/usage-report.sh`).
 
 ## 11. Acceptance (test before calling it done)
 
@@ -389,3 +391,73 @@ Offline acceptance is part of CI:
 Live acceptance still requires two proofs after image rebuild: the direct
 gateway request must return `DIRECT_OK`, then `provider-test.sh` must obtain
 `CLAUDEX_OK` from Claude Code with the exact requested selector in `modelUsage`.
+
+## 15. Named Claude account profiles (owner-approved 2026-07-30)
+
+Native `claude` supports multiple saved subscription credentials in
+MultiFactory. The control dashboard runs Anthropic's official
+`claude setup-token` browser OAuth flow on the host, captures the printed
+inference-only setup token in memory, and stores it under the gitignored
+`multi-factory/auth/.claude-credentials/` vault. Profile metadata contains only
+an opaque UUID, owner-chosen label, and timestamps. Vault directories are mode
+`0700`; tokens and state files are mode `0600`. Tokens, authorization codes,
+and raw CLI output must never enter snapshots, SSE, HTTP responses, logs, or
+profile markers.
+
+Assignments have one default plus overrides for `master` and `worker-1` through
+`worker-4`. A null lane override inherits the default. The special
+`factory-env` selection means exactly `CLAUDE_CODE_OAUTH_TOKEN` from
+`factory/.env`; host Keychain state is not substituted. The master selection
+covers composer, master-run CI repair, and master capacity checks. A worker
+selection covers every native-Claude role started by that lane, including its
+checker. ClaudeX,
+native Codex, and Gemini credentials remain independent.
+
+Each resolved selection is materialized to:
+
+```text
+auth/<service>/claude/oauth-token
+auth/<service>/claude/profile.json
+```
+
+Compose mounts that directory read-only at `/home/factory/.claude-auth`.
+Production services set `MF_CLAUDE_PROFILE_REQUIRED=1`; a marker is therefore
+mandatory after autorun's one-time materialization, while direct legacy test
+harnesses may omit it during migration.
+`mflib.sh` reads it once when a native-Claude role starts, removes all
+higher-precedence API/gateway/cloud authentication variables, exports the
+selected `CLAUDE_CODE_OAUTH_TOKEN`, and asks for Claude's subprocess credential
+scrubbing where that is deliverable. An in-flight role keeps its inherited
+token; the next role observes the new assignment without a container restart.
+
+That last qualifier is load-bearing. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` is a
+sandbox request, and on Linux the sandbox is bubblewrap; the factory image ships
+no `bwrap`, so demanding it aborts the CLI at startup with rc=1 before any
+request is made. `cc()` cannot tell that abort apart from a failed task, probes
+capacity, gets the same abort, and parks the lane for 30 minutes — every Claude
+role then reports **exhausted tokens against a completely unused account**, and
+no account swap can clear it. `mf_claude_env_scrub` therefore probes what the
+host can actually deliver (macOS scrubs without `bwrap`; elsewhere it runs a
+real `bwrap` invocation, since a `bwrap` that cannot open a namespace fails
+identically) and always pins the flag to `0` or `1` rather than leaving a future
+CLI default to decide. `MF_CLAUDE_ENV_SCRUB=0|1` overrides the probe. Adding
+`bubblewrap` to `factory/Dockerfile` would restore the isolation on Linux; until
+then the agent's own subprocesses inherit the role token, exactly as they did
+before named profiles existed.
+
+Profile activation is fail-closed. The marker enters `activating` before the
+token changes and becomes ready only after the token is durable. A missing,
+invalid, or unavailable named token refuses the Claude role rather than falling
+through to `factory-env`. Store operations use both an in-process queue and a
+cross-process lock with a renewed lease so dashboard assignment cannot race the
+autorun materializer. A failed activation rolls the assignment and
+materialization back to the prior selection when storage remains healthy;
+otherwise the affected lane stays fail-closed. Autorun aborts if it cannot
+resolve the selected credentials.
+
+Subscription usage cache and history are partitioned by the master's selected
+profile, and the dashboard labels telemetry with that master account. Provider
+tests execute with the exact selected profile and the same precedence scrub as
+runtime. Credential mutations require JSON from a private-network socket with
+an exact private Host and same Origin; all control requests reject public
+sources and untrusted Host headers to prevent DNS-rebinding access.
