@@ -141,11 +141,17 @@ export type QuoteResponse = z.infer<typeof quoteResponseSchema>;
 export const historyQuerySchema = z.object({ range: historyRangeSchema });
 export type HistoryQuery = z.infer<typeof historyQuerySchema>;
 
-/** `GET /assets/:id/history` response. `interval` is the §5.3 mapping of `range`. */
+/**
+ * `GET /assets/:id/history` response. `currency` is the native denomination of
+ * every `points[].close` value, so consumers can render the series without
+ * coupling its unit to a separate quote request. `interval` is the §5.3 mapping
+ * of `range`.
+ */
 export const historyResponseSchema = z
   .object({
     range: historyRangeSchema,
     interval: historyIntervalSchema,
+    currency: currencyCodeSchema,
     points: z.array(pricePointSchema),
     stale: z.boolean(),
     asOf: z.string().datetime(),

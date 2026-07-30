@@ -289,7 +289,7 @@ describe('AnalyticsPage — main graph, stats & contribution table', () => {
 
     // Resolved window, formatted through the locale-aware date formatter.
     expect(
-      screen.getByText(
+      within(screen.getByRole('region', { name: 'Date range' })).getByText(
         (content) =>
           content.includes(formatDate('2024-01-01')) && content.includes(formatDate('2024-06-30')),
       ),

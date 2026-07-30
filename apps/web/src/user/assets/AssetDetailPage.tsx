@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import type { Time } from 'lightweight-charts';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import {
@@ -109,6 +109,7 @@ function AssetHeader({
   liveQuote: QuoteResponse | undefined;
 }) {
   const t = useT();
+  const headingId = useId();
   const { asset } = detail;
   // Prefer the most recent quote: live-poll result first, then initial detail.
   const quote = liveQuote?.quote ?? detail.quote;
@@ -120,10 +121,12 @@ function AssetHeader({
   const isDown = dayChangePct != null && dayChangePct < 0;
 
   return (
-    <div className="flex flex-col gap-3">
+    <section aria-labelledby={headingId} className="flex flex-col gap-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{asset.name}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight" id={headingId}>
+            {asset.name}
+          </h1>
           <p className="mt-0.5 text-sm bt-muted">
             <span className="font-mono bt-soft">{asset.symbol}</span>
             {asset.exchange ? (
@@ -179,7 +182,7 @@ function AssetHeader({
         {asOf ? <span>{t('assets.detail.asOf', { time: formatDateTime(asOf) })}</span> : null}
         <span>{t('assets.detail.delayedNote')}</span>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -952,6 +955,8 @@ export function AssetDetailPage() {
   const detail = detailQuery.data!;
   const { asset } = detail;
   const chartMode = asset.isCustom ? 'step' : 'area';
+  const chartCurrency =
+    quoteQuery.data?.quote?.currency ?? detail.quote?.currency ?? asset.currency;
 
   return (
     <div className="flex flex-col gap-8">
@@ -996,6 +1001,8 @@ export function AssetDetailPage() {
           <PriceChart
             series={liveChartPoints}
             mode="area"
+            valueCurrency={chartCurrency}
+            valueFormat="unitPrice"
             showRangeToggle={false}
             live
             generation={liveGeneration}
@@ -1008,6 +1015,8 @@ export function AssetDetailPage() {
           <PriceChart
             series={chartPoints}
             mode={chartMode}
+            valueCurrency={chartCurrency}
+            valueFormat="unitPrice"
             range={range}
             // Asset detail keeps its historical §6.3 six-button set — V4-P0
             // widened the shared range vocabulary for the portfolio surface

@@ -6,7 +6,7 @@ import type { ExpenseTrendPoint } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { EXPENSE_TRENDS_QUERY_KEY, getExpenseTrends } from '../../../lib/expensesApi';
-import { formatMoney } from '../../../lib/format';
+import { formatMoney, getMoneyCurrency } from '../../../lib/format';
 import { MoneyText } from '../../../ui';
 import { PriceChart } from '../../../ui/charts';
 import { NEGATIVE, POSITIVE } from '../../../ui/charts/palette';
@@ -50,6 +50,9 @@ function monthsFor(range: string | undefined): number {
 export function CashflowChartWidget({ settings, size }: WidgetProps) {
   const t = useT();
   const months = monthsFor(settings.range);
+  // The visible aggregate totals below use the active base currency. Keep the
+  // chart alternative in that same denomination rather than hard-coding EUR.
+  const currency = getMoneyCurrency();
 
   const trendsQuery = useQuery({
     queryKey: [...EXPENSE_TRENDS_QUERY_KEY, months],
@@ -93,6 +96,7 @@ export function CashflowChartWidget({ settings, size }: WidgetProps) {
             mode="baseline"
             series={series}
             showRangeToggle={false}
+            valueCurrency={currency}
           />
         </div>
       )}
