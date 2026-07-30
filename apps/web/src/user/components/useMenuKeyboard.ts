@@ -74,18 +74,23 @@ export function useMenuKeyboard<T extends HTMLElement = HTMLDivElement>({
 
     // Async items (watchlists, conglomerates) arrive after the menu opened, so
     // this re-runs on `focusVersion`. Focus this hook placed itself may move on
-    // to the item that has since become first; focus the *user* placed — a
-    // roving keystroke, or the menu's own filter field — stays put, and the
-    // pass only re-normalizes the single tab stop around it.
+    // to the item that has since become first; an item the *user* roved to
+    // stays put, and the pass only re-normalizes the single tab stop around it.
+    //
+    // Only a menu *item* counts as user-held. Anything else focused inside the
+    // container is not part of the roving model, so treating it as a holder
+    // would silently cancel the opening focus this hook owes the menu — which
+    // is exactly what the switcher's filter field used to do before it moved to
+    // disclosure semantics (see PortfolioSwitcher). A menu's contents are items.
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const userHeld =
-      focused !== null && menu.contains(focused) && focused !== autoFocusedRef.current
+      focused !== null &&
+      focused !== autoFocusedRef.current &&
+      menu.contains(focused) &&
+      items.includes(focused)
         ? focused
         : null;
-    const target =
-      (userHeld !== null && items.includes(userHeld) ? userHeld : undefined) ??
-      selected ??
-      items[0]!;
+    const target = userHeld ?? selected ?? items[0]!;
 
     for (const item of items) item.tabIndex = item === target ? 0 : -1;
     if (userHeld === null) {
@@ -108,6 +113,10 @@ export function useMenuKeyboard<T extends HTMLElement = HTMLDivElement>({
   useOverlayEscape(open, closeAndRestoreFocus, menuRef);
 
   const onKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
+    // Defensive: no menu on this pattern contains a text field any more (the one
+    // that did is a disclosure now), but the handler is bound to the container,
+    // so were one ever added, Home/End would move the caret rather than being
+    // stolen by the roving model.
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
       return;
     }

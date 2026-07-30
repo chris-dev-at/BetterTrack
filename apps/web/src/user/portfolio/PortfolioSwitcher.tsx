@@ -7,8 +7,9 @@ import type { PortfolioSummary } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { Icon } from '../../ui/origin';
+import { useOverlayEscape } from '../components/overlayStack';
 import { cx } from '../components/ui';
-import { useMenuKeyboard } from '../components/useMenuKeyboard';
+import { restoreFocusTo } from '../components/useFocusTrap';
 import { CreateChainDialog, MirrorInviteStepDialog } from './MirrorchainPanel';
 import { PortfolioIconChip } from './PortfolioIconChip';
 import {
@@ -35,6 +36,18 @@ import { PortfolioWizard } from './wizard/PortfolioWizard';
  * carrying the current portfolio's chip, its name and its default badge. Which
  * portfolio you are looking at is never something the user has to go find.
  *
+ * **Disclosure, not an ARIA menu (#977).** The popover carries a filter field,
+ * and `role="menu"` admits only `menuitem*` / `group` / `separator` / `none`
+ * children — a textbox is not a legal descendant at any focus state, and the
+ * roving single-tab-stop model a menu implies fights the very field this list
+ * needs. So this one widget takes ordinary disclosure semantics: a labelled
+ * `role="group"` popover, plain buttons in natural tab order, and the selected
+ * portfolio marked with `aria-current`. The shared behaviours a menu would have
+ * brought are kept explicitly — `useOverlayEscape` closes only the innermost
+ * open overlay, and every close path lands focus back on the trigger through
+ * {@link restoreFocusTo}. The app's real menus (the account and create menus,
+ * the watchlist pickers) have item-only contents and stay on `useMenuKeyboard`.
+ *
  * Rename / Archive / Delete / Archived live on `PortfolioSettingsPage`
  * (`/portfolio/settings`), reachable from this menu's footer: changing or
  * destroying a portfolio is a deliberate trip to its settings tab, never a slip
@@ -54,13 +67,17 @@ export const ACTIVE_PORTFOLIO_PARAM = 'portfolio';
 /**
  * Above this many portfolios the dropdown's search field takes focus on open.
  * The field itself shows from the second portfolio on (below that there is
- * nothing to filter); it only hijacks the keyboard once the list outgrows the
- * eye, so switching between two portfolios stays a single click.
+ * nothing to filter); it only takes the caret once the list outgrows the eye,
+ * so switching between two portfolios stays a single click. Either way it is
+ * the popover's first tab stop, with the rows following it in document order.
  */
 const SEARCH_THRESHOLD = 6;
 
 /** sessionStorage key for the last active portfolio — session-scoped on purpose. */
 const LAST_ACTIVE_STORAGE_KEY = 'bt.portfolio.last';
+
+/** Ties the trigger to the popover it discloses via `aria-controls`. */
+const POPOVER_ID = 'bt-portfolio-switcher-popover';
 
 /** Remember (or with null, forget) the last active portfolio for this session. */
 export function rememberActivePortfolio(id: string | null) {
@@ -139,11 +156,25 @@ export function PortfolioSwitcher() {
   const [chainSeedName, setChainSeedName] = useState('');
   const [inviteChainId, setInviteChainId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   // The one control that outlives every overlay this menu opens — the wizard,
   // the group-create dialog and the invite step that replaces it. Focus comes
   // back here however that chain ends.
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const closeMenu = useCallback(() => setOpen(false), []);
+
+  // Every close path — Escape, an outside click, picking a portfolio, opening
+  // the wizard — hands focus back deliberately instead of dropping it on the
+  // `<body>` with the popover that held it. The ladder covers the case where
+  // the trigger itself is gone by then.
+  const closeAndRestoreFocus = useCallback(() => {
+    setOpen(false);
+    restoreFocusTo([triggerRef.current], { exclude: popoverRef.current });
+  }, []);
+
+  // Escape is arbitrated globally so it still fires when focus sits on a
+  // non-focusable part of the popover, yet only ever closes the innermost open
+  // overlay — the wizard above this popover closes without discarding it.
+  useOverlayEscape(open, closeAndRestoreFocus, popoverRef);
 
   // Every open starts unfiltered — a filter left over from last time would hide
   // the portfolio the user came to pick.
@@ -171,20 +202,6 @@ export function PortfolioSwitcher() {
         : portfolios.filter((p) => p.name.toLocaleLowerCase().includes(needle)),
     [portfolios, needle],
   );
-
-  const {
-    closeAndRestoreFocus,
-    menuRef,
-    onKeyDown: onMenuKeyDown,
-  } = useMenuKeyboard({
-    open,
-    onClose: closeMenu,
-    triggerRef,
-    initialFocus: 'selected',
-    // The list arrives async and the filter re-cuts it, so the roving tab stop
-    // is re-normalized whenever the set of rendered options changes.
-    focusVersion: `${active?.id ?? ''}:${visible.map((p) => p.id).join(',')}`,
-  });
 
   useEffect(() => {
     if (!open) return;
@@ -233,8 +250,8 @@ export function PortfolioSwitcher() {
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls={open ? POPOVER_ID : undefined}
         aria-label={t('portfolio.switcher.triggerAriaLabel')}
         className={cx('bt-btn bt-portfolio-trigger', open && 'is-open')}
       >
@@ -257,15 +274,15 @@ export function PortfolioSwitcher() {
 
       {open ? (
         <div
-          ref={menuRef}
-          role="menu"
+          ref={popoverRef}
+          id={POPOVER_ID}
+          role="group"
           aria-label={t('portfolio.switcher.menuAriaLabel')}
           className="bt-popover bt-portfolio-menu"
           style={{ left: 0, top: 'calc(100% + 6px)' }}
-          onKeyDown={onMenuKeyDown}
         >
           {showSearch ? (
-            <div className="bt-portfolio-search" role="none">
+            <div className="bt-portfolio-search">
               <Icon name="search" size={14} />
               <input
                 type="search"
@@ -289,8 +306,7 @@ export function PortfolioSwitcher() {
                   <button
                     key={p.id}
                     type="button"
-                    role="menuitemradio"
-                    aria-checked={selected}
+                    aria-current={selected ? 'true' : undefined}
                     onClick={() => {
                       setActive(p.id);
                       closeAndRestoreFocus();
@@ -321,7 +337,6 @@ export function PortfolioSwitcher() {
           <div className="bt-portfolio-actions">
             <button
               type="button"
-              role="menuitem"
               onClick={() => {
                 setWizardOpen(true);
                 // Focus goes back to the trigger before the wizard mounts, so
@@ -335,7 +350,6 @@ export function PortfolioSwitcher() {
               {t('portfolio.switcher.addPortfolio')}
             </button>
             <Link
-              role="menuitem"
               to={{ pathname: '/portfolio/settings', search: portfolioSearch(active?.id) }}
               onClick={closeAndRestoreFocus}
               className="bt-menu-item"
