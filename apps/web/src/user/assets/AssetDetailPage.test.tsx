@@ -105,6 +105,7 @@ const baseDetail = {
 const baseHistory = {
   range: '1M' as const,
   interval: '30m' as const,
+  currency: 'EUR' as const,
   points: [
     { time: '2024-05-01T00:00:00.000Z', close: 27.0 },
     { time: '2024-06-01T00:00:00.000Z', close: 28.5 },
@@ -357,7 +358,8 @@ describe('AssetDetailPage — header rendering', () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
     // Price 28.50 EUR should be rendered via MoneyText — check the formatted value
-    expect(screen.getByText(/28/)).toBeInTheDocument();
+    const assetHeader = screen.getByRole('region', { name: 'Bayer AG' });
+    expect(within(assetHeader).getByText(/28/)).toBeInTheDocument();
     expect(screen.getByText(/2,5/)).toBeInTheDocument(); // day change pct
   });
 

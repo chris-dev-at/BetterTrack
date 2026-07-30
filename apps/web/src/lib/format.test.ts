@@ -5,6 +5,7 @@ import {
   EM_DASH,
   formatDate,
   formatDateTime,
+  formatDateTimeSeconds,
   formatMoney,
   formatPercent,
   formatQuantity,
@@ -285,6 +286,20 @@ describe('formatDateTime', () => {
     expect(formatDateTime(null)).toBe(EM_DASH);
     expect(formatDateTime(undefined)).toBe(EM_DASH);
     expect(formatDateTime('bad')).toBe(EM_DASH);
+  });
+});
+
+describe('formatDateTimeSeconds', () => {
+  test('formats an ISO timestamp to a localised date + seconds', () => {
+    const result = formatDateTimeSeconds('2024-01-15T12:00:01.000Z');
+    expect(result).toMatch(/15\.01\.2024/);
+    expect(result).toMatch(/\d{2}:\d{2}:\d{2}/);
+  });
+
+  test('returns em dash for null / undefined / invalid', () => {
+    expect(formatDateTimeSeconds(null)).toBe(EM_DASH);
+    expect(formatDateTimeSeconds(undefined)).toBe(EM_DASH);
+    expect(formatDateTimeSeconds('bad')).toBe(EM_DASH);
   });
 });
 

@@ -266,6 +266,13 @@
       "loadingChart": "Loading chart…",
       "noPriceData": "No price data for this range yet.",
       "priceChartAria": "Price chart",
+      "priceChartSummary": "Period: {{startDate}} to {{endDate}}. Start: {{startValue}}. End: {{endValue}}. Change: {{change}} ({{changePercent}}). Minimum: {{minimum}} on {{minimumDate}}. Maximum: {{maximum}} on {{maximumDate}}.",
+      "priceChartDataExpand": "Show chart data",
+      "priceChartDataCollapse": "Hide chart data",
+      "priceChartDataTableCaption": "Chart data",
+      "priceChartDataDate": "Date",
+      "priceChartDataValue": "Value",
+      "priceChartDataSampled": "Showing {{shown}} of {{total}} plotted points.",
       "allocationFallbackTitle": "Allocation breakdown"
     },
     "marketState": {
