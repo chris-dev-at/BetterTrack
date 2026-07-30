@@ -671,6 +671,49 @@ describe('admin self-action and last-admin guards (PROJECTPLAN.md §6.12)', () =
     expect(demote.status).toBe(200);
     expect(demote.body.role).toBe('user');
   });
+
+  it.each(['disable', 'demote', 'delete'] as const)(
+    'serializes concurrent %s requests so one active administrator remains',
+    async (operation) => {
+      const first = await harness.seedAdmin();
+      const second = await harness.seedAdmin({
+        email: 'concurrent-admin@test.dev',
+        username: 'concurrent_admin',
+        password: 'concurrent-admin-strong-1',
+      });
+
+      const mutate = (target: typeof first, actor: typeof second): Promise<unknown> => {
+        switch (operation) {
+          case 'disable':
+            return harness.ctx.admin.updateUser(
+              target.id,
+              { status: 'disabled' },
+              { id: actor.id },
+            );
+          case 'demote':
+            return harness.ctx.admin.updateUser(target.id, { role: 'user' }, { id: actor.id });
+          case 'delete':
+            return harness.ctx.admin.deleteUser(target.id, target.username, { id: actor.id });
+        }
+      };
+
+      const results = await Promise.allSettled([mutate(first, second), mutate(second, first)]);
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      const rejected = results.find((result) => result.status === 'rejected');
+      expect(rejected).toBeDefined();
+      if (!rejected || rejected.status !== 'rejected') {
+        throw new Error('Expected one concurrent administrator mutation to fail');
+      }
+      expect(rejected.reason).toMatchObject({
+        statusCode: 400,
+        code: 'LAST_ADMIN',
+        message: 'Cannot remove the last active administrator.',
+      });
+
+      const users = createUserRepository(harness.db);
+      expect(await users.countActiveAdmins()).toBe(1);
+    },
+  );
 });
 
 describe('edit username/email (PROJECTPLAN.md §6.12, §13.2)', () => {
@@ -741,6 +784,38 @@ describe('edit username/email (PROJECTPLAN.md §6.12, §13.2)', () => {
     expect(dupEmail.status).toBe(409);
     expect(dupEmail.body.error.code).toBe('EMAIL_TAKEN');
   });
+
+  it('rolls back an earlier role change when later email validation fails', async () => {
+    const admin = await harness.seedAdmin();
+    const target = await harness.seedAdmin({
+      email: 'atomic-admin@test.dev',
+      username: 'atomic_admin',
+      password: 'atomic-admin-strong-1',
+    });
+    const existing = await harness.seedUser({
+      email: 'existing-email@test.dev',
+      username: 'existing_email',
+    });
+    const adminAgent = await harness.loginAdmin(admin);
+    const users = createUserRepository(harness.db);
+    const before = await users.findById(target.id);
+
+    const patched = await adminAgent
+      .patch(`/api/v1/admin/users/${target.id}`)
+      .set(...XRW)
+      .send({ role: 'user', email: existing.email });
+    expect(patched.status).toBe(409);
+    expect(patched.body.error.code).toBe('EMAIL_TAKEN');
+
+    const after = await users.findById(target.id);
+    expect(after?.role).toBe('admin');
+    expect(after?.email).toBe(target.email);
+    expect(after?.securityGeneration).toBe(before?.securityGeneration);
+
+    const audit = await adminAgent.get(`/api/v1/admin/users/${target.id}/audit`);
+    const actions = (audit.body.entries as Array<{ action: string }>).map((entry) => entry.action);
+    expect(actions).not.toContain('user.role_changed');
+  });
 });
 
 describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
@@ -791,6 +866,28 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
     // The user disabled once; the actor and the duplicate id skipped.
     expect(bulk.body.disabled).toBe(1);
     expect(bulk.body.skipped).toBe(1);
+  });
+
+  it('keeps one active administrator when the batch includes every administrator', async () => {
+    const admin = await harness.seedAdmin();
+    const second = await harness.seedAdmin({
+      email: 'bulk-admin@test.dev',
+      username: 'bulk_admin',
+      password: 'bulk-admin-strong-1',
+    });
+    const adminAgent = await harness.loginAdmin(admin);
+
+    const bulk = await adminAgent
+      .post('/api/v1/admin/users/bulk')
+      .set(...XRW)
+      .send({ action: 'disable', userIds: [admin.id, second.id] });
+    expect(bulk.status).toBe(200);
+    expect(bulk.body).toEqual({ action: 'disable', disabled: 1, skipped: 1 });
+
+    const users = createUserRepository(harness.db);
+    expect(await users.countActiveAdmins()).toBe(1);
+    expect((await users.findById(admin.id))?.status).toBe('active');
+    expect((await users.findById(second.id))?.status).toBe('disabled');
   });
 });
 
