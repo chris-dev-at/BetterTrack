@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -12,7 +12,23 @@ vi.mock('../../lib/portfolioApi', () => ({
   updatePortfolio: vi.fn(),
 }));
 
+// The group-create flow the wizard hands off to talks to the chain API; only
+// the two calls that flow makes are stubbed.
+vi.mock('../../lib/mirrorApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/mirrorApi')>()),
+  createMirrorChain: vi.fn(),
+  getMirrorMembers: vi.fn(),
+}));
+vi.mock('../../lib/socialApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/socialApi')>()),
+  listFriends: vi.fn(),
+}));
+
+import { MIRROR_MAX_MEMBERS } from '@bettertrack/contracts';
+
+import { createMirrorChain, getMirrorMembers } from '../../lib/mirrorApi';
 import { createPortfolio, listPortfolios } from '../../lib/portfolioApi';
+import { listFriends } from '../../lib/socialApi';
 import {
   ACTIVE_PORTFOLIO_PARAM,
   PortfolioSwitcher,
@@ -93,6 +109,19 @@ function tintOf(element: HTMLElement): string | undefined {
     ?.slice('bt-pf-chip--'.length);
 }
 
+/**
+ * The switcher is a disclosure, not an ARIA menu (#977): its popover is a
+ * labelled group and its rows are ordinary buttons in natural tab order. These
+ * two helpers name that contract once so the assertions below read as intent.
+ */
+function findPopover() {
+  return screen.findByRole('group', { name: 'Portfolios' });
+}
+
+function findRow(name: RegExp | string) {
+  return screen.findByRole('button', { name });
+}
+
 /** Surfaces the current `?portfolio=` param so tests can assert routing. */
 function ActiveProbe() {
   const [params] = useSearchParams();
@@ -150,19 +179,105 @@ describe('PortfolioSwitcher', () => {
     await waitFor(() => expect(trigger).toHaveTextContent('Main'));
 
     await userEvent.click(trigger);
-    const menu = await screen.findByRole('menu', { name: 'Portfolios' });
-    expect(within(menu).getByRole('menuitemradio', { name: /Main/ })).toBeInTheDocument();
-    expect(within(menu).getByRole('menuitemradio', { name: /Trading/ })).toBeInTheDocument();
+    const menu = await findPopover();
+    expect(within(menu).getByRole('button', { name: /Main/ })).toBeInTheDocument();
+    expect(within(menu).getByRole('button', { name: /Trading/ })).toBeInTheDocument();
+  });
+
+  test('is a disclosure, not a menu: no menu roles, natural tab order, aria-current', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    const user = userEvent.setup();
+    renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await user.click(trigger);
+    const menu = await findPopover();
+
+    // A filterable picker cannot wear menu semantics: `role="menu"` admits no
+    // textbox descendant, and the roving single tab stop fights the field.
+    expect(trigger).not.toHaveAttribute('aria-haspopup');
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(trigger).toHaveAttribute('aria-controls', menu.id);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(screen.queryAllByRole('menuitem')).toHaveLength(0);
+    expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0);
+    // AskDock treats `.bt-popover` (not the menu role) as "something the app put
+    // on screen", so dropping the role does not turn clicks in here into
+    // outside clicks for it — see askdock/AskDock.tsx OVERLAY_SELECTOR.
+    expect(menu).toHaveClass('bt-popover');
+
+    // Selection is stated with `aria-current`, on the active row and only it.
+    const main = within(menu).getByRole('button', { name: /Main/ });
+    const trading = within(menu).getByRole('button', { name: /Trading/ });
+    expect(main).toHaveAttribute('aria-current', 'true');
+    expect(trading).not.toHaveAttribute('aria-current');
+
+    // Natural tab order: the trigger keeps the caret on open, then Tab walks
+    // search → rows → actions, every stop reachable without arrow keys.
+    expect(trigger).toHaveFocus();
+    await user.tab();
+    expect(within(menu).getByLabelText('Search portfolios')).toHaveFocus();
+    await user.tab();
+    expect(main).toHaveFocus();
+    await user.tab();
+    expect(trading).toHaveFocus();
+    await user.tab();
+    expect(within(menu).getByRole('button', { name: 'Add portfolio' })).toHaveFocus();
+    await user.tab();
+    expect(within(menu).getByRole('link', { name: 'Portfolio settings' })).toHaveFocus();
+
+    // Escape closes from wherever focus sits inside, and the trigger gets it back.
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('group', { name: 'Portfolios' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  test('Escape still closes and restores focus when focus has left the menu', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    const user = userEvent.setup();
+    renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await user.click(trigger);
+    await findPopover();
+    trigger.focus();
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('group', { name: 'Portfolios' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  test('outside mousedown closes the menu and restores its trigger', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    const user = userEvent.setup();
+    renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await user.click(trigger);
+    const menu = await findPopover();
+    // A row holds the caret (the user tabbed to it) — dismissing from outside
+    // must not unmount it and leave focus on `<body>`.
+    const main = within(menu).getByRole('button', { name: /Main/ });
+    main.focus();
+    expect(main).toHaveFocus();
+
+    fireEvent.mouseDown(document.body);
+
+    expect(screen.queryByRole('group', { name: 'Portfolios' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 
   test('switching a portfolio sets the routing param', async () => {
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
     renderSwitcher();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitemradio', { name: /Trading/ }));
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await userEvent.click(trigger);
+    await userEvent.click(await findRow(/Trading/));
 
     await waitFor(() => expect(screen.getByTestId('active-param')).toHaveTextContent('p2'));
+    expect(trigger).toHaveFocus();
   });
 
   test('Add portfolio opens the wizard, which creates and activates the new one', async () => {
@@ -171,7 +286,7 @@ describe('PortfolioSwitcher', () => {
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Add portfolio' }));
+    await userEvent.click(await findRow('Add portfolio'));
 
     await userEvent.type(await screen.findByLabelText('Portfolio name'), 'Retirement');
     await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // → icon
@@ -183,19 +298,14 @@ describe('PortfolioSwitcher', () => {
     await waitFor(() => expect(screen.getByTestId('active-param')).toHaveTextContent('p9'));
   });
 
-  test('the active row is checked, and only it', async () => {
+  test('the active row is the current one, and only it', async () => {
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    expect(await screen.findByRole('menuitemradio', { name: /Main/ })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
-    expect(screen.getByRole('menuitemradio', { name: /Trading/ })).toHaveAttribute(
-      'aria-checked',
-      'false',
-    );
+    expect(await findRow(/Main/)).toHaveAttribute('aria-current', 'true');
+    // Not `aria-current="false"`: absence is how a list states "not this one".
+    expect(screen.getByRole('button', { name: /Trading/ })).not.toHaveAttribute('aria-current');
   });
 
   // ── Icons (kinds, internally) ──────────────────────────────────────────────
@@ -206,11 +316,11 @@ describe('PortfolioSwitcher', () => {
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    const trading = await screen.findByRole('menuitemradio', { name: /Trading/ });
+    const trading = await findRow(/Trading/);
     expect(iconOf(trading)).toBe('briefcase');
     expect(tintOf(trading)).toBe('business');
     // Main was never classified → the private default, glyph and hue together.
-    const main = screen.getByRole('menuitemradio', { name: /Main/ });
+    const main = screen.getByRole('button', { name: /Main/ });
     expect(iconOf(main)).toBe('user-lock');
     expect(tintOf(main)).toBe('private');
   });
@@ -245,8 +355,8 @@ describe('PortfolioSwitcher', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
     // Exact-name lookups: a chip that leaked its icon name into the accessible
     // name (…"Trading Business") would fail these.
-    expect(await screen.findByRole('menuitemradio', { name: 'Trading' })).toBeInTheDocument();
-    expect(screen.getByRole('menuitemradio', { name: 'Main Default' })).toBeInTheDocument();
+    expect(await findRow('Trading')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Main Default' })).toBeInTheDocument();
   });
 
   test('a group portfolio keeps its chosen Icon and wears the shared marker', async () => {
@@ -255,13 +365,13 @@ describe('PortfolioSwitcher', () => {
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    const household = await screen.findByRole('menuitemradio', { name: /Household/ });
+    const household = await findRow(/Household/);
     // The kind the user picked still shows; "shared" is a separate marker, so
     // the Icon setting is not silently overridden for group portfolios (owner).
     expect(iconOf(household)).toBe('family');
     expect(tintOf(household)).toBe('family');
     expect(household.querySelector('[data-group="true"]')).not.toBeNull();
-    const main = screen.getByRole('menuitemradio', { name: /Main/ });
+    const main = screen.getByRole('button', { name: /Main/ });
     expect(main.querySelector('[data-group="true"]')).toBeNull();
   });
 
@@ -272,7 +382,7 @@ describe('PortfolioSwitcher', () => {
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await screen.findByRole('menuitemradio', { name: /Main/ });
+    await findRow(/Main/);
     expect(screen.queryByLabelText('Search portfolios')).not.toBeInTheDocument();
   });
 
@@ -280,15 +390,22 @@ describe('PortfolioSwitcher', () => {
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
     renderSwitcher();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await userEvent.click(trigger);
     const search = await screen.findByLabelText('Search portfolios');
-    // Present (it is the menu's grammar) but unfocused: two portfolios are one
+    // Present (it is the picker's grammar) but unfocused: two portfolios are one
     // click apart, and autofocus would swallow the click-through.
     expect(search).not.toHaveFocus();
+    expect(trigger).toHaveFocus();
 
     await userEvent.type(search, 'trad');
-    expect(await screen.findByRole('menuitemradio', { name: /Trading/ })).toBeInTheDocument();
-    expect(screen.queryByRole('menuitemradio', { name: /Main/ })).not.toBeInTheDocument();
+    expect(await findRow(/Trading/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Main/ })).not.toBeInTheDocument();
+
+    // Home is the caret's, not a list shortcut — the disclosure runs no roving
+    // key handler for it to be stolen by.
+    await userEvent.keyboard('{Home}');
+    expect(search).toHaveFocus();
   });
 
   test('a long list gets a focused search field that filters by name', async () => {
@@ -297,13 +414,15 @@ describe('PortfolioSwitcher', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
     const search = await screen.findByLabelText('Search portfolios');
+    // Legal now that the popover is a disclosure: a textbox is no longer sitting
+    // inside a `role="menu"`, and it is the first stop in natural tab order.
     expect(search).toHaveFocus();
 
     await userEvent.type(search, 'ret');
     // "Retirement" matches; case-insensitive and anywhere in the name.
-    expect(await screen.findByRole('menuitemradio', { name: /Retirement/ })).toBeInTheDocument();
-    expect(screen.queryByRole('menuitemradio', { name: /Main/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('menuitemradio', { name: /Crypto/ })).not.toBeInTheDocument();
+    expect(await findRow(/Retirement/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Main/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Crypto/ })).not.toBeInTheDocument();
   });
 
   test('a search matching nothing says so', async () => {
@@ -314,7 +433,11 @@ describe('PortfolioSwitcher', () => {
     await userEvent.type(await screen.findByLabelText('Search portfolios'), 'zzz');
 
     expect(await screen.findByText('No matches.')).toBeInTheDocument();
-    expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0);
+    for (const portfolio of MANY) {
+      expect(
+        screen.queryByRole('button', { name: new RegExp(portfolio.name) }),
+      ).not.toBeInTheDocument();
+    }
   });
 
   test('the filter resets between openings', async () => {
@@ -324,12 +447,12 @@ describe('PortfolioSwitcher', () => {
     const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
     await userEvent.click(trigger);
     await userEvent.type(await screen.findByLabelText('Search portfolios'), 'crypto');
-    expect(screen.queryByRole('menuitemradio', { name: /Main/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Main/ })).not.toBeInTheDocument();
 
     await userEvent.click(trigger); // close
     await userEvent.click(trigger); // reopen
     expect(await screen.findByLabelText('Search portfolios')).toHaveValue('');
-    expect(screen.getByRole('menuitemradio', { name: /Main/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Main/ })).toBeInTheDocument();
   });
 
   test('Escape closes the menu', async () => {
@@ -337,11 +460,11 @@ describe('PortfolioSwitcher', () => {
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await screen.findByRole('menu', { name: 'Portfolios' });
+    await findPopover();
 
     await userEvent.keyboard('{Escape}');
     await waitFor(() =>
-      expect(screen.queryByRole('menu', { name: 'Portfolios' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('group', { name: 'Portfolios' })).not.toBeInTheDocument(),
     );
   });
 
@@ -352,10 +475,10 @@ describe('PortfolioSwitcher', () => {
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitemradio', { name: /Trading/ }));
+    await userEvent.click(await findRow(/Trading/));
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
 
-    expect(await screen.findByRole('menuitem', { name: 'Portfolio settings' })).toHaveAttribute(
+    expect(await screen.findByRole('link', { name: 'Portfolio settings' })).toHaveAttribute(
       'href',
       '/portfolio/settings?portfolio=p2',
     );
@@ -366,10 +489,10 @@ describe('PortfolioSwitcher', () => {
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await screen.findByRole('menu', { name: 'Portfolios' });
+    await findPopover();
 
     for (const gone of ['Rename current', 'Archive current', 'Delete current', 'Archived…']) {
-      expect(screen.queryByRole('menuitem', { name: gone })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: gone })).not.toBeInTheDocument();
     }
   });
 
@@ -378,12 +501,12 @@ describe('PortfolioSwitcher', () => {
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    expect(await screen.findByRole('menuitem', { name: 'Add portfolio' })).toBeInTheDocument();
+    expect(await findRow('Add portfolio')).toBeInTheDocument();
     for (const gone of ['+ New portfolio', '+ New group portfolio']) {
-      expect(screen.queryByRole('menuitem', { name: gone })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: gone })).not.toBeInTheDocument();
     }
     // …and the settings row still sits beside it.
-    expect(screen.getByRole('menuitem', { name: 'Portfolio settings' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Portfolio settings' })).toBeInTheDocument();
   });
 
   test('the wizard shared-book branch reaches the untouched group-create flow', async () => {
@@ -391,7 +514,7 @@ describe('PortfolioSwitcher', () => {
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
-    await userEvent.click(await screen.findByRole('menuitem', { name: 'Add portfolio' }));
+    await userEvent.click(await findRow('Add portfolio'));
     await userEvent.type(await screen.findByLabelText('Portfolio name'), 'Household');
     await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // → icon
     await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // → book
@@ -402,5 +525,51 @@ describe('PortfolioSwitcher', () => {
     // and no plain portfolio was created on the way.
     expect(await screen.findByRole('dialog', { name: 'New group portfolio' })).toBeInTheDocument();
     expect(createPortfolio).not.toHaveBeenCalled();
+  });
+
+  test('the create → invite handoff still returns focus to the switcher trigger', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN] });
+    vi.mocked(createMirrorChain).mockResolvedValue({
+      chainId: 'c1',
+      name: 'Household',
+      status: 'active',
+      role: 'owner',
+      memberCount: 1,
+      portfolioId: 'p9',
+      createdAt: '2026-07-30T00:00:00.000Z',
+      sync: { appliedSeq: 0, lastSeq: 0, percent: 100, synced: true },
+    });
+    vi.mocked(getMirrorMembers).mockResolvedValue({
+      chainId: 'c1',
+      name: 'Household',
+      status: 'active',
+      role: 'owner',
+      memberCap: MIRROR_MAX_MEMBERS,
+      members: [],
+    });
+    vi.mocked(listFriends).mockResolvedValue({ friends: [] });
+    const user = userEvent.setup();
+    renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await user.click(trigger);
+    await user.click(await findRow('Add portfolio'));
+    await user.type(await screen.findByLabelText('Portfolio name'), 'Household');
+    await user.click(screen.getByRole('button', { name: 'Continue' })); // → icon
+    await user.click(screen.getByRole('button', { name: 'Continue' })); // → book
+    await user.click(screen.getByRole('radio', { name: /Shared with people/ }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+
+    await screen.findByRole('dialog', { name: 'New group portfolio' });
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+
+    // The create dialog unmounts as the invite step mounts, so the invite
+    // dialog's own opener is already detached — the stable trigger is what it
+    // has to come back to.
+    await screen.findByRole('dialog', { name: 'Invite a friend' });
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
   });
 });

@@ -52,6 +52,7 @@ import { CapabilityTags } from './capabilityTags';
 import { NewsHeadlineList } from './newsFeed';
 import { AlertDialog, type AlertDialogAsset } from '../components/AlertDialog';
 import { AlertList } from '../components/AlertList';
+import { useMenuKeyboard } from '../components/useMenuKeyboard';
 import { Alert, Button } from '../components/ui';
 
 // ─── Range mapping ────────────────────────────────────────────────────────────
@@ -563,7 +564,10 @@ const EM_DASH_TEXT = '—';
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
-/** Closes a popover on Escape or on a mousedown outside `containerRef`. */
+/**
+ * Closes a popover on a mousedown outside `containerRef`. Escape is handled by
+ * `useMenuKeyboard` so nested overlays share topmost-only arbitration.
+ */
 function usePopoverDismiss(
   open: boolean,
   onClose: () => void,
@@ -571,16 +575,11 @@ function usePopoverDismiss(
 ) {
   useEffect(() => {
     if (!open) return;
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
     function handleClick(e: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) onClose();
     }
-    document.addEventListener('keydown', handleKey);
     document.addEventListener('mousedown', handleClick);
     return () => {
-      document.removeEventListener('keydown', handleKey);
       document.removeEventListener('mousedown', handleClick);
     };
   }, [open, onClose, containerRef]);
@@ -618,7 +617,7 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
   const addMutation = useAddToWatchlist();
   const [listPickerOpen, setListPickerOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  usePopoverDismiss(listPickerOpen, () => setListPickerOpen(false), containerRef);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   // The caller's named lists — fetched only when the list picker opens (V3-P5).
   const listsQuery = useQuery({
@@ -627,6 +626,17 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
     enabled: listPickerOpen,
     staleTime: 30_000,
   });
+  const {
+    closeAndRestoreFocus,
+    menuRef,
+    onKeyDown: onMenuKeyDown,
+  } = useMenuKeyboard({
+    open: listPickerOpen,
+    onClose: () => setListPickerOpen(false),
+    triggerRef,
+    focusVersion: (listsQuery.data?.watchlists ?? []).map((list) => list.id).join(','),
+  });
+  usePopoverDismiss(listPickerOpen, closeAndRestoreFocus, containerRef);
 
   const watched = watchedIds.has(assetId) || addMutation.isSuccess;
 
@@ -636,8 +646,8 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
   }
 
   return (
-    <div className="relative flex flex-col items-end gap-1">
-      <div className="bt-seg flex items-center" ref={containerRef}>
+    <div className="relative flex flex-col items-end gap-1" ref={containerRef}>
+      <div className="bt-seg flex items-center">
         <button
           type="button"
           onClick={() => {
@@ -647,12 +657,16 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
           aria-pressed={watched}
           aria-label={
             watched
-              ? `${symbol} is on your watchlist`
+              ? t('assets.searchBox.onWatchlistAria', { symbol })
               : addMutation.isError
-                ? `Retry adding ${symbol} to your watchlist`
-                : `Add ${symbol} to watchlist`
+                ? t('assets.searchBox.retryWatchlistAria', { symbol })
+                : t('assets.searchBox.addToWatchlistAria', { symbol })
           }
-          title={watched ? 'On your watchlist' : 'Add to watchlist'}
+          title={
+            watched
+              ? t('assets.searchBox.onWatchlistTitle')
+              : t('assets.searchBox.addToWatchlistTitle')
+          }
           className={cx(
             'rounded-l-md p-2 transition-colors',
             watched ? 'bt-link' : 'bt-muted  hover:',
@@ -665,9 +679,10 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
         </button>
 
         <button
+          ref={triggerRef}
           type="button"
           onClick={() => setListPickerOpen((o) => !o)}
-          aria-label={`Choose a watchlist for ${symbol}`}
+          aria-label={t('assets.searchBox.chooseWatchlistAria', { symbol })}
           aria-haspopup="menu"
           aria-expanded={listPickerOpen}
           className="p-1.5 text-xs bt-muted"
@@ -679,10 +694,12 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
 
       {listPickerOpen ? (
         <div
+          ref={menuRef}
           role="menu"
-          aria-label={`Watchlists for ${symbol}`}
+          aria-label={t('assets.searchBox.watchlistsMenuAria', { symbol })}
           className="bt-popover w-48 p-2 text-xs"
           style={{ right: 0, top: 'calc(100% + 4px)' }}
+          onKeyDown={onMenuKeyDown}
         >
           {(listsQuery.data?.watchlists ?? []).map((list) => (
             <button
@@ -691,7 +708,7 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
               role="menuitem"
               onClick={() => {
                 handleAdd(list.isDefault ? undefined : list.id);
-                setListPickerOpen(false);
+                closeAndRestoreFocus();
               }}
               className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left bt-soft"
             >

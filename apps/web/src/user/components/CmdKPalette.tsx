@@ -12,6 +12,8 @@ import {
   type CommandGroup,
 } from './commands';
 import { useAssetSearch } from './useAssetSearch';
+import { useOverlayEscape } from './overlayStack';
+import { useFocusTrap } from './useFocusTrap';
 
 interface CmdKPaletteProps {
   isOpen: boolean;
@@ -100,34 +102,26 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
 
-  // Close on Escape from anywhere in the overlay.
-  useEffect(() => {
-    if (!isOpen) return;
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      }
-    }
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [isOpen, onClose]);
+  // Initial focus (the input, deterministically), Tab containment, an inert
+  // background and focus restoration all come from the shared trap. It captures
+  // the opener — the topbar search field, or whatever a ⌘K caller was working
+  // in — before descendants commit, which is why the focus call cannot live on
+  // `autoFocus`.
+  const { containerRef, onKeyDown: onTrapKeyDown } = useFocusTrap<HTMLDivElement>({
+    active: isOpen,
+    inertBackground: true,
+    initialFocusRef: inputRef,
+  });
 
-  // A fresh open starts empty and focuses the input; closing hands focus back to
-  // whatever opened it (the topbar search field, or — for a ⌘K open — whatever
-  // the caller was working in). The opener has to be read *before* the input is
-  // focused, which is why the focus call lives here and not on `autoFocus`.
+  // Escape from anywhere in the overlay — but only when the palette is the
+  // innermost open overlay, so anything it opened on top closes alone.
+  useOverlayEscape(isOpen, onClose, containerRef);
+
+  // A fresh open starts empty and at the top of the list.
   useEffect(() => {
     if (!isOpen) return;
-    const opener = document.activeElement;
     setQuery('');
     setActiveIndex(0);
-    inputRef.current?.focus();
-    return () => {
-      if (opener instanceof HTMLElement && opener !== document.body && document.contains(opener)) {
-        opener.focus();
-      }
-    };
   }, [isOpen]);
 
   const trimmed = query.trim();
@@ -242,7 +236,10 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
       aria-modal="true"
       className="bt-palette-overlay"
       onClick={handleBackdrop}
+      onKeyDown={onTrapKeyDown}
+      ref={containerRef}
       role="dialog"
+      tabIndex={-1}
     >
       {/* The panel routes arrow/Enter keys to the active row: the input keeps DOM
           focus and points at the row through aria-activedescendant (combobox

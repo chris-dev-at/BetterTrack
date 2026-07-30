@@ -247,7 +247,6 @@
     "unknown": "unknown",
     "private": "Private",
     "friends": "Friends",
-    "soon": "Soon",
     "comingSoon": "Coming soon",
     "genericError": "Something went wrong. Please try again.",
     "continue": "Continue",
@@ -507,12 +506,9 @@
     "openSearch": "Open search (⌘K)",
     "accountMenu": "Account menu",
     "account": "Account",
-    "myPortfolio": "My Portfolio",
     "settings": "Settings",
     "discreetMode": "Discreet mode",
     "discreetModeError": "Couldn't save that change. Please try again.",
-    "inviteOthers": "Invite Others",
-    "shareProfile": "Share Profile",
     "logout": "Logout",
     "home": "Home",
     "portfolios": "Portfolio",
@@ -641,6 +637,8 @@
     },
     "notifications": {
       "title": "Notifications",
+      "bellAria": "Notifications",
+      "bellUnreadAria": "Notifications ({{count}} unread)",
       "loadError": {
         "title": "Couldn't load your notification settings"
       },
