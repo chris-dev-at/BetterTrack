@@ -3562,6 +3562,7 @@
     "oneTimeCredentials": {
       "temporaryPassword": {
         "title": "User created",
+        "resetTitle": "Password reset",
         "description": "Share this temporary password with {{email}}. It is shown only once and the user must change it on first login.",
         "label": "Temporary password"
       },

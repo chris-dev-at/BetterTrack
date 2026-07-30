@@ -68,11 +68,13 @@ function SecretModal({
 }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
 
   async function copy() {
     try {
       await navigator.clipboard.writeText(result.secret);
       setCopied(true);
+      setAcknowledged(true);
     } catch {
       setCopied(false);
     }
@@ -83,6 +85,7 @@ function SecretModal({
       title={t('settings.api.webhooks.secretModal.title')}
       description={t('settings.api.webhooks.secretModal.description')}
       onClose={onClose}
+      dismissable={acknowledged}
     >
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-2">
@@ -98,8 +101,14 @@ function SecretModal({
         </div>
         <Alert tone="info">{t('settings.api.webhooks.secretModal.storeWarning')}</Alert>
         <div className="flex justify-end">
-          <Button onClick={onClose} variant="primary">
-            {t('settings.api.done')}
+          <Button
+            onClick={() => {
+              setAcknowledged(true);
+              onClose();
+            }}
+            variant="primary"
+          >
+            {t('common.savedOneTimeSecret')}
           </Button>
         </div>
       </div>
