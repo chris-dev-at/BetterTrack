@@ -127,9 +127,8 @@ function connect(cookie?: string, options: ConnectOptions = {}): Promise<ClientS
 /**
  * Open a socket with arbitrary transport and handshake auth — a bearer via the
  * socket.io auth payload (`auth.token`) and/or an `Authorization: Bearer …`
- * handshake header. Native/no-Origin cases must use the latter; a verified
- * same-origin browser polling handshake may instead carry its session cookie.
- * Resolves on connect, rejects with the connect_error message.
+ * handshake header. Native/no-Origin cases must use the latter. Resolves on
+ * connect, rejects with the connect_error message.
  */
 function connectWith(opts: {
   auth?: Record<string, unknown>;
@@ -443,53 +442,7 @@ describe('realtime gateway — Origin admission', () => {
     },
   );
 
-  it('accepts the same-origin browser polling handshake without an Origin header', async () => {
-    await listenWithGateway();
-    const user = await harness.seedUser();
-    const { cookie } = await login(user.email, user.password);
-    const sessionSpy = vi.spyOn(harness.ctx.auth, 'resolveSession');
-    const bearerSpy = vi.spyOn(harness.ctx.apiKeys, 'authenticate');
-
-    try {
-      const browserHeaders = {
-        Host: new URL(harness.ctx.config.topology.webOrigin).host,
-        cookie,
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Dest': 'empty',
-      };
-      const open = await request(server!)
-        .get(`${REALTIME_PATH}/`)
-        .query({ EIO: 4, transport: 'polling' })
-        .set(browserHeaders);
-
-      expect(open.status).toBe(200);
-      expect(open.text.startsWith('0')).toBe(true);
-      const { sid } = JSON.parse(open.text.slice(1)) as { sid: string };
-
-      const connectNamespace = await request(server!)
-        .post(`${REALTIME_PATH}/`)
-        .query({ EIO: 4, transport: 'polling', sid })
-        .set(browserHeaders)
-        .set('Content-Type', 'text/plain;charset=UTF-8')
-        .send('40');
-      expect(connectNamespace.status).toBe(200);
-
-      const namespaceAck = await request(server!)
-        .get(`${REALTIME_PATH}/`)
-        .query({ EIO: 4, transport: 'polling', sid })
-        .set(browserHeaders);
-      expect(namespaceAck.status).toBe(200);
-      expect(namespaceAck.text.startsWith('40')).toBe(true);
-      expect(sessionSpy).toHaveBeenCalledTimes(1);
-      expect(bearerSpy).not.toHaveBeenCalled();
-    } finally {
-      sessionSpy.mockRestore();
-      bearerSpy.mockRestore();
-    }
-  });
-
-  it('rejects claimed same-origin polling from a non-allowlisted Host before auth', async () => {
+  it('rejects forged same-origin metadata without Origin or bearer before auth', async () => {
     await listenWithGateway();
     const user = await harness.seedUser();
     const { cookie } = await login(user.email, user.password);
@@ -501,7 +454,7 @@ describe('realtime gateway — Origin admission', () => {
         .get(`${REALTIME_PATH}/`)
         .query({ EIO: 4, transport: 'polling' })
         .set({
-          Host: 'attacker.example',
+          Host: new URL(harness.ctx.config.topology.webOrigin).host,
           cookie,
           'Sec-Fetch-Site': 'same-origin',
           'Sec-Fetch-Mode': 'cors',
