@@ -1264,6 +1264,20 @@ export function PortfolioPage() {
 
       <RecategorizeBanner />
 
+      {/* Above the empty/non-empty split on purpose: an invited member's copy is
+          empty until the first ops replicate, and hiding the chain surface there
+          left them with no way to see who is in it or whether it had synced. */}
+      {portfolio?.mirror ? (
+        <div style={{ marginBottom: 14 }}>
+          <MirrorAvatarStack badge={portfolio.mirror} onClick={() => setMemberSheetOpen(true)} />
+        </div>
+      ) : null}
+      {portfolio?.mirrorFork ? (
+        <div style={{ marginBottom: 14 }}>
+          <MirrorForkProvenanceLine fork={portfolio.mirrorFork} />
+        </div>
+      ) : null}
+
       {isEmpty ? (
         <EmptyState
           icon="💼"
@@ -1285,19 +1299,6 @@ export function PortfolioPage() {
         />
       ) : (
         <>
-          {portfolio?.mirror ? (
-            <div style={{ marginBottom: 14 }}>
-              <MirrorAvatarStack
-                badge={portfolio.mirror}
-                onClick={() => setMemberSheetOpen(true)}
-              />
-            </div>
-          ) : null}
-          {portfolio?.mirrorFork ? (
-            <div style={{ marginBottom: 14 }}>
-              <MirrorForkProvenanceLine fork={portfolio.mirrorFork} />
-            </div>
-          ) : null}
           <TotalsHeader
             totals={totals}
             onDeposit={() => setCashDialogKind('deposit')}

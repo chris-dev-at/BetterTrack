@@ -5290,3 +5290,34 @@
   min-height: 0;
   overflow-y: auto;
 }
+
+/* A shared book keeps its chosen Icon and wears a small marker instead: the
+   glyph answers "what is this book for", the marker "who else is in it". Sits on
+   the chip's corner, tinted with the reserved group hue, with a ring in the
+   surface colour so it reads as a badge rather than as part of the glyph. */
+.bt-pf-chip--shared {
+  position: relative;
+  overflow: visible;
+}
+
+.bt-pf-chip__mark {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--bt-surface-strong);
+  box-shadow: 0 0 0 1.5px var(--bt-bg-raised);
+  color: var(--bt-pf-group-ink, #9085e9);
+}
+
+.bt-pf-chip--lg .bt-pf-chip__mark {
+  right: -4px;
+  bottom: -4px;
+  width: 16px;
+  height: 16px;
+}

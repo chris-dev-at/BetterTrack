@@ -249,15 +249,20 @@ describe('PortfolioSwitcher', () => {
     expect(screen.getByRole('menuitemradio', { name: 'Main Default' })).toBeInTheDocument();
   });
 
-  test('a group portfolio overrides both the glyph and the hue of its kind', async () => {
+  test('a group portfolio keeps its chosen Icon and wears the shared marker', async () => {
     setPortfolioKind(HOUSEHOLD.id, 'family');
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, HOUSEHOLD] });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
     const household = await screen.findByRole('menuitemradio', { name: /Household/ });
-    expect(iconOf(household)).toBe('users');
-    expect(tintOf(household)).toBe('group');
+    // The kind the user picked still shows; "shared" is a separate marker, so
+    // the Icon setting is not silently overridden for group portfolios (owner).
+    expect(iconOf(household)).toBe('family');
+    expect(tintOf(household)).toBe('family');
+    expect(household.querySelector('[data-group="true"]')).not.toBeNull();
+    const main = screen.getByRole('menuitemradio', { name: /Main/ });
+    expect(main.querySelector('[data-group="true"]')).toBeNull();
   });
 
   // ── Search ────────────────────────────────────────────────────────────────

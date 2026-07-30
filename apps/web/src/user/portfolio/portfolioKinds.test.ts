@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   DEFAULT_PORTFOLIO_KIND,
   PORTFOLIO_KINDS,
+  isGroupPortfolio,
   PORTFOLIO_KIND_ICONS,
   getPortfolioKind,
   getPortfolioKinds,
@@ -92,7 +93,7 @@ describe('portfolioIconName', () => {
     expect(portfolioIconName({ mirror: undefined }, 'private')).toBe('user-lock');
   });
 
-  test('a synced chain copy shows the group icon whatever its kind', () => {
+  test('a synced chain copy keeps its own kind glyph — the marker carries "shared"', () => {
     const mirror = {
       chainId: 'c1',
       chainName: 'Household',
@@ -100,9 +101,14 @@ describe('portfolioIconName', () => {
       memberCount: 3,
       sync: { appliedSeq: 1, lastSeq: 1, percent: 100, synced: true },
     };
+    // Forcing the group glyph made the Icon setting a no-op for exactly the
+    // portfolios people most want to tell apart (owner), so being shared is
+    // carried by the chip's corner marker instead.
     for (const kind of PORTFOLIO_KINDS) {
-      expect(portfolioIconName({ mirror }, kind)).toBe('users');
+      expect(portfolioIconName({ mirror }, kind)).toBe(PORTFOLIO_KIND_ICONS[kind]);
+      expect(isGroupPortfolio({ mirror })).toBe(true);
     }
+    expect(isGroupPortfolio({ mirror: undefined })).toBe(false);
   });
 });
 
@@ -113,7 +119,7 @@ describe('portfolioIconTint', () => {
     }
   });
 
-  test('a synced chain copy takes the group hue, exactly like its glyph', () => {
+  test("a synced chain copy keeps its kind hue — the group hue is the marker's", () => {
     const mirror = {
       chainId: 'c1',
       chainName: 'Household',
@@ -122,7 +128,7 @@ describe('portfolioIconTint', () => {
       sync: { appliedSeq: 1, lastSeq: 1, percent: 100, synced: true },
     };
     for (const kind of PORTFOLIO_KINDS) {
-      expect(portfolioIconTint({ mirror }, kind)).toBe('group');
+      expect(portfolioIconTint({ mirror }, kind)).toBe(kind);
     }
   });
 });

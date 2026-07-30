@@ -63,16 +63,15 @@ export const PORTFOLIO_GROUP_ICON: IconName = 'users';
 export type PortfolioIconTint = PortfolioKind | 'group';
 
 /**
- * The tint one portfolio row renders with, resolved exactly like
- * {@link portfolioIconName}: `group` for a synced copy of an active chain, else
- * its kind. Glyph and tint always move together, so colour never claims
- * something the icon contradicts.
+ * The tint one portfolio row renders with: its kind's hue, resolved exactly like
+ * {@link portfolioIconName} so colour never claims something the glyph
+ * contradicts. The `group` hue is reserved for the shared-book marker.
  */
 export function portfolioIconTint(
-  portfolio: Pick<PortfolioSummary, 'mirror'>,
+  _portfolio: Pick<PortfolioSummary, 'mirror'>,
   kind: PortfolioKind,
 ): PortfolioIconTint {
-  return portfolio.mirror ? 'group' : kind;
+  return kind;
 }
 
 /** localStorage key for the portfolioId → kind map. */
@@ -176,13 +175,23 @@ export function usePortfolioKind(
 }
 
 /**
- * The glyph one portfolio row renders with: the group icon when the summary
- * says it is a synced copy of an active chain (`mirror` present — the only
- * group signal the contract carries), else its kind icon.
+ * The glyph one portfolio row renders with: always its chosen kind icon.
+ *
+ * A group portfolio used to be forced onto the group glyph, which quietly made
+ * the Icon setting a no-op for exactly the portfolios people most want to tell
+ * apart (owner). Being shared is now carried by a small marker on the chip
+ * ({@link isGroupPortfolio} → `PortfolioIconChip group`) instead, so the two
+ * facts — what this book is for, and that others are in it — no longer compete
+ * for one glyph.
  */
 export function portfolioIconName(
-  portfolio: Pick<PortfolioSummary, 'mirror'>,
+  _portfolio: Pick<PortfolioSummary, 'mirror'>,
   kind: PortfolioKind,
 ): IconName {
-  return portfolio.mirror ? PORTFOLIO_GROUP_ICON : PORTFOLIO_KIND_ICONS[kind];
+  return PORTFOLIO_KIND_ICONS[kind];
+}
+
+/** Whether this row is a synced copy of an active chain — the group signal. */
+export function isGroupPortfolio(portfolio: Pick<PortfolioSummary, 'mirror'>): boolean {
+  return Boolean(portfolio.mirror);
 }

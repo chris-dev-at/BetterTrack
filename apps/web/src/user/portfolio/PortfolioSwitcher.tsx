@@ -12,6 +12,7 @@ import { CreateChainDialog, MirrorInviteStepDialog } from './MirrorchainPanel';
 import { PortfolioIconChip } from './PortfolioIconChip';
 import {
   DEFAULT_PORTFOLIO_KIND,
+  isGroupPortfolio,
   portfolioIconName,
   portfolioIconTint,
   usePortfolioKinds,
@@ -220,6 +221,7 @@ export function PortfolioSwitcher() {
         className={cx('bt-btn bt-portfolio-trigger', open && 'is-open')}
       >
         <PortfolioIconChip
+          group={active ? isGroupPortfolio(active) : false}
           icon={active && activeKind ? portfolioIconName(active, activeKind) : 'portfolios'}
           size="lg"
           tint={active && activeKind ? portfolioIconTint(active, activeKind) : undefined}
@@ -276,6 +278,7 @@ export function PortfolioSwitcher() {
                     className="bt-menu-item bt-portfolio-option"
                   >
                     <PortfolioIconChip
+                      group={isGroupPortfolio(p)}
                       icon={portfolioIconName(p, kind)}
                       tint={portfolioIconTint(p, kind)}
                     />
