@@ -985,6 +985,7 @@ export function AssetDetailPage() {
             series={liveChartPoints}
             mode="area"
             valueCurrency={chartCurrency}
+            valueFormat="unitPrice"
             showRangeToggle={false}
             live
             generation={liveGeneration}
@@ -998,6 +999,7 @@ export function AssetDetailPage() {
             series={chartPoints}
             mode={chartMode}
             valueCurrency={chartCurrency}
+            valueFormat="unitPrice"
             range={range}
             // Asset detail keeps its historical §6.3 six-button set — V4-P0
             // widened the shared range vocabulary for the portfolio surface

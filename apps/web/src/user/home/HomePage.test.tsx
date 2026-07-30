@@ -80,6 +80,7 @@ import { I18nProvider } from '../../i18n';
 import { listAlerts } from '../../lib/alertsApi';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { getExpenseTrends } from '../../lib/expensesApi';
+import { setDiscreetMode } from '../../lib/format';
 import { getNewsDigest, getPortfolioDividendCalendar } from '../../lib/marketIntelApi';
 import { listNotifications } from '../../lib/notificationsApi';
 import {
@@ -297,6 +298,7 @@ const ASSET_HISTORY: HistoryResponse = {
 
 beforeEach(() => {
   localStorage.clear();
+  setDiscreetMode(false);
   // Call history, not implementations: several cases below assert *how often* an
   // endpoint was hit (cache sharing, the "asks before it fetches" guarantee), and
   // those claims are meaningless if the counts carry over from earlier tests.
@@ -1000,6 +1002,23 @@ test('a picked spotlight shows the asset’s price, day move and chart', async (
   );
   // Keyed exactly like the asset page, so opening AAPL there costs no refetch.
   expect(getAssetHistory).toHaveBeenCalledWith(APPLE.id, '1M', expect.anything());
+});
+
+test('a spotlight with history but no quote hides its data alternative in discreet mode', async () => {
+  setDiscreetMode(true);
+  vi.mocked(getAssetQuote).mockRejectedValueOnce(new Error('quote unavailable'));
+  storeBoard(['asset-spotlight', { assetId: APPLE.id, assetLabel: 'AAPL', range: '1M' }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Spotlight' });
+  const chart = await within(widget).findByRole('img');
+
+  await vi.waitFor(() => {
+    expect(getAssetHistory).toHaveBeenCalledWith(APPLE.id, '1M', expect.anything());
+  });
+  expect(chart).not.toHaveAttribute('aria-describedby');
+  expect(within(widget).queryByRole('button', { name: 'Show chart data' })).not.toBeInTheDocument();
+  expect(within(widget).queryByText(/Start: 180/)).not.toBeInTheDocument();
 });
 
 test('every widget in the catalog is offered in the drawer and renders when added', async () => {

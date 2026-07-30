@@ -29,6 +29,7 @@ import {
   formatPercent,
   formatQuantity,
   formatSignedPercent,
+  formatUnitPrice,
   isDiscreetMode,
 } from '../../lib/format';
 import {
@@ -91,6 +92,17 @@ export interface PriceChartProps {
    * precedence when both are supplied.
    */
   valueCurrency?: string;
+  /**
+   * Monetary primary-series values are totals by default. Asset history points
+   * are per-unit prices, whose sub-cent precision must remain readable.
+   */
+  valueFormat?: 'money' | 'unitPrice';
+  /**
+   * Expose the summary and expandable table for this chart. Callers which
+   * cannot yet identify a monetary series' currency may defer this until they
+   * can do so, rather than presenting it as a unitless index.
+   */
+  showDataAlternative?: boolean;
   /** Show a spinner instead of the chart (parent is fetching). */
   loading?: boolean;
   /**
@@ -267,12 +279,16 @@ function formatChartValue(
   value: number,
   percentValues: boolean,
   valueCurrency: string | undefined,
+  valueFormat: 'money' | 'unitPrice',
 ): string {
   if (percentValues) return formatPercent(value);
   // An omitted currency is intentional: backtests and comparisons are rebased
   // indices, not money. `formatQuantity` keeps those values locale-aware and
   // deliberately visible in discreet mode.
-  return valueCurrency === undefined ? formatQuantity(value) : formatMoney(value, valueCurrency);
+  if (valueCurrency === undefined) return formatQuantity(value);
+  return valueFormat === 'unitPrice'
+    ? formatUnitPrice(value, valueCurrency)
+    : formatMoney(value, valueCurrency);
 }
 
 /** Mirror MoneyText's explicit positive sign while preserving discreet masking. */
@@ -280,9 +296,10 @@ function formatSignedChartValue(
   value: number,
   percentValues: boolean,
   valueCurrency: string | undefined,
+  valueFormat: 'money' | 'unitPrice',
 ): string {
   if (percentValues) return formatSignedPercent(value);
-  const formatted = formatChartValue(value, false, valueCurrency);
+  const formatted = formatChartValue(value, false, valueCurrency, valueFormat);
   return value > 0 && formatted !== DISCREET_MASK ? `+${formatted}` : formatted;
 }
 
@@ -413,6 +430,8 @@ export function PriceChart({
   overlays = [],
   percentValues = false,
   valueCurrency,
+  valueFormat = 'money',
+  showDataAlternative = true,
   loading = false,
   live = false,
   generation,
@@ -462,19 +481,33 @@ export function PriceChart({
   // Snapshot the discreet flag at chart-create time so a toggle mid-life
   // rebuilds the chart with the correct axis formatter (§13.5 V5-P13 arc (a)).
   const discreet = isDiscreetMode();
-  const dataAlternative = useMemo(() => accessibleChartData(series), [series]);
+  const dataAlternative = useMemo(
+    () => (showDataAlternative ? accessibleChartData(series) : null),
+    [series, showDataAlternative],
+  );
   const summary = useMemo(() => {
     if (!dataAlternative) return null;
     const { datePrecision } = dataAlternative;
     return t('common.charts.priceChartSummary', {
       startDate: formatChartDate(dataAlternative.start.time, datePrecision),
       endDate: formatChartDate(dataAlternative.end.time, datePrecision),
-      startValue: formatChartValue(dataAlternative.start.value, percentValues, valueCurrency),
-      endValue: formatChartValue(dataAlternative.end.value, percentValues, valueCurrency),
+      startValue: formatChartValue(
+        dataAlternative.start.value,
+        percentValues,
+        valueCurrency,
+        valueFormat,
+      ),
+      endValue: formatChartValue(
+        dataAlternative.end.value,
+        percentValues,
+        valueCurrency,
+        valueFormat,
+      ),
       change: formatSignedChartValue(
         dataAlternative.end.value - dataAlternative.start.value,
         percentValues,
         valueCurrency,
+        valueFormat,
       ),
       changePercent: formatSignedPercent(
         dataAlternative.start.value === 0
@@ -483,12 +516,22 @@ export function PriceChart({
               dataAlternative.start.value) *
               100,
       ),
-      minimum: formatChartValue(dataAlternative.minimum.value, percentValues, valueCurrency),
+      minimum: formatChartValue(
+        dataAlternative.minimum.value,
+        percentValues,
+        valueCurrency,
+        valueFormat,
+      ),
       minimumDate: formatChartDate(dataAlternative.minimum.time, datePrecision),
-      maximum: formatChartValue(dataAlternative.maximum.value, percentValues, valueCurrency),
+      maximum: formatChartValue(
+        dataAlternative.maximum.value,
+        percentValues,
+        valueCurrency,
+        valueFormat,
+      ),
       maximumDate: formatChartDate(dataAlternative.maximum.time, datePrecision),
     });
-  }, [dataAlternative, discreet, locale, percentValues, t, valueCurrency]);
+  }, [dataAlternative, discreet, locale, percentValues, t, valueCurrency, valueFormat]);
 
   // Create / tear down the chart instance. Keyed on the *shape* (mode, presence
   // of a benchmark, height) rather than the data, so wiggling data is cheap.
@@ -842,7 +885,12 @@ export function PriceChart({
                             {formatChartDate(point.time, dataAlternative.datePrecision)}
                           </td>
                           <td className="py-1 text-right tabular-nums">
-                            {formatChartValue(point.value, percentValues, valueCurrency)}
+                            {formatChartValue(
+                              point.value,
+                              percentValues,
+                              valueCurrency,
+                              valueFormat,
+                            )}
                           </td>
                         </tr>
                       ))}

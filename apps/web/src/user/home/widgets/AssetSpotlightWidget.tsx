@@ -128,6 +128,8 @@ export function AssetSpotlightWidget({ settings, onSettingsChange, size }: Widge
           ranges={SPOTLIGHT_RANGES}
           series={series}
           valueCurrency={quote?.currency}
+          valueFormat="unitPrice"
+          showDataAlternative={quote !== null}
         />
       </div>
     </div>

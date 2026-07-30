@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
-import { DISCREET_MASK, setDiscreetMode, setFormatLocale } from '../../lib/format';
+import { DISCREET_MASK, formatUnitPrice, setDiscreetMode, setFormatLocale } from '../../lib/format';
 
 // Mock the canvas-backed charting lib: jsdom can't draw, and the wrapper's
 // contract is *how* it drives the lib (series type, setData, disposal).
@@ -236,6 +236,36 @@ describe('PriceChart', () => {
       'Period: 2 Jan 2026 to 15 Jan 2026. Start: 102.4. End: 110.8. Change: +8.4 (+8.20%). Minimum: 101.7 on 6 Jan 2026. Maximum: 110.8 on 15 Jan 2026.',
     );
     expect(summary).not.toHaveTextContent(DISCREET_MASK);
+  });
+
+  test('keeps sub-cent unit prices and their signed change exact in the alternative', async () => {
+    const user = userEvent.setup();
+    render(
+      <I18nProvider initialLocale="en">
+        <PriceChart
+          series={[
+            { time: '2026-01-02', value: 0.000012 },
+            { time: '2026-01-03', value: 0.000014 },
+          ]}
+          valueCurrency="USD"
+          valueFormat="unitPrice"
+        />
+      </I18nProvider>,
+    );
+
+    const start = formatUnitPrice(0.000012, 'USD');
+    const end = formatUnitPrice(0.000014, 'USD');
+    const change = formatUnitPrice(0.000002, 'USD');
+    const chart = screen.getByRole('img', { name: 'Price chart' });
+    const summary = document.getElementById(chart.getAttribute('aria-describedby')!);
+    expect(summary).toHaveTextContent(
+      `Period: 2 Jan 2026 to 3 Jan 2026. Start: ${start}. End: ${end}. Change: +${change} (+16.67%). Minimum: ${start} on 2 Jan 2026. Maximum: ${end} on 3 Jan 2026.`,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Show chart data' }));
+    const table = screen.getByRole('table', { name: 'Chart data' });
+    expect(table).toHaveTextContent(start);
+    expect(table).toHaveTextContent(end);
   });
 
   test('formats already-percent series as percentages, not money or indices', () => {
