@@ -2,16 +2,16 @@ import { Router } from 'express';
 
 import {
   deleteAccountRequestSchema,
-  exportDownloadQuerySchema,
+  exportDownloadRequestSchema,
   exportRequestSchema,
   type DeleteAccountRequest,
-  type ExportDownloadQuery,
+  type ExportDownloadRequest,
   type ExportRequest,
 } from '@bettertrack/contracts';
 
 import { clearSessionCookie } from '../cookies';
 import { requireUser } from '../middleware/session';
-import { validateBody, validateQuery } from '../middleware/validate';
+import { validateBody } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
 import type { AppContext } from '../context';
 
@@ -22,8 +22,8 @@ import type { AppContext } from '../context';
  *   behind the web deletion page and the mobile in-app flow.
  * - **Account data export** (V4-P6a, #494): re-auth-gated `POST /export`
  *   (1/day) creates an async zip job and returns the raw download token once;
- *   `GET /export` polls status; `GET /export/download?token=` streams the
- *   assembled zip while the token matches and the job is ready and unexpired.
+ *   `GET /export` polls status; `POST /export/download` consumes the token from
+ *   its body and streams the assembled zip when the job is ready and unexpired.
  *
  * User-kind only. The mutating routes ride the login rate schedule (per-IP)
  * because they re-verify a credential; each service adds its own per-account
@@ -73,12 +73,14 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
   // Stream the ready zip. Session-authenticated AND token-gated: the token was
   // minted behind the request-time re-auth and is short-lived, so it is the
   // download's fresh-re-auth proof; a foreign/expired token 404s (fails closed).
-  router.get(
+  router.post(
     '/export/download',
     requireUser,
-    validateQuery(exportDownloadQuerySchema),
+    validateBody(exportDownloadRequestSchema),
     async (req, res) => {
-      const { token } = req.valid?.query as ExportDownloadQuery;
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      const { token } = req.valid?.body as ExportDownloadRequest;
       const file = await ctx.dataExport.resolveDownload({ userId: req.authUser!.id, token });
       res.download(file.filePath, file.fileName);
     },
