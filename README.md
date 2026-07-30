@@ -462,6 +462,7 @@ that is absent.
 ```bash
 pnpm exec playwright install --with-deps chromium   # one-time browser install
 pnpm dev:infra                                       # Postgres + Redis
+docker exec bettertrack-dev-db-1 createdb -U bt bettertrack_e2e   # one-time, see below
 pnpm test:e2e
 ```
 
@@ -475,8 +476,17 @@ page (appearing on the watchlist with no manual reload), a cash-funded buy
 switching to a second portfolio, and sharing a watchlist to a friend who sees
 it read-only under Shared With Me. `playwright.config.ts` boots the real
 api + web dev servers (migrating and seeding the api's database first)
-against whatever `E2E_DATABASE_URL`/`E2E_REDIS_URL` point at (defaults match
-`pnpm dev:infra`). It runs against two Playwright projects — `chromium`
+against whatever `E2E_DATABASE_URL`/`E2E_REDIS_URL` point at.
+
+> **The e2e database is never the dev database.** `E2E_DATABASE_URL` defaults to
+> `…/bettertrack_e2e` — the same name CI uses — precisely because the boot
+> migrates AND seeds it and every spec mints accounts in it. Pointing it at
+> `pnpm dev:infra`'s `bettertrack` corrupts real local data, so create the
+> dedicated database once (command above). `E2E_API_BASE_URL` /
+> `E2E_WEB_BASE_URL` move the servers as well as the specs, so a second stack
+> can run alongside a dev stack without either one proxying into the other.
+
+It runs against two Playwright projects — `chromium`
 (`Desktop Chrome`) and `mobile-chromium` (`Pixel 7`, 412×839) — so the happy
 path is proven on a phone-width viewport as well as desktop. This is **not**
 part of `pnpm test` or the per-commit CI gate — it runs nightly via

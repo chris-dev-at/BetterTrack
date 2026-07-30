@@ -38,7 +38,11 @@ const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 async function enableGermanyTaxMode(page: Page): Promise<void> {
   await page.goto('/settings/taxes');
   const germany = page.getByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i });
-  await germany.check();
+  // `click()`, not `check()`: the mode radio is CONTROLLED by server state and
+  // only flips once the settings PATCH returns, which `check()`'s same-tick
+  // verification can never observe (it re-clicks instead). `toBeChecked()` below
+  // is the auto-retrying wait — the assertion is unchanged.
+  await germany.click();
   await expect(germany).toBeChecked();
   // The per-year report signpost only renders once a mode is active — a live proof
   // the choice saved before we start recording taxable trades against it.

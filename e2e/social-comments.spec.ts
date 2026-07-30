@@ -46,14 +46,14 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   // ── Provision a friend group with only `member` in it (via the owner's own
   //    session — group management itself is friend-groups.spec's job). ──
   const groupName = 'E2 Comment Circle';
-  const groupRes = await ownerApi.post(apiV1('/people/groups'), {
+  const groupRes = await ownerApi.post(apiV1('/social/groups'), {
     headers: CSRF_HEADERS,
     data: { name: groupName },
   });
   expect(groupRes.ok(), await groupRes.text()).toBeTruthy();
   const groupId = ((await groupRes.json()) as { id: string }).id;
 
-  const friendsRes = await ownerApi.get(apiV1('/people'));
+  const friendsRes = await ownerApi.get(apiV1('/social/friends'));
   expect(friendsRes.ok(), await friendsRes.text()).toBeTruthy();
   const friends = (
     (await friendsRes.json()) as { friends: { user: { id: string; username: string } }[] }
@@ -61,7 +61,7 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   const memberUserId = friends.find((f) => f.user.username === member.username)?.user.id;
   expect(memberUserId, 'member must be an accepted friend').toBeTruthy();
 
-  const addRes = await ownerApi.post(apiV1(`/people/groups/${groupId}/members`), {
+  const addRes = await ownerApi.post(apiV1(`/social/groups/${groupId}/members`), {
     headers: CSRF_HEADERS,
     data: { userId: memberUserId },
   });
@@ -152,8 +152,11 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   await expect(outsider.page.getByRole('link', { name: /Main/ })).toHaveCount(0);
   // Fail-closed at the API too: the thread (and its reaction state) is a uniform
   // 404 for a viewer the audience does not admit (§6.9 no-enumeration).
+  // The path must be the real `/social/**` mount: while this read pointed at the
+  // non-existent `/api/v1/people/**`, Express answered 404 for EVERY caller and
+  // this privacy assertion passed without once exercising the audience check.
   const outsiderThread = await outsider.context.request.get(
-    apiV1(`/people/items/portfolio/${portfolioId}/thread`),
+    apiV1(`/social/items/portfolio/${portfolioId}/thread`),
   );
   expect(outsiderThread.status()).toBe(404);
 

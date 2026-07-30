@@ -137,7 +137,11 @@ test('quiet hours: a non-urgent notification defers and releases once at window 
   await expect(quietSummary).toBeVisible({ timeout: 15_000 });
   await quietSummary.click();
   const enable = page.getByRole('switch', { name: 'Enable quiet hours' });
-  await enable.check();
+  // `click()`, not `check()`: this switch is CONTROLLED by server state and only
+  // flips once `PATCH /settings/notifications` returns, which `check()`'s
+  // same-tick verification can never observe (it re-clicks instead, toggling the
+  // intent back). `toBeChecked()` below is the auto-retrying wait.
+  await enable.click();
   await expect(enable).toBeChecked();
   // Exact: `getByLabel` matches substrings, and the routing matrix on the same
   // panel labels cells "… New from people you follow via …".

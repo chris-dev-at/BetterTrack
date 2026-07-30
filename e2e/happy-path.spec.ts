@@ -99,9 +99,15 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await buyDialog.getByLabel('Quantity for SAP.DE').fill('4');
   await buyDialog.getByLabel('Price for SAP.DE').fill('50');
   await buyDialog.getByLabel('Pay from cash balance').check();
-  await expect(buyDialog.getByRole('status', { name: 'Cash-after preview' })).toContainText('→', {
-    timeout: 15_000,
-  });
+  // The preview states the resulting balance, not a "before → after" pair, so
+  // assert the number it must arrive at: 800 deposited − 4 × 50 = 600. That is
+  // the property the preview exists for, and a stronger check than the arrow
+  // glyph this used to look for (which the Origin redesign no longer renders).
+  // Locale-agnostic: EN "600.00" (en-GB) vs DE "600,00" (de-AT).
+  await expect(buyDialog.getByRole('status', { name: 'Cash-after preview' })).toContainText(
+    /600[.,]00/,
+    { timeout: 15_000 },
+  );
   await buyDialog.getByRole('button', { name: 'Record' }).click();
   await expect(buyDialog).toBeHidden();
 

@@ -6,8 +6,37 @@
 
 export const WEB_BASE_URL = process.env.E2E_WEB_BASE_URL ?? 'http://localhost:5173';
 export const API_BASE_URL = process.env.E2E_API_BASE_URL ?? 'http://localhost:3000';
+
+/**
+ * The ports the two dev servers must actually LISTEN on, derived from the URLs
+ * above so an `E2E_API_BASE_URL`/`E2E_WEB_BASE_URL` override moves the servers
+ * with the specs. Before this, both overrides only redirected the *client* side:
+ * the API kept listening on `PORT`'s 3000 default and Vite on its hardcoded
+ * 5173, so pointing the suite elsewhere silently tested whatever already owned
+ * those ports — including a developer's running dev stack and its database.
+ */
+export const API_PORT = new URL(API_BASE_URL).port || '3000';
+export const WEB_PORT = new URL(WEB_BASE_URL).port || '5173';
+
+/**
+ * The API's Prometheus listener (§13.5 V5-P2). Pinned here so the e2e API never
+ * silently contends for the 9464 default with another BetterTrack process on the
+ * same host (a dev stack's API binds it). The worker's listener stays OFF — see
+ * `playwright.config.ts`.
+ */
+export const METRICS_PORT = process.env.E2E_METRICS_PORT ?? '9464';
+
+/**
+ * A DEDICATED database, never the dev one. The default deliberately does NOT
+ * match `pnpm dev:infra`'s `bettertrack`: the e2e boot migrates AND seeds
+ * whatever this points at, and every spec mints accounts in it, so aiming it at
+ * a working dev database corrupts real local data. `bettertrack_e2e` is the same
+ * name CI uses (`.github/workflows/e2e-nightly.yml`). Create it once against a
+ * dev Postgres with:
+ *   `docker exec bettertrack-dev-db-1 createdb -U bt bettertrack_e2e`
+ */
 export const DATABASE_URL =
-  process.env.E2E_DATABASE_URL ?? 'postgres://bt:bt@localhost:5432/bettertrack';
+  process.env.E2E_DATABASE_URL ?? 'postgres://bt:bt@localhost:5432/bettertrack_e2e';
 export const REDIS_URL = process.env.E2E_REDIS_URL ?? 'redis://localhost:6379';
 export const SESSION_SECRET =
   process.env.E2E_SESSION_SECRET ?? 'e2e-local-session-secret-not-for-production-0000000000';
