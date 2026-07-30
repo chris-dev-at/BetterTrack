@@ -9,6 +9,15 @@
 
 import type { ComponentType } from 'react';
 
+import {
+  DoneFigure,
+  PreferencesFigure,
+  ProfileFigure,
+  PublicProfileFigure,
+  SecurityFigure,
+  TaxFigure,
+  VerifyEmailFigure,
+} from './FirstRunFigures';
 import { FIRST_RUN_STEP_META } from './stepMeta';
 import { DoneStep } from './steps/DoneStep';
 import { PreferencesStep } from './steps/PreferencesStep';
@@ -29,9 +38,20 @@ const STEP_COMPONENTS: Record<FirstRunStepId, ComponentType<FirstRunStepProps>> 
   done: DoneStep,
 };
 
+const STEP_FIGURES: Record<FirstRunStepId, ComponentType> = {
+  profile: ProfileFigure,
+  verifyEmail: VerifyEmailFigure,
+  security: SecurityFigure,
+  preferences: PreferencesFigure,
+  tax: TaxFigure,
+  publicProfile: PublicProfileFigure,
+  done: DoneFigure,
+};
+
 export const FIRST_RUN_STEPS: readonly FirstRunStep[] = FIRST_RUN_STEP_META.map((meta) => ({
   ...meta,
   Component: STEP_COMPONENTS[meta.id],
+  Figure: STEP_FIGURES[meta.id],
 }));
 
 export type { FirstRunStep, FirstRunStepId, FirstRunStepProps } from './types';

@@ -54,6 +54,13 @@ export interface FirstRunStep {
   hintKey?: string;
   Component: ComponentType<FirstRunStepProps>;
   /**
+   * The step's small live figure, rendered by the frame above the question. Takes
+   * no props: a figure reads the same state its step does (see
+   * `FirstRunFigures.tsx`), which is what keeps it honest and keeps the step
+   * component free of decoration.
+   */
+  Figure?: ComponentType;
+  /**
    * Terminal step: the frame drops "Do this later" (there is nothing left to
    * defer) and the gold CTA leaves the wizard instead of advancing.
    */

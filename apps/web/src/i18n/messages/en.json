@@ -4448,7 +4448,6 @@
     "profile": {
       "label": "You",
       "title": "Is this you?",
-      "hint": "The name and address your account was created with.",
       "nameLabel": "Display name",
       "nameParked": "Renaming arrives with profile editing.",
       "emailLabel": "Email"
@@ -4456,10 +4455,9 @@
     "verifyEmail": {
       "label": "Email",
       "title": "Verify your email",
-      "verified": "{{email}} arrived verified from Google — nothing to do.",
+      "verified": "Already verified through Google.",
       "parkedNote": "Arrives with email delivery.",
-      "codeLabel": "Verification code",
-      "codeHint": "A code will go to {{email}} once delivery is live."
+      "codeLabel": "Verification code"
     },
     "security": {
       "label": "Security",
@@ -4521,6 +4519,22 @@
       "title": "You are set up",
       "set": "Set",
       "later": "Later"
+    },
+    "figures": {
+      "on": "On",
+      "off": "Off",
+      "verified": "Verified through Google",
+      "awaitingDelivery": "Awaiting email delivery",
+      "pin": "PIN",
+      "twoFactor": "2FA",
+      "notSet": "Not set",
+      "taxMeta": "Default for new portfolios",
+      "public": "Public",
+      "private": "Private",
+      "publicMeta": "Visible to anyone with the link",
+      "privateMeta": "Only you can see this page",
+      "setCount": "{{count}} set",
+      "laterCount": "{{count}} left for later"
     }
   }
 }
