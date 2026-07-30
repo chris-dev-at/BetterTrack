@@ -87,6 +87,7 @@ function renderAtWithLocation(path: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   vi.mocked(api.getStats).mockResolvedValue(stats);
   vi.mocked(api.listUsers).mockResolvedValue({ users: [jane] });
   // Bootstrap/login now consult the 2FA setup gate — default to an enrolled admin.
@@ -121,6 +122,24 @@ test('authenticated admins reach the guarded users page', async () => {
   renderAt('/admin/users');
 
   expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+});
+
+test('the admin language control persists across an admin remount', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(admin);
+  const user = userEvent.setup();
+
+  const first = renderAt('/admin/users');
+  expect(await screen.findByRole('link', { name: 'Users' })).toBeInTheDocument();
+
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Console language' }), 'de');
+
+  expect(localStorage.getItem('bettertrack.locale')).toBe('de');
+  expect(screen.getByRole('link', { name: 'Nutzer' })).toBeInTheDocument();
+
+  first.unmount();
+  renderAt('/admin/users');
+
+  expect(await screen.findByRole('link', { name: 'Nutzer' })).toBeInTheDocument();
 });
 
 test.each([0, 500])(
@@ -265,7 +284,7 @@ test('an unknown authenticated admin path renders a not-found state without navi
 
   expect(await screen.findByText('Page not found')).toBeInTheDocument();
   expect(screen.getByText('/admin/blabla', { selector: 'code' })).toBeInTheDocument();
-  expect(screen.getByRole('navigation', { name: 'Admin' })).toBeInTheDocument();
+  expect(screen.getByRole('navigation', { name: 'Admin console' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Back to start' })).toHaveAttribute(
     'href',
     '/admin/users',
