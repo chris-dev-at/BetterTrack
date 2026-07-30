@@ -205,7 +205,8 @@ export function createAdminService(deps: AdminServiceDeps) {
 
   /**
    * Re-enabling must revoke stale credentials before the transaction can make
-   * the account active. A later transaction failure leaves it disabled.
+   * the account active. A later transaction failure (including another field's
+   * uniqueness check) leaves it disabled with those bearer credentials revoked.
    */
   async function prepareEnableUser(target: UserRow): Promise<void> {
     // A failed disable can leave rows physically present but unreachable under
@@ -414,10 +415,9 @@ export function createAdminService(deps: AdminServiceDeps) {
         });
       let outcome = await runMutation();
       while (outcome.kind === 'prepare-enable') {
-        // PGlite and production both keep repository boundaries honest: never
-        // await another repository while holding this transaction. Cleanup is
-        // completed between a no-op validation pass and the retry that can
-        // restore `active`.
+        // `enablePrepared` bounds this to two passes. Cleanup stays between the
+        // no-op validation pass and the retry that can restore `active`, so no
+        // external repository is awaited while holding the transaction.
         await prepareEnableUser(outcome.target);
         enablePrepared = true;
         outcome = await runMutation();
@@ -548,7 +548,9 @@ export function createAdminService(deps: AdminServiceDeps) {
       // Reserve the removal by disabling the row under the serialized invariant
       // lock. This status transition is the only part of a delete that changes
       // the active-admin count; the later physical delete removes an already
-      // inactive row and therefore cannot take the count from one to zero.
+      // inactive row and therefore cannot take the count from one to zero. If
+      // later session or MIRRORCHAIN cleanup fails, any target (including an
+      // ordinary user) deliberately remains disabled and fail-closed for retry.
       const target = await userRepo.withSerializedAdminMutation(async (repo) => {
         const lockedTarget = await repo.findByIdForUpdate(id);
         if (!lockedTarget) throw notFound('User not found.', 'USER_NOT_FOUND');
@@ -576,9 +578,6 @@ export function createAdminService(deps: AdminServiceDeps) {
         // A concurrent enable between reservation and cascade must re-pass the
         // same invariant before this transaction removes the row.
         await ensureActiveAdminRemains(repo, reserved, false);
-        if (reserved.role === 'admin' && (await repo.countActiveAdmins()) < 1) {
-          throw badRequest('Cannot remove the last active administrator.', 'LAST_ADMIN');
-        }
         await repo.remove(reserved.id);
       });
       await audit.record({

@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
 import express from 'express';
+import postgres from 'postgres';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +24,8 @@ import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+const REAL_DATABASE_URL = process.env.TEST_DATABASE_URL;
+const ADMIN_MUTATION_TEST_LOCK = 949967;
 
 let harness: TestHarness;
 
@@ -55,6 +58,134 @@ async function sessionKeyFor(harness: TestHarness, userId: string): Promise<stri
     if (raw && (JSON.parse(raw) as { userId?: string }).userId === userId) return key;
   }
   throw new Error(`No session found for ${userId}`);
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+interface DatabaseLockWait {
+  pid: number;
+  query: string;
+  waitEvent: string | null;
+}
+
+async function waitForDatabaseLock(
+  observer: ReturnType<typeof postgres>,
+  predicate: (row: DatabaseLockWait) => boolean,
+  description: string,
+): Promise<DatabaseLockWait> {
+  const deadline = Date.now() + 4_000;
+  let observed: DatabaseLockWait[] = [];
+
+  while (Date.now() < deadline) {
+    observed = await observer<DatabaseLockWait[]>`
+      SELECT pid, query, wait_event AS "waitEvent"
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND wait_event_type = 'Lock'
+    `;
+    const match = observed.find(predicate);
+    if (match) return match;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(
+    `Timed out waiting for ${description}; observed ${JSON.stringify(
+      observed.map(({ pid, query, waitEvent }) => ({ pid, query, waitEvent })),
+    )}`,
+  );
+}
+
+/**
+ * Hold the first admin mutation inside its status/role write, then prove the
+ * second transaction is already waiting on the active-admin FOR UPDATE query
+ * on another backend. This deliberately runs only in the real-Postgres slice:
+ * PGlite has one connection and cannot exercise the row-lock contract.
+ */
+async function runOverlappingAdminMutations(
+  firstMutation: () => Promise<unknown>,
+  secondMutation: () => Promise<unknown>,
+): Promise<PromiseSettledResult<unknown>[]> {
+  if (!REAL_DATABASE_URL) {
+    throw new Error('Real Postgres is required for the concurrent admin-mutation regression');
+  }
+
+  const controller = postgres(REAL_DATABASE_URL, { max: 1 });
+  const observer = postgres(REAL_DATABASE_URL, { max: 1 });
+  const lockReady = deferred();
+  const releaseLock = deferred();
+  let first: Promise<unknown> | undefined;
+  let second: Promise<unknown> | undefined;
+
+  await observer.unsafe(`
+    CREATE OR REPLACE FUNCTION bt_test_pause_admin_mutation()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(${ADMIN_MUTATION_TEST_LOCK});
+      RETURN NEW;
+    END;
+    $$
+  `);
+  await observer.unsafe('DROP TRIGGER IF EXISTS bt_test_pause_admin_mutation ON users');
+  await observer.unsafe(`
+    CREATE TRIGGER bt_test_pause_admin_mutation
+    BEFORE UPDATE OF status, role ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION bt_test_pause_admin_mutation()
+  `);
+
+  const lockOwner = controller.begin(async (transaction) => {
+    await transaction`SELECT pg_advisory_xact_lock(${ADMIN_MUTATION_TEST_LOCK})`;
+    lockReady.resolve();
+    await releaseLock.promise;
+  });
+
+  try {
+    await Promise.race([
+      lockReady.promise,
+      lockOwner.then(() => {
+        throw new Error('Advisory-lock owner exited before acquiring the test lock');
+      }),
+    ]);
+
+    first = firstMutation();
+    const firstWait = await waitForDatabaseLock(
+      observer,
+      (row) => row.waitEvent === 'advisory' && /update\s+"?users"?/iu.test(row.query),
+      'the first admin mutation to pause in its write',
+    );
+
+    second = secondMutation();
+    const secondWait = await waitForDatabaseLock(
+      observer,
+      (row) =>
+        row.waitEvent !== 'advisory' &&
+        /from\s+"?users"?/iu.test(row.query) &&
+        /for update/iu.test(row.query),
+      'the second admin mutation to wait on the active-admin row lock',
+    );
+    expect(secondWait.pid).not.toBe(firstWait.pid);
+
+    releaseLock.resolve();
+    await lockOwner;
+    return await Promise.allSettled([first, second]);
+  } finally {
+    releaseLock.resolve();
+    await lockOwner.catch(() => {});
+    await first?.catch(() => {});
+    await second?.catch(() => {});
+    await observer.unsafe('DROP TRIGGER IF EXISTS bt_test_pause_admin_mutation ON users');
+    await observer.unsafe('DROP FUNCTION IF EXISTS bt_test_pause_admin_mutation()');
+    await controller.end();
+    await observer.end();
+  }
 }
 
 function bullBoardFixture(): {
@@ -672,7 +803,7 @@ describe('admin self-action and last-admin guards (PROJECTPLAN.md §6.12)', () =
     expect(demote.body.role).toBe('user');
   });
 
-  it.each(['disable', 'demote', 'delete'] as const)(
+  it.skipIf(!REAL_DATABASE_URL).each(['disable', 'demote', 'delete'] as const)(
     'serializes concurrent %s requests so one active administrator remains',
     async (operation) => {
       const first = await harness.seedAdmin();
@@ -697,7 +828,10 @@ describe('admin self-action and last-admin guards (PROJECTPLAN.md §6.12)', () =
         }
       };
 
-      const results = await Promise.allSettled([mutate(first, second), mutate(second, first)]);
+      const results = await runOverlappingAdminMutations(
+        () => mutate(first, second),
+        () => mutate(second, first),
+      );
       expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
       const rejected = results.find((result) => result.status === 'rejected');
       expect(rejected).toBeDefined();
@@ -868,26 +1002,36 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
     expect(bulk.body.skipped).toBe(1);
   });
 
-  it('keeps one active administrator when the batch includes every administrator', async () => {
-    const admin = await harness.seedAdmin();
+  it('uses the last-admin guard when a stale actor is outside the batch', async () => {
+    const first = await harness.seedAdmin();
     const second = await harness.seedAdmin({
       email: 'bulk-admin@test.dev',
       username: 'bulk_admin',
       password: 'bulk-admin-strong-1',
     });
-    const adminAgent = await harness.loginAdmin(admin);
-
-    const bulk = await adminAgent
-      .post('/api/v1/admin/users/bulk')
-      .set(...XRW)
-      .send({ action: 'disable', userIds: [admin.id, second.id] });
-    expect(bulk.status).toBe(200);
-    expect(bulk.body).toEqual({ action: 'disable', disabled: 1, skipped: 1 });
-
+    const staleActor = await harness.seedAdmin({
+      email: 'stale-bulk-actor@test.dev',
+      username: 'stale_bulk_actor',
+      password: 'stale-bulk-actor-strong-1',
+    });
     const users = createUserRepository(harness.db);
+    await users.setStatus(staleActor.id, 'disabled');
+
+    // Calling the service boundary with a persisted but no-longer-active actor
+    // removes the HTTP route's self-skip from the equation. The batch itself
+    // must disable one target and skip the last active administrator.
+    const bulk = await harness.ctx.admin.bulkUserAction(
+      { action: 'disable', userIds: [first.id, second.id] },
+      { id: staleActor.id },
+    );
+    expect(bulk).toEqual({ action: 'disable', disabled: 1, skipped: 1 });
+
     expect(await users.countActiveAdmins()).toBe(1);
-    expect((await users.findById(admin.id))?.status).toBe('active');
-    expect((await users.findById(second.id))?.status).toBe('disabled');
+    const statuses = await Promise.all([
+      users.findById(first.id).then((user) => user?.status),
+      users.findById(second.id).then((user) => user?.status),
+    ]);
+    expect(statuses.sort()).toEqual(['active', 'disabled']);
   });
 });
 
