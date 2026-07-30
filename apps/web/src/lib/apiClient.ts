@@ -60,6 +60,13 @@ interface RequestOptions {
   query?: Record<string, string | number | undefined>;
   signal?: AbortSignal;
   /**
+   * Let the request outlive the page (fetch's `keepalive`). Only for the last
+   * write of a closing tab — the Home board's `pagehide` flush — where an
+   * ordinary fetch would be cancelled mid-flight. Browsers cap keepalive bodies
+   * at 64 KB in total, so it must never be used for bulk writes.
+   */
+  keepalive?: boolean;
+  /**
    * Skip the global auth-response policy (below) for this call. The auth
    * endpoints themselves opt out: a `401` on `/auth/login` or
    * `/auth/change-password` (wrong password) is an in-form error the caller
@@ -149,6 +156,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
             ? (options.body as FormData)
             : JSON.stringify(options.body),
       signal: options.signal,
+      keepalive: options.keepalive,
     });
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;

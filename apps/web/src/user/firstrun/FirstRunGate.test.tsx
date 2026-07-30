@@ -100,6 +100,9 @@ beforeEach(() => {
     discreetMode: false,
   });
   vi.mocked(settingsApi.getTaxSettings).mockResolvedValue({ mode: 'none', country: null });
+  // The gate renders Home once setup is done, and Home reconciles its board with
+  // the account (`home/homeSync.ts`).
+  vi.mocked(settingsApi.getHomeLayout).mockResolvedValue({ layout: null, updatedAt: null });
   vi.mocked(socialApi.getProfileSettings).mockResolvedValue({
     username: 'jane',
     isPublic: false,

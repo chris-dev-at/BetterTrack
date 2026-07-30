@@ -280,6 +280,37 @@ function createUserQueries(db: Database) {
     },
 
     /**
+     * The caller's stored Home widget board (R2 home-widgets). Selected by
+     * column rather than through `findById` so the board — up to 32 KB of
+     * user-controlled jsonb — is only read by the one endpoint that needs it,
+     * never as a side effect of a `select *`.
+     */
+    async findHomeLayout(id: string): Promise<{ layout: unknown; updatedAt: Date | null }> {
+      const [row] = await db
+        .select({ layout: users.homeLayout, updatedAt: users.homeLayoutUpdatedAt })
+        .from(users)
+        .where(eq(users.id, id))
+        .limit(1);
+      return { layout: row?.layout ?? null, updatedAt: row?.updatedAt ?? null };
+    },
+
+    /**
+     * Replace the caller's Home board; `null` clears it. The stamp is bumped on
+     * every write (a clear included) and returned from the same statement, so
+     * the revision the caller records is exactly the one that landed — a
+     * second read could pick up a newer write from another device.
+     */
+    async setHomeLayout(id: string, layout: unknown): Promise<Date | null> {
+      const now = new Date();
+      const [row] = await db
+        .update(users)
+        .set({ homeLayout: layout, homeLayoutUpdatedAt: now, updatedAt: now })
+        .where(eq(users.id, id))
+        .returning({ updatedAt: users.homeLayoutUpdatedAt });
+      return row?.updatedAt ?? null;
+    },
+
+    /**
      * Set (or clear) the caller's curated profile icon id (§13.5 V5-P0c). The
      * service layer validates against the finite allow-list before calling; a
      * `null` clears the picked icon and returns the user to the deterministic

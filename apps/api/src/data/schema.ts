@@ -207,6 +207,17 @@ export const users = pgTable(
     // excludes row counts, document hashes, keys, tokens, and all portfolio data.
     paranoidMediaSet: text('paranoid_media_set').array(),
     paranoidDriveAttestedVersion: integer('paranoid_drive_attested_version'),
+    // The Home widget board (R2 home-widgets), stored per ACCOUNT so the layout
+    // a user composes on one device is the layout they get on every other one.
+    // NULL = never saved a board; the SPA then renders its default layout.
+    //
+    // Deliberately opaque jsonb: the server validates the document's SHAPE and
+    // SIZE (contracts' `homeLayoutSchema`) and never its widget vocabulary, so a
+    // client one deploy ahead can store widget types and settings this build has
+    // never heard of and get them back verbatim. Interpreting them here would
+    // mean an older server silently deleting a newer client's widgets.
+    homeLayout: jsonb('home_layout'),
+    homeLayoutUpdatedAt: timestamp('home_layout_updated_at', { withTimezone: true }),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     // When the account finished (or dismissed) first-run setup — `null` means it
     // has never been through it. Deliberately NOT derivable from `lastLoginAt`:

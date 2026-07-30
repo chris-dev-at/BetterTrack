@@ -392,6 +392,8 @@ const componentSchemas = {
   NotificationSettingsResponse: contracts.notificationSettingsResponseSchema,
   AccountSettingsResponse: contracts.accountSettingsResponseSchema,
   UpdateAccountSettingsRequest: contracts.updateAccountSettingsRequestSchema,
+  HomeLayoutResponse: contracts.homeLayoutResponseSchema,
+  UpdateHomeLayoutRequest: contracts.updateHomeLayoutRequestSchema,
 
   // Telegram + Discord channels (§13.4 V4-P10)
   TelegramSettingsResponse: contracts.telegramSettingsResponseSchema,
@@ -3572,6 +3574,24 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateAccountSettingsRequest,
     status: 200,
     response: R.AccountSettingsResponse,
+  },
+  {
+    method: 'get',
+    path: '/settings/home',
+    tag: 'Settings',
+    summary: 'The caller’s Home widget board; both fields null when none was ever saved.',
+    status: 200,
+    response: R.HomeLayoutResponse,
+  },
+  {
+    method: 'put',
+    path: '/settings/home',
+    tag: 'Settings',
+    summary:
+      'Replace the caller’s Home widget board (`layout: null` clears it). Stored verbatim — only shape and size are validated.',
+    body: R.UpdateHomeLayoutRequest,
+    status: 200,
+    response: R.HomeLayoutResponse,
   },
 
   // Telegram + Discord channels (§13.4 V4-P10)

@@ -6,12 +6,14 @@ import {
   discordWebhookRequestSchema,
   idParamSchema,
   updateAccountSettingsRequestSchema,
+  updateHomeLayoutRequestSchema,
   updateNotificationSettingsRequestSchema,
   updateTaxSettingsRequestSchema,
   type CreateApiKeyRequest,
   type CreateOAuthClientRequest,
   type DiscordWebhookRequest,
   type UpdateAccountSettingsRequest,
+  type UpdateHomeLayoutRequest,
   type UpdateNotificationSettingsRequest,
   type UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
@@ -173,6 +175,24 @@ export function createSettingsRouter(ctx: AppContext): Router {
       discreetMode: body.discreetMode,
     });
     res.json(settings);
+  });
+
+  // ── Home widget board (R2 home-widgets) ────────────────────────────────────
+  // Per account rather than per browser, so the board a user composes follows
+  // them everywhere they sign in. The document is stored and returned verbatim;
+  // only its shape and size are validated (see `homeLayoutSchema`).
+
+  // GET /settings/home — the caller's board, or nulls when they never saved one.
+  router.get('/home', async (req, res) => {
+    const layout = await ctx.homeLayout.get(req.authUser!.id);
+    res.json(layout);
+  });
+
+  // PUT /settings/home — replace the board outright (`layout: null` clears it).
+  router.put('/home', validateBody(updateHomeLayoutRequestSchema), async (req, res) => {
+    const body = req.valid?.body as UpdateHomeLayoutRequest;
+    const layout = await ctx.homeLayout.set(req.authUser!.id, body.layout);
+    res.json(layout);
   });
 
   // GET /settings/taxes — the caller's tax mode (+ country), V3-P4 (§13.3).

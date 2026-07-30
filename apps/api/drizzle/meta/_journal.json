@@ -540,6 +540,13 @@
       "when": 1785377115695,
       "tag": "0076_cash_fusion",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1785418680584,
+      "tag": "0077_home_layout",
+      "breakpoints": true
     }
   ]
 }
