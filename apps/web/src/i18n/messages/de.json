@@ -3165,7 +3165,10 @@
       "loadEarlier": "Ältere Nachrichten laden",
       "sendError": "Deine Nachricht konnte nicht gesendet werden. Bitte versuche es erneut.",
       "banned": "Du kannst derzeit keine Nachrichten senden. Diese Unterhaltung kannst du weiterhin lesen.",
+      "composerLabel": "Nachricht",
       "composerPlaceholder": "Nachricht",
+      "logLabel": "Nachrichten mit {{username}}",
+      "newMessages": "Neue Nachrichten",
       "send": "Senden",
       "attach": "Element teilen",
       "chip": {

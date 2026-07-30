@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -52,16 +52,20 @@ function deferred<T>() {
 }
 
 function renderAt(path: string) {
-  return render(
-    <QueryClientProvider client={makeQueryClient()}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route path="/social/chat" element={<ChatPage />} />
-          <Route path="/social/chat/:userId" element={<ChatPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  const queryClient = makeQueryClient();
+  return {
+    queryClient,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path="/social/chat" element={<ChatPage />} />
+            <Route path="/social/chat/:userId" element={<ChatPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 beforeEach(() => {
@@ -344,11 +348,52 @@ describe('ChatPage — composer focus', () => {
     vi.mocked(getThread).mockResolvedValue({ conversation: convo, nextCursor: null, messages: [] });
   });
 
-  test('opening a conversation puts the caret in the message input', async () => {
+  test('labels the composer and focuses it on desktop', async () => {
     renderAt('/social/chat/u2');
 
-    const input = await screen.findByPlaceholderText('Message');
+    const input = await screen.findByRole('textbox', { name: 'Message' });
+    expect(input).toHaveAttribute('placeholder', 'Message');
     await waitFor(() => expect(document.activeElement).toBe(input));
+  });
+
+  test('does not autofocus the composer on a touch or phone-sized viewport', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn((query: string) => ({
+        matches: query === '(pointer: coarse)' || query === '(max-width: 767px)',
+      })),
+    });
+
+    try {
+      renderAt('/social/chat/u2');
+      const input = await screen.findByRole('textbox', { name: 'Message' });
+      expect(document.activeElement).not.toBe(input);
+    } finally {
+      Object.defineProperty(window, 'matchMedia', {
+        configurable: true,
+        value: originalMatchMedia,
+      });
+    }
+  });
+
+  test('waits for IME composition and keeps Shift+Enter as a newline', async () => {
+    vi.mocked(sendChatMessage).mockResolvedValue(undefined as never);
+    const user = userEvent.setup();
+
+    renderAt('/social/chat/u2');
+    const input = await screen.findByRole('textbox', { name: 'Message' });
+
+    await user.type(input, 'hello');
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(sendChatMessage).not.toHaveBeenCalled();
+
+    await user.keyboard('{Shift>}{Enter}{/Shift}');
+    expect(input).toHaveValue('hello\n');
+    expect(sendChatMessage).not.toHaveBeenCalled();
+
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(sendChatMessage).toHaveBeenCalledWith('c1', { body: 'hello' }));
   });
 
   test('a resolved send clears the input and returns focus for the next message', async () => {
@@ -431,6 +476,168 @@ describe('ChatPage — composer focus', () => {
     expect(screen.queryByPlaceholderText('Message')).not.toBeInTheDocument();
     // The generic send-error alert is NOT shown for a ban.
     expect(screen.queryByText(/couldn't send your message/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('ChatPage — accessible message thread', () => {
+  const conversation = {
+    id: 'c1',
+    user: { id: 'u2', username: 'bob' },
+    unreadCount: 0,
+    lastMessage: null,
+    lastMessageAt: null,
+  };
+  type ThreadMessage = {
+    id: string;
+    conversationId: string;
+    senderId: string;
+    body: string | null;
+    chip: null;
+    createdAt: string;
+  };
+  const firstMessage: ThreadMessage = {
+    id: 'm1',
+    conversationId: 'c1',
+    senderId: 'u2',
+    body: 'First message',
+    chip: null,
+    createdAt: '2026-01-01T10:00:00.000Z',
+  };
+
+  function threadWith(messages: ThreadMessage[]) {
+    return { conversation, nextCursor: null, messages };
+  }
+
+  async function refetchThread(queryClient: QueryClient) {
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['chat', 'thread', 'c1'] });
+    });
+  }
+
+  function setScrollPosition(log: HTMLElement, scrollTop: number) {
+    Object.defineProperties(log, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 1000 },
+      scrollTop: { configurable: true, value: scrollTop, writable: true },
+    });
+    fireEvent.scroll(log);
+  }
+
+  beforeEach(() => {
+    vi.mocked(listConversations).mockResolvedValue({ conversations: [], unreadTotal: 0 });
+    vi.mocked(openConversation).mockResolvedValue(conversation);
+  });
+
+  test('renders incoming messages in a labelled, polite log and semantic list', async () => {
+    const incoming: ThreadMessage = {
+      id: 'm2',
+      conversationId: 'c1',
+      senderId: 'u2',
+      body: 'A newer message',
+      chip: null,
+      createdAt: '2026-01-01T10:01:00.000Z',
+    };
+    vi.mocked(getThread).mockResolvedValue(threadWith([firstMessage]));
+
+    const { queryClient } = renderAt('/social/chat/u2');
+    const log = await screen.findByRole('log', { name: 'Messages with bob' });
+
+    expect(log).toHaveAttribute('aria-live', 'polite');
+    expect(log).toHaveAttribute('aria-relevant', 'additions text');
+    await waitFor(() => expect(within(log).getByRole('list')).toBeInTheDocument());
+
+    vi.mocked(getThread).mockResolvedValue(threadWith([incoming, firstMessage]));
+    await refetchThread(queryClient);
+
+    await waitFor(() => expect(within(log).getByText('A newer message')).toBeInTheDocument());
+  });
+
+  test('renders an own sent message once and returns to the latest message', async () => {
+    const ownMessage: ThreadMessage = {
+      id: 'm2',
+      conversationId: 'c1',
+      senderId: 'me',
+      body: 'My reply',
+      chip: null,
+      createdAt: '2026-01-01T10:01:00.000Z',
+    };
+    vi.mocked(getThread).mockResolvedValue(threadWith([firstMessage]));
+    vi.mocked(sendChatMessage).mockResolvedValue(undefined as never);
+    const user = userEvent.setup();
+
+    renderAt('/social/chat/u2');
+    const log = await screen.findByRole('log', { name: 'Messages with bob' });
+    const scrollIntoView = vi.mocked(Element.prototype.scrollIntoView);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    setScrollPosition(log, 0);
+    scrollIntoView.mockClear();
+    vi.mocked(getThread).mockResolvedValue(threadWith([ownMessage, firstMessage]));
+
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await user.type(input, 'My reply');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => expect(within(log).getAllByText('My reply')).toHaveLength(1));
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' });
+    expect(screen.queryByRole('button', { name: 'New messages' })).not.toBeInTheDocument();
+  });
+
+  test('preserves older history and offers a new-message jump when scrolled away', async () => {
+    const incoming: ThreadMessage = {
+      id: 'm2',
+      conversationId: 'c1',
+      senderId: 'u2',
+      body: 'A newer message',
+      chip: null,
+      createdAt: '2026-01-01T10:01:00.000Z',
+    };
+    vi.mocked(getThread).mockResolvedValue(threadWith([firstMessage]));
+    const user = userEvent.setup();
+
+    const { queryClient } = renderAt('/social/chat/u2');
+    const log = await screen.findByRole('log', { name: 'Messages with bob' });
+    const scrollIntoView = vi.mocked(Element.prototype.scrollIntoView);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    setScrollPosition(log, 0);
+    scrollIntoView.mockClear();
+
+    vi.mocked(getThread).mockResolvedValue(threadWith([incoming, firstMessage]));
+    await refetchThread(queryClient);
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'New messages' })).toBeInTheDocument(),
+    );
+    expect(log.scrollTop).toBe(0);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'New messages' }));
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' });
+    expect(screen.queryByRole('button', { name: 'New messages' })).not.toBeInTheDocument();
+  });
+
+  test('continues following incoming messages while already near the bottom', async () => {
+    const incoming: ThreadMessage = {
+      id: 'm2',
+      conversationId: 'c1',
+      senderId: 'u2',
+      body: 'A newer message',
+      chip: null,
+      createdAt: '2026-01-01T10:01:00.000Z',
+    };
+    vi.mocked(getThread).mockResolvedValue(threadWith([firstMessage]));
+
+    const { queryClient } = renderAt('/social/chat/u2');
+    const log = await screen.findByRole('log', { name: 'Messages with bob' });
+    const scrollIntoView = vi.mocked(Element.prototype.scrollIntoView);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    setScrollPosition(log, 899);
+    scrollIntoView.mockClear();
+
+    vi.mocked(getThread).mockResolvedValue(threadWith([incoming, firstMessage]));
+    await refetchThread(queryClient);
+
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' }));
+    expect(screen.queryByRole('button', { name: 'New messages' })).not.toBeInTheDocument();
   });
 });
 
