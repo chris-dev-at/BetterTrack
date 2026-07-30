@@ -1,4 +1,11 @@
 {
+  "notFound": {
+    "title": "Seite nicht gefunden",
+    "description": "Diese Adresse ist vielleicht falsch, veraltet oder nicht mehr verfügbar.",
+    "requestedPath": "Aufgerufener Pfad:",
+    "backToStart": "Zur Startseite",
+    "backToPrevious": "Zur vorherigen Seite"
+  },
   "accessibility": {
     "skipToContent": "Zum Hauptinhalt springen"
   },
