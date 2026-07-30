@@ -129,6 +129,45 @@ describe('the cache is per account', () => {
   });
 });
 
+describe('a paranoid account keeps its board on the device', () => {
+  // The layout names portfolio ids and plain tickers — the inference paranoid
+  // mode is bought to prevent (owner decision, PROJECTPLAN §16 2026-07-30).
+  test('never fetches and never pushes when sync is off', async () => {
+    seedCache(ALICE, { layout: board('alice-1'), syncedAt: null, dirty: false });
+
+    const { result } = renderHook(() => useHomeBoard(ALICE, { sync: false }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The board still works — it is local, not disabled.
+    expect(cachedIds(ALICE)).toEqual(['alice-1']);
+    expect(server).not.toHaveBeenCalled();
+
+    act(() => result.current.update(board('alice-2')));
+    await settlePush();
+
+    expect(push).not.toHaveBeenCalled();
+    expect(cachedIds(ALICE)).toEqual(['alice-2']);
+  });
+
+  test('a queued edit is dropped rather than flushed when the mode resolves to paranoid', async () => {
+    server.mockResolvedValue({ layout: null, updatedAt: null });
+    const view = renderHook(({ sync }) => useHomeBoard(ALICE, { sync }), {
+      initialProps: { sync: true },
+    });
+    await waitFor(() => expect(server).toHaveBeenCalled());
+
+    act(() => view.result.current.update(board('alice-3')));
+    // Resolving to paranoid before the debounce fires must not leak the edit.
+    view.rerender({ sync: false });
+    await settlePush();
+
+    expect(push).not.toHaveBeenCalled();
+    expect(cachedIds(ALICE)).toEqual(['alice-3']);
+  });
+});
+
 describe('the pre-account board is carried up, once', () => {
   test('migrates the device-wide payload into the signed-in account and publishes it', async () => {
     localStorage.setItem(HOME_LEGACY_STORAGE_KEY, JSON.stringify(board('legacy-1')));

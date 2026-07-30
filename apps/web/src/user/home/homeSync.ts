@@ -164,13 +164,34 @@ export interface HomeBoard {
   update: (next: HomeConfig) => void;
 }
 
+export interface HomeBoardOptions {
+  /**
+   * May this board reach the server at all?
+   *
+   * The layout names portfolio ids, asset ids and asset labels — plain tickers.
+   * For a paranoid account, whose portfolio data exists only client-encrypted,
+   * storing that server-side is exactly the inference the mode is bought to
+   * prevent, so those accounts keep a DEVICE-LOCAL board (owner decision,
+   * 2026-07-30; PROJECTPLAN.md §16). Everything else about the board is
+   * unchanged — it just never leaves the device.
+   *
+   * Fails closed, the same discipline every other paranoid-gated caller uses:
+   * pass `false` until the account's mode has actually resolved to normal, not
+   * merely "not yet known to be paranoid".
+   */
+  sync: boolean;
+}
+
 /**
  * The Home board, kept in step with the account.
  *
  * `accountId` null (anonymous, or the session still resolving) renders the
  * defaults and touches neither storage nor the network.
  */
-export function useHomeBoard(accountId: string | null | undefined): HomeBoard {
+export function useHomeBoard(
+  accountId: string | null | undefined,
+  { sync }: HomeBoardOptions = { sync: true },
+): HomeBoard {
   // Everything the debounce and the in-flight PUT need, held in refs so the
   // callbacks below stay stable: a `flush` that changed identity every render
   // would re-run its effect and defeat the debounce it exists to close out.
@@ -194,10 +215,16 @@ export function useHomeBoard(accountId: string | null | undefined): HomeBoard {
     writeHomeCache(accountRef.current, cache);
   }, []);
 
+  // Read through a ref so `push`/`flush` keep stable identities; a device-local
+  // board must also be able to stop a push that was already queued when the
+  // account's mode resolved to paranoid.
+  const syncRef = useRef(sync);
+  syncRef.current = sync;
+
   const push = useCallback(
     (layout: unknown, keepalive = false) => {
       const account = accountRef.current;
-      if (!account) return;
+      if (!account || !syncRef.current) return;
       const revision = revisionRef.current;
       // Recorded as dirty BEFORE the request so a tab that dies mid-flight
       // retries on the next mount rather than believing itself in sync.
@@ -264,6 +291,14 @@ export function useHomeBoard(accountId: string | null | undefined): HomeBoard {
       setConfig(parseHomeLayout(cached?.layout));
     }
     if (!accountId) return;
+    // Device-local board: no fetch, no push, and nothing left queued that a
+    // later mode change could flush to the server behind the user's back.
+    if (!sync) {
+      pendingRef.current = undefined;
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      timerRef.current = null;
+      return;
+    }
 
     const controller = new AbortController();
     let live = true;
@@ -314,7 +349,7 @@ export function useHomeBoard(accountId: string | null | undefined): HomeBoard {
       live = false;
       controller.abort();
     };
-  }, [accountId, push, store]);
+  }, [accountId, push, store, sync]);
 
   // A fast tab close must not lose the last edit: `pagehide` fires where
   // `beforeunload` does not (bfcache, mobile), and the flush goes out with

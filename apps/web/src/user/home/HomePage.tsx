@@ -18,6 +18,7 @@ import {
 } from './config';
 import { resolveWidgetScope, usePortfoliosQuery, type ResolvedScope } from './homeData';
 import { useHomeBoard } from './homeSync';
+import { usePrivacyMode } from '../vault/usePrivacyMode';
 import { WidgetFrame, type PlacementAxis, type ScopeTag } from './WidgetFrame';
 import { widgetDefinition } from './widgets';
 
@@ -108,7 +109,12 @@ export function HomePage() {
    * — the builder has no Save/Cancel affordance, so eager persistence is what
    * direct manipulation implies, and closing the tab mid-edit never discards it.
    */
-  const { config, update } = useHomeBoard(user?.id);
+  // Paranoid accounts keep a device-local board (owner decision, §16): the
+  // layout names portfolio ids and tickers, which is the inference that mode is
+  // bought to prevent. Fails closed — only a mode that has RESOLVED to normal
+  // enables the sync.
+  const { privacyMode } = usePrivacyMode();
+  const { config, update } = useHomeBoard(user?.id, { sync: privacyMode === 'normal' });
   const [editing, setEditing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   /**

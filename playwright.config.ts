@@ -55,6 +55,12 @@ const apiEnv = {
   BT_GOOGLE_AUTHORIZE_ENDPOINT: `${FAKE_GOOGLE_URL}/authorize`,
   BT_GOOGLE_TOKEN_ENDPOINT: `${FAKE_GOOGLE_URL}/token`,
   BT_GOOGLE_JWKS_URI: `${FAKE_GOOGLE_URL}/jwks`,
+  // One shard drives 40-60 sign-ins a minute from a single address — well past
+  // the production per-IP login limit of 25/min, whose escalating cooldown then
+  // fails every later spec for a reason that has nothing to do with the product.
+  // Raised HERE ONLY, against a throwaway database; the production default in
+  // apps/api/src/config/env.ts is untouched (owner decision, 2026-07-30).
+  RATE_LIMIT_LOGIN_IP_LIMIT: '10000',
 };
 
 // Both processes read the API environment, but only the HTTP API needs the

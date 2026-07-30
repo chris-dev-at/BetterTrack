@@ -106,6 +106,19 @@ const envSchema = z.object({
   // ladder as the steady-state limiter.
   RATE_LIMIT_BURST_WINDOW_SEC: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_BURST_LIMIT: z.coerce.number().int().positive().default(60),
+  /**
+   * Per-IP login attempts per minute. The DEFAULT IS THE PRODUCTION CONTROL and
+   * is not to be raised there — 25/min per IP is what blunts single-IP
+   * credential stuffing (§6.1).
+   *
+   * It is settable only so the e2e suite can stop poisoning itself: one shard
+   * funnels 40-60 logins a minute from a single address, trips the limiter, and
+   * the escalating cooldown then fails every later spec for a reason that has
+   * nothing to do with the product. Raised in playwright.config.ts against a
+   * throwaway database, nowhere else (owner decision, 2026-07-30).
+   */
+  RATE_LIMIT_LOGIN_IP_WINDOW_SEC: z.coerce.number().int().positive().default(60),
+  RATE_LIMIT_LOGIN_IP_LIMIT: z.coerce.number().int().positive().default(25),
 
   // ── Realtime gateway (§4.5, §13.3 V3-P7a) ──────────────────────────────────
   // Feature flag for the Socket.IO gateway at /ws. Default on; off means the
@@ -1085,8 +1098,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       // Login is stricter and per-IP: blunts single-IP credential stuffing while
       // tolerating shared-NAT bursts. Over-limit → 30 s → 5 m → 10 m → 15 m.
       loginIp: {
-        windowSec: 60,
-        limit: 25,
+        windowSec: e.RATE_LIMIT_LOGIN_IP_WINDOW_SEC,
+        limit: e.RATE_LIMIT_LOGIN_IP_LIMIT,
         cooldownsSec: [30, 300, 600, 900],
         decaySec: 15 * 60,
       },
