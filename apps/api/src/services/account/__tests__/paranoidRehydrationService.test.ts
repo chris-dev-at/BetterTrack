@@ -397,11 +397,18 @@ async function replaceNormalPortfolioGraphWithServerVault(
   });
 }
 
-async function storageRoundedQuantityFixture() {
-  const rawQuantities = {
-    buy: '1.0000000046',
-    sell: '1.0000000051',
-  } as const;
+async function storageRoundedQuantityFixture(
+  options: {
+    /** Raw vault decimals; every buy row shares the same raw quantity. */
+    rawQuantities?: { buy: string; sell: string };
+    buyCount?: number;
+    /** The numeric(20,8) rows the storage oracle must produce. */
+    storedQuantities?: { buy: string; sell: string };
+  } = {},
+) {
+  const rawQuantities = options.rawQuantities ?? { buy: '1.0000000046', sell: '1.0000000051' };
+  const buyCount = options.buyCount ?? 1;
+  const storedQuantities = options.storedQuantities ?? { buy: '1.00000000', sell: '1.00000001' };
   const harness = await createTestApp();
   const user = await harness.seedUser();
   const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
@@ -422,24 +429,24 @@ async function storageRoundedQuantityFixture() {
 
   await expect(
     harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
-      {
+      ...Array.from({ length: buyCount }, (_, index) => ({
         assetId: asset.id,
-        side: 'buy',
+        side: 'buy' as const,
         quantity: Number(rawQuantities.buy),
         price: 10,
         fee: 0,
-        executedAt: '2026-07-23T10:00:00.000Z',
-      },
+        executedAt: `2026-07-23T10:${String(index).padStart(2, '0')}:00.000Z`,
+      })),
       {
         assetId: asset.id,
         side: 'sell',
         quantity: Number(rawQuantities.sell),
         price: 11,
         fee: 0,
-        executedAt: '2026-07-23T10:01:00.000Z',
+        executedAt: '2026-07-23T10:30:00.000Z',
       },
     ]),
-  ).resolves.toHaveLength(2);
+  ).resolves.toHaveLength(buyCount + 1);
 
   const [sourcePortfolio] = await harness.db
     .select()
@@ -459,8 +466,8 @@ async function storageRoundedQuantityFixture() {
       .map((row) => ({ side: row.side, quantity: row.quantity }))
       .sort((a, b) => a.side.localeCompare(b.side)),
   ).toEqual([
-    { side: 'buy', quantity: '1.00000000' },
-    { side: 'sell', quantity: '1.00000001' },
+    ...Array.from({ length: buyCount }, () => ({ side: 'buy', quantity: storedQuantities.buy })),
+    { side: 'sell', quantity: storedQuantities.sell },
   ]);
 
   // Paranoid-mode input preserves the raw user decimals. The normal write
@@ -1280,7 +1287,11 @@ describe('paranoid rehydration service', () => {
     ).toEqual([]);
   });
 
-  it('rejects a genuine two-quantum transaction oversell before restore', async () => {
+  it('accepts a two-quantum shortfall at the per-row envelope boundary (#917)', async () => {
+    // One buy plus the sell itself are two stored rows: each may carry one
+    // scale-8 quantum of numeric(20,8) rounding, so a two-quantum shortfall is
+    // still explicable as storage drift — the real invariant is rows × quantum,
+    // not a fixed single quantum.
     const { harness, user, portfolioId, input } = await storageRoundedQuantityFixture();
     const sell = input.document.entities.find(
       (entry): entry is StrictTransactionEntity =>
@@ -1288,6 +1299,25 @@ describe('paranoid rehydration service', () => {
     );
     if (!sell) throw new Error('expected raw sell transaction');
     sell.data.quantity = '1.00000002';
+
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+    expect(
+      await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
+    ).toHaveLength(2);
+  });
+
+  it('rejects a genuine oversell beyond the per-row rounding envelope before restore', async () => {
+    const { harness, user, portfolioId, input } = await storageRoundedQuantityFixture();
+    const sell = input.document.entities.find(
+      (entry): entry is StrictTransactionEntity =>
+        entry.kind === 'transaction' && entry.data.side === 'sell',
+    );
+    if (!sell) throw new Error('expected raw sell transaction');
+    // Two stored rows allow at most two quanta of rounding drift; three quanta
+    // cannot come from numeric(20,8) rounding and must fail closed.
+    sell.data.quantity = '1.00000003';
     const stages: string[] = [];
 
     await expect(
@@ -1299,7 +1329,7 @@ describe('paranoid rehydration service', () => {
       }).rehydrate(user.id, input),
     ).rejects.toMatchObject({
       code: 'INVALID_CASH_LEDGER',
-      message: 'transaction quantity "1.00000002" would oversell its position',
+      message: 'transaction quantity "1.00000003" would oversell its position',
     });
     expect(stages).toEqual([]);
     expect(
@@ -1308,6 +1338,36 @@ describe('paranoid rehydration service', () => {
     expect(
       await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
     ).toEqual([]);
+  });
+
+  it('accepts multi-row rounding drift: 4 × 0.1000000049 buys plus their exact-sum sell (#917 F1)', async () => {
+    // Four epsilon-valid buys each quantize half a quantum down while the
+    // exact-sum sell quantizes up — a two-quantum shortfall no fixed one-quantum
+    // tolerance covers. Paranoid disable must restore this account.
+    const { harness, user, portfolioId, sourceTransactions, input } =
+      await storageRoundedQuantityFixture({
+        rawQuantities: { buy: '0.1000000049', sell: '0.4000000196' },
+        buyCount: 4,
+        storedQuantities: { buy: '0.10000000', sell: '0.40000002' },
+      });
+
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    const restoredTransactions = await harness.db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.portfolioId, portfolioId));
+    expect(
+      restoredTransactions
+        .map((row) => ({ id: row.id, quantity: row.quantity, allowUncovered: row.allowUncovered }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    ).toEqual(
+      sourceTransactions
+        .map((row) => ({ id: row.id, quantity: row.quantity, allowUncovered: row.allowUncovered }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    );
   });
 
   it('restores more transactions than one PostgreSQL bind-parameter batch can hold', async () => {
