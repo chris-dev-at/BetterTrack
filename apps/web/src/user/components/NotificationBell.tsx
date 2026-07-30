@@ -181,6 +181,7 @@ export function NotificationBell() {
   const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -210,7 +211,11 @@ export function NotificationBell() {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     }
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     }
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
@@ -222,15 +227,23 @@ export function NotificationBell() {
 
   const unreadCount = query.data?.unreadCount ?? 0;
   const items = query.data?.items ?? [];
+  const closeAndRestoreFocus = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
 
   return (
     <div ref={rootRef} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
-        aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={unreadCount > 0 ? `Notifications (${unreadCount} unread)` : 'Notifications'}
+        aria-label={
+          unreadCount > 0
+            ? t('settings.notifications.bellUnreadAria', { count: unreadCount })
+            : t('settings.notifications.bellAria')
+        }
         className="relative grid h-9 w-9 place-items-center rounded-full bt-muted transition-colors hover:bt-soft"
       >
         <svg
@@ -263,9 +276,9 @@ export function NotificationBell() {
 
       {open ? (
         <div
-          role="dialog"
           aria-label={t('settings.notifications.title')}
           className="bt-popover w-80"
+          role="group"
           style={{ right: 0, top: 'calc(100% + 6px)', padding: 0 }}
         >
           <div className="flex items-center justify-between bt-b-rule px-3 py-2">
@@ -316,7 +329,7 @@ export function NotificationBell() {
                       markReadMutation.mutate({ ids: [notification.id] });
                     }
                   }}
-                  onNavigate={() => setOpen(false)}
+                  onNavigate={closeAndRestoreFocus}
                 />
               ))}
             </ul>
@@ -325,7 +338,7 @@ export function NotificationBell() {
           <div className="bt-t-rule px-3 py-2 text-center">
             <Link
               to="/settings/notifications"
-              onClick={() => setOpen(false)}
+              onClick={closeAndRestoreFocus}
               className="text-xs font-medium bt-link"
             >
               {t('settings.notifications.allTitle')}

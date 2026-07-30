@@ -634,6 +634,8 @@
     },
     "notifications": {
       "title": "Benachrichtigungen",
+      "bellAria": "Benachrichtigungen",
+      "bellUnreadAria": "Benachrichtigungen ({{count}} ungelesen)",
       "loadError": {
         "title": "Deine Benachrichtigungseinstellungen konnten nicht geladen werden"
       },

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Route, Routes } from 'react-router-dom';
 import { MemoryRouter } from 'react-router-dom';
@@ -354,13 +354,49 @@ describe('AssetSearchBox', () => {
 
       await user.type(screen.getByRole('searchbox'), 'NV');
       await screen.findByText('NVDA');
-      await user.click(screen.getByRole('button', { name: /choose a watchlist for nvda/i }));
+      const trigger = screen.getByRole('button', { name: /choose a watchlist for nvda/i });
+      await user.click(trigger);
 
       // Both lists are offered; picking "Tech" adds to that specific list.
       expect(await screen.findByText('General')).toBeInTheDocument();
       const techItem = await screen.findByText('Tech');
       await user.click(techItem);
       expect(workboardApi.addToWorkboard).toHaveBeenCalledWith('asset-nvda', 'wl-tech');
+      expect(trigger).toHaveFocus();
+    });
+
+    test('supports the complete keyboard pattern in the watchlist menu', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(workboardApi.listWatchlists).mockResolvedValue({
+        watchlists: [
+          { id: 'wl-general', name: 'General', isDefault: true, itemCount: 0, audience: 'private' },
+          { id: 'wl-tech', name: 'Tech', isDefault: false, itemCount: 2, audience: 'private' },
+        ],
+      });
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      const trigger = screen.getByRole('button', { name: /choose a watchlist for nvda/i });
+      await user.click(trigger);
+      const menu = await screen.findByRole('menu', { name: 'Watchlists for NVDA' });
+      const general = await within(menu).findByRole('menuitem', { name: 'General' });
+      const tech = within(menu).getByRole('menuitem', { name: 'Tech' });
+
+      await waitFor(() => expect(general).toHaveFocus());
+      await user.keyboard('{ArrowDown}');
+      expect(tech).toHaveFocus();
+      await user.keyboard('{ArrowUp}');
+      expect(general).toHaveFocus();
+      await user.keyboard('{End}');
+      expect(tech).toHaveFocus();
+      await user.keyboard('{Home}');
+      expect(general).toHaveFocus();
+      await user.keyboard('{Escape}');
+
+      expect(screen.queryByRole('menu', { name: 'Watchlists for NVDA' })).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
     });
   });
 
@@ -393,6 +429,75 @@ describe('AssetSearchBox', () => {
       await user.click(screen.getByRole('button', { name: /add nvda to a blueprint/i }));
 
       expect(await screen.findByRole('menuitem', { name: 'World Basket' })).toBeInTheDocument();
+    });
+
+    test('supports the complete keyboard pattern in the blueprint menu', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(conglomerateApi.listConglomerates).mockResolvedValue(conglomerateList());
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      const trigger = screen.getByRole('button', { name: /add nvda to a blueprint/i });
+      await user.click(trigger);
+      const menu = await screen.findByRole('menu', { name: 'Add NVDA to a blueprint' });
+      const blueprint = await within(menu).findByRole('menuitem', { name: 'World Basket' });
+      const create = within(menu).getByRole('menuitem', { name: '+ Create new blueprint' });
+      const close = within(menu).getByRole('menuitem', { name: 'Close' });
+
+      await waitFor(() => expect(blueprint).toHaveFocus());
+      expect(blueprint).toHaveAttribute('tabindex', '0');
+      expect(create).toHaveAttribute('tabindex', '-1');
+      expect(close).toHaveAttribute('tabindex', '-1');
+      expect(
+        within(menu)
+          .getAllByRole('menuitem')
+          .filter((item) => item.tabIndex === 0),
+      ).toEqual([blueprint]);
+      await user.keyboard('{ArrowDown}');
+      expect(create).toHaveFocus();
+      await user.keyboard('{ArrowDown}');
+      expect(close).toHaveFocus();
+      await user.keyboard('{ArrowDown}');
+      expect(blueprint).toHaveFocus();
+      await user.keyboard('{ArrowUp}');
+      expect(close).toHaveFocus();
+      await user.keyboard('{End}');
+      expect(close).toHaveFocus();
+      await user.keyboard('{Home}');
+      expect(blueprint).toHaveFocus();
+      await user.keyboard('{Escape}');
+
+      expect(
+        screen.queryByRole('menu', { name: 'Add NVDA to a blueprint' }),
+      ).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+    });
+
+    test('keeps focus on an activated blueprint while the add is pending', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(conglomerateApi.listConglomerates).mockResolvedValue(conglomerateList());
+      vi.mocked(conglomerateApi.getConglomerate).mockImplementation(
+        () => new Promise<ConglomerateDetail>(() => undefined),
+      );
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      const trigger = screen.getByRole('button', { name: /add nvda to a blueprint/i });
+      await user.click(trigger);
+      const blueprint = await screen.findByRole('menuitem', { name: 'World Basket' });
+      await waitFor(() => expect(blueprint).toHaveFocus());
+
+      await user.click(blueprint);
+
+      expect(blueprint).toHaveAttribute('aria-disabled', 'true');
+      expect(blueprint).toHaveFocus();
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
     });
 
     test('picking a blueprint adds the asset and confirms in place', async () => {

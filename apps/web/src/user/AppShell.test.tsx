@@ -425,6 +425,58 @@ test('the account menu lists profile, settings, discreet mode and Logout works',
   expect(api.logout).toHaveBeenCalledOnce();
 });
 
+test('the live account menu supports roving focus and restores its trigger on Escape', async () => {
+  const user = userEvent.setup();
+  renderAt('/portfolio');
+
+  const trigger = await screen.findByRole('button', { name: 'Account menu' });
+  await user.click(trigger);
+  const menu = screen.getByRole('menu', { name: 'Account' });
+  const profile = within(menu).getByRole('menuitem', { name: 'My profile' });
+  const settings = within(menu).getByRole('menuitem', { name: 'Settings' });
+  const logoutItem = within(menu).getByRole('menuitem', { name: 'Logout' });
+
+  await waitFor(() => expect(profile).toHaveFocus());
+  await user.keyboard('{ArrowDown}');
+  expect(settings).toHaveFocus();
+  await user.keyboard('{ArrowUp}');
+  expect(profile).toHaveFocus();
+  await user.keyboard('{End}');
+  expect(logoutItem).toHaveFocus();
+  await user.keyboard('{Home}');
+  expect(profile).toHaveFocus();
+  await user.keyboard('{Escape}');
+
+  expect(screen.queryByRole('menu', { name: 'Account' })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+});
+
+test('the live Create menu supports roving focus and restores its trigger on Escape', async () => {
+  const user = userEvent.setup();
+  renderAt('/portfolio');
+
+  const trigger = await screen.findByRole('button', { name: 'Create' });
+  await user.click(trigger);
+  const menu = screen.getByRole('menu', { name: 'Create' });
+  const trade = within(menu).getByRole('menuitem', { name: 'Buy or sell' });
+  const cashFlow = within(menu).getByRole('menuitem', { name: 'Income or expense' });
+  const portfolio = within(menu).getByRole('menuitem', { name: 'New portfolio' });
+
+  await waitFor(() => expect(trade).toHaveFocus());
+  await user.keyboard('{ArrowDown}');
+  expect(cashFlow).toHaveFocus();
+  await user.keyboard('{ArrowUp}');
+  expect(trade).toHaveFocus();
+  await user.keyboard('{End}');
+  expect(portfolio).toHaveFocus();
+  await user.keyboard('{Home}');
+  expect(trade).toHaveFocus();
+  await user.keyboard('{Escape}');
+
+  expect(screen.queryByRole('menu', { name: 'Create' })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+});
+
 // ─── Destinations & redirects ─────────────────────────────────────────────────
 
 test('`/` is the Home command center', async () => {

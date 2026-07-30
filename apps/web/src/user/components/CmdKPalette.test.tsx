@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { Route, Routes } from 'react-router-dom';
@@ -68,6 +68,30 @@ function rowLabels(): string[] {
   return navigableRows().map((row) => row.textContent ?? '');
 }
 
+function PaletteFixture() {
+  const [isOpen, setIsOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setIsOpen(true)}>
+        Open quick search
+      </button>
+      <button type="button">Outside action</button>
+      <CmdKPalette isOpen={isOpen} onClose={() => setIsOpen(false)} />
+    </>
+  );
+}
+
+function renderPaletteFixture() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <PaletteFixture />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(searchApi.searchAssets).mockResolvedValue({ results: [] });
@@ -99,6 +123,33 @@ describe('CmdKPalette', () => {
     await user.keyboard('{Escape}');
 
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  test('focuses deterministically, contains Tab, closes on Escape, and restores its trigger', async () => {
+    const user = userEvent.setup();
+    renderPaletteFixture();
+
+    const trigger = screen.getByRole('button', { name: 'Open quick search' });
+    await user.click(trigger);
+    const dialog = screen.getByRole('dialog', { name: /quick search/i });
+    const search = screen.getByRole('searchbox', { name: /search assets/i });
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), [tabindex]',
+      ),
+    ).filter((element) => element.tabIndex >= 0);
+    const last = focusable.at(-1)!;
+
+    await waitFor(() => expect(search).toHaveFocus());
+    await user.tab({ shift: true });
+    expect(last).toHaveFocus();
+    await user.tab();
+    expect(search).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Outside action' })).not.toHaveFocus();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
   });
 
   test('calls onClose when backdrop is clicked', async () => {

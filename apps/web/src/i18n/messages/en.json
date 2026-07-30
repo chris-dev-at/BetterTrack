@@ -634,6 +634,8 @@
     },
     "notifications": {
       "title": "Notifications",
+      "bellAria": "Notifications",
+      "bellUnreadAria": "Notifications ({{count}} unread)",
       "loadError": {
         "title": "Couldn't load your notification settings"
       },

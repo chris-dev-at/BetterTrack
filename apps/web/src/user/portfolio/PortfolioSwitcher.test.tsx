@@ -155,14 +155,59 @@ describe('PortfolioSwitcher', () => {
     expect(within(menu).getByRole('menuitemradio', { name: /Trading/ })).toBeInTheDocument();
   });
 
+  test('supports selected focus, Arrow/Home/End navigation, and Escape restoration', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    const user = userEvent.setup();
+    renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await user.click(trigger);
+    const menu = await screen.findByRole('menu', { name: 'Portfolios' });
+    const main = within(menu).getByRole('menuitemradio', { name: /Main/ });
+    const trading = within(menu).getByRole('menuitemradio', { name: /Trading/ });
+    const archived = within(menu).getByRole('menuitem', { name: 'Archived…' });
+
+    await waitFor(() => expect(main).toHaveFocus());
+    await user.keyboard('{ArrowDown}');
+    expect(trading).toHaveFocus();
+    await user.keyboard('{ArrowUp}');
+    expect(main).toHaveFocus();
+    await user.keyboard('{End}');
+    expect(archived).toHaveFocus();
+    await user.keyboard('{Home}');
+    expect(main).toHaveFocus();
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  test('Escape still closes and restores focus when focus has left the menu', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    const user = userEvent.setup();
+    renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await user.click(trigger);
+    await screen.findByRole('menu', { name: 'Portfolios' });
+    trigger.focus();
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('menu', { name: 'Portfolios' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
   test('switching a portfolio sets the routing param', async () => {
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
     renderSwitcher();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await userEvent.click(trigger);
     await userEvent.click(await screen.findByRole('menuitemradio', { name: /Trading/ }));
 
     await waitFor(() => expect(screen.getByTestId('active-param')).toHaveTextContent('p2'));
+    expect(trigger).toHaveFocus();
   });
 
   test('Add portfolio opens the wizard, which creates and activates the new one', async () => {

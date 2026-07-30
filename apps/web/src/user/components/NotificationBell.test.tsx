@@ -95,11 +95,37 @@ describe('NotificationBell', () => {
     });
     renderBell();
 
-    await user.click(await screen.findByRole('button', { name: /Notifications/ }));
+    const trigger = await screen.findByRole('button', { name: /Notifications/ });
+    await user.click(trigger);
 
-    expect(await screen.findByRole('dialog', { name: 'Notifications' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).not.toHaveAttribute('aria-haspopup');
+    expect(screen.getByRole('group', { name: 'Notifications' })).toBeInTheDocument();
     expect(screen.getByText('Unread item')).toBeInTheDocument();
     expect(screen.getByText('Read item')).toBeInTheDocument();
+  });
+
+  test('uses a non-modal popover with natural tab order and Escape restoration', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [notification({ id: '00000000-0000-0000-0000-000000000002' })],
+      nextCursor: null,
+      unreadCount: 1,
+    });
+    renderBell();
+
+    const trigger = await screen.findByRole('button', { name: 'Notifications (1 unread)' });
+    await user.click(trigger);
+    const markAll = screen.getByRole('button', { name: 'Mark all read' });
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(document.querySelector('[aria-modal="true"]')).not.toBeInTheDocument();
+    await user.tab();
+    expect(markAll).toHaveFocus();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(markAll).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
   });
 
   test('renders an empty state when there are no notifications', async () => {

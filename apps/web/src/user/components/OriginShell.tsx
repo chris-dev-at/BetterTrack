@@ -29,6 +29,7 @@ import { CmdKPalette } from './CmdKPalette';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
 import { isChildActive, SECTION_NAV, useRailNavChildren, type SectionKey } from './sectionNav';
+import { useMenuKeyboard } from './useMenuKeyboard';
 
 /**
  * Origin application frame (docs/redesign/REAL_APP_REDESIGN_PROMPT.md,
@@ -309,16 +310,30 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
   const [open, setOpen] = useState(false);
   const [discreetError, setDiscreetError] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const discreet = user?.discreetMode === true;
   const name = user?.username ?? user?.email ?? '·';
+  const closeMenu = useCallback(() => setOpen(false), []);
+  const {
+    closeAndRestoreFocus,
+    menuRef,
+    onKeyDown: onMenuKeyDown,
+  } = useMenuKeyboard({
+    open,
+    onClose: closeMenu,
+    triggerRef,
+  });
 
   useEffect(() => {
     if (!open) return;
     function onPointerDown(event: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) closeMenu();
     }
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeAndRestoreFocus();
+      }
     }
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
@@ -326,11 +341,12 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open]);
+  }, [closeAndRestoreFocus, closeMenu, open]);
 
   return (
     <div className="relative" ref={rootRef}>
       <button
+        ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={t('nav.accountMenu')}
@@ -348,8 +364,10 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
 
       {open ? (
         <div
+          ref={menuRef}
           aria-label={t('nav.account')}
           className="bt-popover"
+          onKeyDown={onMenuKeyDown}
           role="menu"
           style={{ bottom: 'calc(100% + 6px)', left: 0, right: collapsed ? 'auto' : 0 }}
         >
@@ -366,7 +384,7 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
           <div className="bt-menu-rule" />
           <Link
             className="bt-menu-item"
-            onClick={() => setOpen(false)}
+            onClick={closeAndRestoreFocus}
             role="menuitem"
             to="/people/profile"
           >
@@ -375,7 +393,7 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
           </Link>
           <Link
             className="bt-menu-item"
-            onClick={() => setOpen(false)}
+            onClick={closeAndRestoreFocus}
             role="menuitem"
             to="/settings/account"
           >
@@ -409,7 +427,7 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
           <button
             className="bt-menu-item"
             onClick={() => {
-              setOpen(false);
+              closeAndRestoreFocus();
               void logout();
             }}
             role="menuitem"
@@ -428,14 +446,28 @@ function CreateMenu() {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeMenu = useCallback(() => setOpen(false), []);
+  const {
+    closeAndRestoreFocus,
+    menuRef,
+    onKeyDown: onMenuKeyDown,
+  } = useMenuKeyboard({
+    open,
+    onClose: closeMenu,
+    triggerRef,
+  });
 
   useEffect(() => {
     if (!open) return;
     function onPointerDown(event: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) closeMenu();
     }
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeAndRestoreFocus();
+      }
     }
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
@@ -443,7 +475,7 @@ function CreateMenu() {
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open]);
+  }, [closeAndRestoreFocus, closeMenu, open]);
 
   const items: ReadonlyArray<{ to: string; icon: IconName; labelKey: string }> = [
     { to: '/portfolio/activity?create=trade', icon: 'assets', labelKey: 'create.trade' },
@@ -462,20 +494,24 @@ function CreateMenu() {
 
   return (
     <div className="relative" ref={rootRef}>
-      <Button
+      <button
+        ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={t('create.button')}
-        icon="plus"
+        className="bt-btn bt-btn--primary"
+        type="button"
         onClick={() => setOpen((value) => !value)}
-        variant="primary"
       >
+        <Icon name="plus" size={16} />
         <span className="bt-hide-below-sm">{t('create.button')}</span>
-      </Button>
+      </button>
       {open ? (
         <div
+          ref={menuRef}
           aria-label={t('create.button')}
           className="bt-popover"
+          onKeyDown={onMenuKeyDown}
           role="menu"
           style={{ top: 'calc(100% + 6px)', right: 0 }}
         >
@@ -483,7 +519,7 @@ function CreateMenu() {
             <Link
               className="bt-menu-item"
               key={item.to}
-              onClick={() => setOpen(false)}
+              onClick={closeAndRestoreFocus}
               role="menuitem"
               to={item.to}
             >

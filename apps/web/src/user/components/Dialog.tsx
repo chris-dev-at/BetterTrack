@@ -4,6 +4,7 @@ import type { CSSProperties, ReactNode } from 'react';
 
 import { useT } from '../../i18n';
 import { cx } from './ui';
+import { useFocusTrap } from './useFocusTrap';
 
 /**
  * Minimal accessible modal for the user app (mirrors the admin `Modal`): a dimmed
@@ -42,6 +43,10 @@ export function Dialog({
   dismissable?: boolean;
 }) {
   const t = useT();
+  const { containerRef, onKeyDown } = useFocusTrap<HTMLDivElement>({
+    inertBackground: true,
+  });
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && dismissable) onClose();
@@ -99,9 +104,11 @@ export function Dialog({
         }}
       >
         <div
+          ref={containerRef}
           role="dialog"
           aria-modal="true"
           aria-label={title}
+          tabIndex={-1}
           className={cx(
             'bt-dialog__panel w-full',
             footer === undefined && 'mt-12 sm:mt-0',
@@ -109,6 +116,7 @@ export function Dialog({
           )}
           style={panelStyle}
           onMouseDown={(e) => e.stopPropagation()}
+          onKeyDown={onKeyDown}
         >
           {head}
           <div className={cx('bt-dialog__body', footer !== undefined && 'flex-1')}>{children}</div>
