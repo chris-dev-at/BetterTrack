@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { LOCALES, type MessageNode } from './registry';
+import { LOCALES, localizedMessage, type MessageNode } from './registry';
 
 /**
  * Key-parity + placeholder-parity gate over the shipped catalogs
@@ -29,6 +29,22 @@ function placeholders(str: string): string[] {
 
 const enFlat = flatten(LOCALES.en.messages);
 const nonDefaultLocales = Object.values(LOCALES).filter((l) => l.code !== 'en');
+
+test('registers every not-found string in EN and DE', () => {
+  const keys = [
+    'notFound.title',
+    'notFound.description',
+    'notFound.requestedPath',
+    'notFound.backToStart',
+    'notFound.backToPrevious',
+  ];
+
+  for (const locale of Object.values(LOCALES)) {
+    for (const key of keys) {
+      expect(localizedMessage(locale.code, key)).not.toBe(key);
+    }
+  }
+});
 
 describe.each(nonDefaultLocales.map((l) => [l.code, l.messages] as const))(
   'catalog parity (en ⇄ %s)',

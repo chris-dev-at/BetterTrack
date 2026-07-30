@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { I18nProvider, useT } from '../i18n';
+import { NotFoundState } from '../ui';
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { AdminLayout } from './components/AdminLayout';
@@ -77,14 +78,8 @@ function AdminShell() {
         <Route path="account-defaults" element={<AccountDefaultsPage />} />
         <Route path="announcements" element={<AnnouncementsPage />} />
         <Route path="security" element={<SecuritySettingsPage />} />
+        <Route path="*" element={<NotFoundState homeTo="/admin/users" />} />
       </Route>
-      {/* Unknown admin paths fall back to the users page (or login if anonymous).
-          The target MUST be absolute (`/admin/users`): a relative `to="users"`
-          resolves against the splat's full matched pathname, so from an unmatched
-          `/admin/blabla` it appends (`/admin/blabla/users`) — which only re-matches
-          this same `*` route and appends again, looping forever. An absolute path
-          lands on the home route in exactly one hop. */}
-      <Route path="*" element={<Navigate to="/admin/users" replace />} />
     </Routes>
   );
 }
