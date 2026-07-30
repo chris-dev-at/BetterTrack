@@ -150,6 +150,12 @@ const registry = createQueueRegistry(createConnection());
 // The market-data jobs read/write Postgres and reach providers through the same
 // caching/resilience service the API uses.
 const { db, client } = createDatabase(config.databaseUrl);
+// Dedicated privacy-lock pool, same rule as in `server.ts`: every privacy-mode
+// lock reserves a connection here rather than on the job pool above, so a lock
+// held across a read never waits on a connection its own callback needs. Its size
+// (`createDatabase`, `max: 10`) is the concurrency budget for privacy-guarded
+// work; on this side the holders are the export build and the expiry sweep, both
+// bounded per job rather than by a client socket.
 const { db: lockDb, client: lockClient } = createDatabase(config.databaseUrl);
 const workerUserRepo = createUserRepository(db);
 const paranoidGuard = createParanoidModeGuard({

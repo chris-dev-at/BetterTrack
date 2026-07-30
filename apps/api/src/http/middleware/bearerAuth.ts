@@ -176,13 +176,34 @@ function resolveAuthPolicy(path: string): PathPolicy | null {
   return null;
 }
 
-function resolvePolicy(path: string): PathPolicy {
+function resolvePolicy(requestPath: string): PathPolicy {
+  // Express routes case-insensitively by default, so `/Account/Paranoid/enable`
+  // reaches the very same handler as the lowercase spelling. Match the same way,
+  // or a variant-cased request silently resolves to a DIFFERENT policy than the
+  // route it actually reaches — skipping past a restricting rule onto the
+  // coarser prefix above it (`app.ts` normalizes its body-parser deferral for
+  // exactly this reason). Every literal in this table is lowercase, so folding
+  // case can only align a rule with the route Express picked.
+  const path = requestPath.toLowerCase();
   // Admin is never reachable by API key regardless of scopes (account-kind
   // separation, §6.12) — 404 to disclose nothing.
   if (path === '/admin' || path.startsWith('/admin/')) return { kind: 'admin' };
   // /auth carve-outs (#361) — resolved before anything else in the group.
   const authPolicy = resolveAuthPolicy(path);
   if (authPolicy) return authPolicy;
+  // Paranoid mode transitions (§13.5 V5-P13) are strictly browser-cookie-session
+  // only — the same rule as `/vault/*` below, for a strictly stronger reason.
+  // Enable is a one-way destructive purge of every cleartext row plus every
+  // outbound and inbound share, and a Drive-only media set carries no
+  // server-verifiable evidence at all: the caller's own attestation IS the whole
+  // input. Disable writes a caller-authored document back into the account. So
+  // neither direction may ride a personal API key or a delegated OAuth token
+  // holding `account:security` (plausible for a sessions/2FA integration), which
+  // also carries no CSRF header. Checked BEFORE the `/account/` branch, which
+  // would otherwise fold both routes into that coarse account-security scope.
+  if (path === '/account/paranoid' || path.startsWith('/account/paranoid/')) {
+    return { kind: 'session-only' };
+  }
   // Account lifecycle (#362): self-service deletion is part of the
   // account-security surface — the mobile in-app flow calls it with a bearer
   // holding `account:security` (deletion is additionally re-auth-gated).

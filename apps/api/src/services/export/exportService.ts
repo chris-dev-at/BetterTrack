@@ -1,4 +1,4 @@
-import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join as joinPath } from 'node:path';
 
 import { eq } from 'drizzle-orm';
@@ -126,6 +126,15 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
 
   const filePathFor = (jobId: string) => joinPath(dir, `${jobId}.zip`);
 
+  const fileExists = async (path: string): Promise<boolean> => {
+    try {
+      await access(path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   async function resolveDownloadUnlocked(input: {
     userId: string;
     token: string;
@@ -140,6 +149,21 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     // expired, replayed, unknown or not-yet-ready token is one indistinguishable
     // 404 — never a distinct signal to a probing caller.
     if (!row || !row.filePath) {
+      throw notFound('This export is no longer available.', 'EXPORT_NOT_FOUND');
+    }
+    // A `ready` row whose archive is gone from disk joins that same 404 instead of
+    // becoming a 500 on the stream. The pointer can outlive the bytes: a paranoid
+    // enable stages and unlinks the archive BEFORE its transaction commits, and
+    // that transaction is allowed to fail outcome-ambiguously afterwards (see
+    // `permanentlyRetirePrepared` — never restore an archive once unlink started),
+    // rolling the row back to `ready` with a `filePath` that no longer resolves.
+    // Operator-side deletion lands here too. Checked while the account transition
+    // lock is held, so an enable cannot slip in between this probe and the stream.
+    if (!(await fileExists(row.filePath))) {
+      logger?.warn(
+        { jobId: row.id },
+        'export download: the ready archive is missing from disk; failing closed',
+      );
       throw notFound('This export is no longer available.', 'EXPORT_NOT_FOUND');
     }
     const stamp = row.readyAt ?? row.createdAt;

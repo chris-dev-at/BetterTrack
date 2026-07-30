@@ -1,7 +1,7 @@
 import { tmpdir } from 'node:os';
 import { dirname, join as joinPath } from 'node:path';
 import { existsSync } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 
 import { unzipSync, strFromU8 } from 'fflate';
 import { and, eq } from 'drizzle-orm';
@@ -301,6 +301,34 @@ describe('account data export', () => {
       .send({ token: downloadToken });
     expect(expired.status).toBe(404);
     expect(expired.body.error.code).toBe('EXPORT_NOT_FOUND');
+  });
+
+  it('fails a download closed when the ready archive is gone from disk', async () => {
+    // A `ready` row can outlive its bytes: a paranoid enable unlinks the staged
+    // archive BEFORE its transaction commits, and that commit is allowed to fail
+    // outcome-ambiguously (an unlink that started is never undone). Operator-side
+    // deletion lands in the same state. The reply must be the ordinary opaque 404,
+    // not a 500 raised mid-stream — asserted through the real HTTP route.
+    const user = await harness.seedUser({ email: 'gone@bettertrack.test', username: 'gone' });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const reqRes = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { jobId, downloadToken } = exportRequestResponseSchema.parse(reqRes.body);
+    const [row] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    await rm(row!.filePath!);
+    expect(existsSync(row!.filePath!)).toBe(false);
+
+    const gone = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken });
+    expect(gone.status, JSON.stringify(gone.body)).toBe(404);
+    expect(gone.body.error.code).toBe('EXPORT_NOT_FOUND');
   });
 
   it('cleanup deletes expired export files and rows', async () => {

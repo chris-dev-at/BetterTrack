@@ -2,6 +2,7 @@ import cookieParser from 'cookie-parser';
 import express from 'express';
 import helmet from 'helmet';
 
+import { GLOBAL_JSON_BODY_LIMIT } from './http/bodyLimits';
 import { createBullBoardRouter } from './http/bullBoard';
 import { createErrorHandler } from './http/errorHandler';
 import { createFeatureFlagsRouter } from './http/routes/featureFlagsRoutes';
@@ -76,14 +77,16 @@ export function createApp(ctx: AppContext) {
   // session/rate-limit work and cross-origin web/admin callers get their headers
   // (§4.6, §10). The allowlist is the derived web+admin origins.
   app.use(createCorsMiddleware(ctx.config.corsOrigins));
-  const regularJson = express.json({ limit: '100kb' });
+  const regularJson = express.json({ limit: GLOBAL_JSON_BODY_LIMIT });
   app.use((req, res, next) => {
     // The decrypted restore is a deflate-expanded multiple of the bounded
     // encrypted envelope (see `PARANOID_RESTORE_PLAINTEXT_FACTOR`).
     // Defer that one parser to the route, after authentication + its vault rate
-    // limiter; every other JSON request keeps the 100 KiB global bound. Express
-    // routes case-insensitively by default, so match the same way — otherwise
-    // `/Disable` reaches the handler under the 100 KiB bound and 413s.
+    // limiter; every other JSON request keeps the 100 KiB global bound. The
+    // route re-applies this same bound for any caller that is not paranoid, so
+    // the deferral widens nothing for an account with nothing to restore.
+    // Express routes case-insensitively by default, so match the same way —
+    // otherwise `/Disable` reaches the handler under the 100 KiB bound and 413s.
     const path = req.path.toLowerCase();
     if (
       req.method === 'POST' &&

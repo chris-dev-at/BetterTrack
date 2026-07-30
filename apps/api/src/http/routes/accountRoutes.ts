@@ -1,4 +1,4 @@
-import { json, Router } from 'express';
+import { json, Router, type RequestHandler } from 'express';
 
 import {
   deleteAccountRequestSchema,
@@ -18,6 +18,7 @@ import {
   PARANOID_TRANSITION_HTTP_ERRORS,
   ParanoidTransitionError,
 } from '../../services/account/paranoidTransitionService';
+import { GLOBAL_JSON_BODY_LIMIT } from '../bodyLimits';
 import { clearSessionCookie } from '../cookies';
 import { requireUser } from '../middleware/session';
 import { validateBody } from '../middleware/validate';
@@ -52,8 +53,45 @@ export const paranoidDisableJsonLimitBytes = (vaultMaxBytes: number): number =>
  * connection idle-in-transaction — and block that account's enable — for as long
  * as its socket stays open. This is an IDLE bound: a slow but progressing
  * transfer keeps resetting it, only a stalled one is cut.
+ *
+ * Capacity consequence, spelled out where the number lives: each in-flight
+ * download occupies ONE connection of the dedicated privacy-lock pool
+ * (`createDatabase`, `max: 10`) for as long as it streams, so at most 10
+ * concurrent guarded downloads per API process — the 11th queues on the pool, and
+ * a fleet of stalled ones is released after this bound rather than never. See the
+ * matching note beside the pool in `server.ts` / `scripts/worker.ts`; raising the
+ * concurrent-download ceiling means raising that pool, not lengthening this.
  */
 export const EXPORT_DOWNLOAD_STALL_TIMEOUT_MS = 60_000;
+
+/**
+ * The privacy-mode transitions are owner-browser-session work, and the global
+ * bearer policy marks `/account/paranoid/*` session-only for that reason. This is
+ * the second, LOCAL half of the same rule — the mirror of `/vault`'s own
+ * `requireCookieSession`, and the structural answer to how these two routes got
+ * bearer-reachable in the first place: they were mounted on a router whose
+ * `/account/**` policy row grants `account:security`, and inherited it silently.
+ * Stating the boundary in the router means a future transition route, a remount,
+ * or a reshuffle of the policy table cannot quietly re-widen it, and direct-router
+ * use in a test carries the same rule as production.
+ *
+ * The sibling `/account` routes deliberately stay bearer-callable (the mobile
+ * in-app deletion and export flows, #362/#494), so this is per-route, not a
+ * router-wide `use`.
+ */
+const requireOwnerBrowserSession: RequestHandler = (req, _res, next) => {
+  if (req.apiKey || !req.sessionId) {
+    next(
+      new ApiError(
+        403,
+        'API_KEY_FORBIDDEN',
+        'Privacy mode transitions are available only to the owning browser session.',
+      ),
+    );
+    return;
+  }
+  next();
+};
 
 /**
  * Account-lifecycle endpoints (PROJECTPLAN.md §13.4). Two families:
@@ -102,6 +140,7 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
   router.post(
     '/paranoid/enable',
     requireUser,
+    requireOwnerBrowserSession,
     limiters.vault,
     validateBody(paranoidEnableRequestSchema),
     async (req, res) => {
@@ -110,11 +149,38 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     },
   );
 
+  // The widened bound is spent ONLY on an account that can legitimately restore.
+  // `app.ts` defers the global parser for this one path before any auth runs, so
+  // the choice has to be made here — this handler sits after `requireUser`, which
+  // is the first point `req.authUser.privacyMode` exists. A normal-mode caller
+  // therefore never makes the process buffer and `JSON.parse` a multi-MiB body
+  // just to be told `PARANOID_NOT_ENABLED`; it keeps the same 100 KiB bound as
+  // every other route.
+  const restoreJson = json({ limit: paranoidDisableJsonLimitBytes(ctx.config.vault.maxBytes) });
+  const globalJson = json({ limit: GLOBAL_JSON_BODY_LIMIT });
+  const restoreBodyParser: RequestHandler = (req, res, next) => {
+    const parser = req.authUser?.privacyMode === 'paranoid' ? restoreJson : globalJson;
+    parser(req, res, (error?: unknown) => {
+      // Answer an over-bound body truthfully instead of letting body-parser's
+      // error surface as an opaque 500 — the same translation `/vault`'s raw
+      // parser makes. Disable is the only exit from paranoid mode, so a caller
+      // that hits a bound has to be able to tell that from a server fault.
+      if ((error as { type?: string } | undefined)?.type === 'entity.too.large') {
+        next(
+          new ApiError(413, 'PAYLOAD_TOO_LARGE', 'The rehydration document exceeds the size cap.'),
+        );
+        return;
+      }
+      next(error);
+    });
+  };
+
   router.post(
     '/paranoid/disable',
     requireUser,
+    requireOwnerBrowserSession,
     limiters.vault,
-    json({ limit: paranoidDisableJsonLimitBytes(ctx.config.vault.maxBytes) }),
+    restoreBodyParser,
     validateBody(paranoidDisableRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as ParanoidDisableRequest;

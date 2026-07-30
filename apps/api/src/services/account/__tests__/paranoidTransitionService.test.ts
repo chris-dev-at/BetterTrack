@@ -1,3 +1,5 @@
+import { join as joinPath } from 'node:path';
+
 import { eq, or } from 'drizzle-orm';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +11,7 @@ import {
   type ParanoidEnableRequest,
 } from '@bettertrack/contracts';
 
+import { withParanoidTransitionTransaction } from '../../../data/repositories/paranoidTransitionRepository';
 import { createShareAudienceRepository } from '../../../data/repositories/shareAudienceRepository';
 import {
   assetIdentities,
@@ -41,6 +44,7 @@ import {
   workboardItems,
 } from '../../../data/schema';
 import { createTestApp, type SeededUser, type TestHarness } from '../../../testing/createTestApp';
+import { hashToken } from '../../crypto/tokens';
 import { liveRingKey } from '../../liveMode/ringBuffer';
 import type { AuditService } from '../../audit/auditService';
 import type { ParanoidRehydrationService } from '../paranoidRehydrationService';
@@ -656,6 +660,41 @@ describe('paranoid public transitions', () => {
     ).toBeUndefined();
   });
 
+  it('spends the widened restore body bound only on an account that can restore', async () => {
+    // `app.ts` defers the global 100 KiB parser for this one path, so the route
+    // picks the parser itself — the first point where `privacyMode` is known. A
+    // normal account has nothing to restore and must not be able to make the
+    // process buffer and JSON.parse a multi-MiB document per request.
+    const user = await harness.seedUser();
+    await seedNormalGraph(user);
+    const agent = await login(user);
+    const oversize = {
+      confirm: true,
+      rehydrationId: REHYDRATION_ID,
+      padding: 'x'.repeat(200 * 1024),
+    };
+
+    const rejected = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send(oversize);
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(413);
+    expect(rejected.body.error.code).toBe('PAYLOAD_TOO_LARGE');
+    expect((await accountState(user.id))?.privacyMode).toBe('normal');
+
+    // Paranoid: the same body is buffered, and the answer comes from the strict
+    // contract instead of the parser — the restore path is never 413-trapped.
+    await expect(
+      harness.ctx.paranoidTransitions.enable(user.id, serverEnable()),
+    ).resolves.toMatchObject({ mode: 'paranoid' });
+    const buffered = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send(oversize);
+    expect(buffered.status, JSON.stringify(buffered.body)).toBe(400);
+    expect(buffered.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
   it('disables through the strict public payload and resumes idempotently', async () => {
     const user = await harness.seedUser();
     await seedNormalGraph(user);
@@ -826,3 +865,100 @@ describe.each<ParanoidEnableStage>(['locked', 'sharingRevoked', 'vaultPurged', '
     });
   },
 );
+
+describe('enable rollback at an outcome-ambiguous commit', () => {
+  it('keeps the archive retired and answers a stale download 404, never a 500', async () => {
+    const user = await harness.seedUser();
+    const { portfolioId } = await seedNormalGraph(user);
+
+    // A ready export archive whose file is staged for retirement by the enable.
+    const downloadToken = 'stale-archive-download-token';
+    const missingArchive = joinPath(harness.ctx.config.dataExport.dir, `${user.id}-retired.zip`);
+    const [exportRow] = await harness.db
+      .insert(exportJobs)
+      .values({
+        userId: user.id,
+        status: 'ready',
+        filePath: missingArchive,
+        fileSize: 4096,
+        downloadTokenHash: hashToken(downloadToken),
+        readyAt: new Date(EDITED_AT),
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      })
+      .returning();
+
+    // Both declared seams, driven together: `prepareExportFile` makes the staged
+    // retirement observable without touching the disk, and
+    // `withTransitionTransaction` fails the COMMIT after the whole body — the one
+    // outcome-ambiguous shape the real transaction can take, and the only way to
+    // reach the ordering `permanentlyRetirePrepared()` deliberately allows.
+    const retirement: string[] = [];
+    const base = {
+      db: harness.db,
+      rehydration: {
+        rehydrate: async () => {
+          throw new Error('enable never rehydrates');
+        },
+      } satisfies ParanoidRehydrationService,
+      audit: { record: async () => undefined } as unknown as AuditService,
+      prepareExportFile: async (artifact: { id: string; filePath: string }) => {
+        retirement.push(`prepare:${artifact.id}`);
+        return {
+          rollback: async () => void retirement.push('rollback'),
+          commit: async () => void retirement.push('commit'),
+        };
+      },
+    };
+    const failing = createParanoidTransitionService({
+      ...base,
+      withTransitionTransaction: async (db, userId, run) =>
+        withParanoidTransitionTransaction(db, userId, async (tx) => {
+          await run(tx);
+          throw new Error('injected commit failure');
+        }),
+    });
+
+    await expect(failing.enable(user.id, serverEnable())).rejects.toThrow(
+      'injected commit failure',
+    );
+
+    // The archive is gone for good — an unlink that has started is never undone,
+    // because neither PostgreSQL nor the filesystem can report this outcome
+    // reliably. The DB, in contrast, rolled ALL the way back.
+    expect(retirement).toEqual([`prepare:${exportRow!.id}`, 'commit']);
+    expect((await accountState(user.id))?.privacyMode).toBe('normal');
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.id, portfolioId)),
+    ).toHaveLength(1);
+    const [rolledBack] = await harness.db
+      .select()
+      .from(exportJobs)
+      .where(eq(exportJobs.id, exportRow!.id));
+    expect(rolledBack!.status).toBe('ready');
+    expect(rolledBack!.error).toBeNull();
+    // The retained pointer is what makes the next enable retry safe (it re-stages
+    // deterministically) — and it is also a pointer to bytes that no longer exist.
+    expect(rolledBack!.filePath).toBe(missingArchive);
+
+    // So the download path must fail CLOSED on the same opaque 404 as an expired or
+    // foreign token rather than 500 on ENOENT while streaming.
+    await expect(
+      harness.ctx.dataExport.withDownload({ userId: user.id, token: downloadToken }, async () => {
+        throw new Error('a missing archive is never streamed');
+      }),
+    ).rejects.toMatchObject({ statusCode: 404, code: 'EXPORT_NOT_FOUND' });
+
+    // And a retry of the same enable — same evidence, a healthy transaction this
+    // time — still completes: the staged name is deterministic, so re-preparing an
+    // artifact whose file is already gone is a no-op rather than a hard conflict.
+    const retried = await createParanoidTransitionService(base).enable(user.id, serverEnable());
+    expect(retried.mode).toBe('paranoid');
+    expect(retried.idempotent).toBe(false);
+    expect(retirement).toEqual([
+      `prepare:${exportRow!.id}`,
+      'commit',
+      `prepare:${exportRow!.id}`,
+      'commit',
+    ]);
+  });
+});
