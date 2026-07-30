@@ -3,12 +3,14 @@ import {
   oauthApproveResponseSchema,
   oauthAuthorizationDetailsResponseSchema,
   oauthClientListResponseSchema,
+  oauthDenyResponseSchema,
   oauthGrantListResponseSchema,
   type CreateOAuthClientRequest,
   type CreateOAuthClientResponse,
   type OAuthApproveResponse,
   type OAuthAuthorizationDetailsResponse,
   type OAuthClientListResponse,
+  type OAuthDenyResponse,
   type OAuthGrantListResponse,
 } from '@bettertrack/contracts';
 
@@ -100,4 +102,14 @@ export async function approveAuthorization(
 ): Promise<OAuthApproveResponse> {
   const data = await apiRequest<unknown>('/oauth/authorize', { method: 'POST', body: params });
   return oauthApproveResponseSchema.parse(data);
+}
+
+/**
+ * `POST /oauth/deny` — the user declined. The API validates the client and
+ * redirect URI before returning an RFC 6749 error callback; callers must never
+ * navigate to the raw `redirect_uri`.
+ */
+export async function denyAuthorization(params: OAuthAuthorizeParams): Promise<OAuthDenyResponse> {
+  const data = await apiRequest<unknown>('/oauth/deny', { method: 'POST', body: params });
+  return oauthDenyResponseSchema.parse(data);
 }

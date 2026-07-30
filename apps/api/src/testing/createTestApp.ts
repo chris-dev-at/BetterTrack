@@ -61,7 +61,9 @@ let realRedisClient: Redis | undefined;
 
 async function acquireRealDb(): Promise<Database> {
   if (!pgClient) {
-    pgClient = postgres(realDbUrl!, { max: 1 });
+    // Keep at least two independent sessions available: admin.test.ts proves
+    // the active-administrator row lock with genuinely overlapping transactions.
+    pgClient = postgres(realDbUrl!, { max: 2 });
     pgDb = drizzlePostgres(pgClient, { schema });
   }
   if (!pgMigrated) {
@@ -211,6 +213,8 @@ export interface CreateTestAppOptions {
    * direct dispatch under test.
    */
   notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
+  /** Recording data-export build transport for atomic request-gate tests. */
+  exportEnqueue?: (jobId: string) => Promise<void>;
   /**
    * Controlled clock for the notification service (#437) — makes the
    * auto-archive sweep threshold provable deterministically.
@@ -289,6 +293,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     liveModeOptions: options.liveModeOptions,
     realtimeCommandNow: options.realtimeCommandNow,
     notificationEnqueue: options.notificationEnqueue,
+    exportEnqueue: options.exportEnqueue,
     notificationNow: options.notificationNow,
     taxNow: options.taxNow,
     budgetNow: options.budgetNow,

@@ -404,6 +404,7 @@ const componentSchemas = {
   ExportRequest: contracts.exportRequestSchema,
   ExportRequestResponse: contracts.exportRequestResponseSchema,
   ExportStatusResponse: contracts.exportStatusResponseSchema,
+  ExportDownloadRequest: contracts.exportDownloadRequestSchema,
 
   // Price alerts (§14, V3-P10)
   Alert: contracts.alertSchema,
@@ -436,6 +437,8 @@ const componentSchemas = {
   OAuthAuthorizationDetailsResponse: contracts.oauthAuthorizationDetailsResponseSchema,
   OAuthApproveRequest: contracts.oauthApproveRequestSchema,
   OAuthApproveResponse: contracts.oauthApproveResponseSchema,
+  OAuthDenyRequest: contracts.oauthDenyRequestSchema,
+  OAuthDenyResponse: contracts.oauthDenyResponseSchema,
   OAuthTokenRequest: contracts.oauthTokenRequestSchema,
   OAuthTokenResponse: contracts.oauthTokenResponseSchema,
 };
@@ -692,12 +695,12 @@ const endpoints: EndpointDef[] = [
     response: R.ExportStatusResponse,
   },
   {
-    method: 'get',
+    method: 'post',
     path: '/account/export/download',
     tag: 'Account',
     summary:
-      'Download the ready export zip; session-authenticated and token-gated (foreign/expired tokens 404).',
-    query: contracts.exportDownloadQuerySchema,
+      'Consume a one-time token from the request body and download the ready export zip; foreign, expired, or replayed tokens 404.',
+    body: R.ExportDownloadRequest,
     status: 200,
   },
   {
@@ -3805,6 +3808,16 @@ const endpoints: EndpointDef[] = [
     body: R.OAuthApproveRequest,
     status: 200,
     response: R.OAuthApproveResponse,
+  },
+  {
+    method: 'post',
+    path: '/oauth/deny',
+    tag: 'OAuth',
+    summary:
+      'Deny consent: validate the authorize request and return an access_denied redirect target.',
+    body: R.OAuthDenyRequest,
+    status: 200,
+    response: R.OAuthDenyResponse,
   },
   {
     method: 'post',

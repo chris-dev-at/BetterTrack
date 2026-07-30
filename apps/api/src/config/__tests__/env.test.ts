@@ -27,6 +27,37 @@ function config(env: NodeJS.ProcessEnv) {
   return loadConfig({ ...REQUIRED, ...env });
 }
 
+describe('production session-secret safety', () => {
+  it.each([
+    'CHANGE_ME_64_RANDOM_HEX_BYTES',
+    '<strong password>',
+    '<openssl rand -hex 64>',
+    'CHANGE_ME_64_RANDOM_HEX_BYTES_PLEASE',
+  ])('rejects a published production placeholder instead of accepting it by length', (secret) => {
+    expect(() => config({ SESSION_SECRET: secret })).toThrow(
+      'SESSION_SECRET: replace the example placeholder before production',
+    );
+  });
+
+  it('rejects a known placeholder anywhere in a production rotation list', () => {
+    expect(() =>
+      config({
+        SESSION_SECRET: 'a-new-random-session-secret-value,change-me-to-64-random-bytes',
+      }),
+    ).toThrow('SESSION_SECRET: replace the example placeholder before production');
+  });
+
+  it('keeps non-production example configuration permissive', () => {
+    const parsed = loadConfig({
+      NODE_ENV: 'development',
+      DATABASE_URL: 'postgres://x',
+      REDIS_URL: 'redis://x',
+      SESSION_SECRET: 'change-me-to-64-random-bytes',
+    });
+    expect(parsed.sessionSecrets).toEqual(['change-me-to-64-random-bytes']);
+  });
+});
+
 describe('subdomains mode', () => {
   it('derives https api/web/admin subdomains of BT_DOMAIN by default', () => {
     const c = config({ BT_MODE: 'subdomains', BT_DOMAIN: 'track.example.at' });

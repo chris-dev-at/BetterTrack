@@ -182,7 +182,8 @@
       "revokeHint": ". You can revoke this access anytime in Settings → API Access.",
       "authorizing": "Authorizing…",
       "approve": "Approve",
-      "approveError": "Could not complete authorization. Please try again."
+      "approveError": "Could not complete authorization. Please try again.",
+      "denyError": "Could not safely return to the requesting app. No access was granted."
     },
     "google": {
       "button": "Continue with Google",
@@ -1381,8 +1382,9 @@
       "pending": "Your export is being prepared. This can take a moment — the button will turn into a download when it's ready.",
       "ready": "Your export is ready to download.",
       "readyUntil": "Your export is ready to download until {{date}}.",
-      "readyNoToken": "Your export is ready, but its download link isn't available on this device. Request a new export to download it here.",
+      "readyNoToken": "Your export is ready, but download access is not kept across page reloads. After this export expires, request a new one.",
       "download": "Download export",
+      "downloadFailed": "Could not download your export. The one-time link may have expired or already been used.",
       "expired": "Your last export has expired. Request a new one to download your data.",
       "currentWrong": "Your password is incorrect.",
       "codeWrong": "That two-factor code is incorrect or has expired.",

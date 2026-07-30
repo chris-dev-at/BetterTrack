@@ -8,11 +8,13 @@ import type {
   MeResponse,
   OAuthApproveResponse,
   OAuthAuthorizationDetailsResponse,
+  OAuthDenyResponse,
 } from '@bettertrack/contracts';
 
 vi.mock('../../lib/oauthApi', () => ({
   getAuthorizationDetails: vi.fn(),
   approveAuthorization: vi.fn(),
+  denyAuthorization: vi.fn(),
   // The Settings page (loaded via UserApp) also imports these; stub them so the
   // module mock is complete even though this suite never exercises them.
   listOAuthClients: vi.fn(),
@@ -30,9 +32,22 @@ vi.mock('../../lib/workboardApi', () => ({
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
 }));
+vi.mock('../../lib/runtimeConfig', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/runtimeConfig')>();
+  return {
+    ...actual,
+    // Exercise the shipped plain-HTTP ports topology: the API asset is not
+    // same-origin because the SPA and API listen on different ports.
+    apiBaseUrl: () => 'http://track.lan:4300/api/v1',
+  };
+});
 
 import { ApiError } from '../../lib/apiClient';
-import { approveAuthorization, getAuthorizationDetails } from '../../lib/oauthApi';
+import {
+  approveAuthorization,
+  denyAuthorization,
+  getAuthorizationDetails,
+} from '../../lib/oauthApi';
 import * as userApi from '../../lib/userApi';
 import { AuthProvider } from '../AuthContext';
 import { UserApp } from '../UserApp';
@@ -71,6 +86,10 @@ const DETAILS: OAuthAuthorizationDetailsResponse = {
 
 const APPROVED: OAuthApproveResponse = {
   redirectTo: 'https://app.example.com/cb?code=one-time-code&state=opaque-state-xyz',
+};
+
+const DENIED: OAuthDenyResponse = {
+  redirectTo: 'https://app.example.com/cb?error=access_denied&state=opaque-state-xyz',
 };
 
 const meUser: MeResponse = {
@@ -170,7 +189,7 @@ test('third-party card shows the signed-in account plus Use another account, and
   );
 });
 
-test('client logos load only from the BetterTrack API path and fall back if that cache read fails', async () => {
+test('client logos load from the cross-port BetterTrack API and fall back if that cache read fails', async () => {
   vi.mocked(getAuthorizationDetails).mockResolvedValue({
     ...DETAILS,
     client: {
@@ -183,7 +202,10 @@ test('client logos load only from the BetterTrack API path and fall back if that
   await screen.findByText('Third-party app');
   const logo = document.querySelector('img');
   expect(logo).not.toBeNull();
-  expect(logo).toHaveAttribute('src', '/api/v1/oauth/client-logos/btc_charting_buddy');
+  expect(logo).toHaveAttribute(
+    'src',
+    'http://track.lan:4300/api/v1/oauth/client-logos/btc_charting_buddy',
+  );
   expect(logo?.getAttribute('src')).not.toContain('app.example.com');
 
   fireEvent.error(logo!);
@@ -243,17 +265,46 @@ test('Use another account signs the current session out and lands on the login s
   expect(approveAuthorization).not.toHaveBeenCalled();
 });
 
-test('cancelling does not issue a code or navigate to the redirect URI', async () => {
+test('cancelling sends the full request and navigates only to the server denial redirect', async () => {
   vi.mocked(getAuthorizationDetails).mockResolvedValue(DETAILS);
+  vi.mocked(denyAuthorization).mockResolvedValue(DENIED);
   const user = userEvent.setup();
   renderConsent();
 
   await screen.findByText('Third-party app');
   await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
-  expect(await screen.findByText('Authorization cancelled')).toBeInTheDocument();
+  await waitFor(() => expect(window.location.href).toBe(DENIED.redirectTo));
+  expect(denyAuthorization).toHaveBeenCalledWith(
+    expect.objectContaining({
+      client_id: 'btc_charting_buddy',
+      redirect_uri: 'https://app.example.com/cb',
+      scope: 'portfolio:read market:read',
+      state: 'opaque-state-xyz',
+      code_challenge: 'a-pkce-code-challenge',
+      code_challenge_method: 'S256',
+    }),
+  );
   expect(approveAuthorization).not.toHaveBeenCalled();
+});
+
+test('a rejected denial stays local and shows the no-access fallback', async () => {
+  vi.mocked(getAuthorizationDetails).mockResolvedValue(DETAILS);
+  vi.mocked(denyAuthorization).mockRejectedValue(
+    new ApiError(400, 'INVALID_REDIRECT_URI', 'bad redirect'),
+  );
+  const user = userEvent.setup();
+  renderConsent();
+
+  await screen.findByText('Third-party app');
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+  expect(
+    await screen.findByText(/could not safely return to the requesting app/i),
+  ).toBeInTheDocument();
+  expect(screen.getByText('Authorization cancelled')).toBeInTheDocument();
   expect(window.location.href).toBe('http://localhost/');
+  expect(approveAuthorization).not.toHaveBeenCalled();
 });
 
 test('an invalid request (400 from the API) shows an error and never redirects', async () => {
