@@ -193,6 +193,32 @@ describe('backup deployment topology', () => {
     expect(retentionBlock).toContain('backupstatus:/status');
     expect(retentionBlock).toContain('context: ./backup');
   });
+
+  it('documents quiescing scheduled backups throughout an in-place production restore', () => {
+    const readme = read('README.md');
+    const readmeRestore = readme.slice(
+      readme.indexOf('**Restore from a dump:**'),
+      readme.indexOf('**Offsite backup (optional).**'),
+    );
+    const ops = read('docs/ops.md');
+    const opsRestore = ops.slice(
+      ops.indexOf('### Restoring in place (production emergency)'),
+      ops.indexOf('## Market-data provider failover'),
+    );
+
+    for (const restoreRunbook of [readmeRestore, opsRestore]) {
+      expect(restoreRunbook).toContain('docker compose stop api worker backup-scheduler');
+      expect(restoreRunbook).toContain('docker compose start api worker');
+      expect(restoreRunbook).toContain('docker compose start backup-scheduler');
+    }
+
+    expect(readmeRestore.indexOf('docker compose stop api worker backup-scheduler')).toBeLessThan(
+      readmeRestore.indexOf('docker compose exec -T db bash -c'),
+    );
+    expect(readmeRestore.indexOf('docker compose exec -T db bash -c')).toBeLessThan(
+      readmeRestore.indexOf('docker compose start backup-scheduler'),
+    );
+  });
 });
 
 describe('local backup status and freshness', () => {

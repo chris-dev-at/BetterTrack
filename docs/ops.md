@@ -303,10 +303,14 @@ policy or credentials change.
 ### Restoring in place (production emergency)
 
 After recovering and decrypting an archive, follow the production restore block
-in `README.md`: stop API and worker writes, place the verified `.sql.gz` in the
-backup volume, restore it explicitly, and restart services. Do not use the
-automated drill for in-place recovery; it intentionally refuses the live
-database.
+in `README.md`. Stop API writes **and** scheduled backups with
+`docker compose stop api worker backup-scheduler` before placing the verified
+`.sql.gz` in the backup volume. Keep all three services stopped until the
+explicit restore completes so the scheduler cannot capture a partially rebuilt
+schema. Then run `docker compose start api worker`, followed by
+`docker compose start backup-scheduler`; the scheduler startup creates and
+drills a fresh post-restore recovery point. Do not use the automated drill for
+in-place recovery; it intentionally refuses the live database.
 
 ## Market-data provider failover
 

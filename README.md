@@ -381,16 +381,20 @@ cd infra
 # 1. Pick a dump (lists everything currently retained).
 docker compose exec db ls -la /backups
 
-# 2. Stop the api and worker so nothing writes during restore.
-docker compose stop api worker
+# 2. Stop all application writes and the backup scheduler so it cannot capture
+#    a partially restored schema.
+docker compose stop api worker backup-scheduler
 
 # 3. Restore — the dump was taken with --clean --if-exists, so it drops and
 #    recreates every object itself; safe to run against the existing database.
 docker compose exec -T db bash -c \
   'gunzip -c /backups/bettertrack-20260704-030000.sql.gz | psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 
-# 4. Bring the api and worker back up.
+# 4. After the restore completes, bring application traffic back, then restart
+#    the scheduler. Its startup run creates and drills a fresh recovery point.
 docker compose start api worker
+docker compose start backup-scheduler
+docker compose ps backup-scheduler
 ```
 
 **Offsite backup (optional).** An age-encrypted copy of each daily dump can be
