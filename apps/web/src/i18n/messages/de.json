@@ -3536,8 +3536,10 @@
       },
       "bulkDisable": {
         "title": "Ausgewählte Nutzer deaktivieren?",
-        "description": "{{count}} ausgewählte Nutzer deaktivieren? Sie können sich danach nicht mehr anmelden.",
-        "confirm": "{{count}} Nutzer deaktivieren",
+        "descriptionOne": "Den ausgewählten Nutzer deaktivieren? Er kann sich danach nicht mehr anmelden.",
+        "descriptionOther": "{{count}} ausgewählte Nutzer deaktivieren? Sie können sich danach nicht mehr anmelden.",
+        "confirmOne": "Nutzer deaktivieren",
+        "confirmOther": "{{count}} Nutzer deaktivieren",
         "pending": "Wird deaktiviert…"
       },
       "revokeInvite": {
@@ -3550,6 +3552,12 @@
         "confirm": "Widerruf bestätigen",
         "pending": "Wird widerrufen…"
       }
+    },
+    "actions": {
+      "delete": "Löschen",
+      "revoke": "Widerrufen",
+      "disableSelected": "Ausgewählte deaktivieren",
+      "disabling": "Wird deaktiviert…"
     },
     "oneTimeCredentials": {
       "temporaryPassword": {

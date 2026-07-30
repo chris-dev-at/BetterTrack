@@ -323,25 +323,35 @@ test('guards incidental dismissal without affecting focus containment', async ()
   const user = userEvent.setup();
   const onClose = vi.fn();
   const { rerender } = render(
-    <Modal title="One-time secret" onClose={onClose} dismissable={false}>
-      <button>I've saved this</button>
-    </Modal>,
+    <>
+      <Modal title="One-time secret" onClose={onClose} dismissable={false}>
+        <button>Continue editing</button>
+        <button>I've saved this</button>
+      </Modal>
+      <button>Outside the dialog</button>
+    </>,
   );
 
+  const continueEditing = screen.getByRole('button', { name: 'Continue editing' });
   const saved = screen.getByRole('button', { name: "I've saved this" });
-  expect(saved).toHaveFocus();
+  expect(continueEditing).toHaveFocus();
 
   await user.keyboard('{Escape}');
   await user.click(screen.getByRole('dialog').parentElement!);
   expect(onClose).not.toHaveBeenCalled();
 
+  await user.click(saved);
   await user.tab();
-  expect(saved).toHaveFocus();
+  expect(continueEditing).toHaveFocus();
 
   rerender(
-    <Modal title="One-time secret" onClose={onClose} dismissable>
-      <button>I've saved this</button>
-    </Modal>,
+    <>
+      <Modal title="One-time secret" onClose={onClose} dismissable>
+        <button>Continue editing</button>
+        <button>I've saved this</button>
+      </Modal>
+      <button>Outside the dialog</button>
+    </>,
   );
 
   await user.keyboard('{Escape}');

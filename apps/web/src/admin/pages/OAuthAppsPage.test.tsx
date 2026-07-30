@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
@@ -9,6 +9,7 @@ import type {
 } from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
+import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { AuthProvider } from '../AuthContext';
 import { OAuthAppsPage } from './OAuthAppsPage';
@@ -86,6 +87,29 @@ test('requires a named confirmation before deleting an OAuth app', async () => {
   await user.click(await screen.findByRole('button', { name: 'Delete app' }));
 
   await waitFor(() => expect(api.deleteFirstPartyApp).toHaveBeenCalledWith(app.id));
+});
+
+test('keeps a deletion failure visible in its confirmation dialog', async () => {
+  vi.mocked(api.deleteFirstPartyApp).mockRejectedValue(
+    new ApiError(409, 'oauth_client_has_grants', 'Revoke active grants before deleting this app.'),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByText(app.name);
+  await user.click(screen.getByRole('button', { name: 'Delete' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Delete OAuth app?' });
+  const confirm = within(dialog).getByRole('button', { name: 'Delete app' });
+
+  await user.click(confirm);
+
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Revoke active grants before deleting this app.',
+  );
+  expect(confirm).toBeEnabled();
+
+  await user.click(confirm);
+  await waitFor(() => expect(api.deleteFirstPartyApp).toHaveBeenCalledTimes(2));
 });
 
 test('keeps a one-time OAuth client secret open until it is acknowledged', async () => {

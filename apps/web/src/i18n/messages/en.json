@@ -3536,8 +3536,10 @@
       },
       "bulkDisable": {
         "title": "Disable selected users?",
-        "description": "Disable {{count}} selected user(s)? They will no longer be able to sign in.",
-        "confirm": "Disable {{count}} users",
+        "descriptionOne": "Disable the selected user? They will no longer be able to sign in.",
+        "descriptionOther": "Disable {{count}} selected users? They will no longer be able to sign in.",
+        "confirmOne": "Disable user",
+        "confirmOther": "Disable {{count}} users",
         "pending": "Disabling…"
       },
       "revokeInvite": {
@@ -3550,6 +3552,12 @@
         "confirm": "Confirm revoke",
         "pending": "Revoking…"
       }
+    },
+    "actions": {
+      "delete": "Delete",
+      "revoke": "Revoke",
+      "disableSelected": "Disable selected",
+      "disabling": "Disabling…"
     },
     "oneTimeCredentials": {
       "temporaryPassword": {

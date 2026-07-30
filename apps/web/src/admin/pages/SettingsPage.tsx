@@ -404,7 +404,7 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
                       setRevokingId(token.id);
                     }}
                   >
-                    Revoke
+                    {t('admin.actions.revoke')}
                   </Button>
                 )
               ) : null}

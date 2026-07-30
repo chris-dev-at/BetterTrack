@@ -170,7 +170,7 @@ export function InvitesPage() {
                             disabled={busyId !== null}
                             onClick={() => setRevoking(invite)}
                           >
-                            Revoke
+                            {t('admin.actions.revoke')}
                           </Button>
                         )
                       ) : (

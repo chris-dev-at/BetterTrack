@@ -134,9 +134,12 @@ export function UsersPage() {
             <Button
               variant="danger"
               disabled={bulkBusy || dialog?.type === 'bulkDisable'}
-              onClick={() => setDialog({ type: 'bulkDisable', userIds: [...selected] })}
+              onClick={() => {
+                setBanner(null);
+                setDialog({ type: 'bulkDisable', userIds: [...selected] });
+              }}
             >
-              {bulkBusy ? 'Disabling…' : 'Disable selected'}
+              {bulkBusy ? t('admin.actions.disabling') : t('admin.actions.disableSelected')}
             </Button>
           </div>
         </div>
@@ -228,8 +231,14 @@ export function UsersPage() {
         >
           <div className="flex flex-col gap-4">
             <p className="text-sm text-neutral-400">
-              {t('admin.confirmations.bulkDisable.description', { count: dialog.userIds.length })}
+              {t(
+                dialog.userIds.length === 1
+                  ? 'admin.confirmations.bulkDisable.descriptionOne'
+                  : 'admin.confirmations.bulkDisable.descriptionOther',
+                { count: dialog.userIds.length },
+              )}
             </p>
+            {banner?.tone === 'error' ? <Alert tone="error">{banner.text}</Alert> : null}
             <div className="flex justify-end gap-2">
               <Button variant="secondary" disabled={bulkBusy} onClick={() => setDialog(null)}>
                 {t('common.cancel')}
@@ -241,7 +250,12 @@ export function UsersPage() {
               >
                 {bulkBusy
                   ? t('admin.confirmations.bulkDisable.pending')
-                  : t('admin.confirmations.bulkDisable.confirm', { count: dialog.userIds.length })}
+                  : t(
+                      dialog.userIds.length === 1
+                        ? 'admin.confirmations.bulkDisable.confirmOne'
+                        : 'admin.confirmations.bulkDisable.confirmOther',
+                      { count: dialog.userIds.length },
+                    )}
               </Button>
             </div>
           </div>

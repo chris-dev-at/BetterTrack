@@ -38,6 +38,7 @@ function errorMessage(err: unknown): string {
  * under their own Settings → API Access; this page is only for our own apps.
  */
 export function OAuthAppsPage() {
+  const t = useT();
   const [name, setName] = useState('');
   const [redirectUri, setRedirectUri] = useState('');
   const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set(['portfolio:read']));
@@ -201,9 +202,12 @@ export function OAuthAppsPage() {
                   <Button
                     variant="danger"
                     disabled={busyId === app.id}
-                    onClick={() => setDeleting(app)}
+                    onClick={() => {
+                      setRowError(null);
+                      setDeleting(app);
+                    }}
                   >
-                    Delete
+                    {t('admin.actions.delete')}
                   </Button>
                 </div>
               </div>
@@ -242,6 +246,7 @@ export function OAuthAppsPage() {
         <DeleteOAuthAppDialog
           app={deleting}
           busy={busyId === deleting.id}
+          error={rowError}
           onCancel={() => setDeleting(null)}
           onConfirm={() => void remove(deleting)}
         />
@@ -303,11 +308,13 @@ function CreatedOAuthAppDialog({
 function DeleteOAuthAppDialog({
   app,
   busy,
+  error,
   onCancel,
   onConfirm,
 }: {
   app: OAuthClientSummary;
   busy: boolean;
+  error: string | null;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -323,6 +330,7 @@ function DeleteOAuthAppDialog({
         <p className="text-sm text-neutral-400">
           {t('admin.confirmations.deleteOAuthApp.description', { name: app.name })}
         </p>
+        {error ? <Alert tone="error">{error}</Alert> : null}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" disabled={busy} onClick={onCancel}>
             {t('common.cancel')}

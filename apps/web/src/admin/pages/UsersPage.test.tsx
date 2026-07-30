@@ -6,6 +6,7 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import type { AdminStats, AdminUser, CreateUserResponse, MeResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
+import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { AuthProvider } from '../AuthContext';
 import { UsersPage } from './UsersPage';
@@ -58,6 +59,7 @@ function renderPage() {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.mocked(api.getMe).mockResolvedValue(admin);
   vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
     setupRequired: false,
@@ -129,7 +131,7 @@ test('bulk-disable names the selected count and only runs after confirmation', a
   await user.click(await screen.findByRole('button', { name: 'Disable selected' }));
 
   expect(await screen.findByRole('dialog', { name: 'Disable selected users?' })).toHaveTextContent(
-    'Disable 1 selected user(s)?',
+    'Disable the selected user?',
   );
   expect(api.bulkUserAction).not.toHaveBeenCalled();
 
@@ -137,10 +139,34 @@ test('bulk-disable names the selected count and only runs after confirmation', a
   expect(api.bulkUserAction).not.toHaveBeenCalled();
 
   await user.click(screen.getByRole('button', { name: 'Disable selected' }));
-  await user.click(await screen.findByRole('button', { name: 'Disable 1 users' }));
+  await user.click(await screen.findByRole('button', { name: 'Disable user' }));
 
   await waitFor(() =>
     expect(api.bulkUserAction).toHaveBeenCalledWith({ action: 'disable', userIds: ['user-1'] }),
   );
   expect(await screen.findByText(/Disabled 1 user/)).toBeInTheDocument();
+});
+
+test('keeps a bulk-disable failure visible in its confirmation dialog', async () => {
+  vi.mocked(api.bulkUserAction).mockRejectedValue(
+    new ApiError(500, 'internal_error', 'Could not disable the selected users.'),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByText('jane@bettertrack.test');
+  await user.click(screen.getByLabelText('Select jane'));
+  await user.click(screen.getByRole('button', { name: 'Disable selected' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Disable selected users?' });
+  const confirm = within(dialog).getByRole('button', { name: 'Disable user' });
+
+  await user.click(confirm);
+
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Could not disable the selected users.',
+  );
+  expect(confirm).toBeEnabled();
+
+  await user.click(confirm);
+  await waitFor(() => expect(api.bulkUserAction).toHaveBeenCalledTimes(2));
 });
