@@ -33,15 +33,6 @@
       </nav>
     </main>
 
-    <script>
-      (function () {
-        var origin = (window.__BT_LANDING__ && window.__BT_LANDING__.webOrigin) || '';
-        if (!origin) return;
-        var links = document.querySelectorAll('.js-web-link');
-        for (var i = 0; i < links.length; i++) {
-          links[i].setAttribute('href', origin);
-        }
-      })();
-    </script>
+    <script src="/landing.js"></script>
   </body>
 </html>
