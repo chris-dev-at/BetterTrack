@@ -107,11 +107,12 @@ test('the user link is keyboard-operable without changing the selection', async 
   const checkbox = await screen.findByLabelText('Select jane');
   await user.click(checkbox);
   expect(checkbox).toBeChecked();
+  expect(checkbox).toHaveFocus();
 
   const link = screen.getByRole('link', { name: /jane@bettertrack\.test jane/ });
   expect(link).toHaveAttribute('href', '/admin/users/user-1');
 
-  link.focus();
+  await user.tab();
   expect(link).toHaveFocus();
 
   await user.keyboard('{Enter}');
