@@ -19,6 +19,16 @@
  * reduces to a normal deposit/withdrawal carrying the computed delta
  * ({@link setBalanceMovement}).
  *
+ * **V5 — the `fee` kind** (§16 2026-07-30). A standing custody / account /
+ * platform fee is its own movement kind rather than a `withdrawal`, because the
+ * two mean opposite things to the return: a withdrawal is the owner taking money
+ * out (external, divided back out of the curve), a fee is what the portfolio
+ * *costs to hold* (internal, and therefore a drag). Before this kind existed a
+ * recurring custody fee could only be entered as a withdrawal, which reported a
+ * fee-eaten portfolio as if it performed exactly like a fee-free one — the gap
+ * the return-series audit found. Always negative; see
+ * {@link EXTERNAL_CASH_MOVEMENT_KINDS} for the full argument.
+ *
  * **Data model.** A movement is `kind + signed EUR amount + ISO-8601 timestamp`.
  * The sign is part of the data (not derived): inflow kinds (`deposit`,
  * `sell_proceeds`) carry a strictly positive `amountEur`, outflow kinds
@@ -73,7 +83,10 @@ import type { FlowPoint, ValuePoint } from './holdings';
  * `dividend` / `tax_withholding` / `tax_refund` (V3-P4, §13.3) are the tax
  * engine's postings: a dividend's gross amount landing in a source, and the
  * KESt/manual tax settlements against it — all internal for TWR purposes (see
- * {@link EXTERNAL_CASH_MOVEMENT_KINDS}).
+ * {@link EXTERNAL_CASH_MOVEMENT_KINDS}). `fee` (V5, §16 2026-07-30) is a
+ * standing cost of *holding* the portfolio — custody/account/platform fees —
+ * also internal, for the reason spelled out on
+ * {@link EXTERNAL_CASH_MOVEMENT_KINDS}.
  */
 export const CASH_MOVEMENT_KINDS = [
   'deposit',
@@ -85,14 +98,18 @@ export const CASH_MOVEMENT_KINDS = [
   'dividend',
   'tax_withholding',
   'tax_refund',
+  'fee',
 ] as const;
 
 export type CashMovementKind = (typeof CASH_MOVEMENT_KINDS)[number];
 
 /**
  * Required sign of `amountEur` per kind: inflows (`deposit`, `sell_proceeds`,
- * `transfer_in`) are strictly positive, outflows (`withdrawal`, `buy`,
- * `transfer_out`) strictly negative.
+ * `transfer_in`, `dividend`, `tax_refund`) are strictly positive, outflows
+ * (`withdrawal`, `buy`, `transfer_out`, `tax_withholding`, `fee`) strictly
+ * negative. A `fee` is money **leaving** the portfolio's cash, so it is never
+ * positive — "a fee that pays you" is not a fee, and admitting one would let a
+ * mistyped sign silently *lift* the performance curve.
  */
 export const CASH_MOVEMENT_SIGN: Readonly<Record<CashMovementKind, 1 | -1>> = {
   deposit: 1,
@@ -104,6 +121,7 @@ export const CASH_MOVEMENT_SIGN: Readonly<Record<CashMovementKind, 1 | -1>> = {
   buy: -1,
   transfer_out: -1,
   tax_withholding: -1,
+  fee: -1,
 };
 
 /**
@@ -118,6 +136,24 @@ export const CASH_MOVEMENT_SIGN: Readonly<Record<CashMovementKind, 1 | -1>> = {
  * and understate the true return — and `tax_withholding` / `tax_refund` are
  * costs of holding the portfolio, kept inside the curve so performance reads
  * net of taxes, exactly as it already reads net of fees.
+ *
+ * **`fee` is internal, and that is the whole point of the kind** (V5, §16
+ * 2026-07-30). A custody / account / platform fee is a **cost of holding**, not
+ * money the owner chose to take out: the portfolio is worth less afterwards
+ * *because of what it costs to run*, so the fee must **drag** the return.
+ * Classifying it external — which is all a `withdrawal` could ever have done —
+ * would divide it back out of the curve and report a portfolio that silently
+ * eats 0.5 % a year as if it did not. This is the same reasoning that keeps
+ * `tax_withholding` inside the curve, and it makes a standing fee read exactly
+ * like the per-trade `fee` that already rides a transaction's cost basis. The
+ * consequence is deliberate and is pinned by test: a fee lowers `performance[]`
+ * while a withdrawal of the same amount on the same day does not.
+ *
+ * NOTE — "external" here means **external to the portfolio's return**, which is
+ * a narrower notion than "hand-entered". MIRRORCHAIN replicates a `fee` exactly
+ * like a deposit/withdrawal (a member typed it; it is not re-derived per copy),
+ * so `mirrorService`'s replication predicate deliberately does NOT reuse this
+ * set. Do not collapse the two.
  */
 export const EXTERNAL_CASH_MOVEMENT_KINDS: readonly CashMovementKind[] = ['deposit', 'withdrawal'];
 
@@ -833,7 +869,9 @@ export function isExternalCashMovement(kind: CashMovementKind): boolean {
  * return: **only** `deposit` / `withdrawal`. `buy` and `sell_proceeds` are
  * internal — money already inside the portfolio changing form — and excluded,
  * which is precisely what keeps a cash-funded buy TWR-neutral (V2-P6's core
- * correctness requirement; see the module header for the two wiring rules).
+ * correctness requirement; see the module header for the two wiring rules). A
+ * `fee` is excluded for the opposite reason: it is a real cost of holding, so it
+ * must stay *inside* the curve and drag the return down.
  *
  * Output is `holdings`' {@link FlowPoint} shape and convention — net EUR flow
  * per day, money *into* the portfolio positive (a deposit's `amountEur` is

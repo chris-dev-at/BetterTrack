@@ -1892,9 +1892,11 @@
     },
     "cash": {
       "title": "Bargeldbestand",
-      "kindGroupAriaLabel": "Einzahlen oder abheben",
+      "kindGroupAriaLabel": "Einzahlen, abheben oder Gebühr erfassen",
       "depositTab": "Einzahlen",
       "withdrawTab": "Abheben",
+      "feeTab": "Gebühr",
+      "feeHint": "Eine Depot-, Konto- oder Plattformgebühr — Kosten des Haltens. Sie senkt deine Performance und gilt nicht als Geld, das du entnommen hast.",
       "amountLabel": "Betrag (EUR)",
       "amountAriaLabel": "Betrag",
       "previewAriaLabel": "Vorschau: Bargeld danach",
@@ -1906,6 +1908,7 @@
       "noteAriaLabel": "Notiz",
       "depositSubmit": "Bargeld einzahlen",
       "withdrawSubmit": "Bargeld abheben",
+      "feeSubmit": "Gebühr erfassen",
       "amountRequired": "Gib einen Betrag größer als 0 ein.",
       "blockedError": "Das würde den Bargeldbestand negativ werden lassen.",
       "invalidDate": "Wähle ein gültiges Datum.",
@@ -1955,7 +1958,8 @@
         "transfer_in": "Umbuchung eingehend",
         "dividend": "Dividende",
         "tax_withholding": "Steuereinbehalt",
-        "tax_refund": "Steuererstattung"
+        "tax_refund": "Steuererstattung",
+        "fee": "Gebühr"
       },
       "history": {
         "heading": "Bewegungsverlauf",

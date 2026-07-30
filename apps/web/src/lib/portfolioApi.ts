@@ -366,6 +366,24 @@ export async function withdrawCash(
 }
 
 /**
+ * `POST /portfolios/:id/cash/fee` — record a standing custody / account /
+ * platform fee; rejects an overdraw exactly like a withdrawal (V5, §16
+ * 2026-07-30). Same body as deposit/withdraw. The difference is what it means to
+ * the return: a fee is a cost of HOLDING, so it drags the performance curve,
+ * whereas a withdrawal is an external flow that is divided back out of it.
+ */
+export async function chargeCashFee(
+  portfolioId: string,
+  body: CashEntryRequest,
+): Promise<CashMovementResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/fee`,
+    { method: 'POST', body },
+  );
+  return cashMovementResponseSchema.parse(data);
+}
+
+/**
  * `POST /portfolios/:id/cash/preview` — the live "available → after" preview for
  * a proposed movement; read-only, no movement is persisted (§14).
  */

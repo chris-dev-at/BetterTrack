@@ -540,6 +540,13 @@
       "when": 1785377115695,
       "tag": "0076_cash_fusion",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1785974400000,
+      "tag": "0077_cash_fee_kind",
+      "breakpoints": true
     }
   ]
 }

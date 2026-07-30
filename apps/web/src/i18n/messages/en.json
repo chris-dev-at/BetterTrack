@@ -1892,9 +1892,11 @@
     },
     "cash": {
       "title": "Cash balance",
-      "kindGroupAriaLabel": "Deposit or withdraw",
+      "kindGroupAriaLabel": "Deposit, withdraw or record a fee",
       "depositTab": "Deposit",
       "withdrawTab": "Withdraw",
+      "feeTab": "Fee",
+      "feeHint": "A custody, account or platform fee — a cost of holding, so it lowers your performance instead of counting as money you took out.",
       "amountLabel": "Amount (EUR)",
       "amountAriaLabel": "Amount",
       "previewAriaLabel": "Cash-after preview",
@@ -1906,6 +1908,7 @@
       "noteAriaLabel": "Note",
       "depositSubmit": "Deposit cash",
       "withdrawSubmit": "Withdraw cash",
+      "feeSubmit": "Record fee",
       "amountRequired": "Enter an amount greater than 0.",
       "blockedError": "That would take the cash balance negative.",
       "invalidDate": "Pick a valid date.",
@@ -1955,7 +1958,8 @@
         "transfer_in": "Transfer in",
         "dividend": "Dividend",
         "tax_withholding": "Tax withheld",
-        "tax_refund": "Tax refund"
+        "tax_refund": "Tax refund",
+        "fee": "Fee"
       },
       "history": {
         "heading": "Movement history",
