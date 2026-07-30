@@ -13,7 +13,7 @@ import type { CatalogEnrichment } from './catalogEnrichment';
  * response says so via `enriching`.
  */
 export interface SearchService {
-  search(userId: string, rawQuery: string): Promise<SearchResponse>;
+  search(userId: string, rawQuery: string, options?: SearchOptions): Promise<SearchResponse>;
   /**
    * Freshness watermark for the conditional catalog-search read (issue #555):
    * the creation time of the newest asset in the caller's visible catalog
@@ -24,6 +24,15 @@ export interface SearchService {
   catalogFreshness(userId: string): Promise<Date | null>;
   /** Resolves once in-flight background enrichments have finished (graceful shutdown, deterministic tests). */
   enrichmentSettled(): Promise<void>;
+}
+
+export interface SearchOptions {
+  /**
+   * Whether a thin local result set may start provider enrichment. User-facing
+   * search defaults to true; bounded batch workflows can perform a complete
+   * catalog-only pass before explicitly admitting provider work.
+   */
+  allowEnrichment?: boolean;
 }
 
 /** Cap on returned rows — the UI shows a short list, not a browse page (§6.2). */
@@ -67,14 +76,14 @@ export function createSearchService(deps: SearchServiceDeps): SearchService {
   const { assetRepo, enrichment } = deps;
 
   return {
-    async search(userId, rawQuery) {
+    async search(userId, rawQuery, options) {
       const query = normalizeQuery(rawQuery);
       const matches = await assetRepo.searchCatalog(userId, query, SEARCH_RESULT_LIMIT);
       const results = matches.map(toResultItem);
 
       const marketMatches = matches.filter((m) => m.ownerId === null).length;
       const enriching =
-        marketMatches < CATALOG_MISS_THRESHOLD
+        options?.allowEnrichment !== false && marketMatches < CATALOG_MISS_THRESHOLD
           ? // Fire-and-forget: resolves after the coalescing decision, never
             // waits on a provider (§6.2). False when it ran recently, so a
             // refetching client doesn't spin forever.
