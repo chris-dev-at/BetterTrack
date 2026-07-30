@@ -66,7 +66,7 @@ jobs:
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Run e2e happy path
+      - name: Run Playwright shard
         # Fail the test step before the job deadline so Playwright receives an
         # interrupt, flushes the blob reporter, and the report upload below runs.
         # Invoke Playwright directly: passing `-- --shard=…` through the pnpm
