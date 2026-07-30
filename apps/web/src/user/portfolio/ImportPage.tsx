@@ -9,6 +9,7 @@ import type {
   ImportRowFlag,
   ImportRowResult,
 } from '@bettertrack/contracts';
+import { IMPORT_MAX_DISTINCT_INSTRUMENTS } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
@@ -51,6 +52,19 @@ const RESULT_TONES: Record<ImportRowResult, BadgeTone> = {
   skipped_error: 'neutral',
   failed: 'neg',
 };
+
+/**
+ * Upload rejections. §8 error messages are server-authored English, so the codes
+ * this surface owns a translated string for are mapped here and the rest still
+ * render verbatim — the systemic error-code → i18n sweep is #739.
+ */
+function uploadErrorMessage(err: unknown, t: TranslateFn): string {
+  if (!(err instanceof ApiError)) return t('portfolio.import.uploadFailed');
+  if (err.code === 'IMPORT_TOO_MANY_INSTRUMENTS') {
+    return t('portfolio.import.tooManyInstruments', { max: IMPORT_MAX_DISTINCT_INSTRUMENTS });
+  }
+  return err.message;
+}
 
 function FlagBadge({ flag, t }: { flag: ImportRowFlag; t: TranslateFn }) {
   return <Badge tone={FLAG_TONES[flag]}>{t(`portfolio.import.flag.${flag}`)}</Badge>;
@@ -157,7 +171,7 @@ export function ImportPage() {
       setError(null);
     },
     onError: (err) => {
-      setError(err instanceof ApiError ? err.message : t('portfolio.import.uploadFailed'));
+      setError(uploadErrorMessage(err, t));
     },
   });
 
