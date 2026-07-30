@@ -326,6 +326,7 @@ describe('static browser security policy', () => {
     expect(csp).toContain(
       "connect-src 'self' https://api.track.example.at wss://api.track.example.at",
     );
+    expect(csp).toContain("img-src 'self' data: blob: https://api.track.example.at https:");
     expect(csp).not.toMatch(/\b(?:ws|wss):(?:\s|;)/);
     expect(csp).toContain(
       "frame-src 'self' https://api.track.example.at https://accounts.google.com",
@@ -469,7 +470,7 @@ describe('shipped web Compose topology → rendered browser policy', () => {
     );
   });
 
-  it('derives ports-mode sources, including a plain-HTTP Grafana origin', () => {
+  it('derives ports-mode sources for API assets, sockets, and plain-HTTP Grafana', () => {
     const rendered = runWebEntrypoint(
       composeWebEnvironment({
         BT_MODE: 'ports',
@@ -481,6 +482,10 @@ describe('shipped web Compose topology → rendered browser policy', () => {
 
     expect(rendered.status).toBe(0);
     const csp = contentSecurityPolicy(rendered.policy);
+    // ConsentPage turns a non-null logoPath into this cross-port API asset URL.
+    // Its origin must be an explicit img-src because the web port is not 'self'.
+    const oauthLogoUrl = 'http://track.lan:4300/api/v1/oauth/client-logos/btc_charting_buddy';
+    expect(csp).toContain(`img-src 'self' data: blob: ${new URL(oauthLogoUrl).origin} https:`);
     expect(csp).toContain("connect-src 'self' http://track.lan:4300 ws://track.lan:4300");
     expect(csp).toContain(
       "frame-src 'self' http://track.lan:4300 https://accounts.google.com http://track.lan:3001;",
