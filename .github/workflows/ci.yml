@@ -70,6 +70,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Render and validate production Compose topologies
+        run: pnpm --filter @bettertrack/api check:production-compose
+
       - name: Test production dependency-audit verifier
         run: node --test .github/scripts/audit-production-dependencies.test.mjs
 
