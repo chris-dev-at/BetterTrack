@@ -31,6 +31,8 @@ import {
 } from '../workboard/conglomerateBuilder';
 import { CapabilityTags } from '../assets/capabilityTags';
 import { TransactionDialog, type TransactionDialogAsset } from './TransactionDialog';
+import { restoreFocusTo } from './useFocusTrap';
+import { useMenuKeyboard } from './useMenuKeyboard';
 
 /** Reused by the lazily-fetched supporting queries below (watchlists, portfolios). */
 const SEARCH_STALE_MS = 30_000;
@@ -58,7 +60,7 @@ export interface AssetSearchBoxProps {
    * default Workboard / Conglomerate / Portfolio navigation actions.
    */
   onSelect?: (item: SearchResultItem) => void;
-  /** Auto-focus the input on mount (useful in the ⌘K palette). */
+  /** Auto-focus the input on mount when it is the dialog's primary control. */
   autoFocus?: boolean;
   placeholder?: string;
 }
@@ -394,7 +396,27 @@ function ResultRow({
   const t = useT();
   const badgeClass = TYPE_BADGE[item.type] ?? '';
   const conglomerateRef = useRef<HTMLDivElement>(null);
-  usePopoverDismiss(conglomeratePickerOpen, onCloseConglomeratePicker, conglomerateRef);
+  const conglomerateTriggerRef = useRef<HTMLButtonElement>(null);
+  const {
+    closeAndRestoreFocus,
+    menuRef,
+    onKeyDown: onMenuKeyDown,
+  } = useMenuKeyboard({
+    open: conglomeratePickerOpen,
+    onClose: onCloseConglomeratePicker,
+    triggerRef: conglomerateTriggerRef,
+    focusVersion: `${conglomeratesLoading}:${conglomerates.map((item) => item.id).join(',')}`,
+  });
+  usePopoverDismiss(conglomeratePickerOpen, closeAndRestoreFocus, conglomerateRef);
+
+  function createConglomerate() {
+    // The trigger is part of this route and disappears during navigation.
+    // Put focus on the shell's stable main region before navigating instead of
+    // briefly restoring the trigger and leaving focus on <body> when it unmounts.
+    onCloseConglomeratePicker();
+    restoreFocusTo([], { exclude: menuRef.current });
+    onCreateConglomerate();
+  }
 
   return (
     <li className="bt-panel bt-panel--soft group relative flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">
@@ -423,8 +445,11 @@ function ResultRow({
 
         <div className="relative" ref={conglomerateRef}>
           <ActionButton
+            buttonRef={conglomerateTriggerRef}
             onClick={onConglomerate}
             aria-label={t('assets.searchBox.addToConglomerateAria', { symbol: item.symbol })}
+            aria-haspopup="menu"
+            aria-expanded={conglomeratePickerOpen}
           >
             {t('assets.searchBox.toConglomerate')}
           </ActionButton>
@@ -436,8 +461,10 @@ function ResultRow({
               isLoading={conglomeratesLoading}
               addState={conglomerateAddState}
               onPick={onPickConglomerate}
-              onClose={onCloseConglomeratePicker}
-              onCreateNew={onCreateConglomerate}
+              onClose={closeAndRestoreFocus}
+              onCreateNew={createConglomerate}
+              menuRef={menuRef}
+              onMenuKeyDown={onMenuKeyDown}
             />
           ) : null}
         </div>
@@ -453,7 +480,13 @@ function ResultRow({
   );
 }
 
-/** Closes a popover on Escape or on a mousedown outside `containerRef`. */
+/**
+ * Closes a popover on a mousedown outside `containerRef`. `onClose` must be the
+ * caller's restoring close: the mousedown can land on non-focusable content,
+ * which would otherwise unmount the focused menu item with nowhere for focus to
+ * go. Escape is not handled here — `useMenuKeyboard` registers the menu with the
+ * shared overlay stack, which arbitrates it and restores focus centrally.
+ */
 function usePopoverDismiss(
   open: boolean,
   onClose: () => void,
@@ -461,16 +494,11 @@ function usePopoverDismiss(
 ) {
   useEffect(() => {
     if (!open) return;
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
     function handleClick(e: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) onClose();
     }
-    document.addEventListener('keydown', handleKey);
     document.addEventListener('mousedown', handleClick);
     return () => {
-      document.removeEventListener('keydown', handleKey);
       document.removeEventListener('mousedown', handleClick);
     };
   }, [open, onClose, containerRef]);
@@ -495,7 +523,7 @@ function WatchlistControl({
   const [listPickerOpen, setListPickerOpen] = useState(false);
   const added = status === 'done';
   const containerRef = useRef<HTMLDivElement>(null);
-  usePopoverDismiss(listPickerOpen, () => setListPickerOpen(false), containerRef);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   // The caller's named lists — fetched only when the picker opens (V3-P5).
   const listsQuery = useQuery({
@@ -504,6 +532,17 @@ function WatchlistControl({
     enabled: listPickerOpen,
     staleTime: 30_000,
   });
+  const {
+    closeAndRestoreFocus,
+    menuRef,
+    onKeyDown: onMenuKeyDown,
+  } = useMenuKeyboard({
+    open: listPickerOpen,
+    onClose: () => setListPickerOpen(false),
+    triggerRef,
+    focusVersion: (listsQuery.data?.watchlists ?? []).map((list) => list.id).join(','),
+  });
+  usePopoverDismiss(listPickerOpen, closeAndRestoreFocus, containerRef);
 
   return (
     <div className="relative flex items-center" ref={containerRef}>
@@ -534,6 +573,7 @@ function WatchlistControl({
       </button>
 
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setListPickerOpen((o) => !o)}
         aria-label={t('assets.searchBox.chooseWatchlistAria', { symbol: item.symbol })}
@@ -546,10 +586,12 @@ function WatchlistControl({
 
       {listPickerOpen ? (
         <div
+          ref={menuRef}
           role="menu"
           aria-label={t('assets.searchBox.watchlistsMenuAria', { symbol: item.symbol })}
           className="bt-popover w-48 p-2 text-xs"
           style={{ right: 0, top: 'calc(100% + 4px)' }}
+          onKeyDown={onMenuKeyDown}
         >
           {(listsQuery.data?.watchlists ?? []).map((list) => (
             <button
@@ -558,7 +600,7 @@ function WatchlistControl({
               role="menuitem"
               onClick={() => {
                 onAdd(list.isDefault ? undefined : list.id);
-                setListPickerOpen(false);
+                closeAndRestoreFocus();
               }}
               className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left bt-soft"
             >
@@ -601,6 +643,8 @@ function ConglomeratePicker({
   onPick,
   onClose,
   onCreateNew,
+  menuRef,
+  onMenuKeyDown,
 }: {
   item: SearchResultItem;
   conglomerates: ConglomerateSummary[];
@@ -609,27 +653,23 @@ function ConglomeratePicker({
   onPick: (target: ConglomerateSummary) => void;
   onClose: () => void;
   onCreateNew: () => void;
+  menuRef: React.RefObject<HTMLDivElement | null>;
+  onMenuKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void;
 }) {
   const t = useT();
   const pending = addState?.status === 'pending';
 
   return (
     <div
+      ref={menuRef}
       role="menu"
       aria-label={t('assets.searchBox.pickerMenuAria', { symbol: item.symbol })}
-      className="bt-popover w-64 p-2"
+      className="bt-popover relative w-64 p-2"
       style={{ right: 0, top: 'calc(100% + 4px)' }}
+      onKeyDown={onMenuKeyDown}
     >
-      <div className="flex items-center justify-between px-1 pb-1">
+      <div className="px-1 pb-1 pr-7">
         <span className="text-xs font-medium bt-muted">{t('assets.searchBox.pickerTitle')}</span>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={t('common.close')}
-          className="rounded p-0.5 bt-muted hover:bt-soft"
-        >
-          ✕
-        </button>
       </div>
 
       {isLoading ? (
@@ -643,9 +683,14 @@ function ConglomeratePicker({
               <button
                 type="button"
                 role="menuitem"
-                onClick={() => onPick(c)}
-                disabled={pending}
-                className="w-full rounded px-2 py-1.5 text-left text-sm bt-soft disabled:cursor-not-allowed disabled:opacity-50"
+                aria-disabled={pending}
+                onClick={() => {
+                  if (!pending) onPick(c);
+                }}
+                className={cx(
+                  'w-full rounded px-2 py-1.5 text-left text-sm bt-soft',
+                  pending && 'cursor-not-allowed opacity-50',
+                )}
               >
                 {c.name}
               </button>
@@ -665,10 +710,26 @@ function ConglomeratePicker({
 
       <button
         type="button"
+        role="menuitem"
         onClick={onCreateNew}
         className="mt-1 w-full rounded px-2 py-1.5 text-left text-xs bt-link"
       >
         {t('assets.searchBox.createNewConglomerate')}
+      </button>
+
+      {/* Last in DOM order so the menu's initial focus lands on a blueprint row
+          rather than on Close, and absolutely positioned back into the header —
+          `right-3`/`top-2` reproduce the popover's `p-2` plus the header's
+          `px-1`, i.e. exactly where the old header-flex ✕ sat. Its roving stop
+          is therefore the last one, after "create new". */}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onClose}
+        aria-label={t('common.close')}
+        className="absolute right-3 top-2 rounded p-0.5 bt-muted hover:bt-soft"
+      >
+        ✕
       </button>
     </div>
   );
@@ -715,19 +776,28 @@ function ActionButton({
   children,
   disabled,
   onClick,
+  buttonRef,
   'aria-label': ariaLabel,
+  'aria-expanded': ariaExpanded,
+  'aria-haspopup': ariaHasPopup,
 }: {
   children: React.ReactNode;
   disabled?: boolean;
   onClick: () => void;
+  buttonRef?: React.Ref<HTMLButtonElement>;
   'aria-label'?: string;
+  'aria-expanded'?: boolean;
+  'aria-haspopup'?: 'menu';
 }) {
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={onClick}
       disabled={disabled}
       aria-label={ariaLabel}
+      aria-expanded={ariaExpanded}
+      aria-haspopup={ariaHasPopup}
       className={cx(
         'rounded px-2 py-1 text-xs font-medium transition-colors',
         'bt-muted',
