@@ -118,12 +118,22 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   // follow the active portfolio, then switch back to the default.
   const switcher = owner.getByRole('button', { name: 'Switch portfolio' });
   await switcher.click();
-  await owner.getByRole('menuitem', { name: '+ New portfolio' }).click();
-  const newPortfolioDialog = owner.getByRole('dialog', { name: 'New portfolio' });
-  await newPortfolioDialog.getByLabel('Portfolio name').fill('Growth');
-  await newPortfolioDialog.getByRole('button', { name: 'Create' }).click();
-  await expect(newPortfolioDialog).toBeHidden();
+  // The switcher's single create entry point is the add-portfolio wizard:
+  // name → icon → book → done, one gold primary per step.
+  await owner.getByRole('menuitem', { name: 'Add portfolio' }).click();
+  const wizard = owner.getByRole('dialog', { name: 'Add portfolio' });
+  await wizard.getByLabel('Portfolio name').fill('Growth');
+  await wizard.getByRole('button', { name: 'Continue' }).click();
+  await wizard.getByRole('radio', { name: 'Savings' }).click();
+  await wizard.getByRole('button', { name: 'Continue' }).click();
+  await wizard.getByRole('radio', { name: /Just me/ }).click();
+  await wizard.getByRole('button', { name: 'Continue' }).click();
+  // Created: the summary reads it back, and the primary activates it.
+  await wizard.getByRole('button', { name: 'Open portfolio' }).click();
+  await expect(wizard).toBeHidden();
   await expect(switcher).toContainText('Growth');
+  // The icon picked in the wizard is the one the trigger now carries.
+  await expect(switcher.locator('svg[data-icon="piggy-bank"]')).toBeVisible();
   await expect(owner.getByText('Your portfolio is empty')).toBeVisible({ timeout: 15_000 });
 
   await switcher.click();

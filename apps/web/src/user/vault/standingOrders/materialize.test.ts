@@ -290,6 +290,8 @@ describe('paranoid standing-order materialization', () => {
               executedAt: BOOKED_AT,
               note: null,
               source: 'standing-order',
+              dedupHash: null,
+              originalCurrency: null,
               createdAt: BOOKED_AT,
             },
           },
@@ -1817,6 +1819,8 @@ function bookedDeposit(id: string, amountEur: string, executedAt: string): Vault
       executedAt,
       note: null,
       source: 'standing-order',
+      dedupHash: null,
+      originalCurrency: null,
       createdAt: executedAt,
     },
   };

@@ -20,12 +20,25 @@ export interface CommandEntry {
   extra?: readonly string[];
   /** Present in the structure, build lands later — rendered with the gold dot. */
   parked?: boolean;
+  /**
+   * Rank (1 = first) in the palette's curated **Suggested** default state — the
+   * handful of high-value entries an empty ⌘K offers before anything is typed.
+   * Deliberately a rank rather than a flag: registry order groups by product
+   * structure, which is the wrong order for a "start here" list.
+   */
+  suggested?: number;
 }
 
 export const COMMANDS: readonly CommandEntry[] = [
   // ── Suite destinations ──
-  { labelKey: 'nav.home', to: '/', group: 'navigate', icon: 'home' },
-  { labelKey: 'nav.portfolios', to: '/portfolio', group: 'navigate', icon: 'portfolios' },
+  { labelKey: 'nav.home', to: '/', group: 'navigate', icon: 'home', suggested: 4 },
+  {
+    labelKey: 'nav.portfolios',
+    to: '/portfolio',
+    group: 'navigate',
+    icon: 'portfolios',
+    suggested: 3,
+  },
   {
     labelKey: 'portfolio.tabs.activity',
     to: '/portfolio/activity',
@@ -38,6 +51,7 @@ export const COMMANDS: readonly CommandEntry[] = [
     group: 'navigate',
     icon: 'cash',
     extra: ['expenses', 'budget', 'ausgaben'],
+    suggested: 2,
   },
   {
     labelKey: 'portfolio.tabs.analysis',
@@ -55,7 +69,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     labelKey: 'portfolio.tabs.customAssets',
-    to: '/portfolio/custom-assets',
+    to: '/assets/custom-assets',
     group: 'navigate',
     icon: 'pen',
   },
@@ -215,8 +229,16 @@ export const COMMANDS: readonly CommandEntry[] = [
     icon: 'sparkles',
     parked: true,
     extra: ['ai', 'ki', 'assistant'],
+    suggested: 6,
   },
   { labelKey: 'nav.review', to: '/review', group: 'navigate', icon: 'inbox', parked: true },
+  {
+    labelKey: 'firstrun.command.runAgain',
+    to: '/welcome',
+    group: 'navigate',
+    icon: 'target',
+    extra: ['setup', 'onboarding', 'wizard', 'welcome', 'einrichtung', 'assistent'],
+  },
 
   // ── Create intents ──
   {
@@ -225,19 +247,21 @@ export const COMMANDS: readonly CommandEntry[] = [
     group: 'create',
     icon: 'assets',
     extra: ['buy', 'sell', 'kauf', 'verkauf', 'transaction'],
+    suggested: 1,
   },
   {
     labelKey: 'create.cashFlow',
     to: '/portfolio/cash-flow?create=transaction',
     group: 'create',
     icon: 'cash',
-    extra: ['income', 'expense', 'einnahme', 'ausgabe'],
+    extra: ['cash flow', 'cashflow', 'income', 'expense', 'einnahme', 'ausgabe'],
   },
   {
     labelKey: 'create.transfer',
     to: '/portfolio/cash-flow/accounts?create=transfer',
     group: 'create',
     icon: 'wallet',
+    extra: ['cash transfer', 'umbuchung', 'überweisung'],
   },
   {
     labelKey: 'create.blueprint',
@@ -256,50 +280,66 @@ export const COMMANDS: readonly CommandEntry[] = [
   { labelKey: 'create.portfolio', to: '/portfolios?create=1', group: 'create', icon: 'portfolios' },
 
   // ── Control Center / settings ──
-  { labelKey: 'nav.controlCenter', to: '/control', group: 'control', icon: 'grid' },
+  // Every settings surface is a Control Center panel (R2): `/control/<panel>`
+  // opens the overlay straight on it. Only genuine pages stay page targets.
+  { labelKey: 'nav.controlCenter', to: '/control', group: 'control', icon: 'grid', suggested: 5 },
   {
     labelKey: 'control.account',
-    to: '/settings/account',
+    to: '/control/account',
     group: 'control',
     icon: 'user',
-    extra: ['email', 'password', 'language', 'sprache', 'passwort'],
+    extra: ['email', 'password', 'language', 'sprache', 'passwort', 'settings'],
   },
   {
     labelKey: 'control.notifications',
-    to: '/settings/notifications',
+    to: '/control/notifications',
     group: 'control',
     icon: 'bell',
     extra: ['digest', 'quiet hours'],
   },
   {
     labelKey: 'control.security',
-    to: '/settings/security',
+    to: '/control/security',
     group: 'control',
     icon: 'shield',
     extra: ['passkey', '2fa', 'pin', 'sessions', 'two-factor'],
   },
   {
-    labelKey: 'control.taxes',
-    to: '/settings/taxes',
+    labelKey: 'control.portfolioDefaults',
+    to: '/control/portfolio-defaults',
     group: 'control',
     icon: 'percent',
-    extra: ['defaults'],
+    extra: ['defaults', 'tax', 'steuer'],
   },
   {
     labelKey: 'control.connections',
-    to: '/settings/connections',
+    to: '/control/connections',
     group: 'control',
     icon: 'link',
     extra: ['google drive', 'parqet'],
   },
   {
+    labelKey: 'control.deleteAccount',
+    to: '/control/delete-account',
+    group: 'control',
+    icon: 'trash',
+    extra: ['close account', 'konto löschen'],
+  },
+  {
     labelKey: 'control.imports',
-    to: '/settings/imports',
+    to: '/control/data',
     group: 'control',
     icon: 'download',
+    parked: true,
     extra: ['export'],
   },
-  { labelKey: 'control.backups', to: '/settings/backups', group: 'control', icon: 'cloud' },
+  {
+    labelKey: 'control.backups',
+    to: '/control/data',
+    group: 'control',
+    icon: 'cloud',
+    parked: true,
+  },
   {
     labelKey: 'control.privacy',
     to: '/control/privacy',
@@ -324,12 +364,12 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     labelKey: 'control.apiKeys',
-    to: '/settings/api',
+    to: '/control/api',
     group: 'control',
     icon: 'key',
     extra: ['token'],
   },
-  { labelKey: 'control.webhooks', to: '/settings/api', group: 'control', icon: 'webhook' },
+  { labelKey: 'control.webhooks', to: '/control/webhooks', group: 'control', icon: 'webhook' },
   {
     labelKey: 'control.mcp',
     to: '/developer/mcp',
@@ -349,15 +389,80 @@ export const COMMANDS: readonly CommandEntry[] = [
 ] as const;
 
 /**
- * Case-insensitive palette filter: matches the translated label or any alias.
- * An empty query surfaces nothing (the palette then shows only asset search),
- * keeping the default state calm.
+ * The curated default state of an empty ⌘K: the {@link CommandEntry.suggested}
+ * entries in rank order. An empty palette showing nothing was the old behaviour
+ * and read as a broken void — a universal search must offer a starting point.
+ */
+export const SUGGESTED_COMMANDS: readonly CommandEntry[] = COMMANDS.filter(
+  (command) => command.suggested !== undefined,
+).sort((a, b) => a.suggested! - b.suggested!);
+
+/**
+ * Where a nested destination lives, as quiet row meta ("Cash flow — Portfolio").
+ * Derived from the route so the registry carries no duplicated copy; top-level
+ * destinations get no meta because their label already says it.
+ */
+const SECTION_LABEL_KEY: readonly (readonly [prefix: string, labelKey: string])[] = [
+  ['/portfolio/', 'nav.portfolios'],
+  ['/portfolios', 'nav.portfolios'],
+  ['/workbench/', 'nav.workbench'],
+  ['/assets/', 'nav.assets'],
+  ['/people/', 'nav.people'],
+  ['/control/', 'nav.controlCenter'],
+  ['/developer/', 'control.developer'],
+];
+
+/** i18n key of the parent section for `to`, or `undefined` for a top-level route. */
+export function sectionLabelKeyFor(to: string): string | undefined {
+  return SECTION_LABEL_KEY.find(([prefix]) => to.startsWith(prefix))?.[1];
+}
+
+/**
+ * Match strength, highest first. Ranking (not raw registry order) is what makes
+ * a short query useful: typing "cas" must offer *Cash flow* before *Backtests*,
+ * which merely contains the letters.
+ */
+const SCORE_LABEL_PREFIX = 4;
+const SCORE_LABEL_WORD = 3;
+const SCORE_ALIAS_PREFIX = 2;
+const SCORE_CONTAINS = 1;
+/** A single character only ever matches the start of a word — never mid-word noise. */
+const MIN_SCORE_SINGLE_CHAR = SCORE_ALIAS_PREFIX;
+
+function scoreCommand(
+  command: CommandEntry,
+  needle: string,
+  translate: (key: string) => string,
+): number {
+  const label = translate(command.labelKey).toLowerCase();
+  if (label.startsWith(needle)) return SCORE_LABEL_PREFIX;
+  const aliases = command.extra ?? [];
+  if (label.split(/[\s/·—–-]+/).some((word) => word.startsWith(needle))) return SCORE_LABEL_WORD;
+  if (aliases.some((term) => term.split(/[\s-]+/).some((word) => word.startsWith(needle)))) {
+    return SCORE_ALIAS_PREFIX;
+  }
+  if (label.includes(needle) || aliases.some((term) => term.includes(needle))) {
+    return SCORE_CONTAINS;
+  }
+  return 0;
+}
+
+/**
+ * Case-insensitive, ranked palette filter over the translated labels and the
+ * alias terms. Returns best matches first, stable within a score (registry
+ * order), and nothing at all for an empty query — the palette shows
+ * {@link SUGGESTED_COMMANDS} there instead.
  */
 export function filterCommands(query: string, translate: (key: string) => string): CommandEntry[] {
   const needle = query.trim().toLowerCase();
-  if (needle.length < 2) return [];
-  return COMMANDS.filter((command) => {
-    if (translate(command.labelKey).toLowerCase().includes(needle)) return true;
-    return command.extra?.some((term) => term.includes(needle)) ?? false;
-  });
+  if (needle.length === 0) return [];
+  const floor = needle.length === 1 ? MIN_SCORE_SINGLE_CHAR : SCORE_CONTAINS;
+  return COMMANDS.map((command, index) => ({
+    command,
+    index,
+    score: scoreCommand(command, needle, translate),
+  }))
+    .filter((hit) => hit.score >= floor)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map((hit) => hit.command);
 }

@@ -29,5 +29,6 @@ export * from './featureFlags';
 export * from './standingOrders';
 export * from './mirrorchain';
 export * from './expenses';
+export * from './cash';
 export * from './webhooks';
 export * from './vault';

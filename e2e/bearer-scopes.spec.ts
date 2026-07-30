@@ -53,6 +53,9 @@ test('bearer scopes: chat:write sends a DM; no notifications:read → 403; admin
     // notifications nor social nor market is granted.
     await sender.page.goto('/settings/api');
     await sender.page.getByLabel('Name', { exact: true }).fill('bearer-scopes-e2e');
+    // The scope picker is a collapsed <details> (anti-bloat), so its checkboxes
+    // are display:none until the summary is opened.
+    await sender.page.getByText('Scopes', { exact: true }).click();
     await sender.page.getByRole('checkbox', { name: /Chat · write/i }).check();
     await sender.page.getByRole('button', { name: 'Create key' }).click();
 

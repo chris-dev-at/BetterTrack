@@ -327,6 +327,12 @@ Re-running the same commit can execute different action code or service images. 
 - Use Renovate/Dependabot to open reviewed digest/version updates.
 - Record image digests in release metadata and verify them at deploy time.
 
+**Remediation status (2026-07-30):** CI, nightly E2E, and application Dockerfile
+references were pinned by #952. Compose-file pins remain a separately scoped
+follow-up; grouped Dependabot updates cover Actions and npm, while Renovate's
+Dockerfile manager groups every deployable base-image stage into a reviewable
+digest update.
+
 ### INF-12 — CI lacks promised dependency and deployable-artifact security gates
 
 **Severity:** Medium.
@@ -349,6 +355,11 @@ Known dependency vulnerabilities, leaked secrets, vulnerable container layers, a
 - Build the exact production images in CI, run smoke/integration tests against them, and sign/attest them.
 - Run the critical E2E happy path on pull requests or before production promotion.
 - Add Dependabot or Renovate with grouped, reviewable updates.
+
+**Remediation status (2026-07-30):** #952 added a PR-gating production
+dependency audit with explicit expiring waivers, full-history secret scanning,
+and report-only nightly Trivy image reports. SBOMs, attestations, and production
+image smoke tests remain follow-up work.
 
 ### INF-13 — Backup sidecar uses an unsupported Alpine release
 

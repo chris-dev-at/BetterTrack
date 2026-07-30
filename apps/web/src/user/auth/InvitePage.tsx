@@ -92,6 +92,8 @@ export function InvitePage() {
     setSubmitting(true);
     try {
       await acceptInvite({ token, username, password });
+      // Land the app; `FirstRunGate` diverts a never-set-up account to /welcome
+      // (one trigger for every §6.12 mode — see RegisterPage).
       navigate('/', { replace: true });
     } catch (err) {
       setError(acceptErrorMessage(t, err));

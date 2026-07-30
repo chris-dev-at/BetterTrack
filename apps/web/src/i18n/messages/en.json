@@ -197,6 +197,20 @@
       "errorAccountDisabled": "This account has been suspended. Please contact the administrator.",
       "errorAdmin": "Google sign-in isn't available for administrator accounts. Please sign in with your password.",
       "errorAlreadyLinked": "That Google account is already linked to another user."
+    },
+    "figures": {
+      "valueLabel": "TOTAL VALUE",
+      "valueAmount": "€128,400",
+      "valueDelta": "+1.2% today",
+      "nestParent": "Main portfolio",
+      "nestParentValue": "€96,120",
+      "nestChild": "Savings",
+      "nestChildValue": "€21,480",
+      "nestChildTwo": "Property",
+      "nestChildTwoValue": "€10,800",
+      "sharedTitle": "Shared portfolio",
+      "sharedMeta": "Two people · one ledger",
+      "trendLabel": "THIS MONTH"
     }
   },
   "common": {
@@ -226,6 +240,8 @@
     "continue": "Continue",
     "dismiss": "Dismiss",
     "errorTitle": "Something went wrong.",
+    "errorFallbackMessage": "We couldn't display this page. Try again. If the problem continues, share the reference below.",
+    "errorCorrelationId": "Reference ID: {{id}}",
     "loadingLabel": "Loading",
     "quickSearchAria": "Quick search",
     "escKey": "Esc",
@@ -487,7 +503,22 @@
     "utilities": "Utilities",
     "myProfile": "My profile",
     "expandRail": "Expand navigation",
-    "collapseRail": "Collapse navigation"
+    "collapseRail": "Collapse navigation",
+    "expandSection": "Expand {{section}}",
+    "collapseSection": "Collapse {{section}}"
+  },
+  "askdock": {
+    "pin": "Keep open",
+    "unpin": "Stop keeping open",
+    "maximize": "Maximize",
+    "restore": "Restore size",
+    "close": "Close Ask BetterTrack",
+    "composerPlaceholder": "Ask about your portfolios",
+    "send": "Send",
+    "hint": "Not live yet — the AI conversation will run here.",
+    "aria": {
+      "region": "Ask BetterTrack panel"
+    }
   },
   "footer": {
     "legal": "Legal",
@@ -498,7 +529,6 @@
   },
   "language": {
     "title": "Language",
-    "description": "The language BetterTrack uses across the app and in your emails.",
     "label": "Display language",
     "saveError": "Couldn't save your language. Please try again."
   },
@@ -517,11 +547,9 @@
       "description": "Broker CSV imports (Trade Republic, George, …) and full account-data export."
     },
     "connections": {
-      "title": "Connections",
       "subtitle": "Everything linking BetterTrack to the outside — sign-in, encrypted storage, and compact connector controls.",
       "comingSoon": "Coming soon",
       "slotsTitle": "Connectors",
-      "slotsSubtitle": "Sync your data with outside services. These are on the way — nothing to set up yet.",
       "drive": {
         "title": "Google Drive app data",
         "description": "Keep your encrypted paranoid vault in your private Drive app-data folder. BetterTrack cannot access ordinary Drive files.",
@@ -592,110 +620,84 @@
     },
     "notifications": {
       "title": "Notifications",
-      "subtitle": "Route each kind of activity to the channels you want — in-app bell, email, phone push, browser push — or mute everything at once.",
       "loadError": {
         "title": "Couldn't load your notification settings"
       },
       "types": {
         "friendRequest": {
-          "label": "Friend requests",
-          "description": "When someone sends you a friend request."
+          "label": "Friend requests"
         },
         "friendAccepted": {
-          "label": "Accepted friend requests",
-          "description": "When someone accepts your friend request."
+          "label": "Accepted friend requests"
         },
         "portfolioShared": {
-          "label": "Shared portfolios",
-          "description": "When a friend shares a portfolio with you."
+          "label": "Shared portfolios"
         },
         "accountInvite": {
-          "label": "Account invites",
-          "description": "When you're invited to BetterTrack."
+          "label": "Account invites"
         },
         "tempPassword": {
-          "label": "Temporary passwords",
-          "description": "When an admin issues you a temporary password."
+          "label": "Temporary passwords"
         },
         "dataExport": {
-          "label": "Data exports",
-          "description": "When a data export you requested is ready to download."
+          "label": "Data exports"
         },
         "alertTriggered": {
-          "label": "Price alerts",
-          "description": "When one of your price alerts fires."
+          "label": "Price alerts"
         },
         "earningsReminder": {
-          "label": "Earnings reminders",
-          "description": "Ahead of an earnings report for an asset you hold or watch. Off by default."
+          "label": "Earnings reminders"
         },
         "chatMessage": {
-          "label": "Chat messages",
-          "description": "When a friend sends you a message."
+          "label": "Chat messages"
         },
         "watchlistShared": {
-          "label": "Shared watchlists",
-          "description": "When a friend shares a watchlist with you."
+          "label": "Shared watchlists"
         },
         "conglomerateShared": {
-          "label": "Shared blueprints",
-          "description": "When a friend shares a blueprint with you."
+          "label": "Shared blueprints"
         },
         "friendActivity": {
-          "label": "Friend activity",
-          "description": "Buys, sells and watchlist additions on shared items you follow."
+          "label": "Friend activity"
         },
         "followPublished": {
-          "label": "New from people you follow",
-          "description": "When someone you follow makes a portfolio, watchlist or blueprint public."
+          "label": "New from people you follow"
         },
         "followAlertCreated": {
-          "label": "New alerts from people you follow",
-          "description": "When someone you follow creates a price alert (only people whose alert news you opted into)."
+          "label": "New alerts from people you follow"
         },
         "followAlertFired": {
-          "label": "Fired alerts from people you follow",
-          "description": "When a price alert of someone you follow triggers (only people whose alert news you opted into)."
+          "label": "Fired alerts from people you follow"
         },
         "dividendEvent": {
-          "label": "Dividend reminders",
-          "description": "When a stock you hold is about to go ex-dividend. Off by default."
+          "label": "Dividend reminders"
         },
         "budgetExceeded": {
-          "label": "Budget alerts",
-          "description": "When your spending in a category blows its monthly budget."
+          "label": "Budget alerts"
         },
         "mirrorInvite": {
-          "label": "Group portfolio invites",
-          "description": "When a friend invites you to a group portfolio."
+          "label": "Group portfolio invites"
         },
         "mirrorMemberJoined": {
-          "label": "Member joined",
-          "description": "When someone joins a group portfolio you own."
+          "label": "Member joined"
         },
         "mirrorMemberLeft": {
-          "label": "Member left",
-          "description": "When a member leaves one of your group portfolios."
+          "label": "Member left"
         },
         "mirrorMemberRemoved": {
-          "label": "Member removed",
-          "description": "When a member is removed from your group portfolio."
+          "label": "Member removed"
         },
         "mirrorRemoved": {
-          "label": "Removed from a group portfolio",
-          "description": "When you are removed from a group portfolio."
+          "label": "Removed from a group portfolio"
         },
         "mirrorOwnershipTransferred": {
-          "label": "Ownership transferred",
-          "description": "When ownership of a group portfolio you are in changes."
+          "label": "Ownership transferred"
         },
         "mirrorChainDissolved": {
-          "label": "Group portfolio dissolved",
-          "description": "When a group portfolio you are in is dissolved."
+          "label": "Group portfolio dissolved"
         },
         "mirrorSyncStalled": {
-          "label": "Sync problems",
-          "description": "When a group portfolio can't finish syncing."
+          "label": "Sync problems"
         }
       },
       "routing": {
@@ -807,7 +809,6 @@
       },
       "telegram": {
         "title": "Telegram",
-        "description": "Receive notifications through the BetterTrack Telegram bot. Link your chat once, unlink any time.",
         "startLink": "Start Telegram link",
         "openBot": "Open Telegram bot",
         "codeHint": "Send /start {{code}} to the bot to finish linking.",
@@ -840,10 +841,15 @@
         "removeError": "Couldn't remove the webhook. Please try again."
       },
       "loadErrorTitle": "Couldn't load notifications",
-      "loadErrorDescription": "Please try again in a moment."
+      "loadErrorDescription": "Please try again in a moment.",
+      "groups": {
+        "general": "General",
+        "channels": "Channels",
+        "routing": "Routing",
+        "timing": "Timing"
+      }
     },
     "security": {
-      "title": "Security",
       "subtitle": "Your session, PIN, and two-factor options.",
       "loadError": {
         "title": "Couldn't load your security settings"
@@ -887,7 +893,6 @@
         "windowError": "Could not update the unlock window. Please try again.",
         "lockAfterInactivity": "Lock after inactivity",
         "lockDescription": "While you're actively using BetterTrack it stays unlocked — reloads and new tabs included. The PIN is asked again only after this long with no activity.",
-        "idleForLabel": "Lock after being idle for",
         "unlockWindowAriaLabel": "Unlock window",
         "disabledNotice": "Your PIN has been turned off.",
         "title": "PIN",
@@ -901,7 +906,6 @@
       },
       "twoFactor": {
         "title": "Two-factor authentication",
-        "description": "Add a second step at sign-in. Turn on either method — or both.",
         "loadError": {
           "title": "Couldn't load your two-factor status"
         },
@@ -946,7 +950,6 @@
           "done": "I've saved these codes",
           "regenerateError": "Could not regenerate recovery codes. Please try again.",
           "cardTitle": "Recovery codes",
-          "cardDescription": "One-time codes to sign in if you lose access to your other factors.",
           "remainingOne": "{{count}} recovery code remaining.",
           "remainingOther": "{{count}} recovery codes remaining.",
           "regenerating": "Regenerating…",
@@ -955,14 +958,12 @@
       },
       "google": {
         "title": "Google account",
-        "description": "Sign in with Google, or manage the linked account.",
         "linkedAs": "Linked as {{email}}",
         "linkedOn": "Linked {{date}}",
         "notLinked": "No Google account is linked.",
         "connectButton": "Connect Google",
         "unlinkButton": "Unlink",
         "unlinkTitle": "Unlink Google",
-        "unlinkPrompt": "Enter your password to confirm you want to unlink Google.",
         "passwordLabel": "Password",
         "confirmUnlink": "Unlink Google",
         "cancel": "Cancel",
@@ -1008,10 +1009,6 @@
       }
     },
     "api": {
-      "title": "API Access",
-      "introBefore": "Personal API keys authenticate scripts and integrations as you, scoped to what they may read or change. Send a key as ",
-      "introMiddle": ". See the API docs at ",
-      "introAfter": ".",
       "copied": "Copied",
       "copy": "Copy",
       "done": "Done",
@@ -1021,7 +1018,6 @@
       "scopeRequired": "Select at least one scope.",
       "scopesLegend": "Scopes",
       "webhooks": {
-        "sectionTitle": "Webhooks",
         "sectionDescription": "Send a signed HTTP POST to your own URL whenever one of your events happens. Every delivery is HMAC-signed so you can verify it came from BetterTrack.",
         "createTitle": "Add a webhook",
         "urlLabel": "Payload URL",
@@ -1039,8 +1035,7 @@
           "title": "Couldn't load your webhooks"
         },
         "empty": {
-          "title": "No webhooks yet",
-          "description": "Add one above to receive signed event deliveries."
+          "title": "No webhooks yet"
         },
         "status": {
           "active": "Active",
@@ -1179,20 +1174,16 @@
           "title": "Couldn't load your API keys"
         },
         "empty": {
-          "title": "No API keys yet",
-          "description": "Create a key above to start using the API."
+          "title": "No API keys yet"
         }
       },
       "oauth": {
-        "sectionTitle": "OAuth apps",
-        "sectionDescription": "Register a third-party app to request scoped, revocable access to BetterTrack accounts via OAuth 2.0 (authorization code + PKCE). Users approve it on a consent screen and never share their password.",
         "yourApps": "Your apps",
         "loadError": {
           "title": "Couldn't load your apps"
         },
         "empty": {
-          "title": "No OAuth apps yet",
-          "description": "Register an app above to integrate with the OAuth flow."
+          "title": "No OAuth apps yet"
         },
         "credentialsModal": {
           "title": "Your new OAuth app",
@@ -1230,27 +1221,25 @@
         "registeredOn": "Registered {{createdAt}}"
       },
       "grants": {
-        "sectionTitle": "Authorized apps",
         "sectionDescription": "Third-party apps you've allowed to access your account. Revoking an app immediately kills its tokens — it must be re-authorized to regain access.",
         "loadError": {
           "title": "Couldn't load your authorized apps"
         },
         "empty": {
-          "title": "No authorized apps",
-          "description": "Apps you approve on the OAuth consent screen appear here."
+          "title": "No authorized apps"
         },
         "canAccess": "{{appName}} can:",
         "authorizedLastUsed": "Authorized {{createdAt}} · last used {{lastUsedAt}}",
         "authorizedNeverUsed": "Authorized {{createdAt}} · never used",
         "revokeAccess": "Revoke access"
-      }
+      },
+      "hint": "Send a key as “Authorization: Bearer …”. Reference at /docs."
     },
     "account": {
       "title": "Account",
       "subtitle": "Your identity, password, and sharing preferences.",
       "loadError": {
-        "title": "Couldn't load your account",
-        "description": "Please try again in a moment."
+        "title": "Couldn't load your account"
       },
       "portfolioError": {
         "title": "Couldn't load your portfolio",
@@ -1260,11 +1249,13 @@
         "username": "Username",
         "email": "Email",
         "memberSince": "Member since"
-      }
+      },
+      "identity": "Identity",
+      "display": "Display",
+      "yourData": "Your data"
     },
     "baseCurrency": {
       "title": "Base currency",
-      "description": "The currency every valuation, chart and report is shown in. Amounts stay stored in each asset’s native currency — only the display conversion changes.",
       "label": "Base currency",
       "saveError": "Couldn’t save your base currency. Please try again.",
       "option": {
@@ -1272,14 +1263,13 @@
         "USD": "USD — US Dollar ($)",
         "CHF": "CHF — Swiss Franc",
         "GBP": "GBP — British Pound (£)"
-      }
+      },
+      "hint": "Display only — amounts stay stored in each asset’s own currency."
     },
     "newPortfolioDefaults": {
       "navLabel": "New portfolio defaults",
-      "title": "Defaults for new portfolios",
-      "subtitle": "What a newly-created portfolio inherits. Existing portfolios keep tracking these unless you override them individually.",
       "tax": {
-        "hint": "Applied to new portfolios and to any portfolio that hasn’t set its own. Override or reset it per portfolio on that portfolio’s tax report."
+        "hint": "Applied to new portfolios and to any portfolio that hasn’t set its own. A single portfolio can override it in its own settings."
       }
     },
     "taxes": {
@@ -1295,27 +1285,33 @@
       "mode": {
         "none": {
           "label": "No tax tracking",
-          "description": "Record sells and dividends without any tax. This is the default."
+          "description": "Record sells and dividends without any tax. This is the default.",
+          "compact": "Sells and dividends record untaxed."
         },
         "manual_per_trade": {
           "label": "Manual — enter tax per trade",
-          "description": "You enter the tax yourself on each sell — an amount, or a percentage of the gain. Nothing is calculated for you."
+          "description": "You enter the tax yourself on each sell — an amount, or a percentage of the gain. Nothing is calculated for you.",
+          "compact": "You type the tax on each sell — nothing is calculated."
         },
         "country_specific": {
           "label": "Austria (KESt)",
-          "description": "27.5 % KESt on realized gains and dividends, with a moving-average cost basis. A loss in the same calendar year offsets earlier gains and refunds the tax already withheld. Everything resets on 1 January — no losses carry into the next year."
+          "description": "27.5 % KESt on realized gains and dividends, with a moving-average cost basis. A loss in the same calendar year offsets earlier gains and refunds the tax already withheld. Everything resets on 1 January — no losses carry into the next year.",
+          "compact": "27.5 % KESt · moving average · resets 1 January"
         },
         "country_specific_de": {
           "label": "Germany (Abgeltungsteuer)",
-          "description": "25 % flat tax plus a 5.5 % solidarity surcharge on the tax, with FIFO cost basis per lot. A €1,000 saver's allowance (Sparer-Pauschbetrag) comes off each year first. Losses from selling shares only offset share gains, other losses offset all capital income — and unused losses carry forward into later years."
+          "description": "25 % flat tax plus a 5.5 % solidarity surcharge on the tax, with FIFO cost basis per lot. A €1,000 saver's allowance (Sparer-Pauschbetrag) comes off each year first. Losses from selling shares only offset share gains, other losses offset all capital income — and unused losses carry forward into later years.",
+          "compact": "25 % + 5.5 % soli · FIFO · €1,000 allowance · losses carry forward"
         },
         "country_specific_fi": {
           "label": "Finland (capital income tax)",
-          "description": "30 % capital-income tax on gains and dividends up to €30,000 per year, 34 % above, with FIFO cost basis. A loss in the same calendar year offsets gains and refunds tax already withheld — nothing carries into the next year. The €30,000 bracket applies per portfolio, not across all your accounts combined."
+          "description": "30 % capital-income tax on gains and dividends up to €30,000 per year, 34 % above, with FIFO cost basis. A loss in the same calendar year offsets gains and refunds tax already withheld — nothing carries into the next year. The €30,000 bracket applies per portfolio, not across all your accounts combined.",
+          "compact": "30 % to €30,000, then 34 % · FIFO · no carry-forward"
         },
         "custom": {
           "label": "Custom rules",
-          "description": "Build your own tax system: a flat rate plus switches for loss offset, refunds, the year reset, loss carry-forward, and the cost basis."
+          "description": "Build your own tax system: a flat rate plus switches for loss offset, refunds, the year reset, loss carry-forward, and the cost basis.",
+          "compact": "Your own rate, cost basis and switches."
         }
       },
       "custom": {
@@ -1366,16 +1362,9 @@
       "currentWrong": "Your current password is incorrect.",
       "changeFailed": "Could not change your password. Please try again."
     },
-    "sharingMoved": {
-      "title": "Portfolio sharing",
-      "description": "Sharing lives in the Social tab now. Choose who can see each of your portfolios there — every portfolio stays private until you share it.",
-      "link": "Manage sharing in Social →"
-    },
     "export": {
       "title": "Export my data",
-      "description": "Download a copy of your account data as a zip (JSON for every kind of data you own, plus CSVs for transactions, cash movements and holdings). You can request one export per day.",
       "password": "Confirm your password",
-      "passwordHint": "Re-enter your password to start an export.",
       "request": "Export my data",
       "requestAgain": "Request a new export",
       "submitting": "Requesting…",
@@ -1390,6 +1379,7 @@
       "codeWrong": "That two-factor code is incorrect or has expired.",
       "rateLimited": "You can request a data export once per day. Please try again later.",
       "requestFailed": "Could not start your export. Please try again.",
+      "hint": "One export per day. The download link expires.",
       "cleartext": {
         "title": "Cleartext export (this device)",
         "description": "Builds a readable JSON + CSV archive of your portfolio data in this browser from your unlocked vault. It never touches the server and contains no keys or encrypted material.",
@@ -1399,7 +1389,6 @@
       }
     },
     "dangerZone": {
-      "title": "Danger zone",
       "description": "Deleting your account permanently removes all of your data. This cannot be undone.",
       "link": "Delete my account…"
     }
@@ -1471,7 +1460,7 @@
       "uncoveredAck": "Continue anyway — sell more than I hold",
       "uncoveredBasisLabel": "Cost basis for the shares you don't hold",
       "uncoveredBasisZero": "Count as 0 % (no gain)",
-      "uncoveredBasisEntry": "Enter buy-in price",
+      "uncoveredBasisInput": "Enter buy-in price",
       "uncoveredEntryPriceLabel": "Original buy-in price",
       "uncoveredEntryPriceAria": "Original buy-in price for the uncovered {{symbol}}",
       "uncoveredNudge": "For accurate history, register the original buy instead.",
@@ -1728,6 +1717,10 @@
     "taxReport": {
       "title": "Tax report",
       "subtitle": "Realized gains, dividends and tax by calendar year (Europe/Vienna).",
+      "mode": {
+        "line": "Computed with tax mode: {{mode}}",
+        "change": "Change in portfolio settings →"
+      },
       "column": {
         "year": "Year",
         "realized": "Realized P/L",
@@ -1761,16 +1754,7 @@
       },
       "disabled": {
         "title": "Tax tracking is off",
-        "description": "Turn on a tax mode for this portfolio above to see realized gains and tax by year.",
-        "link": "Choose a tax mode in Settings → Taxes →"
-      },
-      "treatment": {
-        "title": "Tax treatment · {{name}}",
-        "description": "How this portfolio is taxed. It inherits your new-portfolio default until you set one here.",
-        "inheriting": "Inheriting default",
-        "overridden": "Overridden",
-        "reset": "Reset to default",
-        "editDefault": "Edit the default in Settings →"
+        "description": "Pick a tax mode for this portfolio in its settings to see realized gains and tax by year."
       },
       "de": {
         "title": "Germany (Abgeltungsteuer)",
@@ -1828,8 +1812,6 @@
       "fallbackName": "Portfolio",
       "defaultBadge": "Default",
       "menuAriaLabel": "Portfolios",
-      "newPortfolio": "+ New portfolio",
-      "newGroupPortfolio": "+ New group portfolio",
       "renameCurrent": "Rename current",
       "archiveCurrent": "Archive current",
       "archiveDisabledHint": "You cannot archive your only portfolio",
@@ -1842,12 +1824,10 @@
       "archivedDialogDescription": "Restore a portfolio to bring it back into your list.",
       "noArchived": "No archived portfolios.",
       "restore": "Restore",
-      "createTitle": "New portfolio",
       "renameTitle": "Rename portfolio",
       "nameLabel": "Name",
       "nameAriaLabel": "Portfolio name",
       "namePlaceholder": "e.g. Retirement",
-      "create": "Create",
       "nameTakenError": "You already have a portfolio with that name.",
       "createError": "Could not create the portfolio. Please try again.",
       "renameError": "Could not rename the portfolio. Please try again.",
@@ -1867,7 +1847,48 @@
       "deleteConfirmAriaLabel": "Portfolio name confirmation",
       "deleting": "Deleting…",
       "delete": "Delete permanently",
-      "deleteError": "Could not delete the portfolio. Please try again."
+      "deleteError": "Could not delete the portfolio. Please try again.",
+      "searchPlaceholder": "Search portfolios",
+      "searchAriaLabel": "Search portfolios",
+      "noMatches": "No matches.",
+      "settingsMenuItem": "Portfolio settings",
+      "addPortfolio": "Add portfolio"
+    },
+    "wizard": {
+      "title": "Add portfolio",
+      "stepOf": "Step {{current}} of {{total}}",
+      "name": {
+        "label": "Name",
+        "title": "What is this portfolio called?"
+      },
+      "icon": {
+        "label": "Icon",
+        "title": "Pick its icon",
+        "hint": "Colours it everywhere it appears. Changeable any time."
+      },
+      "book": {
+        "label": "Book",
+        "title": "Who keeps this book?",
+        "solo": {
+          "title": "Just me",
+          "hint": "Only you see and edit it."
+        },
+        "shared": {
+          "title": "Shared with people",
+          "hint": "Everyone edits the same book. It carries the group icon."
+        }
+      },
+      "done": {
+        "label": "Done",
+        "title": "Portfolio created",
+        "primary": "Open portfolio"
+      },
+      "parked": {
+        "currency": "Its own base currency",
+        "template": "Start from a template",
+        "balances": "Opening balances",
+        "import": "Import a broker file"
+      }
     },
     "cash": {
       "title": "Cash balance",
@@ -2071,6 +2092,7 @@
       "uploadCta": "Create preview",
       "uploading": "Uploading…",
       "uploadFailed": "Upload failed.",
+      "tooManyInstruments": "This file contains more than {{max}} distinct instruments — split it into files with at most {{max}} instruments each.",
       "previewTitle": "Preview: {{filename}}",
       "previewEmptyTitle": "No rows to import",
       "previewEmptyBody": "This file didn't contain any recognizable rows — the header may not match a supported broker export.",
@@ -2137,6 +2159,46 @@
       "files": "Files",
       "people": "People",
       "settings": "Settings"
+    },
+    "kinds": {
+      "private": "Private",
+      "family": "Family",
+      "business": "Business",
+      "savings": "Savings",
+      "property": "Property",
+      "group": "Group"
+    },
+    "settings": {
+      "title": "Portfolio settings",
+      "subtitle": "Manage this portfolio.",
+      "loadError": "Could not load this portfolio.",
+      "generalHeading": "General",
+      "nameSaved": "Saved.",
+      "iconLabel": "Icon",
+      "iconPickerAriaLabel": "Portfolio icon",
+      "iconHint": "Marks this portfolio with a coloured icon in the switcher and its lists. Stored on this device.",
+      "taxHeading": "Tax",
+      "tax": {
+        "modeLabel": "Tax mode",
+        "inheriting": "Account default",
+        "overridden": "Set here",
+        "hint": "This portfolio follows your account default until you pick a mode here. Changes apply to future rows; recorded ones keep the treatment they were taxed under.",
+        "pickerAriaLabel": "Tax mode for this portfolio",
+        "inheritedHint": "Following your account default.",
+        "resetHint": "This portfolio has its own mode.",
+        "reset": "Use account default",
+        "editDefault": "Edit the account default →",
+        "loadError": "Couldn’t load this portfolio’s tax mode."
+      },
+      "groupHeading": "Group portfolio",
+      "groupHint": "Share this portfolio with friends — everyone edits the same book.",
+      "groupActive": "{{name}} · {{count}} members",
+      "manageGroup": "Manage group",
+      "dangerHeading": "Danger zone",
+      "archiveAction": "Archive this portfolio",
+      "archiveHint": "Hidden from your list. Restorable any time.",
+      "deleteAction": "Delete this portfolio",
+      "deleteHint": "Permanent. Everything in it is removed."
     }
   },
   "workboard": {
@@ -2861,6 +2923,7 @@
       "overview": "Overview",
       "search": "Search",
       "watchlists": "Watchlists",
+      "customAssets": "Custom assets",
       "news": "News",
       "discover": "Discover",
       "events": "Events",
@@ -3113,7 +3176,9 @@
         "empty": "You have nothing to share yet."
       },
       "deletedUser": "Deleted user",
-      "deletedClosed": "This account no longer exists. The conversation is closed, but your history stays readable."
+      "deletedClosed": "This account no longer exists. The conversation is closed, but your history stays readable.",
+      "popout": "Pop out",
+      "popoutHint": "Open the chat in a separate window"
     },
     "itemFollow": {
       "follow": "Follow item",
@@ -3236,7 +3301,6 @@
   },
   "profile": {
     "title": "My Public Profile",
-    "subtitle": "An optional public page others can view — it shows only the items you've shared with a public link.",
     "error": "Could not load your profile settings. Please refresh the page.",
     "toggleLabel": "Make my profile public",
     "publicItemCount": "{{count}} of your items are currently public.",
@@ -3277,6 +3341,9 @@
         "compass": "Compass",
         "anchor": "Anchor"
       }
+    },
+    "groups": {
+      "page": "Public page"
     }
   },
   "mirrorchain": {
@@ -3898,16 +3965,7 @@
   },
   "home": {
     "greeting": "Welcome back",
-    "subtitle": "Your wealth at a glance — what changed, what needs you, where to go next.",
-    "netWorth": "Net worth",
-    "invested": "Invested",
-    "cash": "Cash",
-    "dayChange": "Today's change",
-    "today": "today",
-    "portfolios": "Portfolios",
-    "acrossPortfolios": "across {{count}} portfolios",
     "go": {
-      "title": "Jump in",
       "portfolio": "Open portfolio",
       "portfolioSub": "Holdings, activity, analysis",
       "workbench": "Plan in the Workbench",
@@ -3919,15 +3977,236 @@
     },
     "defaultPortfolio": "Default",
     "attention": {
-      "title": "Needs attention",
       "review": "Open Review",
       "clear": "All clear — nothing needs you right now."
     },
     "upcoming": {
-      "title": "Upcoming",
       "manage": "Manage in Forecasts",
       "empty": "Nothing scheduled. Standing orders appear here once created.",
       "order": "Standing order"
+    },
+    "builder": {
+      "customize": "Customize",
+      "done": "Done",
+      "add": "Add widget",
+      "addTitle": "Add a widget",
+      "reset": "Reset to default",
+      "emptyBoard": "Your home is empty",
+      "dragHandle": "Reorder {{title}}",
+      "moveUp": "Move {{title}} up",
+      "moveDown": "Move {{title}} down",
+      "remove": "Remove {{title}}",
+      "settings": "{{title}} settings",
+      "sizeAriaLabel": "{{title}} size",
+      "size": {
+        "s": "S",
+        "m": "M",
+        "l": "L"
+      },
+      "scopeLabel": "Portfolio",
+      "scopeAll": "All portfolios",
+      "rangeLabel": "Range",
+      "group": {
+        "overview": "Overview",
+        "charts": "Charts",
+        "lists": "Lists"
+      },
+      "placeBefore": "Place before {{title}}",
+      "placeEnd": "Place at the end",
+      "placeCancel": "Stop placing {{title}}",
+      "addBefore": "Add a widget before {{title}}",
+      "addEnd": "Add a widget at the end",
+      "variantLabel": "Display",
+      "variantAriaLabel": "{{title}} display form",
+      "variant": {
+        "cashflow-chart": {
+          "net": "Net",
+          "columns": "In / out"
+        },
+        "performance-chart": {
+          "value": "Value €",
+          "return": "Return %"
+        },
+        "allocation": {
+          "donut": "Donut",
+          "bars": "Bars"
+        },
+        "top-movers": {
+          "list": "List",
+          "chips": "Chips"
+        },
+        "portfolio-cards": {
+          "cards": "Cards",
+          "table": "Table"
+        },
+        "liquidity": {
+          "ring": "Ring",
+          "bar": "Bar"
+        }
+      },
+      "scopeSelected": "Selected portfolios…",
+      "scopeCount": "{{count}} portfolios",
+      "scopeFilter": "Filter portfolios",
+      "scopeNoMatch": "No portfolio matches.",
+      "scopeNone": "No portfolios yet."
+    },
+    "widgets": {
+      "range": {
+        "1D": "1D",
+        "1W": "1W",
+        "1M": "1M",
+        "3M": "3M",
+        "6M": "6M",
+        "12M": "12M",
+        "1Y": "1Y",
+        "5Y": "5Y",
+        "Max": "Max"
+      },
+      "netWorth": {
+        "title": "Net worth",
+        "description": "Total value with today's change",
+        "changeTitle": "Today's change",
+        "investedWord": "invested",
+        "cashWord": "cash"
+      },
+      "todayChange": {
+        "title": "Today",
+        "description": "Today's move as a compact stat",
+        "label": "Today's change",
+        "totalLabel": "Total value"
+      },
+      "performanceChart": {
+        "title": "Performance",
+        "description": "One portfolio over time — value, or its time-weighted return.",
+        "empty": "No portfolio to chart yet.",
+        "ariaLabel": "Value over time for {{name}}",
+        "ariaLabelReturn": "Time-weighted return over time for {{name}}",
+        "returnHint": "Time-weighted return — deposits and withdrawals are neutralized, so the curve only moves when your holdings move.",
+        "returnNeedsOne": "Return % is only meaningful for a single portfolio, so this shows value instead. Scope the widget to one portfolio to see the return."
+      },
+      "cashflowChart": {
+        "title": "Cash flow",
+        "description": "Money in minus money out, by month",
+        "empty": "No cash-flow data yet.",
+        "ariaLabel": "Net cash flow by month",
+        "incomeWord": "in",
+        "spentWord": "out",
+        "netWord": "net",
+        "columnsAriaLabel": "Money in and money out per month"
+      },
+      "allocation": {
+        "title": "Allocation",
+        "description": "What the money sits in",
+        "chartTitle": "Allocation by position",
+        "other": "Other",
+        "cash": "Cash",
+        "empty": "Nothing allocated yet."
+      },
+      "topMovers": {
+        "title": "Movers",
+        "description": "Biggest climbers and fallers",
+        "climbers": "Climbers",
+        "fallers": "Fallers",
+        "none": "Nothing here.",
+        "empty": "No price moves to rank yet.",
+        "metricAriaLabel": "Ranking metric",
+        "dayMetric": "Today",
+        "totalMetric": "Total"
+      },
+      "portfolioCards": {
+        "title": "Portfolios",
+        "description": "Every portfolio with value and trend",
+        "empty": "No portfolios yet.",
+        "sparkAriaLabel": "One-month trend for {{name}}",
+        "colName": "Portfolio",
+        "colValue": "Value",
+        "colToday": "Today",
+        "colShare": "Share"
+      },
+      "news": {
+        "title": "News",
+        "description": "Headlines on the assets you hold",
+        "empty": "No headlines for your holdings right now.",
+        "unavailable": "News is not available."
+      },
+      "attention": {
+        "title": "Needs attention",
+        "description": "Unread notifications"
+      },
+      "upcoming": {
+        "title": "Upcoming",
+        "description": "Scheduled standing orders",
+        "units": "{{count}} ×"
+      },
+      "shortcuts": {
+        "title": "Jump in",
+        "description": "Links to the main sections"
+      },
+      "netWorthHistory": {
+        "title": "Net worth history",
+        "description": "Every portfolio's value over time, combined",
+        "ariaLabel": "Combined value over time — {{label}}",
+        "empty": "No portfolios to chart yet."
+      },
+      "assetSpotlight": {
+        "title": "Spotlight",
+        "description": "One asset with its price and chart",
+        "ariaLabel": "Price over time for {{name}}",
+        "unpicked": "No asset picked yet",
+        "unpickedHint": "Open this widget's settings to pick one.",
+        "unnamed": "Asset",
+        "pickLabel": "Asset",
+        "current": "Currently {{name}}",
+        "searchPlaceholder": "Search assets"
+      },
+      "recentTransactions": {
+        "title": "Recent activity",
+        "description": "The latest trades across your portfolios",
+        "empty": "No transactions yet.",
+        "countLabel": "Rows",
+        "countOption": "{{count}} rows"
+      },
+      "cashBalances": {
+        "title": "Cash",
+        "description": "Balances per cash source",
+        "empty": "No cash sources yet.",
+        "total": "Total"
+      },
+      "watchlist": {
+        "title": "Watchlist",
+        "description": "A watchlist with live quotes",
+        "empty": "{{name}} is empty.",
+        "noLists": "No watchlists yet.",
+        "listLabel": "List"
+      },
+      "dividends": {
+        "title": "Dividends",
+        "description": "Upcoming ex- and pay dates",
+        "empty": "No dividends coming up.",
+        "unavailable": "Dividend data is not available.",
+        "exDate": "Ex-date",
+        "payDate": "Pay date"
+      },
+      "alerts": {
+        "title": "Alerts",
+        "description": "How many are armed and what fired",
+        "armed": "Armed",
+        "triggered": "Triggered",
+        "empty": "No alerts yet."
+      },
+      "liquidity": {
+        "title": "Liquidity",
+        "description": "How much of it is cash, not invested",
+        "empty": "Nothing to measure yet.",
+        "ofWord": "of"
+      },
+      "concentration": {
+        "title": "Concentration",
+        "description": "How much rides on the biggest position",
+        "empty": "No positions to measure yet.",
+        "inWord": "in",
+        "topN": "Top {{n}} together: {{pct}}"
+      }
     }
   },
   "cashflow": {
@@ -3981,7 +4260,12 @@
     "groups": {
       "account": "Account",
       "data": "Data",
-      "developer": "Developer platform"
+      "developer": "Developer platform",
+      "preferences": "Preferences",
+      "security": "Security",
+      "links": "Pages",
+      "integrations": "Connections & API",
+      "danger": "Danger zone"
     },
     "account": "Account",
     "accountSub": "Profile, email, language, password",
@@ -4010,10 +4294,23 @@
     "mcp": "MCP",
     "mcpSub": "Model Context Protocol access",
     "logs": "Request logs",
-    "logsSub": "Inspect API activity"
+    "logsSub": "Inspect API activity",
+    "deleteAccount": "Delete account",
+    "portfolioDefaults": "Portfolio defaults",
+    "oauthApps": "OAuth apps",
+    "oauthAppsSub": "Third-party apps you registered",
+    "navAria": "Control Center panels",
+    "filterAria": "Filter panels",
+    "filterPlaceholder": "Filter…",
+    "noMatches": "No panel matches.",
+    "leavesPopup": "Opens as its own page",
+    "signIn": "Sign-in",
+    "sessions": "Sessions",
+    "notificationLog": "Notification log",
+    "profile": "Public profile",
+    "authorizedApps": "Authorized apps"
   },
   "privacy": {
-    "title": "Privacy modes",
     "subtitle": "Control what the screen shows and where your data lives.",
     "discreet": {
       "title": "Discreet mode",
@@ -4069,13 +4366,6 @@
       "p1": "Owner, manager and viewer roles per portfolio",
       "p2": "Approval rules for consequential changes",
       "p3": "Access and activity in one audit view"
-    },
-    "portfolioSettings": {
-      "title": "Portfolio settings",
-      "body": "Identity, calculation and lifecycle policy for this portfolio — base currency, tax model, data authority, archive and split.",
-      "p1": "Name, currency and calculation preferences",
-      "p2": "Tax model overrides per portfolio",
-      "p3": "Archive, duplicate, split and merge"
     },
     "portfolioEvents": {
       "title": "Events",
@@ -4210,10 +4500,135 @@
     }
   },
   "palette": {
-    "goTo": "Go to",
-    "create": "Create",
-    "control": "Control Center",
-    "commandsAria": "Commands"
+    "triggerLabel": "Search…",
+    "inputAria": "Search BetterTrack",
+    "placeholder": "Search pages, actions, settings and assets…",
+    "resultsAria": "Search results",
+    "hint": "Pages, actions, settings and market assets — all from here.",
+    "noResults": "Nothing matched “{{query}}”. Try a symbol, a page or a setting.",
+    "assetsLoading": "Searching assets…",
+    "assetsEmpty": "No assets matched.",
+    "group": {
+      "suggested": "Suggested",
+      "actions": "Actions",
+      "goTo": "Go to",
+      "settings": "Settings",
+      "assets": "Assets"
+    },
+    "keys": {
+      "navigate": "Navigate",
+      "open": "Open"
+    },
+    "assetType": {
+      "stock": "Stock",
+      "etf": "ETF",
+      "index": "Index",
+      "fx": "FX",
+      "commodity": "Commodity",
+      "crypto": "Crypto",
+      "other": "Other"
+    }
+  },
+  "firstrun": {
+    "stepOf": "Step {{current}} of {{total}}",
+    "later": "Do this later",
+    "finish": "Go to BetterTrack",
+    "parkedFlag": "In the works",
+    "command": {
+      "runAgain": "Run setup again"
+    },
+    "profile": {
+      "label": "You",
+      "title": "Is this you?",
+      "hint": "The name and address your account was created with.",
+      "nameLabel": "Display name",
+      "nameParked": "Renaming arrives with profile editing.",
+      "emailLabel": "Email"
+    },
+    "verifyEmail": {
+      "label": "Email",
+      "title": "Verify your email",
+      "verified": "Already verified through Google.",
+      "parkedNote": "Arrives with email delivery.",
+      "codeLabel": "Verification code"
+    },
+    "security": {
+      "label": "Security",
+      "title": "Add a second lock?",
+      "hint": "Both are optional, and either can wait.",
+      "setUp": "Set up",
+      "on": "On",
+      "pin": {
+        "title": "App PIN",
+        "description": "Four digits to unlock BetterTrack on this device.",
+        "newLabel": "New PIN",
+        "confirmLabel": "Confirm PIN",
+        "save": "Save PIN",
+        "mismatch": "The two PINs do not match.",
+        "rateLimited": "Too many attempts. Try again shortly.",
+        "failed": "The PIN could not be saved."
+      },
+      "twoFactor": {
+        "title": "Two-factor authentication",
+        "description": "A code from your authenticator app at every sign-in.",
+        "scan": "Scan this with your authenticator app.",
+        "qrAria": "Authenticator setup QR code",
+        "manualToggle": "Enter the key manually",
+        "codeLabel": "Code from your app",
+        "confirm": "Turn on",
+        "invalidCode": "That code is incorrect or has expired.",
+        "rateLimited": "Too many codes. Try again shortly.",
+        "enrollError": "Setup could not be started.",
+        "enabled": "Two-factor authentication is on."
+      },
+      "recoveryCodes": {
+        "description": "Keep these somewhere safe. Each one signs you in once if you lose your app.",
+        "saved": "I have saved them"
+      }
+    },
+    "preferences": {
+      "label": "Preferences",
+      "title": "Language and currency",
+      "languageLabel": "Language",
+      "currencyLabel": "Base currency",
+      "currencyHint": "Every total is converted to this."
+    },
+    "tax": {
+      "label": "Tax",
+      "title": "How should tax be handled?",
+      "hint": "This becomes the default for new portfolios — change it any time.",
+      "groupAria": "Tax handling"
+    },
+    "publicProfile": {
+      "label": "Profile",
+      "title": "Your public profile",
+      "pictureParked": "Picking a picture lands later.",
+      "toggleLabel": "Make my profile public",
+      "toggleHint": "Anyone can see the items you have shared publicly.",
+      "acknowledge": "I understand and want a public profile."
+    },
+    "done": {
+      "label": "Done",
+      "title": "You are set up",
+      "set": "Set",
+      "later": "Later"
+    },
+    "figures": {
+      "on": "On",
+      "off": "Off",
+      "verified": "Verified through Google",
+      "awaitingDelivery": "Awaiting email delivery",
+      "pin": "PIN",
+      "twoFactor": "2FA",
+      "notSet": "Not set",
+      "taxMeta": "Default for new portfolios",
+      "public": "Public",
+      "private": "Private",
+      "publicMeta": "Visible to anyone with the link",
+      "privateMeta": "Only you can see this page",
+      "setCount": "{{count}} set",
+      "laterCount": "{{count}} left for later"
+    }
   },
   "vaultMoney": {
     "error": {

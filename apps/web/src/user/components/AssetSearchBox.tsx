@@ -12,7 +12,6 @@ import {
 } from '../../lib/conglomerateApi';
 import { cx } from '../../lib/cx';
 import { listPortfolios } from '../../lib/portfolioApi';
-import { searchAssets } from '../../lib/searchApi';
 import {
   WATCHLISTS_QUERY_KEY,
   addToWorkboard,
@@ -20,7 +19,7 @@ import {
   listWorkboard,
 } from '../../lib/workboardApi';
 import { EmptyState, MarketStateBadge, Skeleton } from '../../ui';
-import { useDebounce } from '../hooks/useDebounce';
+import { useAssetSearch } from './useAssetSearch';
 import {
   ACTIVE_SUM,
   canAddPosition,
@@ -33,14 +32,8 @@ import {
 import { CapabilityTags } from '../assets/capabilityTags';
 import { TransactionDialog, type TransactionDialogAsset } from './TransactionDialog';
 
-const DEBOUNCE_MS = 300;
-/** Owner directive (#248 §3 / §13.2 V2-P1): search works from a single character. */
-const MIN_CHARS = 1;
-/** Mirror the server-side quote/search cache TTL (PROJECTPLAN.md §6.2, 60 req/min/user). */
+/** Reused by the lazily-fetched supporting queries below (watchlists, portfolios). */
 const SEARCH_STALE_MS = 30_000;
-/** When the API answers `enriching: true` (§6.2), poll for the enriched catalog rows. */
-const ENRICH_POLL_MS = 1_500;
-const ENRICH_TIMEOUT_MS = 10_000;
 
 // Search only ever returns catalog/provider (market) assets — a user's custom
 // off-market assets are not in the search index, so `type: 'custom'` can never
@@ -57,12 +50,7 @@ const TYPE_BADGE: Record<string, string> = {
 };
 
 export interface AssetSearchBoxProps {
-  /**
-   * Notified with the raw query on every keystroke — the ⌘K palette listens so
-   * its command sections (navigate/create/settings) filter on the same input.
-   */
-  onQueryChange?: (query: string) => void;
-  /** Called after any per-result action fires — lets a palette close itself. */
+  /** Called after any per-result action fires — lets a host dialog close itself. */
   onAction?: () => void;
   /**
    * Picker mode (PROJECTPLAN.md §7.3 — "used by … buy dialogs"). When provided,
@@ -76,20 +64,24 @@ export interface AssetSearchBoxProps {
 }
 
 /**
- * Debounced search box + results list (PROJECTPLAN.md §6.2, §7.3 `AssetSearchBox`).
- * Reused by the `/search` page, the ⌘K palette, the Conglomerate Builder, and
- * buy dialogs. Self-contained: owns the query state and TanStack Query fetch.
+ * The **rich** asset search surface (PROJECTPLAN.md §6.2, §7.3 `AssetSearchBox`):
+ * a search input plus result rows carrying the per-result direct actions
+ * (watchlist, → Blueprint, → Portfolio). Used by the `/search` page, the
+ * Conglomerate Builder, buy/alert dialogs and the Compare control.
+ *
+ * The ⌘K palette deliberately does **not** reuse these rows — a universal
+ * palette row is one target you open, not a strip of sub-actions — but it does
+ * reuse the same fetch through {@link useAssetSearch}, so both surfaces share
+ * one debounce, cache and enrichment policy.
  */
 export function AssetSearchBox({
   onAction,
-  onQueryChange,
   onSelect,
   autoFocus = false,
   placeholder,
 }: AssetSearchBoxProps) {
   const t = useT();
   const [query, setQuery] = useState('');
-  const debouncedQuery = useDebounce(query.trim(), DEBOUNCE_MS);
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -106,20 +98,15 @@ export function AssetSearchBox({
     Record<string, { status: 'pending' | 'done' | 'error'; message?: string }>
   >({});
 
-  const enabled = debouncedQuery.length >= MIN_CHARS;
-
-  /** Flips true once a background enrichment poll has run for `ENRICH_TIMEOUT_MS` without settling. */
-  const [enrichTimedOut, setEnrichTimedOut] = useState(false);
-
-  const { data, isFetching, isError } = useQuery({
-    queryKey: ['search', debouncedQuery],
-    queryFn: ({ signal }) => searchAssets(debouncedQuery, signal),
+  const {
+    query: debouncedQuery,
     enabled,
-    staleTime: SEARCH_STALE_MS,
-    retry: false,
-    refetchInterval: (query) =>
-      query.state.data?.enriching === true && !enrichTimedOut ? ENRICH_POLL_MS : false,
-  });
+    results,
+    isFetching,
+    isError,
+    isEnriching,
+    hasLoaded,
+  } = useAssetSearch(query);
 
   // The user's current watchlist membership, so the icon is state-aware from
   // the first render — not only after a click in this session (§13.2).
@@ -152,16 +139,6 @@ export function AssetSearchBox({
     enabled: withDirectActions && conglomeratePickerFor !== null,
     staleTime: 30_000,
   });
-
-  useEffect(() => {
-    setEnrichTimedOut(false);
-    if (data?.enriching !== true) return;
-    const timer = setTimeout(() => setEnrichTimedOut(true), ENRICH_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [debouncedQuery, data?.enriching]);
-
-  const results: SearchResultItem[] = data?.results ?? [];
-  const isEnriching = data?.enriching === true && !enrichTimedOut;
 
   /** Idle | pending | done | error, merging the fetched membership with any in-flight click. */
   function workboardStatusFor(item: SearchResultItem): 'idle' | 'pending' | 'done' | 'error' {
@@ -279,7 +256,7 @@ export function AssetSearchBox({
     onAction?.();
   }
 
-  const showSkeleton = isFetching && data === undefined;
+  const showSkeleton = isFetching && !hasLoaded;
   const showEmpty = enabled && !isFetching && !isError && results.length === 0 && !isEnriching;
   const showError = isError && !isFetching;
   const showSearching = enabled && !showSkeleton && isEnriching;
@@ -291,10 +268,7 @@ export function AssetSearchBox({
         autoFocus={autoFocus}
         type="search"
         value={query}
-        onChange={(e) => {
-          setQuery(e.target.value);
-          onQueryChange?.(e.target.value);
-        }}
+        onChange={(e) => setQuery(e.target.value)}
         placeholder={placeholder ?? t('assets.searchBox.placeholder')}
         aria-label={t('assets.searchBox.inputAria')}
         className={cx('bt-input w-full px-4 py-3', '', '')}

@@ -1,0 +1,26 @@
+title = "BetterTrack secret scanning"
+
+[extend]
+useDefault = true
+
+# These exact files contain deterministic test/vector values or documented
+# deployment placeholders that trigger only the generic API-key heuristic. This
+# rule-level allowlist keeps every other detector active in those files and the
+# generic detector active everywhere else.
+[[rules]]
+id = "generic-api-key"
+
+  [[rules.allowlists]]
+  description = "Deterministic test tokens and documented non-secret placeholders"
+  paths = [
+    '''^apps/api/src/__tests__/accountKind\.test\.ts$''',
+    '''^apps/api/src/__tests__/admin\.test\.ts$''',
+    '''^apps/api/src/__tests__/appSettings\.test\.ts$''',
+    '''^apps/api/src/__tests__/authGoogle\.test\.ts$''',
+    '''^apps/api/src/__tests__/passwordReset\.test\.ts$''',
+    '''^apps/api/src/__tests__/registrationModes\.test\.ts$''',
+    '''^apps/api/src/config/__tests__/env\.test\.ts$''',
+    '''^apps/api/src/services/imports/__tests__/importService\.test\.ts$''',
+    '''^apps/web/src/user/vault/vectors\.fixture\.json$''',
+    '''^docs/ops\.md$''',
+  ]

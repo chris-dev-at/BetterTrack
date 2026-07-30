@@ -1,4 +1,4 @@
-FROM node:22-alpine AS base
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
@@ -23,7 +23,7 @@ FROM build AS deploy-prep
 RUN pnpm deploy --filter @bettertrack/api --prod /deploy
 
 # ── runner: minimal production image ────────────────────────────────────────
-FROM node:22-alpine AS runner
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runner
 WORKDIR /app
 RUN addgroup -S bettertrack && adduser -S bettertrack -G bettertrack \
     && mkdir -p /var/lib/bettertrack/exports \

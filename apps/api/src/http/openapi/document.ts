@@ -730,6 +730,14 @@ const endpoints: EndpointDef[] = [
     response: R.MeResponse,
   },
   {
+    method: 'post',
+    path: '/auth/first-run/complete',
+    tag: 'Auth',
+    summary: 'Mark first-run setup as finished or dismissed (idempotent, set-once).',
+    status: 200,
+    response: R.MeResponse,
+  },
+  {
     method: 'delete',
     path: '/auth/pin',
     tag: 'Auth',

@@ -209,6 +209,17 @@ interface AuthContextValue {
    * — your PIN protects this" choice (V4-P2b, §399 §A). PIN-gated server-side.
    */
   persistSession: () => Promise<void>;
+  /**
+   * Record that first-run setup is done — finished or dismissed (§6.12).
+   *
+   * Updates the local `user` FIRST so the `/welcome` gate stops firing
+   * immediately, then tells the server. A failed round-trip is swallowed on
+   * purpose: the local first-run record still says done, so the user is never
+   * trapped in the wizard by a network hiccup. The cost is that the server may
+   * still think setup is pending, and the wizard reappears on the next device —
+   * strictly better than a loop the user cannot escape.
+   */
+  completeFirstRun: () => Promise<void>;
   /** Request a one-time email login code for a pending 2FA challenge. */
   requestTwoFactorEmailCode: (body: TwoFactorEmailCodeRequest) => Promise<void>;
   acceptInvite: (body: AcceptInviteRequest) => Promise<void>;
@@ -702,6 +713,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [clearSession]);
 
+  const completeFirstRun = useCallback(async () => {
+    // Optimistic and local-first: stamping the in-memory user is what releases
+    // the /welcome gate, so the exit is instant and cannot depend on the network.
+    const stamp = new Date().toISOString();
+    setUser((current) => (current ? { ...current, firstRunCompletedAt: stamp } : current));
+    try {
+      const me = await api.completeFirstRun();
+      // Adopt the server's own timestamp so this device agrees with every other.
+      setUser((current) => (current ? { ...current, ...me } : current));
+    } catch {
+      // Deliberately swallowed — see the interface doc. Never trap the user in
+      // the wizard because a request failed.
+    }
+  }, []);
+
   const clearRateLimitBanner = useCallback(() => setRateLimitBanner(null), []);
 
   const value = useMemo<AuthContextValue>(
@@ -724,6 +750,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       forgetRememberedAccount,
       logout,
       toggleDiscreetMode,
+      completeFirstRun,
       rateLimitBanner,
       clearRateLimitBanner,
     }),
@@ -746,6 +773,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       forgetRememberedAccount,
       logout,
       toggleDiscreetMode,
+      completeFirstRun,
       rateLimitBanner,
       clearRateLimitBanner,
     ],

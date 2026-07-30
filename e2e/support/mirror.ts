@@ -130,7 +130,7 @@ export async function friendUserId(user: E2EUser, username: string): Promise<str
   return match.user.id;
 }
 
-/** "New group portfolio" (design §11 create) — an empty origin copy. */
+/** Group portfolio (design §11 create, the wizard's shared book) — an empty origin copy. */
 export async function createEmptyChain(
   owner: E2EUser,
   name: string,

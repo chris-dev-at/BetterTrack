@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { useEffect } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 
@@ -77,8 +78,14 @@ export function Dialog({
     </div>
   );
 
-  return (
-    <>
+  // Portalled to <body> for the same reason ODialog is: `position: fixed` here
+  // resolves against the nearest ancestor that is a containing block for it, and
+  // the topbar's `backdrop-filter` makes the topbar one — so a dialog opened from
+  // the portfolio switcher (which lives in the topbar) laid itself out inside
+  // that strip instead of over the page. The root carries `bt-app` so the app's
+  // ink, type scale and focus ring still apply outside the shell.
+  return createPortal(
+    <div className="bt-app bt-dialog-root">
       <div className="bt-scrim" aria-hidden="true" />
       <div
         className="fixed inset-0 z-[71] flex items-start justify-center overflow-y-auto p-4 sm:items-center"
@@ -103,6 +110,7 @@ export function Dialog({
           ) : null}
         </div>
       </div>
-    </>
+    </div>,
+    document.body,
   );
 }

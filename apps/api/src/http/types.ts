@@ -19,6 +19,8 @@ export interface AuthUser {
   /** Current account mode, refreshed from the user row on every authenticated request. */
   privacyMode: PrivacyMode;
   lastLoginAt: Date | string | null;
+  /** When first-run setup was finished/dismissed; `null` = never (§6.12). */
+  firstRunCompletedAt: Date | string | null;
   createdAt: Date | string;
 }
 

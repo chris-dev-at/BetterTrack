@@ -73,16 +73,20 @@ import {
  *   - a **bearer token** — the mobile app path (§6.13, §14). It holds no cookie,
  *     so it presents a personal API key (`btk_…`) or a delegated OAuth access
  *     token (`bto_…`) via the socket.io auth payload (`handshake.auth.token`)
- *     and/or an `Authorization: Bearer …` upgrade header. The token is validated
- *     through the SAME service the HTTP bearer middleware uses (revocation,
- *     expiry and consent-scope clamping included), so socket auth can never
- *     drift from — or widen — the HTTP surface. Bearer sockets are admitted only
- *     to the scoped rooms and commands their effective scopes allow; lightweight
- *     invalidations and quote frames still reveal data-family activity.
+ *     and/or an `Authorization: Bearer …` upgrade header. Either form works for
+ *     no-Origin native clients: Engine.IO provisionally admits that transport
+ *     handshake, then the Socket.IO namespace accepts only a bearer and never
+ *     resolves its cookie. The token is validated through the SAME service the
+ *     HTTP bearer middleware uses (revocation, expiry and consent-scope clamping
+ *     included), so socket auth can never drift from — or widen — the HTTP
+ *     surface. Bearer sockets are admitted only to the scoped rooms and commands
+ *     their effective scopes allow; lightweight invalidations and quote frames
+ *     still reveal data-family activity.
  *
  * Both transports are supported: a client may open the websocket transport
- * directly (the mobile app dials `transport=websocket` with no prior polling
- * handshake) or take the polling→websocket upgrade the web SPA performs.
+ * directly (the mobile app and same-origin web SPA dial
+ * `transport=websocket` with no prior polling handshake) or take the
+ * polling→websocket upgrade used by cross-origin web deployments.
  *
  * The gateway is a pure bus subscriber — producers are untouched — and a pure
  * enhancement layer: with `REALTIME_ENABLED=false` {@link RealtimeGateway.attach}
@@ -101,6 +105,7 @@ export const REALTIME_PRINCIPAL_REVALIDATION_TIMEOUT_MS = 5_000;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
 /** Cross-process live frames; each gateway emits remote frames into its local rooms. */
 export const REALTIME_LIVE_FANOUT_CHANNEL = 'bt:live:frames';
+const BEARER_PREFIX = 'Bearer ';
 
 /** Bearer-only user rooms prevent a narrow token entering the full user room. */
 const scopedUserRoom = (userId: string, capability: RealtimeBearerCapability): string =>
@@ -282,6 +287,10 @@ export interface RealtimeGateway {
 
 export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGateway {
   const { config, bus, logger } = deps;
+  const corsOrigins = [
+    ...new Set(config.corsOrigins.map((configuredOrigin) => new URL(configuredOrigin).origin)),
+  ];
+  const allowedOrigins = new Set(corsOrigins);
   const admission =
     deps.realtimeAdmission ?? createRealtimeAdmission(deps.redis, deps.realtimeAdmissionOptions);
   const admissionLeaseTtlMs =
@@ -310,11 +319,15 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   // resolves identically to an HTTP request.
   const parseCookies: RequestHandler = cookieParser(config.sessionSecrets);
 
-  const BEARER_PREFIX = 'Bearer ';
-
   /** Runtime kill-switch read — always-on when no evaluator was injected. */
   const featureEnabled = (key: FeatureFlagKey): Promise<boolean> =>
     deps.isFeatureEnabled ? deps.isFeatureEnabled(key) : Promise.resolve(true);
+
+  const bearerTokenFromHeader = (header: string | string[] | undefined): string | null => {
+    if (typeof header !== 'string' || !header.startsWith(BEARER_PREFIX)) return null;
+    const token = header.slice(BEARER_PREFIX.length).trim();
+    return token.length > 0 ? token : null;
+  };
 
   function eligibleUser(user: RealtimeResolvedUser): boolean {
     // Mirror the user-app HTTP surface: admin-kind accounts have no user
@@ -383,19 +396,15 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   /**
    * The bearer token the mobile app presents (§6.13, §14). The socket.io auth
    * payload (`handshake.auth.token`) is preferred, falling back to an
-   * `Authorization: Bearer …` upgrade header — accept EITHER, mirroring how the
-   * client sends both best-effort. Null when neither carries a token.
+   * `Authorization: Bearer …` upgrade header. Either form is accepted for
+   * allowed-Origin and no-Origin clients; the latter remain bearer-only during
+   * namespace authentication. Null when neither carries a token.
    */
   function bearerTokenOf(socket: Socket): string | null {
     const auth = socket.handshake.auth as Record<string, unknown> | undefined;
     const fromPayload = auth?.token;
     if (typeof fromPayload === 'string' && fromPayload.length > 0) return fromPayload;
-    const header = socket.handshake.headers.authorization;
-    if (typeof header === 'string' && header.startsWith(BEARER_PREFIX)) {
-      const token = header.slice(BEARER_PREFIX.length).trim();
-      if (token.length > 0) return token;
-    }
-    return null;
+    return bearerTokenFromHeader(socket.handshake.headers.authorization);
   }
 
   /** Resolve the handshake's bearer token to a typed principal, or null. */
@@ -407,13 +416,21 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   }
 
   /**
-   * Resolve the handshake to its complete principal — the session cookie (web
-   * SPA) first, then a bearer token (mobile). The two are mutually exclusive in practice
-   * (the SPA holds only a cookie, the app only a token); trying the cookie first
-   * keeps the web path byte-identical and never touches the bearer services for
-   * a cookie request. Both credentials pass through ONE gate below.
+   * Resolve an allowed-Origin handshake to its complete principal — the session
+   * cookie (web SPA) first, then a bearer token (mobile). The two are mutually
+   * exclusive in practice (the SPA holds only a cookie, the app only a token);
+   * trying the cookie first keeps the web path byte-identical and never touches
+   * the bearer services for a cookie request. The no-Origin exception below is
+   * deliberately bearer-only.
    */
   async function authenticate(socket: Socket): Promise<RealtimePrincipal | null> {
+    // Engine.IO cannot inspect handshake.auth because Socket.IO sends it in the
+    // later namespace CONNECT packet. Resolve only the bearer credential family
+    // for a no-Origin transport: otherwise a caller could omit Origin and smuggle
+    // a valid session cookie through the native-client exception.
+    if (socket.handshake.headers.origin === undefined) {
+      return resolveBearerPrincipal(socket);
+    }
     return (await resolveCookiePrincipal(socket)) ?? (await resolveBearerPrincipal(socket));
   }
 
@@ -1543,7 +1560,21 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         transports: ['polling', 'websocket'],
         // Engine.IO handles its own CORS (the Express middleware never sees
         // /ws): same credentialed allowlist as the API (§4.6, §10).
-        cors: { origin: config.corsOrigins, credentials: true },
+        cors: { origin: corsOrigins, credentials: true },
+        // CORS response headers do not protect a direct websocket handshake.
+        // Check the raw request before Engine.IO creates a client or any
+        // session/bearer resolver runs. Browser Origins use the normalized
+        // credentialed allowlist. Engine.IO cannot see Socket.IO's auth payload,
+        // so a no-Origin transport handshake proceeds provisionally and the
+        // namespace middleware admits only a bearer, never a session cookie.
+        allowRequest: (request, allow) => {
+          const origin = request.headers.origin;
+          if (origin !== undefined) {
+            allow(null, typeof origin === 'string' && allowedOrigins.has(origin));
+            return;
+          }
+          allow(null, true);
+        },
       });
       await subscribeLiveChannels(io);
 

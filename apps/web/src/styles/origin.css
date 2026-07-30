@@ -45,7 +45,7 @@
   --bt-shadow-menu: 0 10px 34px rgba(0, 0, 0, 0.45);
   --bt-shadow-overlay: 0 28px 80px rgba(0, 0, 0, 0.55);
   /* Frame metrics */
-  --bt-rail-w: 232px;
+  --bt-rail-w: 260px;
   --bt-rail-w-collapsed: 64px;
   --bt-topbar-h: 60px;
   --bt-gutter: 48px;
@@ -168,7 +168,8 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  overflow: hidden auto;
+  /* No overflow here: tall trees scroll INSIDE .bt-rail__group--suite, and the
+     account popover must be able to escape a collapsed 64px rail unclipped. */
   background: var(--bt-nav);
   border-right: 1px solid var(--bt-border);
   padding: 14px 10px 12px;
@@ -207,9 +208,30 @@
 }
 
 .bt-rail__spacer {
+  /* Grows when there's room; its min-height is the guaranteed gap between the
+     utilities and the collapse/account foot — the suite section above starts
+     scrolling before this gap can vanish. */
   flex: 1 1 auto;
+  min-height: 14px;
 }
 
+.bt-rail__group--suite {
+  flex: 0 1 auto;
+  min-height: 108px;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bt-border-strong) transparent;
+  /* The active edge dash hangs 10px LEFT of the rows; fold that gutter into
+     this scroll container's padding box so the overflow clip can't eat it
+     (net zero visual shift: -10px margin against +10px padding). */
+  margin-left: -10px;
+  padding-left: 10px;
+}
+
+/* Main destinations read a step above the tree children — brighter ink, a bit
+   more weight, and (owner, demo-style) a gold edge line when active. The
+   children stay 12.5px/muted behind their guide line. */
 .bt-rail-item {
   display: flex;
   align-items: center;
@@ -220,10 +242,12 @@
   border: 0;
   border-radius: 6px;
   background: none;
+  /* Unselected rows sit a step back in muted ink; only the active row (and a
+     hovered one) goes bright, so "where am I" reads without counting. */
   color: var(--bt-muted);
   font: inherit;
   font-size: 13px;
-  font-weight: 520;
+  font-weight: 560;
   text-align: left;
   text-decoration: none;
   white-space: nowrap;
@@ -239,16 +263,38 @@
 }
 
 .bt-rail-item.is-active {
+  position: relative;
   background: var(--bt-surface-strong);
   color: var(--bt-text);
 }
 
-.bt-rail-item > svg {
+/* The demo's active marker: a gold dash at the rail's OUTER edge — clear of
+   the rounded row background — vertically centered on the active row. Main
+   destinations only; child rows never carry it. `left` compensates the rail's
+   10px horizontal padding so the dash sits flush against the sidebar edge. */
+.bt-rail-item.is-active::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  translate: 0 -50%;
+  width: 3px;
+  height: 18px;
+  border-radius: 0 2px 2px 0;
+  background: var(--bt-gold);
+}
+
+/* The destination icon — a direct child of the row, or of the link inside an
+   expandable group row (`.bt-rail-item--group`). The group chevron's own icon
+   is deliberately excluded: it stays neutral, never gold. */
+.bt-rail-item > svg,
+.bt-rail-item__link > svg {
   flex: none;
   color: var(--bt-faint);
 }
 
-.bt-rail-item.is-active > svg {
+.bt-rail-item.is-active > svg,
+.bt-rail-item.is-active > .bt-rail-item__link > svg {
   color: var(--bt-gold);
 }
 
@@ -278,6 +324,11 @@
 
 .bt-shell[data-rail='collapsed'] .bt-rail {
   padding-inline: 8px;
+}
+
+.bt-shell[data-rail='collapsed'] .bt-rail__brand {
+  justify-content: center;
+  padding-inline: 0;
 }
 
 .bt-shell[data-rail='collapsed'] .bt-rail-item {
@@ -1613,4 +1664,3736 @@
     background: #fff;
     color: #111;
   }
+}
+
+/* ===== R2: rail nav ===== */
+
+/* Expandable section groups in the rail. The row is a flex box holding the
+   destination link and a chevron that toggles the tree without navigating;
+   `.bt-rail-item` still supplies the row's shape, hover and active surface, so
+   an active group highlights as ONE row — background + ink + gold icon, never
+   an edge accent. */
+
+.bt-rail-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.bt-rail-item--group {
+  gap: 2px;
+  /* The link carries the row's inner padding, so the whole row stays 34px. */
+  padding: 0 3px 0 0;
+}
+
+.bt-rail-item__link {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 0 6px 9px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.bt-rail-item__chevron {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--bt-faint);
+  cursor: pointer;
+  transition: color var(--bt-t-fast);
+}
+
+/* No hover treatment of its own: a highlighted chevron reads as "click HERE to
+   expand" when the whole row already does that (owner). It stays a real button
+   for keyboard and screen-reader users; the rotation is its only feedback. */
+
+.bt-rail-item__chevron > svg {
+  transition: transform var(--bt-t-fast);
+}
+
+.bt-rail-group.is-open .bt-rail-item__chevron > svg {
+  transform: rotate(90deg);
+}
+
+/* Height animation without measuring: the 0fr → 1fr grid track. `visibility`
+   flips only after the close finishes, which keeps a closed tree out of the
+   accessibility tree and off the tab order. */
+.bt-rail-group__children {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition:
+    grid-template-rows 180ms cubic-bezier(0.3, 0, 0.2, 1),
+    visibility 0s linear 180ms;
+}
+
+.bt-rail-group.is-open > .bt-rail-group__children {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition:
+    grid-template-rows 180ms cubic-bezier(0.3, 0, 0.2, 1),
+    visibility 0s;
+}
+
+.bt-rail-group__list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* A hairline guide beside the children, hung from the group icon's centerline;
+   child backgrounds start right of it, so the line never breaks. */
+.bt-rail-group__list::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 18px;
+  width: 1px;
+  background: var(--bt-border-strong);
+}
+
+.bt-rail-group__list > :first-child {
+  margin-top: 2px;
+}
+
+/* Child rows: indented to the group's label, one step quieter, and — like
+   every other selected surface here — active means background + ink only. */
+.bt-rail-child {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  margin-left: 28px;
+  padding: 4px 9px 4px 8px;
+  border-radius: 6px;
+  color: var(--bt-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-rail-child:hover {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text-soft);
+}
+
+/* The open child is marked by INK ALONE — its group row already carries a
+   filled surface, and two stacked grey fills read as one muddy block. */
+.bt-rail-child.is-active {
+  background: none;
+  color: var(--bt-text);
+  font-weight: 600;
+}
+
+.bt-rail-child__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Foot of the rail: the quiet collapse row, above the rule and the account. */
+.bt-rail-item--toggle {
+  color: var(--bt-faint);
+  font-weight: 500;
+}
+
+.bt-shell[data-rail='collapsed'] .bt-rail-item--toggle > svg {
+  transform: scaleX(-1);
+}
+
+/* A narrow rail has no room for a tree: the group row becomes a plain icon
+   link to the section root (tooltip as before), chevron and children gone. */
+.bt-shell[data-rail='collapsed'] .bt-rail-item--group,
+.bt-shell[data-rail='collapsed'] .bt-rail-item__link {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.bt-shell[data-rail='collapsed'] .bt-rail-item__chevron,
+.bt-shell[data-rail='collapsed'] .bt-rail-group__children {
+  display: none;
+}
+
+@media (max-width: 1180px) {
+  .bt-shell .bt-rail-item--group,
+  .bt-shell .bt-rail-item__link {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .bt-shell .bt-rail-item__chevron,
+  .bt-shell .bt-rail-group__children {
+    display: none;
+  }
+
+  .bt-shell .bt-rail-item--toggle > svg {
+    transform: scaleX(-1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-rail-group__children,
+  .bt-rail-group.is-open > .bt-rail-group__children,
+  .bt-rail-item__chevron > svg {
+    transition: none;
+  }
+}
+
+/* ===== R2: home widgets ===================================================
+   The configurable Home board. Widgets are deliberately un-boxed — a tiny
+   label header row over content, separated by space and 1px rules, never a
+   card inside a card. State (active, dragged, hovered) reads through
+   background and ink only; no left-edge accent bars anywhere.
+   ========================================================================= */
+
+/* ── Board grid ──────────────────────────────────────────────────────────── */
+
+.bt-home-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 32px 28px;
+  margin-top: 6px;
+}
+
+/* `position: relative` hosts the placement lines: each widget carries the gold
+   insertion target that sits in the gap before it, absolutely positioned so
+   showing the targets never reflows the board. */
+.bt-home-w {
+  position: relative;
+  min-width: 0;
+  grid-column: span 12;
+  border-radius: 4px;
+  transition: background var(--bt-t-fast);
+}
+
+.bt-home-w[data-size='s'] {
+  grid-column: span 4;
+}
+
+.bt-home-w[data-size='m'] {
+  grid-column: span 6;
+}
+
+.bt-home-w[data-size='l'] {
+  grid-column: span 12;
+}
+
+/* Edit mode: a quiet dashed outline marks what is movable/removable. It sits
+   outside the content box so nothing reflows when the builder opens. */
+.bt-home-w.is-editing {
+  outline: 1px dashed var(--bt-border-strong);
+  outline-offset: 12px;
+}
+
+/* Picked up and waiting for a destination. Reads as lifted through background and
+   ink only — the existing dashed edit outline simply turns gold. No edge bar, and
+   no opacity drop (which would read as "disabled" rather than "held"). */
+.bt-home-w.is-armed {
+  outline-color: var(--bt-gold);
+  background: var(--bt-surface);
+}
+
+.bt-home-w__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  margin-bottom: 10px;
+}
+
+.bt-home-w__chrome {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+/* A click target, not a drag handle: no `touch-action` override (the page must
+   keep scrolling under the finger) and no grab cursor. */
+.bt-home-w__grip[aria-pressed='true'] {
+  color: var(--bt-gold);
+}
+
+.bt-home-w__anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.bt-home-w__popover {
+  right: 0;
+  top: calc(100% + 6px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 236px;
+  padding: 12px;
+}
+
+/* ── Net-worth hero — the page's single focal point ──────────────────────── */
+
+.bt-home-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.bt-home-hero__sub {
+  margin-top: 12px;
+}
+
+/* The change tag: one rounded pill directly beneath the headline, reading
+   `money | percent`. The tint carries the sign; the border stays neutral so
+   both themes work from the same tokens. */
+.bt-change-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 11px;
+  padding: 5px 12px;
+  border: 1px solid var(--bt-border);
+  border-radius: 999px;
+  background: var(--bt-surface);
+  color: var(--bt-text-soft);
+  font-size: 13px;
+  font-weight: 560;
+  font-variant-numeric: tabular-nums;
+}
+
+.bt-change-pill.is-pos {
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+}
+
+.bt-change-pill.is-neg {
+  background: var(--bt-neg-soft);
+  color: var(--bt-neg);
+}
+
+.bt-change-pill__sep {
+  font-weight: 400;
+  opacity: 0.42;
+}
+
+.bt-home-substats {
+  margin-top: 10px;
+}
+
+/* ── Portfolio cards ─────────────────────────────────────────────────────── */
+
+.bt-home-pcards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+  gap: 12px;
+}
+
+.bt-home-pcard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  color: inherit;
+  text-decoration: none;
+  transition:
+    background var(--bt-t-fast),
+    border-color var(--bt-t-fast);
+}
+
+.bt-home-pcard:hover {
+  background: var(--bt-surface-hover);
+  border-color: var(--bt-border-strong);
+}
+
+.bt-home-pcard__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bt-home-pcard__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-home-pcard__body {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bt-home-pcard__figures {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bt-home-pcard__value {
+  font-size: 17px;
+  font-weight: 620;
+}
+
+.bt-home-pcard__spark {
+  display: block;
+  flex: 0 0 auto;
+}
+
+/* ── Top movers ──────────────────────────────────────────────────────────── */
+
+.bt-home-movers__bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.bt-home-movers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(186px, 1fr));
+  gap: 20px 28px;
+}
+
+.bt-home-movers__title {
+  margin-bottom: 4px;
+}
+
+.bt-home-movers__none {
+  padding: 9px 0;
+}
+
+.bt-home-mover {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.bt-home-mover__ident {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bt-home-mover__link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.bt-home-mover__link:hover {
+  color: var(--bt-gold);
+}
+
+.bt-home-mover__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-home-mover__figures {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+/* ── News ────────────────────────────────────────────────────────────────── */
+
+.bt-home-news {
+  display: flex;
+  flex-direction: column;
+}
+
+.bt-home-news__group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 0;
+}
+
+.bt-home-news__symbol {
+  color: var(--bt-text-soft);
+}
+
+.bt-home-news__items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bt-home-news__link {
+  display: block;
+  color: var(--bt-text);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.bt-home-news__link:hover {
+  text-decoration: underline;
+}
+
+.bt-home-news__meta {
+  display: block;
+  margin-top: 2px;
+}
+
+/* ── Ported list rows (attention, upcoming) ──────────────────────────────── */
+
+.bt-home-row {
+  padding: 11px 0;
+}
+
+.bt-home-row--split {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.bt-home-row__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.bt-home-row__sub {
+  display: block;
+}
+
+.bt-home-clear {
+  padding: 12px 0;
+}
+
+.bt-home-clear__icon {
+  margin-right: 6px;
+  color: var(--bt-pos);
+  vertical-align: -2px;
+}
+
+.bt-home-more {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 12.5px;
+}
+
+/* ── Shortcuts ───────────────────────────────────────────────────────────── */
+
+.bt-home-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: 10px;
+}
+
+.bt-home-shortcut {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+  transition:
+    background var(--bt-t-fast),
+    border-color var(--bt-t-fast);
+}
+
+.bt-home-shortcut:hover {
+  background: var(--bt-surface-hover);
+  border-color: var(--bt-border-strong);
+}
+
+.bt-home-shortcut__icon {
+  flex: 0 0 auto;
+  color: var(--bt-gold);
+}
+
+.bt-home-shortcut__sub {
+  display: block;
+}
+
+/* ── "Add widget" catalog (inside the drawer) ────────────────────────────── */
+
+.bt-home-catalog__group + .bt-home-catalog__group {
+  margin-top: 24px;
+}
+
+.bt-home-catalog {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.bt-home-catalog__item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--bt-t-fast);
+}
+
+.bt-home-catalog__item + .bt-home-catalog__item {
+  border-top: 1px solid var(--bt-border);
+  border-radius: 0 0 6px 6px;
+}
+
+.bt-home-catalog__item:hover {
+  background: var(--bt-surface-hover);
+}
+
+.bt-home-catalog__icon {
+  flex: 0 0 auto;
+  color: var(--bt-muted);
+}
+
+.bt-home-catalog__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bt-home-catalog__add {
+  flex: 0 0 auto;
+  color: var(--bt-faint);
+}
+
+.bt-home-catalog__item:hover .bt-home-catalog__add {
+  color: var(--bt-gold);
+}
+
+/* ── Board responsiveness ────────────────────────────────────────────────── */
+
+@media (max-width: 1180px) {
+  .bt-home-w[data-size='s'] {
+    grid-column: span 6;
+  }
+
+  .bt-home-w[data-size='m'] {
+    grid-column: span 12;
+  }
+}
+
+/* ≤760px: one column, in the order the user arranged. */
+@media (max-width: 759.98px) {
+  .bt-home-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 26px;
+  }
+
+  .bt-home-w,
+  .bt-home-w[data-size='s'],
+  .bt-home-w[data-size='m'],
+  .bt-home-w[data-size='l'] {
+    grid-column: 1 / -1;
+  }
+
+  .bt-home-w.is-editing {
+    outline-offset: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-home-w,
+  .bt-home-pcard,
+  .bt-home-shortcut,
+  .bt-home-catalog__item {
+    transition: none;
+  }
+}
+
+/* ── Expanded catalog: transactions, dividends, cash, watchlist, alerts,
+      spotlight ────────────────────────────────────────────────────────────────
+   All of these are list widgets, so they reuse `.bt-home-row`/`.bt-band` for
+   their rows and add only what their own right-hand column needs. Same bargain
+   as the rest of the board: no boxes, no accent bars, ink and space only. */
+
+/* Right-hand figure stack shared by the transaction, watchlist and quote rows:
+   the badge/price on top, the secondary figure under it, both right-aligned so
+   the numbers form a column the eye can scan. */
+.bt-home-txn__figures {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.bt-home-txn__amount {
+  color: var(--bt-text-soft);
+}
+
+/* Row titles that are links stay ink-coloured until hover — a list of ten blue
+   symbols would read as a navigation menu rather than as data. */
+.bt-home-txn__link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.bt-home-txn__link:hover {
+  color: var(--bt-gold);
+}
+
+.bt-home-divs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Cash balances ───────────────────────────────────────────────────────── */
+
+.bt-home-cash__group + .bt-home-cash__group {
+  margin-top: 14px;
+}
+
+.bt-home-cash__portfolio {
+  margin-bottom: 2px;
+  color: var(--bt-text-soft);
+}
+
+.bt-home-cash__name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The total sits under a rule as a summary line, not as another row. */
+.bt-home-cash__total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--bt-border-strong);
+}
+
+/* ── Alerts ──────────────────────────────────────────────────────────────── */
+
+.bt-home-alerts {
+  display: flex;
+  gap: 28px;
+  padding: 2px 0 4px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.bt-home-alerts__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.bt-home-alerts__value {
+  font-size: 23px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+/* Gold, never the negative palette: a fired alert wants attention, it is not a
+   loss. pos/neg ink stays reserved for real gain/loss polarity. */
+.bt-home-alerts__value.is-hot {
+  color: var(--bt-gold);
+}
+
+.bt-home-alerts:hover .bt-label {
+  color: var(--bt-gold);
+}
+
+.bt-home-alerts__list {
+  margin-top: 6px;
+  border-top: 1px solid var(--bt-border);
+}
+
+/* ── Asset spotlight ─────────────────────────────────────────────────────── */
+
+.bt-home-spot__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.bt-home-spot__price {
+  font-size: 17px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The asset picker inside the settings popover. The default 236px popover is too
+   narrow for search results, so a popover containing a picker widens — scoped
+   with :has() so every other popover keeps its width. */
+.bt-home-w__popover:has(.bt-home-spot-pick) {
+  width: 304px;
+}
+
+.bt-home-spot-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* Results scroll inside the popover instead of growing it off-screen. */
+  max-height: 336px;
+  overflow-y: auto;
+}
+
+.bt-home-spot-pick__current {
+  margin-top: -2px;
+}
+
+/* ── Click-to-place: insertion slots ────────────────────────────────────────
+   Reordering is a discrete choice, not a drag. Entering the builder OPENS THE
+   BOARD UP (wider gaps below) so every position between widgets has room of its
+   own, and each position is a button carrying a labelled gold pill:
+
+     - nothing picked up ⇒ ⊕ "Add here", which opens the drawer and inserts there;
+     - a widget picked up ⇒ "Move here" on each legal destination.
+
+   Each slot is absolutely positioned INTO the gap and hosted by the widget it
+   lands in front of, so revealing the slots never reflows the board — the widgets
+   hold still while the user decides.
+
+   ORIENTATION is set by the page from the MEASURED layout (`is-h` / `is-v`), not
+   guessed from a widget's declared span. That is what keeps a line from ever being
+   drawn across the boundary it is not dividing: only slots whose two neighbours
+   genuinely share a row are vertical.
+
+   Deliberately un-transitioned: the slots are a menu, not an animation, which is
+   also what `prefers-reduced-motion` would ask for. */
+
+.bt-home-place {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+/* The line itself, drawn behind the pill and sized by the axis rules below. */
+.bt-home-place::after {
+  content: '';
+  position: absolute;
+  border-radius: 1px;
+  background: var(--bt-gold);
+  opacity: 0.75;
+}
+
+/* ── Horizontal slot: a row boundary, so the line spans the widget's width ── */
+
+.bt-home-place.is-h {
+  right: 0;
+  left: 0;
+  height: 34px;
+}
+
+/* Centre the 34px slot on the row gap's mid-line: half the gap out, then half
+   the slot back. The leading and trailing slots have no gap to sit in, which is
+   what the grid's edit-mode padding is for. */
+.bt-home-place.is-h.bt-home-place--before {
+  top: calc(-1 * var(--bt-home-rowgap) / 2 - 17px);
+}
+
+.bt-home-place.is-h.bt-home-place--after {
+  bottom: calc(-1 * var(--bt-home-rowgap) / 2 - 17px);
+}
+
+.bt-home-place.is-h::after {
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 2px;
+  margin-top: -1px;
+}
+
+/* ── Vertical slot: a column boundary inside the column gap ───────────────── */
+
+.bt-home-place.is-v {
+  top: 0;
+  bottom: 0;
+  width: var(--bt-home-colgap);
+}
+
+.bt-home-place.is-v.bt-home-place--before {
+  left: calc(var(--bt-home-colgap) / -1);
+}
+
+.bt-home-place.is-v.bt-home-place--after {
+  right: calc(var(--bt-home-colgap) / -1);
+}
+
+.bt-home-place.is-v::after {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+}
+
+/* ── The pill ──────────────────────────────────────────────────────────────
+   What makes a slot read as a target rather than as decoration. On a vertical
+   slot the column gap has no room for words, so the text is dropped and the pill
+   collapses to its icon — the button keeps its full accessible name either way. */
+
+.bt-home-place__pill {
+  /* `position: relative` + z-index so the pill sits ABOVE the line: the line is
+     a ::after pseudo, which paints after the element's children, and without
+     this it draws straight through the glyph. */
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: 1px solid var(--bt-gold);
+  border-radius: 999px;
+  background: var(--bt-bg);
+  color: var(--bt-gold);
+  line-height: 1;
+}
+
+/* Idle ⊕ slots stay quiet so a board in edit mode is not a wall of gold; the
+   move targets are the active question and read at full strength. */
+.bt-home-place.is-add {
+  opacity: 0.34;
+}
+
+.bt-home-place:hover,
+.bt-home-place:focus-visible {
+  opacity: 1;
+}
+
+.bt-home-place:hover::after,
+.bt-home-place:focus-visible::after {
+  opacity: 1;
+}
+
+.bt-home-place:hover .bt-home-place__pill,
+.bt-home-place:focus-visible .bt-home-place__pill {
+  background: var(--bt-gold);
+  color: var(--bt-gold-ink);
+}
+
+/* The ring belongs to the pill, not to the invisible full-gap hit box. */
+.bt-home-place:focus-visible {
+  outline: none;
+}
+
+.bt-home-place:focus-visible .bt-home-place__pill {
+  box-shadow: 0 0 0 3px var(--bt-gold-soft);
+}
+
+/* ── Indicators: liquidity, concentration ───────────────────────────────────
+   One ratio, stated. No thresholds and no pos/neg ink: "good" liquidity or
+   "safe" concentration depends on an intent the app does not know, so these
+   widgets report and let the user judge. */
+
+.bt-home-ind {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.bt-home-ind--stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+}
+
+.bt-home-ind__arc {
+  flex: 0 0 auto;
+}
+
+.bt-home-ind__figures {
+  min-width: 0;
+}
+
+.bt-home-ind__value {
+  font-size: 25px;
+  font-weight: 620;
+  line-height: 1.1;
+}
+
+/* Split bar: the two shares butt against each other, no track needed — together
+   they are the whole. */
+.bt-home-ind__bar {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  height: 10px;
+  border-radius: 999px;
+}
+
+/* Share of a whole ⇒ a track, because the empty part is as meaningful as the
+   filled part. */
+.bt-home-ind__track {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bt-surface-strong);
+}
+
+.bt-home-ind__track > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--bt-text-soft);
+}
+
+/* ── Cash flow, in/out columns ──────────────────────────────────────────────
+   Two same-unit series on one shared scale: no second axis, no rescaling, so the
+   bars are directly comparable by height. */
+
+.bt-home-cols__plot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.bt-home-cols__group {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+
+.bt-home-cols__bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 100%;
+}
+
+.bt-home-cols__bars > span {
+  flex: 1;
+  max-width: 22px;
+  border-radius: 2px 2px 0 0;
+}
+
+.bt-home-cols__label {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-home-cols__legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.bt-home-cols__key {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.bt-home-cols__key:not(:first-child) {
+  margin-left: 8px;
+}
+
+/* ── Allocation, ranked bars ────────────────────────────────────────────────
+   Bars scale to the LARGEST segment, not the total, so the ranking stays legible
+   when one position dominates; the printed share carries the absolute reading. */
+
+.bt-home-alloc {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.bt-home-alloc__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 10px;
+}
+
+.bt-home-alloc__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  grid-column: 1 / -1;
+}
+
+.bt-home-alloc__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-home-alloc__pct {
+  flex: 0 0 auto;
+}
+
+.bt-home-alloc__track {
+  overflow: hidden;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bt-surface-strong);
+  align-self: center;
+}
+
+.bt-home-alloc__track > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.bt-home-alloc__amount {
+  align-self: center;
+}
+
+/* ── Movers, compact chips ──────────────────────────────────────────────────
+   A day/period move is genuine polarity, so the chips earn the pos/neg palette. */
+
+.bt-home-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bt-home-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--bt-border);
+  border-radius: 999px;
+  background: var(--bt-surface);
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.bt-home-chip:hover {
+  border-color: var(--bt-border-strong);
+  background: var(--bt-surface-hover);
+}
+
+.bt-home-chip__sym {
+  color: var(--bt-text);
+  font-weight: 560;
+}
+
+.bt-home-chip.is-pos {
+  color: var(--bt-pos);
+}
+
+.bt-home-chip.is-neg {
+  color: var(--bt-neg);
+}
+
+/* ── Portfolios, dense table ────────────────────────────────────────────── */
+
+.bt-home-ptable {
+  width: 100%;
+}
+
+/* ── Board spacing while editing ────────────────────────────────────────────
+   The owner explicitly allowed extra room here: the reading board stays tight,
+   and the builder trades density for slots that are unmistakably BETWEEN widgets
+   rather than touching one. The gaps are custom properties so the slot geometry
+   above derives from them instead of restating the numbers. */
+
+.bt-home-grid {
+  --bt-home-rowgap: 32px;
+  --bt-home-colgap: 28px;
+}
+
+.bt-home-grid.is-editing {
+  --bt-home-rowgap: 64px;
+  --bt-home-colgap: 44px;
+  gap: var(--bt-home-rowgap) var(--bt-home-colgap);
+  /* Room for the leading and trailing slots, which sit outside the first and last
+     rows rather than between them: half a row gap out (32px) plus half a slot
+     (17px), rounded up so neither ever pokes past the board. */
+  padding: 52px 0;
+}
+
+@media (max-width: 759.98px) {
+  .bt-home-grid.is-editing {
+    /* One column, so no vertical slot can occur; the row gap is what matters. */
+    --bt-home-colgap: 30px;
+    --bt-home-rowgap: 58px;
+    padding: 48px 0;
+  }
+}
+
+/* ── Multi-portfolio scope picker (inside the settings popover) ─────────────
+   Scope is "all portfolios", "one portfolio" or a hand-picked SET, so the Select
+   grows a checkbox list. It lives in a 236px popover, so the list scrolls rather
+   than growing and only gains a filter box once there are enough portfolios for
+   scrolling alone to be tedious. */
+
+.bt-home-scope {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bt-home-scope__filter {
+  font-size: 12px;
+}
+
+.bt-home-scope__list {
+  display: flex;
+  flex-direction: column;
+  /* Roughly six rows before it scrolls — enough to choose from without the popover
+     running off the viewport on a short screen. */
+  max-height: 168px;
+  overflow-y: auto;
+  padding: 2px;
+  border: 1px solid var(--bt-border);
+  border-radius: 6px;
+}
+
+.bt-home-scope__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.bt-home-scope__item:hover {
+  background: var(--bt-surface-hover);
+}
+
+/* The last remaining choice is disabled rather than hidden: an empty set would
+   resolve back to "all", so the control has to show that it is deliberately
+   refusing, not that it is missing. */
+.bt-home-scope__item:has(.bt-home-scope__box:disabled) {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.bt-home-scope__box {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: 3px;
+  accent-color: var(--bt-gold);
+}
+
+.bt-home-scope__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Chart footnote ──────────────────────────────────────────────────────────
+   One quiet line under a widget's chart, for something the curve cannot say
+   about itself: that the performance form is a time-weighted return, or that
+   it fell back to euro value because the scope covers more than one portfolio.
+   Sits tight under the plot so it reads as part of the chart, not as a stat. */
+
+.bt-home-chartnote {
+  margin-top: 8px;
+  text-wrap: pretty;
+}
+
+/* ===== R2: auth + firstrun ===================================================
+ *
+ * (1) The split auth gate. Above 900px the standalone auth screens become two
+ * columns: a graphite brand panel (wordmark + the one tagline over a slow
+ * ambient tint) and a working column carrying the form directly on the canvas —
+ * no card inside a card. Below 900px every rule here folds away and `.bt-gate`
+ * renders exactly the centered single-column gate it always did.
+ *
+ * (2) The first-run wizard (`/welcome`): the same gate canvas, one question per
+ * screen, a slim dot stepper, and a single gold Continue.
+ * ------------------------------------------------------------------------- */
+
+.bt-gate__column {
+  width: min(400px, 100%);
+}
+
+/* Hidden until the split kicks in — below 900px the card carries the wordmark. */
+.bt-gate__brandpanel {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .bt-gate--split {
+    display: grid;
+    /* The base gate centers its flex children; as a grid both panes must
+       stretch the full row height or they collapse to centered bands. */
+    align-items: stretch;
+    grid-template-columns: minmax(320px, 40%) minmax(0, 1fr);
+    height: 100vh;
+    height: 100dvh;
+    padding: 0;
+  }
+
+  .bt-gate--split .bt-gate__brandpanel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 12px;
+    overflow: hidden;
+    padding: clamp(36px, 4vw, 56px);
+    background: var(--bt-nav);
+    border-right: 1px solid var(--bt-border);
+  }
+
+  /* Ambient tint: two very low-alpha radials, drifting slowly enough to read as
+     depth rather than motion. Sits behind the content, never intercepts input. */
+  .bt-gate__brandpanel::before {
+    content: '';
+    position: absolute;
+    inset: -25%;
+    pointer-events: none;
+    background:
+      radial-gradient(42% 34% at 24% 20%, var(--bt-gold-soft), transparent 68%),
+      radial-gradient(38% 32% at 76% 78%, var(--bt-blue-soft), transparent 70%);
+    animation: bt-gate-drift 44s ease-in-out infinite alternate;
+  }
+
+  .bt-gate__brandpanel > * {
+    position: relative;
+  }
+
+  .bt-gate--split .bt-gate__column {
+    display: flex;
+    width: auto;
+    flex-direction: column;
+    justify-content: center;
+    overflow-y: auto;
+    padding: 48px clamp(28px, 5vw, 72px);
+  }
+
+  /* On the split the working column IS the surface — drop the card chrome. */
+  .bt-gate--split .bt-gate__card {
+    width: min(400px, 100%);
+    margin-inline: auto;
+    padding: 0;
+    background: transparent;
+    border: 0;
+  }
+
+  .bt-gate--split .bt-gate__brand {
+    margin-bottom: 22px;
+    text-align: left;
+  }
+
+  /* The wordmark is shown by the brand panel at this width, so the card's copy
+     is hidden VISUALLY only: the panel is decorative (aria-hidden), and this
+     stays the one mark in the accessibility tree at every width. */
+  .bt-gate--split .bt-gate__brand-mark {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+.bt-gate__mark {
+  font-size: clamp(25px, 2.4vw, 32px);
+}
+
+.bt-gate__tagline {
+  max-width: 30ch;
+  color: var(--bt-muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+@keyframes bt-gate-drift {
+  from {
+    transform: translate3d(-2%, -1.5%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(2.5%, 2%, 0) scale(1.06);
+  }
+}
+
+/* ── First-run wizard ────────────────────────────────────────────────────── */
+
+.bt-fr {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* Single column by default (phones): no rail, the compact line carries position.
+   The split arrives at 900px — same breakpoint as the auth gate, so both
+   standalone surfaces change shape at one place. */
+.bt-fr__shell {
+  display: flex;
+  min-height: 100vh;
+  min-height: 100dvh;
+  flex-direction: column;
+}
+
+.bt-fr__main {
+  display: flex;
+  width: min(560px, 100%);
+  flex: 1;
+  flex-direction: column;
+  margin-inline: auto;
+  padding: clamp(20px, 4vh, 40px) 18px 40px;
+}
+
+/* Position on narrow viewports. A tall rail stacked above the question would
+   push the actual question off the first screenful, so it becomes one line. */
+.bt-fr__compact {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 30px;
+}
+
+.bt-fr__stepnow {
+  color: var(--bt-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* ── The step rail (≥900px) ───────────────────────────────────────────────── */
+
+.bt-fr__rail {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .bt-fr__shell {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+
+  .bt-fr__rail {
+    position: sticky;
+    top: 0;
+    display: flex;
+    height: 100vh;
+    height: 100dvh;
+    flex-direction: column;
+    gap: 34px;
+    overflow-y: auto;
+    padding: 30px 26px;
+    background: var(--bt-nav);
+    border-right: 1px solid var(--bt-border);
+  }
+
+  .bt-fr__main {
+    width: min(560px, 100%);
+    padding: clamp(40px, 8vh, 88px) clamp(28px, 4vw, 56px) 48px;
+  }
+
+  /* The rail owns position at this width. */
+  .bt-fr__compact {
+    display: none;
+  }
+}
+
+/* Every step listed up front, so the run reads as bounded. Row pitch is fixed —
+   never stretched to fill the rail — so the connector always reaches the next
+   marker instead of dangling. */
+.bt-fr__steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.bt-fr__steprow {
+  position: relative;
+  display: grid;
+  width: 100%;
+  align-items: center;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 11px;
+  padding: 7px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  text-align: left;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+/* A visited step can be revisited; an unreached one is inert, not a dead link. */
+.bt-fr__steprow:not(:disabled) {
+  cursor: pointer;
+}
+
+.bt-fr__steprow:not(:disabled):hover {
+  background: var(--bt-surface-soft);
+}
+
+.bt-fr__steprow:disabled {
+  cursor: default;
+}
+
+/* The trail between markers, drawn from each row to the next. */
+.bt-fr__steps > li:not(:last-child) .bt-fr__stepmark::after {
+  content: '';
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 50%;
+  width: 1px;
+  height: 11px;
+  background: var(--bt-border-strong);
+  transform: translateX(-50%);
+}
+
+.bt-fr__stepmark {
+  position: relative;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 50%;
+  color: var(--bt-faint);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.bt-fr__steplabel {
+  overflow: hidden;
+  color: var(--bt-faint);
+  font-size: 13px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Done — the only place green appears in the wizard: it means "on/ok", nothing
+   decorative. */
+.bt-fr__steprow[data-state='done'] .bt-fr__stepmark {
+  border-color: color-mix(in srgb, var(--bt-pos) 30%, transparent);
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+}
+
+.bt-fr__steprow[data-state='done'] .bt-fr__steplabel {
+  color: var(--bt-text-soft);
+}
+
+/* Skipped — deliberately NOT a tick and not green: a dash on the plain neutral
+   marker, so "passed over" never reads as "handled". */
+.bt-fr__steprow[data-state='skipped'] .bt-fr__stepmark {
+  border-style: dashed;
+  color: var(--bt-muted);
+}
+
+.bt-fr__steprow[data-state='skipped'] .bt-fr__steplabel {
+  color: var(--bt-muted);
+}
+
+/* Current — the brightest ink in the rail and its single gold hit. */
+.bt-fr__steprow[data-state='current'] .bt-fr__stepmark {
+  border-color: var(--bt-gold);
+  background: var(--bt-gold);
+  color: var(--bt-gold-ink);
+  font-weight: 700;
+}
+
+.bt-fr__steprow[data-state='current'] .bt-fr__steplabel {
+  color: var(--bt-text);
+  font-weight: 620;
+}
+
+.bt-fr__body {
+  flex: 1;
+}
+
+/* The question is the page title here, so it sits in the 27–32px title band —
+   and a 27px ivory heading against the figure's 14px value is what guarantees
+   the eye reads the question first. */
+.bt-fr__q {
+  margin-bottom: 6px;
+  color: var(--bt-text);
+  font-size: 27px;
+  font-weight: 650;
+  letter-spacing: -0.012em;
+  line-height: 1.22;
+}
+
+.bt-fr__hint {
+  margin-bottom: 26px;
+  max-width: 46ch;
+  color: var(--bt-muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+/* One choice per line, separated by a rule rather than boxed into cards. */
+.bt-fr__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 0;
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-fr__row:last-child {
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-fr__rowlabel {
+  color: var(--bt-text);
+  font-size: 14px;
+  font-weight: 560;
+}
+
+.bt-fr__rowsub {
+  margin-top: 2px;
+  color: var(--bt-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+/* Borrowed controls bring their own gold action — the tax picker's "Apply", for
+   one. Inside a step the frame's Continue is the screen's single gold CTA, so
+   any primary a reused control carries is demoted to a neutral one here. Scoped
+   to the step body, so the footer's Continue keeps its gold, and scoped to the
+   wizard, so Settings keeps its own emphasis untouched. */
+.bt-fr__body .bt-btn--primary {
+  background: var(--bt-surface-strong);
+  border-color: var(--bt-border-strong);
+  color: var(--bt-text);
+  font-weight: 570;
+}
+
+.bt-fr__body .bt-btn--primary:hover {
+  background: var(--bt-surface-hover);
+  border-color: var(--bt-border-strong);
+}
+
+.bt-fr__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 32px;
+}
+
+/* The way out is always offered and never competes: muted, not a blue link, and
+   well below the footer's Continue in the reading order. */
+.bt-fr__later {
+  margin-top: 14px;
+  text-align: center;
+}
+
+.bt-fr__later > button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--bt-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: color var(--bt-t-fast);
+}
+
+.bt-fr__later > button:hover {
+  color: var(--bt-text-soft);
+}
+
+/* Step change reads as continuity, not decoration (140–220ms band). */
+.bt-fr__step {
+  animation: bt-fr-in 180ms cubic-bezier(0.3, 0, 0.2, 1);
+}
+
+@keyframes bt-fr-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-gate__brandpanel::before,
+  .bt-fr__step {
+    animation: none;
+  }
+
+  .bt-fr__steprow {
+    transition: none;
+  }
+}
+
+/* ===== R2: control center ===== */
+
+/* The settings-absorbing popup: one large overlay over the dimmed shell, left
+   pane a filterable grouped panel nav, right pane the active panel's own page
+   component. Selected rows are marked with background + ink only — no
+   left-edge accent bar. Gold stays on focus and the brand dot. */
+
+/* The portal root carries `bt-app` (for the app's ink, type, gold focus ring
+   and scrollbars, which the overlay would otherwise escape by portalling to
+   <body>) — this strips the page canvas back off it. Declared last, so it wins
+   the equal-specificity tie against `.bt-app`. */
+.bt-cc-root {
+  min-height: 0;
+  background: none;
+}
+
+.bt-cc {
+  position: fixed;
+  inset: 0;
+  z-index: 71;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  pointer-events: none;
+}
+
+.bt-cc__panel {
+  pointer-events: auto;
+  width: min(960px, 94vw);
+  height: min(660px, 90vh);
+  display: flex;
+  flex-direction: column;
+  background: var(--bt-bg-raised);
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 10px;
+  box-shadow: var(--bt-shadow-overlay);
+  animation: bt-cc-open 300ms cubic-bezier(0.32, 0.72, 0.22, 1) both;
+}
+
+.bt-cc__panel:focus {
+  outline: none;
+}
+
+.bt-cc__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-cc__body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 244px minmax(0, 1fr);
+}
+
+.bt-cc__nav {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 10px 20px;
+  border-right: 1px solid var(--bt-border);
+  background: var(--bt-bg);
+}
+
+.bt-cc__filter {
+  padding: 0 4px 12px;
+}
+
+.bt-cc__filter .bt-input {
+  min-height: 32px;
+  font-size: 13px;
+}
+
+.bt-cc__group + .bt-cc__group {
+  margin-top: 16px;
+}
+
+.bt-cc__group-title {
+  padding: 0 8px;
+  margin-bottom: 6px;
+}
+
+.bt-cc__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  color: var(--bt-text-soft);
+  font-size: 13px;
+  text-decoration: none;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-cc__item > svg {
+  flex: none;
+  color: var(--bt-muted);
+}
+
+.bt-cc__item-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.bt-cc__item:hover {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text);
+}
+
+/* Selected row: background + ink only. No edge marker, no gold fill. */
+.bt-cc__item.is-active {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+  font-weight: 590;
+}
+
+.bt-cc__item.is-active > svg {
+  color: var(--bt-text-soft);
+}
+
+.bt-cc__item.is-danger {
+  color: var(--bt-neg);
+}
+
+.bt-cc__item.is-danger > svg,
+.bt-cc__item.is-danger.is-active > svg {
+  color: var(--bt-neg);
+}
+
+/* Rows that leave the popup for a page of their own. */
+.bt-cc__item--link {
+  color: var(--bt-muted);
+}
+
+.bt-cc__item-out {
+  flex: none;
+  color: var(--bt-faint);
+}
+
+.bt-cc__empty {
+  padding: 10px 8px;
+  color: var(--bt-muted);
+  font-size: 12.5px;
+}
+
+.bt-cc__content {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 26px 30px;
+}
+
+@keyframes bt-cc-open {
+  from {
+    opacity: 0;
+    translate: 0 10px;
+    scale: 0.99;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-cc__panel,
+  .bt-cc__item {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .bt-cc {
+    padding: 0;
+  }
+
+  .bt-cc__panel {
+    width: 100vw;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .bt-cc__body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .bt-cc__nav {
+    max-height: 38vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--bt-border);
+  }
+
+  .bt-cc__content {
+    padding: 18px 16px 28px;
+  }
+}
+
+/* ── Popup-native panel content ───────────────────────────────────────────────
+ *
+ * The panels are no longer full-canvas pages mounted in a popup: each one is
+ * built for the 960×660 surface. The grammar is deliberately tiny — a compact
+ * head, a labelled group, and a ruled row (label · one-line hint · control) —
+ * so a panel is a stack of rows, never a stack of cards. No nested panels, no
+ * page-sized title stacks, no paragraph under every control.
+ */
+
+.bt-cc-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* One head per panel: the panel's name. No subtitle restating it. */
+.bt-cc-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bt-cc-panel__title {
+  font-size: 15px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  color: var(--bt-text);
+}
+
+/* A labelled group of rows. The label is a real heading, styled small — the
+   document outline survives, the visual weight does not. */
+.bt-cc-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.bt-cc-group + .bt-cc-group {
+  margin-top: 20px;
+}
+
+.bt-cc-group__label {
+  margin-bottom: 8px;
+  color: var(--bt-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+/* The rows themselves: hairline-separated, no container. */
+.bt-cc-rows {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-cc-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+/* Rows whose control is a form or a list sit under their label instead of
+   beside it — same rule, same rhythm, just stacked. */
+.bt-cc-row--stack {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.bt-cc-row__text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.bt-cc-row__label {
+  color: var(--bt-text);
+  font-size: 13px;
+  font-weight: 570;
+}
+
+.bt-cc-row__hint {
+  color: var(--bt-muted);
+  font-size: 11.5px;
+}
+
+.bt-cc-row__control {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Controls stay narrow: a popup is not a canvas. */
+.bt-cc-row__control .bt-input,
+.bt-cc-row__control .bt-select {
+  min-height: 30px;
+  font-size: 12.5px;
+}
+
+.bt-cc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 420px;
+}
+
+.bt-cc-form .bt-input,
+.bt-cc-form .bt-select,
+.bt-cc-form .bt-textarea {
+  min-height: 30px;
+  font-size: 12.5px;
+}
+
+.bt-cc-form .bt-field > label {
+  font-size: 12px;
+}
+
+/* A one-line constraint the user genuinely needs (inheritance semantics, a
+   show-once secret, what a lost key costs). Not a place for narration. */
+.bt-cc-note {
+  color: var(--bt-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.bt-cc-note--warn {
+  color: var(--bt-gold);
+}
+
+/* Dense object rows (sessions, keys, apps, webhooks, connectors): title line
+   left with its metadata beneath, inline actions right. */
+.bt-cc-list {
+  border-top: 1px solid var(--bt-border);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* A list opening a group would draw its own top rule against the group's, so
+   the two hairlines would read as one 2px seam. The group already ruled it. */
+.bt-cc-rows > .bt-cc-list {
+  border-top: 0;
+}
+
+.bt-cc-list__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-cc-list__main {
+  min-width: 0;
+  flex: 1 1 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bt-cc-list__actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* A third rank inside an object row — one step quieter than the hint, for
+   metadata that must not compete (a connector's sync semantics, say). */
+.bt-cc-list__meta {
+  color: var(--bt-faint);
+  font-size: 11.5px;
+}
+
+/* Monospace surfaces (tokens, client ids, URLs) shrink in the popup. */
+.bt-cc-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+/* Disclosures stay the popup's way to fold a long block away. */
+.bt-cc-fold {
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-cc-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  color: var(--bt-text);
+  font-size: 13px;
+  font-weight: 570;
+  cursor: pointer;
+  list-style: none;
+}
+
+.bt-cc-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.bt-cc-fold > summary::after {
+  content: '▸';
+  margin-left: auto;
+  color: var(--bt-faint);
+  font-size: 11px;
+  transition: transform var(--bt-t-fast);
+}
+
+.bt-cc-fold[open] > summary::after {
+  transform: rotate(90deg);
+}
+
+.bt-cc-fold__body {
+  padding: 2px 0 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-cc-fold > summary::after {
+    transition: none;
+  }
+}
+
+/* ── Dense mode list (tax treatment) ──────────────────────────────────────────
+ *
+ * A one-of-N choice as hairline-ruled rows instead of a card per option. Each
+ * row is a two-column grid — mode name, then ONE qualifying line — so the whole
+ * option set is scannable in the popup rather than one option filling it. The
+ * selected row is marked by background and ink only; there is no edge marker.
+ */
+
+/* No top rule of its own: the list always follows either the group's opening
+   rule or a row's bottom rule, and two hairlines read as one 2px seam. */
+.bt-cc-modes {
+  border-top: 0;
+}
+
+.bt-cc-mode {
+  display: grid;
+  grid-template-columns: auto minmax(150px, 200px) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 9px 8px;
+  border-bottom: 1px solid var(--bt-border);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-cc-mode:hover {
+  background: var(--bt-surface-soft);
+}
+
+.bt-cc-mode.is-selected {
+  background: var(--bt-surface-strong);
+}
+
+.bt-cc-mode.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.bt-cc-mode__radio {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--bt-gold);
+  align-self: center;
+}
+
+.bt-cc-mode__name {
+  color: var(--bt-text-soft);
+  font-size: 13px;
+  font-weight: 570;
+}
+
+.bt-cc-mode.is-selected .bt-cc-mode__name {
+  color: var(--bt-text);
+}
+
+.bt-cc-mode__hint {
+  color: var(--bt-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Narrow popup / mobile: the qualifier drops under the name rather than
+   squeezing both columns to unreadable widths. */
+@media (max-width: 620px) {
+  .bt-cc-mode {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .bt-cc-mode__hint {
+    grid-column: 2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-cc-mode {
+    transition: none;
+  }
+}
+
+/* ===== R2: portfolio ===== */
+
+/*
+ * Portfolio switcher — a selector, not a management menu. The trigger is a
+ * bordered, surfaced control (icon chip · name · default badge · chevron); the
+ * dropdown is a search + list + create footer. Selection is background/ink + a
+ * check, never an edge marker. The icon chips, their per-icon hues and the
+ * trigger/row metrics live in the "R2: switcher" section at the end of this file.
+ */
+
+.bt-portfolio-menu {
+  max-width: calc(100vw - 24px);
+}
+
+.bt-portfolio-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 2px 6px;
+  padding: 0 10px;
+  min-height: 34px;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 7px;
+  background: var(--bt-bg);
+  color: var(--bt-muted);
+}
+
+.bt-portfolio-search:focus-within {
+  border-color: var(--bt-gold);
+  color: var(--bt-text-soft);
+}
+
+.bt-portfolio-search > input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--bt-text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  appearance: none;
+}
+
+.bt-portfolio-search > input::placeholder {
+  color: var(--bt-faint);
+}
+
+.bt-portfolio-search > input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.bt-portfolio-list {
+  max-height: 304px;
+  overflow-y: auto;
+  padding: 1px 0;
+}
+
+/* Selected row: background + ink + check. No left-edge accent bar, ever. */
+.bt-portfolio-option[aria-checked='true'] {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text);
+}
+
+.bt-portfolio-check {
+  flex: none;
+  margin-left: auto;
+}
+
+.bt-portfolio-default {
+  flex: none;
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* A default row that is also selected: badge keeps the gap, check ends the row. */
+.bt-portfolio-default + .bt-portfolio-check {
+  margin-left: 0;
+}
+
+.bt-portfolio-empty {
+  padding: 9px;
+  color: var(--bt-muted);
+  font-size: 12.5px;
+}
+
+/* ── Portfolio settings ──────────────────────────────────────────────────── */
+
+/* Label/control on the left, its one action on the right; stacks when narrow. */
+.bt-settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bt-settings-row__field {
+  flex: 1 1 260px;
+  max-width: 420px;
+}
+
+.bt-settings-block {
+  margin-top: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+/* Icon picker: chip + label per icon, selected by background/ink only. */
+.bt-kind-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bt-kind-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 0 13px 0 7px;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 7px;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    border-color var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-kind-option:hover {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text);
+}
+
+.bt-kind-option.is-active {
+  background: var(--bt-surface-strong);
+  border-color: var(--bt-border-strong);
+  color: var(--bt-text);
+  font-weight: 590;
+}
+
+/* Tax section (issue #636): what is in effect + where it comes from, then the
+   picker, then the one move it cannot express. Rules, not cards. */
+.bt-pftax__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-pftax__mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+
+.bt-pftax__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--bt-border);
+}
+
+/* The Tax tab's read-only counterpart: one line naming the mode in force. */
+.bt-pftax-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 18px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--bt-border);
+  color: var(--bt-muted);
+  font-size: 12.5px;
+}
+
+.bt-danger-zone {
+  border-color: rgba(251, 113, 133, 0.24);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-kind-option {
+    transition: none;
+  }
+}
+
+/* ===== R2: Ask dock + chat pop-out ===== */
+
+/* The AI panel FLOATS over the canvas (owner: "the AI chat should go over the
+   thing … like not inside the content of the page like it should go over"):
+   inset from the right and bottom edges, its own corners, border and overlay
+   shadow, clear of the topbar — so it can never be mistaken for a page column.
+   Above the canvas and the rail/bottombar (40), below the modal layer (scrim 70,
+   dialog 71). NON-MODAL by design: no scrim and no scroll lock, so the page
+   underneath stays readable, clickable and navigable while it is open. */
+.bt-askdock {
+  position: fixed;
+  top: calc(var(--bt-topbar-h) + 14px);
+  right: 16px;
+  bottom: 16px;
+  z-index: 45;
+  width: 396px;
+  max-width: calc(100vw - 32px);
+  /* Never touches top and bottom: the inset holds it off both edges and the cap
+     keeps it from stretching the full height of a tall monitor. */
+  max-height: min(700px, calc(100vh - var(--bt-topbar-h) - 30px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bt-bg-raised);
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 10px;
+  box-shadow: var(--bt-shadow-overlay);
+  /* Reuses the overlay slide the drawer/dialog language already uses. */
+  animation: bt-slide-in 300ms cubic-bezier(0.32, 0.72, 0.22, 1) both;
+}
+
+.bt-askdock__head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px 9px 13px;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+/* Maximized: the Control Center's own popup geometry (min(960px, 94vw) ×
+   min(660px, 90vh), centered, 10px corners) so the two large surfaces feel like
+   one system. It is NOT modal, though — it stays at z-index 45 under the modal
+   layer, and centering by translate rather than a full-viewport grid wrapper
+   means only the panel's own box takes pointer events, so the page around it
+   keeps working and the click-away rule still reaches it. */
+.bt-askdock--max {
+  top: 50%;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  translate: -50% -50%;
+  width: min(960px, 94vw);
+  height: min(660px, 90vh);
+  max-width: none;
+  max-height: none;
+  animation: bt-rise 300ms cubic-bezier(0.32, 0.72, 0.22, 1) both;
+  /* The faintest possible lift off the page (owner: "just the most smallest
+     thing possible"): the overlay shadow, a wide soft ambient one, and a
+     hairline ring. Shadows rather than a scrim or a backdrop element — a scrim
+     would read as modal, and any pseudo-element here would be clipped by the
+     panel's own `overflow: hidden`. Nothing intercepts pointer events, so the
+     page behind stays live and a click-away still closes an unpinned panel. */
+  box-shadow:
+    var(--bt-shadow-overlay),
+    0 30px 80px -30px rgb(0 0 0 / 45%),
+    0 0 0 1px rgb(0 0 0 / 22%);
+}
+
+.bt-askdock__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--bt-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bt-askdock__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Pin + maximize: quiet icon buttons whose engaged state is background and ink,
+   never an edge bar. The glyph itself also changes (the pin tilts, the brackets
+   reverse), so the state never rests on colour alone. */
+.bt-askdock__mode {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--bt-muted);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast),
+    border-color var(--bt-t-fast);
+}
+
+.bt-askdock__mode > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.bt-askdock__mode:hover {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text-soft);
+}
+
+.bt-askdock__mode.is-on {
+  background: var(--bt-surface-strong);
+  border-color: var(--bt-border-strong);
+  color: var(--bt-text);
+}
+
+/* Engaged pin reads as driven in: tilted, so shape carries the state too. */
+.bt-askdock__mode.is-on .bt-askdock__pin-glyph {
+  rotate: 45deg;
+}
+
+.bt-askdock__pin-glyph {
+  transition: rotate var(--bt-t-fast);
+}
+
+.bt-askdock__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 13px 12px;
+}
+
+/* The same parked surface the /ask page renders, at panel density. */
+.bt-askdock__parked .bt-parked {
+  max-width: none;
+  padding: 20px 16px 22px;
+}
+
+.bt-askdock__parked .bt-parked__title {
+  font-size: 17px;
+}
+
+.bt-askdock__parked .bt-parked__body {
+  max-width: none;
+  font-size: 12.5px;
+}
+
+.bt-askdock__parked .bt-parked__points {
+  font-size: 12px;
+}
+
+.bt-askdock__composer {
+  display: flex;
+  flex: none;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px;
+}
+
+.bt-askdock__hint {
+  flex: none;
+  padding: 0 12px 12px;
+}
+
+/* Popped-out friend chat: the window IS the surface, so the shared panes fill it
+   edge to edge with no page chrome around them. */
+.bt-chatwindow {
+  display: flex;
+  height: 100vh;
+}
+
+.bt-chatwindow__frame {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The panes carry their own card chrome for the page's master-detail layout;
+   inside the pop-out window they sit flush against the window edge. */
+.bt-chatwindow .bt-panel {
+  min-height: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
+
+/* Desktop-only luxury: below this the rail's Ask row stays a plain link to
+   /ask. `AskDock` already renders nothing there — this is the CSS backstop. */
+@media (max-width: 899px) {
+  .bt-askdock {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-askdock,
+  .bt-askdock--max {
+    animation: none;
+  }
+
+  .bt-askdock__mode,
+  .bt-askdock__pin-glyph {
+    transition: none;
+  }
+}
+
+/* ===== R2: switcher ===== */
+
+/*
+ * Portfolio icon chips — the user-facing "Icon" of a portfolio (internally its
+ * *kind*, see user/portfolio/portfolioKinds.ts). One rounded chip: a ~14% tint
+ * of the icon's hue behind the glyph drawn in that hue at full strength, so a
+ * list of portfolios is scannable by colour before it is readable by name. The
+ * glyph always carries the meaning; colour only speeds up the scan.
+ *
+ * HUES come off the validated categorical palette (ui/charts/palette.ts) — dark
+ * theme uses those values verbatim, the light theme uses same-hue darkened
+ * counterparts (the palette is validated against the dark canvas only, and the
+ * dark inks sit at ~2.5:1 on white). Both themes keep every glyph above 3:1
+ * against its own tinted chip.
+ *
+ * Deliberately EXCLUDED palette slots: green (#199e70) and teal (#0d9488) read
+ * as the positive semantic pair, red-brown (#c0453f) as the negative one, and
+ * yellow (#c98500) as the gold the app reserves for brand/action/focus. What is
+ * left is six well-separated hues (min adjacent gap 34°), one per icon.
+ */
+
+.bt-pf-chip {
+  --bt-pf-ink: var(--bt-muted);
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--bt-pf-ink) 26%, transparent);
+  background: color-mix(in srgb, var(--bt-pf-ink) 14%, transparent);
+  color: var(--bt-pf-ink);
+}
+
+/* The topbar trigger's chip: one step up, because it states the current scope. */
+.bt-pf-chip--lg {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+}
+
+.bt-pf-chip--private {
+  --bt-pf-ink: #3987e5; /* palette blue */
+}
+
+.bt-pf-chip--family {
+  --bt-pf-ink: #d55181; /* palette magenta */
+}
+
+.bt-pf-chip--business {
+  --bt-pf-ink: #b06fc9; /* palette purple */
+}
+
+.bt-pf-chip--savings {
+  --bt-pf-ink: #7a9e2b; /* palette lime */
+}
+
+.bt-pf-chip--property {
+  --bt-pf-ink: #d95926; /* palette orange */
+}
+
+/* Group (MIRRORCHAIN) copies override the icon entirely — hue included. */
+.bt-pf-chip--group {
+  --bt-pf-ink: #9085e9; /* palette violet */
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--private {
+  --bt-pf-ink: #1f6ac4;
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--family {
+  --bt-pf-ink: #b93a68;
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--business {
+  --bt-pf-ink: #8e46ad;
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--savings {
+  --bt-pf-ink: #5c7a13;
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--property {
+  --bt-pf-ink: #b8431a;
+}
+
+:root[data-bt-theme='light'] .bt-pf-chip--group {
+  --bt-pf-ink: #6154c6;
+}
+
+/* ── Trigger ─────────────────────────────────────────────────────────────── */
+
+/*
+ * The one topbar control that is a *statement*, not an action: bordered and
+ * surfaced so the current portfolio is unmistakable at a glance. Gold stays with
+ * brand/action/focus — prominence here is border + surface + weight.
+ */
+.bt-portfolio-trigger {
+  justify-content: flex-start;
+  gap: 9px;
+  min-width: 200px;
+  max-width: min(340px, 42vw);
+  min-height: 40px;
+  padding: 0 10px 0 5px;
+  background: var(--bt-surface);
+  text-align: left;
+}
+
+.bt-portfolio-trigger:hover,
+.bt-portfolio-trigger.is-open {
+  background: var(--bt-surface-hover);
+  border-color: var(--bt-border-strong);
+}
+
+.bt-portfolio-trigger__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--bt-text);
+  font-size: 13.5px;
+  font-weight: 620;
+  letter-spacing: -0.005em;
+}
+
+.bt-portfolio-trigger__chevron {
+  flex: none;
+  color: var(--bt-muted);
+}
+
+/* ── Dropdown ────────────────────────────────────────────────────────────── */
+
+.bt-portfolio-menu {
+  width: 324px;
+}
+
+.bt-portfolio-option {
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 8px;
+}
+
+.bt-portfolio-option__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 530;
+}
+
+.bt-portfolio-option[aria-checked='true'] .bt-portfolio-option__name {
+  font-weight: 620;
+}
+
+/* Create + settings footer: same rhythm as the rows above the rule. */
+.bt-portfolio-actions > .bt-menu-item {
+  min-height: 34px;
+  gap: 10px;
+}
+
+.bt-portfolio-actions > .bt-menu-item > svg {
+  flex: none;
+  color: var(--bt-muted);
+}
+
+.bt-portfolio-actions > .bt-menu-item:hover > svg {
+  color: var(--bt-text-soft);
+}
+
+/* ── Add-portfolio wizard ────────────────────────────────────────────────────
+ * The switcher's one create action, at popup scale: a slim dot stepper, one
+ * question, that step's own control, and a single gold primary. Same grammar as
+ * the first-run gate (`bt-fr`), sized for a dialog instead of a full canvas.
+ */
+
+.bt-pfw {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.bt-pfw__stepper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bt-pfw__dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bt-pfw__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bt-border-strong);
+  transition:
+    background var(--bt-t-fast),
+    width var(--bt-t-fast);
+}
+
+.bt-pfw__dot[data-state='done'] {
+  background: var(--bt-faint);
+}
+
+.bt-pfw__dot[data-state='current'] {
+  width: 18px;
+  border-radius: 3px;
+  background: var(--bt-gold);
+}
+
+.bt-pfw__stepnow {
+  color: var(--bt-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.bt-pfw__body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  animation: bt-rise-sm var(--bt-t-fast) both;
+}
+
+.bt-pfw__q {
+  color: var(--bt-text);
+  font-size: 17px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.bt-pfw__hint {
+  margin-top: -8px;
+  max-width: 52ch;
+  color: var(--bt-muted);
+  font-size: 12.5px;
+}
+
+/* One choice per line, separated by a rule rather than boxed into cards. */
+.bt-pfw__choices {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bt-border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.bt-pfw__choice {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 12px;
+  border: 0;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-pfw__choice + .bt-pfw__choice {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-pfw__choice:hover {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text);
+}
+
+/* Selected: background + ink + check. No left-edge accent bar, ever. */
+.bt-pfw__choice.is-active {
+  background: var(--bt-surface-soft);
+  color: var(--bt-text);
+}
+
+.bt-pfw__choice-icon {
+  flex: none;
+  color: var(--bt-muted);
+}
+
+.bt-pfw__choice.is-active .bt-pfw__choice-icon {
+  color: var(--bt-text-soft);
+}
+
+.bt-pfw__choice-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.bt-pfw__choice-text > strong {
+  font-size: 13.5px;
+  font-weight: 590;
+}
+
+.bt-pfw__choice-text > small {
+  color: var(--bt-muted);
+  font-size: 12px;
+}
+
+.bt-pfw__choice-check {
+  flex: none;
+}
+
+/* Terminal read-back: the chip and the name of what was just made. */
+.bt-pfw__summary {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid var(--bt-border);
+  border-radius: 7px;
+}
+
+.bt-pfw__summary-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.bt-pfw__summary-text > strong {
+  color: var(--bt-text);
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.bt-pfw__summary-text > small {
+  color: var(--bt-muted);
+  font-size: 12px;
+}
+
+/* Parked rows: stated in the bt-parked voice, never a control that does nothing. */
+.bt-pfw__parkedset {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-pfw__parked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+  color: var(--bt-faint);
+  font-size: 12px;
+}
+
+.bt-pfw__parked > svg {
+  flex: none;
+}
+
+.bt-pfw__parked > span:first-of-type {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bt-pfw__parked-flag {
+  flex: none;
+  color: var(--bt-muted);
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.bt-pfw__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--bt-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-pfw__dot,
+  .bt-pfw__choice {
+    transition: none;
+  }
+
+  .bt-pfw__body {
+    animation: none;
+  }
+}
+
+/* ===== R2: palette =========================================================
+   Universal ⌘K search: one faux-input trigger in the topbar, one overlay with
+   ONE row grammar for everything it can reach — icon chip · primary · quiet
+   meta · optional badge/dot · chevron. Commands and assets are the same kind of
+   row under different ruled headers, so nothing reads as pasted in. Active and
+   hover state is background + ink only; no edge bars anywhere.
+   ========================================================================= */
+
+/* ── Topbar trigger: a search field you click, not a button ───────────────── */
+
+.bt-searchfield {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: clamp(260px, 24vw, 340px);
+  min-height: 34px;
+  padding: 0 8px 0 11px;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 6px;
+  background: var(--bt-bg-raised);
+  color: var(--bt-faint);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: text;
+  transition:
+    border-color var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-searchfield:hover {
+  border-color: var(--bt-border-accent);
+  color: var(--bt-muted);
+}
+
+.bt-searchfield:focus-visible {
+  outline: none;
+  border-color: var(--bt-gold);
+  box-shadow: 0 0 0 1px var(--bt-gold);
+}
+
+/* The placeholder stand-in: muted like a real one, and it yields the row so the
+   ⌘K chip stays pinned right. */
+.bt-searchfield__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Overlay + panel ─────────────────────────────────────────────────────── */
+
+.bt-palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 76;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: min(12vh, 96px) 16px 16px;
+  background: var(--bt-scrim);
+  backdrop-filter: blur(4px);
+  animation: bt-fade var(--bt-t-fast) both;
+}
+
+.bt-palette {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: min(72vh, 620px);
+  overflow: hidden;
+  background: var(--bt-bg-raised);
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 10px;
+  box-shadow: var(--bt-shadow-overlay);
+  animation: bt-rise var(--bt-t-panel) both;
+}
+
+/* ── The real input ──────────────────────────────────────────────────────── */
+
+.bt-palette__field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  min-height: 52px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--bt-border);
+  color: var(--bt-muted);
+}
+
+.bt-palette__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: none;
+  color: var(--bt-text);
+  font: inherit;
+  font-size: 14.5px;
+  outline: none;
+}
+
+.bt-palette__input::placeholder {
+  color: var(--bt-faint);
+}
+
+/* ── Body: ruled sections of identical rows ──────────────────────────────── */
+
+.bt-palette__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.bt-palette__group {
+  padding: 8px 8px 10px;
+}
+
+/* The one clear separation between commands and assets — and between command
+   sections — is a rule, not a card. */
+.bt-palette__group + .bt-palette__group {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-palette__label {
+  padding: 2px 9px 6px;
+  color: var(--bt-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.bt-palette__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.bt-palette__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  color: var(--bt-text-soft);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.bt-palette__row:hover,
+.bt-palette__row[aria-selected='true'] {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-palette__chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--bt-surface);
+  color: var(--bt-muted);
+}
+
+.bt-palette__row:hover > .bt-palette__chip,
+.bt-palette__row[aria-selected='true'] > .bt-palette__chip {
+  background: var(--bt-surface-soft);
+  color: var(--bt-gold);
+}
+
+.bt-palette__primary {
+  flex: 0 1 auto;
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 540;
+}
+
+.bt-palette__primary.is-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+}
+
+.bt-palette__meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--bt-faint);
+  font-size: 12px;
+}
+
+.bt-palette__badge {
+  flex: none;
+  min-height: 18px;
+  padding: 0 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--bt-muted);
+}
+
+/* Row-shaped, non-interactive line inside a section (loading / nothing found).
+   Aligned with the row text column so a filling section never shifts. */
+.bt-palette__note {
+  padding: 7px 9px 7px 45px;
+  color: var(--bt-faint);
+  font-size: 12px;
+}
+
+/* ── Default-state hint, empty state, key legend ─────────────────────────── */
+
+.bt-palette__hint,
+.bt-palette__empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 10px 16px;
+  border-top: 1px solid var(--bt-border);
+  color: var(--bt-faint);
+  font-size: 12px;
+}
+
+.bt-palette__foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: none;
+  min-height: 34px;
+  padding: 0 14px;
+  border-top: 1px solid var(--bt-border);
+  background: var(--bt-surface-soft);
+  color: var(--bt-faint);
+  font-size: 11.5px;
+}
+
+.bt-palette__foot > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+@media (max-width: 639.98px) {
+  .bt-palette-overlay {
+    padding: 8vh 10px 10px;
+  }
+
+  .bt-palette__meta {
+    display: none;
+  }
+
+  .bt-palette__primary {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  .bt-palette__foot {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-palette-overlay,
+  .bt-palette {
+    animation: none;
+  }
+
+  .bt-searchfield {
+    transition: none;
+  }
+}
+
+/* ===== R2: auth figures ====================================================
+ * Decorative product figures on the split auth panel: four small cards drifting
+ * over the graphite, arranged as a loose diagonal that leads the eye toward the
+ * form column. Only ever visible where the split exists (≥900px) — the panel
+ * itself is display:none below that, so no query is needed here.
+ *
+ * Every card is a flat surface with a 1px rule and a soft shadow; no nested
+ * cards, no gold (the wordmark below owns the brand colour). Money is tabular.
+ * The drift is slow and staggered — depth, not animation — and stops entirely
+ * under prefers-reduced-motion.
+ * ========================================================================== */
+
+/* One cluster, not four scattered cards: a fixed-width stage the cards cascade
+   inside, each overlapping the one before it so they read as a stack with
+   depth. Sits in the panel's upper two-thirds; the wordmark owns the foot. */
+.bt-authfig {
+  position: absolute;
+  top: clamp(52px, 13vh, 148px);
+  left: clamp(30px, 5vw, 66px);
+  width: min(384px, 86%);
+  height: 374px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A soft lift under the cluster so it sits on light rather than on nothing. */
+.bt-authfig::before {
+  content: '';
+  position: absolute;
+  inset: -14% -18% -22%;
+  background: radial-gradient(58% 52% at 42% 44%, rgb(255 255 255 / 4.5%), transparent 72%);
+}
+
+.bt-authfig__card {
+  position: absolute;
+  display: flex;
+  background: color-mix(in srgb, var(--bt-surface) 88%, transparent);
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 8px;
+  box-shadow: 0 18px 38px -26px rgb(0 0 0 / 62%);
+  backdrop-filter: blur(2px);
+  animation: bt-authfig-drift 24s ease-in-out infinite alternate;
+}
+
+/* 1 — what everything is worth. */
+.bt-authfig__value {
+  top: 0;
+  left: 0;
+  z-index: 3;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 15px 13px;
+  min-width: 186px;
+}
+
+.bt-authfig__label {
+  color: var(--bt-faint);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.bt-authfig__amount {
+  color: var(--bt-text);
+  font-size: 25px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.bt-authfig__pill {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* 2 — portfolios nest, behind the rail's own hairline guide. */
+.bt-authfig__nest {
+  top: 78px;
+  left: 118px;
+  z-index: 4;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 14px 12px;
+  min-width: 224px;
+  animation-duration: 29s;
+  animation-delay: -6s;
+}
+
+.bt-authfig__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--bt-text-soft);
+  font-size: 12.5px;
+  font-weight: 560;
+}
+
+.bt-authfig__row > svg {
+  flex: none;
+  color: var(--bt-muted);
+}
+
+.bt-authfig__rowlabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-authfig__rowvalue {
+  color: var(--bt-muted);
+  font-size: 12px;
+}
+
+.bt-authfig__children {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: 7px;
+  padding-left: 14px;
+}
+
+.bt-authfig__children::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  width: 1px;
+  background: var(--bt-border-strong);
+}
+
+.bt-authfig__row--child {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--bt-muted);
+}
+
+/* 3 — one ledger, two people. */
+.bt-authfig__shared {
+  top: 226px;
+  left: 2px;
+  z-index: 3;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  min-width: 200px;
+  animation-duration: 21s;
+  animation-delay: -13s;
+}
+
+.bt-authfig__faces {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--bt-surface-strong);
+  color: var(--bt-blue);
+}
+
+.bt-authfig__stack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.bt-authfig__title {
+  color: var(--bt-text-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.bt-authfig__meta {
+  color: var(--bt-faint);
+  font-size: 11.5px;
+}
+
+/* 4 — the month, drawn. */
+.bt-authfig__trend {
+  top: 246px;
+  left: 210px;
+  z-index: 2;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 14px 12px;
+  width: 158px;
+  animation-duration: 26s;
+  animation-delay: -3s;
+}
+
+.bt-authfig__spark {
+  display: block;
+  width: 100%;
+  height: 30px;
+  overflow: visible;
+}
+
+@keyframes bt-authfig-drift {
+  from {
+    translate: 0 0;
+  }
+  to {
+    translate: 0 -9px;
+  }
+}
+
+/* Tight panels (900–1100px): trade the outer offsets for room. */
+@media (max-width: 1100px) {
+  .bt-authfig {
+    height: 342px;
+  }
+
+  .bt-authfig__value {
+    min-width: 166px;
+  }
+
+  .bt-authfig__nest {
+    left: 92px;
+    min-width: 202px;
+  }
+
+  .bt-authfig__shared {
+    top: 208px;
+    min-width: 0;
+  }
+
+  /* The shared card sits above the trend card, so at this width the trend must
+     start clear of it or its label gets covered. */
+  .bt-authfig__trend {
+    top: 238px;
+    left: 200px;
+    width: 132px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-authfig__card {
+    animation: none;
+  }
+}
+
+/* ===== R2: firstrun figures =================================================
+ * One small live figure per wizard step, above the question.
+ *
+ * Sized and toned to LOSE to the question below it: a 64px flat strip, one
+ * hairline, muted labels, at most one accent hit — against a 25px ivory heading.
+ * That ordering is the whole point. The reference design put a full-height
+ * decorative panel beside every question with the same border weight as the
+ * control, which is what made it read as graphics-first.
+ *
+ * Every figure reflects real state (see FirstRunFigures.tsx), so none of this is
+ * ornament for its own sake, and there is nothing to animate — no drift here,
+ * unlike the auth panel's cards. Money is tabular.
+ * ========================================================================== */
+
+.bt-frfig {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 22px;
+  padding: 12px 14px;
+  min-height: 64px;
+  background: var(--bt-surface-soft);
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A quiet square for the step's glyph — neutral, never gold: the rail's current
+   marker and the Continue button already own the accent on this screen. */
+.bt-frfig__tile {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: var(--bt-surface-strong);
+  color: var(--bt-muted);
+}
+
+.bt-frfig__stack {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bt-frfig__value {
+  overflow: hidden;
+  color: var(--bt-text);
+  font-size: 14px;
+  font-weight: 570;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-frfig__meta {
+  overflow: hidden;
+  color: var(--bt-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-frfig__chips {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+}
+
+/* Off by default, lit when the thing is genuinely on — the figure's only job is
+   to say which. Green means "on", matching the rail's done marker. */
+/* Same type and geometry as `.bt-badge` — a chip here must not read as a new
+   kind of object. */
+.bt-frfig__chip {
+  min-height: 20px;
+  padding: 1px 8px;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 999px;
+  color: var(--bt-faint);
+  font-size: 11.5px;
+  font-weight: 570;
+  white-space: nowrap;
+}
+
+.bt-frfig__chip--on {
+  border-color: color-mix(in srgb, var(--bt-pos) 30%, transparent);
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+}
+
+/* ===== R2: dialog portal + wizard-sized panel ==============================
+ * Dialogs portal to <body> (see ODialog/Dialog): rendered in place they inherit
+ * the nearest containing block for fixed positioning, and the topbar's
+ * `backdrop-filter` makes the topbar exactly that — a dialog opened from the
+ * portfolio switcher used to lay itself out inside that strip. The portal root
+ * carries `bt-app` for the app's ink and type, so it must not repaint the page
+ * canvas underneath it.
+ * ========================================================================== */
+
+.bt-dialog-root {
+  position: static;
+  min-height: 0;
+  background: none;
+}
+
+/* A wizard is a big centred popup, not a form panel: the Control Center's own
+   geometry, so the two read as one system. The body scrolls inside it, which is
+   what keeps a long step from pushing the footer off screen. */
+.bt-dialog__panel--wizard {
+  width: min(960px, 94vw);
+  height: min(660px, 90vh);
+  max-height: none;
+}
+
+.bt-dialog__panel--wizard > .bt-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* A shared book keeps its chosen Icon and wears a small marker instead: the
+   glyph answers "what is this book for", the marker "who else is in it". Sits on
+   the chip's corner, tinted with the reserved group hue, with a ring in the
+   surface colour so it reads as a badge rather than as part of the glyph. */
+.bt-pf-chip--shared {
+  position: relative;
+  overflow: visible;
+}
+
+.bt-pf-chip__mark {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--bt-surface-strong);
+  box-shadow: 0 0 0 1.5px var(--bt-bg-raised);
+  color: var(--bt-pf-group-ink, #9085e9);
+}
+
+.bt-pf-chip--lg .bt-pf-chip__mark {
+  right: -4px;
+  bottom: -4px;
+  width: 16px;
+  height: 16px;
 }
