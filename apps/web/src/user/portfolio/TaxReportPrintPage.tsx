@@ -206,6 +206,12 @@ export function TaxReportPrintPage() {
   // context, and the server holds no tax data for it (PD7) — every fetch stays
   // disabled until the account resolves to 'normal'. The in-app print action on
   // the tax report page generates the paranoid printable document instead.
+  //
+  // The route matrix already redirects `/portfolio/tax/print` away from a
+  // paranoid account (`isParanoidKilledPath`), so the branches below are a
+  // deliberate second line of defense, not a live surface: this page renders
+  // outside the app shell and a single route-table edit would otherwise turn a
+  // hidden surface into a server-read one.
   const privacyMode = useResolvedPrivacyMode();
   const paranoid = privacyMode === 'paranoid';
 

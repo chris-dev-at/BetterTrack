@@ -1194,7 +1194,8 @@
         },
         "empty": {
           "title": "No API keys yet"
-        }
+        },
+        "scopeInactive": "inactive in Paranoid mode"
       },
       "oauth": {
         "yourApps": "Your apps",
@@ -3623,7 +3624,16 @@
       "driveGesture": "Google may ask you to sign in so this device can read the encrypted Drive copy.",
       "action": "Unlock vault",
       "unlocking": "Unlocking…",
-      "restore": "Choose a vault copy to restore",
+      "stuck": {
+        "title": "Can’t unlock this vault?",
+        "body": "BetterTrack cannot reset a vault passphrase and keeps no copy of your key. Without the passphrase, the recovery kit, or a device that is still unlocked, the encrypted data is gone for good — this is the trade-off you confirmed when you turned Paranoid mode on.",
+        "keptHint": "Starting fresh discards the encrypted vault and returns this account to a normal, empty one. Everything that was never in the vault — your sign-in, friends, chats, price alerts, watchlists and settings — stays exactly as it is.",
+        "driveLeftover": "The encrypted copy in your Google Drive is left where it is. It can no longer be opened by anyone, including you — remove the bettertrack-vault file from Drive yourself if you want it gone.",
+        "confirmLabel": "Type your username ({{username}}) to confirm",
+        "action": "Discard the vault and start fresh",
+        "working": "Discarding…",
+        "error": "The vault could not be discarded. Nothing changed — try again when the connection is available."
+      },
       "errors": {
         "wrongPassphrase": "That vault passphrase is incorrect.",
         "recoveryKit": "That recovery kit is invalid or belongs to another vault.",

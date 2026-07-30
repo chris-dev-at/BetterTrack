@@ -1194,7 +1194,8 @@
         },
         "empty": {
           "title": "Noch keine API-Schlüssel"
-        }
+        },
+        "scopeInactive": "im Paranoid-Modus inaktiv"
       },
       "oauth": {
         "yourApps": "Deine Apps",
@@ -3623,7 +3624,16 @@
       "driveGesture": "Google bittet dich möglicherweise um eine Anmeldung, damit dieses Gerät die verschlüsselte Drive-Kopie lesen kann.",
       "action": "Tresor entsperren",
       "unlocking": "Wird entsperrt…",
-      "restore": "Tresorkopie zur Wiederherstellung wählen",
+      "stuck": {
+        "title": "Tresor lässt sich nicht entsperren?",
+        "body": "BetterTrack kann eine Tresor-Passphrase nicht zurücksetzen und bewahrt keine Kopie deines Schlüssels auf. Ohne Passphrase, Wiederherstellungspaket oder ein noch entsperrtes Gerät sind die verschlüsselten Daten endgültig verloren — das ist der Kompromiss, den du beim Aktivieren des Paranoid-Modus bestätigt hast.",
+        "keptHint": "Ein Neustart verwirft den verschlüsselten Tresor und führt dieses Konto in ein normales, leeres Konto zurück. Alles, was nie im Tresor lag — Anmeldung, Freundschaften, Chats, Kursalarme, Merklisten und Einstellungen —, bleibt unverändert erhalten.",
+        "driveLeftover": "Die verschlüsselte Kopie in deinem Google Drive bleibt liegen. Sie lässt sich von niemandem mehr öffnen, auch nicht von dir — entferne die bettertrack-vault-Datei bei Bedarf selbst aus Drive.",
+        "confirmLabel": "Tippe deinen Benutzernamen ({{username}}) zur Bestätigung",
+        "action": "Tresor verwerfen und neu beginnen",
+        "working": "Wird verworfen…",
+        "error": "Der Tresor konnte nicht verworfen werden. Es wurde nichts geändert — versuche es erneut, sobald die Verbindung verfügbar ist."
+      },
       "errors": {
         "wrongPassphrase": "Diese Tresor-Passphrase ist falsch.",
         "recoveryKit": "Dieses Wiederherstellungspaket ist ungültig oder gehört zu einem anderen Tresor.",

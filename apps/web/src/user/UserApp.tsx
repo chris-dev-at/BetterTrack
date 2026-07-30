@@ -32,6 +32,7 @@ import { apiPortfolioStore } from '../lib/portfolioStore';
 import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
 import { useVaultRuntime } from './vault/VaultRuntimeProvider';
 import { VaultUnlockGate } from './vault/ui/VaultUnlockGate';
+import { discardLockedVault } from './vault/ui/disable';
 import { ParanoidNavigationGate } from './vault/ui/ParanoidSurfaceGate';
 import { ForecastPage } from './forecast/ForecastPage';
 import { DashboardPage as ExpenseDashboardPage } from './expenses/DashboardPage';
@@ -518,7 +519,24 @@ function AccountModeRoot({ children }: { children: ReactNode }) {
     );
   }
   if (runtime.phase !== 'unlocked' || paranoidStore == null) {
-    return <VaultUnlockGate mediaSet={privacy.mediaState.mediaSet} />;
+    // The gate owns the whole authenticated subtree, so the §3 recovery exit
+    // has to live ON it: /control/privacy (Start fresh, Disable) is exactly
+    // what a user who cannot unlock can no longer reach.
+    return (
+      <VaultUnlockGate
+        mediaSet={privacy.mediaState.mediaSet}
+        onStartFresh={
+          user?.id == null
+            ? undefined
+            : async () => {
+                await discardLockedVault(user.id);
+                await runtime.cleanupAfterDisable();
+                privacy.acceptNormal();
+                void privacy.refetch();
+              }
+        }
+      />
+    );
   }
   return (
     <ResolvedPrivacyModeProvider

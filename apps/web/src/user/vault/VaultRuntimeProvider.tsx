@@ -10,6 +10,8 @@ import {
   type ReactNode,
 } from 'react';
 
+import { VAULT_FORMAT_VERSION } from '@bettertrack/contracts';
+
 import { createIndexedDbVaultCustody, type DeviceVaultCustody } from './custody';
 import {
   createDriveDataHome,
@@ -451,7 +453,7 @@ export function VaultRuntimeProvider({
         return serializeRecoveryKit({
           keyId,
           vaultKey,
-          formatVersion: 1,
+          formatVersion: VAULT_FORMAT_VERSION,
         });
       }),
     [core],
@@ -500,7 +502,7 @@ export function VaultRuntimeProvider({
           serializeRecoveryKit({
             keyId: result.header.keyId,
             vaultKey: result.vaultKey,
-            formatVersion: 1,
+            formatVersion: VAULT_FORMAT_VERSION,
           }),
         );
         await installed.replaceEnvelope(result.envelope);

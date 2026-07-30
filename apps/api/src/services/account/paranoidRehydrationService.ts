@@ -1596,16 +1596,30 @@ export function createParanoidRehydrationService(
         throw new ParanoidRehydrationError('INVALID_REFERENCE', 'rehydration request is malformed');
       }
       const normalizedRequest = parsed.data;
+      // The §3 destruction exit: a caller that cannot decrypt restores nothing,
+      // so there is no graph to validate — only the promise that it carries
+      // none. An account with zero portfolios is the state a brand-new account
+      // is in until its default one is provisioned lazily, so the restore
+      // invariants below (which exist to catch a PARTIAL restore) do not apply.
+      const discarding = normalizedRequest.discard === true;
+      if (discarding && normalizedRequest.document.entities.length > 0) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'a discarding rehydration must not carry restore rows',
+        );
+      }
       validateCustomAssetFacts(userId, normalizedRequest.document.entities);
       // Tombstones exist for client-side merge convergence only. Construct and
       // validate the restore graph from live facts before any database mutation.
       const entities = liveEntities(normalizedRequest.document);
-      validateGraph(
-        userId,
-        entities,
-        transactionQuantityRoundingTolerance,
-        deps.testOnlyObserveSolvencyReplay,
-      );
+      if (!discarding) {
+        validateGraph(
+          userId,
+          entities,
+          transactionQuantityRoundingTolerance,
+          deps.testOnlyObserveSolvencyReplay,
+        );
+      }
 
       return withParanoidRehydrationTransaction(deps.db, userId, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);
@@ -1633,10 +1647,11 @@ export function createParanoidRehydrationService(
         const sourceRows = createParanoidRehydrationSourceRepository(tx);
         await ensureNoExistingRestorableRows(sourceRows, userId);
         const retainedIdentityIds = await sourceRows.listRetainedCustomAssetIdentityIds(userId);
-        const retireIdentityIds = retainedCustomAssetRetireIds(
-          retainedIdentityIds,
-          normalizedRequest.document.entities,
-        );
+        // A discarding caller holds no document, so it cannot account for a
+        // single retained claim: every one of them is retired with the vault.
+        const retireIdentityIds = discarding
+          ? retainedIdentityIds
+          : retainedCustomAssetRetireIds(retainedIdentityIds, normalizedRequest.document.entities);
         const referencedAssets = await resolveReferencedAssets(sourceRows, entities);
         validateStandingOrderCurrencies(entities, referencedAssets);
 

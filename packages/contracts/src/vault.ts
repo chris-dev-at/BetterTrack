@@ -1205,6 +1205,16 @@ export const paranoidDisableRehydrationRequestSchema = z
   .object({
     rehydrationId: z.string().uuid(),
     document: vaultStrictDocumentV1Schema,
+    /**
+     * The `§3` destruction exit ("lost key ⇒ lost data … the only server-side
+     * recovery is destruction"): the caller cannot decrypt its vault and is
+     * therefore restoring NOTHING. `document.entities` MUST then be empty — the
+     * flag is explicit rather than inferred from an empty graph so that a
+     * client bug which loses its rows still fails the ordinary restore
+     * invariants instead of silently wiping the account. Retained custom-asset
+     * identity claims are all retired, since no document can account for them.
+     */
+    discard: z.literal(true).optional(),
   })
   .strict();
 export type ParanoidDisableRehydrationRequest = z.infer<

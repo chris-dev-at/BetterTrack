@@ -134,11 +134,15 @@ function portfolioResponse(
     };
   });
   const investedEur = holdings.reduce((sum, holding) => sum + (holding.costBasisEur ?? 0), 0);
+  // Σ (marketValueEur ?? 0) — the client engine refuses to derive at all while
+  // an ACTIVE holding has no price (`MARKET_DATA_MISSING`), so this is the
+  // server's guarded market-value sum, not an optimistic one.
   const marketValueEur = derived.holdingsValueEur ?? 0;
-  const unrealizedPnlEur = holdings.reduce(
-    (sum, holding) => sum + (holding.unrealizedPnlEur ?? 0),
-    0,
-  );
+  // The chosen invariant is the server's (portfolioService.computeTotals):
+  // unrealized = value − invested, so the three header numbers always add up on
+  // screen. Summing per-holding `unrealizedPnlEur` instead would drop the
+  // null rows while their cost still counted in `investedEur`.
+  const unrealizedPnlEur = marketValueEur - investedEur;
   // Day change mirrors the server's guarded accumulation
   // (portfolioService.computeTotals): a holding enters BOTH sides of the ratio
   // or neither. `dayChangeEur` is null for every asset without a previous close

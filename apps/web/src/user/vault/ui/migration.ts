@@ -37,6 +37,13 @@ export interface NormalVaultMigrationOptions {
  * Read the complete currently-restorable normal-account graph before enable.
  * Derived snapshots/import staging/fire ledgers are deliberately omitted: PD3
  * marks them purge-only and re-derives their successors after rehydration.
+ *
+ * One documented gap inside a restorable kind: only a standing order's LAST run
+ * (`lastPeriodKey` + `lastRunAt`) is migrated, because that is all the standing
+ * orders endpoint exposes. Earlier `standing_order_runs` rows are purged at
+ * enable and do not come back on disable. Dueness is unaffected — the scheduler
+ * reads `lastPeriodKey`, and the client materializer derives the same
+ * deterministic occurrence ids — so the loss is historical run bookkeeping only.
  */
 export async function buildNormalVaultDocument(
   options: NormalVaultMigrationOptions,

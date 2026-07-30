@@ -22,6 +22,20 @@ const KILLED_PREFIXES = [
   '/social/profile',
 ] as const;
 
+/**
+ * The expense area (V5-P9). Its `/expenses/*` endpoints are already refused
+ * server-side under the `portfolioServer` capability (the PD3b enforcement
+ * registry), so these five pages are hidden rather than left to 403 into an
+ * empty shell. The DATA is not killed: the expense tables are vault-classified,
+ * `migration.ts` carries every category/transaction/rule/budget into the blob,
+ * and the whole area returns intact on disable. Re-deriving these pages against
+ * the vault store is v6 follow-up work — recorded in PROJECTPLAN §16
+ * (2026-07-30) and as kill-list item 11 in docs/paranoid-design.md §8, because
+ * §8's rule is that an absent surface is a documented one.
+ *
+ * `/portfolio/cash-flow/accounts` deliberately stays live: cash sources are
+ * portfolio rows served by the vault store, not expense rows.
+ */
 const KILLED_EXACT_PATHS = new Set([
   '/portfolio/cash-flow',
   '/portfolio/cash-flow/transactions',

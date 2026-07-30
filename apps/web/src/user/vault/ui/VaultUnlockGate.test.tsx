@@ -11,8 +11,17 @@ const runtime = vi.hoisted(() => ({
   unlockWithRecoveryKit: vi.fn(async () => ({})),
 }));
 
+const auth = vi.hoisted(() => ({
+  user: { username: 'ada' } as { username: string } | null,
+  logout: vi.fn(async () => undefined),
+}));
+
 vi.mock('../VaultRuntimeProvider', () => ({
   useVaultRuntime: () => runtime,
+}));
+
+vi.mock('../../AuthContext', () => ({
+  useAuth: () => auth,
 }));
 
 import { VaultUnlockGate } from './VaultUnlockGate';
@@ -22,6 +31,7 @@ beforeEach(() => {
   runtime.phase = 'locked';
   runtime.unlockFromDevice.mockResolvedValue(false);
   runtime.unlockWithPassphrase.mockResolvedValue({});
+  auth.user = { username: 'ada' };
 });
 
 describe('VaultUnlockGate', () => {
@@ -77,5 +87,70 @@ describe('VaultUnlockGate', () => {
     // The gate stays closed: no kit is armed, so the passphrase is still required.
     expect(screen.getByRole('button', { name: 'Unlock vault' })).toBeDisabled();
     expect(runtime.unlockWithRecoveryKit).not.toHaveBeenCalled();
+  });
+
+  it('is never a dead end: signing out is always available, like the PIN gate', async () => {
+    const user = userEvent.setup();
+    render(<VaultUnlockGate mediaSet={['server']} />);
+
+    await user.click(screen.getByRole('button', { name: 'Sign out' }));
+
+    expect(auth.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers the §3 destruction exit only after the username is typed', async () => {
+    const onStartFresh = vi.fn(async () => undefined);
+    const user = userEvent.setup();
+    render(<VaultUnlockGate mediaSet={['server']} onStartFresh={onStartFresh} />);
+
+    const action = screen.getByRole('button', { name: 'Discard the vault and start fresh' });
+    expect(action).toBeDisabled();
+
+    await user.type(screen.getByLabelText(/Type your username \(ada\)/), 'adam');
+    expect(action).toBeDisabled();
+
+    await user.clear(screen.getByLabelText(/Type your username \(ada\)/));
+    await user.type(screen.getByLabelText(/Type your username \(ada\)/), 'ada');
+    expect(action).toBeEnabled();
+
+    await user.click(action);
+    expect(onStartFresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('tells a Drive vault owner that the leftover ciphertext is theirs to remove', () => {
+    render(<VaultUnlockGate mediaSet={['drive']} onStartFresh={vi.fn(async () => undefined)} />);
+
+    expect(screen.getByText(/bettertrack-vault file from Drive/i)).toBeInTheDocument();
+  });
+
+  it('says nothing about Drive for a server-only vault', () => {
+    render(<VaultUnlockGate mediaSet={['server']} onStartFresh={vi.fn(async () => undefined)} />);
+
+    expect(screen.queryByText(/bettertrack-vault file from Drive/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps the gate usable when discarding the vault fails', async () => {
+    const onStartFresh = vi.fn(async () => {
+      throw new Error('offline');
+    });
+    const user = userEvent.setup();
+    render(<VaultUnlockGate mediaSet={['server']} onStartFresh={onStartFresh} />);
+
+    await user.type(screen.getByLabelText(/Type your username \(ada\)/), 'ada');
+    await user.click(screen.getByRole('button', { name: 'Discard the vault and start fresh' }));
+
+    expect(await screen.findByText(/could not be discarded/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Discard the vault and start fresh' })).toBeEnabled();
+    // Unlocking is still the primary path — the failed exit changed nothing.
+    expect(screen.getByLabelText('Vault passphrase')).toBeEnabled();
+  });
+
+  it('does not offer destruction when no exit was wired up', () => {
+    render(<VaultUnlockGate mediaSet={['server']} />);
+
+    expect(screen.queryByText('Can’t unlock this vault?')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Discard the vault and start fresh' }),
+    ).not.toBeInTheDocument();
   });
 });

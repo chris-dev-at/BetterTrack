@@ -754,6 +754,85 @@ describe('paranoid public transitions', () => {
     );
   });
 
+  it('discards an unrecoverable vault into an empty normal account, but only when asked explicitly', async () => {
+    // docs/paranoid-design.md §3 — "lost key ⇒ lost data … the only
+    // server-side recovery is destruction". The unlock gate's Start-fresh is
+    // the entry point: a client that cannot decrypt restores nothing and says
+    // so with an explicit flag.
+    const user = await harness.seedUser();
+    const { watchlistId } = await seedNormalGraph(user);
+    const agent = await login(user);
+    await expect(
+      harness.ctx.paranoidTransitions.enable(user.id, serverEnable()),
+    ).resolves.toMatchObject({ mode: 'paranoid' });
+    const emptyDocument = { schemaVersion: 1, entities: [], mergeLog: [] };
+
+    // A client that merely LOST its rows still fails the ordinary restore
+    // invariants — an empty graph is never read as consent to destroy.
+    const silent = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send({ confirm: true, rehydrationId: REHYDRATION_ID, document: emptyDocument });
+    expect(silent.status).toBe(400);
+    expect(silent.body.error.code).toBe('PARANOID_REHYDRATION_INVALID');
+    expect((await accountState(user.id))?.privacyMode).toBe('paranoid');
+
+    // …and a discard may not smuggle rows back in.
+    const mixed = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send({
+        confirm: true,
+        discard: true,
+        rehydrationId: REHYDRATION_ID,
+        document: disableRequest(user.id).document,
+      });
+    expect(mixed.status).toBe(400);
+    expect(mixed.body.error.code).toBe('PARANOID_REHYDRATION_INVALID');
+    expect((await accountState(user.id))?.privacyMode).toBe('paranoid');
+
+    const response = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send({
+        confirm: true,
+        discard: true,
+        rehydrationId: REHYDRATION_ID,
+        document: emptyDocument,
+      });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(paranoidDisableResponseSchema.parse(response.body)).toMatchObject({
+      mode: 'normal',
+      idempotent: false,
+    });
+    expect((await accountState(user.id))?.privacyMode).toBe('normal');
+    // The vault and every row it held are gone; the retained identity claim
+    // that no document could account for is retired with it.
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db.select().from(assetIdentities).where(eq(assetIdentities.id, ASSET_ID)),
+    ).toEqual([]);
+    // … while everything that was never in the vault survives untouched.
+    expect(
+      await harness.db.select().from(watchlists).where(eq(watchlists.id, watchlistId)),
+    ).toHaveLength(1);
+    const [audit] = await harness.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, 'account.paranoid_disabled'));
+    expect(audit?.meta).toEqual({
+      rehydrationId: REHYDRATION_ID,
+      idempotent: false,
+      discard: true,
+    });
+  });
+
   it('serializes simultaneous equivalent enables into one commit and one idempotent retry', async () => {
     const user = await harness.seedUser();
     await seedNormalGraph(user);

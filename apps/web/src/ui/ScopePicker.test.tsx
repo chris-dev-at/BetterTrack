@@ -5,7 +5,6 @@ import { describe, expect, test } from 'vitest';
 
 import { API_KEY_SCOPES, type ApiKeyScope } from '@bettertrack/contracts';
 
-import { ResolvedPrivacyModeProvider } from '../user/vault/usePrivacyMode';
 import { ScopePicker, ScopeSummary } from './ScopePicker';
 
 /**
@@ -25,13 +24,16 @@ import { ScopePicker, ScopeSummary } from './ScopePicker';
 function PickerHarness({
   initial,
   onLastValue,
+  paranoid = false,
 }: {
   initial?: readonly ApiKeyScope[];
   onLastValue?: (scopes: ApiKeyScope[]) => void;
+  paranoid?: boolean;
 }) {
   const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set(initial ?? []));
   return (
     <ScopePicker
+      paranoid={paranoid}
       scopes={scopes}
       onChange={(next) => {
         setScopes(next);
@@ -148,9 +150,7 @@ describe('ScopePicker', () => {
 
   test('removes portfolio-scoped grants entirely for a paranoid account', () => {
     render(
-      <ResolvedPrivacyModeProvider mode="paranoid">
-        <PickerHarness initial={['portfolio:read', 'portfolio:write', 'market:read']} />
-      </ResolvedPrivacyModeProvider>,
+      <PickerHarness paranoid initial={['portfolio:read', 'portfolio:write', 'market:read']} />,
     );
 
     expect(screen.queryByText('Portfolio')).not.toBeInTheDocument();

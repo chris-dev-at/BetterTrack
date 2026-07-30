@@ -3,19 +3,34 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { VaultMediaSet } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
+import { Button as OriginButton } from '../../../ui/origin';
+import { useAuth } from '../../AuthContext';
 import { Alert, AuthCard, Button, CHECKBOX_STYLE, TextField } from '../../components/ui';
 import { VaultCryptoError } from '../errors';
 import { useVaultRuntime } from '../VaultRuntimeProvider';
 
+/**
+ * The locked-vault gate. It replaces the whole authenticated subtree, so — like
+ * the PIN gate, which traps every route the same way and ships a Sign-out
+ * button for exactly that reason — it must never be a dead end: a user who
+ * cannot unlock can always sign out, and (§3) can always take the one recovery
+ * BetterTrack has, which is destruction.
+ */
 export function VaultUnlockGate({
   mediaSet,
-  onRestore,
+  onStartFresh,
 }: {
   mediaSet: VaultMediaSet;
-  onRestore?: () => void;
+  /**
+   * Discards the unrecoverable vault and returns the account to an empty normal
+   * one (docs/paranoid-design.md §3). Omitted ⇒ the entry point is not offered,
+   * so an isolated caller cannot destroy data it never wired up.
+   */
+  onStartFresh?: () => Promise<void>;
 }) {
   const t = useT();
   const runtime = useVaultRuntime();
+  const { user, logout } = useAuth();
   const [passphrase, setPassphrase] = useState('');
   const [keepUnlocked, setKeepUnlocked] = useState(false);
   const [recoveryKit, setRecoveryKit] = useState<Uint8Array | null>(null);
@@ -114,13 +129,93 @@ export function VaultUnlockGate({
         <Button disabled={busy || (recoveryKit == null && passphrase.length === 0)} type="submit">
           {busy ? t('vault.unlock.unlocking') : t('vault.unlock.action')}
         </Button>
-        {onRestore ? (
-          <button className="bt-link text-sm" onClick={onRestore} type="button">
-            {t('vault.unlock.restore')}
-          </button>
-        ) : null}
       </form>
+
+      {/* Outside the unlock form on purpose: neither action may be reachable by
+          an Enter keypress meant for the passphrase. */}
+      <div className="mt-4 flex flex-col gap-3">
+        <Button disabled={busy} onClick={() => void logout()} type="button" variant="ghost">
+          {t('auth.common.signOut')}
+        </Button>
+        {onStartFresh ? (
+          <StuckFold
+            driveSelected={driveSelected}
+            onStartFresh={onStartFresh}
+            username={user?.username ?? null}
+          />
+        ) : null}
+      </div>
     </AuthCard>
+  );
+}
+
+/**
+ * The §3 recovery story, folded away (anti-bloat) until a stuck user opens it:
+ * BetterTrack holds no escrow, so the only exit that does not need the key is
+ * destruction. Friction matches the account-deletion rung — the username has to
+ * be typed — because this is irreversible and one rung below deleting the
+ * account outright.
+ */
+function StuckFold({
+  driveSelected,
+  onStartFresh,
+  username,
+}: {
+  driveSelected: boolean;
+  onStartFresh: () => Promise<void>;
+  username: string | null;
+}) {
+  const t = useT();
+  const [typed, setTyped] = useState('');
+  const [working, setWorking] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const confirmed =
+    username != null && typed.trim().toLowerCase() === username.trim().toLowerCase();
+
+  async function startFresh() {
+    if (!confirmed || working) return;
+    setWorking(true);
+    setFailed(false);
+    try {
+      await onStartFresh();
+    } catch {
+      setFailed(true);
+      setWorking(false);
+    }
+  }
+
+  return (
+    <details className="bt-panel p-3">
+      <summary className="bt-row-title cursor-pointer">{t('vault.unlock.stuck.title')}</summary>
+      <div className="mt-3 flex flex-col gap-3">
+        <p className="bt-soft text-sm">{t('vault.unlock.stuck.body')}</p>
+        <p className="bt-muted text-xs">{t('vault.unlock.stuck.keptHint')}</p>
+        {/* Nothing can reach the user's Drive without a decrypted session, so
+            the leftover ciphertext there is theirs to remove — say so instead
+            of leaving a file behind after a screen that promised removal. */}
+        {driveSelected ? (
+          <p className="bt-muted text-xs">{t('vault.unlock.stuck.driveLeftover')}</p>
+        ) : null}
+        <TextField
+          autoComplete="off"
+          disabled={working}
+          id="vault-start-fresh-confirm"
+          label={t('vault.unlock.stuck.confirmLabel', { username: username ?? '' })}
+          onChange={(event) => setTyped(event.target.value)}
+          value={typed}
+        />
+        {failed ? <Alert tone="error">{t('vault.unlock.stuck.error')}</Alert> : null}
+        <OriginButton
+          disabled={!confirmed || working}
+          onClick={() => void startFresh()}
+          size="sm"
+          type="button"
+          variant="danger"
+        >
+          {working ? t('vault.unlock.stuck.working') : t('vault.unlock.stuck.action')}
+        </OriginButton>
+      </div>
+    </details>
   );
 }
 

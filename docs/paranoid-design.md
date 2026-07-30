@@ -433,6 +433,18 @@ Killed for paranoid accounts:
     jobs, dividend/earnings scans keyed to holdings, etc. skip paranoid
     accounts (their input tables are empty by §7); the V4 offsite backup
     carries only ciphertext for them.
+11. **The expense-tracking SURFACES (V5-P9) — absent for now, and this is a
+    recorded deviation, not a design intent.** Every `/expenses/*` route is
+    already refused under the `portfolioServer` capability (the enforcement
+    registry, PD3b), so the pages that read them are hidden rather than left to
+    401 into an empty shell: `/portfolio/cash-flow` and its transactions,
+    budgets, categories and rules tabs are killed paths for a paranoid account.
+    The DATA is not killed — §1 classifies the expense tables as `vault` and
+    the enable migration carries every category, transaction, rule and budget
+    into the blob, so the whole area returns intact on disable. What is missing
+    is the client-side re-derivation of those five pages against the vault
+    store; it is v6 follow-up work and is logged in PROJECTPLAN §16
+    (2026-07-30) alongside the home board and the contribution column.
 
 Kept, unchanged (the "fully functional" half): the full auth stack (password,
 2FA, passkeys, PIN, sessions, admin-independent), friendships + chat +

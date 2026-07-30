@@ -493,7 +493,6 @@ export function AnalyticsPage() {
           excludedGroups={excludedGroups}
           onToggleGroup={toggleGroup}
           overlayAssets={overlayAssets}
-          overlayAvailable
           onToggleOverlay={() => setOverlayAssets((v) => !v)}
         />
       ) : null}
@@ -782,7 +781,6 @@ function VisibilityFilters({
   excludedGroups,
   onToggleGroup,
   overlayAssets,
-  overlayAvailable,
   onToggleOverlay,
 }: {
   t: TranslateFn;
@@ -793,24 +791,21 @@ function VisibilityFilters({
   excludedGroups: Set<string>;
   onToggleGroup: (key: string) => void;
   overlayAssets: boolean;
-  overlayAvailable: boolean;
   onToggleOverlay: () => void;
 }) {
   return (
     <section className="bt-panel bt-panel--pad bt-panel--soft flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="bt-label">{t('portfolio.analytics.filters.heading')}</h2>
-        {overlayAvailable ? (
-          <button
-            type="button"
-            aria-pressed={overlayAssets}
-            onClick={onToggleOverlay}
-            title={t('portfolio.analytics.filters.overlayHint')}
-            className={cx('bt-subtab', overlayAssets && 'is-active')}
-          >
-            {t('portfolio.analytics.filters.overlayToggle')}
-          </button>
-        ) : null}
+        <button
+          type="button"
+          aria-pressed={overlayAssets}
+          onClick={onToggleOverlay}
+          title={t('portfolio.analytics.filters.overlayHint')}
+          className={cx('bt-subtab', overlayAssets && 'is-active')}
+        >
+          {t('portfolio.analytics.filters.overlayToggle')}
+        </button>
       </div>
 
       <div className="flex flex-col gap-1.5">

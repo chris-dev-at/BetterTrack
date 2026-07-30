@@ -9,7 +9,6 @@ import {
 
 import { cx } from '../lib/cx';
 import { useT } from '../i18n';
-import { useResolvedPrivacyMode } from '../user/vault/usePrivacyMode';
 
 export function isParanoidBlockedScope(scope: ApiKeyScope): boolean {
   return scope === 'portfolio:read' || scope === 'portfolio:write';
@@ -124,6 +123,12 @@ export interface ScopePickerProps {
   defaultOpen?: boolean;
   /** Overrides the fieldset legend (defaults to `ui.scopePicker.legend`). */
   legend?: string;
+  /**
+   * Paranoid accounts cannot grant portfolio-scoped access (§8), so that module
+   * is not offered. Passed in rather than read from a hook: `ui/` also serves
+   * the admin app and must stay app-agnostic.
+   */
+  paranoid?: boolean;
 }
 
 /** One module row: label + info-point + read/write (or combined) toggles. */
@@ -236,9 +241,9 @@ export function ScopePicker({
   collapsible = false,
   defaultOpen = false,
   legend,
+  paranoid = false,
 }: ScopePickerProps) {
   const t = useT();
-  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const modules = paranoid
     ? SCOPE_MODULES.filter(
         (module) =>
@@ -298,13 +303,13 @@ type ScopeGroup = { module: ScopeModule; claims: ScopeClaim[] };
 
 export function ScopeSummary({ items }: ScopeSummaryProps) {
   const t = useT();
-  const paranoid = useResolvedPrivacyMode() === 'paranoid';
-  const visibleItems = paranoid
-    ? items.filter((item) => !isParanoidBlockedScope(item.scope))
-    : items;
+  // Every requested claim is shown, always: a consent screen that shortened its
+  // own list would understate what the caller is about to hold. A paranoid
+  // account never reaches this render with a portfolio scope in `items` —
+  // ConsentPage refuses the whole authorization first (§8).
   const grouped: ScopeGroup[] = [];
   for (const module of SCOPE_MODULES) {
-    const claims = visibleItems.filter((item) => moduleForScope(item.scope)?.key === module.key);
+    const claims = items.filter((item) => moduleForScope(item.scope)?.key === module.key);
     if (claims.length > 0) grouped.push({ module, claims: [...claims] });
   }
 

@@ -90,7 +90,13 @@ export function usePrivacyMode(enabled = true, accountId: string | null = null):
     initialData: () => readCachedParanoidMode(accountId),
     retry: false,
     staleTime: 15_000,
-    refetchInterval: enabled ? 15_000 : false,
+    // Only a paranoid account polls. It is the one that must notice a disable
+    // performed on another device *while a decrypted session is open*; a normal
+    // account changes mode roughly once in its life, and the default refetch on
+    // window focus (plus the 15 s staleTime) picks an enable up just as well
+    // without a permanent 4 req/min heartbeat per signed-in user.
+    refetchInterval: (query) =>
+      enabled && query.state.data?.privacyMode === 'paranoid' ? 15_000 : false,
     refetchIntervalInBackground: false,
     enabled,
   });

@@ -489,6 +489,10 @@ export function createParanoidTransitionService(
         meta: {
           rehydrationId: result.rehydrationId,
           idempotent: result.idempotent,
+          // Only stamped for the §3 destruction exit, so the ordinary restore's
+          // audit row keeps its established shape and a wiped vault is never
+          // mistaken for a restored one.
+          ...(rehydration.discard === true ? { discard: true } : {}),
         },
       });
       return result;
