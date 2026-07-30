@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Suspense, lazy, useEffect } from 'react';
+import { Suspense, lazy, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
-import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useParams, type Location } from 'react-router-dom';
 
 import { I18nProvider, useI18n } from '../i18n';
 import { RealtimeProvider } from '../lib/realtime';
@@ -67,8 +67,9 @@ import { ChatPage } from './social/ChatPage';
 import { ChatWindowPage } from './social/ChatWindowPage';
 import { HomePage } from './home/HomePage';
 import { AskPage, DeveloperPlatformPage, ReviewPage } from './hub/HubPages';
-import { ControlCenterOverlay } from './control/ControlCenterOverlay';
+import { ControlCenterOverlay, matchControlPanel } from './control/ControlCenterOverlay';
 import { ParkedPage } from './parked/ParkedPage';
+import { useUiScaleWatcher } from './useUiScale';
 
 /**
  * The app-wide query cache. Exported so tests that mount {@link UserApp} more
@@ -102,6 +103,42 @@ function LegacyRedirect({ to, withSplat = false }: { to: string; withSplat?: boo
 }
 
 /**
+ * The page the Control Center popup opens over when it is reached cold — a
+ * bookmark, a pasted link, a fresh tab, an email link. The popup always needs a
+ * real page behind it, and Home is the one destination that is always there.
+ */
+const CONTROL_COLD_BACKGROUND: Location = {
+  pathname: '/',
+  search: '',
+  hash: '',
+  state: null,
+  key: 'default',
+};
+
+/**
+ * Legacy paths whose entire job is to redirect INTO the Control Center popup.
+ * They are never remembered as the page behind it: the popup would then sit on
+ * top of the redirect that opened it, and the redirect would fire again on the
+ * next render — a loop, not a background. Keep in sync with the
+ * `LegacyRedirect to="/control/…"` routes below.
+ */
+const REDIRECTS_INTO_CONTROL: readonly RegExp[] = [
+  /^\/settings(?:\/|$)/,
+  /^\/people\/profile\/?$/,
+  /^\/developer\/webhooks\/?$/,
+  // Two hops: `/social/profile` → `/people/profile` → `/control/profile`.
+  /^\/social\/profile\/?$/,
+];
+
+function isTransientControlEntry(pathname: string): boolean {
+  return REDIRECTS_INTO_CONTROL.some((pattern) => pattern.test(pathname));
+}
+
+function href(location: Location): string {
+  return `${location.pathname}${location.search}${location.hash}`;
+}
+
+/**
  * The non-admin app (PROJECTPLAN.md §6.1, §7.1; docs/redesign/PRODUCT_BLUEPRINT.md).
  * Two app-wide auth gates sit above routing: the session bootstrap (`loading`)
  * and the forced-password-change trap — while either is in effect no
@@ -117,6 +154,31 @@ function LegacyRedirect({ to, withSplat = false }: { to: string; withSplat?: boo
  */
 function UserShell() {
   const { status } = useAuth();
+  const location = useLocation();
+
+  /**
+   * The Control Center is a POPUP, not a page (owner): `/control/:panel` must
+   * open ON TOP of whatever the user is looking at instead of replacing it with
+   * a blank canvas — which is what a route element did, since a route element
+   * renders *instead of* the page.
+   *
+   * So while the popup is open the route tree below renders against the last
+   * non-popup location, and the popup is rendered beside it. `<Routes location>`
+   * also publishes that location as the LocationContext, so the page behind
+   * keeps its own `useLocation`, its `?portfolio=` search params and its active
+   * nav states — it does not just stay painted, it stays *itself*.
+   *
+   * The background is REMEMBERED rather than carried in link state: every route
+   * into the popup — the rail, ⌘K, the account menu, a legacy `/settings/*`
+   * redirect, a bookmark — then opens over the page it was opened from, with no
+   * per-link ceremony that a future call site could forget.
+   */
+  const control = matchControlPanel(location.pathname);
+  const background = useRef<Location>(CONTROL_COLD_BACKGROUND);
+  if (control === null && !isTransientControlEntry(location.pathname)) {
+    background.current = location;
+  }
+  const pageLocation = control === null ? location : background.current;
 
   if (status === 'loading') return <Splash />;
   if (status === 'password-change-required') return <ForcedPasswordChangePage />;
@@ -125,7 +187,23 @@ function UserShell() {
   if (status === 'pin-required') return <PinGate />;
 
   return (
-    <Routes>
+    <>
+      <UserRoutes location={pageLocation} />
+      {/* The popup lives OUTSIDE the route tree, so it needs the guard the tree
+          gives its pages: only a fully authenticated session may see account
+          settings. First run is handled by its own gate inside the tree, which
+          navigates to /welcome and closes the popup with it. */}
+      {control !== null && status === 'authenticated' ? (
+        <ControlCenterOverlay closeTo={href(background.current)} panel={control.panel} />
+      ) : null}
+    </>
+  );
+}
+
+/** The authenticated route tree, rendered at `location` (see {@link UserShell}). */
+function UserRoutes({ location }: { location: Location }) {
+  return (
+    <Routes location={location}>
       <Route path="login" element={<LoginPage />} />
       <Route path="register" element={<RegisterPage />} />
       <Route path="forgot-password" element={<ForgotPasswordPage />} />
@@ -264,15 +342,13 @@ function UserShell() {
             {/* ── Suite utilities ── */}
             <Route path="ask" element={<AskPage />} />
             <Route path="review" element={<ReviewPage />} />
-            {/* The Control Center is an OVERLAY (R2): `/control` opens it on the
-              default panel, `/control/:panel` deep-links one. `control/data`
-              is declared as its own page — a static segment outranks the
-              dynamic `:panel`, so Data management keeps its full page. */}
+            {/* The Control Center is an OVERLAY (R2) and is NOT a route: the
+              shell matches `/control` / `/control/:panel` itself and renders the
+              popup over the page behind it (see UserShell). `control/data` is a
+              real page and stays a route — `matchControlPanel` excludes that
+              segment, exactly as a static route segment used to outrank the
+              dynamic `:panel`. */}
             <Route path="control/data" element={<ParkedPage page="dataManagement" />} />
-            {/* ONE route node for the overlay: `/control` and `/control/:panel`
-              matching separate nodes would remount the dialog on every panel
-              switch and replay its entrance animation. */}
-            <Route path="control/:panel?" element={<ControlCenterOverlay />} />
 
             {/* ── Developer platform ── */}
             <Route path="developer" element={<DeveloperPlatformPage />} />
@@ -403,6 +479,12 @@ function AnnouncementBannerRoot() {
   return <AnnouncementBanner enabled={status === 'authenticated'} />;
 }
 
+/** Keeps an automatic interface scale correct as the window resizes. */
+function UiScaleWatcher() {
+  useUiScaleWatcher();
+  return null;
+}
+
 /**
  * Follow the authenticated user's stored UI language (§13.3 V3-P1): whenever the
  * signed-in `me` carries a locale, switch the runtime to it. Renders nothing.
@@ -423,6 +505,7 @@ export function UserApp() {
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <VaultRuntimeRoot>
+            <UiScaleWatcher />
             <LocaleSync />
             <RateLimitToastPortal />
             <RealtimeRoot>

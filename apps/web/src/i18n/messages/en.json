@@ -1266,6 +1266,11 @@
       },
       "hint": "Display only — amounts stay stored in each asset’s own currency."
     },
+    "uiScale": {
+      "title": "Interface size",
+      "hint": "Scales the whole app on this device only — it is not synced to your account. Automatic reads the display: 100 % on a high-DPI screen, larger on a 1× monitor.",
+      "auto": "Automatic ({{percent}} %)"
+    },
     "newPortfolioDefaults": {
       "navLabel": "New portfolio defaults",
       "tax": {

@@ -1266,6 +1266,11 @@
       },
       "hint": "Nur die Anzeige — Beträge bleiben in der Währung des jeweiligen Assets gespeichert."
     },
+    "uiScale": {
+      "title": "Oberflächengröße",
+      "hint": "Skaliert die gesamte App nur auf diesem Gerät — es wird nicht mit deinem Konto synchronisiert. Automatisch liest den Bildschirm aus: 100 % auf einem HiDPI-Display, größer auf einem 1×-Monitor.",
+      "auto": "Automatisch ({{percent}} %)"
+    },
     "newPortfolioDefaults": {
       "navLabel": "Standardwerte für neue Portfolios",
       "tax": {

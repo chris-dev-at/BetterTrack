@@ -58,7 +58,7 @@ export function Dialog({
   // scroll — the pre-reskin behavior, kept byte-for-byte.
   const panelStyle: CSSProperties =
     footer !== undefined
-      ? { width: '100%', maxHeight: 'calc(100dvh - 2rem)' }
+      ? { width: '100%', maxHeight: 'calc(100 * var(--bt-dvh) - 2rem)' }
       : { width: '100%', maxHeight: 'none', display: 'block' };
 
   const head = (

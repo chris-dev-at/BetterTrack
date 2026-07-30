@@ -54,7 +54,7 @@ export function ChatPage() {
         title={t('social.chat.title')}
       />
 
-      <div className="flex h-[70vh] gap-4">
+      <div className="flex h-[calc(70*var(--bt-vh))] gap-4">
         <aside className={cx('w-full shrink-0 md:w-80', selected && 'hidden md:block')}>
           <ConversationListPane
             onSelect={openTarget}

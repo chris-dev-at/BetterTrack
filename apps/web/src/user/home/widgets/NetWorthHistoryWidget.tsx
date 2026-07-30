@@ -149,6 +149,8 @@ export function NetWorthHistoryWidget({
         mode="area"
         onRangeChange={(next) => onSettingsChange({ range: next })}
         range={range}
+        // The widget's own header owns the left of this row (owner).
+        rangeAlign="end"
         ranges={PERFORMANCE_RANGES}
         series={combined.series}
       />

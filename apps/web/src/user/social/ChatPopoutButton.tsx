@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { useT } from '../../i18n';
 import type { ChatTarget } from './chatSurface';
-import { CHAT_WINDOW_FEATURES, CHAT_WINDOW_NAME, chatWindowPath } from './chatWindow';
+import { CHAT_WINDOW_NAME, chatWindowFeatures, chatWindowPath } from './chatWindow';
 
 /** "Open in a separate window" — not in the shared icon set, so it lives here. */
 function PopoutIcon() {
@@ -39,7 +39,7 @@ export function ChatPopoutButton({ target }: { target: ChatTarget | null }) {
   const path = chatWindowPath(target);
 
   function popOut() {
-    const opened = window.open(path, CHAT_WINDOW_NAME, CHAT_WINDOW_FEATURES);
+    const opened = window.open(path, CHAT_WINDOW_NAME, chatWindowFeatures());
     if (opened) {
       // Re-focus an already-open pop-out instead of leaving it behind the app.
       opened.focus?.();

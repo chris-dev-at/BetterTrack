@@ -445,6 +445,44 @@ test('`/workboard` redirects to the Workbench', async () => {
 // ─── Control Center overlay: the retired /settings/* shell (R2) ──────────────
 
 /**
+ * The popup opens ON TOP of the page, which stays mounted behind it. It used to
+ * be a route element, so the canvas behind the scrim went blank (owner: "the
+ * control center should open on top of the current thing you are on and not make
+ * the content a blank page").
+ */
+test('the Control Center opens over the page you were on, which stays on screen', async () => {
+  const user = userEvent.setup();
+  renderAt('/assets/search');
+
+  const tabs = await screen.findByRole('navigation', { name: 'Assets' });
+  expect(tabs).toBeInTheDocument();
+
+  const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
+  await user.click(within(utilities).getByRole('link', { name: 'Control Center' }));
+
+  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  expect(dialog).toBeInTheDocument();
+  // The Assets workspace is still there — same element, so its state (and the
+  // user's scroll position) survived opening the popup.
+  expect(screen.getByRole('navigation', { name: 'Assets' })).toBe(tabs);
+  // …and it still knows which page it is on, because the tree renders against
+  // the background location rather than the popup's URL.
+  expect(within(tabs).getByRole('link', { name: /Search/ })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+});
+
+test('a cold deep link opens the popup over Home rather than nothing', async () => {
+  renderAt('/control/sessions');
+
+  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  expect(within(dialog).getByRole('link', { name: 'Sessions', current: 'page' })).toBeVisible();
+  const rail = await findRail();
+  expect(within(rail).getByRole('link', { name: 'Home' })).toHaveAttribute('aria-current', 'page');
+});
+
+/**
  * Every legacy `/settings/*` path now redirects onto its Control Center panel.
  * The nav row's `aria-current` is the assertion (not the panel's content), so
  * these stay honest about ROUTING without depending on each page's data.

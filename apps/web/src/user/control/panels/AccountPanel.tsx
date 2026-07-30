@@ -25,7 +25,11 @@ import { useVaultMoneySession } from '../../vault/engine/VaultMoneyEngineProvide
 import { createClientCleartextExport } from '../../vault/export/cleartext';
 import { deliverClientDownload } from '../../vault/export/deliver';
 import { usePrivacyMode } from '../../vault/usePrivacyMode';
+import { UI_SCALE_STEPS } from '../../uiScale';
+import { useEffectiveUiScale, useUiScaleSetting } from '../../useUiScale';
 import { PanelForm, PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
+
+type UiScaleStep = (typeof UI_SCALE_STEPS)[number];
 
 const ME_KEY = ['auth', 'me'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
@@ -186,6 +190,41 @@ function BaseCurrencyRow() {
       {error ? (
         <span className="bt-field__error">{t('settings.baseCurrency.saveError')}</span>
       ) : null}
+    </Row>
+  );
+}
+
+/**
+ * Interface-scale row (owner, 2026-07-30: too small on 1× Windows monitors,
+ * right as it is on the Mac). Per DEVICE, not per account — the hint says so,
+ * because the same login being 100% here and 130% at work is otherwise
+ * surprising. "Automatic" states what it worked out, so the number is never a
+ * mystery.
+ */
+function InterfaceScaleRow() {
+  const t = useT();
+  const [setting, setSetting] = useUiScaleSetting();
+  const effective = useEffectiveUiScale();
+
+  return (
+    <Row hint={t('settings.uiScale.hint')} label={t('settings.uiScale.title')}>
+      <Select
+        aria-label={t('settings.uiScale.title')}
+        onChange={(e) =>
+          setSetting(e.target.value === 'auto' ? 'auto' : (Number(e.target.value) as UiScaleStep))
+        }
+        style={{ width: 'auto', maxWidth: 220 }}
+        value={String(setting)}
+      >
+        <option value="auto">
+          {t('settings.uiScale.auto', { percent: Math.round(effective * 100) })}
+        </option>
+        {UI_SCALE_STEPS.map((step) => (
+          <option key={step} value={String(step)}>
+            {`${Math.round(step * 100)} %`}
+          </option>
+        ))}
+      </Select>
     </Row>
   );
 }
@@ -431,6 +470,7 @@ export function AccountPanel() {
       <PanelGroup label={t('settings.account.display')}>
         <LanguageRow />
         <BaseCurrencyRow />
+        <InterfaceScaleRow />
       </PanelGroup>
 
       <PanelGroup label={t('settings.account.yourData')}>
