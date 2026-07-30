@@ -34,10 +34,27 @@ pass is part of V3-P13.
 The "Open the web app" links resolve at runtime from `window.__BT_LANDING__.webOrigin`,
 and the registration-mode probe reads `window.__BT_LANDING__.apiOrigin`. In the
 container, `env.js` is regenerated from `env.js.template` by
-`docker-entrypoint.sh` (an nginx `/docker-entrypoint.d` hook). The Compose service
-passes the same mode, domain, TLS, subdomain, port, and explicit-origin inputs as
-the front proxy, so links, fetches, and the CSP always agree without a rebuild.
-The committed `env.js` is the local default.
+`docker-entrypoint.sh` (an nginx `/docker-entrypoint.d` hook). The hook parses
+each configured origin with `new URL()`, accepts `https:` origins plus loopback
+`http:` only for local development, and writes the values with `JSON.stringify`.
+An invalid origin stops the container before nginx starts. The image installs
+Node only for that start-time validation/rendering step.
+
+The Compose service passes the same mode, domain, TLS, subdomain, port, and
+explicit-origin inputs as the front proxy, so links, fetches, and the CSP always
+agree without a rebuild. For an insecure local ports-mode preview, use a loopback
+domain such as `localhost`; non-loopback deployments need HTTPS. The committed
+`env.js` is the local default and matches the generated JSON shape.
+
+## Registration status
+
+The product pages discover the public registration mode after load and swap the
+hero, browser metadata, footer note, and registration CTA in place. Closed
+instances make no self-serve claim; invite-token, approval, and open instances
+explain their respective flow. If discovery cannot complete, the page shows a
+restrained registration-status-unavailable message instead of assuming the
+instance is closed. The shared `landing.js` also validates runtime origins before
+using them, so the mobile placeholder receives the same safe link handling.
 
 ## Serving it
 

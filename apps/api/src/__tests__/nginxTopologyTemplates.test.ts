@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
   cpSync,
@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 
 import { describe, expect, it } from 'vitest';
 
@@ -95,47 +96,188 @@ function composeWebEnvironment(hostEnv: Record<string, string>): Record<string, 
   return composeServiceEnvironment('web', 'landing', hostEnv);
 }
 
-function renderLandingEntrypoint(env: Record<string, string>): string {
+interface LandingEntrypointRun {
+  status: number;
+  stderr: string;
+  /** null when the entrypoint refused to boot before rendering. */
+  config: string | null;
+}
+
+function runLandingEntrypoint(env: Record<string, string>): LandingEntrypointRun {
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'bettertrack-landing-topology-'));
   const htmlRoot = resolve(temporaryRoot, 'html');
-  const binRoot = resolve(temporaryRoot, 'bin');
-  const fakeEnvsubst = resolve(binRoot, 'envsubst');
   mkdirSync(htmlRoot);
-  mkdirSync(binRoot);
   writeFileSync(
     resolve(htmlRoot, 'env.js.template'),
     readFileSync(resolve(repoDir, 'apps/landing/site/env.js.template'), 'utf8'),
   );
-  writeFileSync(
-    fakeEnvsubst,
-    [
-      '#!/usr/bin/env node',
-      "let input = '';",
-      "process.stdin.setEncoding('utf8');",
-      "process.stdin.on('data', (chunk) => { input += chunk; });",
-      "process.stdin.on('end', () => {",
-      "  input = input.replaceAll('${BT_WEB_ORIGIN}', process.env.BT_WEB_ORIGIN || '');",
-      "  input = input.replaceAll('${BT_API_ORIGIN}', process.env.BT_API_ORIGIN || '');",
-      '  process.stdout.write(input);',
-      '});',
-      '',
-    ].join('\n'),
-  );
-  chmodSync(fakeEnvsubst, 0o755);
 
   try {
-    execFileSync('sh', [resolve(repoDir, 'apps/landing/docker-entrypoint.sh')], {
+    const result = spawnSync('sh', [resolve(repoDir, 'apps/landing/docker-entrypoint.sh')], {
       env: {
         ...process.env,
         ...env,
         BT_LANDING_HTML_ROOT: htmlRoot,
-        PATH: `${binRoot}:${process.env.PATH ?? ''}`,
       },
+      encoding: 'utf8',
     });
-    return readFileSync(resolve(htmlRoot, 'env.js'), 'utf8');
+    return {
+      status: result.status ?? 1,
+      stderr: result.stderr ?? '',
+      config: existsSync(resolve(htmlRoot, 'env.js'))
+        ? readFileSync(resolve(htmlRoot, 'env.js'), 'utf8')
+        : null,
+    };
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
   }
+}
+
+function renderLandingEntrypoint(env: Record<string, string>): string {
+  const result = runLandingEntrypoint(env);
+  if (result.status !== 0 || result.config === null) {
+    throw new Error(`landing entrypoint failed: ${result.stderr}`);
+  }
+  return result.config;
+}
+
+function landingRuntimeConfig(rendered: string): { webOrigin: string; apiOrigin: string } {
+  const assignment = /window\.__BT_LANDING__ = (\{.*\});/.exec(rendered);
+  if (!assignment?.[1]) throw new Error('landing config assignment not found');
+  return JSON.parse(assignment[1]) as { webOrigin: string; apiOrigin: string };
+}
+
+interface LandingElement {
+  tagName: string;
+  hidden: boolean;
+  textContent: string;
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+}
+
+function landingElement(
+  tagName: string,
+  attributes: Record<string, string> = {},
+  textContent = '',
+): LandingElement {
+  const values = new Map(Object.entries(attributes));
+  return {
+    tagName,
+    hidden: false,
+    textContent,
+    getAttribute(name) {
+      return values.get(name) ?? null;
+    },
+    setAttribute(name, value) {
+      values.set(name, value);
+    },
+  };
+}
+
+type LandingRegistrationMode = 'closed' | 'invite_token' | 'approval' | 'open';
+
+interface LandingScriptRun {
+  documentElement: LandingElement;
+  webLink: LandingElement;
+  registerCta: LandingElement;
+  registrationNote: LandingElement;
+  title: LandingElement;
+  description: LandingElement;
+  footer: LandingElement;
+}
+
+async function runLandingScript(options: {
+  mode?: LandingRegistrationMode;
+  fetchFailure?: boolean;
+  includeRegistrationUi?: boolean;
+  webOrigin?: string;
+  apiOrigin?: string;
+}): Promise<LandingScriptRun> {
+  const documentElement = landingElement('HTML');
+  const webLink = landingElement('A', { href: 'https://web.bettertrack.at' });
+  const registerCta = landingElement('A', {
+    'data-registration-label-invite_token': 'Register with an invite token',
+    'data-registration-label-approval': 'Request an account',
+    'data-registration-label-open': 'Create an account',
+  });
+  registerCta.hidden = true;
+  const registrationNote = landingElement('P', {
+    'data-registration-copy-closed': 'Registration is currently closed.',
+    'data-registration-copy-invite_token': 'Registration requires an invite token.',
+    'data-registration-copy-approval': 'Request an account, then wait for approval.',
+    'data-registration-copy-open': 'Registration is open. Create an account to get started.',
+    'data-registration-copy-unavailable': 'Registration status unavailable.',
+  });
+  registrationNote.hidden = true;
+  const title = landingElement(
+    'TITLE',
+    {
+      'data-registration-copy-closed': 'BetterTrack — registration closed',
+      'data-registration-copy-invite_token': 'BetterTrack — register with an invite token',
+      'data-registration-copy-approval': 'BetterTrack — request an account',
+      'data-registration-copy-open': 'BetterTrack — create an account',
+    },
+    'BetterTrack — your personal investing workspace',
+  );
+  const description = landingElement('META', {
+    content: 'Neutral registration description.',
+    'data-registration-copy-closed': 'Registration is closed.',
+    'data-registration-copy-invite_token': 'Registration requires an invite token.',
+    'data-registration-copy-approval': 'Account requests are reviewed before access.',
+    'data-registration-copy-open': 'Registration is open.',
+  });
+  const eyebrow = landingElement('SPAN', {
+    'data-registration-copy-closed': 'Self-hosted · Registration closed',
+    'data-registration-copy-invite_token': 'Self-hosted · Invite token required',
+    'data-registration-copy-approval': 'Self-hosted · Approval required',
+    'data-registration-copy-open': 'Self-hosted · Registration open',
+  });
+  const footer = landingElement('SPAN', {
+    'data-registration-copy-closed': 'Self-hosted personal finance. Registration is closed.',
+    'data-registration-copy-invite_token':
+      'Self-hosted personal finance. An invite token is required.',
+    'data-registration-copy-approval':
+      'Self-hosted personal finance. Account requests require approval.',
+    'data-registration-copy-open': 'Self-hosted personal finance. Registration is open.',
+  });
+  const copyElements = [registrationNote, title, description, eyebrow, footer];
+  const includeRegistrationUi = options.includeRegistrationUi !== false;
+  const document = {
+    documentElement,
+    querySelector(selector: string) {
+      if (!includeRegistrationUi) return null;
+      if (selector === '.js-register-cta') return registerCta;
+      if (selector === '.js-registration-note') return registrationNote;
+      return null;
+    },
+    querySelectorAll(selector: string) {
+      if (selector === '.js-web-link') return [webLink];
+      const match = /^\[data-registration-copy-(.+)]$/.exec(selector);
+      if (!match?.[1]) return [];
+      return copyElements.filter(
+        (element) => element.getAttribute(`data-registration-copy-${match[1]}`) !== null,
+      );
+    },
+  };
+  const fetch = options.fetchFailure
+    ? () => Promise.reject(new Error('offline'))
+    : () =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ mode: options.mode }),
+        });
+  const window = {
+    __BT_LANDING__: {
+      webOrigin: options.webOrigin ?? 'https://web.example.net',
+      apiOrigin: options.apiOrigin ?? 'https://api.example.net',
+    },
+    fetch,
+  };
+  const landingScript = readFileSync(resolve(repoDir, 'apps/landing/site/landing.js'), 'utf8');
+  runInNewContext(landingScript, { Error, URL, document, fetch, window });
+  await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
+
+  return { documentElement, webLink, registerCta, registrationNote, title, description, footer };
 }
 
 interface WebEntrypointRun {
@@ -392,8 +534,112 @@ describe('static browser security policy', () => {
       const scripts = html.match(/<script\b[^>]*>/g) ?? [];
       expect(scripts.length).toBeGreaterThan(0);
       expect(scripts.every((tag) => /\bsrc=/.test(tag))).toBe(true);
+      expect(html).toContain('<script src="/env.js"></script>');
       expect(html).toContain('<script src="/landing.js"></script>');
     }
+  });
+});
+
+describe('landing registration status presentation', () => {
+  it.each([
+    {
+      mode: 'closed' as const,
+      ctaLabel: null,
+      note: 'Registration is currently closed.',
+      title: 'BetterTrack — registration closed',
+      description: 'Registration is closed.',
+      footer: 'Self-hosted personal finance. Registration is closed.',
+    },
+    {
+      mode: 'invite_token' as const,
+      ctaLabel: 'Register with an invite token',
+      note: 'Registration requires an invite token.',
+      title: 'BetterTrack — register with an invite token',
+      description: 'Registration requires an invite token.',
+      footer: 'Self-hosted personal finance. An invite token is required.',
+    },
+    {
+      mode: 'approval' as const,
+      ctaLabel: 'Request an account',
+      note: 'Request an account, then wait for approval.',
+      title: 'BetterTrack — request an account',
+      description: 'Account requests are reviewed before access.',
+      footer: 'Self-hosted personal finance. Account requests require approval.',
+    },
+    {
+      mode: 'open' as const,
+      ctaLabel: 'Create an account',
+      note: 'Registration is open. Create an account to get started.',
+      title: 'BetterTrack — create an account',
+      description: 'Registration is open.',
+      footer: 'Self-hosted personal finance. Registration is open.',
+    },
+  ])('renders an accurate $mode registration state', async (expectation) => {
+    const page = await runLandingScript({ mode: expectation.mode });
+
+    expect(page.documentElement.getAttribute('data-registration-mode')).toBe(expectation.mode);
+    expect(page.webLink.getAttribute('href')).toBe('https://web.example.net');
+    expect(page.registrationNote.hidden).toBe(false);
+    expect(page.registrationNote.textContent).toBe(expectation.note);
+    expect(page.title.textContent).toBe(expectation.title);
+    expect(page.description.getAttribute('content')).toBe(expectation.description);
+    expect(page.footer.textContent).toBe(expectation.footer);
+    expect(page.registerCta.hidden).toBe(expectation.ctaLabel === null);
+
+    if (expectation.ctaLabel) {
+      expect(page.registerCta.textContent).toBe(expectation.ctaLabel);
+      expect(page.registerCta.getAttribute('href')).toBe('https://web.example.net/register');
+    }
+  });
+
+  it('shows a restrained unavailable status instead of assuming registration is closed', async () => {
+    const page = await runLandingScript({ fetchFailure: true });
+
+    expect(page.documentElement.getAttribute('data-registration-mode')).toBe('unavailable');
+    expect(page.registrationNote.hidden).toBe(false);
+    expect(page.registrationNote.textContent).toBe('Registration status unavailable.');
+    expect(page.registerCta.hidden).toBe(true);
+    expect(page.title.textContent).toBe('BetterTrack — your personal investing workspace');
+    expect(page.description.getAttribute('content')).toBe('Neutral registration description.');
+  });
+
+  it.each(['javascript:alert(1)', 'https://web.example.net\nwindow.pwned = true'])(
+    'does not overwrite the mobile web-app link with an unsafe runtime origin (%j)',
+    async (webOrigin) => {
+      const page = await runLandingScript({
+        includeRegistrationUi: false,
+        webOrigin,
+      });
+
+      expect(page.webLink.getAttribute('href')).toBe('https://web.bettertrack.at');
+    },
+  );
+
+  it.each([
+    ['index.html', 'Registration status unavailable. Please try again later or contact the host.'],
+    [
+      'de.html',
+      'Registrierungsstatus nicht verfügbar. Bitte versuche es später erneut oder kontaktiere den Host.',
+    ],
+  ])('ships complete mode copy in %s', (name, unavailableCopy) => {
+    const html = readFileSync(resolve(repoDir, 'apps/landing/site', name), 'utf8');
+
+    for (const mode of ['closed', 'invite_token', 'approval', 'open']) {
+      expect(html).toContain(`data-registration-copy-${mode}=`);
+    }
+    for (const mode of ['invite_token', 'approval', 'open']) {
+      expect(html).toContain(`data-registration-label-${mode}=`);
+    }
+    expect(html).toContain('data-registration-copy-unavailable=');
+    expect(html).toContain(unavailableCopy);
+  });
+
+  it('stacks header controls before they can overflow on phone widths', () => {
+    const styles = readFileSync(resolve(repoDir, 'apps/landing/site/styles.css'), 'utf8');
+
+    expect(styles).toContain('@media (max-width: 480px)');
+    expect(styles).toContain('flex-wrap: wrap;');
+    expect(styles).toContain('.header-actions {\n    width: 100%;');
   });
 });
 
@@ -568,6 +814,15 @@ describe('shipped web Compose topology → rendered browser policy', () => {
 });
 
 describe('shipped landing Compose topology', () => {
+  it('keeps the committed development artifact equal to the generated default', () => {
+    const rendered = renderLandingEntrypoint({
+      BT_MODE: 'subdomains',
+      BT_DOMAIN: 'bettertrack.at',
+    });
+
+    expect(rendered).toBe(readFileSync(resolve(repoDir, 'apps/landing/site/env.js'), 'utf8'));
+  });
+
   it('derives custom subdomain origins that match the front proxy CSP', () => {
     const rendered = renderLandingEntrypoint(
       composeLandingEnvironment({
@@ -578,24 +833,28 @@ describe('shipped landing Compose topology', () => {
       }),
     );
 
-    expect(rendered).toBe(
-      "window.__BT_LANDING__ = { webOrigin: 'https://app.money.example.net', apiOrigin: 'https://gateway.money.example.net' };\n",
-    );
+    expect(landingRuntimeConfig(rendered)).toEqual({
+      webOrigin: 'https://app.money.example.net',
+      apiOrigin: 'https://gateway.money.example.net',
+    });
+    expect(rendered).not.toContain('${BT_WEB_ORIGIN}');
+    expect(rendered).not.toContain('${BT_API_ORIGIN}');
   });
 
-  it('derives plain-HTTP ports origins from the shipped Compose environment', () => {
+  it('derives plain-HTTP loopback ports origins from the shipped Compose environment', () => {
     const rendered = renderLandingEntrypoint(
       composeLandingEnvironment({
         BT_MODE: 'ports',
-        BT_DOMAIN: 'track.lan',
+        BT_DOMAIN: 'localhost',
         BT_PORT_API: '4300',
         BT_PORT_WEB: '4800',
       }),
     );
 
-    expect(rendered).toBe(
-      "window.__BT_LANDING__ = { webOrigin: 'http://track.lan:4800', apiOrigin: 'http://track.lan:4300' };\n",
-    );
+    expect(landingRuntimeConfig(rendered)).toEqual({
+      webOrigin: 'http://localhost:4800',
+      apiOrigin: 'http://localhost:4300',
+    });
   });
 
   it('honors the same explicit Compose origin overrides as the front proxy', () => {
@@ -608,8 +867,42 @@ describe('shipped landing Compose topology', () => {
       }),
     );
 
-    expect(rendered).toBe(
-      "window.__BT_LANDING__ = { webOrigin: 'https://public-app.example.net', apiOrigin: 'https://public-api.example.net' };\n",
-    );
+    expect(landingRuntimeConfig(rendered)).toEqual({
+      webOrigin: 'https://public-app.example.net',
+      apiOrigin: 'https://public-api.example.net',
+    });
+  });
+
+  it('normalizes URL syntax before writing executable landing configuration', () => {
+    const rendered = renderLandingEntrypoint({
+      BT_MODE: 'subdomains',
+      BT_DOMAIN: 'internal.example.net',
+      BT_API_ORIGIN: 'HTTPS://PUBLIC-API.Example.NET/',
+      BT_WEB_ORIGIN: 'HTTPS://PUBLIC-APP.Example.NET/',
+    });
+
+    expect(landingRuntimeConfig(rendered)).toEqual({
+      webOrigin: 'https://public-app.example.net',
+      apiOrigin: 'https://public-api.example.net',
+    });
+  });
+
+  it.each([
+    ['BT_WEB_ORIGIN', 'javascript:alert(1)'],
+    ['BT_WEB_ORIGIN', 'http://web.example.net'],
+    ['BT_WEB_ORIGIN', 'https://web.example.net/path'],
+    ['BT_WEB_ORIGIN', 'https://user:secret@web.example.net'],
+    ['BT_API_ORIGIN', 'https://api.example.net\nwindow.pwned = true'],
+  ])('refuses an unsafe configured origin (%s = %j)', (name, value) => {
+    const rendered = runLandingEntrypoint({
+      BT_MODE: 'subdomains',
+      BT_DOMAIN: 'internal.example.net',
+      BT_WEB_ORIGIN: name === 'BT_WEB_ORIGIN' ? value : 'https://web.example.net',
+      BT_API_ORIGIN: name === 'BT_API_ORIGIN' ? value : 'https://api.example.net',
+    });
+
+    expect(rendered.status).not.toBe(0);
+    expect(rendered.stderr).toContain(name);
+    expect(rendered.config).toBeNull();
   });
 });

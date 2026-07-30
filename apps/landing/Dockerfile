@@ -13,6 +13,6 @@ COPY apps/landing/site/ /usr/share/nginx/html/
 
 # Origin-injection hook: nginx:alpine runs /docker-entrypoint.d/*.sh before start.
 COPY apps/landing/docker-entrypoint.sh /docker-entrypoint.d/40-bt-landing-env.sh
-RUN chmod +x /docker-entrypoint.d/40-bt-landing-env.sh
+RUN apk add --no-cache nodejs && chmod +x /docker-entrypoint.d/40-bt-landing-env.sh
 
 EXPOSE 80
