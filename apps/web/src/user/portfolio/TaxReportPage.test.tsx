@@ -127,7 +127,7 @@ describe('TaxReportPage', () => {
     expect(screen.queryByText('Locked')).not.toBeInTheDocument();
   });
 
-  test('with this portfolio inheriting `none`, shows the off state + a default editor link, never queries the report', async () => {
+  test('with this portfolio inheriting `none`, shows the off state and never queries the report', async () => {
     vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue({
       effective: { mode: 'none', country: null },
       override: null,
@@ -137,14 +137,52 @@ describe('TaxReportPage', () => {
     renderPage();
 
     expect(await screen.findByText(/Tax tracking is off/i)).toBeInTheDocument();
-    // The per-portfolio treatment control offers a link to edit the user default.
-    expect(screen.getByRole('link', { name: /Edit the default/i })).toHaveAttribute(
-      'href',
-      '/settings/taxes',
-    );
     // Wait a tick to be sure the (disabled) report query truly never fired.
     await waitFor(() => expect(portfolioApi.getPortfolioTaxSettings).toHaveBeenCalled());
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+  });
+
+  // ── Configuration moved to the Settings tab (issue #636) ───────────────────
+
+  test('names the tax mode its numbers were computed under, and where to change it', async () => {
+    renderPage();
+
+    expect(await screen.findByText(/Computed with tax mode: Austria/i)).toBeInTheDocument();
+    // Inherited here (source: 'user'), and the switch is one link away.
+    expect(screen.getByText('Account default')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Change in portfolio settings/i })).toHaveAttribute(
+      'href',
+      '/portfolio/settings?portfolio=p1',
+    );
+  });
+
+  test('an overridden portfolio says so on the report line', async () => {
+    vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue({
+      effective: { mode: 'country_specific', country: 'DE' },
+      override: { mode: 'country_specific', country: 'DE' },
+      userDefault: { mode: 'none', country: null },
+      source: 'portfolio',
+    });
+    renderPage();
+
+    expect(await screen.findByText(/Computed with tax mode: Germany/i)).toBeInTheDocument();
+    expect(screen.getByText('Set here')).toBeInTheDocument();
+    expect(screen.queryByText('Account default')).not.toBeInTheDocument();
+  });
+
+  test('offers no way to change the tax mode any more — the tab only reports', async () => {
+    renderPage();
+    await screen.findByText(/Computed with tax mode/i);
+
+    // No picker, and nothing that writes the override.
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    for (const gone of [/Reset to default/i, /Use account default/i, /Edit the default/i]) {
+      expect(screen.queryByRole('button', { name: gone })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: gone })).not.toBeInTheDocument();
+    }
+    expect(portfolioApi.setPortfolioTaxOverride).not.toHaveBeenCalled();
+    expect(portfolioApi.clearPortfolioTaxOverride).not.toHaveBeenCalled();
   });
 
   test('renders a per-year row: realized P/L, tax withheld, the refund line, and the net total', async () => {
@@ -185,11 +223,11 @@ describe('TaxReportPage', () => {
     // the disabled gate so the user is not wrongly told tax is simply off.
     vi.mocked(portfolioApi.getPortfolioTaxSettings).mockRejectedValue(new Error('boom'));
     renderPage();
-    // The error surfaces in both the treatment control and the report area.
-    expect((await screen.findAllByText(/Couldn’t load your tax report/i)).length).toBeGreaterThan(
-      0,
-    );
+
+    expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
     expect(screen.queryByText(/Tax tracking is off/i)).not.toBeInTheDocument();
+    // …and the mode line claims nothing it could not resolve.
+    expect(screen.queryByText(/Computed with tax mode/i)).not.toBeInTheDocument();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
   });
 

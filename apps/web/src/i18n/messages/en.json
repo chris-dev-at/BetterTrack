@@ -1700,6 +1700,10 @@
     "taxReport": {
       "title": "Tax report",
       "subtitle": "Realized gains, dividends and tax by calendar year (Europe/Vienna).",
+      "mode": {
+        "line": "Computed with tax mode: {{mode}}",
+        "change": "Change in portfolio settings →"
+      },
       "column": {
         "year": "Year",
         "realized": "Realized P/L",
@@ -1733,16 +1737,7 @@
       },
       "disabled": {
         "title": "Tax tracking is off",
-        "description": "Turn on a tax mode for this portfolio above to see realized gains and tax by year.",
-        "link": "Choose a tax mode in Settings → Taxes →"
-      },
-      "treatment": {
-        "title": "Tax treatment · {{name}}",
-        "description": "How this portfolio is taxed. It inherits your new-portfolio default until you set one here.",
-        "inheriting": "Inheriting default",
-        "overridden": "Overridden",
-        "reset": "Reset to default",
-        "editDefault": "Edit the default in Settings →"
+        "description": "Pick a tax mode for this portfolio in its settings to see realized gains and tax by year."
       },
       "de": {
         "title": "Germany (Abgeltungsteuer)",
@@ -2155,6 +2150,19 @@
       "iconLabel": "Icon",
       "iconPickerAriaLabel": "Portfolio icon",
       "iconHint": "Marks this portfolio with a coloured icon in the switcher and its lists. Stored on this device.",
+      "taxHeading": "Tax",
+      "tax": {
+        "modeLabel": "Tax mode",
+        "inheriting": "Account default",
+        "overridden": "Set here",
+        "hint": "This portfolio follows your account default until you pick a mode here. Changes apply to future rows; recorded ones keep the treatment they were taxed under.",
+        "pickerAriaLabel": "Tax mode for this portfolio",
+        "inheritedHint": "Following your account default.",
+        "resetHint": "This portfolio has its own mode.",
+        "reset": "Use account default",
+        "editDefault": "Edit the account default →",
+        "loadError": "Couldn’t load this portfolio’s tax mode."
+      },
       "groupHeading": "Group portfolio",
       "groupHint": "Share this portfolio with friends — everyone edits the same book.",
       "groupActive": "{{name}} · {{count}} members",

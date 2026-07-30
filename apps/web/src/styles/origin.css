@@ -3527,6 +3527,49 @@
   font-weight: 590;
 }
 
+/* Tax section (issue #636): what is in effect + where it comes from, then the
+   picker, then the one move it cannot express. Rules, not cards. */
+.bt-pftax__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-pftax__mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 9px;
+  min-width: 0;
+}
+
+.bt-pftax__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--bt-border);
+}
+
+/* The Tax tab's read-only counterpart: one line naming the mode in force. */
+.bt-pftax-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 18px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--bt-border);
+  color: var(--bt-muted);
+  font-size: 12.5px;
+}
+
 .bt-danger-zone {
   border-color: rgba(251, 113, 133, 0.24);
 }

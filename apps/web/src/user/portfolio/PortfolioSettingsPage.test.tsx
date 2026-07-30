@@ -10,14 +10,21 @@ vi.mock('../../lib/portfolioApi', () => ({
   archivePortfolio: vi.fn(),
   restorePortfolio: vi.fn(),
   deletePortfolio: vi.fn(),
+  // Tax section (issue #636), moved here from the Tax tab.
+  getPortfolioTaxSettings: vi.fn(),
+  setPortfolioTaxOverride: vi.fn(),
+  clearPortfolioTaxOverride: vi.fn(),
 }));
 
 import { ApiError } from '../../lib/apiClient';
 import {
   archivePortfolio,
+  clearPortfolioTaxOverride,
   deletePortfolio,
+  getPortfolioTaxSettings,
   listPortfolios,
   restorePortfolio,
+  setPortfolioTaxOverride,
   updatePortfolio,
 } from '../../lib/portfolioApi';
 import { PortfolioSettingsPage } from './PortfolioSettingsPage';
@@ -108,11 +115,28 @@ function renderSettings(portfolioId = 'p2') {
   );
 }
 
+/** This portfolio inherits the account default (AT) unless a test says otherwise. */
+const INHERITED_AT = {
+  effective: { mode: 'country_specific' as const, country: 'AT' as const },
+  override: null,
+  userDefault: { mode: 'country_specific' as const, country: 'AT' as const },
+  source: 'user' as const,
+};
+
+/** …and here it carries its own override (DE), which the account default is not. */
+const OVERRIDDEN_DE = {
+  effective: { mode: 'country_specific' as const, country: 'DE' as const },
+  override: { mode: 'country_specific' as const, country: 'DE' as const },
+  userDefault: { mode: 'none' as const, country: null },
+  source: 'portfolio' as const,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
   localStorage.clear();
   resetPortfolioKindCache();
+  vi.mocked(getPortfolioTaxSettings).mockResolvedValue(INHERITED_AT);
 });
 
 describe('PortfolioSettingsPage — general', () => {
@@ -245,6 +269,79 @@ describe('PortfolioSettingsPage — icon', () => {
       'aria-checked',
       'true',
     );
+  });
+});
+
+describe('PortfolioSettingsPage — tax', () => {
+  test('names the mode in effect and that it comes from the account default', async () => {
+    mockLists([MAIN, TRADING]);
+    renderSettings('p2');
+
+    expect(await screen.findByRole('heading', { name: 'Tax' })).toBeInTheDocument();
+    // The mode in force, and — the distinction users get wrong — where it is from.
+    expect(screen.getByText('Tax mode')).toBeInTheDocument();
+    expect(await screen.findByText('Account default')).toBeInTheDocument();
+    expect(screen.queryByText('Set here')).not.toBeInTheDocument();
+    // Inheriting: the way out is to the ACCOUNT default, not a local reset.
+    expect(screen.getByRole('link', { name: /Edit the account default/i })).toHaveAttribute(
+      'href',
+      '/settings/taxes',
+    );
+    expect(screen.queryByRole('button', { name: 'Use account default' })).not.toBeInTheDocument();
+    expect(getPortfolioTaxSettings).toHaveBeenCalledWith('p2', expect.anything());
+  });
+
+  test('picking a mode writes this portfolio’s override', async () => {
+    mockLists([MAIN, TRADING]);
+    vi.mocked(setPortfolioTaxOverride).mockResolvedValue(OVERRIDDEN_DE);
+    renderSettings('p2');
+
+    await userEvent.click(await screen.findByRole('radio', { name: /Germany/i }));
+
+    await waitFor(() =>
+      expect(setPortfolioTaxOverride).toHaveBeenCalledWith('p2', {
+        mode: 'country_specific',
+        country: 'DE',
+      }),
+    );
+    // The mutation result seeds the cache, so the badge flips without a refetch.
+    expect(await screen.findByText('Set here')).toBeInTheDocument();
+  });
+
+  test('an overridden portfolio can fall back to the account default', async () => {
+    mockLists([MAIN, TRADING]);
+    vi.mocked(getPortfolioTaxSettings).mockResolvedValue(OVERRIDDEN_DE);
+    vi.mocked(clearPortfolioTaxOverride).mockResolvedValue(INHERITED_AT);
+    renderSettings('p2');
+
+    expect(await screen.findByText('Set here')).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: 'Use account default' }));
+
+    await waitFor(() => expect(clearPortfolioTaxOverride).toHaveBeenCalledWith('p2'));
+    expect(await screen.findByText('Account default')).toBeInTheDocument();
+  });
+
+  test('a failed write says so and leaves the picker usable', async () => {
+    mockLists([MAIN, TRADING]);
+    vi.mocked(setPortfolioTaxOverride).mockRejectedValue(new Error('boom'));
+    renderSettings('p2');
+
+    await userEvent.click(await screen.findByRole('radio', { name: /Germany/i }));
+
+    expect(await screen.findByText(/Couldn’t save your tax mode/i)).toBeInTheDocument();
+    // Still inheriting: a refused write must not fake the new state.
+    expect(screen.getByText('Account default')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Germany/i })).toBeEnabled();
+  });
+
+  test('a failing tax query degrades to its own error, not a broken page', async () => {
+    mockLists([MAIN, TRADING]);
+    vi.mocked(getPortfolioTaxSettings).mockRejectedValue(new Error('boom'));
+    renderSettings('p2');
+
+    expect(await screen.findByText(/Couldn’t load this portfolio’s tax mode/i)).toBeInTheDocument();
+    // The rest of the page still works.
+    expect(screen.getByLabelText('Name')).toHaveValue('Trading');
   });
 });
 

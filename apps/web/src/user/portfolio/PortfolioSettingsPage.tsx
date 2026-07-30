@@ -19,6 +19,7 @@ import { Dialog } from '../components/Dialog';
 import { Alert, cx } from '../components/ui';
 import { ConvertChainDialog, MemberSheet, MirrorInviteStepDialog } from './MirrorchainPanel';
 import { PortfolioIconChip } from './PortfolioIconChip';
+import { PortfolioTaxSection } from './PortfolioTaxSection';
 import {
   ACTIVE_PORTFOLIO_PARAM,
   promotedDefaultName,
@@ -35,6 +36,8 @@ import { PORTFOLIO_KINDS, PORTFOLIO_KIND_ICONS, usePortfolioKind } from './portf
  *
  *   • General — rename, and the Icon (internally the *kind*) that colours and
  *     marks this portfolio everywhere it appears.
+ *   • Tax — this portfolio's tax mode: inherited from the account default or
+ *     overridden here (issue #636). The Tax tab reports; this decides.
  *   • Group portfolio — the MIRRORCHAIN convert entry point (V5-P7 M5, design
  *     §11) that used to sit as a standing CTA on the overview header, or the
  *     member sheet once the portfolio already is a synced copy.
@@ -256,6 +259,12 @@ export function PortfolioSettingsPage() {
           </div>
           <p className="bt-meta">{t('portfolio.settings.iconHint')}</p>
         </div>
+      </section>
+
+      {/* ── Tax (issue #636) ────────────────────────────────────────────── */}
+      <section aria-label={t('portfolio.settings.taxHeading')} className="bt-section">
+        <SectionHead title={t('portfolio.settings.taxHeading')} />
+        <PortfolioTaxSection portfolioId={portfolio.id} />
       </section>
 
       {/* ── Group portfolio (MIRRORCHAIN) ───────────────────────────────── */}
