@@ -34,9 +34,20 @@ else
     API_ORIGIN="${SCHEME}://${DOMAIN}:${BT_PORT_API:-3000}"
 fi
 API_ORIGIN="${API_ORIGIN%/}"
-case "$API_ORIGIN" in
-    https://*) WS_ORIGIN="wss://${API_ORIGIN#https://}" ;;
-    http://*) WS_ORIGIN="ws://${API_ORIGIN#http://}" ;;
+# URL schemes are case-insensitive. Normalize only the protocol so explicit
+# overrides accepted by the API contract (for example HTTPS://api.example.at)
+# also boot the front proxy and derive the matching WebSocket source.
+API_SCHEME="$(printf '%s' "${API_ORIGIN%%://*}" | tr '[:upper:]' '[:lower:]')"
+API_REST="${API_ORIGIN#*://}"
+case "$API_SCHEME" in
+    https)
+        API_ORIGIN="https://${API_REST}"
+        WS_ORIGIN="wss://${API_REST}"
+        ;;
+    http)
+        API_ORIGIN="http://${API_REST}"
+        WS_ORIGIN="ws://${API_REST}"
+        ;;
     *)
         echo "bettertrack-web: BT_API_ORIGIN must use http:// or https://" >&2
         exit 1
@@ -58,7 +69,13 @@ esac
 # scheme/host/port. This string lands inside a header value, so anything that
 # could terminate or extend the policy is a boot failure, not a sanitized value.
 GRAFANA_FRAME_SRC=''
-GRAFANA_PUBLIC_URL="$(printf '%s' "${BT_GRAFANA_PUBLIC_URL:-}" |
+GRAFANA_PUBLIC_URL_RAW="${BT_GRAFANA_PUBLIC_URL:-}"
+GRAFANA_PUBLIC_URL_SINGLE_LINE="$(printf '%s' "$GRAFANA_PUBLIC_URL_RAW" | tr -d '\r\n')"
+if [ "$GRAFANA_PUBLIC_URL_RAW" != "$GRAFANA_PUBLIC_URL_SINGLE_LINE" ]; then
+    echo "bettertrack-web: BT_GRAFANA_PUBLIC_URL must be a single-line URL" >&2
+    exit 1
+fi
+GRAFANA_PUBLIC_URL="$(printf '%s' "$GRAFANA_PUBLIC_URL_RAW" |
     sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 if [ -n "$GRAFANA_PUBLIC_URL" ]; then
     # Reduce to scheme://host[:port] — drop path, query and fragment. URL schemes

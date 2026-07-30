@@ -37,6 +37,8 @@ server {
     }
 }
 
+# Plain port layouts do not inherit the live edge's http-level noindex map, so
+# unlike the subdomains template they need no compensating X-Robots-Tag header.
 # ── Web port → user SPA ─────────────────────────────────────────────────────
 server {
     listen ${BT_PORT_WEB} default_server;

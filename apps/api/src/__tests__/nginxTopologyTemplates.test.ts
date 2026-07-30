@@ -340,12 +340,20 @@ describe('static browser security policy', () => {
     );
   });
 
-  it('never permits inline/eval scripts while documenting the style-only exception', () => {
+  it('permits the vault Argon2 WASM compiler without enabling inline or general eval', () => {
     expect(scriptSrc).toBeDefined();
+    expect(scriptSrc).toContain("'wasm-unsafe-eval'");
     expect(scriptSrc).not.toContain("'unsafe-inline'");
     expect(scriptSrc).not.toContain("'unsafe-eval'");
     expect(csp).toContain("style-src 'self' 'unsafe-inline' https://accounts.google.com");
     expect(rawPolicy).toContain('inline style attributes');
+    expect(rawPolicy).toContain('hash-wasm Argon2id');
+
+    // Keep the policy exception coupled to the actual paranoid unlock path:
+    // deriveVaultKek defaults to hash-wasm rather than an injected test KDF.
+    const vaultCrypto = readFileSync(resolve(repoDir, 'apps/web/src/user/vault/crypto.ts'), 'utf8');
+    expect(vaultCrypto).toContain("import { argon2id } from 'hash-wasm';");
+    expect(vaultCrypto).toContain('deps.argon2 ?? argon2id');
   });
 
   it('renders HSTS only into a deployment whose public scheme is HTTPS', () => {
@@ -479,22 +487,35 @@ describe('shipped web Compose topology → rendered browser policy', () => {
     );
   });
 
-  it('honors the explicit API origin override and derives the websocket source from it', () => {
-    const rendered = runWebEntrypoint(
-      composeWebEnvironment({
-        BT_MODE: 'subdomains',
-        BT_DOMAIN: 'internal.example.net',
-        BT_API_ORIGIN: 'https://public-api.example.net/',
-      }),
-    );
+  it.each([
+    [
+      'HTTPS://public-api.example.net/',
+      'https://public-api.example.net',
+      'wss://public-api.example.net',
+    ],
+    [
+      'hTtP://public-api.example.net:4300/',
+      'http://public-api.example.net:4300',
+      'ws://public-api.example.net:4300',
+    ],
+  ])(
+    'normalizes an explicit API origin scheme (%s) before deriving browser sources',
+    (override, apiOrigin, wsOrigin) => {
+      const rendered = runWebEntrypoint(
+        composeWebEnvironment({
+          BT_MODE: 'subdomains',
+          BT_DOMAIN: 'internal.example.net',
+          BT_API_ORIGIN: override,
+        }),
+      );
 
-    expect(rendered.status).toBe(0);
-    const csp = contentSecurityPolicy(rendered.policy);
-    expect(csp).toContain(
-      "connect-src 'self' https://public-api.example.net wss://public-api.example.net",
-    );
-    expect(csp).toContain("frame-src 'self' https://public-api.example.net ");
-  });
+      expect(rendered.status).toBe(0);
+      const csp = contentSecurityPolicy(rendered.policy);
+      expect(csp).toContain(`connect-src 'self' ${apiOrigin} ${wsOrigin}`);
+      expect(csp).toContain(`frame-src 'self' ${apiOrigin} `);
+      expect(rendered.defaultConf).toContain(`apiOrigin: "${apiOrigin}"`);
+    },
+  );
 
   it.each(['', '   '])(
     'treats a blank Grafana public URL (%j) as unset, exactly like the api config does',
@@ -523,6 +544,7 @@ describe('shipped web Compose topology → rendered browser policy', () => {
     'https://grafana bettertrack.at',
     'https://user:secret@grafana.bettertrack.at',
     'https://*.bettertrack.at',
+    'https://grafana.bettertrack.at\n; script-src *',
   ])('refuses to boot on a Grafana public URL that could corrupt the policy (%j)', (value) => {
     const rendered = runWebEntrypoint(
       composeWebEnvironment({
