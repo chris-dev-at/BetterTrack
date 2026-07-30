@@ -33,7 +33,12 @@ import {
 } from './retirementProof';
 import { createUnlockedVaultDriveRuntime, type VaultDriveSyncCoordinator } from './runtime';
 
-const baseDocument: VaultDocument = { schemaVersion: 1, entities: {}, mergeLog: [] };
+const baseDocument: VaultDocument = {
+  schemaVersion: 1,
+  entities: {},
+  mergeLog: [],
+  mirrorProvenance: [],
+};
 const securedDocument: VaultDocument = {
   ...baseDocument,
   schemaVersion: 2,

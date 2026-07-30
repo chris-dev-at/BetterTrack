@@ -383,6 +383,96 @@ Keeping a restore list would mean holding the very social graph the mode exists
 to remove, server-side, for the whole paranoid period. Logged as a plan
 deviation in PROJECTPLAN.md §16 (2026-07-30), owner ack pending.
 
+## 7.1 Severed-fork MIRRORCHAIN provenance (encrypted, versioned)
+
+**The problem.** Leaving a chain with a fork (mirrorchain design §6) keeps rows the
+chain force-applied to that copy. Replica apply deliberately waives the ordinary
+solvency gate (`force: true`), because copy-local tax movements skew a source, so
+a reachable fork ledger can carry a **negative prefix** no normal write path would
+accept. Rehydration must preserve exactly those rows — and only those.
+
+The identity that proves a row came from the chain lives in `mirror_rows`
+(logical `mirror_id` ↔ copy-local `local_id`), and that table dies with the copy:
+enable deletes the portfolio, so the map cascades away. The append-only oplog
+keeps only the LOGICAL id, while the encrypted document keeps only the LOCAL id.
+`local_id = mirror_id` holds at the origin _until_ a sanctioned financial
+correction (delete + re-create + repoint, mirrorchain §2) replaces the local row —
+after that the equality is false, and inferring the association from row values is
+ambiguous. So the map itself must be captured while it still exists.
+
+**Representation.** `vaultMirrorProvenanceSchema` (`packages/contracts/src/vault.ts`):
+`{ chainId, kind, mirrorId, portfolioId, localId }`, carried as the additive
+`mirrorProvenance` array on vault document v1/v2 and on the strict restore
+document. It is `.default([])`, so a document written before this section parses
+unchanged and means "no severed fork" — no already-written `schemaVersion` is
+reinterpreted, and an unsupported (higher) version still fails closed. The two
+`mirror_rows` attribution columns are deliberately dropped
+(`VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS`): they are a co-member's identity, the
+vault must not carry it, and restore-time validation never needs it. That is also
+why `mirror_rows` is NOT vault-classified and is never re-inserted on disable —
+restoring it would require exactly the identity we refuse to carry, and the fork
+is un-synced by definition.
+
+**Capture** — `GET /account/paranoid/fork-provenance`, run by the enable wizard
+(§7 step 2) BEFORE the purge: the caller's own `mirror_rows` for portfolios they
+still own whose membership has ENDED. Active memberships are excluded (they block
+enable anyway, and would be live chain data), and no other user's row is
+reachable, because the read is scoped by portfolio ownership.
+
+**Merge / migration.** Provenance is content-addressed, not entity-atomic: the
+CAS merge takes the deterministic UNION keyed by `(kind, chainId, mirrorId)`, and
+dominance requires the winner to already contain every entry of the loser, so a
+merge can never silently drop it. Two entries claiming one logical identity with
+different `localId`s, or one `localId` under two logical identities, are a
+malformed document (fail closed) rather than a resolvable conflict.
+
+**Purge.** Enable purges the copy; `mirror_rows` cascades with the portfolio and
+the account keeps ZERO cleartext alias rows — including Drive-only, which gains no
+new server-side table, fingerprint, or portfolio-derived metadata. What survives
+is chain-level and already retained by mirrorchain §2/§6: the append-only oplog
+and the membership tombstone (with its `applied_seq` watermark). Those are the
+proof surface; the user's own map is the encrypted half.
+
+**Disable-time validation** (all of it BEFORE the mutation transaction opens):
+
+1. Each entry resolves to a live document entity of the mapped kind and to that
+   entity's portfolio, and the entries are unique by logical identity AND by local
+   id — a duplicate is rejected, never merged.
+2. The caller must hold an ENDED membership in `chainId`; an unknown chain, another
+   user's chain, or a still-active membership is rejected.
+3. The entity's authoritative op is the highest-seq op ≤ that membership's
+   `applied_seq`. Absent (no op for the logical id), beyond-watermark, wrong-kind
+   (an op class that cannot produce that row kind) and stale (the authoritative op
+   is a delete) are all rejected. A `cash.transfer` op speaks for BOTH minted leg
+   ids, one of which is not its own `mirror_id` column.
+4. **Cash intent is bound to the op, never to a client tag.** A `buy` leg requires
+   a buy op with `payFromCash: true`; a `sell_proceeds` leg requires a sell op with
+   `addProceedsToCash: true`; the movement's source must equal the local source the
+   op's `cashSourceMirrorId` resolves to (a `cash_source` entry of the same chain,
+   or the copy's Main when null); and the row's write-path tag must be
+   `sync:mirrorchain` or the entity's create-op `originSource` (a correction keeps
+   the corrected row's tag). Errors name the exact field and value.
+5. Only then is the solvency waiver granted, and only to a cash source that
+   carries an authenticated chain movement — its own `cash_movement` entry, or a
+   buy/sell leg whose transaction entry passed (4) — and only from that movement
+   onward in persisted `(executed_at, id)` order. Before the first authenticated
+   chain movement the source's ledger was purely local, where no overdraw is
+   reachable, so a negative prefix there still fails closed. The former
+   `source === 'sync:mirrorchain'` test is gone: it was a client-authored string
+   that waived overdraw for a whole source on request.
+
+Reading the chain tables outside the restore transaction is sound: the oplog is
+append-only, ops ≤ the watermark are immutable, and an ended membership cannot
+reactivate without leaving paranoid mode first (re-joining is a normal-mode write).
+
+**Successful rehydration and cleanup.** The provenance is proof material only: no
+row is derived from it, `mirror_rows` is not re-created, and the restored fork
+stays un-synced exactly as it was before enable. The client prunes entries whose
+local row it deleted locally (so a stale alias can never accumulate), and the
+whole document — provenance included — is discarded with the vault once disable
+commits; the decrypted disable request lives only for the already-approved request
+lifetime.
+
 ## 8. The feature-kill list (exact, binding)
 
 Everything that depends on the server reading the portfolio is **absent by

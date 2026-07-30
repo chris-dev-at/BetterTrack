@@ -127,7 +127,7 @@ function entity(
 }
 
 function document(rows: VaultEntity[]): VaultDocument {
-  return { schemaVersion: 1, entities: { transaction: rows }, mergeLog: [] };
+  return { schemaVersion: 1, entities: { transaction: rows }, mergeLog: [], mirrorProvenance: [] };
 }
 
 function header(

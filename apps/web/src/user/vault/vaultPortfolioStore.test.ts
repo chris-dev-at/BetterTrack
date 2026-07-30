@@ -407,6 +407,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       schemaVersion: 1,
       entities: [{ ...entity!, kind: 'transaction' }],
       mergeLog: [],
+      mirrorProvenance: [],
     });
     const strictTransaction = strict.entities[0];
     if (strictTransaction?.kind !== 'transaction') {
@@ -2155,6 +2156,7 @@ function initialDocument(): VaultDocument {
       ],
     },
     mergeLog: [],
+    mirrorProvenance: [],
   };
 }
 
@@ -2165,6 +2167,8 @@ function strictDocumentFrom(document: VaultDocument) {
       entities.map((entity) => ({ ...entity, kind })),
     ),
     mergeLog: document.mergeLog,
+    // §7.1: the disable payload carries the severed-fork identity map verbatim.
+    mirrorProvenance: document.mirrorProvenance,
   });
 }
 
@@ -2176,7 +2180,12 @@ function documentFromStrictDocument(
     const { kind, ...entity } = strictEntity;
     entities[kind] = [...(entities[kind] ?? []), entity];
   }
-  return { schemaVersion: strict.schemaVersion, entities, mergeLog: strict.mergeLog };
+  return {
+    schemaVersion: strict.schemaVersion,
+    entities,
+    mergeLog: strict.mergeLog,
+    mirrorProvenance: strict.mirrorProvenance,
+  };
 }
 
 function vaultEntity(id: string, data: Record<string, unknown>): VaultEntity {

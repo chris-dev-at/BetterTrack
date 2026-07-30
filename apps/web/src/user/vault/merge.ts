@@ -13,6 +13,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { VaultCryptoError } from './errors';
+import { forkProvenanceDominates, mergeForkProvenance } from './mirrorProvenance';
 
 export const VAULT_MERGE_LOG_LIMIT = 20;
 
@@ -91,6 +92,10 @@ export function mergeVaultDocuments(input: MergeVaultDocumentsInput): MergedVaul
   const common = {
     entities,
     mergeLog: appendMergeRecord(left.mergeLog, right.mergeLog, record),
+    // §7.1 severed-fork provenance is content-addressed, not entity-atomic: the
+    // union keyed by logical identity is what every replica converges on, and a
+    // merge must never be the step that loses an identity map.
+    mirrorProvenance: mergeForkProvenance(left.mirrorProvenance, right.mirrorProvenance),
   };
   const document: VaultDocument =
     clientSecurity == null
@@ -145,6 +150,9 @@ export function documentDominates(left: VaultDocument, right: VaultDocument): bo
 }
 
 function documentDominatesParsed(left: VaultDocument, right: VaultDocument): boolean {
+  // A linear successor must already carry the loser's fork provenance; otherwise
+  // taking it verbatim would silently drop an identity the other replica captured.
+  if (!forkProvenanceDominates(left.mirrorProvenance, right.mirrorProvenance)) return false;
   const leftSecurity = clientSecurityOf(left);
   const rightSecurity = clientSecurityOf(right);
   if (rightSecurity != null && leftSecurity == null) return false;

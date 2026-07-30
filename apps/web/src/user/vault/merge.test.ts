@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { VaultDocument, VaultEntity, VaultMergeRecord } from '@bettertrack/contracts';
+import type {
+  VaultDocument,
+  VaultEntity,
+  VaultMergeRecord,
+  VaultMirrorProvenance,
+} from '@bettertrack/contracts';
 
 import { VaultCryptoError } from './errors';
 import {
@@ -29,11 +34,16 @@ function entity(overrides: Partial<VaultEntity> = {}): VaultEntity {
   };
 }
 
-function document(entities: VaultEntity[], mergeLog: VaultMergeRecord[] = []): VaultDocument {
+function document(
+  entities: VaultEntity[],
+  mergeLog: VaultMergeRecord[] = [],
+  mirrorProvenance: VaultMirrorProvenance[] = [],
+): VaultDocument {
   return {
     schemaVersion: 1,
     entities: { transaction: entities },
     mergeLog,
+    mirrorProvenance,
   };
 }
 
@@ -458,5 +468,45 @@ describe('vault merge metadata and validation', () => {
       expect(caught).toBeInstanceOf(VaultCryptoError);
       expect(caught).toMatchObject({ code: 'envelope-invalid' });
     }
+  });
+});
+
+describe('severed-fork provenance across the CAS merge', () => {
+  const CHAIN = '018f0000-0000-7000-8000-0000000000d1';
+  const left: VaultMirrorProvenance = {
+    chainId: CHAIN,
+    kind: 'transaction',
+    mirrorId: '018f0000-0000-7000-8000-0000000000d2',
+    portfolioId: '018f0000-0000-7000-8000-0000000000d3',
+    localId: ENTITY_A,
+  };
+  const right: VaultMirrorProvenance = { ...left, kind: 'cash_source', localId: ENTITY_B };
+
+  it('unions both replicas instead of dropping either identity map', () => {
+    const merged = merge(
+      document([entity({ id: ENTITY_A })], [], [left]),
+      document([entity({ id: ENTITY_B })], [], [right]),
+    );
+    expect(merged.divergent).toBe(true);
+    expect(merged.document.mirrorProvenance).toEqual([right, left]);
+    expect(
+      merge(
+        document([entity({ id: ENTITY_B })], [], [right]),
+        document([entity({ id: ENTITY_A })], [], [left]),
+      ),
+    ).toEqual(merged);
+  });
+
+  it('refuses to call a newer document a linear successor while it lacks an identity', () => {
+    // Same entities, but the older parent captured provenance the newer one has
+    // not seen: taking the newer document verbatim would lose the fork's proof.
+    const newer = merge(
+      { ...document([entity({ id: ENTITY_A })], [], []), schemaVersion: 1 },
+      document([entity({ id: ENTITY_A })], [], [left]),
+      { leftVersion: 9, rightVersion: 4 },
+    );
+    expect(newer.divergent).toBe(true);
+    expect(newer.document.mirrorProvenance).toEqual([left]);
+    expect(newer.vaultVersion).toBe(10);
   });
 });

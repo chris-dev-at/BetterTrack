@@ -491,6 +491,7 @@ async function storageRoundedQuantityFixture(
         ...transactionEntities,
       ],
       mergeLog: [],
+      mirrorProvenance: [],
     },
   };
 
@@ -568,6 +569,7 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
         }),
       ],
       mergeLog: [],
+      mirrorProvenance: [],
     },
   };
 }
@@ -1507,6 +1509,7 @@ describe('paranoid rehydration service', () => {
           ...sourceMovements.map(strictCashMovementEntity),
         ],
         mergeLog: [],
+        mirrorProvenance: [],
       },
     };
 
@@ -2374,6 +2377,7 @@ describe('paranoid rehydration service', () => {
           ...sourceMovements.map(strictCashMovementEntity),
         ],
         mergeLog: [],
+        mirrorProvenance: [],
       },
     };
 
@@ -2515,7 +2519,19 @@ describe('paranoid rehydration service', () => {
       ),
     ).toBe(true);
 
-    const input: ParanoidDisableRehydrationRequest = {
+    // §7.1 capture: the enable wizard reads the identity map while `mirror_rows`
+    // still exists, through the production read the route serves.
+    const captured = await harness.ctx.paranoidTransitions.forkProvenance(bob.id);
+    expect(captured.provenance.length).toBeGreaterThan(0);
+    expect(
+      captured.provenance.every(
+        (entry) => entry.chainId === chain.id && entry.portfolioId === bobForkId,
+      ),
+    ).toBe(true);
+
+    const documentWith = (
+      mirrorProvenance: ParanoidDisableRehydrationRequest['document']['mirrorProvenance'],
+    ): ParanoidDisableRehydrationRequest => ({
       rehydrationId: REHYDRATION_ID,
       document: {
         schemaVersion: 1,
@@ -2536,11 +2552,29 @@ describe('paranoid rehydration service', () => {
           }),
         ],
         mergeLog: [],
+        mirrorProvenance,
       },
-    };
+    });
+    const input = documentWith(captured.provenance);
 
     await replaceNormalPortfolioGraphWithServerVault(harness, bob.id);
     await harness.db.delete(userTaxSettings).where(eq(userTaxSettings.userId, bob.id));
+
+    // The `sync:mirrorchain` tag alone no longer waives anything: without the
+    // authenticated identity map the overdrawn prefix is a plain overdraw.
+    await expect(
+      createParanoidRehydrationService({ db: harness.db, now: () => new Date(now) }).rehydrate(
+        bob.id,
+        documentWith([]),
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_CASH_LEDGER' });
+    expect(
+      await harness.db
+        .select()
+        .from(portfolioCashMovements)
+        .where(inArray(portfolioCashMovements.portfolioId, sourcePortfolioIds)),
+    ).toEqual([]);
+
     await expect(
       createParanoidRehydrationService({
         db: harness.db,
@@ -2778,6 +2812,7 @@ describe('paranoid rehydration service', () => {
           ...sourceMovements.map(strictCashMovementEntity),
         ],
         mergeLog: [],
+        mirrorProvenance: [],
       },
     };
 

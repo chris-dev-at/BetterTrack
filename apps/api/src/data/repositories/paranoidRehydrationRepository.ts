@@ -1,5 +1,6 @@
+import type { MirrorMemberStatus, VaultMirrorProvenance } from '@bettertrack/contracts';
 import type { VaultStrictDocumentV1 } from '@bettertrack/contracts';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 
@@ -11,6 +12,9 @@ import {
   expenseCategories,
   expenseRules,
   expenseTransactions,
+  mirrorChainMembers,
+  mirrorChainOps,
+  mirrorRows,
   portfolioCashMovements,
   portfolioCashSources,
   portfolios,
@@ -422,6 +426,134 @@ export function createParanoidRehydrationSourceRepository(
           })),
         );
       });
+    },
+  };
+}
+
+/**
+ * Severed-fork MIRRORCHAIN provenance reads (`docs/paranoid-design.md` §7.1).
+ *
+ * Two callers, both non-destructive: the enable wizard's capture read (while
+ * `mirror_rows` still exists) and disable-time validation (after it has cascaded
+ * away, proving the encrypted map against the append-only oplog). Reads only —
+ * they are deliberately usable outside the restore transaction so an invalid
+ * document is refused before any mutation transaction opens.
+ */
+
+/** One ENDED membership: the chain plus the watermark its copy stopped at. */
+export interface ParanoidForkMembership {
+  chainId: string;
+  status: MirrorMemberStatus;
+  appliedSeq: number;
+}
+
+/** One oplog row, still un-parsed: the service validates the payload contract. */
+export interface ParanoidForkChainOp {
+  mirrorId: string | null;
+  seq: number;
+  kind: string;
+  actorUserId: string | null;
+  payload: unknown;
+}
+
+export interface ParanoidForkProvenanceRepository {
+  /** The caller's ended memberships; an active one is deliberately excluded. */
+  listEndedMemberships(userId: string): Promise<readonly ParanoidForkMembership[]>;
+  /**
+   * Every op of `chainId` at or below `maxSeq` that speaks for one of
+   * `logicalIds` — either through its own `mirror_id`, or as the `cash.transfer`
+   * op that minted a second leg id which never appears in that column.
+   */
+  listChainOpsForLogicalIds(
+    chainId: string,
+    logicalIds: readonly string[],
+    maxSeq: number,
+  ): Promise<readonly ParanoidForkChainOp[]>;
+  /** Capture read: the caller's own retained fork identity map. */
+  listRetainedForkProvenance(userId: string): Promise<readonly VaultMirrorProvenance[]>;
+}
+
+export function createParanoidForkProvenanceRepository(
+  db: Database,
+): ParanoidForkProvenanceRepository {
+  return {
+    async listEndedMemberships(userId) {
+      return db
+        .select({
+          chainId: mirrorChainMembers.chainId,
+          status: mirrorChainMembers.status,
+          appliedSeq: mirrorChainMembers.appliedSeq,
+        })
+        .from(mirrorChainMembers)
+        .where(and(eq(mirrorChainMembers.userId, userId), ne(mirrorChainMembers.status, 'active')));
+    },
+
+    async listChainOpsForLogicalIds(chainId, logicalIds, maxSeq) {
+      if (!logicalIds.length) return [];
+      const found: ParanoidForkChainOp[] = [];
+      await forEachChunk(logicalIds, async (chunk) => {
+        const ids = [...chunk];
+        found.push(
+          ...(await db
+            .select({
+              mirrorId: mirrorChainOps.mirrorId,
+              seq: mirrorChainOps.seq,
+              kind: mirrorChainOps.kind,
+              actorUserId: mirrorChainOps.actorUserId,
+              payload: mirrorChainOps.payload,
+            })
+            .from(mirrorChainOps)
+            .where(
+              and(
+                eq(mirrorChainOps.chainId, chainId),
+                lte(mirrorChainOps.seq, maxSeq),
+                or(
+                  inArray(mirrorChainOps.mirrorId, ids),
+                  and(
+                    eq(mirrorChainOps.kind, 'cash.transfer'),
+                    inArray(sql`${mirrorChainOps.payload} ->> 'inMirrorId'`, ids),
+                  ),
+                ),
+              ),
+            )),
+        );
+      });
+      return found;
+    },
+
+    async listRetainedForkProvenance(userId) {
+      const memberships = await db
+        .select({
+          chainId: mirrorChainMembers.chainId,
+          status: mirrorChainMembers.status,
+        })
+        .from(mirrorChainMembers)
+        .where(eq(mirrorChainMembers.userId, userId));
+      const active = new Set(
+        memberships.filter((row) => row.status === 'active').map((row) => row.chainId),
+      );
+      const endedChainIds = [
+        ...new Set(memberships.filter((row) => !active.has(row.chainId)).map((row) => row.chainId)),
+      ];
+      if (!endedChainIds.length) return [];
+
+      const provenance: VaultMirrorProvenance[] = [];
+      await forEachChunk(endedChainIds, async (chunk) => {
+        provenance.push(
+          ...(await db
+            .select({
+              chainId: mirrorRows.chainId,
+              kind: mirrorRows.kind,
+              mirrorId: mirrorRows.mirrorId,
+              portfolioId: mirrorRows.portfolioId,
+              localId: mirrorRows.localId,
+            })
+            .from(mirrorRows)
+            .innerJoin(portfolios, eq(portfolios.id, mirrorRows.portfolioId))
+            .where(and(eq(portfolios.userId, userId), inArray(mirrorRows.chainId, [...chunk])))),
+        );
+      });
+      return provenance;
     },
   };
 }

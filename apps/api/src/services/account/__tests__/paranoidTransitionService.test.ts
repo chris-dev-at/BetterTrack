@@ -210,6 +210,7 @@ function disableRequest(userId: string, rehydrationId = REHYDRATION_ID): Paranoi
         },
       ],
       mergeLog: [],
+      mirrorProvenance: [],
     },
   };
 }
@@ -785,6 +786,58 @@ describe('paranoid public transitions', () => {
       await harness.db.select().from(portfolios).where(eq(portfolios.id, RESTORED_PORTFOLIO_ID)),
     ).toHaveLength(1);
     expect(await harness.db.select().from(assets).where(eq(assets.id, ASSET_ID))).toHaveLength(1);
+  });
+});
+
+describe('severed-fork provenance capture read', () => {
+  it('exposes only the caller’s own ended fork, never an active chain or a co-member', async () => {
+    const owner = await harness.seedUser({
+      email: 'capture-owner@bettertrack.test',
+      username: 'capture-owner',
+    });
+    const member = await harness.seedUser({
+      email: 'capture-member@bettertrack.test',
+      username: 'capture-member',
+    });
+    const ownerPortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
+    const { chain } = await harness.ctx.mirror.convertToChain(owner.id, ownerPortfolioId, {
+      name: 'Capture chain',
+    });
+    const { portfolioId: forkPortfolioId } = await harness.ctx.mirror.attachMemberCopy(
+      chain.id,
+      member.id,
+    );
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    // While the membership is ACTIVE the map stays server-side and invisible.
+    await expect(harness.ctx.paranoidTransitions.forkProvenance(member.id)).resolves.toEqual({
+      provenance: [],
+    });
+    await expect(harness.ctx.paranoidTransitions.forkProvenance(owner.id)).resolves.toEqual({
+      provenance: [],
+    });
+
+    await harness.ctx.mirror.removeMember(owner.id, chain.id, member.id);
+    const captured = await harness.ctx.paranoidTransitions.forkProvenance(member.id);
+    expect(captured.provenance.length).toBeGreaterThan(0);
+    for (const entry of captured.provenance) {
+      expect(entry.chainId).toBe(chain.id);
+      expect(entry.portfolioId).toBe(forkPortfolioId);
+      // Only the five contract fields — no `createdBy`/`createdByUsername`.
+      expect(Object.keys(entry).sort()).toEqual([
+        'chainId',
+        'kind',
+        'localId',
+        'mirrorId',
+        'portfolioId',
+      ]);
+    }
+    // The still-active owner sees nothing, and the departed member's read never
+    // reaches into the owner's copy.
+    await expect(harness.ctx.paranoidTransitions.forkProvenance(owner.id)).resolves.toEqual({
+      provenance: [],
+    });
+    expect(captured.provenance.some((entry) => entry.portfolioId === ownerPortfolioId)).toBe(false);
   });
 });
 

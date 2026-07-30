@@ -560,6 +560,7 @@ function document(id: string): VaultDocument {
     schemaVersion: 1,
     entities: { portfolio: [entity(id)] },
     mergeLog: [],
+    mirrorProvenance: [],
   };
 }
 

@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  MIRROR_ROW_KINDS,
+  VAULT_ENTITY_KINDS,
   VAULT_ENTITY_SCHEMAS,
   VAULT_ENTITY_ROW_SCHEMAS,
+  VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS,
+  VAULT_MIRROR_PROVENANCE_ENTITY_KINDS,
   VAULT_TABLE_ENTITY_KINDS,
+  vaultMirrorProvenanceSchema,
   type VaultEntityKind,
 } from '@bettertrack/contracts';
 import { getTableColumns, getTableName, is } from 'drizzle-orm';
@@ -170,5 +175,51 @@ describe('strict vault-payload completeness', () => {
 
   it('does not classify rehydration metadata as vault content', () => {
     expect(PARANOID_TABLE_CLASSIFICATION['paranoid_rehydration_receipts']).toBe('server');
+  });
+});
+
+/**
+ * Severed-fork MIRRORCHAIN provenance (`docs/paranoid-design.md` §7.1) is
+ * enrolled in the same mechanical style as the strict document: every
+ * `mirror_rows` column is either carried by the encrypted record or explicitly
+ * named as dropped with a reason, so a future column can neither slip into the
+ * vault nor silently escape restore-time validation.
+ */
+describe('severed-fork provenance enrollment', () => {
+  const carried = Object.keys(vaultMirrorProvenanceSchema.shape).sort();
+  const dropped = Object.keys(VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS).sort();
+  const columns = Object.keys(getTableColumns(schema.mirrorRows)).sort();
+
+  it('carries or explicitly drops every mirror_rows column', () => {
+    expect([...carried, ...dropped].sort()).toEqual(columns);
+    expect(carried.filter((field) => dropped.includes(field))).toEqual([]);
+  });
+
+  it('states a non-empty reason for every dropped column', () => {
+    for (const [column, reason] of Object.entries(VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS)) {
+      expect(reason.trim().length, `${column} needs a reason`).toBeGreaterThan(0);
+    }
+  });
+
+  it('resolves every mirror row kind to an enrolled vault entity kind', () => {
+    expect(Object.keys(VAULT_MIRROR_PROVENANCE_ENTITY_KINDS).sort()).toEqual(
+      [...MIRROR_ROW_KINDS].sort(),
+    );
+    for (const kind of Object.values(VAULT_MIRROR_PROVENANCE_ENTITY_KINDS)) {
+      expect(VAULT_ENTITY_KINDS).toContain(kind);
+    }
+  });
+
+  /**
+   * `mirror_rows` itself stays server-classified and is NEVER restored: its
+   * `created_by`/`created_by_username` columns are a co-member's identity, which
+   * the encrypted document must not carry, so a `vault` classification could only
+   * be honoured by leaking exactly that. The logical half rides `mirrorProvenance`
+   * instead, and the fork stays un-synced after disable.
+   */
+  it('keeps the identity map itself server-classified and out of the entity map', () => {
+    expect(PARANOID_TABLE_CLASSIFICATION['mirror_rows']).toBe('server');
+    expect(Object.keys(VAULT_TABLE_ENTITY_KINDS)).not.toContain('mirror_rows');
+    expect(PARANOID_REHYDRATION_POLICY['mirror_rows']).toBeUndefined();
   });
 });

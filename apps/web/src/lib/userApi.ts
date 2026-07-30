@@ -5,6 +5,7 @@ import {
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
+  paranoidForkProvenanceResponseSchema,
   paranoidMediaStateResponseSchema,
   paranoidMediaTransitionResponseSchema,
   paranoidServerCandidateMetadataSchema,
@@ -51,6 +52,7 @@ import {
   type PasskeyRegisterVerifyRequest,
   type PasswordResetComplete,
   type PasswordResetRequest,
+  type ParanoidForkProvenanceResponse,
   type ParanoidMediaStateResponse,
   type ParanoidMediaTransitionRequest,
   type ParanoidMediaTransitionResponse,
@@ -131,6 +133,18 @@ export async function logout(): Promise<void> {
 export async function getMe(signal?: AbortSignal): Promise<MeResponse> {
   const data = await apiRequest<unknown>('/auth/me', { signal, suppressAuthRedirect: true });
   return meResponseSchema.parse(data);
+}
+
+/**
+ * The §7.1 capture read the enable wizard runs BEFORE enabling, while the
+ * server's `mirror_rows` identity map still exists. It returns the caller's own
+ * severed-fork map only — no co-member identity and no active chain.
+ */
+export async function getParanoidForkProvenance(
+  signal?: AbortSignal,
+): Promise<ParanoidForkProvenanceResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/fork-provenance', { signal });
+  return paranoidForkProvenanceResponseSchema.parse(data);
 }
 
 /** Portfolio-free paranoid media state; no Drive capability crosses this API. */
