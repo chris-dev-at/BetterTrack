@@ -370,8 +370,9 @@ runs connectivity and schema probes, drops that database, appends evidence to
 automatically at least monthly and never targets `POSTGRES_DB`.
 
 Deployments upgrading from the former host-cron runbook should remove the old
-`docker compose exec -T db /backups/backup.sh` crontab entry. The script is no
-longer mounted into `db`; the in-stack scheduler replaces that local job.
+`docker compose exec -T db bash /opt/bettertrack/backup.sh` crontab entry. The
+script is no longer mounted into `db`; the in-stack scheduler replaces that local
+job.
 
 **Restore from a dump:**
 

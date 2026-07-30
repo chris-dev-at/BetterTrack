@@ -1,6 +1,15 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -222,6 +231,27 @@ describe('backup deployment topology', () => {
 });
 
 describe('local backup status and freshness', () => {
+  it('fails a successful workflow and cleans up when the atomic status replace fails', () => {
+    const target = fixture();
+    executable(target.bin, 'mv', 'exit 73');
+
+    const result = run('offsite.sh', {
+      ...target.env,
+      BT_BACKUP_AGE_RECIPIENT_FILE: '',
+      BT_BACKUP_RCLONE_REMOTE: '',
+    });
+
+    expect(result.stdout).toContain('offsite skipped');
+    expect(result.status).toBe(8);
+    expect(result.stderr).toContain('could not replace status file');
+    expect(existsSync(target.status)).toBe(false);
+    expect(
+      readdirSync(target.backups).filter((entry) =>
+        entry.startsWith('.bettertrack-backup-status.'),
+      ),
+    ).toEqual([]);
+  });
+
   it('creates a verified dump and reports healthy from fresh status timestamps', () => {
     const target = fixture();
     executable(target.bin, 'pg_dump', "printf '%s\\n' 'CREATE TABLE probe(id integer);'");

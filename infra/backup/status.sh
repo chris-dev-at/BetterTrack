@@ -34,14 +34,21 @@ bt_status_get() {
 
 bt_status_update() {
     local file directory lock_file temp_file line existing_key update update_key update_value
-    local lock_fd updated
+    local lock_fd updated content existing_content status_code
     local -a updates
     updates=("$@")
     file="$(bt_backup_status_file)"
     directory="$(dirname "${file}")"
     lock_file="${file}.lock"
+    temp_file=''
+    content=$'schema_version=1\n'
+    existing_content=''
+    status_code=0
 
-    mkdir -p "${directory}"
+    if ! mkdir -p "${directory}"; then
+        echo "bettertrack-backup-status: could not create status directory ${directory}" >&2
+        return 1
+    fi
 
     for update in "${updates[@]}"; do
         update_key="${update%%=*}"
@@ -54,17 +61,26 @@ bt_status_update() {
         fi
     done
 
-    exec {lock_fd}>"${lock_file}"
+    if ! exec {lock_fd}>"${lock_file}"; then
+        echo "bettertrack-backup-status: could not open lock file ${lock_file}" >&2
+        return 1
+    fi
     if ! flock -w 5 "${lock_fd}"; then
         echo "bettertrack-backup-status: timed out waiting for ${lock_file}" >&2
         exec {lock_fd}>&-
         return 1
     fi
 
-    temp_file="$(mktemp "${directory}/.bettertrack-backup-status.XXXXXX")"
-    {
-        printf 'schema_version=1\n'
-        if [ -r "${file}" ]; then
+    if ! temp_file="$(mktemp "${directory}/.bettertrack-backup-status.XXXXXX")"; then
+        echo "bettertrack-backup-status: could not create a temporary status file" >&2
+        status_code=1
+    fi
+
+    if [ "${status_code}" -eq 0 ] && [ -e "${file}" ]; then
+        if ! existing_content="$(cat -- "${file}")"; then
+            echo "bettertrack-backup-status: could not read existing status file ${file}" >&2
+            status_code=1
+        else
             while IFS= read -r line || [ -n "${line}" ]; do
                 existing_key="${line%%=*}"
                 [[ "${existing_key}" =~ ^[a-z][a-z0-9_]*$ ]] || continue
@@ -77,16 +93,46 @@ bt_status_update() {
                         break
                     fi
                 done
-                [ "${updated}" = true ] || printf '%s\n' "${line}"
-            done < "${file}"
+                [ "${updated}" = true ] || content+="${line}"$'\n'
+            done <<< "${existing_content}"
         fi
-        for update in "${updates[@]}"; do
-            printf '%s\n' "${update}"
-        done
-    } > "${temp_file}"
-    chmod 0640 "${temp_file}"
-    mv -f "${temp_file}" "${file}"
+    fi
 
-    flock -u "${lock_fd}"
-    exec {lock_fd}>&-
+    if [ "${status_code}" -eq 0 ]; then
+        for update in "${updates[@]}"; do
+            content+="${update}"$'\n'
+        done
+    fi
+
+    if [ "${status_code}" -eq 0 ] && ! printf '%s' "${content}" > "${temp_file}"; then
+        echo "bettertrack-backup-status: could not write temporary status file ${temp_file}" >&2
+        status_code=1
+    fi
+    if [ "${status_code}" -eq 0 ] && ! chmod 0640 "${temp_file}"; then
+        echo "bettertrack-backup-status: could not set permissions on ${temp_file}" >&2
+        status_code=1
+    fi
+    if [ "${status_code}" -eq 0 ]; then
+        if mv -f "${temp_file}" "${file}"; then
+            temp_file=''
+        else
+            echo "bettertrack-backup-status: could not replace status file ${file}" >&2
+            status_code=1
+        fi
+    fi
+
+    if [ -n "${temp_file}" ] && ! rm -f -- "${temp_file}"; then
+        echo "bettertrack-backup-status: could not remove temporary file ${temp_file}" >&2
+        status_code=1
+    fi
+
+    if ! flock -u "${lock_fd}"; then
+        echo "bettertrack-backup-status: could not release lock ${lock_file}" >&2
+        status_code=1
+    fi
+    if ! exec {lock_fd}>&-; then
+        echo "bettertrack-backup-status: could not close lock ${lock_file}" >&2
+        status_code=1
+    fi
+    return "${status_code}"
 }

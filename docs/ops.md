@@ -110,11 +110,11 @@ It stays running so the next scheduled dump can recover backup freshness.
 
 When upgrading a deployment that used the old runbook, remove its legacy host
 crontab entry containing
-`docker compose exec -T db /backups/backup.sh`. The script is intentionally no
-longer mounted into `db`, and leaving the old entry creates a silent failing
-duplicate. If that line also chained the optional offsite upload, preserve the
-upload cadence in the trusted offsite control plane; the in-stack scheduler
-replaces the local-dump and restore-drill portions.
+`docker compose exec -T db bash /opt/bettertrack/backup.sh`. The script is
+intentionally no longer mounted into `db`, and leaving the old entry creates a
+silent failing duplicate. If that line also chained the optional offsite upload,
+preserve the upload cadence in the trusted offsite control plane; the in-stack
+scheduler replaces the local-dump and restore-drill portions.
 
 ### Scheduled and on-demand local restore drill
 
