@@ -406,7 +406,7 @@ function ResultRow({
     triggerRef: conglomerateTriggerRef,
     focusVersion: `${conglomeratesLoading}:${conglomerates.map((item) => item.id).join(',')}`,
   });
-  usePopoverDismiss(conglomeratePickerOpen, onCloseConglomeratePicker, conglomerateRef);
+  usePopoverDismiss(conglomeratePickerOpen, closeAndRestoreFocus, conglomerateRef);
 
   return (
     <li className="bt-panel bt-panel--soft group relative flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">
@@ -470,7 +470,13 @@ function ResultRow({
   );
 }
 
-/** Closes a popover on Escape or on a mousedown outside `containerRef`. */
+/**
+ * Closes a popover on a mousedown outside `containerRef`. `onClose` must be the
+ * caller's restoring close: the mousedown can land on non-focusable content,
+ * which would otherwise unmount the focused menu item with nowhere for focus to
+ * go. Escape is not handled here — `useMenuKeyboard` registers the menu with the
+ * shared overlay stack, which arbitrates it and restores focus centrally.
+ */
 function usePopoverDismiss(
   open: boolean,
   onClose: () => void,
@@ -478,16 +484,11 @@ function usePopoverDismiss(
 ) {
   useEffect(() => {
     if (!open) return;
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
     function handleClick(e: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) onClose();
     }
-    document.addEventListener('keydown', handleKey);
     document.addEventListener('mousedown', handleClick);
     return () => {
-      document.removeEventListener('keydown', handleKey);
       document.removeEventListener('mousedown', handleClick);
     };
   }, [open, onClose, containerRef]);
@@ -531,7 +532,7 @@ function WatchlistControl({
     triggerRef,
     focusVersion: (listsQuery.data?.watchlists ?? []).map((list) => list.id).join(','),
   });
-  usePopoverDismiss(listPickerOpen, () => setListPickerOpen(false), containerRef);
+  usePopoverDismiss(listPickerOpen, closeAndRestoreFocus, containerRef);
 
   return (
     <div className="relative flex items-center" ref={containerRef}>

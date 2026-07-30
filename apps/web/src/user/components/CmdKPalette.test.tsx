@@ -132,7 +132,7 @@ describe('CmdKPalette', () => {
     const trigger = screen.getByRole('button', { name: 'Open quick search' });
     await user.click(trigger);
     const dialog = screen.getByRole('dialog', { name: /quick search/i });
-    const search = screen.getByRole('searchbox', { name: /search assets/i });
+    const field = input();
     const focusable = Array.from(
       dialog.querySelectorAll<HTMLElement>(
         'a[href], button:not([disabled]), input:not([disabled]), [tabindex]',
@@ -140,12 +140,16 @@ describe('CmdKPalette', () => {
     ).filter((element) => element.tabIndex >= 0);
     const last = focusable.at(-1)!;
 
-    await waitFor(() => expect(search).toHaveFocus());
+    await waitFor(() => expect(field).toHaveFocus());
     await user.tab({ shift: true });
     expect(last).toHaveFocus();
     await user.tab();
-    expect(search).toHaveFocus();
+    expect(field).toHaveFocus();
     expect(screen.getByRole('button', { name: 'Outside action' })).not.toHaveFocus();
+    expect(dialog.closest('[inert]')).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Outside action' }).closest('[inert]'),
+    ).not.toBeNull();
 
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());

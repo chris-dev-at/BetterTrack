@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 
+import { topOverlayElement } from './overlayStack';
+
 const FOCUSABLE_SELECTOR = [
   'a[href]',
   'area[href]',
@@ -113,6 +115,47 @@ function currentActiveElement() {
   return document.activeElement instanceof HTMLElement ? document.activeElement : null;
 }
 
+/** Focuses a node the document cannot otherwise reach, without altering layout. */
+function focusProgrammatically(element: HTMLElement) {
+  if (element.tabIndex < 0 && !element.hasAttribute('tabindex')) {
+    element.setAttribute('tabindex', '-1');
+  }
+  element.focus();
+}
+
+/**
+ * Hands focus back after an overlay closes, in descending order of intent:
+ * the caller's stable trigger, the element that had focus when the overlay
+ * opened, the overlay still open underneath, and finally the page's main
+ * region.
+ *
+ * The last two rungs are what keeps a closing overlay from dropping focus onto
+ * `<body>` when its opener is gone — which happens whenever one overlay hands
+ * off to another (the opener unmounts with the overlay that owned it) or an
+ * item unmounts as it is activated. Silently giving up there is exactly the
+ * "focused element left with nowhere to go" the trap exists to prevent.
+ */
+export function restoreFocusTo(
+  candidates: Array<HTMLElement | null | undefined>,
+  { exclude }: { exclude?: HTMLElement | null } = {},
+) {
+  for (const candidate of candidates) {
+    if (candidate instanceof HTMLElement && candidate.isConnected) {
+      candidate.focus();
+      return;
+    }
+  }
+
+  const overlayBelow = topOverlayElement(exclude);
+  if (overlayBelow !== null) {
+    focusProgrammatically(overlayBelow);
+    return;
+  }
+
+  const main = document.querySelector<HTMLElement>('main');
+  if (main !== null) focusProgrammatically(main);
+}
+
 function makeBackgroundInert(container: HTMLElement) {
   const changed: Array<{ element: HTMLElement; hadInert: boolean }> = [];
   let branch: HTMLElement = container;
@@ -141,13 +184,21 @@ interface FocusTrapOptions {
   active?: boolean;
   inertBackground?: boolean;
   initialFocusRef?: RefObject<HTMLElement | null>;
+  /**
+   * A trigger that outlives this overlay, for flows where one overlay replaces
+   * another (create-group → invite step): the opener captured at mount is a
+   * control in the *retiring* overlay, so it is already detached by the time
+   * the survivor closes. Pass the stable element and restoration keeps working
+   * across the handoff.
+   */
   restoreFocusRef?: RefObject<HTMLElement | null>;
 }
 
 /**
  * Dependency-free focus containment for user-app overlays. It captures the
  * opener before descendants commit, focuses the first available control (or an
- * explicit target), contains Tab/Shift+Tab, and restores the opener on close.
+ * explicit target), contains Tab/Shift+Tab, and restores focus on close — to
+ * the opener, or down the {@link restoreFocusTo} ladder when the opener is gone.
  */
 export function useFocusTrap<T extends HTMLElement>({
   active = true,
@@ -180,10 +231,7 @@ export function useFocusTrap<T extends HTMLElement>({
 
     return () => {
       restoreBackground?.();
-      const restoreTarget = restoreFocusRef?.current ?? openingElementRef.current;
-      if (restoreTarget instanceof HTMLElement && restoreTarget.isConnected) {
-        restoreTarget.focus();
-      }
+      restoreFocusTo([restoreFocusRef?.current, openingElementRef.current], { exclude: container });
     };
   }, [active, inertBackground, initialFocusRef, restoreFocusRef]);
 

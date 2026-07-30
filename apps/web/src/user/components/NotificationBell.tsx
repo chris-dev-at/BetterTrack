@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { REALTIME_SERVER_EVENTS } from '@bettertrack/contracts';
@@ -11,6 +11,8 @@ import { listNotifications, markNotificationsRead } from '../../lib/notification
 import { useRealtimeEvent } from '../../lib/realtime';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert, cx } from './ui';
+import { useOverlayEscape } from './overlayStack';
+import { restoreFocusTo } from './useFocusTrap';
 
 /** Read a string field from a notification payload, or null when absent/empty. */
 function payloadString(payload: unknown, key: string): string | null {
@@ -181,6 +183,7 @@ export function NotificationBell() {
   const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const queryClient = useQueryClient();
 
@@ -205,32 +208,29 @@ export function NotificationBell() {
     },
   });
 
+  const closeAndRestoreFocus = useCallback(() => {
+    setOpen(false);
+    restoreFocusTo([triggerRef.current], { exclude: panelRef.current });
+  }, []);
+
+  // Non-modal, so it takes Escape through the shared overlay stack like every
+  // other popover: it closes only while it is the innermost open overlay, and
+  // it closes even when focus never entered the panel.
+  useOverlayEscape(open, closeAndRestoreFocus, panelRef);
+
   useEffect(() => {
     if (!open) return;
     function onPointerDown(e: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     }
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    }
     document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
     };
   }, [open]);
 
   const unreadCount = query.data?.unreadCount ?? 0;
   const items = query.data?.items ?? [];
-  const closeAndRestoreFocus = () => {
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
 
   return (
     <div ref={rootRef} className="relative">
@@ -278,6 +278,7 @@ export function NotificationBell() {
         <div
           aria-label={t('settings.notifications.title')}
           className="bt-popover w-80"
+          ref={panelRef}
           role="group"
           style={{ right: 0, top: 'calc(100% + 6px)', padding: 0 }}
         >

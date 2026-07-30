@@ -398,6 +398,33 @@ describe('AssetSearchBox', () => {
       expect(screen.queryByRole('menu', { name: 'Watchlists for NVDA' })).not.toBeInTheDocument();
       expect(trigger).toHaveFocus();
     });
+
+    test('Escape closes and restores after focus has left the watchlist menu', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(workboardApi.listWatchlists).mockResolvedValue({
+        watchlists: [
+          { id: 'wl-general', name: 'General', isDefault: true, itemCount: 0, audience: 'private' },
+        ],
+      });
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      const trigger = screen.getByRole('button', { name: /choose a watchlist for nvda/i });
+      await user.click(trigger);
+      await screen.findByRole('menu', { name: 'Watchlists for NVDA' });
+
+      // Focus outside the popover — a click on non-focusable chrome, or a Tab
+      // past the last item, both land here.
+      (document.activeElement as HTMLElement | null)?.blur();
+      expect(document.body).toHaveFocus();
+
+      await user.keyboard('{Escape}');
+
+      expect(screen.queryByRole('menu', { name: 'Watchlists for NVDA' })).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+    });
   });
 
   describe('→ Portfolio (inline Buy/Sell dialog, §13.2)', () => {
@@ -493,10 +520,54 @@ describe('AssetSearchBox', () => {
 
       await user.click(blueprint);
 
+      const menu = screen.getByRole('menu', { name: 'Add NVDA to a blueprint' });
+      const create = within(menu).getByRole('menuitem', { name: '+ Create new blueprint' });
+      const close = within(menu).getByRole('menuitem', { name: 'Close' });
       expect(blueprint).toHaveAttribute('aria-disabled', 'true');
       expect(blueprint).toHaveFocus();
+
+      // The pending item stays focusable, so it stays in the roving model: the
+      // menu must never end up with two tab stops.
+      const tabStops = () =>
+        within(menu)
+          .getAllByRole('menuitem')
+          .filter((item) => item.tabIndex === 0);
+      expect(tabStops()).toEqual([blueprint]);
+      await user.keyboard('{ArrowDown}');
+      expect(create).toHaveFocus();
+      expect(tabStops()).toEqual([create]);
+      await user.keyboard('{End}');
+      expect(close).toHaveFocus();
+      expect(tabStops()).toEqual([close]);
+      await user.keyboard('{Home}');
+      expect(blueprint).toHaveFocus();
+      expect(tabStops()).toEqual([blueprint]);
+
       await user.keyboard('{Escape}');
       expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+    });
+
+    test('Escape closes and restores after focus has left the blueprint menu', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(conglomerateApi.listConglomerates).mockResolvedValue(conglomerateList());
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      const trigger = screen.getByRole('button', { name: /add nvda to a blueprint/i });
+      await user.click(trigger);
+      await screen.findByRole('menu', { name: 'Add NVDA to a blueprint' });
+
+      (document.activeElement as HTMLElement | null)?.blur();
+      expect(document.body).toHaveFocus();
+
+      await user.keyboard('{Escape}');
+
+      expect(
+        screen.queryByRole('menu', { name: 'Add NVDA to a blueprint' }),
+      ).not.toBeInTheDocument();
       expect(trigger).toHaveFocus();
     });
 

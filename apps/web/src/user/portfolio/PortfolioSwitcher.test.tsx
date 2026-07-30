@@ -12,7 +12,23 @@ vi.mock('../../lib/portfolioApi', () => ({
   updatePortfolio: vi.fn(),
 }));
 
+// The group-create flow the wizard hands off to talks to the chain API; only
+// the two calls that flow makes are stubbed.
+vi.mock('../../lib/mirrorApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/mirrorApi')>()),
+  createMirrorChain: vi.fn(),
+  getMirrorMembers: vi.fn(),
+}));
+vi.mock('../../lib/socialApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/socialApi')>()),
+  listFriends: vi.fn(),
+}));
+
+import { MIRROR_MAX_MEMBERS } from '@bettertrack/contracts';
+
+import { createMirrorChain, getMirrorMembers } from '../../lib/mirrorApi';
 import { createPortfolio, listPortfolios } from '../../lib/portfolioApi';
+import { listFriends } from '../../lib/socialApi';
 import {
   ACTIVE_PORTFOLIO_PARAM,
   PortfolioSwitcher,
@@ -165,7 +181,7 @@ describe('PortfolioSwitcher', () => {
     const menu = await screen.findByRole('menu', { name: 'Portfolios' });
     const main = within(menu).getByRole('menuitemradio', { name: /Main/ });
     const trading = within(menu).getByRole('menuitemradio', { name: /Trading/ });
-    const archived = within(menu).getByRole('menuitem', { name: 'Archived…' });
+    const settings = within(menu).getByRole('menuitem', { name: /Portfolio settings/ });
 
     await waitFor(() => expect(main).toHaveFocus());
     await user.keyboard('{ArrowDown}');
@@ -173,7 +189,7 @@ describe('PortfolioSwitcher', () => {
     await user.keyboard('{ArrowUp}');
     expect(main).toHaveFocus();
     await user.keyboard('{End}');
-    expect(archived).toHaveFocus();
+    expect(settings).toHaveFocus();
     await user.keyboard('{Home}');
     expect(main).toHaveFocus();
     await user.keyboard('{Escape}');
@@ -447,5 +463,51 @@ describe('PortfolioSwitcher', () => {
     // and no plain portfolio was created on the way.
     expect(await screen.findByRole('dialog', { name: 'New group portfolio' })).toBeInTheDocument();
     expect(createPortfolio).not.toHaveBeenCalled();
+  });
+
+  test('the create → invite handoff still returns focus to the switcher trigger', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN] });
+    vi.mocked(createMirrorChain).mockResolvedValue({
+      chainId: 'c1',
+      name: 'Household',
+      status: 'active',
+      role: 'owner',
+      memberCount: 1,
+      portfolioId: 'p9',
+      createdAt: '2026-07-30T00:00:00.000Z',
+      sync: { appliedSeq: 0, lastSeq: 0, percent: 100, synced: true },
+    });
+    vi.mocked(getMirrorMembers).mockResolvedValue({
+      chainId: 'c1',
+      name: 'Household',
+      status: 'active',
+      role: 'owner',
+      memberCap: MIRROR_MAX_MEMBERS,
+      members: [],
+    });
+    vi.mocked(listFriends).mockResolvedValue({ friends: [] });
+    const user = userEvent.setup();
+    renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await user.click(trigger);
+    await user.click(await screen.findByRole('menuitem', { name: 'Add portfolio' }));
+    await user.type(await screen.findByLabelText('Portfolio name'), 'Household');
+    await user.click(screen.getByRole('button', { name: 'Continue' })); // → icon
+    await user.click(screen.getByRole('button', { name: 'Continue' })); // → book
+    await user.click(screen.getByRole('radio', { name: /Shared with people/ }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+
+    await screen.findByRole('dialog', { name: 'New group portfolio' });
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+
+    // The create dialog unmounts as the invite step mounts, so the invite
+    // dialog's own opener is already detached — the stable trigger is what it
+    // has to come back to.
+    await screen.findByRole('dialog', { name: 'Invite a friend' });
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
   });
 });

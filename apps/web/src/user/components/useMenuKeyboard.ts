@@ -1,15 +1,28 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 
+import { useOverlayEscape } from './overlayStack';
+import { restoreFocusTo } from './useFocusTrap';
+
 const MENU_ITEM_SELECTOR = [
   '[role="menuitem"]',
   '[role="menuitemradio"]',
   '[role="menuitemcheckbox"]',
 ].join(',');
 
+/**
+ * Every item the roving `tabIndex` covers.
+ *
+ * `aria-disabled` items stay in — they remain focusable by design (a blueprint
+ * that is mid-mutation keeps the caret rather than dumping it on `<body>`), so
+ * leaving them out would let one keep `tabIndex=0` while the roving index moved
+ * on, giving the menu two tab stops. Only natively `disabled` controls, which
+ * cannot hold focus at all, are excluded. Activation is blocked separately, by
+ * the item itself.
+ */
 function menuItems(menu: HTMLElement) {
   return Array.from(menu.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR)).filter(
-    (item) => !item.matches(':disabled') && item.getAttribute('aria-disabled') !== 'true',
+    (item) => !item.matches(':disabled'),
   );
 }
 
@@ -35,9 +48,14 @@ export function useMenuKeyboard<T extends HTMLElement = HTMLDivElement>({
   focusVersion,
 }: MenuKeyboardOptions) {
   const menuRef = useRef<T>(null);
+  /** The item this hook last focused — as opposed to one the user moved to. */
+  const autoFocusedRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      autoFocusedRef.current = null;
+      return;
+    }
 
     const menu = menuRef.current;
     if (!menu) return;
@@ -53,53 +71,70 @@ export function useMenuKeyboard<T extends HTMLElement = HTMLDivElement>({
               item.getAttribute('aria-current') === 'true',
           )
         : undefined;
-    focusMenuItem(items, selected ?? items[0]!);
+
+    // Async items (watchlists, conglomerates) arrive after the menu opened, so
+    // this re-runs on `focusVersion`. Focus this hook placed itself may move on
+    // to the item that has since become first; focus the *user* placed — a
+    // roving keystroke, or the menu's own filter field — stays put, and the
+    // pass only re-normalizes the single tab stop around it.
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const userHeld =
+      focused !== null && menu.contains(focused) && focused !== autoFocusedRef.current
+        ? focused
+        : null;
+    const target =
+      (userHeld !== null && items.includes(userHeld) ? userHeld : undefined) ??
+      selected ??
+      items[0]!;
+
+    for (const item of items) item.tabIndex = item === target ? 0 : -1;
+    if (userHeld === null) {
+      target.focus();
+      autoFocusedRef.current = target;
+    }
   }, [focusVersion, initialFocus, open]);
 
   const closeAndRestoreFocus = useCallback(() => {
     onClose();
-    const trigger = triggerRef.current;
-    if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus();
+    // The trigger normally survives; when it does not (the whole row unmounted
+    // with the item that was activated) the ladder finds the next deliberate
+    // destination instead of leaving focus on a detached node.
+    restoreFocusTo([triggerRef.current], { exclude: menuRef.current });
   }, [onClose, triggerRef]);
 
-  const onKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLElement>) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        closeAndRestoreFocus();
-        return;
-      }
+  // Escape is arbitrated globally so that it still works when focus sits on a
+  // non-focusable part of the popover, yet only ever closes the innermost open
+  // overlay — a menu inside a dialog closes without discarding the dialog.
+  useOverlayEscape(open, closeAndRestoreFocus, menuRef);
 
-      if (
-        event.key !== 'ArrowDown' &&
-        event.key !== 'ArrowUp' &&
-        event.key !== 'Home' &&
-        event.key !== 'End'
-      ) {
-        return;
-      }
+  const onKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
+    if (
+      event.key !== 'ArrowDown' &&
+      event.key !== 'ArrowUp' &&
+      event.key !== 'Home' &&
+      event.key !== 'End'
+    ) {
+      return;
+    }
 
-      const menu = menuRef.current;
-      if (!menu) return;
-      const items = menuItems(menu);
-      if (items.length === 0) return;
+    const menu = menuRef.current;
+    if (!menu) return;
+    const items = menuItems(menu);
+    if (items.length === 0) return;
 
-      event.preventDefault();
-      const activeIndex = items.indexOf(document.activeElement as HTMLElement);
-      let nextIndex: number;
-      if (event.key === 'Home') nextIndex = 0;
-      else if (event.key === 'End') nextIndex = items.length - 1;
-      else if (event.key === 'ArrowDown') {
-        nextIndex = activeIndex < 0 || activeIndex === items.length - 1 ? 0 : activeIndex + 1;
-      } else {
-        nextIndex = activeIndex <= 0 ? items.length - 1 : activeIndex - 1;
-      }
+    event.preventDefault();
+    const activeIndex = items.indexOf(document.activeElement as HTMLElement);
+    let nextIndex: number;
+    if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = items.length - 1;
+    else if (event.key === 'ArrowDown') {
+      nextIndex = activeIndex < 0 || activeIndex === items.length - 1 ? 0 : activeIndex + 1;
+    } else {
+      nextIndex = activeIndex <= 0 ? items.length - 1 : activeIndex - 1;
+    }
 
-      focusMenuItem(items, items[nextIndex]!);
-    },
-    [closeAndRestoreFocus],
-  );
+    focusMenuItem(items, items[nextIndex]!);
+  }, []);
 
   return { closeAndRestoreFocus, menuRef, onKeyDown };
 }

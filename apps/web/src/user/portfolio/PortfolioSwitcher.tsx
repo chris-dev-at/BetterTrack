@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -8,6 +8,7 @@ import { useT } from '../../i18n';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { Icon } from '../../ui/origin';
 import { cx } from '../components/ui';
+import { useMenuKeyboard } from '../components/useMenuKeyboard';
 import { CreateChainDialog, MirrorInviteStepDialog } from './MirrorchainPanel';
 import { PortfolioIconChip } from './PortfolioIconChip';
 import {
@@ -138,20 +139,20 @@ export function PortfolioSwitcher() {
   const [chainSeedName, setChainSeedName] = useState('');
   const [inviteChainId, setInviteChainId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  // The one control that outlives every overlay this menu opens — the wizard,
+  // the group-create dialog and the invite step that replaces it. Focus comes
+  // back here however that chain ends.
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeMenu = useCallback(() => setOpen(false), []);
 
   useEffect(() => {
     if (!open) return;
     function onPointerDown(e: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     }
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false);
-    }
     document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
     };
   }, [open]);
 
@@ -181,6 +182,20 @@ export function PortfolioSwitcher() {
         : portfolios.filter((p) => p.name.toLocaleLowerCase().includes(needle)),
     [portfolios, needle],
   );
+
+  const {
+    closeAndRestoreFocus,
+    menuRef,
+    onKeyDown: onMenuKeyDown,
+  } = useMenuKeyboard({
+    open,
+    onClose: closeMenu,
+    triggerRef,
+    initialFocus: 'selected',
+    // The list arrives async and the filter re-cuts it, so the roving tab stop
+    // is re-normalized whenever the set of rendered options changes.
+    focusVersion: `${active?.id ?? ''}:${visible.map((p) => p.id).join(',')}`,
+  });
 
   // Any explicit selection — a click here or a param'd deep link (⌘K, Home
   // shortcuts) — becomes the session's remembered portfolio, so coming back to
@@ -213,6 +228,7 @@ export function PortfolioSwitcher() {
   return (
     <div ref={rootRef} className="relative inline-block">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
@@ -239,10 +255,12 @@ export function PortfolioSwitcher() {
 
       {open ? (
         <div
+          ref={menuRef}
           role="menu"
           aria-label={t('portfolio.switcher.menuAriaLabel')}
           className="bt-popover bt-portfolio-menu"
           style={{ left: 0, top: 'calc(100% + 6px)' }}
+          onKeyDown={onMenuKeyDown}
         >
           {showSearch ? (
             <div className="bt-portfolio-search" role="none">
@@ -273,7 +291,7 @@ export function PortfolioSwitcher() {
                     aria-checked={selected}
                     onClick={() => {
                       setActive(p.id);
-                      setOpen(false);
+                      closeAndRestoreFocus();
                     }}
                     className="bt-menu-item bt-portfolio-option"
                   >
@@ -304,7 +322,10 @@ export function PortfolioSwitcher() {
               role="menuitem"
               onClick={() => {
                 setWizardOpen(true);
-                setOpen(false);
+                // Focus goes back to the trigger before the wizard mounts, so
+                // the whole create chain below has a live opener to return to
+                // however it ends.
+                closeAndRestoreFocus();
               }}
               className="bt-menu-item"
             >
@@ -314,7 +335,7 @@ export function PortfolioSwitcher() {
             <Link
               role="menuitem"
               to={{ pathname: '/portfolio/settings', search: portfolioSearch(active?.id) }}
-              onClick={() => setOpen(false)}
+              onClick={closeAndRestoreFocus}
               className="bt-menu-item"
             >
               <Icon name="settings" size={15} />
@@ -344,6 +365,7 @@ export function PortfolioSwitcher() {
       {createChainOpen ? (
         <CreateChainDialog
           initialName={chainSeedName}
+          restoreFocusRef={triggerRef}
           onClose={() => setCreateChainOpen(false)}
           onCreated={(chainId) => {
             setCreateChainOpen(false);
@@ -356,6 +378,7 @@ export function PortfolioSwitcher() {
       {inviteChainId ? (
         <MirrorInviteStepDialog
           chainId={inviteChainId}
+          restoreFocusRef={triggerRef}
           onClose={() => setInviteChainId(null)}
           onDone={() => {
             setInviteChainId(null);

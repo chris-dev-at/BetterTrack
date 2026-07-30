@@ -324,24 +324,18 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
     triggerRef,
   });
 
+  // Escape is arbitrated by the shared overlay stack inside `useMenuKeyboard`;
+  // only the click-away belongs to this shell.
   useEffect(() => {
     if (!open) return;
     function onPointerDown(event: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) closeMenu();
     }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        closeAndRestoreFocus();
-      }
-    }
     document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
     };
-  }, [closeAndRestoreFocus, closeMenu, open]);
+  }, [closeMenu, open]);
 
   return (
     <div className="relative" ref={rootRef}>
@@ -458,24 +452,18 @@ function CreateMenu() {
     triggerRef,
   });
 
+  // Escape is arbitrated by the shared overlay stack inside `useMenuKeyboard`;
+  // only the click-away belongs to this shell.
   useEffect(() => {
     if (!open) return;
     function onPointerDown(event: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) closeMenu();
     }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        closeAndRestoreFocus();
-      }
-    }
     document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
     };
-  }, [closeAndRestoreFocus, closeMenu, open]);
+  }, [closeMenu, open]);
 
   const items: ReadonlyArray<{ to: string; icon: IconName; labelKey: string }> = [
     { to: '/portfolio/activity?create=trade', icon: 'assets', labelKey: 'create.trade' },
