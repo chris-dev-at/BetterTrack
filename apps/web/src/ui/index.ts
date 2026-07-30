@@ -3,6 +3,7 @@ export { MoneyText, type MoneyTextProps } from './MoneyText';
 export { MarketStateBadge, type MarketStateBadgeProps } from './MarketStateBadge';
 export { StatCard, type StatCardProps } from './StatCard';
 export { EmptyState, type EmptyStateProps } from './EmptyState';
+export { NotFoundState, type NotFoundStateProps } from './NotFoundState';
 export { ComingSoon, type ComingSoonProps } from './ComingSoon';
 export { Skeleton, type SkeletonProps } from './Skeleton';
 export { ErrorBoundary, type ErrorBoundaryProps } from './ErrorBoundary';

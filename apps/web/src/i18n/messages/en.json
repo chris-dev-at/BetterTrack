@@ -1,4 +1,11 @@
 {
+  "notFound": {
+    "title": "Page not found",
+    "description": "This address may be misspelled, outdated, or no longer available.",
+    "requestedPath": "Requested path:",
+    "backToStart": "Back to start",
+    "backToPrevious": "Back to previous page"
+  },
   "accessibility": {
     "skipToContent": "Skip to main content"
   },
