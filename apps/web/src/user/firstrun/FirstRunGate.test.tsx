@@ -149,7 +149,10 @@ test('a server that does not report the field at all never diverts', async () =>
 test('a local "done" record suppresses the divert even while the server still says null', async () => {
   // The state after a completion whose request failed: this device must not be
   // bounced back into the wizard on every reload.
-  localStorage.setItem('bt.firstrun.v1', JSON.stringify({ done: true, steps: {} }));
+  localStorage.setItem(
+    'bt.firstrun.v1',
+    JSON.stringify({ account: NEVER_SET_UP.id, done: true, steps: {} }),
+  );
   vi.mocked(api.getMe).mockResolvedValue(NEVER_SET_UP);
   renderAt('/');
 
@@ -221,5 +224,18 @@ test('/welcome stays reachable on demand for an established account', async () =
   renderAt('/welcome');
 
   // Re-runnable: being set up already does not lock the wizard away.
+  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+});
+
+test("another account's done record does NOT suppress this account's setup", async () => {
+  // Regression: the record used to be device-wide, so one "Do this later" made
+  // every later account on that browser skip the wizard entirely.
+  localStorage.setItem(
+    'bt.firstrun.v1',
+    JSON.stringify({ account: 'a-different-user', done: true, steps: {} }),
+  );
+  vi.mocked(api.getMe).mockResolvedValue(NEVER_SET_UP);
+  renderAt('/');
+
   expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
 });

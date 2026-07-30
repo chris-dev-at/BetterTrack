@@ -144,17 +144,17 @@ test('walking past a step records it as skipped, and a satisfied step as complet
 
   // Profile is a confirmation — seeing it completes it.
   await clickContinue(u);
-  await waitFor(() => expect(readFirstRun().steps.profile).toBe('complete'));
+  await waitFor(() => expect(readFirstRun(user.id).steps.profile).toBe('complete'));
 
   // A password account has nothing to verify against yet — parked, so skipped.
   await screen.findByRole('heading', { name: 'Verify your email' });
   await clickContinue(u);
-  await waitFor(() => expect(readFirstRun().steps.verifyEmail).toBe('skipped'));
+  await waitFor(() => expect(readFirstRun(user.id).steps.verifyEmail).toBe('skipped'));
 
   // Neither lock set → skipped.
   await screen.findByRole('heading', { name: 'Add a second lock?' });
   await clickContinue(u);
-  await waitFor(() => expect(readFirstRun().steps.security).toBe('skipped'));
+  await waitFor(() => expect(readFirstRun(user.id).steps.security).toBe('skipped'));
 });
 
 test('a Google-verified account completes the email step without any code entry', async () => {
@@ -175,7 +175,7 @@ test('a Google-verified account completes the email step without any code entry'
   expect(screen.queryByLabelText('Verification code')).not.toBeInTheDocument();
 
   await clickContinue(u);
-  await waitFor(() => expect(readFirstRun().steps.verifyEmail).toBe('complete'));
+  await waitFor(() => expect(readFirstRun(user.id).steps.verifyEmail).toBe('complete'));
 });
 
 test('setting a PIN through the real endpoint completes the security step', async () => {
@@ -207,7 +207,7 @@ test('setting a PIN through the real endpoint completes the security step', asyn
   // The row flips to "On" and the step now counts as complete.
   expect(await screen.findByText('On')).toBeInTheDocument();
   await clickContinue(u);
-  await waitFor(() => expect(readFirstRun().steps.security).toBe('complete'));
+  await waitFor(() => expect(readFirstRun(user.id).steps.security).toBe('complete'));
 });
 
 test('a mismatched PIN confirmation never reaches the server', async () => {
@@ -322,7 +322,7 @@ test('"Do this later" closes the run out and hands over the app', async () => {
   await u.click(screen.getByRole('button', { name: 'Do this later' }));
 
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
-  expect(readFirstRun().done).toBe(true);
+  expect(readFirstRun(user.id).done).toBe(true);
 });
 
 test('the last step summarises what was set versus deferred, then opens the app', async () => {
@@ -345,7 +345,7 @@ test('the last step summarises what was set versus deferred, then opens the app'
 
   await u.click(screen.getByRole('button', { name: 'Go to BetterTrack' }));
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
-  expect(readFirstRun().done).toBe(true);
+  expect(readFirstRun(user.id).done).toBe(true);
 });
 
 test('/welcome is re-runnable: a finished run reopens at the first step', async () => {
@@ -354,7 +354,7 @@ test('/welcome is re-runnable: a finished run reopens at the first step', async 
   await screen.findByRole('heading', { name: 'Is this you?' });
   await u.click(screen.getByRole('button', { name: 'Do this later' }));
   await screen.findByRole('button', { name: 'Account menu' });
-  expect(readFirstRun().done).toBe(true);
+  expect(readFirstRun(user.id).done).toBe(true);
   first.unmount();
 
   renderWelcome();

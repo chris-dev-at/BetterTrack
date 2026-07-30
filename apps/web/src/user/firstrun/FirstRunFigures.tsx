@@ -207,7 +207,8 @@ export function PublicProfileFigure() {
 /** How the run actually went — counted from what each step recorded. */
 export function DoneFigure() {
   const t = useT();
-  const statuses = Object.values(readFirstRun().steps);
+  const { user } = useAuth();
+  const statuses = Object.values(readFirstRun(user?.id).steps);
   const set = statuses.filter((status) => status === 'complete').length;
   const later = statuses.filter((status) => status === 'skipped').length;
   return (

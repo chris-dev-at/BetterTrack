@@ -45,6 +45,9 @@ function isExempt(pathname: string): boolean {
  * stamped optimistically, but a reload would read `null` from the server again
  * and bounce straight back. Honouring the local `done` flag means a network
  * failure can cost the user a re-run on another device — never a trap on this one.
+ * The record is scoped to ONE account (`readFirstRun(user.id)`): a device where
+ * somebody once pressed "Do this later" must not skip setup for the next account
+ * created on it.
  *
  * Placement matters: this is mounted below the `loading`,
  * `password-change-required` and `pin-required` states, which `UserShell`
@@ -58,7 +61,7 @@ export function FirstRunGate() {
   const pending = user?.firstRunCompletedAt === null;
   // Short-circuit order is deliberate: the storage read only happens for the
   // handful of sessions the server actually reports as un-set-up.
-  if (pending && !isExempt(pathname) && !readFirstRun().done) {
+  if (pending && !isExempt(pathname) && !readFirstRun(user?.id).done) {
     return <Navigate to="/welcome" replace />;
   }
   return <Outlet />;

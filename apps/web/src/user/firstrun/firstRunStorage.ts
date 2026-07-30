@@ -1,18 +1,20 @@
 /**
  * First-run wizard progress, persisted client-side (`/welcome`).
  *
- * There is deliberately NO server flag for onboarding completion — nothing in
- * `MeResponse` or `AccountSettingsResponse` records it, and inventing one would
- * mean a schema change this workstream does not own. The wizard's own memory is
- * therefore purely local: which steps the user actually completed or skipped,
- * and whether the run has been closed out.
+ * Completion itself lives on the server (`users.first_run_completed_at`,
+ * migration 0074). This record is the local companion: which steps the user
+ * completed or skipped, plus a `done` flag that stops a failed completion call
+ * from bouncing the user straight back into setup.
  *
- * That makes this record advisory, never a gate: it decides what the Done
- * summary reads back and nothing else. Every real setting the wizard touches
- * (PIN, 2FA, locale, base currency, tax mode, public profile) is stored
- * server-side by its own endpoint, so a cleared browser loses the summary, not
- * the setup. Storage failures degrade to "nothing recorded" and never throw —
- * the same contract as `rememberedAccount.ts`.
+ * **It is scoped to ONE account.** The record carries the account it belongs to
+ * and reads as empty for anybody else — without that, a browser where someone
+ * once pressed "Do this later" would skip setup for every account created on it
+ * afterwards, which is exactly the bug the owner hit.
+ *
+ * Every real setting the wizard touches (PIN, 2FA, locale, base currency, tax
+ * mode, public profile) is stored server-side by its own endpoint, so a cleared
+ * browser loses the summary, not the setup. Storage failures degrade to "nothing
+ * recorded" and never throw — the same contract as `rememberedAccount.ts`.
  */
 
 import { FIRST_RUN_STEP_META } from './stepMeta';
@@ -29,6 +31,9 @@ export interface FirstRunState {
   steps: Partial<Record<FirstRunStepId, FirstRunStepStatus>>;
 }
 
+/** The account a record belongs to; anything else reads as a fresh run. */
+export type FirstRunAccountId = string | null | undefined;
+
 const EMPTY: FirstRunState = { done: false, steps: {} };
 
 function isStatus(value: unknown): value is FirstRunStepStatus {
@@ -40,7 +45,8 @@ function isStatus(value: unknown): value is FirstRunStepStatus {
  * reads as a fresh run rather than throwing — a hand-edited or half-written
  * record must never be able to break `/welcome`.
  */
-export function readFirstRun(): FirstRunState {
+export function readFirstRun(accountId: FirstRunAccountId): FirstRunState {
+  if (!accountId) return EMPTY;
   let raw: string | null;
   try {
     raw = window.localStorage.getItem(STORAGE_KEY);
@@ -51,7 +57,9 @@ export function readFirstRun(): FirstRunState {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return EMPTY;
-    const record = parsed as { done?: unknown; steps?: unknown };
+    const record = parsed as { account?: unknown; done?: unknown; steps?: unknown };
+    // Somebody else's run (or a pre-scoping record): not this account's business.
+    if (record.account !== accountId) return EMPTY;
     const steps: FirstRunState['steps'] = {};
     if (record.steps && typeof record.steps === 'object') {
       for (const [key, value] of Object.entries(record.steps as Record<string, unknown>)) {
@@ -67,26 +75,31 @@ export function readFirstRun(): FirstRunState {
   }
 }
 
-function write(state: FirstRunState): void {
+function write(accountId: FirstRunAccountId, state: FirstRunState): void {
+  if (!accountId) return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ account: accountId, ...state }));
   } catch {
     // Storage unavailable/full: the run simply isn't remembered.
   }
 }
 
 /** Record how one step ended. Returns the state as written. */
-export function markFirstRunStep(id: FirstRunStepId, status: FirstRunStepStatus): FirstRunState {
-  const current = readFirstRun();
+export function markFirstRunStep(
+  accountId: FirstRunAccountId,
+  id: FirstRunStepId,
+  status: FirstRunStepStatus,
+): FirstRunState {
+  const current = readFirstRun(accountId);
   const next: FirstRunState = { ...current, steps: { ...current.steps, [id]: status } };
-  write(next);
+  write(accountId, next);
   return next;
 }
 
 /** Close the run out — from the last step or from "Do this later". */
-export function markFirstRunDone(): FirstRunState {
-  const next: FirstRunState = { ...readFirstRun(), done: true };
-  write(next);
+export function markFirstRunDone(accountId: FirstRunAccountId): FirstRunState {
+  const next: FirstRunState = { ...readFirstRun(accountId), done: true };
+  write(accountId, next);
   return next;
 }
 

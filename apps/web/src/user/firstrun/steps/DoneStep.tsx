@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { useT } from '../../../i18n';
 import { Icon } from '../../../ui/origin';
+import { useAuth } from '../../AuthContext';
 import { readFirstRun } from '../firstRunStorage';
 import { FIRST_RUN_STEP_META } from '../stepMeta';
 import type { FirstRunStepProps } from '../types';
@@ -15,7 +16,8 @@ import type { FirstRunStepProps } from '../types';
  */
 export function DoneStep({ report }: FirstRunStepProps) {
   const t = useT();
-  const [summary] = useState(() => readFirstRun().steps);
+  const { user } = useAuth();
+  const [summary] = useState(() => readFirstRun(user?.id).steps);
 
   useEffect(() => {
     report({ status: 'complete' });

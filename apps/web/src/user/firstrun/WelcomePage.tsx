@@ -33,7 +33,7 @@ const UNREPORTED: FirstRunStepReport = { status: 'skipped', busy: false };
 export function WelcomePage() {
   const t = useT();
   const navigate = useNavigate();
-  const { completeFirstRun } = useAuth();
+  const { completeFirstRun, user } = useAuth();
 
   const [index, setIndex] = useState(0);
   const [reported, setReported] = useState<FirstRunStepReport>(UNREPORTED);
@@ -60,7 +60,7 @@ export function WelcomePage() {
    * leaving is never blocked on the network.
    */
   function leave() {
-    markFirstRunDone();
+    markFirstRunDone(user?.id);
     void completeFirstRun();
     navigate('/', { replace: true });
   }
@@ -78,7 +78,7 @@ export function WelcomePage() {
   function onSubmit(event: FormEvent) {
     event.preventDefault();
     if (!step || reported.busy) return;
-    markFirstRunStep(step.id, reported.status);
+    markFirstRunStep(user?.id, step.id, reported.status);
     setRecorded((current) => ({ ...current, [step.id]: reported.status }));
     if (step.terminal) {
       leave();
