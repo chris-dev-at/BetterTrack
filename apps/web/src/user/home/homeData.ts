@@ -4,7 +4,7 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 import type { PortfolioSummary, PortfolioTotals } from '@bettertrack/contracts';
 
 import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
-import type { WidgetScope } from './config';
+import { SCOPE_ALL, SCOPE_SELECTED, type WidgetScope } from './config';
 
 /**
  * Shared data layer for the Home widget board.
@@ -98,36 +98,71 @@ function sum(rows: readonly PortfolioRow[], pick: (row: PortfolioRow) => number 
   return rows.reduce((total, row) => total + (pick(row) ?? 0), 0);
 }
 
+/** How a stored scope actually resolved — what the header tag has to state. */
+export type ScopeMode = 'all' | 'single' | 'subset';
+
 export interface ResolvedScope {
-  /** The portfolios the widget reads: every active one, or exactly the scoped one. */
+  /**
+   * The portfolios the widget reads: every active one, exactly the scoped one, or
+   * the chosen set. Always in the app's own portfolio order, never in the order the
+   * ids happen to be stored in, so two widgets over the same set agree on order.
+   */
   portfolios: PortfolioSummary[];
-  /** The single scoped portfolio, or null when the widget spans all of them. */
+  /** The single scoped portfolio, or null for both `all` and a multi-portfolio set. */
   single: PortfolioSummary | null;
+  mode: ScopeMode;
 }
 
+const ALL = (portfolios: readonly PortfolioSummary[]): ResolvedScope => ({
+  portfolios: [...portfolios],
+  single: null,
+  mode: 'all',
+});
+
 /**
- * Resolve a stored scope against the live portfolio list. A scope naming a
- * portfolio that has since been archived or deleted degrades to "all" instead of
- * rendering an empty widget the user cannot explain — the stored setting is left
- * alone, so restoring the portfolio restores the scope.
+ * Resolve a stored scope against the live portfolio list.
+ *
+ * Three forms, one degradation rule. `'all'` takes everything; a bare id takes that
+ * portfolio; {@link SCOPE_SELECTED} takes the ids in `scopeIds`. In every case an id
+ * that no longer names a live portfolio (archived, deleted, belonged to another
+ * account) is **dropped** and whatever remains is kept — and if nothing remains the
+ * widget falls back to all portfolios rather than rendering an empty box the user
+ * cannot account for.
+ *
+ * Nothing here writes: the stored setting survives untouched, so un-archiving a
+ * portfolio silently restores its place in the set without the user re-picking it.
+ *
+ * A set that currently happens to cover every portfolio still resolves as `subset`,
+ * not `all`. The two mean different things going forward — a new portfolio joins an
+ * `all` widget and does *not* join a chosen set — and the header tag has to say
+ * which one the user is looking at.
  */
 export function resolveScope(
   portfolios: readonly PortfolioSummary[],
   scope: WidgetScope | undefined,
+  scopeIds?: readonly string[],
 ): ResolvedScope {
-  if (scope !== undefined && scope !== 'all') {
-    const match = portfolios.find((portfolio) => portfolio.id === scope);
-    if (match) return { portfolios: [match], single: match };
+  if (scope === SCOPE_SELECTED) {
+    if (scopeIds === undefined || scopeIds.length === 0) return ALL(portfolios);
+    const wanted = new Set(scopeIds);
+    const chosen = portfolios.filter((portfolio) => wanted.has(portfolio.id));
+    if (chosen.length === 0) return ALL(portfolios);
+    return { portfolios: chosen, single: chosen.length === 1 ? chosen[0]! : null, mode: 'subset' };
   }
-  return { portfolios: [...portfolios], single: null };
+  if (scope !== undefined && scope !== SCOPE_ALL) {
+    const match = portfolios.find((portfolio) => portfolio.id === scope);
+    if (match) return { portfolios: [match], single: match, mode: 'single' };
+  }
+  return ALL(portfolios);
 }
 
 /** Memoized {@link resolveScope} for use inside widget components. */
 export function useResolvedScope(
   portfolios: readonly PortfolioSummary[],
   scope: WidgetScope | undefined,
+  scopeIds?: readonly string[],
 ): ResolvedScope {
-  return useMemo(() => resolveScope(portfolios, scope), [portfolios, scope]);
+  return useMemo(() => resolveScope(portfolios, scope, scopeIds), [portfolios, scope, scopeIds]);
 }
 
 /**
@@ -143,15 +178,18 @@ export function useResolvedScope(
  */
 export function resolveWidgetScope(
   portfolios: readonly PortfolioSummary[],
-  scope: WidgetScope | undefined,
+  settings: { scope?: WidgetScope; scopeIds?: readonly string[] },
   options: { supportsScope: boolean; allowsAll: boolean },
 ): ResolvedScope {
-  if (!options.supportsScope) return { portfolios: [...portfolios], single: null };
+  if (!options.supportsScope) return ALL(portfolios);
   if (!options.allowsAll) {
-    const single = pickSinglePortfolio(portfolios, scope);
-    return { portfolios: single ? [single] : [], single };
+    // A type that cannot aggregate ignores a chosen set the same way it ignores
+    // "all": it needs exactly one portfolio, so the set's first live member is the
+    // honest reading of what the user picked.
+    const single = pickSinglePortfolio(portfolios, settings);
+    return { portfolios: single ? [single] : [], single, mode: 'single' };
   }
-  return resolveScope(portfolios, scope);
+  return resolveScope(portfolios, settings.scope, settings.scopeIds);
 }
 
 /**
@@ -164,9 +202,15 @@ export function resolveWidgetScope(
  */
 function pickSinglePortfolio(
   portfolios: readonly PortfolioSummary[],
-  scope: WidgetScope | undefined,
+  settings: { scope?: WidgetScope; scopeIds?: readonly string[] },
 ): PortfolioSummary | null {
-  const named = scope !== undefined && scope !== 'all' ? scope : null;
+  const { scope, scopeIds } = settings;
+  const named =
+    scope === SCOPE_SELECTED
+      ? (scopeIds?.find((id) => portfolios.some((portfolio) => portfolio.id === id)) ?? null)
+      : scope !== undefined && scope !== SCOPE_ALL
+        ? scope
+        : null;
   return (
     (named !== null ? portfolios.find((portfolio) => portfolio.id === named) : undefined) ??
     portfolios.find((portfolio) => portfolio.isDefault) ??

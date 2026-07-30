@@ -620,18 +620,19 @@ test('a scope naming a portfolio that no longer exists degrades to all portfolio
   expect(persisted().widgets[0]?.settings.scope).toBe('p-deleted');
 });
 
-test('an unscoped widget offers no scope picker', async () => {
+test('a widget whose data has no portfolio dimension offers no scope picker', async () => {
   const user = editMode();
+  storeBoard('cashflow-chart');
   renderHome();
-  await screen.findByRole('region', { name: 'Net worth' });
+  await screen.findByRole('region', { name: 'Cash flow' });
   await user.click(screen.getByRole('button', { name: 'Customize' }));
 
-  // "Portfolios" IS the all-portfolios overview, so scoping it would be
-  // meaningless — but it does offer display forms, so it still has a settings
-  // button. The absence to assert is the scope field itself, not the button.
-  await user.click(screen.getByRole('button', { name: 'Portfolios settings' }));
+  // The expense ledger is user-level: there is no per-portfolio cash-flow series,
+  // so the widget offers range and display but deliberately no scope. It still has
+  // a settings button — the absence to assert is the scope field itself.
+  await user.click(screen.getByRole('button', { name: 'Cash flow settings' }));
   expect(screen.queryByLabelText('Portfolio')).not.toBeInTheDocument();
-  expect(screen.getByRole('group', { name: 'Portfolios display form' })).toBeInTheDocument();
+  expect(screen.getByRole('group', { name: 'Cash flow display form' })).toBeInTheDocument();
 });
 
 test('a widget with neither scope, range nor display forms has no settings button', async () => {
@@ -1455,4 +1456,218 @@ test('picking a widget up swaps the ⊕ positions for move targets', async () =>
     expect(target.querySelector('svg[data-icon="arrow-right"]')).not.toBeNull();
     expect(target.textContent).toBe('');
   }
+});
+
+// ─── Multi-portfolio scope ───────────────────────────────────────────────────
+
+/**
+ * Scope stopped being "all portfolios or exactly one" and became a chosen set.
+ * These cases cover the three things that can go wrong in the UI rather than in the
+ * resolver (which homeData.test.ts pins down directly): the picker has to write a
+ * set, the header tag has to state which of the three modes is in play, and each
+ * scoped widget has to read the set rather than the whole list.
+ */
+
+/** A third portfolio, so "2 of 3" is a real subset rather than everything. */
+const PENSION: PortfolioSummary = { ...MAIN, id: 'p-pension', name: 'Pension', isDefault: false };
+
+function withThreePortfolios() {
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, SAVINGS, PENSION] });
+  vi.mocked(getPortfolio).mockImplementation(async (id: string) => {
+    if (id === MAIN.id) return summary(9_000, 1_000, 250);
+    if (id === SAVINGS.id) return summary(3_500, 500, -50);
+    return summary(2_000, 0, 10);
+  });
+}
+
+/** The chosen-set scope for a board fixture. */
+const pick = (...ids: string[]) => ({ scope: 'selected', scopeIds: ids });
+
+test('the header tag states all / one / a count, and never implies all for a subset', async () => {
+  withThreePortfolios();
+  storeBoard(
+    ['net-worth', { scope: 'all' }],
+    ['today-change', { scope: SAVINGS.id }],
+    ['liquidity', pick(MAIN.id, PENSION.id)],
+  );
+
+  renderHome();
+  const all = await screen.findByRole('region', { name: 'Net worth' });
+  const one = screen.getByRole('region', { name: 'Today' });
+  const some = screen.getByRole('region', { name: 'Liquidity' });
+
+  // Tags only appear once the portfolio list has resolved, so await one of them
+  // before asserting on any of the three.
+  expect(await within(one).findByText('Savings')).toBeInTheDocument();
+  const tag = await within(some).findByText('2 portfolios');
+  // "all" wears no tag: it is the default, and a tag on every widget would be noise.
+  expect(within(all).queryByText(/portfolios?$/)).not.toBeInTheDocument();
+  // The members are discoverable without opening the settings.
+  expect(tag).toHaveAttribute('title', 'Main, Pension');
+  expect(tag).toHaveAccessibleName('2 portfolios — Main, Pension');
+});
+
+test('a set that currently covers every portfolio still reads as a set, not as all', async () => {
+  withThreePortfolios();
+  storeBoard(['net-worth', pick(MAIN.id, SAVINGS.id, PENSION.id)]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Net worth' });
+
+  // It is a *fixed* set: a portfolio added tomorrow will not join it, so calling it
+  // "All portfolios" would be a promise the widget does not keep.
+  expect(await within(widget).findByText('3 portfolios')).toBeInTheDocument();
+});
+
+test('the portfolios widget shows only the chosen portfolios — the owner’s case', async () => {
+  withThreePortfolios();
+  storeBoard(['portfolio-cards', pick(MAIN.id, PENSION.id)]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Portfolios' });
+
+  expect(await within(widget).findByRole('link', { name: /Main/ })).toBeInTheDocument();
+  expect(within(widget).getByRole('link', { name: /Pension/ })).toBeInTheDocument();
+  expect(within(widget).queryByRole('link', { name: /Savings/ })).not.toBeInTheDocument();
+});
+
+test('the portfolios table divides the share across the chosen set only', async () => {
+  withThreePortfolios();
+  storeBoard(['portfolio-cards', { ...pick(MAIN.id, PENSION.id), variant: 'table' }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Portfolios' });
+
+  // 10 000 and 2 000 of the 12 000 the set holds between them — the question a set
+  // implies. The header tag says a set is in play, so 100 % cannot be misread.
+  expect(await within(widget).findByText('83.33%')).toBeInTheDocument();
+  expect(within(widget).getByText('16.67%')).toBeInTheDocument();
+});
+
+test('a money roll-up over a subset equals what those portfolios sum to alone', async () => {
+  withThreePortfolios();
+  storeBoard(
+    ['net-worth', pick(MAIN.id, PENSION.id)],
+    ['net-worth', { scope: MAIN.id }],
+    ['net-worth', { scope: PENSION.id }],
+  );
+
+  renderHome();
+  const [subset, first, second] = await screen.findAllByRole('region', { name: 'Net worth' });
+
+  // Main 10 000 + Pension 2 000 = 12 000, and each on its own is 10 000 / 2 000.
+  expect(await within(subset!).findByText('12,000.00 €')).toBeInTheDocument();
+  expect(within(first!).getByText('10,000.00 €')).toBeInTheDocument();
+  expect(within(second!).getByText('2,000.00 €')).toBeInTheDocument();
+  // …and the day change rolls up the same way: +250 + +10.
+  expect(within(subset!).getByText('+260.00 €')).toBeInTheDocument();
+});
+
+test('the liquidity indicator measures only the chosen portfolios', async () => {
+  withThreePortfolios();
+  storeBoard(['liquidity', pick(SAVINGS.id, PENSION.id)]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Liquidity' });
+
+  // Savings 500 cash + Pension 0, over a 4 000 + 2 000 total ⇒ 8.33 %.
+  expect(await within(widget).findByText('8.33%')).toBeInTheDocument();
+  expect(within(widget).getByText('6,000.00 €')).toBeInTheDocument();
+});
+
+test('the combined value chart fans out over exactly the chosen portfolios', async () => {
+  withThreePortfolios();
+  storeBoard(['net-worth-history', { ...pick(MAIN.id, PENSION.id), range: '6M' }]);
+
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth history' });
+
+  await vi.waitFor(() => {
+    const asked = vi
+      .mocked(getPortfolioHistory)
+      .mock.calls.map(([id]) => id)
+      .filter((id, index, list) => list.indexOf(id) === index);
+    expect(asked.sort()).toEqual([MAIN.id, PENSION.id].sort());
+  });
+});
+
+test('picking "Selected portfolios…" seeds a set and the checkboxes narrow it', async () => {
+  const user = editMode();
+  withThreePortfolios();
+  storeBoard(['portfolio-cards', { scope: 'all' }]);
+  renderHome();
+  await screen.findByRole('region', { name: 'Portfolios' });
+
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+  await user.click(screen.getByRole('button', { name: 'Portfolios settings' }));
+  await user.selectOptions(screen.getByLabelText('Portfolio'), 'selected');
+
+  // Seeded with what the widget was already anchored to, never an empty set (which
+  // would resolve straight back to "all" and look like the choice did nothing).
+  expect(persisted().widgets[0]?.settings).toMatchObject({
+    scope: 'selected',
+    scopeIds: [MAIN.id],
+  });
+
+  await user.click(screen.getByRole('checkbox', { name: 'Pension' }));
+  expect(persisted().widgets[0]?.settings.scopeIds).toEqual([MAIN.id, PENSION.id]);
+
+  await user.click(screen.getByRole('checkbox', { name: 'Main' }));
+  expect(persisted().widgets[0]?.settings.scopeIds).toEqual([PENSION.id]);
+});
+
+test('the last chosen portfolio cannot be unchecked — an empty set would mean "all"', async () => {
+  const user = editMode();
+  withThreePortfolios();
+  storeBoard(['portfolio-cards', pick(SAVINGS.id)]);
+  renderHome();
+  await screen.findByRole('region', { name: 'Portfolios' });
+
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+  await user.click(screen.getByRole('button', { name: 'Portfolios settings' }));
+
+  // Refused visibly rather than silently widening the widget behind the user.
+  expect(screen.getByRole('checkbox', { name: 'Savings' })).toBeDisabled();
+  expect(screen.getByRole('checkbox', { name: 'Main' })).toBeEnabled();
+});
+
+test('leaving the set mode clears the stored ids so a stale set cannot linger', async () => {
+  const user = editMode();
+  withThreePortfolios();
+  storeBoard(['portfolio-cards', pick(MAIN.id, PENSION.id)]);
+  renderHome();
+  await screen.findByRole('region', { name: 'Portfolios' });
+
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+  await user.click(screen.getByRole('button', { name: 'Portfolios settings' }));
+  await user.selectOptions(screen.getByLabelText('Portfolio'), 'all');
+
+  expect(persisted().widgets[0]?.settings.scopeIds).toBeUndefined();
+  expect(persisted().widgets[0]?.settings.scope).toBe('all');
+});
+
+test('a set naming a portfolio that no longer exists keeps the rest and says so', async () => {
+  withThreePortfolios();
+  storeBoard(['net-worth', pick(MAIN.id, 'p-deleted')]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Net worth' });
+
+  // Only Main survives, so the tag counts one — and the stored id is left alone, so
+  // un-archiving the other portfolio restores it without the user re-picking.
+  expect(await within(widget).findByText('10,000.00 €')).toBeInTheDocument();
+  expect(within(widget).getByText('1 portfolios')).toBeInTheDocument();
+  expect(persisted().widgets[0]?.settings.scopeIds).toEqual([MAIN.id, 'p-deleted']);
+});
+
+test('a set whose every portfolio is gone falls back to all rather than blanking', async () => {
+  withThreePortfolios();
+  storeBoard(['net-worth', pick('p-gone', 'p-also-gone')]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Net worth' });
+
+  // 10 000 + 4 000 + 2 000 across all three.
+  expect(await within(widget).findByText('16,000.00 €')).toBeInTheDocument();
+  expect(within(widget).queryByText(/portfolios$/)).not.toBeInTheDocument();
 });

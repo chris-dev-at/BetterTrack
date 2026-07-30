@@ -19,8 +19,8 @@ import {
   type HomeConfig,
   type WidgetType,
 } from './config';
-import { resolveWidgetScope, usePortfoliosQuery } from './homeData';
-import { WidgetFrame, type PlacementAxis } from './WidgetFrame';
+import { resolveWidgetScope, usePortfoliosQuery, type ResolvedScope } from './homeData';
+import { WidgetFrame, type PlacementAxis, type ScopeTag } from './WidgetFrame';
 import { widgetDefinition } from './widgets';
 
 /**
@@ -241,6 +241,24 @@ export function HomePage() {
     };
   }
 
+  /**
+   * What the widget's header tag says about its scope. It must never imply "all"
+   * while a subset is on screen, so each mode states its own truth: nothing at all
+   * for `all` (the board's default, and a tag on every widget would be noise), the
+   * portfolio's name for a single one, and a count for a chosen set — with the names
+   * carried in the tag's tooltip and accessible name so the set is discoverable
+   * without opening the settings.
+   */
+  function scopeTag(scope: ResolvedScope): ScopeTag | null {
+    if (scope.mode === 'single') return { label: scope.single?.name ?? '', detail: null };
+    if (scope.mode !== 'subset') return null;
+    const names = scope.portfolios.map((portfolio) => portfolio.name).join(', ');
+    return {
+      label: t('home.builder.scopeCount', { count: scope.portfolios.length }),
+      detail: names,
+    };
+  }
+
   const greeting = user?.username ? `${t('home.greeting')}, ${user.username}` : t('home.greeting');
 
   return (
@@ -287,7 +305,7 @@ export function HomePage() {
         <div className={cx('bt-home-grid', editing && 'is-editing')} ref={gridRef}>
           {config.widgets.map((widget, index) => {
             const definition = widgetDefinition(widget.type);
-            const scope = resolveWidgetScope(portfolios, widget.settings.scope, {
+            const scope = resolveWidgetScope(portfolios, widget.settings, {
               supportsScope: definition.supportsScope,
               allowsAll: definition.scopeAllowsAll !== false,
             });
@@ -321,7 +339,7 @@ export function HomePage() {
                 placeAfter={isLast ? target(config.widgets.length) : null}
                 placeBefore={target(index)}
                 portfolios={portfolios}
-                scopeLabel={scope.single?.name ?? null}
+                scopeTag={scopeTag(scope)}
                 widget={widget}
               >
                 <Component
