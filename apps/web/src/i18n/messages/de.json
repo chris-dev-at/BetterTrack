@@ -182,7 +182,8 @@
       "revokeHint": ". Du kannst diesen Zugriff jederzeit unter Einstellungen → API-Zugang widerrufen.",
       "authorizing": "Wird autorisiert…",
       "approve": "Zustimmen",
-      "approveError": "Die Autorisierung konnte nicht abgeschlossen werden. Bitte versuche es erneut."
+      "approveError": "Die Autorisierung konnte nicht abgeschlossen werden. Bitte versuche es erneut.",
+      "denyError": "Die sichere Rückkehr zur anfragenden App ist fehlgeschlagen. Es wurde kein Zugriff gewährt."
     },
     "google": {
       "button": "Weiter mit Google",
@@ -196,6 +197,20 @@
       "errorAccountDisabled": "Dieses Konto wurde gesperrt. Bitte wende dich an den Administrator.",
       "errorAdmin": "Die Google-Anmeldung ist für Administratorkonten nicht verfügbar. Bitte melde dich mit deinem Passwort an.",
       "errorAlreadyLinked": "Dieses Google-Konto ist bereits mit einem anderen Benutzer verknüpft."
+    },
+    "figures": {
+      "valueLabel": "GESAMTWERT",
+      "valueAmount": "128.400 €",
+      "valueDelta": "+1,2 % heute",
+      "nestParent": "Haupt-Portfolio",
+      "nestParentValue": "96.120 €",
+      "nestChild": "Sparen",
+      "nestChildValue": "21.480 €",
+      "nestChildTwo": "Immobilie",
+      "nestChildTwoValue": "10.800 €",
+      "sharedTitle": "Gemeinsames Portfolio",
+      "sharedMeta": "Zwei Personen · ein Buch",
+      "trendLabel": "DIESER MONAT"
     }
   },
   "common": {
@@ -225,6 +240,8 @@
     "continue": "Weiter",
     "dismiss": "Schließen",
     "errorTitle": "Etwas ist schiefgelaufen.",
+    "errorFallbackMessage": "Diese Seite konnte nicht angezeigt werden. Versuche es erneut. Falls das Problem weiterhin besteht, teile die Referenz unten mit.",
+    "errorCorrelationId": "Referenz-ID: {{id}}",
     "loadingLabel": "Lädt",
     "quickSearchAria": "Schnellsuche",
     "escKey": "Esc",
@@ -244,7 +261,8 @@
       "pre": "Vorbörslich",
       "post": "Nachbörslich"
     },
-    "or": "oder"
+    "or": "oder",
+    "parked": "Geplant"
   },
   "ui": {
     "scopePicker": {
@@ -266,8 +284,8 @@
           "description": "Deine Portfolios, Bestände und Kassenbestände lesen oder Portfolios, Transaktionen, benutzerdefinierte Anlagen und Kassenbewegungen erstellen und bearbeiten."
         },
         "workboard": {
-          "label": "Workboard",
-          "description": "Watchlists, Konglomerate und Backtests lesen oder bearbeiten und Backtests ausführen."
+          "label": "Workbench",
+          "description": "Watchlists, Blueprints und Backtests lesen oder bearbeiten und Backtests ausführen."
         },
         "market": {
           "label": "Markt",
@@ -458,7 +476,7 @@
   },
   "nav": {
     "portfolio": "Portfolio",
-    "workboard": "Workboard",
+    "workboard": "Workbench",
     "forecast": "Prognose",
     "expenses": "Ausgaben",
     "assets": "Anlagen",
@@ -474,7 +492,33 @@
     "discreetModeError": "Änderung konnte nicht gespeichert werden. Bitte erneut versuchen.",
     "inviteOthers": "Andere einladen",
     "shareProfile": "Profil teilen",
-    "logout": "Abmelden"
+    "logout": "Abmelden",
+    "home": "Home",
+    "portfolios": "Portfolio",
+    "workbench": "Workbench",
+    "people": "Personen",
+    "ask": "BetterTrack fragen",
+    "review": "Review",
+    "controlCenter": "Kontrollzentrum",
+    "utilities": "Werkzeuge",
+    "myProfile": "Mein Profil",
+    "expandRail": "Navigation ausklappen",
+    "collapseRail": "Navigation einklappen",
+    "expandSection": "{{section}} ausklappen",
+    "collapseSection": "{{section}} einklappen"
+  },
+  "askdock": {
+    "pin": "Offen halten",
+    "unpin": "Nicht mehr offen halten",
+    "maximize": "Maximieren",
+    "restore": "Größe zurücksetzen",
+    "close": "BetterTrack fragen schließen",
+    "composerPlaceholder": "Frag etwas zu deinen Portfolios",
+    "send": "Senden",
+    "hint": "Noch nicht live — hier wird die KI-Konversation laufen.",
+    "aria": {
+      "region": "Bereich „BetterTrack fragen“"
+    }
   },
   "footer": {
     "legal": "Rechtliches",
@@ -485,7 +529,6 @@
   },
   "language": {
     "title": "Sprache",
-    "description": "Die Sprache, die BetterTrack in der App und in deinen E-Mails verwendet.",
     "label": "Anzeigesprache",
     "saveError": "Deine Sprache konnte nicht gespeichert werden. Bitte versuche es erneut."
   },
@@ -504,11 +547,55 @@
       "description": "Broker-CSV-Importe (Trade Republic, George, …) und vollständiger Konto-Datenexport."
     },
     "connections": {
-      "title": "Verbindungen",
-      "subtitle": "Alles, was BetterTrack mit der Außenwelt verbindet — dein Google-Login und die bald verfügbaren Connectors.",
+      "subtitle": "Alles, was BetterTrack mit der Außenwelt verbindet — Anmeldung, verschlüsselter Speicher und kompakte Connector-Steuerung.",
       "comingSoon": "Bald verfügbar",
       "slotsTitle": "Connectors",
-      "slotsSubtitle": "Synchronisiere deine Daten mit externen Diensten. Sie sind in Arbeit — noch nichts einzurichten.",
+      "drive": {
+        "title": "Google Drive-App-Daten",
+        "description": "Speichere deinen verschlüsselten Paranoid-Tresor im privaten App-Daten-Ordner von Drive. BetterTrack kann keine normalen Drive-Dateien sehen.",
+        "status": {
+          "connected": "Verbunden",
+          "needsSignIn": "Anmeldung nötig",
+          "disconnected": "Nicht verbunden",
+          "working": "In Arbeit"
+        },
+        "connect": "Drive verbinden",
+        "disconnect": "Drive trennen",
+        "signIn": "Bei Google anmelden, um zu synchronisieren",
+        "unlockRequired": "Entsperre deinen verschlüsselten Tresor, um den Speicher zu ändern.",
+        "unlockPrompt": "Gib deine Tresor-Passphrase ein. Drive-Autorisierung und Migration werden mit dieser Aktion fortgesetzt.",
+        "passphraseLabel": "Tresor-Passphrase",
+        "unlockAndContinue": "Entsperren und fortfahren",
+        "unlockError": "Der Tresor konnte nicht aus einer authentifizierten verschlüsselten Kopie entsperrt werden.",
+        "configMissing": "Google Drive-App-Datenspeicher ist in dieser Installation nicht eingerichtet.",
+        "lastMedium": "Drive ist dein einziges Tresor-Medium und kann daher nicht getrennt werden.",
+        "connectedNotice": "Google Drive-App-Datenspeicher verbunden.",
+        "disconnectedNotice": "Google Drive-App-Datenspeicher getrennt.",
+        "leftover": "Drive wurde getrennt, aber Google konnte den verbliebenen Geheimtext nicht löschen. Er liegt nur noch in deinem eigenen App-Daten-Ordner.",
+        "leftoverSyncPending": "Drive wurde getrennt und die Speicherwahl gespeichert. Google konnte den verbliebenen Geheimtext jedoch nicht löschen und die Synchronisierung benötigt noch Aufmerksamkeit.",
+        "syncPending": "Die Speicherwahl wurde gespeichert, aber die Synchronisierung benötigt noch Aufmerksamkeit. BetterTrack versucht es erneut mit der verschlüsselten ausstehenden Kopie.",
+        "actionError": "Die Speicheränderung wurde abgebrochen, weil keine verifizierte Kopie abgeschlossen werden konnte.",
+        "syncRequired": "Deine neuesten verschlüsselten Änderungen liegen noch nicht auf jedem ausgewählten Medium, daher wurde die Speicherwahl nicht geändert. Versuche es erneut, sobald die Synchronisierung abgeschlossen ist.",
+        "unreadableLeftover": "Eine Google-Drive-Kopie deines Tresors konnte mit diesem Tresorschlüssel nicht entschlüsselt werden. BetterTrack löscht niemals Geheimtext, den es nicht verifizieren kann — entferne die BetterTrack-App-Daten in deinem Google-Konto und versuche es dann erneut.",
+        "loadError": "Der Drive-Speicherstatus konnte nicht geladen werden.",
+        "purgedNotice": "Die aufbewahrte Server-Wiederherstellungskopie wurde gelöscht.",
+        "purgeError": "Die aufbewahrte Serverkopie wurde nicht gelöscht. Das Wiederherstellungsfenster oder der Read-back-Nachweis ist möglicherweise noch nicht bereit.",
+        "storage": {
+          "title": "Tresor-Speicherkopien",
+          "both": "Dein verschlüsselter Tresor liegt auf dem BetterTrack-Server und in Drive.",
+          "driveOnly": "Drive ist das einzige aktive Tresor-Medium. BetterTrack hält keinen aktiven Portfolio-Geheimtext.",
+          "useDriveOnly": "Nur Drive verwenden",
+          "addServer": "Serverkopie hinzufügen",
+          "driveOnlyNotice": "Nur-Drive-Speicherung aktiviert. Die Server-Wiederherstellungskopie bleibt erhalten, bis du sie ausdrücklich löschst.",
+          "serverAddedNotice": "Eine authentifizierte Serverkopie wurde hinzugefügt."
+        },
+        "retired": {
+          "title": "Aufbewahrte Server-Wiederherstellungskopie",
+          "wait": "Sie bleibt mindestens bis {{date}} wiederherstellbar.",
+          "ready": "Das Wiederherstellungsfenster endete am {{date}}. Vor dem Löschen ist ein frischer authentifizierter Drive-Read-back nötig.",
+          "purge": "Aufbewahrte Serverkopie löschen"
+        }
+      },
       "sync": {
         "oneTime": "Einmaliger Import — läuft einmal beim Verbinden.",
         "stayConnected": "Bleibt verbunden — synchronisiert automatisch."
@@ -533,110 +620,84 @@
     },
     "notifications": {
       "title": "Benachrichtigungen",
-      "subtitle": "Lege für jede Art von Aktivität fest, über welche Kanäle du benachrichtigt wirst — Glocke in der App, E-Mail, Handy-Push, Browser-Push — oder schalte alles auf einmal stumm.",
       "loadError": {
         "title": "Deine Benachrichtigungseinstellungen konnten nicht geladen werden"
       },
       "types": {
         "friendRequest": {
-          "label": "Freundschaftsanfragen",
-          "description": "Wenn dir jemand eine Freundschaftsanfrage sendet."
+          "label": "Freundschaftsanfragen"
         },
         "friendAccepted": {
-          "label": "Angenommene Freundschaftsanfragen",
-          "description": "Wenn jemand deine Freundschaftsanfrage annimmt."
+          "label": "Angenommene Freundschaftsanfragen"
         },
         "portfolioShared": {
-          "label": "Geteilte Portfolios",
-          "description": "Wenn ein Freund ein Portfolio mit dir teilt."
+          "label": "Geteilte Portfolios"
         },
         "accountInvite": {
-          "label": "Konto-Einladungen",
-          "description": "Wenn du zu BetterTrack eingeladen wirst."
+          "label": "Konto-Einladungen"
         },
         "tempPassword": {
-          "label": "Temporäre Passwörter",
-          "description": "Wenn ein Administrator dir ein temporäres Passwort ausstellt."
+          "label": "Temporäre Passwörter"
         },
         "dataExport": {
-          "label": "Datenexporte",
-          "description": "Wenn ein von dir angeforderter Datenexport zum Download bereit ist."
+          "label": "Datenexporte"
         },
         "alertTriggered": {
-          "label": "Preisalarme",
-          "description": "Wenn einer deiner Preisalarme auslöst."
+          "label": "Preisalarme"
         },
         "earningsReminder": {
-          "label": "Erinnerungen an Quartalszahlen",
-          "description": "Vor einem Quartalsbericht für einen Wert, den du hältst oder beobachtest. Standardmäßig aus."
+          "label": "Erinnerungen an Quartalszahlen"
         },
         "chatMessage": {
-          "label": "Chat-Nachrichten",
-          "description": "Wenn dir ein Freund eine Nachricht sendet."
+          "label": "Chat-Nachrichten"
         },
         "watchlistShared": {
-          "label": "Geteilte Watchlists",
-          "description": "Wenn Freunde eine Watchlist mit dir teilen."
+          "label": "Geteilte Watchlists"
         },
         "conglomerateShared": {
-          "label": "Geteilte Konglomerate",
-          "description": "Wenn Freunde ein Konglomerat mit dir teilen."
+          "label": "Geteilte Blueprints"
         },
         "friendActivity": {
-          "label": "Aktivität von Freunden",
-          "description": "Käufe, Verkäufe und Watchlist-Einträge bei geteilten Elementen, denen du folgst."
+          "label": "Aktivität von Freunden"
         },
         "followPublished": {
-          "label": "Neues von Personen, denen du folgst",
-          "description": "Wenn jemand, dem du folgst, ein Portfolio, eine Watchlist oder ein Konglomerat öffentlich macht."
+          "label": "Neues von Personen, denen du folgst"
         },
         "followAlertCreated": {
-          "label": "Neue Alarme von Personen, denen du folgst",
-          "description": "Wenn jemand, dem du folgst, einen Preisalarm erstellt (nur Personen, deren Alarm-Neuigkeiten du aktiviert hast)."
+          "label": "Neue Alarme von Personen, denen du folgst"
         },
         "followAlertFired": {
-          "label": "Ausgelöste Alarme von Personen, denen du folgst",
-          "description": "Wenn ein Preisalarm von jemandem, dem du folgst, auslöst (nur Personen, deren Alarm-Neuigkeiten du aktiviert hast)."
+          "label": "Ausgelöste Alarme von Personen, denen du folgst"
         },
         "dividendEvent": {
-          "label": "Dividenden-Erinnerungen",
-          "description": "Wenn eine Aktie, die du hältst, bald ex Dividende notiert. Standardmäßig aus."
+          "label": "Dividenden-Erinnerungen"
         },
         "budgetExceeded": {
-          "label": "Budget-Warnungen",
-          "description": "Wenn deine Ausgaben in einer Kategorie ihr Monatsbudget überschreiten."
+          "label": "Budget-Warnungen"
         },
         "mirrorInvite": {
-          "label": "Einladungen zu Gruppen-Portfolios",
-          "description": "Wenn dich ein:e Freund:in zu einem Gruppen-Portfolio einlädt."
+          "label": "Einladungen zu Gruppen-Portfolios"
         },
         "mirrorMemberJoined": {
-          "label": "Mitglied beigetreten",
-          "description": "Wenn jemand einem Gruppen-Portfolio beitritt, das dir gehört."
+          "label": "Mitglied beigetreten"
         },
         "mirrorMemberLeft": {
-          "label": "Mitglied ausgetreten",
-          "description": "Wenn ein Mitglied eines deiner Gruppen-Portfolios verlässt."
+          "label": "Mitglied ausgetreten"
         },
         "mirrorMemberRemoved": {
-          "label": "Mitglied entfernt",
-          "description": "Wenn ein Mitglied aus deinem Gruppen-Portfolio entfernt wird."
+          "label": "Mitglied entfernt"
         },
         "mirrorRemoved": {
-          "label": "Aus einem Gruppen-Portfolio entfernt",
-          "description": "Wenn du aus einem Gruppen-Portfolio entfernt wirst."
+          "label": "Aus einem Gruppen-Portfolio entfernt"
         },
         "mirrorOwnershipTransferred": {
-          "label": "Eigentümerschaft übertragen",
-          "description": "Wenn sich die Eigentümerschaft eines Gruppen-Portfolios ändert, in dem du bist."
+          "label": "Eigentümerschaft übertragen"
         },
         "mirrorChainDissolved": {
-          "label": "Gruppen-Portfolio aufgelöst",
-          "description": "Wenn ein Gruppen-Portfolio, in dem du bist, aufgelöst wird."
+          "label": "Gruppen-Portfolio aufgelöst"
         },
         "mirrorSyncStalled": {
-          "label": "Synchronisierungsprobleme",
-          "description": "Wenn ein Gruppen-Portfolio nicht fertig synchronisiert werden kann."
+          "label": "Synchronisierungsprobleme"
         }
       },
       "routing": {
@@ -748,7 +809,6 @@
       },
       "telegram": {
         "title": "Telegram",
-        "description": "Empfange Benachrichtigungen über den BetterTrack-Telegram-Bot. Einmal verknüpfen — jederzeit wieder trennen.",
         "startLink": "Telegram-Verknüpfung starten",
         "openBot": "Telegram-Bot öffnen",
         "codeHint": "Sende /start {{code}} an den Bot, um die Verknüpfung abzuschließen.",
@@ -781,10 +841,15 @@
         "removeError": "Der Webhook konnte nicht entfernt werden. Bitte versuche es erneut."
       },
       "loadErrorTitle": "Benachrichtigungen konnten nicht geladen werden",
-      "loadErrorDescription": "Bitte versuche es gleich noch einmal."
+      "loadErrorDescription": "Bitte versuche es gleich noch einmal.",
+      "groups": {
+        "general": "Allgemein",
+        "channels": "Kanäle",
+        "routing": "Zuordnung",
+        "timing": "Zeitsteuerung"
+      }
     },
     "security": {
-      "title": "Sicherheit",
       "subtitle": "Deine Sitzung, deine PIN und Zwei-Faktor-Optionen.",
       "loadError": {
         "title": "Deine Sicherheitseinstellungen konnten nicht geladen werden"
@@ -828,7 +893,6 @@
         "windowError": "Das Sperrfenster konnte nicht aktualisiert werden. Bitte versuche es erneut.",
         "lockAfterInactivity": "Nach Inaktivität sperren",
         "lockDescription": "Solange du BetterTrack aktiv nutzt, bleibt es entsperrt — auch bei Neuladen und neuen Tabs. Die PIN wird erst nach dieser Zeit ohne Aktivität wieder abgefragt.",
-        "idleForLabel": "Sperren nach Inaktivität von",
         "unlockWindowAriaLabel": "Entsperrfenster",
         "disabledNotice": "Deine PIN wurde deaktiviert.",
         "title": "PIN",
@@ -842,7 +906,6 @@
       },
       "twoFactor": {
         "title": "Zwei-Faktor-Authentifizierung",
-        "description": "Füge einen zweiten Schritt bei der Anmeldung hinzu. Aktiviere eine Methode — oder beide.",
         "loadError": {
           "title": "Dein Zwei-Faktor-Status konnte nicht geladen werden"
         },
@@ -887,7 +950,6 @@
           "done": "Ich habe diese Codes gespeichert",
           "regenerateError": "Wiederherstellungscodes konnten nicht neu erzeugt werden. Bitte versuche es erneut.",
           "cardTitle": "Wiederherstellungscodes",
-          "cardDescription": "Einmalcodes zum Anmelden, falls du den Zugriff auf deine anderen Faktoren verlierst.",
           "remainingOne": "Noch {{count}} Wiederherstellungscode übrig.",
           "remainingOther": "Noch {{count}} Wiederherstellungscodes übrig.",
           "regenerating": "Wird neu erzeugt…",
@@ -896,14 +958,12 @@
       },
       "google": {
         "title": "Google-Konto",
-        "description": "Melde dich mit Google an oder verwalte das verknüpfte Konto.",
         "linkedAs": "Verknüpft als {{email}}",
         "linkedOn": "Verknüpft {{date}}",
         "notLinked": "Es ist kein Google-Konto verknüpft.",
         "connectButton": "Google verbinden",
         "unlinkButton": "Trennen",
         "unlinkTitle": "Google trennen",
-        "unlinkPrompt": "Gib zur Bestätigung dein Passwort ein, um die Google-Verknüpfung zu trennen.",
         "passwordLabel": "Passwort",
         "confirmUnlink": "Google trennen",
         "cancel": "Abbrechen",
@@ -949,10 +1009,6 @@
       }
     },
     "api": {
-      "title": "API-Zugriff",
-      "introBefore": "Persönliche API-Schlüssel authentifizieren Skripte und Integrationen in deinem Namen, begrenzt auf das, was sie lesen oder ändern dürfen. Sende einen Schlüssel als ",
-      "introMiddle": ". Die API-Dokumentation findest du unter ",
-      "introAfter": ".",
       "copied": "Kopiert",
       "copy": "Kopieren",
       "done": "Fertig",
@@ -962,7 +1018,6 @@
       "scopeRequired": "Wähle mindestens einen Berechtigungsbereich.",
       "scopesLegend": "Berechtigungsbereiche",
       "webhooks": {
-        "sectionTitle": "Webhooks",
         "sectionDescription": "Sende bei jedem deiner Ereignisse einen signierten HTTP-POST an deine eigene URL. Jede Zustellung ist HMAC-signiert, sodass du prüfen kannst, dass sie von BetterTrack stammt.",
         "createTitle": "Webhook hinzufügen",
         "urlLabel": "Payload-URL",
@@ -980,8 +1035,7 @@
           "title": "Deine Webhooks konnten nicht geladen werden"
         },
         "empty": {
-          "title": "Noch keine Webhooks",
-          "description": "Füge oben einen hinzu, um signierte Ereigniszustellungen zu erhalten."
+          "title": "Noch keine Webhooks"
         },
         "status": {
           "active": "Aktiv",
@@ -1019,7 +1073,7 @@
           "friendAccepted": "Freundschaftsanfrage angenommen",
           "portfolioShared": "Portfolio mit dir geteilt",
           "watchlistShared": "Watchlist mit dir geteilt",
-          "conglomerateShared": "Konglomerat mit dir geteilt",
+          "conglomerateShared": "Blueprints mit dir geteilt",
           "friendActivity": "Freund-Aktivität bei einem geteilten Objekt",
           "followPublished": "Jemand, dem du folgst, hat etwas veröffentlicht",
           "followAlertCreated": "Jemand, dem du folgst, hat einen Alarm erstellt",
@@ -1050,12 +1104,12 @@
           "description": "Portfolios, Transaktionen und Kassenbewegungen erstellen/bearbeiten."
         },
         "workboardRead": {
-          "label": "Workboard · lesen",
-          "description": "Watchlists, Konglomerate und Backtests lesen."
+          "label": "Workbench · lesen",
+          "description": "Watchlists, Blueprints und Backtests lesen."
         },
         "workboardWrite": {
-          "label": "Workboard · schreiben",
-          "description": "Watchlists und Konglomerate bearbeiten, Backtests ausführen."
+          "label": "Workbench · schreiben",
+          "description": "Watchlists und Blueprints bearbeiten, Backtests ausführen."
         },
         "marketRead": {
           "label": "Markt · lesen",
@@ -1120,20 +1174,16 @@
           "title": "Deine API-Schlüssel konnten nicht geladen werden"
         },
         "empty": {
-          "title": "Noch keine API-Schlüssel",
-          "description": "Erstelle oben einen Schlüssel, um die API zu nutzen."
+          "title": "Noch keine API-Schlüssel"
         }
       },
       "oauth": {
-        "sectionTitle": "OAuth-Apps",
-        "sectionDescription": "Registriere eine Drittanbieter-App für begrenzten, widerrufbaren Zugriff auf BetterTrack-Konten über OAuth 2.0 (Authorization Code + PKCE). Nutzer stimmen auf einem Zustimmungsbildschirm zu und geben ihr Passwort nie preis.",
         "yourApps": "Deine Apps",
         "loadError": {
           "title": "Deine Apps konnten nicht geladen werden"
         },
         "empty": {
-          "title": "Noch keine OAuth-Apps",
-          "description": "Registriere oben eine App, um sie in den OAuth-Flow einzubinden."
+          "title": "Noch keine OAuth-Apps"
         },
         "credentialsModal": {
           "title": "Deine neue OAuth-App",
@@ -1171,27 +1221,25 @@
         "registeredOn": "Registriert {{createdAt}}"
       },
       "grants": {
-        "sectionTitle": "Autorisierte Apps",
         "sectionDescription": "Drittanbieter-Apps, denen du Zugriff auf dein Konto erlaubt hast. Der Widerruf einer App macht ihre Tokens sofort ungültig — sie muss erneut autorisiert werden, um wieder Zugriff zu erhalten.",
         "loadError": {
           "title": "Deine autorisierten Apps konnten nicht geladen werden"
         },
         "empty": {
-          "title": "Keine autorisierten Apps",
-          "description": "Apps, die du auf dem OAuth-Zustimmungsbildschirm genehmigst, erscheinen hier."
+          "title": "Keine autorisierten Apps"
         },
         "canAccess": "{{appName}} kann:",
         "authorizedLastUsed": "Autorisiert {{createdAt}} · zuletzt verwendet {{lastUsedAt}}",
         "authorizedNeverUsed": "Autorisiert {{createdAt}} · nie verwendet",
         "revokeAccess": "Zugriff widerrufen"
-      }
+      },
+      "hint": "Schick einen Key als „Authorization: Bearer …“. Referenz unter /docs."
     },
     "account": {
       "title": "Konto",
       "subtitle": "Deine Identität, dein Passwort und deine Freigabe-Einstellungen.",
       "loadError": {
-        "title": "Dein Konto konnte nicht geladen werden",
-        "description": "Bitte versuche es gleich noch einmal."
+        "title": "Dein Konto konnte nicht geladen werden"
       },
       "portfolioError": {
         "title": "Dein Portfolio konnte nicht geladen werden",
@@ -1201,11 +1249,13 @@
         "username": "Benutzername",
         "email": "E-Mail",
         "memberSince": "Mitglied seit"
-      }
+      },
+      "identity": "Identität",
+      "display": "Anzeige",
+      "yourData": "Deine Daten"
     },
     "baseCurrency": {
       "title": "Basiswährung",
-      "description": "Die Währung, in der alle Bewertungen, Diagramme und Berichte angezeigt werden. Beträge bleiben in der nativen Währung der jeweiligen Anlage gespeichert — nur die Anzeige-Umrechnung ändert sich.",
       "label": "Basiswährung",
       "saveError": "Deine Basiswährung konnte nicht gespeichert werden. Bitte versuche es erneut.",
       "option": {
@@ -1213,14 +1263,13 @@
         "USD": "USD — US-Dollar ($)",
         "CHF": "CHF — Schweizer Franken",
         "GBP": "GBP — Britisches Pfund (£)"
-      }
+      },
+      "hint": "Nur die Anzeige — Beträge bleiben in der Währung des jeweiligen Assets gespeichert."
     },
     "newPortfolioDefaults": {
       "navLabel": "Standardwerte für neue Portfolios",
-      "title": "Standardwerte für neue Portfolios",
-      "subtitle": "Was ein neu erstelltes Portfolio übernimmt. Bestehende Portfolios folgen diesen Werten weiter, sofern du sie nicht einzeln überschreibst.",
       "tax": {
-        "hint": "Gilt für neue Portfolios und für jedes Portfolio ohne eigene Einstellung. Pro Portfolio kannst du sie im Steuerbericht des Portfolios überschreiben oder zurücksetzen."
+        "hint": "Gilt für neue Portfolios und für jedes Portfolio ohne eigene Einstellung. Ein einzelnes Portfolio kann sie in seinen eigenen Einstellungen überschreiben."
       }
     },
     "taxes": {
@@ -1236,27 +1285,33 @@
       "mode": {
         "none": {
           "label": "Keine Steuererfassung",
-          "description": "Verkäufe und Dividenden werden ohne Steuer erfasst. Das ist die Standardeinstellung."
+          "description": "Verkäufe und Dividenden werden ohne Steuer erfasst. Das ist die Standardeinstellung.",
+          "compact": "Verkäufe und Dividenden werden ohne Steuer erfasst."
         },
         "manual_per_trade": {
           "label": "Manuell — Steuer pro Verkauf eingeben",
-          "description": "Du gibst die Steuer bei jedem Verkauf selbst ein — als Betrag oder als Prozentsatz des Gewinns. Es wird nichts für dich berechnet."
+          "description": "Du gibst die Steuer bei jedem Verkauf selbst ein — als Betrag oder als Prozentsatz des Gewinns. Es wird nichts für dich berechnet.",
+          "compact": "Du trägst die Steuer pro Verkauf ein — es wird nichts berechnet."
         },
         "country_specific": {
           "label": "Österreich (KESt)",
-          "description": "27,5 % KESt auf realisierte Gewinne und Dividenden, mit gleitendem Durchschnittseinstand. Ein Verlust im selben Kalenderjahr verrechnet frühere Gewinne und erstattet die bereits einbehaltene Steuer. Alles wird am 1. Jänner zurückgesetzt — Verluste werden nicht ins nächste Jahr übertragen."
+          "description": "27,5 % KESt auf realisierte Gewinne und Dividenden, mit gleitendem Durchschnittseinstand. Ein Verlust im selben Kalenderjahr verrechnet frühere Gewinne und erstattet die bereits einbehaltene Steuer. Alles wird am 1. Jänner zurückgesetzt — Verluste werden nicht ins nächste Jahr übertragen.",
+          "compact": "27,5 % KESt · gleitender Durchschnitt · Reset am 1. Jänner"
         },
         "country_specific_de": {
           "label": "Deutschland (Abgeltungsteuer)",
-          "description": "25 % Abgeltungsteuer plus 5,5 % Solidaritätszuschlag auf die Steuer, mit FIFO-Anschaffungskosten je Tranche. Der Sparer-Pauschbetrag von 1.000 € wird jedes Jahr zuerst angerechnet. Verluste aus Aktienverkäufen verrechnen sich nur mit Aktiengewinnen, sonstige Verluste mit allen Kapitalerträgen — nicht genutzte Verluste werden ins Folgejahr vorgetragen."
+          "description": "25 % Abgeltungsteuer plus 5,5 % Solidaritätszuschlag auf die Steuer, mit FIFO-Anschaffungskosten je Tranche. Der Sparer-Pauschbetrag von 1.000 € wird jedes Jahr zuerst angerechnet. Verluste aus Aktienverkäufen verrechnen sich nur mit Aktiengewinnen, sonstige Verluste mit allen Kapitalerträgen — nicht genutzte Verluste werden ins Folgejahr vorgetragen.",
+          "compact": "25 % + 5,5 % Soli · FIFO · 1.000 € Freibetrag · Verlustvortrag"
         },
         "country_specific_fi": {
           "label": "Finnland (Kapitalertragsteuer)",
-          "description": "30 % Kapitalertragsteuer auf Gewinne und Dividenden bis 30.000 € pro Jahr, 34 % darüber, mit FIFO-Kostenbasis. Ein Verlust im selben Kalenderjahr gleicht Gewinne aus und erstattet bereits einbehaltene Steuer — nichts wird ins Folgejahr übertragen. Die 30.000-€-Grenze gilt pro Portfolio, nicht über alle Konten hinweg."
+          "description": "30 % Kapitalertragsteuer auf Gewinne und Dividenden bis 30.000 € pro Jahr, 34 % darüber, mit FIFO-Kostenbasis. Ein Verlust im selben Kalenderjahr gleicht Gewinne aus und erstattet bereits einbehaltene Steuer — nichts wird ins Folgejahr übertragen. Die 30.000-€-Grenze gilt pro Portfolio, nicht über alle Konten hinweg.",
+          "compact": "30 % bis 30.000 €, darüber 34 % · FIFO · kein Vortrag"
         },
         "custom": {
           "label": "Eigene Regeln",
-          "description": "Bau dein eigenes Steuersystem: ein fester Satz plus Schalter für Verlustverrechnung, Erstattung, Jahresreset, Verlustvortrag und die Einstandsmethode."
+          "description": "Bau dein eigenes Steuersystem: ein fester Satz plus Schalter für Verlustverrechnung, Erstattung, Jahresreset, Verlustvortrag und die Einstandsmethode.",
+          "compact": "Dein eigener Satz, Kostenbasis und Schalter."
         }
       },
       "custom": {
@@ -1307,32 +1362,33 @@
       "currentWrong": "Dein aktuelles Passwort ist falsch.",
       "changeFailed": "Passwort konnte nicht geändert werden. Bitte versuche es erneut."
     },
-    "sharingMoved": {
-      "title": "Portfolio-Freigabe",
-      "description": "Die Freigabe befindet sich jetzt im Tab „Sozial“. Lege dort fest, wer welches deiner Portfolios sehen kann — jedes Portfolio bleibt privat, bis du es teilst.",
-      "link": "Freigabe im Tab „Sozial“ verwalten →"
-    },
     "export": {
       "title": "Meine Daten exportieren",
-      "description": "Lade eine Kopie deiner Kontodaten als ZIP herunter (JSON für jede Art von Daten, die dir gehören, plus CSVs für Transaktionen, Geldbewegungen und Bestände). Du kannst einen Export pro Tag anfordern.",
       "password": "Passwort bestätigen",
-      "passwordHint": "Gib dein Passwort erneut ein, um einen Export zu starten.",
       "request": "Meine Daten exportieren",
       "requestAgain": "Neuen Export anfordern",
       "submitting": "Wird angefordert…",
       "pending": "Dein Export wird vorbereitet. Das kann einen Moment dauern — die Schaltfläche wird zum Download, sobald er fertig ist.",
       "ready": "Dein Export steht zum Download bereit.",
       "readyUntil": "Dein Export steht bis zum {{date}} zum Download bereit.",
-      "readyNoToken": "Dein Export ist fertig, aber der Download-Link ist auf diesem Gerät nicht verfügbar. Fordere einen neuen Export an, um ihn hier herunterzuladen.",
+      "readyNoToken": "Dein Export ist fertig, aber der Download-Zugriff wird beim Neuladen der Seite nicht gespeichert. Fordere nach Ablauf dieses Exports einen neuen an.",
       "download": "Export herunterladen",
+      "downloadFailed": "Dein Export konnte nicht heruntergeladen werden. Der einmalige Link ist möglicherweise abgelaufen oder wurde bereits verwendet.",
       "expired": "Dein letzter Export ist abgelaufen. Fordere einen neuen an, um deine Daten herunterzuladen.",
       "currentWrong": "Dein Passwort ist falsch.",
       "codeWrong": "Dieser Zwei-Faktor-Code ist falsch oder abgelaufen.",
       "rateLimited": "Du kannst einen Datenexport einmal pro Tag anfordern. Bitte versuche es später erneut.",
-      "requestFailed": "Der Export konnte nicht gestartet werden. Bitte versuche es erneut."
+      "requestFailed": "Der Export konnte nicht gestartet werden. Bitte versuche es erneut.",
+      "hint": "Ein Export pro Tag. Der Download-Link läuft ab.",
+      "cleartext": {
+        "title": "Klartext-Export (dieses Gerät)",
+        "description": "Erstellt in diesem Browser aus deinem entsperrten Tresor ein lesbares JSON- und CSV-Archiv deiner Portfoliodaten. Er berührt nie den Server und enthält keine Schlüssel oder verschlüsselten Daten.",
+        "button": "Klartext-Export erstellen",
+        "generating": "Wird erstellt…",
+        "locked": "Entsperre deinen Tresor, um auf diesem Gerät einen Klartext-Export zu erstellen."
+      }
     },
     "dangerZone": {
-      "title": "Gefahrenzone",
       "description": "Wenn du dein Konto löschst, werden alle deine Daten dauerhaft entfernt. Das kann nicht rückgängig gemacht werden.",
       "link": "Mein Konto löschen…"
     }
@@ -1404,7 +1460,7 @@
       "uncoveredAck": "Trotzdem fortfahren — mehr verkaufen, als ich halte",
       "uncoveredBasisLabel": "Einstandswert für die nicht gehaltenen Stücke",
       "uncoveredBasisZero": "Als 0 % zählen (kein Gewinn)",
-      "uncoveredBasisEntry": "Kaufpreis eingeben",
+      "uncoveredBasisInput": "Kaufpreis eingeben",
       "uncoveredEntryPriceLabel": "Ursprünglicher Kaufpreis",
       "uncoveredEntryPriceAria": "Ursprünglicher Kaufpreis für die nicht gedeckten {{symbol}}",
       "uncoveredNudge": "Erfasse für eine korrekte Historie besser den ursprünglichen Kauf.",
@@ -1579,15 +1635,15 @@
         "none": "Keiner",
         "asset": "Anlage / Index",
         "portfolio": "Portfolio",
-        "conglomerate": "Konglomerat",
+        "conglomerate": "Blueprints",
         "searchPlaceholder": "Anlage oder Index suchen…",
         "current": "Vergleich: {{label}}",
         "pickPortfolio": "Portfolio zum Vergleichen wählen",
         "pickPortfolioPlaceholder": "Portfolio wählen…",
         "noPortfolios": "Du hast keine weiteren Portfolios zum Vergleichen.",
-        "pickConglomerate": "Konglomerat zum Vergleichen wählen",
-        "pickConglomeratePlaceholder": "Konglomerat wählen…",
-        "noConglomerates": "Du hast noch keine Konglomerate."
+        "pickConglomerate": "Blueprints zum Vergleichen wählen",
+        "pickConglomeratePlaceholder": "Blueprints wählen…",
+        "noConglomerates": "Du hast noch keine Blueprints."
       },
       "chart": {
         "ariaLabel": "Portfolio-Analysediagramm",
@@ -1661,6 +1717,10 @@
     "taxReport": {
       "title": "Steuerbericht",
       "subtitle": "Realisierte Gewinne, Dividenden und Steuer pro Kalenderjahr (Zeitzone Wien).",
+      "mode": {
+        "line": "Berechnet mit Steuermodus: {{mode}}",
+        "change": "In den Portfolio-Einstellungen ändern →"
+      },
       "column": {
         "year": "Jahr",
         "realized": "Realisierter G/V",
@@ -1694,16 +1754,7 @@
       },
       "disabled": {
         "title": "Steuererfassung ist aus",
-        "description": "Aktiviere oben einen Steuermodus für dieses Portfolio, um realisierte Gewinne und Steuer nach Jahr zu sehen.",
-        "link": "Steuermodus in Einstellungen → Steuern wählen →"
-      },
-      "treatment": {
-        "title": "Steuerliche Behandlung · {{name}}",
-        "description": "Wie dieses Portfolio besteuert wird. Es übernimmt deinen Standard für neue Portfolios, bis du hier einen festlegst.",
-        "inheriting": "Übernimmt Standard",
-        "overridden": "Überschrieben",
-        "reset": "Auf Standard zurücksetzen",
-        "editDefault": "Standard in Einstellungen bearbeiten →"
+        "description": "Wähle in den Einstellungen dieses Portfolios einen Steuermodus, um realisierte Gewinne und Steuer nach Jahr zu sehen."
       },
       "de": {
         "title": "Deutschland (Abgeltungsteuer)",
@@ -1726,7 +1777,16 @@
         "print": "Drucken",
         "back": "Zurück zum Bericht",
         "missingParams": "Wähle ein Portfolio und ein Jahr zum Drucken.",
-        "loadError": "Der Bericht konnte nicht zum Drucken geladen werden."
+        "loadError": "Der Bericht konnte nicht zum Drucken geladen werden.",
+        "paranoidHint": "Dieses Konto berechnet Steuerberichte auf dem Gerät aus dem verschlüsselten Tresor. Verwende stattdessen die Aktion „Drucken / PDF“ auf der Steuerbericht-Seite – diese Ansicht hat keinen Zugriff auf deinen entsperrten Tresor."
+      },
+      "paranoid": {
+        "locked": {
+          "title": "Tresor entsperren",
+          "description": "Steuerzahlen eines Paranoid-Kontos werden auf diesem Gerät aus deinem verschlüsselten Tresor berechnet. Entsperre den Tresor, um sie zu sehen."
+        },
+        "retry": "Erneut versuchen",
+        "disabledDescription": "Für dieses Portfolio ist in deinem Tresor kein Steuermodus aktiv, daher gibt es nichts zu berechnen."
       }
     },
     "section": {
@@ -1744,15 +1804,14 @@
       },
       "customAssetsComingSoon": {
         "description": "Verfolge Immobilien, Fahrzeuge, Sammlerstücke und andere nicht notierte Bestände mit einem Wertpunkte-Editor."
-      }
+      },
+      "aria": "Portfolio-Arbeitsbereich"
     },
     "switcher": {
       "triggerAriaLabel": "Portfolio wechseln",
       "fallbackName": "Portfolio",
       "defaultBadge": "Standard",
       "menuAriaLabel": "Portfolios",
-      "newPortfolio": "+ Neues Portfolio",
-      "newGroupPortfolio": "+ Neues Gruppenportfolio",
       "renameCurrent": "Aktuelles umbenennen",
       "archiveCurrent": "Aktuelles archivieren",
       "archiveDisabledHint": "Du kannst dein einziges Portfolio nicht archivieren",
@@ -1765,12 +1824,10 @@
       "archivedDialogDescription": "Stelle ein Portfolio wieder her, um es zurück in deine Liste zu bringen.",
       "noArchived": "Keine archivierten Portfolios.",
       "restore": "Wiederherstellen",
-      "createTitle": "Neues Portfolio",
       "renameTitle": "Portfolio umbenennen",
       "nameLabel": "Name",
       "nameAriaLabel": "Portfolioname",
       "namePlaceholder": "z. B. Altersvorsorge",
-      "create": "Erstellen",
       "nameTakenError": "Du hast bereits ein Portfolio mit diesem Namen.",
       "createError": "Das Portfolio konnte nicht erstellt werden. Bitte versuche es erneut.",
       "renameError": "Das Portfolio konnte nicht umbenannt werden. Bitte versuche es erneut.",
@@ -1790,7 +1847,48 @@
       "deleteConfirmAriaLabel": "Bestätigung des Portfolionamens",
       "deleting": "Wird gelöscht…",
       "delete": "Endgültig löschen",
-      "deleteError": "Das Portfolio konnte nicht gelöscht werden. Bitte versuche es erneut."
+      "deleteError": "Das Portfolio konnte nicht gelöscht werden. Bitte versuche es erneut.",
+      "searchPlaceholder": "Portfolios durchsuchen",
+      "searchAriaLabel": "Portfolios durchsuchen",
+      "noMatches": "Keine Treffer.",
+      "settingsMenuItem": "Portfolio-Einstellungen",
+      "addPortfolio": "Portfolio hinzufügen"
+    },
+    "wizard": {
+      "title": "Portfolio hinzufügen",
+      "stepOf": "Schritt {{current}} von {{total}}",
+      "name": {
+        "label": "Name",
+        "title": "Wie heißt dieses Portfolio?"
+      },
+      "icon": {
+        "label": "Symbol",
+        "title": "Wähle sein Symbol",
+        "hint": "Färbt es überall, wo es auftaucht. Jederzeit änderbar."
+      },
+      "book": {
+        "label": "Buch",
+        "title": "Wer führt dieses Buch?",
+        "solo": {
+          "title": "Nur ich",
+          "hint": "Nur du siehst und bearbeitest es."
+        },
+        "shared": {
+          "title": "Mit Personen geteilt",
+          "hint": "Alle bearbeiten dasselbe Buch. Es trägt das Gruppensymbol."
+        }
+      },
+      "done": {
+        "label": "Fertig",
+        "title": "Portfolio erstellt",
+        "primary": "Portfolio öffnen"
+      },
+      "parked": {
+        "currency": "Eigene Basiswährung",
+        "template": "Mit einer Vorlage starten",
+        "balances": "Anfangsbestände",
+        "import": "Broker-Datei importieren"
+      }
     },
     "cash": {
       "title": "Bargeldbestand",
@@ -1994,6 +2092,7 @@
       "uploadCta": "Vorschau erstellen",
       "uploading": "Wird hochgeladen…",
       "uploadFailed": "Upload fehlgeschlagen.",
+      "tooManyInstruments": "Diese Datei enthält mehr als {{max}} verschiedene Instrumente — teile sie in Dateien mit höchstens {{max}} Instrumenten auf.",
       "previewTitle": "Vorschau: {{filename}}",
       "previewEmptyTitle": "Keine importierbaren Zeilen",
       "previewEmptyBody": "Diese Datei enthielt keine erkennbaren Zeilen — der Header passt möglicherweise nicht zu einem unterstützten Broker-Export.",
@@ -2046,13 +2145,67 @@
         "failed": "Fehlgeschlagen"
       },
       "startOver": "Weitere Datei importieren"
+    },
+    "tabs": {
+      "overview": "Übersicht",
+      "activity": "Aktivität",
+      "customAssets": "Eigene Anlagen",
+      "cashFlow": "Cashflow",
+      "analysis": "Analyse",
+      "tax": "Steuern",
+      "import": "Import",
+      "plan": "Plan",
+      "automate": "Automatisieren",
+      "files": "Dateien",
+      "people": "Personen",
+      "settings": "Einstellungen"
+    },
+    "kinds": {
+      "private": "Privat",
+      "family": "Familie",
+      "business": "Geschäftlich",
+      "savings": "Sparen",
+      "property": "Immobilien",
+      "group": "Gruppe"
+    },
+    "settings": {
+      "title": "Portfolio-Einstellungen",
+      "subtitle": "Verwalte dieses Portfolio.",
+      "loadError": "Dieses Portfolio konnte nicht geladen werden.",
+      "generalHeading": "Allgemein",
+      "nameSaved": "Gespeichert.",
+      "iconLabel": "Symbol",
+      "iconPickerAriaLabel": "Portfolio-Symbol",
+      "iconHint": "Kennzeichnet dieses Portfolio mit einem farbigen Symbol in der Auswahl und in Listen. Nur auf diesem Gerät gespeichert.",
+      "taxHeading": "Steuern",
+      "tax": {
+        "modeLabel": "Steuermodus",
+        "inheriting": "Konto-Vorgabe",
+        "overridden": "Hier gesetzt",
+        "hint": "Dieses Portfolio folgt deiner Konto-Vorgabe, bis du hier einen Modus wählst. Änderungen gelten für neue Einträge; bereits erfasste behalten ihre Behandlung.",
+        "pickerAriaLabel": "Steuermodus für dieses Portfolio",
+        "inheritedHint": "Folgt deiner Konto-Vorgabe.",
+        "resetHint": "Dieses Portfolio hat einen eigenen Modus.",
+        "reset": "Konto-Vorgabe verwenden",
+        "editDefault": "Konto-Vorgabe bearbeiten →",
+        "loadError": "Der Steuermodus dieses Portfolios konnte nicht geladen werden."
+      },
+      "groupHeading": "Gruppenportfolio",
+      "groupHint": "Teile dieses Portfolio mit Freunden — ihr führt dasselbe Buch.",
+      "groupActive": "{{name}} · {{count}} Mitglieder",
+      "manageGroup": "Gruppe verwalten",
+      "dangerHeading": "Gefahrenzone",
+      "archiveAction": "Dieses Portfolio archivieren",
+      "archiveHint": "Aus deiner Liste ausgeblendet. Jederzeit wiederherstellbar.",
+      "deleteAction": "Dieses Portfolio löschen",
+      "deleteHint": "Endgültig. Alles darin wird entfernt."
     }
   },
   "workboard": {
     "section": {
       "subnav": {
         "overview": "Übersicht",
-        "conglomerates": "Konglomerate",
+        "conglomerates": "Blueprints",
         "watchlists": "Watchlists",
         "alerts": "Alarme",
         "backtests": "Backtests",
@@ -2062,15 +2215,15 @@
       },
       "watchlist": {
         "title": "Watchlists",
-        "description": "Mehrere benannte Watchlists kommen hierher. Bis dahin findest du deine Watchlist auf der Workboard-Übersicht."
+        "description": "Mehrere benannte Watchlists kommen hierher. Bis dahin findest du deine Watchlist auf der Workbench-Übersicht."
       },
       "backtests": {
         "title": "Backtests",
-        "description": "Eigenständige Backtests über beliebige Anlagenkörbe — über den ins Konglomerat eingebetteten Backtest hinaus."
+        "description": "Eigenständige Backtests über beliebige Anlagenkörbe — über den ins Blueprints eingebetteten Backtest hinaus."
       },
       "calculators": {
         "title": "Rechner",
-        "description": "Eigenständige Investitionsrechner — verwandle ein Budget in eine genaue Kaufliste ohne gespeichertes Konglomerat."
+        "description": "Eigenständige Investitionsrechner — verwandle ein Budget in eine genaue Kaufliste ohne gespeichertes Blueprints."
       },
       "comparisons": {
         "title": "Vergleiche",
@@ -2082,8 +2235,8 @@
       }
     },
     "overview": {
-      "title": "Workboard",
-      "subtitle": "Deine beobachteten Anlagen, Alarme und Konglomerate auf einen Blick.",
+      "title": "Workbench",
+      "subtitle": "Deine beobachteten Anlagen, Alarme und Blueprints auf einen Blick.",
       "watchlist": {
         "heading": "Watchlist",
         "shareButton": "Mit Freunden teilen",
@@ -2093,7 +2246,7 @@
         "removeError": "Entfernen fehlgeschlagen. Bitte versuche es erneut.",
         "reorderError": "Neue Reihenfolge konnte nicht gespeichert werden. Bitte versuche es erneut.",
         "emptyTitle": "Deine Watchlist ist leer",
-        "emptyDescription": "Finde eine Anlage und füge sie deinem Workboard hinzu, um sie zu beobachten.",
+        "emptyDescription": "Finde eine Anlage und füge sie deinem Workbench hinzu, um sie zu beobachten.",
         "emptySearchLink": "Nach einer Anlage suchen →",
         "trendHeader": "Trend",
         "assetHeader": "Anlage",
@@ -2122,8 +2275,8 @@
         "emptyDescription": "Deine aktiven Alarme für alle beobachteten Anlagen erscheinen hier."
       },
       "conglomerates": {
-        "heading": "Meine Konglomerate",
-        "emptyTitle": "Konglomerate folgen in Kürze",
+        "heading": "Meine Blueprints",
+        "emptyTitle": "Blueprints folgen in Kürze",
         "emptyDescription": "Deine individuellen ETF-Körbe erscheinen hier."
       }
     },
@@ -2168,12 +2321,12 @@
         "dax": "DAX",
         "msciWorld": "MSCI World",
         "search": "Anlage suchen…",
-        "myConglomerates": "Meine Konglomerate…",
+        "myConglomerates": "Meine Blueprints…",
         "searchPlaceholder": "Beliebige Anlage als Benchmark suchen…",
-        "pickConglomerate": "Benchmark-Konglomerat",
-        "pickConglomeratePlaceholder": "Konglomerat auswählen…",
-        "loading": "Konglomerate werden geladen…",
-        "noConglomerates": "Noch keine Konglomerate.",
+        "pickConglomerate": "Benchmark-Blueprints",
+        "pickConglomeratePlaceholder": "Blueprints auswählen…",
+        "loading": "Blueprints werden geladen…",
+        "noConglomerates": "Noch keine Blueprints.",
         "clear": "Benchmark entfernen",
         "saved": "Eigene Benchmark"
       },
@@ -2194,7 +2347,7 @@
       "rebalanceAriaLabel": "Rebalancing-Frequenz wählen",
       "noPositions": "Füge Positionen hinzu, um einen Backtest in der Vorschau zu sehen",
       "error": "Der Backtest konnte nicht ausgeführt werden. Bitte versuche es erneut.",
-      "chartAriaLabel": "Konglomerat-Backtest-Diagramm",
+      "chartAriaLabel": "Blueprints-Backtest-Diagramm",
       "stats": {
         "totalReturn": "Gesamtrendite",
         "cagr": "CAGR",
@@ -2296,13 +2449,13 @@
       }
     },
     "conglomerates": {
-      "title": "Konglomerate",
+      "title": "Blueprints",
       "subtitle": "Deine individuellen ETF-artigen Körbe — erstellen, backtesten und ein Budget in eine Kaufliste verwandeln.",
-      "loadError": "Deine Konglomerate konnten nicht geladen werden. Bitte lade die Seite neu.",
-      "emptyTitle": "Noch keine Konglomerate",
+      "loadError": "Deine Blueprints konnten nicht geladen werden. Bitte lade die Seite neu.",
+      "emptyTitle": "Noch keine Blueprints",
       "emptyDescription": "Erstelle einen individuellen ETF-artigen Korb, backteste ihn und verwandle ein Budget in eine Kaufliste.",
-      "emptyCta": "Neues Konglomerat →",
-      "newCardLabel": "Neues Konglomerat",
+      "emptyCta": "Neues Blueprints →",
+      "newCardLabel": "Neues Blueprints",
       "positionCountOne": "{{count}} Position",
       "positionCountOther": "{{count}} Positionen",
       "status": {
@@ -2320,31 +2473,31 @@
       "noPositionsDescription": "Füge im Builder Anlagen und Gewichte hinzu, um diesen Korb aufzuteilen.",
       "assetHeader": "Anlage",
       "weightHeader": "Gewicht",
-      "deleteDialogTitle": "Konglomerat löschen?",
+      "deleteDialogTitle": "Blueprints löschen?",
       "deleteDialogBody": "Dies löscht {{name}} und alle seine Positionen dauerhaft. Dies kann nicht rückgängig gemacht werden.",
-      "deleteError": "Dieses Konglomerat konnte nicht gelöscht werden. Bitte versuche es erneut.",
+      "deleteError": "Dieses Blueprints konnte nicht gelöscht werden. Bitte versuche es erneut.",
       "deleting": "Wird gelöscht…",
       "backToConglomeratesError": "← Zurück zu Konglomeraten",
-      "backLink": "← Konglomerate",
-      "loadError": "Dieses Konglomerat konnte nicht geladen werden. Es existiert möglicherweise nicht oder der Server ist vorübergehend nicht erreichbar.",
+      "backLink": "← Blueprints",
+      "loadError": "Dieses Blueprints konnte nicht geladen werden. Es existiert möglicherweise nicht oder der Server ist vorübergehend nicht erreichbar.",
       "shareButton": "Mit Freunden teilen",
       "sharedButton": "Mit Freunden geteilt",
       "shareError": "Freigabe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
       "positionsHeading": "Positionen",
       "allocationHeading": "Aufteilung",
-      "allocationChartTitle": "Konglomerat-Aufteilung",
+      "allocationChartTitle": "Blueprints-Aufteilung",
       "backtestHeading": "Backtest",
       "calculatorHeading": "Rechner",
       "viewToggleAriaLabel": "Positionsansicht",
       "viewStored": "Wie gebaut",
       "viewResolved": "Aufgelöst",
-      "resolvedHint": "Effektive Asset-Gewichte nach Auflösung verschachtelter Konglomerate.",
+      "resolvedHint": "Effektive Asset-Gewichte nach Auflösung verschachtelter Blueprints.",
       "resolvedLoadError": "Die aufgelöste Ansicht konnte nicht geladen werden.",
-      "deleteInUseError": "Dieses Konglomerat ist Bestandteil von {{parents}} — entferne es zuerst dort."
+      "deleteInUseError": "Dieses Blueprints ist Bestandteil von {{parents}} — entferne es zuerst dort."
     },
     "builder": {
       "loading": "Builder wird geladen…",
-      "defaultName": "Unbenanntes Konglomerat",
+      "defaultName": "Unbenanntes Blueprints",
       "nameAriaLabel": "Konglomeratname",
       "closeAriaLabel": "Builder schließen",
       "activatableHint": "Aktiv = dein validierter Live-Korb, den der Rechner verwendet; die Gewichte müssen 100 % ergeben.",
@@ -2353,7 +2506,7 @@
       "reactivate": "Erneut aktivieren",
       "activate": "Aktivieren",
       "activateValidationError": "Gewichte müssen 100 % (±0,01) ergeben, mit jeder Position über 0, bevor aktiviert werden kann.",
-      "activateError": "Dieses Konglomerat konnte nicht aktiviert werden. Bitte versuche es erneut.",
+      "activateError": "Dieses Blueprints konnte nicht aktiviert werden. Bitte versuche es erneut.",
       "saving": "Wird gespeichert…",
       "saveFailed": "Speichern fehlgeschlagen",
       "draftSaved": "Entwurf — gespeichert",
@@ -2378,7 +2531,7 @@
       "autoBalance": "Auto-Balance",
       "normalize": "Normalisieren",
       "noPositionsMessage": "Noch keine Positionen. Suche links und klicke eine Anlage an, um sie hinzuzufügen.",
-      "positionsListAriaLabel": "Konglomerat-Positionen",
+      "positionsListAriaLabel": "Blueprints-Positionen",
       "weightSliderAriaLabel": "Gewichtsregler für {{symbol}}",
       "weightAriaLabel": "Gewicht für {{symbol}}",
       "lockAriaLabel": "{{symbol}} sperren",
@@ -2395,28 +2548,28 @@
       "statLargest": "Größte",
       "backtestPreviewAriaLabel": "Backtest-Vorschau (folgt in Kürze)",
       "backtestPreviewText": "Backtest-Vorschau — folgt mit dem Backtest-Panel.",
-      "nestConglomerateHeading": "Konglomerat verschachteln",
-      "nestConglomerateHint": "Füge eines deiner eigenen Konglomerate als gewichteten Anteil hinzu — seine Gewichte werden bei Backtest und Aufteilung rekursiv aufgelöst.",
-      "nestConglomerateEmpty": "Noch keine anderen Konglomerate zum Verschachteln.",
-      "nestConglomerateLoadError": "Deine Konglomerate konnten nicht geladen werden.",
-      "nestConglomerateListAriaLabel": "Deine Konglomerate",
+      "nestConglomerateHeading": "Blueprints verschachteln",
+      "nestConglomerateHint": "Füge eines deiner eigenen Blueprints als gewichteten Anteil hinzu — seine Gewichte werden bei Backtest und Aufteilung rekursiv aufgelöst.",
+      "nestConglomerateEmpty": "Noch keine anderen Blueprints zum Verschachteln.",
+      "nestConglomerateLoadError": "Deine Blueprints konnten nicht geladen werden.",
+      "nestConglomerateListAriaLabel": "Deine Blueprints",
       "nestConglomerateAddAriaLabel": "{{name}} als Bestandteil hinzufügen",
       "saveIdeaNestedHint": "Ideen enthalten nur Asset-Gewichte — ein Korb mit verschachtelten Konglomeraten kann nicht als Idee gespeichert werden.",
       "errors": {
-        "maxPositions": "Ein Konglomerat darf höchstens {{max}} Positionen haben.",
-        "duplicateAsset": "Dieses Asset ist bereits in diesem Konglomerat.",
-        "duplicateConglomerate": "Dieses Konglomerat ist bereits ein Bestandteil.",
-        "selfNest": "Ein Konglomerat kann sich nicht selbst enthalten.",
-        "nestingCycle": "Diese Verschachtelung würde einen Zyklus erzeugen — ein Konglomerat kann sich nicht selbst enthalten, auch nicht über ein anderes Konglomerat.",
-        "nestingTooDeep": "Konglomerate können höchstens {{max}} Ebenen tief verschachtelt werden."
+        "maxPositions": "Ein Blueprints darf höchstens {{max}} Positionen haben.",
+        "duplicateAsset": "Dieses Asset ist bereits in diesem Blueprints.",
+        "duplicateConglomerate": "Dieses Blueprints ist bereits ein Bestandteil.",
+        "selfNest": "Ein Blueprints kann sich nicht selbst enthalten.",
+        "nestingCycle": "Diese Verschachtelung würde einen Zyklus erzeugen — ein Blueprints kann sich nicht selbst enthalten, auch nicht über ein anderes Blueprints.",
+        "nestingTooDeep": "Blueprints können höchstens {{max}} Ebenen tief verschachtelt werden."
       }
     },
     "ideas": {
       "list": {
         "title": "Ideen",
-        "subtitle": "Gespeicherte Workboard-Analysen — jede exakt wie gespeichert wieder öffnen oder mit Freunden teilen.",
+        "subtitle": "Gespeicherte Workbench-Analysen — jede exakt wie gespeichert wieder öffnen oder mit Freunden teilen.",
         "emptyTitle": "Noch keine gespeicherten Ideen",
-        "emptyBody": "Speichere einen Korb samt Backtest aus einem Konglomerat oder dem Builder, um später darauf zurückzukommen.",
+        "emptyBody": "Speichere einen Korb samt Backtest aus einem Blueprints oder dem Builder, um später darauf zurückzukommen.",
         "open": "Öffnen",
         "share": "Teilen",
         "thesisNone": "Keine These",
@@ -2443,27 +2596,27 @@
         "loadError": "Diese Idee konnte nicht geladen werden.",
         "thesisHeading": "These",
         "backtestHeading": "Backtest",
-        "conglomerateGone": "Das Konglomerat, auf das diese Idee verweist, ist nicht mehr verfügbar."
+        "conglomerateGone": "Das Blueprints, auf das diese Idee verweist, ist nicht mehr verfügbar."
       }
     },
     "comparison": {
-      "title": "Konglomerate vergleichen",
-      "description": "Überlagere 2–6 deiner Konglomerate in einem Chart und vergleiche Rendite und Risiko nebeneinander.",
-      "selectHeading": "Konglomerate auswählen",
-      "selectHint": "Wähle {{min}}–{{max}} Konglomerate zum Vergleich.",
+      "title": "Blueprints vergleichen",
+      "description": "Überlagere 2–6 deiner Blueprints in einem Chart und vergleiche Rendite und Risiko nebeneinander.",
+      "selectHeading": "Blueprints auswählen",
+      "selectHint": "Wähle {{min}}–{{max}} Blueprints zum Vergleich.",
       "selectionCount": "{{count}}/{{max}} ausgewählt",
       "emptyPositions": "Keine Positionen",
-      "noConglomerates": "Noch nicht genug Konglomerate",
-      "noConglomeratesHint": "Erstelle mindestens zwei Konglomerate mit Positionen, um sie hier zu vergleichen.",
-      "needTwo": "Wähle mindestens {{min}} Konglomerate zum Vergleich.",
+      "noConglomerates": "Noch nicht genug Blueprints",
+      "noConglomeratesHint": "Erstelle mindestens zwei Blueprints mit Positionen, um sie hier zu vergleichen.",
+      "needTwo": "Wähle mindestens {{min}} Blueprints zum Vergleich.",
       "error": "Der Vergleich konnte nicht berechnet werden. Bitte versuche es erneut.",
-      "windowError": "Eines der ausgewählten Konglomerate hat zu wenig Kurshistorie für das Vergleichsfenster. Wähle einen kürzeren Zeitraum oder entferne es.",
-      "chartAriaLabel": "Vergleichschart der Konglomerate",
-      "legendAriaLabel": "Verglichene Konglomerate",
+      "windowError": "Eines der ausgewählten Blueprints hat zu wenig Kurshistorie für das Vergleichsfenster. Wähle einen kürzeren Zeitraum oder entferne es.",
+      "chartAriaLabel": "Vergleichschart der Blueprints",
+      "legendAriaLabel": "Verglichene Blueprints",
       "baselineLabel": "Basis",
       "setBaseline": "{{name}} als Basis verwenden",
       "grid": {
-        "ariaLabel": "Vergleichsstatistiken der Konglomerate",
+        "ariaLabel": "Vergleichsstatistiken der Blueprints",
         "metric": "Kennzahl"
       }
     }
@@ -2649,8 +2802,8 @@
       },
       "appearsIn": {
         "title": "Enthalten in",
-        "emptyTitle": "In keinem Konglomerat oder Portfolio",
-        "emptyDescription": "Füge diese Anlage einem Konglomerat hinzu oder erfasse eine Transaktion, um sie hier zu sehen."
+        "emptyTitle": "In keinem Blueprints oder Portfolio",
+        "emptyDescription": "Füge diese Anlage einem Blueprints hinzu oder erfasse eine Transaktion, um sie hier zu sehen."
       },
       "dividends": {
         "title": "Dividenden",
@@ -2680,7 +2833,7 @@
       "watchlistAddError": "Konnte nicht zur Watchlist hinzugefügt werden. Bitte versuche es erneut.",
       "quickActions": "Schnellaktionen",
       "addToPortfolio": "+ Portfolio",
-      "addToConglomerate": "+ Konglomerat",
+      "addToConglomerate": "+ Blueprints",
       "backToSearch": "← Zurück zur Suche",
       "backShort": "← Suche",
       "loadError": "Die Anlagedetails konnten nicht geladen werden. Die Anlage existiert möglicherweise nicht oder der Server ist vorübergehend nicht erreichbar.",
@@ -2745,9 +2898,9 @@
       "searchingMore": "Der Markt wird nach weiteren Ergebnissen durchsucht…",
       "resultsAria": "Suchergebnisse",
       "openAria": "{{symbol}} öffnen — {{name}}",
-      "toConglomerate": "→ Konglomerat",
+      "toConglomerate": "→ Blueprints",
       "toPortfolio": "→ Portfolio",
-      "addToConglomerateAria": "{{symbol}} zu einem Konglomerat hinzufügen",
+      "addToConglomerateAria": "{{symbol}} zu einem Blueprints hinzufügen",
       "recordBuyAria": "Kauf für {{symbol}} erfassen",
       "onWatchlistAria": "{{symbol}} ist auf deiner Watchlist",
       "retryWatchlistAria": "{{symbol}} erneut zur Watchlist hinzufügen",
@@ -2756,14 +2909,25 @@
       "addToWatchlistTitle": "Zur Watchlist hinzufügen",
       "chooseWatchlistAria": "Watchlist für {{symbol}} wählen",
       "watchlistsMenuAria": "Watchlists für {{symbol}}",
-      "pickerMenuAria": "{{symbol}} zu einem Konglomerat hinzufügen",
-      "pickerTitle": "Zu Konglomerat hinzufügen",
-      "noConglomerates": "Du hast noch keine Konglomerate.",
+      "pickerMenuAria": "{{symbol}} zu einem Blueprints hinzufügen",
+      "pickerTitle": "Zu Blueprints hinzufügen",
+      "noConglomerates": "Du hast noch keine Blueprints.",
       "addedTo": "Zu {{name}} hinzugefügt.",
-      "createNewConglomerate": "+ Neues Konglomerat erstellen",
+      "createNewConglomerate": "+ Neues Blueprints erstellen",
       "selectAria": "{{symbol}} auswählen",
       "select": "Auswählen →",
-      "addToConglomerateError": "Konnte nicht zu diesem Konglomerat hinzugefügt werden."
+      "addToConglomerateError": "Konnte nicht zu diesem Blueprints hinzugefügt werden."
+    },
+    "aria": "Anlagen",
+    "tabs": {
+      "overview": "Übersicht",
+      "search": "Suche",
+      "watchlists": "Watchlists",
+      "customAssets": "Eigene Werte",
+      "news": "News",
+      "discover": "Entdecken",
+      "events": "Termine",
+      "screener": "Screener"
     }
   },
   "sharing": {
@@ -2861,8 +3025,8 @@
         "other": "{{count}} Portfolios"
       },
       "conglomerate": {
-        "one": "{{count}} Konglomerat",
-        "other": "{{count}} Konglomerate"
+        "one": "{{count}} Blueprints",
+        "other": "{{count}} Blueprints"
       },
       "watchlist": {
         "one": "{{count}} Watchlist",
@@ -2886,15 +3050,15 @@
     },
     "kind": {
       "portfolios": "Portfolios",
-      "conglomerates": "Konglomerate",
+      "conglomerates": "Blueprints",
       "watchlists": "Watchlists",
       "ideas": "Ideen"
     },
     "myShared": {
       "title": "Meine Elemente",
-      "subtitle": "Jedes Portfolio, Konglomerat und jede Watchlist, die dir gehört, ist hier — lege fest, wer welches sehen kann. Alles bleibt privat, bis du es teilst.",
+      "subtitle": "Jedes Portfolio, Blueprints und jede Watchlist, die dir gehört, ist hier — lege fest, wer welches sehen kann. Alles bleibt privat, bis du es teilst.",
       "emptyTitle": "Du besitzt noch nichts",
-      "emptyBody": "Erstelle ein Portfolio, Konglomerat oder eine Watchlist, um hier die Freigabe zu verwalten.",
+      "emptyBody": "Erstelle ein Portfolio, Blueprints oder eine Watchlist, um hier die Freigabe zu verwalten.",
       "error": "Deine Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
       "publicProfileLink": "Öffentliches Profil verwalten"
     },
@@ -2924,7 +3088,7 @@
       "unfollowAria": "{{username}} entfolgen",
       "loginToFollow": "Zum Folgen anmelden",
       "listTitle": "Folge ich",
-      "listSubtitle": "Personen, denen du folgst. Du erhältst eine Benachrichtigung, wenn sie ein Portfolio, eine Watchlist oder ein Konglomerat öffentlich machen.",
+      "listSubtitle": "Personen, denen du folgst. Du erhältst eine Benachrichtigung, wenn sie ein Portfolio, eine Watchlist oder ein Blueprints öffentlich machen.",
       "empty": "Du folgst noch niemandem.",
       "emptyHint": "Öffne das öffentliche Profil einer Person, um ihr zu folgen.",
       "error": "Deine gefolgten Personen konnten nicht geladen werden. Bitte lade die Seite neu.",
@@ -2951,7 +3115,7 @@
       "sharesHeading": "Teilt mit dir",
       "sharesEmpty": "{{username}} teilt noch nichts mit dir.",
       "followHeading": "Neuigkeiten über diese Person",
-      "followHint": "Folge, um zu erfahren, wenn sie ein Portfolio, eine Watchlist oder ein Konglomerat öffentlich macht."
+      "followHint": "Folge, um zu erfahren, wenn sie ein Portfolio, eine Watchlist oder ein Blueprints öffentlich macht."
     },
     "chat": {
       "title": "Nachrichten",
@@ -2970,7 +3134,7 @@
         "shared": {
           "asset": "Anlage geteilt",
           "portfolio": "Portfolio geteilt",
-          "conglomerate": "Konglomerat geteilt",
+          "conglomerate": "Blueprints geteilt",
           "watchlist": "Watchlist geteilt",
           "idea": "Hat eine Idee geteilt"
         }
@@ -2995,7 +3159,7 @@
         "kind": {
           "asset": "Anlage",
           "portfolio": "Portfolio",
-          "conglomerate": "Konglomerat",
+          "conglomerate": "Blueprints",
           "watchlist": "Watchlist",
           "idea": "Idee"
         },
@@ -3012,7 +3176,9 @@
         "empty": "Du hast noch nichts zum Teilen."
       },
       "deletedUser": "Gelöschtes Konto",
-      "deletedClosed": "Dieses Konto existiert nicht mehr. Die Unterhaltung ist geschlossen, dein Verlauf bleibt aber lesbar."
+      "deletedClosed": "Dieses Konto existiert nicht mehr. Die Unterhaltung ist geschlossen, dein Verlauf bleibt aber lesbar.",
+      "popout": "Neues Fenster",
+      "popoutHint": "Öffnet den Chat in einem eigenen Fenster"
     },
     "itemFollow": {
       "follow": "Element folgen",
@@ -3060,11 +3226,11 @@
       "portfolioEmptyTitle": "Noch nichts zu zeigen",
       "portfolioEmptyDescription": "{{username}} hat in diesem Portfolio noch keine Bestände erfasst.",
       "portfolioChartAria": "Wertverlauf des geteilten Portfolios",
-      "conglomerateUnavailableTitle": "Dieses Konglomerat ist nicht verfügbar",
+      "conglomerateUnavailableTitle": "Dieses Blueprints ist nicht verfügbar",
       "watchlistUnavailableTitle": "Diese Watchlist ist nicht verfügbar",
       "unavailableDescription": "Die Person teilt es möglicherweise nicht mehr, oder ihr seid nicht mehr befreundet.",
       "noPositionsTitle": "Keine Positionen",
-      "noPositionsDescription": "Dieses Konglomerat enthält noch keine Anlagen.",
+      "noPositionsDescription": "Dieses Blueprints enthält noch keine Anlagen.",
       "watchlistEmptyTitle": "Leere Watchlist",
       "watchlistEmptyDescription": "Diese Person beobachtet noch keine Anlagen.",
       "sharedByReadOnly": "Geteilt von {{username}} · nur Lesezugriff",
@@ -3135,7 +3301,6 @@
   },
   "profile": {
     "title": "Mein öffentliches Profil",
-    "subtitle": "Eine optionale öffentliche Seite, die andere sehen können — sie zeigt nur die Elemente, die du per öffentlichem Link geteilt hast.",
     "error": "Deine Profileinstellungen konnten nicht geladen werden. Bitte lade die Seite neu.",
     "toggleLabel": "Mein Profil öffentlich machen",
     "publicItemCount": "{{count}} deiner Elemente sind derzeit öffentlich.",
@@ -3176,6 +3341,9 @@
         "compass": "Kompass",
         "anchor": "Anker"
       }
+    },
+    "groups": {
+      "page": "Öffentliche Seite"
     }
   },
   "mirrorchain": {
@@ -3314,7 +3482,7 @@
     "warning": {
       "headline": "Das kann nicht rückgängig gemacht werden. Beim Löschen werden entfernt:",
       "data": "Alle Portfolios, Transaktionen, Geldquellen, individuellen Anlagen, Steuerdaten und Berichte",
-      "social": "Deine Freundschaften, geteilten Inhalte, Watchlists, Konglomerate, Alarme und Benachrichtigungen",
+      "social": "Deine Freundschaften, geteilten Inhalte, Watchlists, Blueprints, Alarme und Benachrichtigungen",
       "access": "Alle Sitzungen, API-Schlüssel und verbundenen Apps — du wirst überall sofort abgemeldet",
       "chat": "Deine Identität in Chats — von dir gesendete Nachrichten bleiben für deine Freunde als „Gelöschtes Konto“ sichtbar"
     },
@@ -3332,6 +3500,17 @@
       "tooMany": "Zu viele Versuche. Bitte warte kurz und versuche es erneut."
     }
   },
+  "vault": {
+    "sync": {
+      "synced": "Verschlüsselter Tresor synchronisiert",
+      "syncing": "Verschlüsselte Änderungen warten auf Synchronisierung",
+      "offline": "Verschlüsselte Änderungen sind offline lokal gespeichert",
+      "needsAttention": "Tresor-Synchronisierung benötigt Aufmerksamkeit",
+      "drive": {
+        "signIn": "Bei Google anmelden, um zu synchronisieren"
+      }
+    }
+  },
   "announcements": {
     "dismiss": "Ausblenden",
     "dismissing": "Wird ausgeblendet…",
@@ -3342,6 +3521,68 @@
     },
     "aria": {
       "list": "Ankündigungen"
+    }
+  },
+  "vaultExports": {
+    "tax": {
+      "title": "Steuerbericht",
+      "section": "Abschnitt",
+      "summary": "Zusammenfassung",
+      "germany": "Deutschland (Abgeltungsteuer)",
+      "positions": "Positionen",
+      "sells": "Verkäufe",
+      "dividends": "Dividenden",
+      "empty": "Keine Verkäufe oder Dividenden in diesem Jahr.",
+      "year": "Jahr",
+      "realized": "Realisierter G/V",
+      "realizedEur": "Realisierter G/V (EUR)",
+      "dividendsGross": "Dividenden brutto",
+      "dividendsGrossEur": "Dividenden brutto (EUR)",
+      "withheld": "Einbehaltene Steuer",
+      "withheldEur": "Einbehaltene Steuer (EUR)",
+      "refunded": "Erstattete Steuer",
+      "refundedEur": "Erstattete Steuer (EUR)",
+      "net": "Netto-Steuer",
+      "netEur": "Netto-Steuer (EUR)",
+      "tax": "Steuer",
+      "taxEur": "Steuer (EUR)",
+      "date": "Datum",
+      "quantity": "Anzahl",
+      "proceeds": "Erlös",
+      "proceedsEur": "Erlös (EUR)",
+      "costBasis": "Einstand",
+      "costBasisEur": "Einstand (EUR)",
+      "gross": "Brutto",
+      "grossEur": "Brutto (EUR)",
+      "allowance": "Pauschbetrag genutzt / verbleibend",
+      "allowanceUsedEur": "Genutzter Pauschbetrag (EUR)",
+      "allowanceRemainingEur": "Verbleibender Pauschbetrag (EUR)",
+      "shareLossPot": "Aktien-Verlusttopf ein / aus",
+      "shareLossPotInEur": "Aktien-Verlusttopf ein (EUR)",
+      "shareLossPotOutEur": "Aktien-Verlusttopf aus (EUR)",
+      "otherLossPot": "Sonstiger Verlusttopf ein / aus",
+      "otherLossPotInEur": "Sonstiger Verlusttopf ein (EUR)",
+      "otherLossPotOutEur": "Sonstiger Verlusttopf aus (EUR)",
+      "kapest": "KapESt",
+      "kapestEur": "KapESt (EUR)",
+      "soli": "Soli",
+      "soliEur": "Soli (EUR)",
+      "symbol": "Symbol",
+      "name": "Name",
+      "taxMode": "Steuermodus",
+      "disclaimerLabel": "Haftungsausschluss",
+      "disclaimer": "Schätzwerte nur für deine persönliche Übersicht — keine Steuerberatung, keine Gewähr für Richtigkeit, kein Dokument für die Steuererklärung."
+    },
+    "cleartext": {
+      "readme": "BetterTrack — lokaler Klartext-Export\n\nDieses Archiv wurde lokal aus deinem entsperrten verschlüsselten Tresor erstellt.\nEs enthält Quelldaten als JSON sowie CSV-Dateien für Transaktionen,\nGeldbewegungen und Bestände. Tresorschlüssel, Passphrasen,\nWiederherstellungsdaten, Chiffretext, Sync-Metadaten, Quarantäne-Blobs und\nabgeleitete Caches sind nicht enthalten.\n",
+      "skipped": {
+        "importBatches": "Import-Zwischenspeicher; übernommene Zeilen werden in ihren endgültigen Datensätzen exportiert.",
+        "importRows": "Import-Zwischenspeicher; übernommene Zeilen werden in ihren endgültigen Datensätzen exportiert.",
+        "portfolioSnapshots": "Abgeleiteter Bewertungscache; wird aus Quelldaten und Marktdaten neu erstellt.",
+        "snapshotState": "Abgeleitete Buchführung zur Snapshot-Invalidierung.",
+        "standingOrderRuns": "Idempotenz-Buchführung; gebuchte Zeilen und Definitionen werden exportiert.",
+        "expenseBudgetFires": "Abgeleitete Buchführung für Alarmzustellungen."
+      }
     }
   },
   "admin": {
@@ -3682,7 +3923,7 @@
       },
       "feature": {
         "portfolio": "Portfolio",
-        "workboard": "Workboard",
+        "workboard": "Workbench",
         "assets": "Assets",
         "social": "Sozial",
         "alerts": "Benachrichtigungen",
@@ -3690,6 +3931,716 @@
         "imports": "Importe",
         "settings": "Einstellungen"
       }
+    },
+    "emailLog": {
+      "loading": "E-Mail-Protokoll wird geladen…",
+      "empty": "Noch keine E-Mails gesendet.",
+      "emptyForUser": "Noch keine E-Mails an {{email}} gesendet.",
+      "headers": {
+        "when": "Zeitpunkt",
+        "recipient": "Empfänger",
+        "template": "Vorlage",
+        "subject": "Betreff",
+        "status": "Status"
+      },
+      "status": {
+        "sent": "Gesendet",
+        "failed": "Fehlgeschlagen",
+        "suppressed": "Unterdrückt"
+      },
+      "loadMore": "Mehr laden",
+      "loadingMore": "Wird geladen…"
+    }
+  },
+  "create": {
+    "button": "Neu",
+    "trade": "Kauf oder Verkauf",
+    "cashFlow": "Einnahme oder Ausgabe",
+    "transfer": "Transfer",
+    "blueprint": "Neuer Blueprint",
+    "watchlist": "Neue Watchlist",
+    "alert": "Neuer Alarm",
+    "idea": "Neue Idee",
+    "portfolio": "Neues Portfolio"
+  },
+  "home": {
+    "greeting": "Willkommen zurück",
+    "go": {
+      "portfolio": "Portfolio öffnen",
+      "portfolioSub": "Bestände, Aktivität, Analyse",
+      "workbench": "In der Workbench planen",
+      "workbenchSub": "Blueprints, Backtests, Prognosen",
+      "research": "Anlagen recherchieren",
+      "researchSub": "Suche, Watchlists, News",
+      "people": "Mit Personen arbeiten",
+      "peopleSub": "Teilen, Chat, geteilte Inhalte"
+    },
+    "defaultPortfolio": "Standard",
+    "attention": {
+      "review": "Review öffnen",
+      "clear": "Alles erledigt — gerade braucht dich nichts."
+    },
+    "upcoming": {
+      "manage": "In Prognosen verwalten",
+      "empty": "Nichts geplant. Sparpläne erscheinen hier, sobald sie angelegt sind.",
+      "order": "Sparplan"
+    },
+    "builder": {
+      "customize": "Anpassen",
+      "done": "Fertig",
+      "add": "Widget hinzufügen",
+      "addTitle": "Widget hinzufügen",
+      "reset": "Auf Standard zurücksetzen",
+      "emptyBoard": "Deine Startseite ist leer",
+      "dragHandle": "{{title}} umsortieren",
+      "moveUp": "{{title}} nach oben schieben",
+      "moveDown": "{{title}} nach unten schieben",
+      "remove": "{{title}} entfernen",
+      "settings": "Einstellungen für {{title}}",
+      "sizeAriaLabel": "Größe von {{title}}",
+      "size": {
+        "s": "S",
+        "m": "M",
+        "l": "L"
+      },
+      "scopeLabel": "Portfolio",
+      "scopeAll": "Alle Portfolios",
+      "rangeLabel": "Zeitraum",
+      "group": {
+        "overview": "Überblick",
+        "charts": "Charts",
+        "lists": "Listen"
+      },
+      "placeBefore": "Vor {{title}} einfügen",
+      "placeEnd": "Am Ende einfügen",
+      "placeCancel": "{{title}} nicht verschieben",
+      "addBefore": "Widget vor {{title}} hinzufügen",
+      "addEnd": "Widget am Ende hinzufügen",
+      "variantLabel": "Darstellung",
+      "variantAriaLabel": "Darstellung von {{title}}",
+      "variant": {
+        "cashflow-chart": {
+          "net": "Netto",
+          "columns": "Ein / aus"
+        },
+        "performance-chart": {
+          "value": "Wert €",
+          "return": "Rendite %"
+        },
+        "allocation": {
+          "donut": "Ring",
+          "bars": "Balken"
+        },
+        "top-movers": {
+          "list": "Liste",
+          "chips": "Chips"
+        },
+        "portfolio-cards": {
+          "cards": "Karten",
+          "table": "Tabelle"
+        },
+        "liquidity": {
+          "ring": "Ring",
+          "bar": "Balken"
+        }
+      },
+      "scopeSelected": "Ausgewählte Portfolios…",
+      "scopeCount": "{{count}} Portfolios",
+      "scopeFilter": "Portfolios filtern",
+      "scopeNoMatch": "Kein Portfolio passt.",
+      "scopeNone": "Noch keine Portfolios."
+    },
+    "widgets": {
+      "range": {
+        "1D": "1D",
+        "1W": "1W",
+        "1M": "1M",
+        "3M": "3M",
+        "6M": "6M",
+        "12M": "12M",
+        "1Y": "1Y",
+        "5Y": "5Y",
+        "Max": "Max"
+      },
+      "netWorth": {
+        "title": "Nettovermögen",
+        "description": "Gesamtwert mit der Veränderung von heute",
+        "changeTitle": "Veränderung heute",
+        "investedWord": "investiert",
+        "cashWord": "Cash"
+      },
+      "todayChange": {
+        "title": "Heute",
+        "description": "Die heutige Bewegung als kompakte Kennzahl",
+        "label": "Veränderung heute",
+        "totalLabel": "Gesamtwert"
+      },
+      "performanceChart": {
+        "title": "Performance",
+        "description": "Ein Portfolio im Zeitverlauf — Wert oder zeitgewichtete Rendite.",
+        "empty": "Noch kein Portfolio zum Anzeigen.",
+        "ariaLabel": "Wertverlauf von {{name}}",
+        "ariaLabelReturn": "Zeitgewichtete Rendite von {{name}} im Zeitverlauf",
+        "returnHint": "Zeitgewichtete Rendite — Ein- und Auszahlungen werden neutralisiert, die Kurve bewegt sich nur, wenn sich deine Bestände bewegen.",
+        "returnNeedsOne": "Die Rendite in % ist nur für ein einzelnes Portfolio aussagekräftig, deshalb siehst du hier den Wert. Beschränke das Widget auf ein Portfolio, um die Rendite zu sehen."
+      },
+      "cashflowChart": {
+        "title": "Cashflow",
+        "description": "Einnahmen minus Ausgaben, pro Monat",
+        "empty": "Noch keine Cashflow-Daten.",
+        "ariaLabel": "Netto-Cashflow pro Monat",
+        "incomeWord": "rein",
+        "spentWord": "raus",
+        "netWord": "netto",
+        "columnsAriaLabel": "Einnahmen und Ausgaben pro Monat"
+      },
+      "allocation": {
+        "title": "Aufteilung",
+        "description": "Worin dein Geld steckt",
+        "chartTitle": "Aufteilung nach Position",
+        "other": "Sonstige",
+        "cash": "Cash",
+        "empty": "Noch nichts investiert."
+      },
+      "topMovers": {
+        "title": "Bewegungen",
+        "description": "Die größten Gewinner und Verlierer",
+        "climbers": "Gewinner",
+        "fallers": "Verlierer",
+        "none": "Nichts dabei.",
+        "empty": "Noch keine Kursbewegungen zum Sortieren.",
+        "metricAriaLabel": "Sortierung",
+        "dayMetric": "Heute",
+        "totalMetric": "Gesamt"
+      },
+      "portfolioCards": {
+        "title": "Portfolios",
+        "description": "Alle Portfolios mit Wert und Verlauf",
+        "empty": "Noch keine Portfolios.",
+        "sparkAriaLabel": "Verlauf von {{name}} über einen Monat",
+        "colName": "Portfolio",
+        "colValue": "Wert",
+        "colToday": "Heute",
+        "colShare": "Anteil"
+      },
+      "news": {
+        "title": "News",
+        "description": "Schlagzeilen zu deinen Beständen",
+        "empty": "Gerade keine Schlagzeilen zu deinen Beständen.",
+        "unavailable": "News sind nicht verfügbar."
+      },
+      "attention": {
+        "title": "Braucht Aufmerksamkeit",
+        "description": "Ungelesene Benachrichtigungen"
+      },
+      "upcoming": {
+        "title": "Anstehend",
+        "description": "Geplante Sparpläne",
+        "units": "{{count}} ×"
+      },
+      "shortcuts": {
+        "title": "Direkt loslegen",
+        "description": "Links zu den Hauptbereichen"
+      },
+      "netWorthHistory": {
+        "title": "Vermögensverlauf",
+        "description": "Der Wertverlauf aller Portfolios, zusammengefasst",
+        "ariaLabel": "Gesamter Wertverlauf — {{label}}",
+        "empty": "Noch keine Portfolios zum Anzeigen."
+      },
+      "assetSpotlight": {
+        "title": "Spotlight",
+        "description": "Eine Anlage mit Kurs und Chart",
+        "ariaLabel": "Kursverlauf von {{name}}",
+        "unpicked": "Noch keine Anlage gewählt",
+        "unpickedHint": "Öffne die Einstellungen dieses Widgets und wähle eine aus.",
+        "unnamed": "Anlage",
+        "pickLabel": "Anlage",
+        "current": "Aktuell {{name}}",
+        "searchPlaceholder": "Anlagen suchen"
+      },
+      "recentTransactions": {
+        "title": "Letzte Aktivität",
+        "description": "Die neuesten Trades aus deinen Portfolios",
+        "empty": "Noch keine Transaktionen.",
+        "countLabel": "Zeilen",
+        "countOption": "{{count}} Zeilen"
+      },
+      "cashBalances": {
+        "title": "Cash",
+        "description": "Bestände je Cash-Quelle",
+        "empty": "Noch keine Cash-Quellen.",
+        "total": "Gesamt"
+      },
+      "watchlist": {
+        "title": "Watchlist",
+        "description": "Eine Watchlist mit aktuellen Kursen",
+        "empty": "{{name}} ist leer.",
+        "noLists": "Noch keine Watchlists.",
+        "listLabel": "Liste"
+      },
+      "dividends": {
+        "title": "Dividenden",
+        "description": "Kommende Ex- und Zahltage",
+        "empty": "Keine Dividenden in Sicht.",
+        "unavailable": "Dividendendaten sind nicht verfügbar.",
+        "exDate": "Ex-Tag",
+        "payDate": "Zahltag"
+      },
+      "alerts": {
+        "title": "Alarme",
+        "description": "Wie viele scharf sind und was ausgelöst hat",
+        "armed": "Scharf",
+        "triggered": "Ausgelöst",
+        "empty": "Noch keine Alarme."
+      },
+      "liquidity": {
+        "title": "Liquidität",
+        "description": "Wie viel davon Cash ist statt investiert",
+        "empty": "Noch nichts zu messen.",
+        "ofWord": "von"
+      },
+      "concentration": {
+        "title": "Konzentration",
+        "description": "Wie viel an der größten Position hängt",
+        "empty": "Noch keine Positionen zum Messen.",
+        "inWord": "in",
+        "topN": "Top {{n}} zusammen: {{pct}}"
+      }
+    }
+  },
+  "cashflow": {
+    "aria": "Cashflow",
+    "tabs": {
+      "overview": "Übersicht",
+      "transactions": "Transaktionen",
+      "budgets": "Budgets",
+      "categories": "Kategorien",
+      "rules": "Regeln",
+      "import": "Import",
+      "accounts": "Cash-Konten"
+    }
+  },
+  "workbench": {
+    "aria": "Workbench",
+    "tabs": {
+      "overview": "Übersicht",
+      "studio": "Studio",
+      "forecasts": "Prognosen",
+      "blueprints": "Blueprints",
+      "backtests": "Backtests",
+      "compare": "Vergleichen",
+      "ideas": "Ideen",
+      "calculators": "Rechner",
+      "alerts": "Alarme"
+    }
+  },
+  "people": {
+    "aria": "Personen",
+    "tabs": {
+      "friends": "Freunde",
+      "chat": "Chat",
+      "shared": "Geteilte Inhalte",
+      "profile": "Öffentliches Profil",
+      "teams": "Teams",
+      "approvals": "Freigaben"
+    }
+  },
+  "ask": {
+    "title": "BetterTrack fragen",
+    "subtitle": "Ein KI-Arbeitsbereich mit klar begrenztem, erlaubnisbasiertem Zugriff auf deine Daten."
+  },
+  "review": {
+    "title": "Review",
+    "subtitle": "Eine Liste für alles, was deine Entscheidung braucht."
+  },
+  "control": {
+    "title": "Kontrollzentrum",
+    "subtitle": "Einstellungen, Daten und die Developer-Plattform — alles, was den Arbeitsbereich betreibt.",
+    "groups": {
+      "account": "Konto",
+      "data": "Daten",
+      "developer": "Developer-Plattform",
+      "preferences": "Einstellungen",
+      "security": "Sicherheit",
+      "links": "Seiten",
+      "integrations": "Verbindungen & API",
+      "danger": "Gefahrenzone"
+    },
+    "account": "Konto",
+    "accountSub": "Profil, E-Mail, Sprache, Passwort",
+    "notifications": "Benachrichtigungen",
+    "notificationsSub": "Kanäle, Digest, Ruhezeiten",
+    "security": "Sicherheit",
+    "securitySub": "Passkeys, Zwei-Faktor, PIN, Sitzungen",
+    "taxes": "Steuer-Voreinstellungen",
+    "taxesSub": "Voreinstellungen für neue Portfolios",
+    "connections": "Verbindungen",
+    "connectionsSub": "Google Drive und Datenquellen",
+    "imports": "Import & Export",
+    "importsSub": "Broker-Dateien, Konto-Export",
+    "backups": "Backups",
+    "backupsSub": "Externe Kopien deiner Daten",
+    "privacy": "Privatsphäre-Modi",
+    "privacySub": "Diskreter Modus und der Paranoid-Tresor",
+    "dataManagement": "Datenverwaltung",
+    "dataManagementSub": "Checkpoints, Aufbewahrung, Portabilität",
+    "developer": "Developer-Übersicht",
+    "developerSub": "API-Keys, OAuth, Webhooks, MCP",
+    "apiKeys": "API-Keys",
+    "apiKeysSub": "Persönliche Tokens mit Scopes",
+    "webhooks": "Webhooks",
+    "webhooksSub": "Signierte Event-Zustellungen",
+    "mcp": "MCP",
+    "mcpSub": "Zugriff über das Model Context Protocol",
+    "logs": "Request-Logs",
+    "logsSub": "API-Aktivität einsehen",
+    "deleteAccount": "Konto löschen",
+    "portfolioDefaults": "Portfolio-Voreinstellungen",
+    "oauthApps": "OAuth-Apps",
+    "oauthAppsSub": "Von dir registrierte Fremd-Apps",
+    "navAria": "Kontrollzentrum-Bereiche",
+    "filterAria": "Bereiche filtern",
+    "filterPlaceholder": "Filtern…",
+    "noMatches": "Kein Bereich passt.",
+    "leavesPopup": "Öffnet sich als eigene Seite",
+    "signIn": "Anmeldung",
+    "sessions": "Sitzungen",
+    "notificationLog": "Benachrichtigungsprotokoll",
+    "profile": "Öffentliches Profil",
+    "authorizedApps": "Autorisierte Apps"
+  },
+  "privacy": {
+    "subtitle": "Steuere, was der Bildschirm zeigt und wo deine Daten liegen.",
+    "discreet": {
+      "title": "Diskreter Modus",
+      "body": "Maskiert jeden absoluten Betrag in der App — zeig BetterTrack anderen, ohne Zahlen offenzulegen."
+    }
+  },
+  "parked": {
+    "flag": "In Arbeit",
+    "foot": "Im Produktplan reserviert — diese Oberfläche wartet auf ihre Umsetzung.",
+    "links": {
+      "forecasts": "Prognosen öffnen",
+      "taxDefaults": "Steuer-Voreinstellungen",
+      "blueprints": "Blueprints öffnen",
+      "backtests": "Backtests öffnen",
+      "search": "Suche öffnen",
+      "friends": "Personen öffnen",
+      "importsExports": "Import & Export",
+      "security": "Sicherheitseinstellungen",
+      "aiInsights": "KI-Insights in der Analyse",
+      "nlBuilder": "Blueprint-Builder",
+      "standingOrders": "Sparpläne in Prognosen",
+      "structure": "Struktur",
+      "events": "Ereignisse",
+      "health": "Datenqualität",
+      "rebalancePage": "Rebalancing",
+      "privateMarkets": "Private Märkte"
+    },
+    "portfolioPlan": {
+      "title": "Plan",
+      "body": "Ziele, Zielallokation und Rebalancing — die vorausschauende Seite des Portfolios, verbunden mit denselben Daten wie alles andere.",
+      "p1": "Ziele mit Zieldatum und nötigen Beiträgen",
+      "p2": "Zielallokation mit Abweichungs-Tracking",
+      "p3": "Rebalancing-Vorschläge, die du vor jeder Änderung freigibst",
+      "p4": "Prognose-Verknüpfungen in die Workbench"
+    },
+    "automate": {
+      "title": "Automatisieren",
+      "body": "Sparpläne, Regeln und freigegebene Automationen für dieses Portfolio. Sparpläne laufen heute schon — verwalte sie in den Prognosen, bis dieser Tab übernimmt.",
+      "p1": "Wiederkehrende Käufe und Beiträge nach Zeitplan",
+      "p2": "Regeln, die neue Aktivität kategorisieren und zuordnen",
+      "p3": "Jede Automation sichtbar, pausierbar und nachvollziehbar"
+    },
+    "portfolioFiles": {
+      "title": "Dateien",
+      "body": "Abrechnungen, Verträge, Belege und Bewertungsnachweise — am Portfolio angehängt und mit den Zahlen verknüpft, die sie belegen.",
+      "p1": "Dokumente hochladen, klassifizieren und mit Aktivität verknüpfen",
+      "p2": "Versionierung mit Prüfung und Wiederherstellung",
+      "p3": "Nachweis-Links von jeder folgenreichen Zahl aus"
+    },
+    "portfolioPeople": {
+      "title": "Personen",
+      "body": "Rollen, Zugriff und Freigaben für dieses Portfolio. Teilen mit Freunden und Gruppen-Portfolios funktionieren schon — feingranulare Rollen landen hier.",
+      "p1": "Eigentümer-, Verwalter- und Betrachter-Rollen je Portfolio",
+      "p2": "Freigaberegeln für folgenreiche Änderungen",
+      "p3": "Zugriff und Aktivität in einer Audit-Ansicht"
+    },
+    "portfolioEvents": {
+      "title": "Ereignisse",
+      "body": "Kapitalmaßnahmen — Splits, Fusionen, Spin-offs und Sachdividenden — abgeglichen mit Nachweisen und lückenloser Beleg-Spur.",
+      "p1": "Sichere Maßnahmen laufen direkt, unsichere gehen ins Review",
+      "p2": "Auswirkungen auf Position, Steuern und Einstandskosten explizit",
+      "p3": "Dauerhafte Quell- und Beleg-Spur je Ereignis"
+    },
+    "portfolioStructure": {
+      "title": "Struktur",
+      "body": "Der Beziehungs- und Eigentumsgraph: verschachtelte Portfolios, Eigentumsanteile und Roll-ups ohne Doppelzählung.",
+      "p1": "Haushalte, Gesellschaften und Mandate als Portfolios",
+      "p2": "Umhängen und Eigentumsänderungen über das Review",
+      "p3": "Roll-ups, die keinen Euro doppelt zählen"
+    },
+    "dataHealth": {
+      "title": "Datenqualität",
+      "body": "Herkunft auf Feldebene für jede folgenreiche Zahl: Quelle, Sync-Alter, Lücken und Ausnahmen — Korrekturen laufen über das Review.",
+      "p1": "Quelle, Import und Berechnungsweg je Feld",
+      "p2": "Veraltete Verbindungen und fehlende Daten früh sichtbar",
+      "p3": "Nachweise oder begründete Ausnahmen direkt erfasst",
+      "p4": "Wahrheitsändernde Korrekturen gehen über das Review"
+    },
+    "privateMarkets": {
+      "title": "Private Märkte",
+      "body": "Commitments, Kapitalabrufe, NAV-Updates und Bewertungsnachweise für nicht börsennotierte Positionen.",
+      "p1": "Commitments mit Abruf-Zeitplänen gegen die Liquidität",
+      "p2": "NAV-Änderungen mit ihren Nachweisen im Review",
+      "p3": "Durchblick in Allokation und Performance"
+    },
+    "rebalance": {
+      "title": "Rebalancing",
+      "body": "Rebalancing mit Nebenbedingungen: exakte Stückzahlen, Kosten und Steuerschätzungen, eingefroren in einen Plan, den du freigibst.",
+      "p1": "Ziele aus Blueprints oder dem Portfolio-Plan",
+      "p2": "Kosten, Steuern und Regelentscheidungen explizit",
+      "p3": "Eine eingefrorene Plan-Prüfsumme fürs Review"
+    },
+    "studio": {
+      "title": "Studio",
+      "body": "Der visuelle Was-wäre-wenn-Builder: Szenarien auf echten Portfoliodaten entwerfen und nur über einen expliziten Review-Schritt anwenden.",
+      "p1": "Zerstörungsfreie Entwürfe über echten Beständen",
+      "p2": "Beiträge, Schocks und Allokationsänderungen als Bausteine",
+      "p3": "Charts und Vergleiche aktualisieren sich beim Bearbeiten",
+      "p4": "Aufs Portfolio anwenden endet immer in einem Review"
+    },
+    "assetEvents": {
+      "title": "Termine",
+      "body": "Earnings, Dividenden, Splits und der Makro-Kalender für die Anlagen, die du hältst und beobachtest.",
+      "p1": "Earnings-Termine mit Schätzungen und Überraschungen",
+      "p2": "Dividendenkalender mit erwarteten Erträgen",
+      "p3": "Splits und Kapitalmaßnahmen im Voraus"
+    },
+    "screener": {
+      "title": "Screener",
+      "body": "Das Anlageuniversum nach Fundamentaldaten, Performance und Exposure filtern — Ergebnisse gehen in Watchlists oder Blueprints.",
+      "p1": "Kombinierbare Filter über den lokalen Anlagenkatalog",
+      "p2": "Gespeicherte Screens, die auf frischen Daten neu laufen",
+      "p3": "Ein Klick in Watchlists und Blueprints"
+    },
+    "discover": {
+      "title": "Entdecken",
+      "body": "Kuratierte Einstiege in Aktien, ETFs, Krypto und Rohstoffe — stöbern nach Kategorie, Region und Thema.",
+      "p1": "Kategorie-Browser für jede Anlageklasse",
+      "p2": "Regionale und thematische Sammlungen",
+      "p3": "Direkte Wege in Recherche und Watchlists"
+    },
+    "teams": {
+      "title": "Teams",
+      "body": "Gemeinsame Arbeitsbereiche für Haushalte, Clubs und Berater-Beziehungen mit Rollen und gemeinsamer Sicht.",
+      "p1": "Gruppen-Portfolios mit Mitglieder-Rollen",
+      "p2": "Berater- und Kunden-Arbeitsbereiche mit Review-Regeln",
+      "p3": "Gemeinsame Aktivität, ohne dein Konto aufzugeben"
+    },
+    "approvals": {
+      "title": "Freigaben",
+      "body": "Anfragen, die ein zweites Paar Augen brauchen: Zugriffsvergaben, folgenreiche Änderungen und Automations-Vorschläge.",
+      "p1": "Zugriffsanfragen mit expliziten Scopes",
+      "p2": "Folgenreiche Änderungen warten auf Freigabe",
+      "p3": "Eine vollständige Entscheidungs-Spur je Anfrage"
+    },
+    "review": {
+      "title": "Review-Eingang",
+      "body": "Unkategorisierte Aktivität, veraltete Verbindungen, Abweichungen, fehlende Daten und offene Einladungen — eine priorisierte Liste statt verstreuter Warnungen.",
+      "p1": "Jeder Eintrag direkt an Ort und Stelle erledigbar",
+      "p2": "Prioritäten, die die Geldwirkung widerspiegeln",
+      "p3": "Automations-Vorschläge warten auf deine Entscheidung",
+      "p4": "Nichts Folgenreiches passiert im Stillen"
+    },
+    "dataManagement": {
+      "title": "Datenverwaltung",
+      "body": "Verifizierte Checkpoints, Wiederherstellung mit Vorschau, portable Export-Manifeste und Aufbewahrungsregeln.",
+      "p1": "Checkpoints, die du prüfen und wiederherstellen kannst",
+      "p2": "Portable Exporte in einem offenen Manifest-Format",
+      "p3": "Aufbewahrungsregeln unter deiner Kontrolle"
+    },
+    "paranoid": {
+      "title": "Paranoid-Modus",
+      "body": "Deine Daten bleiben nur bei dir: Das Portfolio liegt in einem client-verschlüsselten Tresor — auf BetterTrack, deinem Google Drive, beidem oder nur Drive — und der Server kann es nie lesen. Die Client-Grundlagen sind bereits gemerged; der Aktivierungs-Flow landet hier.",
+      "p1": "Client-seitige Verschlüsselung — der Schlüssel verlässt deine Geräte nie",
+      "p2": "Speichermedien nach Wahl: Server, Drive, beides oder nur Drive",
+      "p3": "Geldberechnung auf deinem Gerät mit derselben geprüften Engine",
+      "p4": "Schlüssel verloren heißt Daten verloren — bewusst so, mit Pflicht-Recovery-Kit"
+    },
+    "mcp": {
+      "title": "MCP",
+      "body": "KI-Clients über das Model Context Protocol verbinden — mit Portfolio-Grenze, Tool-Auswahl und prüfbaren Schreibzugriffen.",
+      "p1": "Streamable-HTTP-Clients mit rotierbarem Zugriff",
+      "p2": "Eine harte Portfolio-Grenze je Verbindung",
+      "p3": "Finanz-Schreibzugriffe kommen als prüfbare Vorschläge an"
+    },
+    "developerLogs": {
+      "title": "Request-Logs",
+      "body": "API-Requests nach Zeitraum, Pfad, Akteur und Ergebnis filtern; Status, Latenz, Scope und Antwort-Vorschau einsehen.",
+      "p1": "Filter nach Zeitraum, Pfad, Akteur und Ergebnis",
+      "p2": "Status, Latenz und Portfolio-Scope je Request",
+      "p3": "CSV-Export für tiefere Analysen"
+    },
+    "oauthApps": {
+      "title": "OAuth-Apps",
+      "body": "PKCE- oder vertrauliche Clients registrieren, Redirect-URIs und Scopes verwalten, autorisierte Zugriffe einsehen. Heute verwalten Admins die OAuth-Apps.",
+      "p1": "Öffentliche PKCE- und vertrauliche Clients",
+      "p2": "Zugangsdaten einmal sichtbar, jederzeit widerrufbar",
+      "p3": "Eine Vorschau des Autorisierungsmodells"
+    },
+    "ask": {
+      "title": "BetterTrack fragen",
+      "body": "Fragen über deine eigenen Portfolios mit explizitem Scope, verknüpften Antworten und prüfbaren Vorschlägen — ohne aufdringliche Chat-Blasen. KI-Insights und der Sprach-Blueprint-Builder sind heute schon live; der volle Arbeitsbereich landet hier.",
+      "p1": "Du wählst genau, welche Portfolios die Antwort lesen darf",
+      "p2": "Jede Zahl verlinkt zurück auf Datensätze und Annahmen",
+      "p3": "Szenario-Antworten öffnen sich als Workbench-Entwürfe",
+      "p4": "Kein Schreibzugriff ohne deine ausdrückliche Bestätigung"
+    }
+  },
+  "palette": {
+    "triggerLabel": "Suchen…",
+    "inputAria": "BetterTrack durchsuchen",
+    "placeholder": "Seiten, Aktionen, Einstellungen und Anlagen suchen…",
+    "resultsAria": "Suchergebnisse",
+    "hint": "Seiten, Aktionen, Einstellungen und Marktanlagen — alles von hier aus.",
+    "noResults": "Nichts passt zu „{{query}}“. Probiere ein Symbol, eine Seite oder eine Einstellung.",
+    "assetsLoading": "Anlagen werden gesucht…",
+    "assetsEmpty": "Keine passenden Anlagen.",
+    "group": {
+      "suggested": "Vorschläge",
+      "actions": "Aktionen",
+      "goTo": "Gehe zu",
+      "settings": "Einstellungen",
+      "assets": "Anlagen"
+    },
+    "keys": {
+      "navigate": "Navigieren",
+      "open": "Öffnen"
+    },
+    "assetType": {
+      "stock": "Aktie",
+      "etf": "ETF",
+      "index": "Index",
+      "fx": "FX",
+      "commodity": "Rohstoff",
+      "crypto": "Krypto",
+      "other": "Sonstige"
+    }
+  },
+  "firstrun": {
+    "stepOf": "Schritt {{current}} von {{total}}",
+    "later": "Später erledigen",
+    "finish": "Zu BetterTrack",
+    "parkedFlag": "In Arbeit",
+    "command": {
+      "runAgain": "Einrichtung erneut starten"
+    },
+    "profile": {
+      "label": "Du",
+      "title": "Bist das du?",
+      "hint": "Name und Adresse, mit denen dein Konto erstellt wurde.",
+      "nameLabel": "Anzeigename",
+      "nameParked": "Das Umbenennen kommt mit der Profilbearbeitung.",
+      "emailLabel": "E-Mail"
+    },
+    "verifyEmail": {
+      "label": "E-Mail",
+      "title": "E-Mail bestätigen",
+      "verified": "Bereits über Google bestätigt.",
+      "parkedNote": "Kommt mit dem E-Mail-Versand.",
+      "codeLabel": "Bestätigungscode"
+    },
+    "security": {
+      "label": "Sicherheit",
+      "title": "Ein zweites Schloss?",
+      "hint": "Beides ist freiwillig und kann warten.",
+      "setUp": "Einrichten",
+      "on": "Aktiv",
+      "pin": {
+        "title": "App-PIN",
+        "description": "Vier Ziffern, um BetterTrack auf diesem Gerät zu entsperren.",
+        "newLabel": "Neue PIN",
+        "confirmLabel": "PIN bestätigen",
+        "save": "PIN speichern",
+        "mismatch": "Die beiden PINs stimmen nicht überein.",
+        "rateLimited": "Zu viele Versuche. Bitte gleich noch einmal probieren.",
+        "failed": "Die PIN konnte nicht gespeichert werden."
+      },
+      "twoFactor": {
+        "title": "Zwei-Faktor-Authentifizierung",
+        "description": "Bei jeder Anmeldung ein Code aus deiner Authenticator-App.",
+        "scan": "Scanne das mit deiner Authenticator-App.",
+        "qrAria": "QR-Code zur Authenticator-Einrichtung",
+        "manualToggle": "Schlüssel manuell eingeben",
+        "codeLabel": "Code aus deiner App",
+        "confirm": "Aktivieren",
+        "invalidCode": "Dieser Code ist falsch oder abgelaufen.",
+        "rateLimited": "Zu viele Codes. Bitte gleich noch einmal probieren.",
+        "enrollError": "Die Einrichtung konnte nicht gestartet werden.",
+        "enabled": "Die Zwei-Faktor-Authentifizierung ist aktiv."
+      },
+      "recoveryCodes": {
+        "description": "Bewahre sie sicher auf. Jeder Code meldet dich einmal an, falls du deine App verlierst.",
+        "saved": "Ich habe sie gespeichert"
+      }
+    },
+    "preferences": {
+      "label": "Einstellungen",
+      "title": "Sprache und Währung",
+      "languageLabel": "Sprache",
+      "currencyLabel": "Basiswährung",
+      "currencyHint": "Jede Summe wird in diese Währung umgerechnet."
+    },
+    "tax": {
+      "label": "Steuern",
+      "title": "Wie sollen Steuern behandelt werden?",
+      "hint": "Das wird die Vorgabe für neue Portfolios — du kannst sie jederzeit ändern.",
+      "groupAria": "Steuerbehandlung"
+    },
+    "publicProfile": {
+      "label": "Profil",
+      "title": "Dein öffentliches Profil",
+      "pictureParked": "Ein Bild auszuwählen kommt später.",
+      "toggleLabel": "Mein Profil öffentlich machen",
+      "toggleHint": "Alle können sehen, was du öffentlich geteilt hast.",
+      "acknowledge": "Ich verstehe das und möchte ein öffentliches Profil."
+    },
+    "done": {
+      "label": "Fertig",
+      "title": "Du bist eingerichtet",
+      "set": "Erledigt",
+      "later": "Später"
+    },
+    "figures": {
+      "on": "Aktiv",
+      "off": "Aus",
+      "verified": "Über Google bestätigt",
+      "awaitingDelivery": "Wartet auf den E-Mail-Versand",
+      "pin": "PIN",
+      "twoFactor": "2FA",
+      "notSet": "Nicht gesetzt",
+      "taxMeta": "Vorgabe für neue Portfolios",
+      "public": "Öffentlich",
+      "private": "Privat",
+      "publicMeta": "Für alle mit dem Link sichtbar",
+      "privateMeta": "Nur du siehst diese Seite",
+      "setCount": "{{count}} erledigt",
+      "laterCount": "{{count}} für später"
+    }
+  },
+  "vaultMoney": {
+    "error": {
+      "locked": "Dein Tresor ist gesperrt. Entsperre ihn, um fortzufahren.",
+      "corrupt": "Die entschlüsselten Tresordaten konnten nicht sicher verarbeitet werden.",
+      "unavailable": "Deine Tresordaten sind gerade nicht verfügbar. Versuche es erneut, sobald die Synchronisierung abgeschlossen ist.",
+      "unsupported": "Dieser Tresor enthält Daten, die diese App-Version nicht unterstützt.",
+      "portfolioNotFound": "Dieses Portfolio existiert nicht in deinem Tresor.",
+      "marketData": "Für diese Berechnung nötige Marktdaten sind nicht verfügbar. Es wurde nichts geschätzt – versuche es später erneut.",
+      "tax": "Die Steuereinstellungen oder Steuerdaten in deinem Tresor konnten nicht angewendet werden.",
+      "aborted": "Der Vorgang wurde vor Abschluss unterbrochen.",
+      "generic": "Der Vorgang konnte nicht abgeschlossen werden."
     }
   }
 }

@@ -26,6 +26,16 @@ async function loginAgent(email: string, password: string, staySignedIn?: boolea
   return agent;
 }
 
+async function storedSessionFor(userId: string): Promise<Record<string, unknown>> {
+  for (const key of await harness.ctx.redis.keys('sess:*')) {
+    const raw = await harness.ctx.redis.get(key);
+    if (!raw) continue;
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    if (data.userId === userId) return data;
+  }
+  throw new Error(`No session found for ${userId}`);
+}
+
 describe('GET /auth/session — current-session info (PROJECTPLAN.md §6.11 Security)', () => {
   it("returns the current session's timestamps with expiresAt = renewedAt + 30-day window", async () => {
     const user = await harness.seedUser();
@@ -47,6 +57,12 @@ describe('GET /auth/session — current-session info (PROJECTPLAN.md §6.11 Secu
     // window past the renewal.
     expect(info.persistent).toBe(true);
     expect(expiresAt - renewedAt).toBe(harness.ctx.config.cookie.maxAgeMs);
+
+    // Authentication provenance is server-only session state; password alone
+    // records no MFA assurance and no response contract exposes either field.
+    const stored = await storedSessionFor(user.id);
+    expect(stored.authenticationMethod).toBe('password');
+    expect(stored.mfaAssurance).toBeUndefined();
   });
 
   it('reports an ephemeral session with persistent:false and a cap-bounded expiry, not 30 days', async () => {

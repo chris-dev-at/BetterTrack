@@ -7,13 +7,7 @@ import { formatMoney } from '../../lib/format';
 import { setCashBalance } from '../../lib/portfolioApi';
 import { MoneyText } from '../../ui';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
-
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
+import { Alert, Button } from '../components/ui';
 
 /** Cents-quantized delta between a target and the current balance (matches the server). */
 function deltaEur(target: number, current: number): number {
@@ -80,17 +74,15 @@ export function SetBalanceDialog({
       widthClassName="max-w-md"
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <p className="text-sm text-neutral-400">
+        <p className="text-sm bt-muted">
           {t('portfolio.cashSources.setBalance.currentLabel')}:{' '}
-          <span className="font-medium text-neutral-200">
+          <span className="font-medium bt-soft">
             <MoneyText amount={source.balanceEur} currency="EUR" />
           </span>
         </p>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.cashSources.setBalance.targetLabel')}
-          </span>
+        <div className="bt-field">
+          <label>{t('portfolio.cashSources.setBalance.targetLabel')}</label>
           <input
             type="number"
             inputMode="decimal"
@@ -99,12 +91,12 @@ export function SetBalanceDialog({
             value={target}
             onChange={(e) => setTarget(e.target.value)}
             aria-label={t('portfolio.cashSources.setBalance.targetAriaLabel')}
-            className={inputClass}
+            className="bt-input"
           />
-        </label>
+        </div>
 
         {delta !== null ? (
-          <p className="text-xs text-neutral-400" role="status">
+          <p className="text-xs bt-muted" role="status">
             {delta === 0
               ? t('portfolio.cashSources.setBalance.noChange')
               : delta > 0
@@ -117,19 +109,17 @@ export function SetBalanceDialog({
           </p>
         ) : null}
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.cashSources.setBalance.noteLabel')}
-          </span>
+        <div className="bt-field">
+          <label>{t('portfolio.cashSources.setBalance.noteLabel')}</label>
           <input
             type="text"
             value={note}
             maxLength={1000}
             onChange={(e) => setNote(e.target.value)}
             aria-label={t('portfolio.cashSources.setBalance.noteLabel')}
-            className={inputClass}
+            className="bt-input"
           />
-        </label>
+        </div>
 
         {error ? <Alert tone="error">{error}</Alert> : null}
 

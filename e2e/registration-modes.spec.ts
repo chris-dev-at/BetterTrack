@@ -9,6 +9,7 @@ import {
 } from './support/adminApi';
 import { passwordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
+import { dismissFirstRun } from './support/flows';
 
 /**
  * Registration-modes smoke (§6.12 / v3 #420, via issue #446). The admin flips
@@ -42,8 +43,12 @@ test('registration modes: open mode allows self-serve signup at /register', asyn
     await page.getByLabel('Password').fill(ACCOUNT_PASSWORD);
     await page.getByRole('button', { name: 'Create account' }).click();
 
-    // Open mode signs the new account straight in → "/" → /portfolio.
-    await expect(page).toHaveURL(/\/portfolio$/, { timeout: 20_000 });
+    // Open mode signs the new account straight in — onto first-run setup, which
+    // hands over the app once skipped.
+    await dismissFirstRun(page);
+    await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({
+      timeout: 20_000,
+    });
   } finally {
     await setRegistrationMode(apiRequest, priorMode);
     await apiRequest.dispose();
@@ -89,7 +94,10 @@ test('registration modes: invite-token mode consumes a single-use token', async 
     await goodPage.getByLabel('Username').fill(goodUsername);
     await goodPage.getByLabel('Password').fill(ACCOUNT_PASSWORD);
     await goodPage.getByRole('button', { name: 'Create account' }).click();
-    await expect(goodPage).toHaveURL(/\/portfolio$/, { timeout: 20_000 });
+    await dismissFirstRun(goodPage);
+    await expect(goodPage.getByRole('button', { name: 'Account menu' })).toBeVisible({
+      timeout: 20_000,
+    });
 
     // (2) The same token — now spent — surfaces INVALID_REGISTRATION_TOKEN
     // (i18n key auth.register.invalidToken) and no account is created. The
@@ -200,7 +208,13 @@ test('registration modes: approval mode gates on admin approve / reject via the 
     // account with the same email + username + password.
     await approvePage.goto('/login');
     await passwordSignIn(approvePage, approveUsername, ACCOUNT_PASSWORD);
-    await expect(approvePage).toHaveURL(/\/portfolio$/, { timeout: 20_000 });
+    // An approved applicant never touches a signup screen — they just log in —
+    // so this is the mode the old per-page redirect could never reach. The
+    // assertion is deliberately strict: it proves setup now finds them.
+    await dismissFirstRun(approvePage);
+    await expect(approvePage.getByRole('button', { name: 'Account menu' })).toBeVisible({
+      timeout: 20_000,
+    });
 
     // (5) Applicant B still cannot sign in — a rejected application never
     // becomes an account; §6.1 hides the reason behind the generic form error.

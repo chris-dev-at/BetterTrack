@@ -78,16 +78,22 @@ export function DeleteAccountPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0b0e14] px-4 pb-12 pt-[10vh] sm:pt-[14vh]">
-      <div className="mx-auto w-full max-w-md">
-        <div className="mb-8 text-center">
-          <Wordmark edition="Web" className="text-2xl" />
+    // Standalone gate screen (outside the app chrome). The card border carries
+    // the negative hue so the destructive intent is legible before any copy is
+    // read — the only decoration on an otherwise standard gate card.
+    <div className="bt-app bt-gate">
+      <div
+        className="bt-gate__card flex flex-col gap-5"
+        style={{ borderColor: 'color-mix(in srgb, var(--bt-neg) 32%, transparent)' }}
+      >
+        <div className="bt-gate__brand text-center">
+          <Wordmark edition="Web" />
         </div>
 
-        <div className="flex flex-col gap-5 rounded-xl border border-red-900/60 bg-neutral-900 p-6">
+        <div className="flex flex-col gap-5">
           <div className="flex flex-col gap-1">
-            <h1 className="text-lg font-semibold text-red-400">{t('deleteAccount.title')}</h1>
-            <p className="text-sm text-neutral-400">{t('deleteAccount.subtitle')}</p>
+            <h1 className="bt-h2 bt-neg">{t('deleteAccount.title')}</h1>
+            <p className="bt-muted text-sm">{t('deleteAccount.subtitle')}</p>
           </div>
 
           <Alert tone="error">
@@ -136,7 +142,7 @@ export function DeleteAccountPage() {
               <button
                 type="button"
                 onClick={() => setUseCode((v) => !v)}
-                className="w-fit text-xs font-medium text-sky-400 hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                className="bt-link w-fit text-xs font-medium"
               >
                 {useCode ? t('deleteAccount.usePassword') : t('deleteAccount.useCode')}
               </button>
@@ -148,15 +154,17 @@ export function DeleteAccountPage() {
               <Button
                 type="submit"
                 variant="secondary"
-                className="text-red-300 ring-red-900 hover:bg-red-950"
+                className="bt-btn--danger"
                 disabled={mutation.isPending}
               >
                 {mutation.isPending ? t('deleteAccount.submitting') : t('deleteAccount.submit')}
               </Button>
-              <Link
-                to="/settings/account"
-                className="text-sm font-medium text-neutral-400 hover:text-neutral-200"
-              >
+              {/* Cancel leaves for the portfolio, REPLACING this entry. It used
+                  to go back to account settings, which now redirect into the
+                  Control Center — and closing that popup went back in history,
+                  landing on this gate again. Someone who opened the delete link
+                  directly could not escape the loop. */}
+              <Link className="bt-btn bt-btn--quiet" replace to="/portfolio">
                 {t('common.cancel')}
               </Link>
             </div>

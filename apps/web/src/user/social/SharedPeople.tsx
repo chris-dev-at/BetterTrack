@@ -6,7 +6,7 @@ import type { FriendUser, ShareKind, SharedWithMeResponse } from '@bettertrack/c
 
 import { setActivityAlert } from '../../lib/socialApi';
 import { useT, type TranslateFn } from '../../i18n';
-import { cx } from '../components/ui';
+import { Switch } from '../../ui/origin';
 
 /**
  * Shared building blocks for the person-centric social surfaces (V3-P6, #384):
@@ -122,18 +122,44 @@ export function KindIcon({ kind, className }: { kind: ShareKind; className?: str
   );
 }
 
+/**
+ * The quiet square that carries a {@link KindIcon} in a row. Origin keeps object
+ * glyphs on a flat strong-surface tile with a small radius — no colored badge,
+ * no circle — so a list of mixed kinds reads as one calm column.
+ */
+export function KindTile({ kind, size = 34 }: { kind: ShareKind; size?: number }) {
+  return (
+    <span
+      className="flex shrink-0 items-center justify-center"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: 6,
+        background: 'var(--bt-surface-strong)',
+        color: 'var(--bt-muted)',
+      }}
+    >
+      <KindIcon kind={kind} className="h-[18px] w-[18px]" />
+    </span>
+  );
+}
+
 /** The read-only deep link for one item a friend shares with me. */
 export function sharedItemHref(kind: ShareKind, subjectId: string): string {
-  if (kind === 'portfolio') return `/social/shared-with-me/${subjectId}`;
-  if (kind === 'conglomerate') return `/social/shared-with-me/conglomerates/${subjectId}`;
-  if (kind === 'idea') return `/social/shared-with-me/ideas/${subjectId}`;
-  return `/social/shared-with-me/watchlists/${subjectId}`;
+  if (kind === 'portfolio') return `/people/shared/${subjectId}`;
+  if (kind === 'conglomerate') return `/people/shared/conglomerates/${subjectId}`;
+  if (kind === 'idea') return `/people/shared/ideas/${subjectId}`;
+  return `/people/shared/watchlists/${subjectId}`;
 }
 
 /**
  * One shared item as a row: a read-only deep link (icon + name + secondary line),
  * with an optional `footer` slot beneath it (e.g. the activity-alert control),
  * kept OUTSIDE the link so it doesn't navigate.
+ *
+ * Origin: a flat ruled row, not a card — these always live inside another
+ * surface (a friend's expanded overview), and Origin forbids boxes inside
+ * boxes. The caller supplies the `bt-band` that rules consecutive rows apart.
  */
 export function SharedItemRow({
   kind,
@@ -149,23 +175,24 @@ export function SharedItemRow({
   footer?: ReactNode;
 }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40 transition-colors hover:border-neutral-700">
+    <div>
       <Link
+        className="flex min-w-0 items-center gap-3"
+        style={{ padding: '10px 0', textDecoration: 'none' }}
         to={sharedItemHref(kind, subjectId)}
-        className="flex min-w-0 items-center gap-3 px-3 py-2.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
       >
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-neutral-800 text-neutral-400">
-          <KindIcon kind={kind} className="h-5 w-5" />
-        </span>
+        <KindTile kind={kind} />
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-sm font-medium text-neutral-100">{name}</span>
+          <span className="bt-row-title truncate">{name}</span>
           {secondary != null && secondary !== '' ? (
-            <span className="truncate text-xs text-neutral-500">{secondary}</span>
+            <span className="bt-row-sub truncate">{secondary}</span>
           ) : null}
         </span>
       </Link>
       {footer != null ? (
-        <div className="border-t border-neutral-800 px-3 py-2.5">{footer}</div>
+        <div className="bt-t-rule" style={{ padding: '9px 0' }}>
+          {footer}
+        </div>
       ) : null}
     </div>
   );
@@ -215,30 +242,19 @@ export function ActivityAlertToggle({
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="flex min-w-0 flex-col">
-        <span className="text-xs font-medium text-neutral-300">{label}</span>
-        <span className="text-[11px] leading-tight text-neutral-500">
+        <span className="bt-soft" style={{ fontSize: 12, fontWeight: 570 }}>
+          {label}
+        </span>
+        <span className="bt-meta" style={{ fontSize: 11.5, lineHeight: 1.3 }}>
           {t('social.activity.dormantHint')}
         </span>
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={on}
+      <Switch
         aria-label={label}
+        checked={on}
+        onChange={toggle}
         title={on ? t('social.activity.on') : t('social.activity.off')}
-        onClick={toggle}
-        className={cx(
-          'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-          on ? 'bg-sky-600' : 'bg-neutral-700',
-        )}
-      >
-        <span
-          className={cx(
-            'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-            on ? 'translate-x-6' : 'translate-x-1',
-          )}
-        />
-      </button>
+      />
     </div>
   );
 }

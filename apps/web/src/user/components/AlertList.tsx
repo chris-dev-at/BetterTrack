@@ -1,27 +1,27 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
-import type { Alert } from '@bettertrack/contracts';
+import type { Alert, AlertStatus } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { ALERTS_QUERY_KEY, deleteAlert, rearmAlert } from '../../lib/alertsApi';
 import { formatDateTime } from '../../lib/format';
+import { Badge, Button, type BadgeTone } from '../../ui/origin';
 import { ALERT_STATUS_META, describeAlertRule } from './alertMeta';
-import { Alert as AlertBanner, cx } from './ui';
+import { Alert as AlertBanner } from './ui';
+
+/** §14 status → Badge tone: active reads positive, triggered draws the eye
+ * (gold), disabled/paused stays neutral. */
+const STATUS_TONE: Record<AlertStatus, BadgeTone> = {
+  active: 'pos',
+  triggered: 'gold',
+  disabled: 'neutral',
+};
 
 function StatusBadge({ alert }: { alert: Alert }) {
   const t = useT();
   const meta = ALERT_STATUS_META[alert.status];
-  return (
-    <span
-      className={cx(
-        'inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset',
-        meta.className,
-      )}
-    >
-      {t(meta.labelKey)}
-    </span>
-  );
+  return <Badge tone={STATUS_TONE[alert.status]}>{t(meta.labelKey)}</Badge>;
 }
 
 function AlertRow({
@@ -48,25 +48,20 @@ function AlertRow({
   const busy = rearmMutation.isPending || deleteMutation.isPending;
 
   return (
-    <li className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+    <li className="bt-band__row flex flex-col gap-2">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           {showAsset ? (
-            <Link
-              to={`/assets/${alert.asset.id}`}
-              className="font-mono text-sm text-sky-400 hover:underline"
-            >
+            <Link className="bt-link" style={{ fontSize: 12.5 }} to={`/assets/${alert.asset.id}`}>
               {alert.asset.symbol}
             </Link>
           ) : null}
-          <p className="text-sm font-medium text-neutral-100">
-            {describeAlertRule(t, alert, alert.asset.currency)}
-          </p>
+          <p className="bt-row-title">{describeAlertRule(t, alert, alert.asset.currency)}</p>
         </div>
         <StatusBadge alert={alert} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500">
+      <div className="bt-meta flex flex-wrap items-center gap-x-3 gap-y-1">
         <span>
           {alert.repeat ? t('workboard.alerts.list.repeat') : t('workboard.alerts.list.oneShot')}
         </span>
@@ -79,35 +74,20 @@ function AlertRow({
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 pt-1 text-sm">
+      <div className="flex flex-wrap items-center gap-2 pt-1">
         {alert.status === 'triggered' ? (
-          <button
-            type="button"
-            onClick={() => rearmMutation.mutate()}
-            disabled={busy}
-            className="font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
-          >
+          <Button disabled={busy} onClick={() => rearmMutation.mutate()} size="sm" variant="quiet">
             {rearmMutation.isPending
               ? t('workboard.alerts.list.rearming')
               : t('workboard.alerts.list.rearm')}
-          </button>
+          </Button>
         ) : null}
-        <button
-          type="button"
-          onClick={() => onEdit(alert)}
-          disabled={busy}
-          className="font-medium text-neutral-300 hover:text-neutral-100 disabled:cursor-not-allowed disabled:text-neutral-600"
-        >
+        <Button disabled={busy} onClick={() => onEdit(alert)} size="sm" variant="quiet">
           {t('common.edit')}
-        </button>
-        <button
-          type="button"
-          onClick={() => deleteMutation.mutate()}
-          disabled={busy}
-          className="font-medium text-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:text-neutral-600"
-        >
+        </Button>
+        <Button disabled={busy} onClick={() => deleteMutation.mutate()} size="sm" variant="danger">
           {deleteMutation.isPending ? t('workboard.alerts.list.deleting') : t('common.delete')}
-        </button>
+        </Button>
       </div>
 
       {rearmMutation.isError || deleteMutation.isError ? (
@@ -134,7 +114,7 @@ export function AlertList({
   onEdit: (alert: Alert) => void;
 }) {
   return (
-    <ul className="flex flex-col gap-3">
+    <ul className="bt-panel bt-band">
       {alerts.map((alert) => (
         <AlertRow key={alert.id} alert={alert} showAsset={showAsset} onEdit={onEdit} />
       ))}

@@ -68,6 +68,7 @@ import {
 import type { Logger } from '../logger';
 import { createRealtimeGateway, type RealtimeGateway } from '../realtime';
 import { createHealthService, type HealthService } from '../services/health/healthService';
+import { createReadinessService, type ReadinessService } from '../services/health/readinessService';
 import { initObservability, type Observability } from '../services/observability/sentry';
 import { createMarketData } from '../providers';
 import type { MarketDataService } from '../providers';
@@ -93,6 +94,7 @@ import {
 } from '../services/admin/adminTwoFactorService';
 import { createApiKeyService, type ApiKeyService } from '../services/apiKeys/apiKeyService';
 import { createOAuthService, type OAuthService } from '../services/oauth/oauthService';
+import type { OAuthLogoFetcher } from '../services/oauth/oauthLogo';
 import { createAppSettingsService } from '../services/appSettings/appSettingsService';
 import {
   createFeatureFlagService,
@@ -465,6 +467,8 @@ export interface AppContext {
   observability: Observability;
   /** Admin health snapshot behind `GET /admin/health` (§13.4 V4-P5a). */
   health: HealthService;
+  /** Public DB + Redis readiness gate behind `GET /health/ready` (#939). */
+  readiness: ReadinessService;
   /**
    * DB-backed problem capture + admin resolve flow (§13.5 V5-P2 arc (d), the
    * Sentry replacement). Captures unhandled errors, failed jobs and provider
@@ -544,6 +548,8 @@ export interface BuildContextDeps {
   googleVerifier?: GoogleTokenVerifier;
   /** Test seam: fast poll cadence / small ring for Live Mode tests (V3-P7b). */
   liveModeOptions?: LiveModeServiceOptions;
+  /** Test seam: deterministic process-local realtime command-bucket clock. */
+  realtimeCommandNow?: () => number;
   /**
    * Test seam (#368): the notification center's transport. Defaults to the
    * durable BullMQ enqueue in production and to a direct synchronous
@@ -594,6 +600,8 @@ export interface BuildContextDeps {
    * only ever reaches the configured local endpoint (LOCAL AI ONLY).
    */
   aiFetch?: typeof fetch;
+  /** Test seam for save-time OAuth logo fetching; production uses guarded HTTPS. */
+  oauthLogoFetcher?: OAuthLogoFetcher;
 }
 
 /** Composition root: repositories → services → context. */
@@ -635,6 +643,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   });
   const audit = createAuditService(auditRepo);
 
+  // Typed domain event bus (§9, §4.5) — ephemeral cross-process fan-out for
+  // realtime signals. It is built before credential services so lifecycle
+  // invalidations can publish at their actual revocation choke points.
+  const events = createEventBus({
+    publisher: redis.duplicate(),
+    subscriber: redis.duplicate(),
+    logger,
+  });
+
   // DB-backed problem capture (§13.5 V5-P2 arc (d), the Sentry replacement):
   // built early so the market-data breaker below can report provider failures
   // into it. Rate-capped + PII-scrubbed; the admin resolve flow uses `audit`.
@@ -656,6 +673,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     repo: createApiKeyRepository(db),
     tierRepo: createApiKeyTierRepository(db),
     requestLogRepo: createApiKeyRequestLogRepository(db),
+    userRepo,
+    events,
     audit,
     redis,
     logger,
@@ -668,7 +687,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // OAuth 2.0 provider (§6.13, V2-P12): app registration, authorize/consent +
   // token exchange, grant management, and access-token resolution for the bearer
   // middleware. Reuses the personal-key scope taxonomy + audit patterns.
-  const oauth = createOAuthService({ repo: createOAuthRepository(db), audit, redis });
+  const oauth = createOAuthService({
+    repo: createOAuthRepository(db),
+    audit,
+    redis,
+    userRepo,
+    events,
+    logger,
+    logoFetcher: deps.oauthLogoFetcher,
+  });
   const passwordHasher = deps.passwordHasher ?? createPasswordHasher();
 
   // Global app settings (§6.12): registration-mode enforcement + beta toggle,
@@ -710,17 +737,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // admin-proxied Grafana reverse proxy enforces per request. Rides the same
   // `app_settings` KV store for its runtime kill-switch (default on).
   const monitoring = createMonitoringService({ config, repo: appSettingsRepo, audit, logger });
-
-  // Typed domain event bus (§9, §4.5) — EPHEMERAL fan-out only (#368): realtime
-  // pushes (bell, quotes, chat threads, presence-adjacent signals). Anything
-  // that must survive a restart rides BullMQ, never this. Pub/sub needs a
-  // dedicated subscriber connection, so publisher and subscriber each get their
-  // own duplicated Redis connection.
-  const events = createEventBus({
-    publisher: redis.duplicate(),
-    subscriber: redis.duplicate(),
-    logger,
-  });
 
   // Social graph (§6.9): shared by the social service and the portfolio service
   // (the latter resolves the owner's friends when a portfolio is shared, §6.10).
@@ -879,6 +895,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     vaults: createParanoidVaultRepository(db),
     maxBytes: config.vault.maxBytes,
     retention: config.vault.history,
+    // Short-lived candidate/purge transcripts are domain-separated inside the
+    // service. Losing a rotated cookie secret only invalidates in-flight proofs;
+    // durable retirement bytes and their client-held signing keys are untouched.
+    proofSecret: config.sessionSecrets[0],
   });
 
   const webhookSubscriptionRepo = createWebhookSubscriptionRepository(db);
@@ -946,6 +966,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     redis,
     email,
+    sessions,
   });
 
   // Passkeys / WebAuthn (§13.4 V4-P4): register/manage from Settings → Security and
@@ -974,6 +995,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     redis,
     email,
+    sessions,
   });
 
   const auth = createAuthService({
@@ -987,6 +1009,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolioRepo,
     notificationRepo,
     sessions,
+    events,
+    logger,
     audit,
     passwordHasher,
     email,
@@ -1055,6 +1079,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     apiKeys,
     oauth,
     sessions,
+    events,
+    logger,
     audit,
     passwordHasher,
     email,
@@ -1531,6 +1557,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     userRepo,
     chatRepo,
     sessions,
+    events,
+    logger,
     audit,
     passwordHasher,
     twoFactor,
@@ -1602,9 +1630,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // cookie→user resolution verbatim; `portfolio:{id}` room joins enforce
   // owner-or-shared with the same repository checks the shared-view HTTP
   // endpoints use (§6.9), recomputed at join time.
-  // Live Mode core (§6.3, V3-P7b). Hosted in the API process next to the
-  // gateway that drives its watcher counts — the ring buffer lives in Redis, so
-  // moving the loop into the worker later is wiring, not a data-path change.
+  // Live Mode core (§6.3, V3-P7b). API processes retain socket-local watcher
+  // counts; Redis elects one provider poll owner per globally-hot asset and
+  // holds the shared ring buffer used across owner handoff.
   const liveMode = createLiveModeService({
     marketData,
     redis,
@@ -1616,21 +1644,101 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     config,
     bus: events,
     logger,
+    redis,
+    realtimeCommandNow: deps.realtimeCommandNow,
     resolveSession: async (sessionId, userAgent) => {
-      // The gateway only needs the resolved user; the persistence marker
-      // (V4-P2b) is HTTP-cookie bookkeeping and irrelevant to a socket.
       const resolved = await auth.resolveSession(sessionId, userAgent);
-      return resolved?.user ?? null;
+      if (!resolved) return null;
+      // Carry the absolute session deadline as part of socket state, so an idle
+      // connection cannot outlive the cookie that originally authenticated it.
+      const session = await auth.getSessionInfo(sessionId);
+      if (!session) return null;
+      return {
+        sessionId,
+        expiresAt: session.expiresAt,
+        user: {
+          id: resolved.user.id,
+          role: resolved.user.role,
+          status: resolved.user.status,
+          mustChangePassword: resolved.user.mustChangePassword,
+        },
+      };
     },
     // Bearer handshake auth for the cookieless mobile app (§6.13, §14): the SAME
     // resolution the HTTP bearer middleware runs — a personal API key first,
     // then a delegated OAuth access token; both enforce revocation, expiry and
     // consent-scope clamping inside the service, so socket auth can never drift
-    // from HTTP auth. Returns the owning user, or null for an unknown token.
+    // from HTTP auth. Returns the complete scoped credential, never just a user.
     resolveBearer: async (token) => {
-      const principal =
-        (await apiKeys.authenticate(token)) ?? (await oauth.authenticateToken(token));
-      return principal?.user ?? null;
+      const key = await apiKeys.authenticate(token);
+      if (key) {
+        return {
+          kind: 'personal' as const,
+          keyId: key.keyId,
+          scopes: key.scopes,
+          user: {
+            id: key.user.id,
+            role: key.user.role,
+            status: key.user.status,
+            mustChangePassword: key.user.mustChangePassword,
+          },
+        };
+      }
+      const tokenPrincipal = await oauth.authenticateToken(token);
+      if (!tokenPrincipal) return null;
+      return {
+        kind: 'oauth' as const,
+        grantId: tokenPrincipal.grantId,
+        accessTokenId: tokenPrincipal.accessTokenId,
+        expiresAt: tokenPrincipal.expiresAt.toISOString(),
+        scopes: tokenPrincipal.scopes,
+        user: {
+          id: tokenPrincipal.user.id,
+          role: tokenPrincipal.user.role,
+          status: tokenPrincipal.user.status,
+          mustChangePassword: tokenPrincipal.user.mustChangePassword,
+        },
+      };
+    },
+    revalidatePersonal: async ({ userId, keyId }) => {
+      const principal = await apiKeys.revalidatePrincipal({ userId, keyId });
+      if (!principal) return null;
+      return {
+        kind: 'personal' as const,
+        keyId: principal.keyId,
+        scopes: principal.scopes,
+        user: {
+          id: principal.user.id,
+          role: principal.user.role,
+          status: principal.user.status,
+          mustChangePassword: principal.user.mustChangePassword,
+        },
+      };
+    },
+    revalidateOAuth: async ({ userId, grantId, accessTokenId, expiresAt, scopes }) => {
+      const expiresAtDate = new Date(expiresAt);
+      if (Number.isNaN(expiresAtDate.getTime())) return null;
+      const principal = await oauth.revalidatePrincipal({
+        userId,
+        grantId,
+        accessTokenId,
+        expiresAt: expiresAtDate,
+        scopes,
+      });
+      if (!principal) return null;
+      return {
+        kind: 'oauth' as const,
+        grantId: principal.grantId,
+        accessTokenId: principal.accessTokenId,
+        expiresAt: principal.expiresAt.toISOString(),
+        scopes: principal.scopes,
+        user: {
+          id: principal.user.id,
+          role: principal.user.role,
+          status: principal.user.status,
+          mustChangePassword: principal.user.mustChangePassword,
+        },
+      };
     },
     canViewPortfolio: async (userId, portfolioId) => {
       if (await portfolioRepo.findByIdForUser(userId, portfolioId)) return true;
@@ -1682,6 +1790,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     queues,
     gateway: realtime,
   });
+  const readiness = createReadinessService({ db, redis });
 
   // Defense below HTTP: expose every killed/mixed service only through the
   // executable registry. Raw instances remain private composition dependencies.
@@ -1776,6 +1885,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     queues,
     observability,
     health,
+    readiness,
     problems,
     monitoring,
     usageAnalytics,

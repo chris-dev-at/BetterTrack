@@ -11,10 +11,11 @@ import { useT } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { PriceChart } from '../../ui/charts';
 import { Avatar } from '../components/Avatar';
+import { Icon } from '../../ui/origin';
 import { Splash } from '../components/ui';
 import { AlertFollowToggle, AutoFollowToggle, FollowButton } from './FollowButton';
 import { ItemFollowButton } from './ItemFollowButton';
-import { KindIcon } from './SharedPeople';
+import { KindTile } from './SharedPeople';
 
 /**
  * The UNAUTHENTICATED public-profile view (§14, V3-P6): a logged-out visitor opens
@@ -22,38 +23,50 @@ import { KindIcon } from './SharedPeople';
  * their bio — and nothing else. A profile that is not opted-in (or an unknown /
  * inactive user) renders a friendly "not available" (the API 404s), so disabling a
  * profile takes it offline instantly and a non-public item can never appear.
+ *
+ * It renders OUTSIDE the app shell, so it puts on the Origin frame itself:
+ * `bt-app` supplies the graphite canvas, ivory type and focus ring, and a single
+ * centered reading column (the shell's own narrow canvas width) carries a
+ * compact wordmark header over the profile.
  */
+
+/** The shell's narrow content column, reproduced for the standalone pages. */
+const COLUMN = {
+  marginInline: 'auto',
+  maxWidth: 880,
+  paddingInline: 'clamp(16px, 3.4vw, 48px)',
+  width: '100%',
+} as const;
+
 function Shell({ children }: { children: React.ReactNode }) {
   const t = useT();
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100">
-      <header className="border-b border-neutral-800 px-6 py-4">
-        <div className="mx-auto flex max-w-3xl items-center justify-between">
+    <div className="bt-app">
+      <header className="bt-b-rule">
+        <div className="flex items-center justify-between gap-3 py-4" style={COLUMN}>
           <Wordmark edition="Web" className="text-lg" />
-          <span className="text-xs uppercase tracking-wide text-neutral-500">
-            {t('profile.publicBadge')}
-          </span>
+          <span className="bt-label">{t('profile.publicBadge')}</span>
         </div>
       </header>
-      <main className="mx-auto max-w-3xl px-6 py-8">{children}</main>
+      <main className="py-10" style={COLUMN}>
+        {children}
+      </main>
     </div>
   );
 }
 
 function Chevron({ open }: { open: boolean }) {
   return (
-    <svg
-      className={`h-4 w-4 shrink-0 text-neutral-500 transition-transform ${open ? 'rotate-90' : ''}`}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M9 6l6 6-6 6" />
-    </svg>
+    <Icon
+      name="chevron-right"
+      size={16}
+      style={{
+        color: 'var(--bt-faint)',
+        flex: 'none',
+        transform: open ? 'rotate(90deg)' : undefined,
+        transition: 'transform var(--bt-t-fast)',
+      }}
+    />
   );
 }
 
@@ -85,20 +98,25 @@ function ProfileItemCard({
   });
 
   return (
-    <div className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/40">
-      <div className="flex items-center gap-3 pr-3">
+    <div className="bt-panel overflow-hidden">
+      <div className="flex items-center gap-2 pr-3">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-neutral-800/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
+          className="bt-band__row flex min-w-0 flex-1 items-center gap-3 text-left"
+          style={{
+            background: 'none',
+            border: 0,
+            color: 'inherit',
+            cursor: 'pointer',
+            font: 'inherit',
+          }}
         >
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-neutral-800 text-neutral-400">
-            <KindIcon kind={kind} className="h-5 w-5" />
-          </span>
+          <KindTile kind={kind} />
           <span className="flex min-w-0 flex-1 flex-col">
-            <span className="truncate text-sm font-medium text-neutral-100">{name}</span>
-            <span className="truncate text-xs text-neutral-500">{headline}</span>
+            <span className="bt-row-title truncate">{name}</span>
+            <span className="bt-row-sub truncate">{headline}</span>
           </span>
           <Chevron open={open} />
         </button>
@@ -106,38 +124,44 @@ function ProfileItemCard({
       </div>
 
       {open ? (
-        <div className="border-t border-neutral-800 p-4">
+        <div className="bt-t-rule" style={{ padding: 16 }}>
           {detail.isLoading ? (
-            <p className="text-sm text-neutral-500">{t('publicShare.loading')}</p>
+            <p className="bt-meta">{t('publicShare.loading')}</p>
           ) : detail.isError || !detail.data ? (
-            <p className="text-sm text-neutral-500">{t('publicShare.notFound')}</p>
+            <p className="bt-meta">{t('publicShare.notFound')}</p>
           ) : detail.data.kind === 'portfolio' ? (
             <div className="flex flex-col gap-4">
               {detail.data.portfolio.history.points.length > 0 ? (
                 <section aria-label={t('publicShare.valueOverTime')}>
-                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                  <h3 className="bt-label" style={{ marginBottom: 8 }}>
                     {t('publicShare.valueOverTime')}
                   </h3>
-                  <PriceChart
-                    series={detail.data.portfolio.history.points.map((pt) => ({
-                      time: pt.date as Time,
-                      value: pt.valueEur,
-                    }))}
-                    mode="area"
-                    showRangeToggle={false}
-                    height={240}
-                    ariaLabel={t('publicShare.valueOverTime')}
-                  />
+                  <div className="bt-chart">
+                    <PriceChart
+                      series={detail.data.portfolio.history.points.map((pt) => ({
+                        time: pt.date as Time,
+                        value: pt.valueEur,
+                      }))}
+                      mode="area"
+                      showRangeToggle={false}
+                      height={240}
+                      ariaLabel={t('publicShare.valueOverTime')}
+                    />
+                  </div>
                 </section>
               ) : null}
-              <ul className="divide-y divide-neutral-800">
+              <ul className="bt-band flex flex-col">
                 {detail.data.portfolio.holdings.map((h) => (
-                  <li key={h.asset.id} className="flex items-center justify-between gap-3 py-2">
+                  <li
+                    key={h.asset.id}
+                    className="flex items-center justify-between gap-3"
+                    style={{ padding: '9px 0' }}
+                  >
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{h.asset.symbol}</p>
-                      <p className="truncate text-xs text-neutral-500">{h.asset.name}</p>
+                      <p className="bt-row-title truncate">{h.asset.symbol}</p>
+                      <p className="bt-row-sub truncate">{h.asset.name}</p>
                     </div>
-                    <span className="shrink-0 text-sm text-neutral-300">
+                    <span className="bt-num bt-soft shrink-0">
                       {formatMoney(h.marketValueEur ?? 0, 'EUR')}
                     </span>
                   </li>
@@ -145,36 +169,39 @@ function ProfileItemCard({
               </ul>
             </div>
           ) : detail.data.kind === 'conglomerate' ? (
-            <ul className="divide-y divide-neutral-800">
+            <ul className="bt-band flex flex-col">
               {detail.data.conglomerate.positions.map((p) => (
                 <li
                   key={p.kind === 'asset' ? p.assetId : p.childId}
-                  className="flex items-center justify-between gap-3 py-2"
+                  className="flex items-center justify-between gap-3"
+                  style={{ padding: '9px 0' }}
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">
+                    <p className="bt-row-title truncate">
                       {p.kind === 'asset' ? p.asset.symbol : p.child.name}
                     </p>
-                    <p className="truncate text-xs text-neutral-500">
+                    <p className="bt-row-sub truncate">
                       {p.kind === 'asset' ? p.asset.name : t('workboard.conglomerates.nestedBadge')}
                     </p>
                   </div>
-                  <span className="shrink-0 text-sm text-neutral-300">
-                    {formatPercent(p.weightPct)}
-                  </span>
+                  <span className="bt-num bt-soft shrink-0">{formatPercent(p.weightPct)}</span>
                 </li>
               ))}
             </ul>
           ) : (
-            <ul className="divide-y divide-neutral-800">
+            <ul className="bt-band flex flex-col">
               {detail.data.watchlist.items.map((item) => (
-                <li key={item.id} className="flex items-center justify-between gap-3 py-2">
+                <li
+                  key={item.id}
+                  className="flex items-center justify-between gap-3"
+                  style={{ padding: '9px 0' }}
+                >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{item.asset.symbol}</p>
-                    <p className="truncate text-xs text-neutral-500">{item.asset.name}</p>
+                    <p className="bt-row-title truncate">{item.asset.symbol}</p>
+                    <p className="bt-row-sub truncate">{item.asset.name}</p>
                   </div>
                   {item.asset.exchange ? (
-                    <span className="shrink-0 text-xs text-neutral-500">{item.asset.exchange}</span>
+                    <span className="bt-meta shrink-0">{item.asset.exchange}</span>
                   ) : null}
                 </li>
               ))}
@@ -189,7 +216,7 @@ function ProfileItemCard({
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-2">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">{title}</h2>
+      <h2 className="bt-label">{title}</h2>
       <div className="flex flex-col gap-2">{children}</div>
     </section>
   );
@@ -210,7 +237,7 @@ export function PublicProfileViewPage() {
   if (isError || !data) {
     return (
       <Shell>
-        <p className="text-sm text-neutral-400">{t('profile.notAvailable')}</p>
+        <p className="bt-soft">{t('profile.notAvailable')}</p>
       </Shell>
     );
   }
@@ -224,14 +251,16 @@ export function PublicProfileViewPage() {
         <div className="flex items-center gap-4">
           <Avatar name={data.username} iconId={data.profileIcon} size="lg" />
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-2xl font-semibold">@{data.username}</h1>
-            <p className="mt-0.5 text-sm text-neutral-500">
+            <h1 className="bt-page-title truncate">@{data.username}</h1>
+            <p className="bt-page-sub">
               {t(`social.follow.followers.${data.followerCount === 1 ? 'one' : 'other'}`, {
                 count: data.followerCount,
               })}
             </p>
             {data.bio ? (
-              <p className="mt-1 break-words text-sm text-neutral-400">{data.bio}</p>
+              <p className="bt-soft break-words" style={{ marginTop: 6 }}>
+                {data.bio}
+              </p>
             ) : null}
           </div>
           <div className="flex flex-col items-end gap-2">
@@ -242,7 +271,7 @@ export function PublicProfileViewPage() {
         </div>
 
         {empty ? (
-          <p className="text-sm text-neutral-500">{t('profile.emptyPublic')}</p>
+          <p className="bt-meta">{t('profile.emptyPublic')}</p>
         ) : (
           <div className="flex flex-col gap-6">
             {data.portfolios.length > 0 ? (

@@ -6,14 +6,8 @@ import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { transferCash } from '../../lib/portfolioApi';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert, Button } from '../components/ui';
 import { activeSources } from './cashSourceUtils';
-
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
 
 export interface TransferDialogProps {
   portfolioId: string;
@@ -52,9 +46,7 @@ export function TransferDialog({
         onClose={onClose}
         widthClassName="max-w-md"
       >
-        <p className="text-sm text-neutral-400">
-          {t('portfolio.cashSources.transfer.needTwoSources')}
-        </p>
+        <p className="text-sm bt-muted">{t('portfolio.cashSources.transfer.needTwoSources')}</p>
         <div className="mt-4 flex justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>
             {t('common.close')}
@@ -105,15 +97,13 @@ export function TransferDialog({
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">
-              {t('portfolio.cashSources.transfer.fromLabel')}
-            </span>
+          <div className="bt-field">
+            <label>{t('portfolio.cashSources.transfer.fromLabel')}</label>
             <select
               value={fromSourceId}
               onChange={(e) => setFromSourceId(e.target.value)}
               aria-label={t('portfolio.cashSources.transfer.fromLabel')}
-              className={inputClass}
+              className="bt-select"
             >
               {active.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -121,17 +111,15 @@ export function TransferDialog({
                 </option>
               ))}
             </select>
-          </label>
+          </div>
 
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">
-              {t('portfolio.cashSources.transfer.toLabel')}
-            </span>
+          <div className="bt-field">
+            <label>{t('portfolio.cashSources.transfer.toLabel')}</label>
             <select
               value={toSourceId}
               onChange={(e) => setToSourceId(e.target.value)}
               aria-label={t('portfolio.cashSources.transfer.toLabel')}
-              className={inputClass}
+              className="bt-select"
             >
               {active.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -139,13 +127,11 @@ export function TransferDialog({
                 </option>
               ))}
             </select>
-          </label>
+          </div>
         </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.cashSources.transfer.amountLabel')}
-          </span>
+        <div className="bt-field">
+          <label>{t('portfolio.cashSources.transfer.amountLabel')}</label>
           <input
             type="number"
             inputMode="decimal"
@@ -154,23 +140,21 @@ export function TransferDialog({
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             aria-label={t('portfolio.cashSources.transfer.amountLabel')}
-            className={inputClass}
+            className="bt-input"
           />
-        </label>
+        </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.cashSources.transfer.noteLabel')}
-          </span>
+        <div className="bt-field">
+          <label>{t('portfolio.cashSources.transfer.noteLabel')}</label>
           <input
             type="text"
             value={note}
             maxLength={1000}
             onChange={(e) => setNote(e.target.value)}
             aria-label={t('portfolio.cashSources.transfer.noteLabel')}
-            className={inputClass}
+            className="bt-input"
           />
-        </label>
+        </div>
 
         {error ? <Alert tone="error">{error}</Alert> : null}
 

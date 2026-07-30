@@ -302,6 +302,10 @@ export function createParanoidRehydrationSourceRepository(
             executedAt: new Date(entity.data.executedAt),
             note: entity.data.note,
             source: entity.data.source,
+            // V5 cash fusion: both must round-trip. Losing `dedupHash` would let
+            // a re-imported bank statement duplicate every row it already landed.
+            dedupHash: entity.data.dedupHash,
+            originalCurrency: entity.data.originalCurrency,
             createdAt: new Date(entity.data.createdAt),
           })),
         );

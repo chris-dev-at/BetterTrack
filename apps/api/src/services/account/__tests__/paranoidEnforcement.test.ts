@@ -40,7 +40,7 @@ import {
   type JobDefinition,
 } from '../../../jobs';
 import { createAlertsEvaluateJob } from '../../../jobs/definitions/alertsJob';
-import { buildRouteTable } from '../../../scripts/checkOpenapiCoverage';
+import { buildRouteTable, type MountedSurface } from '../../../scripts/checkOpenapiCoverage';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import {
   cachedIntel,
@@ -273,9 +273,9 @@ describe('paranoid kill registry', () => {
     );
 
     const mounted = buildRouteTable()
-      .filter((route) => route.path.startsWith('/api/v1'))
+      .filter((route) => route.kind === 'route' && route.path.startsWith('/api/v1'))
       .map((route) => ({
-        method: route.method,
+        method: (route as Extract<MountedSurface, { kind: 'route' }>).method,
         path: route.path.slice('/api/v1'.length) || '/',
       }));
     for (const route of mounted) {
@@ -410,7 +410,7 @@ describe('paranoid kill registry', () => {
     for (const exemption of PARANOID_SERVICE_EXEMPTIONS) {
       if (exemption.handling === 'kept') continue;
       expect(
-        exemption.coverage.length,
+        exemption.coverage?.length ?? 0,
         `${exemption.service}.${exemption.methods.join(',')} needs semantic coverage`,
       ).toBeGreaterThan(0);
     }
@@ -452,7 +452,8 @@ describe('paranoid kill registry', () => {
       ),
       ...PARANOID_SERVICE_EXEMPTIONS.filter(
         (exemption) =>
-          exemption.handling !== 'kept' && exemption.coverage.includes('ownedAssetProvenance'),
+          exemption.handling !== 'kept' &&
+          (exemption.coverage?.includes('ownedAssetProvenance') ?? false),
       ),
     ].flatMap((entry) =>
       registeredServiceMethods(context[entry.service]!, entry).map(
@@ -519,7 +520,9 @@ describe('paranoid kill registry', () => {
   });
 
   it('classifies every queue and requires an executable binding for every killed job', async () => {
-    expect(Object.keys(PARANOID_JOB_POLICIES).sort()).toEqual([...ALL_QUEUE_NAMES].sort());
+    expect(PARANOID_JOB_POLICIES.map((entry) => entry.surface.name).sort()).toEqual(
+      [...ALL_QUEUE_NAMES].sort(),
+    );
 
     const alwaysParanoid = {
       isParanoid: vi.fn(async () => true),
@@ -535,7 +538,8 @@ describe('paranoid kill registry', () => {
     };
     const handlers = new Map<string, ReturnType<typeof vi.fn>>();
     const definitions: JobDefinition[] = [];
-    for (const [name, policy] of Object.entries(PARANOID_JOB_POLICIES)) {
+    for (const { surface, policy } of PARANOID_JOB_POLICIES) {
+      const name = surface.name;
       const handler = vi.fn(async () => {});
       handlers.set(name, handler);
       const definition = { name, handler } as unknown as JobDefinition;
@@ -584,7 +588,8 @@ describe('paranoid kill registry', () => {
     // An `internallyFiltered` declaration carries a real proof obligation:
     // strip the binding off the definition and the matrix refuses it, so the
     // classification can never quietly degrade into `kept`.
-    for (const [name, policy] of Object.entries(PARANOID_JOB_POLICIES)) {
+    for (const { surface, policy } of PARANOID_JOB_POLICIES) {
+      const name = surface.name;
       if (policy.mode !== 'internallyFiltered') continue;
       const unbound = definitions.map((definition) =>
         definition.name === name

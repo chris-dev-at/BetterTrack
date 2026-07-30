@@ -21,6 +21,8 @@ import {
   type OAuthAuthorizationDetailsQuery,
   type OAuthAuthorizationDetailsResponse,
   type OAuthClientSummary,
+  type OAuthDenyRequest,
+  type OAuthDenyResponse,
   type OAuthGrantSummary,
   type OAuthTokenRequest,
   type OAuthTokenResponse,
@@ -28,17 +30,31 @@ import {
 
 import type {
   OAuthAuthorizationCodeExchange,
+  OAuthClientListRow,
+  OAuthClientLookupRow,
   OAuthRepository,
 } from '../../data/repositories/oauthRepository';
+import type { UserRepository } from '../../data/repositories/userRepository';
 import type { OAuthClientRow, UserRow } from '../../data/schema';
 import { badRequest, notFound } from '../../errors';
+import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
+import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken, sha256Base64Url } from '../crypto/tokens';
+import {
+  createOAuthLogoFetcher,
+  type OAuthLogoFetcher,
+  type OAuthLogoContentType,
+} from './oauthLogo';
 
 /** The resolved principal behind a valid OAuth access token (mirrors the key one). */
 export interface OAuthPrincipal {
   user: UserRow;
   grantId: string;
+  /** The individual access-token row; the grant is the revocation unit. */
+  accessTokenId: string;
+  /** Absolute access-token deadline used to terminate an idle socket on time. */
+  expiresAt: Date;
   scopes: ApiKeyScope[];
 }
 
@@ -46,6 +62,13 @@ export interface OAuthServiceDeps {
   repo: OAuthRepository;
   audit: AuditService;
   redis: Redis;
+  /** Fresh user-status lookup for fail-closed realtime principal revalidation. */
+  userRepo?: Pick<UserRepository, 'findById'>;
+  /** Best-effort lifecycle fan-out to disconnect already-open realtime sockets. */
+  events?: Pick<EventBus, 'publish'>;
+  logger?: Pick<Logger, 'warn'>;
+  /** Save-time remote-logo fetcher; defaults to the guard-pinned HTTPS implementation. */
+  logoFetcher?: OAuthLogoFetcher;
   /** Clock seam so token/code TTLs are testable without wall-clock waits. */
   now?: () => Date;
 }
@@ -96,12 +119,18 @@ export interface OAuthService {
   getAuthorizationDetails(
     query: OAuthAuthorizationDetailsQuery,
   ): Promise<OAuthAuthorizationDetailsResponse>;
+  /** Public raster endpoint reads only persisted bytes; it never contacts the source URL. */
+  getClientLogo(
+    clientId: string,
+  ): Promise<{ bytes: Buffer; contentType: OAuthLogoContentType } | null>;
   /** User approved consent → mint a single-use code, return where to send them. */
   approve(input: {
     userId: string;
     body: OAuthApproveRequest;
     ip?: string | null;
   }): Promise<OAuthApproveResponse>;
+  /** User denied consent → return the validated callback with an OAuth error. */
+  deny(body: OAuthDenyRequest): Promise<OAuthDenyResponse>;
   /** Public token endpoint: authorization_code or refresh_token grant. */
   exchangeToken(input: {
     body: OAuthTokenRequest;
@@ -109,6 +138,14 @@ export interface OAuthService {
   }): Promise<OAuthTokenResponse>;
   /** Bearer-auth lookup: resolve an active OAuth access token, else null. */
   authenticateToken(token: string): Promise<OAuthPrincipal | null>;
+  /** Revalidate a connected realtime OAuth principal without retaining its token. */
+  revalidatePrincipal(input: {
+    userId: string;
+    grantId: string;
+    accessTokenId: string;
+    expiresAt: Date;
+    scopes: ApiKeyScope[];
+  }): Promise<OAuthPrincipal | null>;
   /** Record a scope-denied OAuth bearer attempt (called by the scope middleware). */
   recordScopeDenied(input: {
     userId: string;
@@ -129,6 +166,20 @@ type OAuthTokenStore = Pick<
   'createAccessToken' | 'createRefreshToken'
 >;
 
+interface PreparedTokenPair {
+  issuedAt: Date;
+  accessToken: {
+    tokenHash: string;
+    scopes: ApiKeyScope[];
+    expiresAt: Date;
+  };
+  refreshToken: {
+    tokenHash: string;
+    expiresAt: Date;
+  };
+  response: OAuthTokenResponse;
+}
+
 function mint(prefix: string): { token: string; tokenHash: string } {
   const token = `${prefix}${randomBytes(32).toString('base64url')}`;
   return { token, tokenHash: hashToken(token) };
@@ -142,7 +193,7 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
-function toClientSummary(row: OAuthClientRow): OAuthClientSummary {
+function toClientSummary(row: OAuthClientRow | OAuthClientListRow): OAuthClientSummary {
   return {
     id: row.id,
     clientId: row.clientId,
@@ -151,13 +202,23 @@ function toClientSummary(row: OAuthClientRow): OAuthClientSummary {
     scopes: row.scopes as ApiKeyScope[],
     public: row.isPublic,
     firstParty: row.isFirstParty,
-    logoUrl: row.logoUrl ?? null,
+    logoPath: logoPathFor(row),
     createdAt: row.createdAt.toISOString(),
   };
 }
 
+type OAuthClientLogoState =
+  | Pick<OAuthClientRow, 'clientId' | 'isFirstParty' | 'logoBytes' | 'logoContentType'>
+  | (Pick<OAuthClientRow, 'clientId' | 'isFirstParty'> & { hasLogo: boolean });
+
+function logoPathFor(row: OAuthClientLogoState): string | null {
+  const hasLogo = 'hasLogo' in row ? row.hasLogo : Boolean(row.logoBytes && row.logoContentType);
+  if (row.isFirstParty || !hasLogo) return null;
+  return `/oauth/client-logos/${row.clientId}`;
+}
+
 /** Parse the space-delimited `scope` param into a validated, client-allowed set. */
-function parseScopes(scope: string, client: OAuthClientRow): ApiKeyScope[] {
+function parseScopes(scope: string, client: Pick<OAuthClientRow, 'scopes'>): ApiKeyScope[] {
   const requested = scope.split(/\s+/).filter(Boolean);
   if (requested.length === 0) {
     throw badRequest('At least one scope is required.', 'INVALID_SCOPE');
@@ -215,17 +276,54 @@ function clampToAllowed(
  * cuts off every token because the token lookup joins through the grant.
  */
 export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
-  const { repo, audit, redis } = deps;
+  const { repo, audit, redis, userRepo, events, logger } = deps;
   const now = deps.now ?? (() => new Date());
+  const logoFetcher = deps.logoFetcher ?? createOAuthLogoFetcher({ logger });
 
-  /** Shared authorize-request validation for both the consent read and approve. */
+  async function publishInvalidation(
+    event: Omit<RealtimePrincipalInvalidatedEvent, 'type' | 'occurredAt'>,
+  ): Promise<void> {
+    if (!events) return;
+    try {
+      await events.publish({
+        type: 'realtime.principal.invalidated',
+        ...event,
+        occurredAt: now().toISOString(),
+      });
+    } catch (err) {
+      // The grant is already revoked. Socket revalidation remains the
+      // fail-closed backstop if this ephemeral cross-process signal is lost.
+      logger?.warn(
+        { err, userId: event.userId, kind: event.kind },
+        'oauth realtime invalidation publish failed',
+      );
+    }
+  }
+
+  /** Fan out a client cascade to the exact OAuth grants it removed. */
+  async function invalidateDeletedClientGrants(
+    grants: readonly { id: string; userId: string }[],
+  ): Promise<void> {
+    await Promise.all(
+      grants.map(({ id, userId }) =>
+        publishInvalidation({
+          userId,
+          kind: 'oauth',
+          credentialId: id,
+          exceptCredentialId: null,
+        }),
+      ),
+    );
+  }
+
+  /** Shared authorize-request validation for the consent read, approve and deny paths. */
   async function validateAuthorize(input: {
     clientId: string;
     redirectUri: string;
     scope: string;
     codeChallenge?: string;
     codeChallengeMethod?: string;
-  }): Promise<{ client: OAuthClientRow; scopes: ApiKeyScope[] }> {
+  }): Promise<{ client: OAuthClientLookupRow; scopes: ApiKeyScope[] }> {
     const client = await repo.findClientByClientId(input.clientId);
     if (!client) {
       throw badRequest('Unknown client.', 'INVALID_CLIENT');
@@ -253,42 +351,56 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     return { client, scopes };
   }
 
-  function issueTokenPair(
-    store: OAuthTokenStore,
-    grantId: string,
-    scopes: ApiKeyScope[],
-  ): Promise<OAuthTokenResponse> {
+  function prepareTokenPair(scopes: ApiKeyScope[]): PreparedTokenPair {
     const issued = now();
     const access = mint(OAUTH_ACCESS_TOKEN_PREFIX);
     const refresh = mint(OAUTH_REFRESH_TOKEN_PREFIX);
     const accessExpires = new Date(issued.getTime() + OAUTH_ACCESS_TOKEN_TTL_SECONDS * 1000);
     const refreshExpires = new Date(issued.getTime() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000);
-    return Promise.all([
-      store.createAccessToken({
-        grantId,
+    return {
+      issuedAt: issued,
+      accessToken: {
         tokenHash: access.tokenHash,
         scopes,
         expiresAt: accessExpires,
+      },
+      refreshToken: {
+        tokenHash: refresh.tokenHash,
+        expiresAt: refreshExpires,
+      },
+      response: {
+        access_token: access.token,
+        token_type: 'Bearer',
+        expires_in: OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+        refresh_token: refresh.token,
+        scope: scopes.join(' '),
+      },
+    };
+  }
+
+  function issueTokenPair(
+    store: OAuthTokenStore,
+    grantId: string,
+    scopes: ApiKeyScope[],
+  ): Promise<OAuthTokenResponse> {
+    const pair = prepareTokenPair(scopes);
+    return Promise.all([
+      store.createAccessToken({
+        grantId,
+        ...pair.accessToken,
       }),
       store.createRefreshToken({
         grantId,
-        tokenHash: refresh.tokenHash,
-        expiresAt: refreshExpires,
+        ...pair.refreshToken,
       }),
-    ]).then(() => ({
-      access_token: access.token,
-      token_type: 'Bearer' as const,
-      expires_in: OAUTH_ACCESS_TOKEN_TTL_SECONDS,
-      refresh_token: refresh.token,
-      scope: scopes.join(' '),
-    }));
+    ]).then(() => pair.response);
   }
 
   /** Resolve + authenticate the client on the token endpoint (confidential vs public). */
   async function authenticateClient(input: {
     clientId: string;
     clientSecret?: string;
-  }): Promise<OAuthClientRow> {
+  }): Promise<OAuthClientLookupRow> {
     const client = await repo.findClientByClientId(input.clientId);
     if (!client) {
       throw badRequest('Unknown client.', 'INVALID_CLIENT');
@@ -334,6 +446,11 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       clientSecret = secret.token;
       clientSecretHash = secret.tokenHash;
     }
+    // Fetch exactly once at save time. A blocked, invalid, oversized or failed
+    // logo degrades to the existing letter placeholder without failing app
+    // registration. The remote source is never read during consent rendering.
+    const logo =
+      !input.isFirstParty && input.logoUrl ? await logoFetcher.fetch(input.logoUrl) : null;
     const row = await repo.createClient({
       userId: input.userId,
       clientId,
@@ -344,7 +461,11 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       isPublic: input.isPublic,
       isFirstParty: input.isFirstParty,
       // First-party apps render the BetterTrack mark, so a logo is never stored.
+      // Keep a third-party source server-side even when the one save-time fetch
+      // fails, so a future explicit retry/update can recover without losing it.
       logoUrl: input.isFirstParty ? null : (input.logoUrl ?? null),
+      logoBytes: logo?.bytes ?? null,
+      logoContentType: logo?.contentType ?? null,
     });
     await audit.record({
       actorId: input.actorId,
@@ -383,15 +504,16 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     },
 
     async deleteClient({ userId, id, ip }) {
-      const row = await repo.deleteClient(userId, id);
-      if (!row) {
+      const deleted = await repo.deleteClient(userId, id);
+      if (!deleted) {
         throw notFound('OAuth app not found.', 'OAUTH_CLIENT_NOT_FOUND');
       }
+      await invalidateDeletedClientGrants(deleted.activeGrants);
       await audit.record({
         actorId: userId,
         action: AuditAction.OAuthClientDeleted,
         targetType: 'oauth_client',
-        targetId: row.id,
+        targetId: deleted.client.id,
         ip: ip ?? null,
       });
     },
@@ -425,15 +547,16 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     },
 
     async deleteFirstPartyClient({ adminId, id, ip }) {
-      const row = await repo.deleteFirstPartyClient(id);
-      if (!row) {
+      const deleted = await repo.deleteFirstPartyClient(id);
+      if (!deleted) {
         throw notFound('OAuth app not found.', 'OAUTH_CLIENT_NOT_FOUND');
       }
+      await invalidateDeletedClientGrants(deleted.activeGrants);
       await audit.record({
         actorId: adminId,
         action: AuditAction.OAuthClientDeleted,
         targetType: 'oauth_client',
-        targetId: row.id,
+        targetId: deleted.client.id,
         ip: ip ?? null,
       });
     },
@@ -500,6 +623,12 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       if (!row) {
         throw notFound('Authorized app not found.', 'OAUTH_GRANT_NOT_FOUND');
       }
+      await publishInvalidation({
+        userId,
+        kind: 'oauth',
+        credentialId: row.id,
+        exceptCredentialId: null,
+      });
       await audit.record({
         actorId: userId,
         action: AuditAction.OAuthGrantRevoked,
@@ -511,6 +640,12 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
 
     async revokeAllForUser(userId) {
       await repo.revokeAllForUser(userId);
+      await publishInvalidation({
+        userId,
+        kind: 'oauth',
+        credentialId: null,
+        exceptCredentialId: null,
+      });
     },
 
     async getAuthorizationDetails(query) {
@@ -526,7 +661,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
           clientId: client.clientId,
           name: client.name,
           firstParty: client.isFirstParty,
-          logoUrl: client.isFirstParty ? null : (client.logoUrl ?? null),
+          logoPath: logoPathFor(client),
         },
         // Write-implies-read (#371): show every implied read on the consent
         // screen so the user sees the true effective access an approval grants
@@ -537,6 +672,20 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         })),
         redirectUri: query.redirect_uri,
         state: query.state ?? null,
+      };
+    },
+
+    async getClientLogo(clientId) {
+      const logo = await repo.findClientLogoByClientId(clientId);
+      if (
+        !logo ||
+        !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(logo.contentType)
+      ) {
+        return null;
+      }
+      return {
+        bytes: logo.bytes,
+        contentType: logo.contentType as OAuthLogoContentType,
       };
     },
 
@@ -574,6 +723,20 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       return { redirectTo: `${body.redirect_uri}${sep}${params.toString()}` };
     },
 
+    async deny(body) {
+      await validateAuthorize({
+        clientId: body.client_id,
+        redirectUri: body.redirect_uri,
+        scope: body.scope,
+        codeChallenge: body.code_challenge,
+        codeChallengeMethod: body.code_challenge_method,
+      });
+      const sep = body.redirect_uri.includes('?') ? '&' : '?';
+      const params = new URLSearchParams({ error: 'access_denied' });
+      if (body.state) params.set('state', body.state);
+      return { redirectTo: `${body.redirect_uri}${sep}${params.toString()}` };
+    },
+
     async exchangeToken({ body, ip }) {
       if (body.grant_type === 'authorization_code') {
         return exchangeAuthorizationCode(body, ip ?? null);
@@ -604,7 +767,31 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       return {
         user: found.user,
         grantId: found.grant.id,
+        accessTokenId: found.token.id,
+        expiresAt: found.token.expiresAt,
         scopes: clampToAllowed(found.token.scopes as ApiKeyScope[], found.client.scopes),
+      };
+    },
+
+    async revalidatePrincipal({ userId, grantId, accessTokenId, expiresAt, scopes }) {
+      // A real API process always provides the user repository. A deliberately
+      // minimal construction must never accidentally keep a socket authorized.
+      if (!userRepo || expiresAt.getTime() <= now().getTime()) return null;
+      const [user, grants] = await Promise.all([
+        userRepo.findById(userId),
+        repo.listGrantsForUser(userId),
+      ]);
+      if (!user || user.status !== 'active') return null;
+      const active = grants.find(({ grant }) => grant.id === grantId);
+      if (!active) return null;
+      // Keep this specific access token's ceiling: a later grant/client edit
+      // may reduce it, but revalidation must never broaden its original grant.
+      return {
+        user,
+        grantId,
+        accessTokenId,
+        expiresAt,
+        scopes: clampToAllowed(scopes, active.client.scopes),
       };
     },
 
@@ -725,21 +912,38 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     // revoke the whole grant (RFC 6819 §5.2.2.3) and reject.
     if (found.token.consumedAt) {
       await repo.revokeGrant(found.grant.userId, found.grant.id);
+      await publishInvalidation({
+        userId: found.grant.userId,
+        kind: 'oauth',
+        credentialId: found.grant.id,
+        exceptCredentialId: null,
+      });
       throw badRequest('Refresh token has already been used.', 'INVALID_GRANT');
     }
     if (found.token.expiresAt.getTime() <= now().getTime()) {
       throw badRequest('Refresh token has expired.', 'INVALID_GRANT');
     }
-    const consumed = await repo.consumeRefreshToken(found.token.id);
-    if (!consumed) {
-      throw badRequest('Refresh token has already been used.', 'INVALID_GRANT');
-    }
     // Clamp to the app's current allowed scopes so a refresh never re-broadens a
     // grant past a scope the admin has since removed, and the advertised `scope`
     // matches what the freshly-issued token can actually use.
     const scopes = clampToAllowed(found.grant.scopes as ApiKeyScope[], client.scopes);
-    const tokens = await issueTokenPair(repo, found.grant.id, scopes);
-    await repo.touchGrantLastUsed(found.grant.id, now());
+    const pair = prepareTokenPair(scopes);
+    const rotation = await repo.rotateRefreshToken({
+      tokenId: found.token.id,
+      grantId: found.grant.id,
+      rotatedAt: pair.issuedAt,
+      accessToken: pair.accessToken,
+      refreshToken: pair.refreshToken,
+    });
+    if (rotation === 'replayed') {
+      await publishInvalidation({
+        userId: found.grant.userId,
+        kind: 'oauth',
+        credentialId: found.grant.id,
+        exceptCredentialId: null,
+      });
+      throw badRequest('Refresh token has already been used.', 'INVALID_GRANT');
+    }
     await audit.record({
       actorId: found.grant.userId,
       action: AuditAction.OAuthTokenRefreshed,
@@ -748,6 +952,6 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       ip,
       meta: { clientId: client.clientId },
     });
-    return tokens;
+    return pair.response;
   }
 }

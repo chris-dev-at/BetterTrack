@@ -182,7 +182,8 @@
       "revokeHint": ". You can revoke this access anytime in Settings → API Access.",
       "authorizing": "Authorizing…",
       "approve": "Approve",
-      "approveError": "Could not complete authorization. Please try again."
+      "approveError": "Could not complete authorization. Please try again.",
+      "denyError": "Could not safely return to the requesting app. No access was granted."
     },
     "google": {
       "button": "Continue with Google",
@@ -196,6 +197,20 @@
       "errorAccountDisabled": "This account has been suspended. Please contact the administrator.",
       "errorAdmin": "Google sign-in isn't available for administrator accounts. Please sign in with your password.",
       "errorAlreadyLinked": "That Google account is already linked to another user."
+    },
+    "figures": {
+      "valueLabel": "TOTAL VALUE",
+      "valueAmount": "€128,400",
+      "valueDelta": "+1.2% today",
+      "nestParent": "Main portfolio",
+      "nestParentValue": "€96,120",
+      "nestChild": "Savings",
+      "nestChildValue": "€21,480",
+      "nestChildTwo": "Property",
+      "nestChildTwoValue": "€10,800",
+      "sharedTitle": "Shared portfolio",
+      "sharedMeta": "Two people · one ledger",
+      "trendLabel": "THIS MONTH"
     }
   },
   "common": {
@@ -225,6 +240,8 @@
     "continue": "Continue",
     "dismiss": "Dismiss",
     "errorTitle": "Something went wrong.",
+    "errorFallbackMessage": "We couldn't display this page. Try again. If the problem continues, share the reference below.",
+    "errorCorrelationId": "Reference ID: {{id}}",
     "loadingLabel": "Loading",
     "quickSearchAria": "Quick search",
     "escKey": "Esc",
@@ -244,7 +261,8 @@
       "pre": "Pre-market",
       "post": "After hours"
     },
-    "or": "or"
+    "or": "or",
+    "parked": "Planned"
   },
   "ui": {
     "scopePicker": {
@@ -266,8 +284,8 @@
           "description": "Read your portfolios, holdings and cash balances, or create and edit portfolios, transactions, custom assets and cash movements."
         },
         "workboard": {
-          "label": "Workboard",
-          "description": "Read watchlists, conglomerates and backtests, or edit them and run backtests."
+          "label": "Workbench",
+          "description": "Read watchlists, blueprints and backtests, or edit them and run backtests."
         },
         "market": {
           "label": "Market",
@@ -458,7 +476,7 @@
   },
   "nav": {
     "portfolio": "Portfolio",
-    "workboard": "Workboard",
+    "workboard": "Workbench",
     "forecast": "Forecast",
     "expenses": "Expenses",
     "assets": "Assets",
@@ -474,7 +492,33 @@
     "discreetModeError": "Couldn't save that change. Please try again.",
     "inviteOthers": "Invite Others",
     "shareProfile": "Share Profile",
-    "logout": "Logout"
+    "logout": "Logout",
+    "home": "Home",
+    "portfolios": "Portfolio",
+    "workbench": "Workbench",
+    "people": "People",
+    "ask": "Ask BetterTrack",
+    "review": "Review",
+    "controlCenter": "Control Center",
+    "utilities": "Utilities",
+    "myProfile": "My profile",
+    "expandRail": "Expand navigation",
+    "collapseRail": "Collapse navigation",
+    "expandSection": "Expand {{section}}",
+    "collapseSection": "Collapse {{section}}"
+  },
+  "askdock": {
+    "pin": "Keep open",
+    "unpin": "Stop keeping open",
+    "maximize": "Maximize",
+    "restore": "Restore size",
+    "close": "Close Ask BetterTrack",
+    "composerPlaceholder": "Ask about your portfolios",
+    "send": "Send",
+    "hint": "Not live yet — the AI conversation will run here.",
+    "aria": {
+      "region": "Ask BetterTrack panel"
+    }
   },
   "footer": {
     "legal": "Legal",
@@ -485,7 +529,6 @@
   },
   "language": {
     "title": "Language",
-    "description": "The language BetterTrack uses across the app and in your emails.",
     "label": "Display language",
     "saveError": "Couldn't save your language. Please try again."
   },
@@ -504,11 +547,55 @@
       "description": "Broker CSV imports (Trade Republic, George, …) and full account-data export."
     },
     "connections": {
-      "title": "Connections",
-      "subtitle": "Everything linking BetterTrack to the outside — your Google sign-in, and the connectors coming soon.",
+      "subtitle": "Everything linking BetterTrack to the outside — sign-in, encrypted storage, and compact connector controls.",
       "comingSoon": "Coming soon",
       "slotsTitle": "Connectors",
-      "slotsSubtitle": "Sync your data with outside services. These are on the way — nothing to set up yet.",
+      "drive": {
+        "title": "Google Drive app data",
+        "description": "Keep your encrypted paranoid vault in your private Drive app-data folder. BetterTrack cannot access ordinary Drive files.",
+        "status": {
+          "connected": "Connected",
+          "needsSignIn": "Needs sign-in",
+          "disconnected": "Disconnected",
+          "working": "Working"
+        },
+        "connect": "Connect Drive",
+        "disconnect": "Disconnect Drive",
+        "signIn": "Sign in to Google to sync",
+        "unlockRequired": "Unlock your encrypted vault to change its storage.",
+        "unlockPrompt": "Enter your vault passphrase. Drive authorization and migration continue from this gesture.",
+        "passphraseLabel": "Vault passphrase",
+        "unlockAndContinue": "Unlock and continue",
+        "unlockError": "The vault could not be unlocked from an authenticated encrypted copy.",
+        "configMissing": "Google Drive app-data storage is not configured on this deployment.",
+        "lastMedium": "Drive is your only vault medium, so it cannot be disconnected.",
+        "connectedNotice": "Google Drive app-data storage connected.",
+        "disconnectedNotice": "Google Drive app-data storage disconnected.",
+        "leftover": "Drive was disconnected, but Google could not delete the leftover ciphertext. It remains only in your own app-data folder.",
+        "leftoverSyncPending": "Drive was disconnected and the storage choice was saved, but Google could not delete the leftover ciphertext and synchronization still needs attention.",
+        "syncPending": "The storage choice was saved, but synchronization still needs attention. BetterTrack will retry from the encrypted pending copy.",
+        "actionError": "The storage change was cancelled because a verified copy could not be completed.",
+        "syncRequired": "Your latest encrypted changes are not on every selected medium yet, so the storage choice was left unchanged. Try again once synchronization has finished.",
+        "unreadableLeftover": "A Google Drive copy of your vault could not be decrypted with this vault key. BetterTrack never deletes ciphertext it cannot verify — remove the BetterTrack app data in your Google account, then try again.",
+        "loadError": "Drive storage status could not be loaded.",
+        "purgedNotice": "The retained server recovery copy was deleted.",
+        "purgeError": "The retained server copy was not deleted. The recovery window or read-back proof may not be ready.",
+        "storage": {
+          "title": "Vault storage copies",
+          "both": "Your encrypted vault is stored on the BetterTrack server and in Drive.",
+          "driveOnly": "Drive is the only active vault medium. BetterTrack holds no active portfolio ciphertext.",
+          "useDriveOnly": "Use Drive only",
+          "addServer": "Add server copy",
+          "driveOnlyNotice": "Drive-only storage activated. The server recovery copy remains retained until you explicitly delete it.",
+          "serverAddedNotice": "An authenticated server copy was added."
+        },
+        "retired": {
+          "title": "Retained server recovery copy",
+          "wait": "It remains recoverable until at least {{date}}.",
+          "ready": "The recovery window ended on {{date}}. A fresh authenticated Drive read is required before deletion.",
+          "purge": "Delete retained server copy"
+        }
+      },
       "sync": {
         "oneTime": "One-time import — runs once when you connect.",
         "stayConnected": "Stays connected — syncs automatically."
@@ -533,110 +620,84 @@
     },
     "notifications": {
       "title": "Notifications",
-      "subtitle": "Route each kind of activity to the channels you want — in-app bell, email, phone push, browser push — or mute everything at once.",
       "loadError": {
         "title": "Couldn't load your notification settings"
       },
       "types": {
         "friendRequest": {
-          "label": "Friend requests",
-          "description": "When someone sends you a friend request."
+          "label": "Friend requests"
         },
         "friendAccepted": {
-          "label": "Accepted friend requests",
-          "description": "When someone accepts your friend request."
+          "label": "Accepted friend requests"
         },
         "portfolioShared": {
-          "label": "Shared portfolios",
-          "description": "When a friend shares a portfolio with you."
+          "label": "Shared portfolios"
         },
         "accountInvite": {
-          "label": "Account invites",
-          "description": "When you're invited to BetterTrack."
+          "label": "Account invites"
         },
         "tempPassword": {
-          "label": "Temporary passwords",
-          "description": "When an admin issues you a temporary password."
+          "label": "Temporary passwords"
         },
         "dataExport": {
-          "label": "Data exports",
-          "description": "When a data export you requested is ready to download."
+          "label": "Data exports"
         },
         "alertTriggered": {
-          "label": "Price alerts",
-          "description": "When one of your price alerts fires."
+          "label": "Price alerts"
         },
         "earningsReminder": {
-          "label": "Earnings reminders",
-          "description": "Ahead of an earnings report for an asset you hold or watch. Off by default."
+          "label": "Earnings reminders"
         },
         "chatMessage": {
-          "label": "Chat messages",
-          "description": "When a friend sends you a message."
+          "label": "Chat messages"
         },
         "watchlistShared": {
-          "label": "Shared watchlists",
-          "description": "When a friend shares a watchlist with you."
+          "label": "Shared watchlists"
         },
         "conglomerateShared": {
-          "label": "Shared conglomerates",
-          "description": "When a friend shares a conglomerate with you."
+          "label": "Shared blueprints"
         },
         "friendActivity": {
-          "label": "Friend activity",
-          "description": "Buys, sells and watchlist additions on shared items you follow."
+          "label": "Friend activity"
         },
         "followPublished": {
-          "label": "New from people you follow",
-          "description": "When someone you follow makes a portfolio, watchlist or conglomerate public."
+          "label": "New from people you follow"
         },
         "followAlertCreated": {
-          "label": "New alerts from people you follow",
-          "description": "When someone you follow creates a price alert (only people whose alert news you opted into)."
+          "label": "New alerts from people you follow"
         },
         "followAlertFired": {
-          "label": "Fired alerts from people you follow",
-          "description": "When a price alert of someone you follow triggers (only people whose alert news you opted into)."
+          "label": "Fired alerts from people you follow"
         },
         "dividendEvent": {
-          "label": "Dividend reminders",
-          "description": "When a stock you hold is about to go ex-dividend. Off by default."
+          "label": "Dividend reminders"
         },
         "budgetExceeded": {
-          "label": "Budget alerts",
-          "description": "When your spending in a category blows its monthly budget."
+          "label": "Budget alerts"
         },
         "mirrorInvite": {
-          "label": "Group portfolio invites",
-          "description": "When a friend invites you to a group portfolio."
+          "label": "Group portfolio invites"
         },
         "mirrorMemberJoined": {
-          "label": "Member joined",
-          "description": "When someone joins a group portfolio you own."
+          "label": "Member joined"
         },
         "mirrorMemberLeft": {
-          "label": "Member left",
-          "description": "When a member leaves one of your group portfolios."
+          "label": "Member left"
         },
         "mirrorMemberRemoved": {
-          "label": "Member removed",
-          "description": "When a member is removed from your group portfolio."
+          "label": "Member removed"
         },
         "mirrorRemoved": {
-          "label": "Removed from a group portfolio",
-          "description": "When you are removed from a group portfolio."
+          "label": "Removed from a group portfolio"
         },
         "mirrorOwnershipTransferred": {
-          "label": "Ownership transferred",
-          "description": "When ownership of a group portfolio you are in changes."
+          "label": "Ownership transferred"
         },
         "mirrorChainDissolved": {
-          "label": "Group portfolio dissolved",
-          "description": "When a group portfolio you are in is dissolved."
+          "label": "Group portfolio dissolved"
         },
         "mirrorSyncStalled": {
-          "label": "Sync problems",
-          "description": "When a group portfolio can't finish syncing."
+          "label": "Sync problems"
         }
       },
       "routing": {
@@ -748,7 +809,6 @@
       },
       "telegram": {
         "title": "Telegram",
-        "description": "Receive notifications through the BetterTrack Telegram bot. Link your chat once, unlink any time.",
         "startLink": "Start Telegram link",
         "openBot": "Open Telegram bot",
         "codeHint": "Send /start {{code}} to the bot to finish linking.",
@@ -781,10 +841,15 @@
         "removeError": "Couldn't remove the webhook. Please try again."
       },
       "loadErrorTitle": "Couldn't load notifications",
-      "loadErrorDescription": "Please try again in a moment."
+      "loadErrorDescription": "Please try again in a moment.",
+      "groups": {
+        "general": "General",
+        "channels": "Channels",
+        "routing": "Routing",
+        "timing": "Timing"
+      }
     },
     "security": {
-      "title": "Security",
       "subtitle": "Your session, PIN, and two-factor options.",
       "loadError": {
         "title": "Couldn't load your security settings"
@@ -828,7 +893,6 @@
         "windowError": "Could not update the unlock window. Please try again.",
         "lockAfterInactivity": "Lock after inactivity",
         "lockDescription": "While you're actively using BetterTrack it stays unlocked — reloads and new tabs included. The PIN is asked again only after this long with no activity.",
-        "idleForLabel": "Lock after being idle for",
         "unlockWindowAriaLabel": "Unlock window",
         "disabledNotice": "Your PIN has been turned off.",
         "title": "PIN",
@@ -842,7 +906,6 @@
       },
       "twoFactor": {
         "title": "Two-factor authentication",
-        "description": "Add a second step at sign-in. Turn on either method — or both.",
         "loadError": {
           "title": "Couldn't load your two-factor status"
         },
@@ -887,7 +950,6 @@
           "done": "I've saved these codes",
           "regenerateError": "Could not regenerate recovery codes. Please try again.",
           "cardTitle": "Recovery codes",
-          "cardDescription": "One-time codes to sign in if you lose access to your other factors.",
           "remainingOne": "{{count}} recovery code remaining.",
           "remainingOther": "{{count}} recovery codes remaining.",
           "regenerating": "Regenerating…",
@@ -896,14 +958,12 @@
       },
       "google": {
         "title": "Google account",
-        "description": "Sign in with Google, or manage the linked account.",
         "linkedAs": "Linked as {{email}}",
         "linkedOn": "Linked {{date}}",
         "notLinked": "No Google account is linked.",
         "connectButton": "Connect Google",
         "unlinkButton": "Unlink",
         "unlinkTitle": "Unlink Google",
-        "unlinkPrompt": "Enter your password to confirm you want to unlink Google.",
         "passwordLabel": "Password",
         "confirmUnlink": "Unlink Google",
         "cancel": "Cancel",
@@ -949,10 +1009,6 @@
       }
     },
     "api": {
-      "title": "API Access",
-      "introBefore": "Personal API keys authenticate scripts and integrations as you, scoped to what they may read or change. Send a key as ",
-      "introMiddle": ". See the API docs at ",
-      "introAfter": ".",
       "copied": "Copied",
       "copy": "Copy",
       "done": "Done",
@@ -962,7 +1018,6 @@
       "scopeRequired": "Select at least one scope.",
       "scopesLegend": "Scopes",
       "webhooks": {
-        "sectionTitle": "Webhooks",
         "sectionDescription": "Send a signed HTTP POST to your own URL whenever one of your events happens. Every delivery is HMAC-signed so you can verify it came from BetterTrack.",
         "createTitle": "Add a webhook",
         "urlLabel": "Payload URL",
@@ -980,8 +1035,7 @@
           "title": "Couldn't load your webhooks"
         },
         "empty": {
-          "title": "No webhooks yet",
-          "description": "Add one above to receive signed event deliveries."
+          "title": "No webhooks yet"
         },
         "status": {
           "active": "Active",
@@ -1019,7 +1073,7 @@
           "friendAccepted": "Friend request accepted",
           "portfolioShared": "Portfolio shared with you",
           "watchlistShared": "Watchlist shared with you",
-          "conglomerateShared": "Conglomerate shared with you",
+          "conglomerateShared": "Blueprint shared with you",
           "friendActivity": "Friend activity on a shared item",
           "followPublished": "Someone you follow published an item",
           "followAlertCreated": "Someone you follow created an alert",
@@ -1050,12 +1104,12 @@
           "description": "Create/edit portfolios, transactions and cash movements."
         },
         "workboardRead": {
-          "label": "Workboard · read",
-          "description": "Read watchlists, conglomerates and backtests."
+          "label": "Workbench · read",
+          "description": "Read watchlists, blueprints and backtests."
         },
         "workboardWrite": {
-          "label": "Workboard · write",
-          "description": "Edit watchlists, conglomerates and run backtests."
+          "label": "Workbench · write",
+          "description": "Edit watchlists, blueprints and run backtests."
         },
         "marketRead": {
           "label": "Market · read",
@@ -1120,20 +1174,16 @@
           "title": "Couldn't load your API keys"
         },
         "empty": {
-          "title": "No API keys yet",
-          "description": "Create a key above to start using the API."
+          "title": "No API keys yet"
         }
       },
       "oauth": {
-        "sectionTitle": "OAuth apps",
-        "sectionDescription": "Register a third-party app to request scoped, revocable access to BetterTrack accounts via OAuth 2.0 (authorization code + PKCE). Users approve it on a consent screen and never share their password.",
         "yourApps": "Your apps",
         "loadError": {
           "title": "Couldn't load your apps"
         },
         "empty": {
-          "title": "No OAuth apps yet",
-          "description": "Register an app above to integrate with the OAuth flow."
+          "title": "No OAuth apps yet"
         },
         "credentialsModal": {
           "title": "Your new OAuth app",
@@ -1171,27 +1221,25 @@
         "registeredOn": "Registered {{createdAt}}"
       },
       "grants": {
-        "sectionTitle": "Authorized apps",
         "sectionDescription": "Third-party apps you've allowed to access your account. Revoking an app immediately kills its tokens — it must be re-authorized to regain access.",
         "loadError": {
           "title": "Couldn't load your authorized apps"
         },
         "empty": {
-          "title": "No authorized apps",
-          "description": "Apps you approve on the OAuth consent screen appear here."
+          "title": "No authorized apps"
         },
         "canAccess": "{{appName}} can:",
         "authorizedLastUsed": "Authorized {{createdAt}} · last used {{lastUsedAt}}",
         "authorizedNeverUsed": "Authorized {{createdAt}} · never used",
         "revokeAccess": "Revoke access"
-      }
+      },
+      "hint": "Send a key as “Authorization: Bearer …”. Reference at /docs."
     },
     "account": {
       "title": "Account",
       "subtitle": "Your identity, password, and sharing preferences.",
       "loadError": {
-        "title": "Couldn't load your account",
-        "description": "Please try again in a moment."
+        "title": "Couldn't load your account"
       },
       "portfolioError": {
         "title": "Couldn't load your portfolio",
@@ -1201,11 +1249,13 @@
         "username": "Username",
         "email": "Email",
         "memberSince": "Member since"
-      }
+      },
+      "identity": "Identity",
+      "display": "Display",
+      "yourData": "Your data"
     },
     "baseCurrency": {
       "title": "Base currency",
-      "description": "The currency every valuation, chart and report is shown in. Amounts stay stored in each asset’s native currency — only the display conversion changes.",
       "label": "Base currency",
       "saveError": "Couldn’t save your base currency. Please try again.",
       "option": {
@@ -1213,14 +1263,13 @@
         "USD": "USD — US Dollar ($)",
         "CHF": "CHF — Swiss Franc",
         "GBP": "GBP — British Pound (£)"
-      }
+      },
+      "hint": "Display only — amounts stay stored in each asset’s own currency."
     },
     "newPortfolioDefaults": {
       "navLabel": "New portfolio defaults",
-      "title": "Defaults for new portfolios",
-      "subtitle": "What a newly-created portfolio inherits. Existing portfolios keep tracking these unless you override them individually.",
       "tax": {
-        "hint": "Applied to new portfolios and to any portfolio that hasn’t set its own. Override or reset it per portfolio on that portfolio’s tax report."
+        "hint": "Applied to new portfolios and to any portfolio that hasn’t set its own. A single portfolio can override it in its own settings."
       }
     },
     "taxes": {
@@ -1236,27 +1285,33 @@
       "mode": {
         "none": {
           "label": "No tax tracking",
-          "description": "Record sells and dividends without any tax. This is the default."
+          "description": "Record sells and dividends without any tax. This is the default.",
+          "compact": "Sells and dividends record untaxed."
         },
         "manual_per_trade": {
           "label": "Manual — enter tax per trade",
-          "description": "You enter the tax yourself on each sell — an amount, or a percentage of the gain. Nothing is calculated for you."
+          "description": "You enter the tax yourself on each sell — an amount, or a percentage of the gain. Nothing is calculated for you.",
+          "compact": "You type the tax on each sell — nothing is calculated."
         },
         "country_specific": {
           "label": "Austria (KESt)",
-          "description": "27.5 % KESt on realized gains and dividends, with a moving-average cost basis. A loss in the same calendar year offsets earlier gains and refunds the tax already withheld. Everything resets on 1 January — no losses carry into the next year."
+          "description": "27.5 % KESt on realized gains and dividends, with a moving-average cost basis. A loss in the same calendar year offsets earlier gains and refunds the tax already withheld. Everything resets on 1 January — no losses carry into the next year.",
+          "compact": "27.5 % KESt · moving average · resets 1 January"
         },
         "country_specific_de": {
           "label": "Germany (Abgeltungsteuer)",
-          "description": "25 % flat tax plus a 5.5 % solidarity surcharge on the tax, with FIFO cost basis per lot. A €1,000 saver's allowance (Sparer-Pauschbetrag) comes off each year first. Losses from selling shares only offset share gains, other losses offset all capital income — and unused losses carry forward into later years."
+          "description": "25 % flat tax plus a 5.5 % solidarity surcharge on the tax, with FIFO cost basis per lot. A €1,000 saver's allowance (Sparer-Pauschbetrag) comes off each year first. Losses from selling shares only offset share gains, other losses offset all capital income — and unused losses carry forward into later years.",
+          "compact": "25 % + 5.5 % soli · FIFO · €1,000 allowance · losses carry forward"
         },
         "country_specific_fi": {
           "label": "Finland (capital income tax)",
-          "description": "30 % capital-income tax on gains and dividends up to €30,000 per year, 34 % above, with FIFO cost basis. A loss in the same calendar year offsets gains and refunds tax already withheld — nothing carries into the next year. The €30,000 bracket applies per portfolio, not across all your accounts combined."
+          "description": "30 % capital-income tax on gains and dividends up to €30,000 per year, 34 % above, with FIFO cost basis. A loss in the same calendar year offsets gains and refunds tax already withheld — nothing carries into the next year. The €30,000 bracket applies per portfolio, not across all your accounts combined.",
+          "compact": "30 % to €30,000, then 34 % · FIFO · no carry-forward"
         },
         "custom": {
           "label": "Custom rules",
-          "description": "Build your own tax system: a flat rate plus switches for loss offset, refunds, the year reset, loss carry-forward, and the cost basis."
+          "description": "Build your own tax system: a flat rate plus switches for loss offset, refunds, the year reset, loss carry-forward, and the cost basis.",
+          "compact": "Your own rate, cost basis and switches."
         }
       },
       "custom": {
@@ -1307,32 +1362,33 @@
       "currentWrong": "Your current password is incorrect.",
       "changeFailed": "Could not change your password. Please try again."
     },
-    "sharingMoved": {
-      "title": "Portfolio sharing",
-      "description": "Sharing lives in the Social tab now. Choose who can see each of your portfolios there — every portfolio stays private until you share it.",
-      "link": "Manage sharing in Social →"
-    },
     "export": {
       "title": "Export my data",
-      "description": "Download a copy of your account data as a zip (JSON for every kind of data you own, plus CSVs for transactions, cash movements and holdings). You can request one export per day.",
       "password": "Confirm your password",
-      "passwordHint": "Re-enter your password to start an export.",
       "request": "Export my data",
       "requestAgain": "Request a new export",
       "submitting": "Requesting…",
       "pending": "Your export is being prepared. This can take a moment — the button will turn into a download when it's ready.",
       "ready": "Your export is ready to download.",
       "readyUntil": "Your export is ready to download until {{date}}.",
-      "readyNoToken": "Your export is ready, but its download link isn't available on this device. Request a new export to download it here.",
+      "readyNoToken": "Your export is ready, but download access is not kept across page reloads. After this export expires, request a new one.",
       "download": "Download export",
+      "downloadFailed": "Could not download your export. The one-time link may have expired or already been used.",
       "expired": "Your last export has expired. Request a new one to download your data.",
       "currentWrong": "Your password is incorrect.",
       "codeWrong": "That two-factor code is incorrect or has expired.",
       "rateLimited": "You can request a data export once per day. Please try again later.",
-      "requestFailed": "Could not start your export. Please try again."
+      "requestFailed": "Could not start your export. Please try again.",
+      "hint": "One export per day. The download link expires.",
+      "cleartext": {
+        "title": "Cleartext export (this device)",
+        "description": "Builds a readable JSON + CSV archive of your portfolio data in this browser from your unlocked vault. It never touches the server and contains no keys or encrypted material.",
+        "button": "Build cleartext export",
+        "generating": "Building…",
+        "locked": "Unlock your vault to build a cleartext export on this device."
+      }
     },
     "dangerZone": {
-      "title": "Danger zone",
       "description": "Deleting your account permanently removes all of your data. This cannot be undone.",
       "link": "Delete my account…"
     }
@@ -1404,7 +1460,7 @@
       "uncoveredAck": "Continue anyway — sell more than I hold",
       "uncoveredBasisLabel": "Cost basis for the shares you don't hold",
       "uncoveredBasisZero": "Count as 0 % (no gain)",
-      "uncoveredBasisEntry": "Enter buy-in price",
+      "uncoveredBasisInput": "Enter buy-in price",
       "uncoveredEntryPriceLabel": "Original buy-in price",
       "uncoveredEntryPriceAria": "Original buy-in price for the uncovered {{symbol}}",
       "uncoveredNudge": "For accurate history, register the original buy instead.",
@@ -1579,15 +1635,15 @@
         "none": "None",
         "asset": "Asset / index",
         "portfolio": "Portfolio",
-        "conglomerate": "Conglomerate",
+        "conglomerate": "Blueprint",
         "searchPlaceholder": "Search an asset or index…",
         "current": "Comparing: {{label}}",
         "pickPortfolio": "Choose a portfolio to compare",
         "pickPortfolioPlaceholder": "Choose a portfolio…",
         "noPortfolios": "You have no other portfolios to compare.",
-        "pickConglomerate": "Choose a conglomerate to compare",
-        "pickConglomeratePlaceholder": "Choose a conglomerate…",
-        "noConglomerates": "You don't have any conglomerates yet."
+        "pickConglomerate": "Choose a blueprint to compare",
+        "pickConglomeratePlaceholder": "Choose a blueprint…",
+        "noConglomerates": "You don't have any blueprints yet."
       },
       "chart": {
         "ariaLabel": "Portfolio analytics chart",
@@ -1661,6 +1717,10 @@
     "taxReport": {
       "title": "Tax report",
       "subtitle": "Realized gains, dividends and tax by calendar year (Europe/Vienna).",
+      "mode": {
+        "line": "Computed with tax mode: {{mode}}",
+        "change": "Change in portfolio settings →"
+      },
       "column": {
         "year": "Year",
         "realized": "Realized P/L",
@@ -1694,16 +1754,7 @@
       },
       "disabled": {
         "title": "Tax tracking is off",
-        "description": "Turn on a tax mode for this portfolio above to see realized gains and tax by year.",
-        "link": "Choose a tax mode in Settings → Taxes →"
-      },
-      "treatment": {
-        "title": "Tax treatment · {{name}}",
-        "description": "How this portfolio is taxed. It inherits your new-portfolio default until you set one here.",
-        "inheriting": "Inheriting default",
-        "overridden": "Overridden",
-        "reset": "Reset to default",
-        "editDefault": "Edit the default in Settings →"
+        "description": "Pick a tax mode for this portfolio in its settings to see realized gains and tax by year."
       },
       "de": {
         "title": "Germany (Abgeltungsteuer)",
@@ -1726,7 +1777,16 @@
         "print": "Print",
         "back": "Back to report",
         "missingParams": "Choose a portfolio and year to print.",
-        "loadError": "Couldn’t load the report for printing."
+        "loadError": "Couldn’t load the report for printing.",
+        "paranoidHint": "This account computes tax reports on-device from the encrypted vault. Use the Print / PDF action on the tax report page instead — this view has no access to your unlocked vault."
+      },
+      "paranoid": {
+        "locked": {
+          "title": "Unlock your vault",
+          "description": "Tax figures for a paranoid account are computed on this device from your encrypted vault. Unlock the vault to see them."
+        },
+        "retry": "Try again",
+        "disabledDescription": "No tax mode is active for this portfolio in your vault, so there is nothing to compute."
       }
     },
     "section": {
@@ -1744,15 +1804,14 @@
       },
       "customAssetsComingSoon": {
         "description": "Track real estate, vehicles, collectibles and other unlisted holdings with a value-points editor."
-      }
+      },
+      "aria": "Portfolio workspace"
     },
     "switcher": {
       "triggerAriaLabel": "Switch portfolio",
       "fallbackName": "Portfolio",
       "defaultBadge": "Default",
       "menuAriaLabel": "Portfolios",
-      "newPortfolio": "+ New portfolio",
-      "newGroupPortfolio": "+ New group portfolio",
       "renameCurrent": "Rename current",
       "archiveCurrent": "Archive current",
       "archiveDisabledHint": "You cannot archive your only portfolio",
@@ -1765,12 +1824,10 @@
       "archivedDialogDescription": "Restore a portfolio to bring it back into your list.",
       "noArchived": "No archived portfolios.",
       "restore": "Restore",
-      "createTitle": "New portfolio",
       "renameTitle": "Rename portfolio",
       "nameLabel": "Name",
       "nameAriaLabel": "Portfolio name",
       "namePlaceholder": "e.g. Retirement",
-      "create": "Create",
       "nameTakenError": "You already have a portfolio with that name.",
       "createError": "Could not create the portfolio. Please try again.",
       "renameError": "Could not rename the portfolio. Please try again.",
@@ -1790,7 +1847,48 @@
       "deleteConfirmAriaLabel": "Portfolio name confirmation",
       "deleting": "Deleting…",
       "delete": "Delete permanently",
-      "deleteError": "Could not delete the portfolio. Please try again."
+      "deleteError": "Could not delete the portfolio. Please try again.",
+      "searchPlaceholder": "Search portfolios",
+      "searchAriaLabel": "Search portfolios",
+      "noMatches": "No matches.",
+      "settingsMenuItem": "Portfolio settings",
+      "addPortfolio": "Add portfolio"
+    },
+    "wizard": {
+      "title": "Add portfolio",
+      "stepOf": "Step {{current}} of {{total}}",
+      "name": {
+        "label": "Name",
+        "title": "What is this portfolio called?"
+      },
+      "icon": {
+        "label": "Icon",
+        "title": "Pick its icon",
+        "hint": "Colours it everywhere it appears. Changeable any time."
+      },
+      "book": {
+        "label": "Book",
+        "title": "Who keeps this book?",
+        "solo": {
+          "title": "Just me",
+          "hint": "Only you see and edit it."
+        },
+        "shared": {
+          "title": "Shared with people",
+          "hint": "Everyone edits the same book. It carries the group icon."
+        }
+      },
+      "done": {
+        "label": "Done",
+        "title": "Portfolio created",
+        "primary": "Open portfolio"
+      },
+      "parked": {
+        "currency": "Its own base currency",
+        "template": "Start from a template",
+        "balances": "Opening balances",
+        "import": "Import a broker file"
+      }
     },
     "cash": {
       "title": "Cash balance",
@@ -1994,6 +2092,7 @@
       "uploadCta": "Create preview",
       "uploading": "Uploading…",
       "uploadFailed": "Upload failed.",
+      "tooManyInstruments": "This file contains more than {{max}} distinct instruments — split it into files with at most {{max}} instruments each.",
       "previewTitle": "Preview: {{filename}}",
       "previewEmptyTitle": "No rows to import",
       "previewEmptyBody": "This file didn't contain any recognizable rows — the header may not match a supported broker export.",
@@ -2046,13 +2145,67 @@
         "failed": "Failed"
       },
       "startOver": "Import another file"
+    },
+    "tabs": {
+      "overview": "Overview",
+      "activity": "Activity",
+      "customAssets": "Custom assets",
+      "cashFlow": "Cash flow",
+      "analysis": "Analysis",
+      "tax": "Tax",
+      "import": "Import",
+      "plan": "Plan",
+      "automate": "Automate",
+      "files": "Files",
+      "people": "People",
+      "settings": "Settings"
+    },
+    "kinds": {
+      "private": "Private",
+      "family": "Family",
+      "business": "Business",
+      "savings": "Savings",
+      "property": "Property",
+      "group": "Group"
+    },
+    "settings": {
+      "title": "Portfolio settings",
+      "subtitle": "Manage this portfolio.",
+      "loadError": "Could not load this portfolio.",
+      "generalHeading": "General",
+      "nameSaved": "Saved.",
+      "iconLabel": "Icon",
+      "iconPickerAriaLabel": "Portfolio icon",
+      "iconHint": "Marks this portfolio with a coloured icon in the switcher and its lists. Stored on this device.",
+      "taxHeading": "Tax",
+      "tax": {
+        "modeLabel": "Tax mode",
+        "inheriting": "Account default",
+        "overridden": "Set here",
+        "hint": "This portfolio follows your account default until you pick a mode here. Changes apply to future rows; recorded ones keep the treatment they were taxed under.",
+        "pickerAriaLabel": "Tax mode for this portfolio",
+        "inheritedHint": "Following your account default.",
+        "resetHint": "This portfolio has its own mode.",
+        "reset": "Use account default",
+        "editDefault": "Edit the account default →",
+        "loadError": "Couldn’t load this portfolio’s tax mode."
+      },
+      "groupHeading": "Group portfolio",
+      "groupHint": "Share this portfolio with friends — everyone edits the same book.",
+      "groupActive": "{{name}} · {{count}} members",
+      "manageGroup": "Manage group",
+      "dangerHeading": "Danger zone",
+      "archiveAction": "Archive this portfolio",
+      "archiveHint": "Hidden from your list. Restorable any time.",
+      "deleteAction": "Delete this portfolio",
+      "deleteHint": "Permanent. Everything in it is removed."
     }
   },
   "workboard": {
     "section": {
       "subnav": {
         "overview": "Overview",
-        "conglomerates": "Conglomerates",
+        "conglomerates": "Blueprints",
         "watchlists": "Watchlists",
         "alerts": "Alerts",
         "backtests": "Backtests",
@@ -2062,19 +2215,19 @@
       },
       "watchlist": {
         "title": "Watchlists",
-        "description": "Named, multiple watchlists arrive here. For now your watchlist lives on the Workboard overview."
+        "description": "Named, multiple watchlists arrive here. For now your watchlist lives on the Workbench overview."
       },
       "backtests": {
         "title": "Backtests",
-        "description": "Standalone backtesting across any basket of assets, beyond the conglomerate-embedded backtest."
+        "description": "Standalone backtesting across any basket of assets, beyond the blueprint-embedded backtest."
       },
       "calculators": {
         "title": "Calculators",
-        "description": "Standalone invest calculators — turn a budget into an exact buy list without a saved conglomerate."
+        "description": "Standalone invest calculators — turn a budget into an exact buy list without a saved blueprint."
       },
       "comparisons": {
         "title": "Comparisons",
-        "description": "Side-by-side comparison of assets and conglomerates on returns, risk and allocation."
+        "description": "Side-by-side comparison of assets and blueprints on returns, risk and allocation."
       },
       "savedIdeas": {
         "title": "Saved Ideas",
@@ -2082,8 +2235,8 @@
       }
     },
     "overview": {
-      "title": "Workboard",
-      "subtitle": "Your watched assets, alerts and conglomerates at a glance.",
+      "title": "Workbench",
+      "subtitle": "Your watched assets, alerts and blueprints at a glance.",
       "watchlist": {
         "heading": "Watchlist",
         "shareButton": "Share with friends",
@@ -2093,7 +2246,7 @@
         "removeError": "Failed to remove. Please try again.",
         "reorderError": "Failed to save new order. Please try again.",
         "emptyTitle": "Your watchlist is empty",
-        "emptyDescription": "Find an asset and add it to your Workboard to start watching.",
+        "emptyDescription": "Find an asset and add it to your Workbench to start watching.",
         "emptySearchLink": "Search for an asset →",
         "trendHeader": "Trend",
         "assetHeader": "Asset",
@@ -2122,8 +2275,8 @@
         "emptyDescription": "Your active alerts across all watched assets will appear here."
       },
       "conglomerates": {
-        "heading": "My Conglomerates",
-        "emptyTitle": "Conglomerates coming soon",
+        "heading": "My Blueprints",
+        "emptyTitle": "Blueprints coming soon",
         "emptyDescription": "Your custom ETF baskets will appear here."
       }
     },
@@ -2168,12 +2321,12 @@
         "dax": "DAX",
         "msciWorld": "MSCI World",
         "search": "Search asset…",
-        "myConglomerates": "My conglomerates…",
+        "myConglomerates": "My blueprints…",
         "searchPlaceholder": "Search any asset as benchmark…",
-        "pickConglomerate": "Benchmark conglomerate",
-        "pickConglomeratePlaceholder": "Choose a conglomerate…",
-        "loading": "Loading conglomerates…",
-        "noConglomerates": "No conglomerates yet.",
+        "pickConglomerate": "Benchmark blueprint",
+        "pickConglomeratePlaceholder": "Choose a blueprint…",
+        "loading": "Loading blueprints…",
+        "noConglomerates": "No blueprints yet.",
         "clear": "Clear benchmark",
         "saved": "Custom benchmark"
       },
@@ -2194,7 +2347,7 @@
       "rebalanceAriaLabel": "Select rebalance frequency",
       "noPositions": "Add positions to preview a backtest",
       "error": "Could not run the backtest. Please try again.",
-      "chartAriaLabel": "Conglomerate backtest chart",
+      "chartAriaLabel": "Blueprint backtest chart",
       "stats": {
         "totalReturn": "Total return",
         "cagr": "CAGR",
@@ -2296,13 +2449,13 @@
       }
     },
     "conglomerates": {
-      "title": "Conglomerates",
+      "title": "Blueprints",
       "subtitle": "Your custom ETF-style baskets — build, backtest and turn a budget into a buy list.",
-      "loadError": "Could not load your Conglomerates. Please refresh the page.",
-      "emptyTitle": "No Conglomerates yet",
+      "loadError": "Could not load your Blueprints. Please refresh the page.",
+      "emptyTitle": "No Blueprints yet",
       "emptyDescription": "Build a custom ETF-style basket, backtest it and turn a budget into a buy list.",
-      "emptyCta": "New Conglomerate →",
-      "newCardLabel": "New Conglomerate",
+      "emptyCta": "New Blueprint →",
+      "newCardLabel": "New Blueprint",
       "positionCountOne": "{{count}} position",
       "positionCountOther": "{{count}} positions",
       "status": {
@@ -2320,32 +2473,32 @@
       "noPositionsDescription": "Add assets and weights in the Builder to start allocating this basket.",
       "assetHeader": "Asset",
       "weightHeader": "Weight",
-      "deleteDialogTitle": "Delete Conglomerate?",
+      "deleteDialogTitle": "Delete Blueprint?",
       "deleteDialogBody": "This permanently deletes {{name}} and all its positions. This cannot be undone.",
-      "deleteError": "Could not delete this Conglomerate. Please try again.",
+      "deleteError": "Could not delete this Blueprint. Please try again.",
       "deleting": "Deleting…",
-      "backToConglomeratesError": "← Back to Conglomerates",
-      "backLink": "← Conglomerates",
-      "loadError": "Could not load this Conglomerate. It may not exist or the server is temporarily unavailable.",
+      "backToConglomeratesError": "← Back to Blueprints",
+      "backLink": "← Blueprints",
+      "loadError": "Could not load this Blueprint. It may not exist or the server is temporarily unavailable.",
       "shareButton": "Share with friends",
       "sharedButton": "Shared with friends",
       "shareError": "Could not update sharing. Please try again.",
       "positionsHeading": "Positions",
       "allocationHeading": "Allocation",
-      "allocationChartTitle": "Conglomerate allocation",
+      "allocationChartTitle": "Blueprint allocation",
       "backtestHeading": "Backtest",
       "calculatorHeading": "Calculator",
       "viewToggleAriaLabel": "Positions view",
       "viewStored": "As built",
       "viewResolved": "Resolved",
-      "resolvedHint": "Effective asset weights after resolving nested conglomerates.",
+      "resolvedHint": "Effective asset weights after resolving nested blueprints.",
       "resolvedLoadError": "The resolved view could not be loaded.",
-      "deleteInUseError": "This conglomerate is a constituent of {{parents}} — remove it there first."
+      "deleteInUseError": "This blueprint is a constituent of {{parents}} — remove it there first."
     },
     "builder": {
       "loading": "Loading the Builder…",
-      "defaultName": "Untitled conglomerate",
-      "nameAriaLabel": "Conglomerate name",
+      "defaultName": "Untitled blueprint",
+      "nameAriaLabel": "Blueprint name",
       "closeAriaLabel": "Close the Builder",
       "activatableHint": "Active = your live, validated basket used by the calculator; must sum to 100%.",
       "notActivatableHint": "Weights must sum to 100% (±0.01) before activating.",
@@ -2353,7 +2506,7 @@
       "reactivate": "Re-activate",
       "activate": "Activate",
       "activateValidationError": "Weights must sum to 100% (±0.01) with every position above 0 before activating.",
-      "activateError": "Could not activate this Conglomerate. Please try again.",
+      "activateError": "Could not activate this Blueprint. Please try again.",
       "saving": "Saving…",
       "saveFailed": "Save failed",
       "draftSaved": "Draft — saved",
@@ -2378,7 +2531,7 @@
       "autoBalance": "Auto-balance",
       "normalize": "Normalize",
       "noPositionsMessage": "No positions yet. Search on the left and click an asset to add it.",
-      "positionsListAriaLabel": "Conglomerate positions",
+      "positionsListAriaLabel": "Blueprint positions",
       "weightSliderAriaLabel": "Weight slider for {{symbol}}",
       "weightAriaLabel": "Weight for {{symbol}}",
       "lockAriaLabel": "Lock {{symbol}}",
@@ -2395,28 +2548,28 @@
       "statLargest": "Largest",
       "backtestPreviewAriaLabel": "Backtest preview (coming soon)",
       "backtestPreviewText": "Backtest preview — coming with the backtest panel.",
-      "nestConglomerateHeading": "Nest a conglomerate",
-      "nestConglomerateHint": "Add one of your own conglomerates as a weighted slice — its weights resolve recursively at backtest and allocation time.",
-      "nestConglomerateEmpty": "No other conglomerates to nest yet.",
-      "nestConglomerateLoadError": "Your conglomerates could not be loaded.",
-      "nestConglomerateListAriaLabel": "Your conglomerates",
+      "nestConglomerateHeading": "Nest a blueprint",
+      "nestConglomerateHint": "Add one of your own blueprints as a weighted slice — its weights resolve recursively at backtest and allocation time.",
+      "nestConglomerateEmpty": "No other blueprints to nest yet.",
+      "nestConglomerateLoadError": "Your blueprints could not be loaded.",
+      "nestConglomerateListAriaLabel": "Your blueprints",
       "nestConglomerateAddAriaLabel": "Add {{name}} as a constituent",
-      "saveIdeaNestedHint": "Ideas hold asset weights only — a basket with nested conglomerates cannot be saved as an idea.",
+      "saveIdeaNestedHint": "Ideas hold asset weights only — a basket with nested blueprints cannot be saved as an idea.",
       "errors": {
-        "maxPositions": "A conglomerate may have at most {{max}} positions.",
-        "duplicateAsset": "That asset is already in this conglomerate.",
-        "duplicateConglomerate": "That conglomerate is already a constituent.",
-        "selfNest": "A conglomerate cannot contain itself.",
-        "nestingCycle": "This nesting would create a cycle — a conglomerate cannot contain itself, directly or through another conglomerate.",
-        "nestingTooDeep": "Conglomerates can be nested at most {{max}} levels deep."
+        "maxPositions": "A blueprint may have at most {{max}} positions.",
+        "duplicateAsset": "That asset is already in this blueprint.",
+        "duplicateConglomerate": "That blueprint is already a constituent.",
+        "selfNest": "A blueprint cannot contain itself.",
+        "nestingCycle": "This nesting would create a cycle — a blueprint cannot contain itself, directly or through another blueprint.",
+        "nestingTooDeep": "Blueprints can be nested at most {{max}} levels deep."
       }
     },
     "ideas": {
       "list": {
         "title": "Ideas",
-        "subtitle": "Saved Workboard analyses — reopen any one exactly as saved, or share it with friends.",
+        "subtitle": "Saved Workbench analyses — reopen any one exactly as saved, or share it with friends.",
         "emptyTitle": "No saved ideas yet",
-        "emptyBody": "Save a basket and its backtest from a conglomerate or the Builder to revisit it later.",
+        "emptyBody": "Save a basket and its backtest from a blueprint or the Builder to revisit it later.",
         "open": "Open",
         "share": "Share",
         "thesisNone": "No thesis note",
@@ -2443,27 +2596,27 @@
         "loadError": "Couldn't load this idea.",
         "thesisHeading": "Thesis",
         "backtestHeading": "Backtest",
-        "conglomerateGone": "The conglomerate this idea references is no longer available."
+        "conglomerateGone": "The blueprint this idea references is no longer available."
       }
     },
     "comparison": {
-      "title": "Compare conglomerates",
-      "description": "Overlay 2–6 of your conglomerates on one chart and compare returns and risk side by side.",
-      "selectHeading": "Choose conglomerates",
-      "selectHint": "Pick {{min}}–{{max}} conglomerates to compare.",
+      "title": "Compare blueprints",
+      "description": "Overlay 2–6 of your blueprints on one chart and compare returns and risk side by side.",
+      "selectHeading": "Choose blueprints",
+      "selectHint": "Pick {{min}}–{{max}} blueprints to compare.",
       "selectionCount": "{{count}}/{{max}} selected",
       "emptyPositions": "No positions",
-      "noConglomerates": "Not enough conglomerates yet",
-      "noConglomeratesHint": "Build at least two conglomerates with positions to compare them here.",
-      "needTwo": "Select at least {{min}} conglomerates to compare.",
+      "noConglomerates": "Not enough blueprints yet",
+      "noConglomeratesHint": "Build at least two blueprints with positions to compare them here.",
+      "needTwo": "Select at least {{min}} blueprints to compare.",
       "error": "The comparison could not be computed. Please try again.",
-      "windowError": "One of the selected conglomerates has too little price history to cover the comparison window. Try a shorter range or deselect it.",
-      "chartAriaLabel": "Conglomerate comparison chart",
-      "legendAriaLabel": "Compared conglomerates",
+      "windowError": "One of the selected blueprints has too little price history to cover the comparison window. Try a shorter range or deselect it.",
+      "chartAriaLabel": "Blueprint comparison chart",
+      "legendAriaLabel": "Compared blueprints",
       "baselineLabel": "Baseline",
       "setBaseline": "Use {{name}} as the baseline",
       "grid": {
-        "ariaLabel": "Conglomerate comparison statistics",
+        "ariaLabel": "Blueprint comparison statistics",
         "metric": "Metric"
       }
     }
@@ -2649,8 +2802,8 @@
       },
       "appearsIn": {
         "title": "Appears in",
-        "emptyTitle": "Not in any conglomerate or portfolio",
-        "emptyDescription": "Add this asset to a conglomerate or record a transaction to see it here."
+        "emptyTitle": "Not in any blueprint or portfolio",
+        "emptyDescription": "Add this asset to a blueprint or record a transaction to see it here."
       },
       "dividends": {
         "title": "Dividends",
@@ -2680,7 +2833,7 @@
       "watchlistAddError": "Failed to add to Watchlist. Please try again.",
       "quickActions": "Quick actions",
       "addToPortfolio": "+ Portfolio",
-      "addToConglomerate": "+ Conglomerate",
+      "addToConglomerate": "+ Blueprint",
       "backToSearch": "← Back to Search",
       "backShort": "← Search",
       "loadError": "Could not load asset details. The asset may not exist or the server is temporarily unavailable.",
@@ -2745,9 +2898,9 @@
       "searchingMore": "Searching the market for more results…",
       "resultsAria": "Search results",
       "openAria": "Open {{symbol}} — {{name}}",
-      "toConglomerate": "→ Conglomerate",
+      "toConglomerate": "→ Blueprint",
       "toPortfolio": "→ Portfolio",
-      "addToConglomerateAria": "Add {{symbol}} to a Conglomerate",
+      "addToConglomerateAria": "Add {{symbol}} to a Blueprint",
       "recordBuyAria": "Record a buy for {{symbol}}",
       "onWatchlistAria": "{{symbol}} is on your watchlist",
       "retryWatchlistAria": "Retry adding {{symbol}} to your watchlist",
@@ -2756,14 +2909,25 @@
       "addToWatchlistTitle": "Add to watchlist",
       "chooseWatchlistAria": "Choose a watchlist for {{symbol}}",
       "watchlistsMenuAria": "Watchlists for {{symbol}}",
-      "pickerMenuAria": "Add {{symbol}} to a conglomerate",
-      "pickerTitle": "Add to conglomerate",
-      "noConglomerates": "You don't have any conglomerates yet.",
+      "pickerMenuAria": "Add {{symbol}} to a blueprint",
+      "pickerTitle": "Add to blueprint",
+      "noConglomerates": "You don't have any blueprints yet.",
       "addedTo": "Added to {{name}}.",
-      "createNewConglomerate": "+ Create new conglomerate",
+      "createNewConglomerate": "+ Create new blueprint",
       "selectAria": "Select {{symbol}}",
       "select": "Select →",
-      "addToConglomerateError": "Could not add to that conglomerate."
+      "addToConglomerateError": "Could not add to that blueprint."
+    },
+    "aria": "Assets",
+    "tabs": {
+      "overview": "Overview",
+      "search": "Search",
+      "watchlists": "Watchlists",
+      "customAssets": "Custom assets",
+      "news": "News",
+      "discover": "Discover",
+      "events": "Events",
+      "screener": "Screener"
     }
   },
   "sharing": {
@@ -2861,8 +3025,8 @@
         "other": "{{count}} portfolios"
       },
       "conglomerate": {
-        "one": "{{count}} conglomerate",
-        "other": "{{count}} conglomerates"
+        "one": "{{count}} blueprint",
+        "other": "{{count}} blueprints"
       },
       "watchlist": {
         "one": "{{count}} watchlist",
@@ -2886,15 +3050,15 @@
     },
     "kind": {
       "portfolios": "Portfolios",
-      "conglomerates": "Conglomerates",
+      "conglomerates": "Blueprints",
       "watchlists": "Watchlists",
       "ideas": "Ideas"
     },
     "myShared": {
       "title": "My items",
-      "subtitle": "Every portfolio, conglomerate and watchlist you own is here — choose who can see each one. Everything stays private until you share it.",
+      "subtitle": "Every portfolio, blueprint and watchlist you own is here — choose who can see each one. Everything stays private until you share it.",
       "emptyTitle": "You don't own anything yet",
-      "emptyBody": "Create a portfolio, conglomerate or watchlist and it appears here to manage its sharing.",
+      "emptyBody": "Create a portfolio, blueprint or watchlist and it appears here to manage its sharing.",
       "error": "Could not load your items. Please refresh the page.",
       "publicProfileLink": "Manage your public profile"
     },
@@ -2924,7 +3088,7 @@
       "unfollowAria": "Unfollow {{username}}",
       "loginToFollow": "Log in to follow",
       "listTitle": "Following",
-      "listSubtitle": "People you follow. You get a notification when they make a new portfolio, watchlist or conglomerate public.",
+      "listSubtitle": "People you follow. You get a notification when they make a new portfolio, watchlist or blueprint public.",
       "empty": "You're not following anyone yet.",
       "emptyHint": "Open someone's public profile to follow them.",
       "error": "Couldn't load who you follow. Please refresh the page.",
@@ -2951,7 +3115,7 @@
       "sharesHeading": "Shares with you",
       "sharesEmpty": "{{username}} isn't sharing anything with you yet.",
       "followHeading": "News about this person",
-      "followHint": "Follow to hear when they make a portfolio, watchlist or conglomerate public."
+      "followHint": "Follow to hear when they make a portfolio, watchlist or blueprint public."
     },
     "chat": {
       "title": "Messages",
@@ -2970,7 +3134,7 @@
         "shared": {
           "asset": "Shared an asset",
           "portfolio": "Shared a portfolio",
-          "conglomerate": "Shared a conglomerate",
+          "conglomerate": "Shared a blueprint",
           "watchlist": "Shared a watchlist",
           "idea": "Shared an idea"
         }
@@ -2995,7 +3159,7 @@
         "kind": {
           "asset": "Asset",
           "portfolio": "Portfolio",
-          "conglomerate": "Conglomerate",
+          "conglomerate": "Blueprint",
           "watchlist": "Watchlist",
           "idea": "Idea"
         },
@@ -3012,7 +3176,9 @@
         "empty": "You have nothing to share yet."
       },
       "deletedUser": "Deleted user",
-      "deletedClosed": "This account no longer exists. The conversation is closed, but your history stays readable."
+      "deletedClosed": "This account no longer exists. The conversation is closed, but your history stays readable.",
+      "popout": "Pop out",
+      "popoutHint": "Open the chat in a separate window"
     },
     "itemFollow": {
       "follow": "Follow item",
@@ -3060,11 +3226,11 @@
       "portfolioEmptyTitle": "Nothing to show yet",
       "portfolioEmptyDescription": "{{username}} hasn't recorded any holdings in this portfolio.",
       "portfolioChartAria": "Shared portfolio value over time",
-      "conglomerateUnavailableTitle": "This conglomerate isn't available",
+      "conglomerateUnavailableTitle": "This blueprint isn't available",
       "watchlistUnavailableTitle": "This watchlist isn't available",
       "unavailableDescription": "The owner may have stopped sharing it, or you're no longer friends.",
       "noPositionsTitle": "No positions",
-      "noPositionsDescription": "This conglomerate has no assets yet.",
+      "noPositionsDescription": "This blueprint has no assets yet.",
       "watchlistEmptyTitle": "Empty watchlist",
       "watchlistEmptyDescription": "This friend isn't watching any assets.",
       "sharedByReadOnly": "Shared by {{username}} · read-only",
@@ -3135,7 +3301,6 @@
   },
   "profile": {
     "title": "My Public Profile",
-    "subtitle": "An optional public page others can view — it shows only the items you've shared with a public link.",
     "error": "Could not load your profile settings. Please refresh the page.",
     "toggleLabel": "Make my profile public",
     "publicItemCount": "{{count}} of your items are currently public.",
@@ -3176,6 +3341,9 @@
         "compass": "Compass",
         "anchor": "Anchor"
       }
+    },
+    "groups": {
+      "page": "Public page"
     }
   },
   "mirrorchain": {
@@ -3314,7 +3482,7 @@
     "warning": {
       "headline": "This cannot be undone. Deleting your account removes:",
       "data": "All portfolios, transactions, cash sources, custom assets, tax records and reports",
-      "social": "Your friendships, shared items, watchlists, conglomerates, alerts and notifications",
+      "social": "Your friendships, shared items, watchlists, blueprints, alerts and notifications",
       "access": "Every session, API key and connected app — you are signed out everywhere immediately",
       "chat": "Your identity in chats — messages you sent stay visible to your friends as “Deleted user”"
     },
@@ -3332,6 +3500,17 @@
       "tooMany": "Too many attempts. Please wait a moment and try again."
     }
   },
+  "vault": {
+    "sync": {
+      "synced": "Encrypted vault synced",
+      "syncing": "Encrypted changes are waiting to sync",
+      "offline": "Encrypted changes are saved locally while offline",
+      "needsAttention": "Vault sync needs attention",
+      "drive": {
+        "signIn": "Sign in to Google to sync"
+      }
+    }
+  },
   "announcements": {
     "dismiss": "Dismiss",
     "dismissing": "Dismissing…",
@@ -3342,6 +3521,68 @@
     },
     "aria": {
       "list": "Announcements"
+    }
+  },
+  "vaultExports": {
+    "tax": {
+      "title": "Tax report",
+      "section": "Section",
+      "summary": "Summary",
+      "germany": "Germany (Abgeltungsteuer)",
+      "positions": "Positions",
+      "sells": "Sells",
+      "dividends": "Dividends",
+      "empty": "No sells or dividends in this year.",
+      "year": "Year",
+      "realized": "Realized P/L",
+      "realizedEur": "Realized P/L (EUR)",
+      "dividendsGross": "Dividends gross",
+      "dividendsGrossEur": "Dividends gross (EUR)",
+      "withheld": "Tax withheld",
+      "withheldEur": "Tax withheld (EUR)",
+      "refunded": "Tax refunded",
+      "refundedEur": "Tax refunded (EUR)",
+      "net": "Net tax",
+      "netEur": "Net tax (EUR)",
+      "tax": "Tax",
+      "taxEur": "Tax (EUR)",
+      "date": "Date",
+      "quantity": "Quantity",
+      "proceeds": "Proceeds",
+      "proceedsEur": "Proceeds (EUR)",
+      "costBasis": "Cost basis",
+      "costBasisEur": "Cost basis (EUR)",
+      "gross": "Gross",
+      "grossEur": "Gross (EUR)",
+      "allowance": "Allowance used / remaining",
+      "allowanceUsedEur": "Allowance used (EUR)",
+      "allowanceRemainingEur": "Allowance remaining (EUR)",
+      "shareLossPot": "Share-loss pot in / out",
+      "shareLossPotInEur": "Share-loss pot in (EUR)",
+      "shareLossPotOutEur": "Share-loss pot out (EUR)",
+      "otherLossPot": "Other-loss pot in / out",
+      "otherLossPotInEur": "Other-loss pot in (EUR)",
+      "otherLossPotOutEur": "Other-loss pot out (EUR)",
+      "kapest": "KapESt",
+      "kapestEur": "KapESt (EUR)",
+      "soli": "Soli",
+      "soliEur": "Soli (EUR)",
+      "symbol": "Symbol",
+      "name": "Name",
+      "taxMode": "Tax mode",
+      "disclaimerLabel": "Disclaimer",
+      "disclaimer": "Estimates for your personal overview only — not tax advice, no guarantee of correctness, not a filing document."
+    },
+    "cleartext": {
+      "readme": "BetterTrack — client cleartext export\n\nThis archive was built locally from your unlocked encrypted vault. It contains\nsource entities as JSON plus spreadsheet-friendly transaction, cash-movement,\nand holdings CSV files. Vault keys, passphrases, recovery material, ciphertext,\nsync metadata, quarantined blobs, and derived caches are not included.\n",
+      "skipped": {
+        "importBatches": "Import staging bookkeeping; applied rows are exported in their final entities.",
+        "importRows": "Import staging bookkeeping; applied rows are exported in their final entities.",
+        "portfolioSnapshots": "Derived valuation cache; rebuilt from source rows and market data.",
+        "snapshotState": "Derived snapshot invalidation bookkeeping.",
+        "standingOrderRuns": "Idempotency bookkeeping; materialized rows and definitions are exported.",
+        "expenseBudgetFires": "Derived alert-delivery bookkeeping."
+      }
     }
   },
   "admin": {
@@ -3682,7 +3923,7 @@
       },
       "feature": {
         "portfolio": "Portfolio",
-        "workboard": "Workboard",
+        "workboard": "Workbench",
         "assets": "Assets",
         "social": "Social",
         "alerts": "Alerts",
@@ -3690,6 +3931,716 @@
         "imports": "Imports",
         "settings": "Settings"
       }
+    },
+    "emailLog": {
+      "loading": "Loading email log…",
+      "empty": "No emails sent yet.",
+      "emptyForUser": "No emails sent to {{email}} yet.",
+      "headers": {
+        "when": "When",
+        "recipient": "Recipient",
+        "template": "Template",
+        "subject": "Subject",
+        "status": "Status"
+      },
+      "status": {
+        "sent": "Sent",
+        "failed": "Failed",
+        "suppressed": "Suppressed"
+      },
+      "loadMore": "Load more",
+      "loadingMore": "Loading…"
+    }
+  },
+  "create": {
+    "button": "Create",
+    "trade": "Buy or sell",
+    "cashFlow": "Income or expense",
+    "transfer": "Transfer",
+    "blueprint": "New Blueprint",
+    "watchlist": "New watchlist",
+    "alert": "New alert",
+    "idea": "New idea",
+    "portfolio": "New portfolio"
+  },
+  "home": {
+    "greeting": "Welcome back",
+    "go": {
+      "portfolio": "Open portfolio",
+      "portfolioSub": "Holdings, activity, analysis",
+      "workbench": "Plan in the Workbench",
+      "workbenchSub": "Blueprints, backtests, forecasts",
+      "research": "Research assets",
+      "researchSub": "Search, watchlists, news",
+      "people": "Work with people",
+      "peopleSub": "Sharing, chat, shared items"
+    },
+    "defaultPortfolio": "Default",
+    "attention": {
+      "review": "Open Review",
+      "clear": "All clear — nothing needs you right now."
+    },
+    "upcoming": {
+      "manage": "Manage in Forecasts",
+      "empty": "Nothing scheduled. Standing orders appear here once created.",
+      "order": "Standing order"
+    },
+    "builder": {
+      "customize": "Customize",
+      "done": "Done",
+      "add": "Add widget",
+      "addTitle": "Add a widget",
+      "reset": "Reset to default",
+      "emptyBoard": "Your home is empty",
+      "dragHandle": "Reorder {{title}}",
+      "moveUp": "Move {{title}} up",
+      "moveDown": "Move {{title}} down",
+      "remove": "Remove {{title}}",
+      "settings": "{{title}} settings",
+      "sizeAriaLabel": "{{title}} size",
+      "size": {
+        "s": "S",
+        "m": "M",
+        "l": "L"
+      },
+      "scopeLabel": "Portfolio",
+      "scopeAll": "All portfolios",
+      "rangeLabel": "Range",
+      "group": {
+        "overview": "Overview",
+        "charts": "Charts",
+        "lists": "Lists"
+      },
+      "placeBefore": "Place before {{title}}",
+      "placeEnd": "Place at the end",
+      "placeCancel": "Stop placing {{title}}",
+      "addBefore": "Add a widget before {{title}}",
+      "addEnd": "Add a widget at the end",
+      "variantLabel": "Display",
+      "variantAriaLabel": "{{title}} display form",
+      "variant": {
+        "cashflow-chart": {
+          "net": "Net",
+          "columns": "In / out"
+        },
+        "performance-chart": {
+          "value": "Value €",
+          "return": "Return %"
+        },
+        "allocation": {
+          "donut": "Donut",
+          "bars": "Bars"
+        },
+        "top-movers": {
+          "list": "List",
+          "chips": "Chips"
+        },
+        "portfolio-cards": {
+          "cards": "Cards",
+          "table": "Table"
+        },
+        "liquidity": {
+          "ring": "Ring",
+          "bar": "Bar"
+        }
+      },
+      "scopeSelected": "Selected portfolios…",
+      "scopeCount": "{{count}} portfolios",
+      "scopeFilter": "Filter portfolios",
+      "scopeNoMatch": "No portfolio matches.",
+      "scopeNone": "No portfolios yet."
+    },
+    "widgets": {
+      "range": {
+        "1D": "1D",
+        "1W": "1W",
+        "1M": "1M",
+        "3M": "3M",
+        "6M": "6M",
+        "12M": "12M",
+        "1Y": "1Y",
+        "5Y": "5Y",
+        "Max": "Max"
+      },
+      "netWorth": {
+        "title": "Net worth",
+        "description": "Total value with today's change",
+        "changeTitle": "Today's change",
+        "investedWord": "invested",
+        "cashWord": "cash"
+      },
+      "todayChange": {
+        "title": "Today",
+        "description": "Today's move as a compact stat",
+        "label": "Today's change",
+        "totalLabel": "Total value"
+      },
+      "performanceChart": {
+        "title": "Performance",
+        "description": "One portfolio over time — value, or its time-weighted return.",
+        "empty": "No portfolio to chart yet.",
+        "ariaLabel": "Value over time for {{name}}",
+        "ariaLabelReturn": "Time-weighted return over time for {{name}}",
+        "returnHint": "Time-weighted return — deposits and withdrawals are neutralized, so the curve only moves when your holdings move.",
+        "returnNeedsOne": "Return % is only meaningful for a single portfolio, so this shows value instead. Scope the widget to one portfolio to see the return."
+      },
+      "cashflowChart": {
+        "title": "Cash flow",
+        "description": "Money in minus money out, by month",
+        "empty": "No cash-flow data yet.",
+        "ariaLabel": "Net cash flow by month",
+        "incomeWord": "in",
+        "spentWord": "out",
+        "netWord": "net",
+        "columnsAriaLabel": "Money in and money out per month"
+      },
+      "allocation": {
+        "title": "Allocation",
+        "description": "What the money sits in",
+        "chartTitle": "Allocation by position",
+        "other": "Other",
+        "cash": "Cash",
+        "empty": "Nothing allocated yet."
+      },
+      "topMovers": {
+        "title": "Movers",
+        "description": "Biggest climbers and fallers",
+        "climbers": "Climbers",
+        "fallers": "Fallers",
+        "none": "Nothing here.",
+        "empty": "No price moves to rank yet.",
+        "metricAriaLabel": "Ranking metric",
+        "dayMetric": "Today",
+        "totalMetric": "Total"
+      },
+      "portfolioCards": {
+        "title": "Portfolios",
+        "description": "Every portfolio with value and trend",
+        "empty": "No portfolios yet.",
+        "sparkAriaLabel": "One-month trend for {{name}}",
+        "colName": "Portfolio",
+        "colValue": "Value",
+        "colToday": "Today",
+        "colShare": "Share"
+      },
+      "news": {
+        "title": "News",
+        "description": "Headlines on the assets you hold",
+        "empty": "No headlines for your holdings right now.",
+        "unavailable": "News is not available."
+      },
+      "attention": {
+        "title": "Needs attention",
+        "description": "Unread notifications"
+      },
+      "upcoming": {
+        "title": "Upcoming",
+        "description": "Scheduled standing orders",
+        "units": "{{count}} ×"
+      },
+      "shortcuts": {
+        "title": "Jump in",
+        "description": "Links to the main sections"
+      },
+      "netWorthHistory": {
+        "title": "Net worth history",
+        "description": "Every portfolio's value over time, combined",
+        "ariaLabel": "Combined value over time — {{label}}",
+        "empty": "No portfolios to chart yet."
+      },
+      "assetSpotlight": {
+        "title": "Spotlight",
+        "description": "One asset with its price and chart",
+        "ariaLabel": "Price over time for {{name}}",
+        "unpicked": "No asset picked yet",
+        "unpickedHint": "Open this widget's settings to pick one.",
+        "unnamed": "Asset",
+        "pickLabel": "Asset",
+        "current": "Currently {{name}}",
+        "searchPlaceholder": "Search assets"
+      },
+      "recentTransactions": {
+        "title": "Recent activity",
+        "description": "The latest trades across your portfolios",
+        "empty": "No transactions yet.",
+        "countLabel": "Rows",
+        "countOption": "{{count}} rows"
+      },
+      "cashBalances": {
+        "title": "Cash",
+        "description": "Balances per cash source",
+        "empty": "No cash sources yet.",
+        "total": "Total"
+      },
+      "watchlist": {
+        "title": "Watchlist",
+        "description": "A watchlist with live quotes",
+        "empty": "{{name}} is empty.",
+        "noLists": "No watchlists yet.",
+        "listLabel": "List"
+      },
+      "dividends": {
+        "title": "Dividends",
+        "description": "Upcoming ex- and pay dates",
+        "empty": "No dividends coming up.",
+        "unavailable": "Dividend data is not available.",
+        "exDate": "Ex-date",
+        "payDate": "Pay date"
+      },
+      "alerts": {
+        "title": "Alerts",
+        "description": "How many are armed and what fired",
+        "armed": "Armed",
+        "triggered": "Triggered",
+        "empty": "No alerts yet."
+      },
+      "liquidity": {
+        "title": "Liquidity",
+        "description": "How much of it is cash, not invested",
+        "empty": "Nothing to measure yet.",
+        "ofWord": "of"
+      },
+      "concentration": {
+        "title": "Concentration",
+        "description": "How much rides on the biggest position",
+        "empty": "No positions to measure yet.",
+        "inWord": "in",
+        "topN": "Top {{n}} together: {{pct}}"
+      }
+    }
+  },
+  "cashflow": {
+    "aria": "Cash flow",
+    "tabs": {
+      "overview": "Overview",
+      "transactions": "Transactions",
+      "budgets": "Budgets",
+      "categories": "Categories",
+      "rules": "Rules",
+      "import": "Import",
+      "accounts": "Cash accounts"
+    }
+  },
+  "workbench": {
+    "aria": "Workbench",
+    "tabs": {
+      "overview": "Overview",
+      "studio": "Studio",
+      "forecasts": "Forecasts",
+      "blueprints": "Blueprints",
+      "backtests": "Backtests",
+      "compare": "Compare",
+      "ideas": "Ideas",
+      "calculators": "Calculators",
+      "alerts": "Alerts"
+    }
+  },
+  "people": {
+    "aria": "People",
+    "tabs": {
+      "friends": "Friends",
+      "chat": "Chat",
+      "shared": "Shared items",
+      "profile": "Public profile",
+      "teams": "Teams",
+      "approvals": "Approvals"
+    }
+  },
+  "ask": {
+    "title": "Ask BetterTrack",
+    "subtitle": "A scoped, permissioned AI workspace over your data."
+  },
+  "review": {
+    "title": "Review",
+    "subtitle": "One queue for everything that needs your decision."
+  },
+  "control": {
+    "title": "Control Center",
+    "subtitle": "Settings, data and the developer platform — everything that runs the workspace.",
+    "groups": {
+      "account": "Account",
+      "data": "Data",
+      "developer": "Developer platform",
+      "preferences": "Preferences",
+      "security": "Security",
+      "links": "Pages",
+      "integrations": "Connections & API",
+      "danger": "Danger zone"
+    },
+    "account": "Account",
+    "accountSub": "Profile, email, language, password",
+    "notifications": "Notifications",
+    "notificationsSub": "Channels, digest, quiet hours",
+    "security": "Security",
+    "securitySub": "Passkeys, two-factor, PIN, sessions",
+    "taxes": "Tax defaults",
+    "taxesSub": "Defaults for new portfolios",
+    "connections": "Connections",
+    "connectionsSub": "Google Drive and data sources",
+    "imports": "Imports & exports",
+    "importsSub": "Broker files, account export",
+    "backups": "Backups",
+    "backupsSub": "Offsite copies of your data",
+    "privacy": "Privacy modes",
+    "privacySub": "Discreet mode and the paranoid vault",
+    "dataManagement": "Data management",
+    "dataManagementSub": "Checkpoints, retention, portability",
+    "developer": "Developer overview",
+    "developerSub": "API keys, OAuth, webhooks, MCP",
+    "apiKeys": "API keys",
+    "apiKeysSub": "Personal tokens with scopes",
+    "webhooks": "Webhooks",
+    "webhooksSub": "Signed event deliveries",
+    "mcp": "MCP",
+    "mcpSub": "Model Context Protocol access",
+    "logs": "Request logs",
+    "logsSub": "Inspect API activity",
+    "deleteAccount": "Delete account",
+    "portfolioDefaults": "Portfolio defaults",
+    "oauthApps": "OAuth apps",
+    "oauthAppsSub": "Third-party apps you registered",
+    "navAria": "Control Center panels",
+    "filterAria": "Filter panels",
+    "filterPlaceholder": "Filter…",
+    "noMatches": "No panel matches.",
+    "leavesPopup": "Opens as its own page",
+    "signIn": "Sign-in",
+    "sessions": "Sessions",
+    "notificationLog": "Notification log",
+    "profile": "Public profile",
+    "authorizedApps": "Authorized apps"
+  },
+  "privacy": {
+    "subtitle": "Control what the screen shows and where your data lives.",
+    "discreet": {
+      "title": "Discreet mode",
+      "body": "Masks every absolute amount across the app — show BetterTrack to anyone without exposing numbers."
+    }
+  },
+  "parked": {
+    "flag": "In the works",
+    "foot": "Reserved in the product plan — this surface is waiting for its build.",
+    "links": {
+      "forecasts": "Open Forecasts",
+      "taxDefaults": "Tax defaults",
+      "blueprints": "Open Blueprints",
+      "backtests": "Open Backtests",
+      "search": "Open search",
+      "friends": "Open People",
+      "importsExports": "Imports & exports",
+      "security": "Security settings",
+      "aiInsights": "AI insights in Analysis",
+      "nlBuilder": "Blueprint builder",
+      "standingOrders": "Standing orders in Forecasts",
+      "structure": "Structure",
+      "events": "Events",
+      "health": "Data health",
+      "rebalancePage": "Rebalance",
+      "privateMarkets": "Private markets"
+    },
+    "portfolioPlan": {
+      "title": "Plan",
+      "body": "Goals, target allocation and rebalancing — the portfolio's forward-looking side, connected to the same data as everything else.",
+      "p1": "Goals with target dates and required contributions",
+      "p2": "Target allocation with drift tracking",
+      "p3": "Rebalance proposals you approve before anything changes",
+      "p4": "Forecast links into the Workbench"
+    },
+    "automate": {
+      "title": "Automate",
+      "body": "Standing orders, rules and approved automations for this portfolio. Standing orders already run today — manage them in Forecasts until this tab takes over.",
+      "p1": "Recurring buys and contributions on a schedule",
+      "p2": "Rules that categorize and route new activity",
+      "p3": "Every automation visible, pausable and auditable"
+    },
+    "portfolioFiles": {
+      "title": "Files",
+      "body": "Statements, contracts, receipts and valuation evidence — attached to the portfolio, linked to the numbers they prove.",
+      "p1": "Upload, classify and link documents to activity",
+      "p2": "Versioning with review and restore",
+      "p3": "Evidence links from any consequential number"
+    },
+    "portfolioPeople": {
+      "title": "People",
+      "body": "Roles, access and approvals for this portfolio. Sharing with friends and group portfolios already work — fine-grained roles arrive here.",
+      "p1": "Owner, manager and viewer roles per portfolio",
+      "p2": "Approval rules for consequential changes",
+      "p3": "Access and activity in one audit view"
+    },
+    "portfolioEvents": {
+      "title": "Events",
+      "body": "Corporate actions — splits, mergers, spin-offs and dividends in kind — reconciled with evidence and a full receipt trail.",
+      "p1": "Safe actions reconcile directly, uncertain ones go to Review",
+      "p2": "Position, tax and cost-basis effects made explicit",
+      "p3": "A persistent source and receipt trail per event"
+    },
+    "portfolioStructure": {
+      "title": "Structure",
+      "body": "The containment and ownership graph: nested portfolios, ownership stakes and roll-ups without double counting.",
+      "p1": "Households, entities and client mandates as portfolios",
+      "p2": "Reparenting and ownership changes through Review",
+      "p3": "Roll-ups that never count a euro twice"
+    },
+    "dataHealth": {
+      "title": "Data health",
+      "body": "Field-level lineage for every consequential number: source, sync age, gaps and exceptions — with corrections staged for review.",
+      "p1": "Source, import and calculation provenance per field",
+      "p2": "Stale connections and missing data surfaced early",
+      "p3": "Evidence or reasoned exceptions recorded in place",
+      "p4": "Truth-changing corrections go through Review"
+    },
+    "privateMarkets": {
+      "title": "Private markets",
+      "body": "Commitments, capital calls, NAV updates and valuation evidence for non-listed holdings.",
+      "p1": "Commitments with call schedules against liquidity",
+      "p2": "NAV changes staged with their evidence",
+      "p3": "Look-through into allocation and performance"
+    },
+    "rebalance": {
+      "title": "Rebalance",
+      "body": "Constraint-aware rebalancing: exact quantities, costs and tax estimates, frozen into a plan you approve.",
+      "p1": "Targets from Blueprints or the portfolio plan",
+      "p2": "Costs, taxes and policy decisions made explicit",
+      "p3": "A frozen plan checksum submitted to Review"
+    },
+    "studio": {
+      "title": "Studio",
+      "body": "The visual what-if builder: draft scenarios against real portfolio data and apply them only through an explicit review step.",
+      "p1": "Non-destructive drafts over real holdings",
+      "p2": "Contributions, shocks and allocation changes as blocks",
+      "p3": "Charts and comparisons update as you edit",
+      "p4": "Apply-to-portfolio always ends in a review"
+    },
+    "assetEvents": {
+      "title": "Events",
+      "body": "Earnings, dividends, splits and the macro calendar for the assets you own and watch.",
+      "p1": "Earnings dates with estimates and surprises",
+      "p2": "Dividend calendar with projected income",
+      "p3": "Splits and corporate actions ahead of time"
+    },
+    "screener": {
+      "title": "Screener",
+      "body": "Filter the asset universe by fundamentals, performance and exposure — then send results to watchlists or Blueprints.",
+      "p1": "Composable filters over the local asset catalog",
+      "p2": "Saved screens that rerun on fresh data",
+      "p3": "One-click routes into watchlists and Blueprints"
+    },
+    "discover": {
+      "title": "Discover",
+      "body": "Curated entry points into stocks, ETFs, crypto and commodities — browse by category, region and theme.",
+      "p1": "Category browsers for every asset class",
+      "p2": "Regional and thematic collections",
+      "p3": "Straight lines into research and watchlists"
+    },
+    "teams": {
+      "title": "Teams",
+      "body": "Shared workspaces for households, clubs and advisor relationships with roles and a common view.",
+      "p1": "Group portfolios with member roles",
+      "p2": "Advisor and client workspaces with review rules",
+      "p3": "Shared activity without giving up your account"
+    },
+    "approvals": {
+      "title": "Approvals",
+      "body": "Requests that need a second pair of eyes: access grants, consequential edits and automation proposals.",
+      "p1": "Access requests with explicit scopes",
+      "p2": "Consequential changes held until approved",
+      "p3": "A full decision trail per request"
+    },
+    "review": {
+      "title": "Review inbox",
+      "body": "Uncategorized activity, stale connections, drift, missing data and pending invitations — one prioritized queue instead of scattered warnings.",
+      "p1": "Every item actionable in place",
+      "p2": "Priorities that reflect money impact",
+      "p3": "Automation proposals held for your decision",
+      "p4": "Nothing consequential happens silently"
+    },
+    "dataManagement": {
+      "title": "Data management",
+      "body": "Verified checkpoints, previewable restores, portable export manifests and retention policy.",
+      "p1": "Checkpoints you can verify and restore from",
+      "p2": "Portable exports in an open manifest format",
+      "p3": "Retention rules you control"
+    },
+    "paranoid": {
+      "title": "Paranoid mode",
+      "body": "Your data stays with just you: the portfolio lives in a client-encrypted vault — on BetterTrack, your Google Drive, both or Drive-only — and the server can never read it. The client foundations are already merged; the enable flow lands here.",
+      "p1": "Client-side encryption with a key that never leaves your devices",
+      "p2": "Storage media you choose: server, Drive, both or Drive-only",
+      "p3": "Money math computed on your device with the same audited engine",
+      "p4": "Lost key means lost data — by design, with a forced recovery kit"
+    },
+    "mcp": {
+      "title": "MCP",
+      "body": "Connect AI clients through the Model Context Protocol with a portfolio boundary, tool selection and reviewable writes.",
+      "p1": "Streamable HTTP clients with rotating access",
+      "p2": "A hard portfolio boundary per connection",
+      "p3": "Finance writes arrive as reviewable proposals"
+    },
+    "developerLogs": {
+      "title": "Request logs",
+      "body": "Filter API requests by period, path, actor and result; inspect status, latency, scope and response previews.",
+      "p1": "Filters by period, path, actor and result",
+      "p2": "Status, latency and portfolio scope per request",
+      "p3": "CSV export for deeper analysis"
+    },
+    "oauthApps": {
+      "title": "OAuth apps",
+      "body": "Register PKCE or confidential clients, manage redirect URIs and scopes, and inspect authorized grants. Administrators manage OAuth apps today.",
+      "p1": "Public PKCE and confidential clients",
+      "p2": "Credentials revealed once, revocable any time",
+      "p3": "A preview of the authorization model"
+    },
+    "ask": {
+      "title": "Ask BetterTrack",
+      "body": "Questions over your own portfolios with explicit scope, linked answers and reviewable proposals — no unsolicited chat bubbles. AI insights and the natural-language Blueprint builder are live today; the full workspace lands here.",
+      "p1": "You choose exactly which portfolios the answer may read",
+      "p2": "Every figure links back to records and assumptions",
+      "p3": "Scenario answers open as Workbench drafts",
+      "p4": "No write happens without your explicit confirmation"
+    }
+  },
+  "palette": {
+    "triggerLabel": "Search…",
+    "inputAria": "Search BetterTrack",
+    "placeholder": "Search pages, actions, settings and assets…",
+    "resultsAria": "Search results",
+    "hint": "Pages, actions, settings and market assets — all from here.",
+    "noResults": "Nothing matched “{{query}}”. Try a symbol, a page or a setting.",
+    "assetsLoading": "Searching assets…",
+    "assetsEmpty": "No assets matched.",
+    "group": {
+      "suggested": "Suggested",
+      "actions": "Actions",
+      "goTo": "Go to",
+      "settings": "Settings",
+      "assets": "Assets"
+    },
+    "keys": {
+      "navigate": "Navigate",
+      "open": "Open"
+    },
+    "assetType": {
+      "stock": "Stock",
+      "etf": "ETF",
+      "index": "Index",
+      "fx": "FX",
+      "commodity": "Commodity",
+      "crypto": "Crypto",
+      "other": "Other"
+    }
+  },
+  "firstrun": {
+    "stepOf": "Step {{current}} of {{total}}",
+    "later": "Do this later",
+    "finish": "Go to BetterTrack",
+    "parkedFlag": "In the works",
+    "command": {
+      "runAgain": "Run setup again"
+    },
+    "profile": {
+      "label": "You",
+      "title": "Is this you?",
+      "hint": "The name and address your account was created with.",
+      "nameLabel": "Display name",
+      "nameParked": "Renaming arrives with profile editing.",
+      "emailLabel": "Email"
+    },
+    "verifyEmail": {
+      "label": "Email",
+      "title": "Verify your email",
+      "verified": "Already verified through Google.",
+      "parkedNote": "Arrives with email delivery.",
+      "codeLabel": "Verification code"
+    },
+    "security": {
+      "label": "Security",
+      "title": "Add a second lock?",
+      "hint": "Both are optional, and either can wait.",
+      "setUp": "Set up",
+      "on": "On",
+      "pin": {
+        "title": "App PIN",
+        "description": "Four digits to unlock BetterTrack on this device.",
+        "newLabel": "New PIN",
+        "confirmLabel": "Confirm PIN",
+        "save": "Save PIN",
+        "mismatch": "The two PINs do not match.",
+        "rateLimited": "Too many attempts. Try again shortly.",
+        "failed": "The PIN could not be saved."
+      },
+      "twoFactor": {
+        "title": "Two-factor authentication",
+        "description": "A code from your authenticator app at every sign-in.",
+        "scan": "Scan this with your authenticator app.",
+        "qrAria": "Authenticator setup QR code",
+        "manualToggle": "Enter the key manually",
+        "codeLabel": "Code from your app",
+        "confirm": "Turn on",
+        "invalidCode": "That code is incorrect or has expired.",
+        "rateLimited": "Too many codes. Try again shortly.",
+        "enrollError": "Setup could not be started.",
+        "enabled": "Two-factor authentication is on."
+      },
+      "recoveryCodes": {
+        "description": "Keep these somewhere safe. Each one signs you in once if you lose your app.",
+        "saved": "I have saved them"
+      }
+    },
+    "preferences": {
+      "label": "Preferences",
+      "title": "Language and currency",
+      "languageLabel": "Language",
+      "currencyLabel": "Base currency",
+      "currencyHint": "Every total is converted to this."
+    },
+    "tax": {
+      "label": "Tax",
+      "title": "How should tax be handled?",
+      "hint": "This becomes the default for new portfolios — change it any time.",
+      "groupAria": "Tax handling"
+    },
+    "publicProfile": {
+      "label": "Profile",
+      "title": "Your public profile",
+      "pictureParked": "Picking a picture lands later.",
+      "toggleLabel": "Make my profile public",
+      "toggleHint": "Anyone can see the items you have shared publicly.",
+      "acknowledge": "I understand and want a public profile."
+    },
+    "done": {
+      "label": "Done",
+      "title": "You are set up",
+      "set": "Set",
+      "later": "Later"
+    },
+    "figures": {
+      "on": "On",
+      "off": "Off",
+      "verified": "Verified through Google",
+      "awaitingDelivery": "Awaiting email delivery",
+      "pin": "PIN",
+      "twoFactor": "2FA",
+      "notSet": "Not set",
+      "taxMeta": "Default for new portfolios",
+      "public": "Public",
+      "private": "Private",
+      "publicMeta": "Visible to anyone with the link",
+      "privateMeta": "Only you can see this page",
+      "setCount": "{{count}} set",
+      "laterCount": "{{count}} left for later"
+    }
+  },
+  "vaultMoney": {
+    "error": {
+      "locked": "Your vault is locked. Unlock it to continue.",
+      "corrupt": "The decrypted vault data could not be processed safely.",
+      "unavailable": "Your vault data is not available right now. Try again once sync has settled.",
+      "unsupported": "This vault contains data this app version does not support.",
+      "portfolioNotFound": "This portfolio does not exist in your vault.",
+      "marketData": "Market data needed for this calculation is unavailable. Nothing was estimated — try again later.",
+      "tax": "The tax settings or tax data in your vault could not be applied.",
+      "aborted": "The operation was interrupted before completion.",
+      "generic": "The operation could not be completed."
     }
   }
 }

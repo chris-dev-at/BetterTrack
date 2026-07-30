@@ -6,11 +6,11 @@ import {
   VAULT_DOCUMENT_VERSION,
   VAULT_FORMAT_VERSION,
   VAULT_KDF_ALG,
-  type VaultDocumentV1,
+  type VaultDocument,
   type VaultEnvelopeHeader,
   type VaultKdfParams,
   type VaultWrappedKey,
-  vaultDocumentV1Schema,
+  vaultDocumentSchema,
   vaultEnvelopeHeaderSchema,
 } from '@bettertrack/contracts';
 
@@ -41,7 +41,7 @@ export interface VaultCryptoDeps {
 export type VaultKeyMaterial = Uint8Array | CryptoKey;
 
 export interface EncryptVaultInput {
-  document: VaultDocumentV1;
+  document: VaultDocument;
   vaultKey: VaultKeyMaterial;
   header: Omit<VaultEnvelopeHeader, 'cipher' | 'iv' | 'formatVersion' | 'schemaVersion'>;
   randomBytes?: RandomBytes;
@@ -181,7 +181,7 @@ export async function unwrapVaultKey(
 
 export async function encryptVaultDocument(input: EncryptVaultInput): Promise<EncryptedVault> {
   requireKeyMaterial(input.vaultKey, 'Vault key');
-  const parsedDocument = vaultDocumentV1Schema.safeParse(input.document);
+  const parsedDocument = vaultDocumentSchema.safeParse(input.document);
   if (!parsedDocument.success) {
     throw new VaultCryptoError(
       'document-invalid',
@@ -196,7 +196,7 @@ export async function encryptVaultDocument(input: EncryptVaultInput): Promise<En
     const header = canonicalVaultHeader({
       ...input.header,
       formatVersion: VAULT_FORMAT_VERSION,
-      schemaVersion: VAULT_DOCUMENT_VERSION,
+      schemaVersion: parsedDocument.data.schemaVersion,
       cipher: VAULT_CONTENT_CIPHER,
       iv: bytesToBase64(iv),
     });
@@ -222,7 +222,7 @@ export async function encryptVaultDocument(input: EncryptVaultInput): Promise<En
 export async function decryptVaultDocument(
   envelope: Uint8Array,
   vaultKey: VaultKeyMaterial,
-): Promise<{ document: VaultDocumentV1; header: VaultEnvelopeHeader }> {
+): Promise<{ document: VaultDocument; header: VaultEnvelopeHeader }> {
   requireKeyMaterial(vaultKey, 'Vault key');
   const decoded = decodeVaultEnvelope(envelope);
   if (decoded.header.schemaVersion > VAULT_DOCUMENT_VERSION) {
@@ -253,11 +253,11 @@ export async function decryptVaultDocument(
         cause,
       });
     }
-    const parsed = vaultDocumentV1Schema.safeParse(value);
-    if (!parsed.success) {
+    const parsed = vaultDocumentSchema.safeParse(value);
+    if (!parsed.success || parsed.data.schemaVersion !== decoded.header.schemaVersion) {
       throw new VaultCryptoError(
         'document-invalid',
-        'Vault document does not match the current schema.',
+        'Vault document does not match its authenticated schema version.',
       );
     }
     return { document: parsed.data, header: decoded.header };

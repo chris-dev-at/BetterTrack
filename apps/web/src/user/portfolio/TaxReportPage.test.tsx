@@ -1,14 +1,35 @@
+import { webcrypto } from 'node:crypto';
+
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { PortfolioAsset, TaxYearReportResponse, TaxYearSummary } from '@bettertrack/contracts';
+import type {
+  ParanoidMediaStateResponse,
+  PortfolioAsset,
+  TaxYearReportResponse,
+  TaxYearSummary,
+} from '@bettertrack/contracts';
 
 vi.mock('../../lib/portfolioApi');
+vi.mock('../../lib/userApi');
+vi.mock('../vault/export/deliver', () => ({
+  deliverClientDownload: vi.fn(),
+  printClientDocument: vi.fn(),
+}));
 
 import * as portfolioApi from '../../lib/portfolioApi';
+import * as userApi from '../../lib/userApi';
+import {
+  createClientMoneyMarket,
+  createMutableTestSync,
+  decryptClientMoneyFixture,
+  withTaxSettings,
+} from '../vault/engine/clientMoney.testSupport';
+import { VaultMoneyEngineProvider } from '../vault/engine/VaultMoneyEngineProvider';
+import { deliverClientDownload, printClientDocument } from '../vault/export/deliver';
 import { TaxReportPage } from './TaxReportPage';
 
 // This portfolio's effective tax view (issue #636): the report reads the mode
@@ -66,8 +87,21 @@ function renderPage() {
   );
 }
 
+const PARANOID_MEDIA: ParanoidMediaStateResponse = {
+  privacyMode: 'paranoid',
+  mediaState: {
+    mediaSet: ['server'],
+    driveAttestedVersion: null,
+    server: { disposition: 'active', candidate: null, retired: null },
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(userApi.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   vi.mocked(portfolioApi.listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue(AT_TAX_VIEW);
   vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({ years: [YEAR_2026] });
@@ -127,7 +161,7 @@ describe('TaxReportPage', () => {
     expect(screen.queryByText('Locked')).not.toBeInTheDocument();
   });
 
-  test('with this portfolio inheriting `none`, shows the off state + a default editor link, never queries the report', async () => {
+  test('with this portfolio inheriting `none`, shows the off state and never queries the report', async () => {
     vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue({
       effective: { mode: 'none', country: null },
       override: null,
@@ -137,14 +171,52 @@ describe('TaxReportPage', () => {
     renderPage();
 
     expect(await screen.findByText(/Tax tracking is off/i)).toBeInTheDocument();
-    // The per-portfolio treatment control offers a link to edit the user default.
-    expect(screen.getByRole('link', { name: /Edit the default/i })).toHaveAttribute(
-      'href',
-      '/settings/taxes',
-    );
     // Wait a tick to be sure the (disabled) report query truly never fired.
     await waitFor(() => expect(portfolioApi.getPortfolioTaxSettings).toHaveBeenCalled());
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+  });
+
+  // ── Configuration moved to the Settings tab (issue #636) ───────────────────
+
+  test('names the tax mode its numbers were computed under, and where to change it', async () => {
+    renderPage();
+
+    expect(await screen.findByText(/Computed with tax mode: Austria/i)).toBeInTheDocument();
+    // Inherited here (source: 'user'), and the switch is one link away.
+    expect(screen.getByText('Account default')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Change in portfolio settings/i })).toHaveAttribute(
+      'href',
+      '/portfolio/settings?portfolio=p1',
+    );
+  });
+
+  test('an overridden portfolio says so on the report line', async () => {
+    vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue({
+      effective: { mode: 'country_specific', country: 'DE' },
+      override: { mode: 'country_specific', country: 'DE' },
+      userDefault: { mode: 'none', country: null },
+      source: 'portfolio',
+    });
+    renderPage();
+
+    expect(await screen.findByText(/Computed with tax mode: Germany/i)).toBeInTheDocument();
+    expect(screen.getByText('Set here')).toBeInTheDocument();
+    expect(screen.queryByText('Account default')).not.toBeInTheDocument();
+  });
+
+  test('offers no way to change the tax mode any more — the tab only reports', async () => {
+    renderPage();
+    await screen.findByText(/Computed with tax mode/i);
+
+    // No picker, and nothing that writes the override.
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    for (const gone of [/Reset to default/i, /Use account default/i, /Edit the default/i]) {
+      expect(screen.queryByRole('button', { name: gone })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: gone })).not.toBeInTheDocument();
+    }
+    expect(portfolioApi.setPortfolioTaxOverride).not.toHaveBeenCalled();
+    expect(portfolioApi.clearPortfolioTaxOverride).not.toHaveBeenCalled();
   });
 
   test('renders a per-year row: realized P/L, tax withheld, the refund line, and the net total', async () => {
@@ -185,11 +257,11 @@ describe('TaxReportPage', () => {
     // the disabled gate so the user is not wrongly told tax is simply off.
     vi.mocked(portfolioApi.getPortfolioTaxSettings).mockRejectedValue(new Error('boom'));
     renderPage();
-    // The error surfaces in both the treatment control and the report area.
-    expect((await screen.findAllByText(/Couldn’t load your tax report/i)).length).toBeGreaterThan(
-      0,
-    );
+
+    expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
     expect(screen.queryByText(/Tax tracking is off/i)).not.toBeInTheDocument();
+    // …and the mode line claims nothing it could not resolve.
+    expect(screen.queryByText(/Computed with tax mode/i)).not.toBeInTheDocument();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
   });
 
@@ -353,5 +425,141 @@ describe('TaxReportPage', () => {
 
     const print = screen.getByRole('link', { name: /Print \/ PDF/i });
     expect(print).toHaveAttribute('href', '/portfolio/tax/print?portfolio=p1&year=2026');
+  });
+});
+
+describe('TaxReportPage — paranoid mode (PD7)', () => {
+  beforeEach(() => {
+    Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
+    vi.mocked(userApi.getParanoidMediaState).mockResolvedValue(PARANOID_MEDIA);
+  });
+
+  async function renderParanoidUnlocked() {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withTaxSettings(fixture.document, 'country_specific', 'AT', null);
+    const sync = createMutableTestSync(document, fixture.header, fixture.envelope);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <VaultMoneyEngineProvider
+            dependencies={{ sync, market: createClientMoneyMarket().market }}
+          >
+            <TaxReportPage />
+          </VaultMoneyEngineProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return sync;
+  }
+
+  test('derives the year table from the decrypted vault without any server portfolio/tax read', async () => {
+    await renderParanoidUnlocked();
+
+    expect(await screen.findByRole('button', { name: /Show 2026 details/i })).toBeInTheDocument();
+
+    expect(portfolioApi.listPortfolios).not.toHaveBeenCalled();
+    expect(portfolioApi.getPortfolioTaxSettings).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
+  });
+
+  test('client CSV and printable document come from the same derived in-memory report', async () => {
+    const user = userEvent.setup();
+    await renderParanoidUnlocked();
+
+    await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
+    await user.click(await screen.findByRole('button', { name: 'Export CSV' }));
+
+    await waitFor(() => expect(deliverClientDownload).toHaveBeenCalledTimes(1));
+    const [text, mediaType, filename] = vi.mocked(deliverClientDownload).mock.calls[0]!;
+    expect(mediaType).toBe('text/csv;charset=utf-8');
+    expect(filename).toBe('tax-report-2026.csv');
+    expect(String(text)).toContain('2026');
+
+    await user.click(screen.getByRole('button', { name: 'Print / PDF' }));
+    await waitFor(() => expect(printClientDocument).toHaveBeenCalledTimes(1));
+    expect(String(vi.mocked(printClientDocument).mock.calls[0]![0])).toContain('2026');
+
+    // Both artifacts were generated in the browser — the server saw nothing.
+    expect(portfolioApi.taxYearReportCsvUrl).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
+  });
+
+  // A write synced in from another device moves the vault under the rendered
+  // report: the exports refuse it (scope assertion) rather than hand over stale
+  // figures, so the refusal has to offer the way back — a re-derivation.
+  test('a vault write under the rendered report refuses the export and offers a retry that re-derives', async () => {
+    const user = userEvent.setup();
+    const sync = await renderParanoidUnlocked();
+
+    await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
+    await screen.findByRole('button', { name: 'Export CSV' });
+
+    // Another device's write: same content, new vault version + write id.
+    await sync.mutate(({ document }) => document);
+
+    await user.click(screen.getByRole('button', { name: 'Export CSV' }));
+    expect(
+      await screen.findByText('The operation was interrupted before completion.'),
+    ).toBeInTheDocument();
+    expect(deliverClientDownload).not.toHaveBeenCalled();
+
+    // The retry re-derives against the current vault, and the export succeeds.
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await user.click(await screen.findByRole('button', { name: 'Export CSV' }));
+    await waitFor(() => expect(deliverClientDownload).toHaveBeenCalledTimes(1));
+    expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
+  });
+
+  test('a locked vault shows the unlock prompt and never a figure or server fallback', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <TaxReportPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText('Unlock your vault')).toBeInTheDocument();
+    expect(portfolioApi.listPortfolios).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+  });
+
+  // Regression: a cached ['portfolios'] entry (from an earlier normal-mode
+  // session on this client) must not resolve an active id and start the tax
+  // settings/report reads while privacy is still pending or paranoid.
+  test('pre-seeded portfolio and tax-settings caches never start server tax reads', async () => {
+    let resolvePrivacy!: (value: ParanoidMediaStateResponse) => void;
+    vi.mocked(userApi.getParanoidMediaState).mockImplementation(
+      () =>
+        new Promise<ParanoidMediaStateResponse>((resolve) => {
+          resolvePrivacy = resolve;
+        }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['portfolios'], PORTFOLIO_LIST);
+    client.setQueryData(['portfolio', 'taxSettings', 'p1'], AT_TAX_VIEW);
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <TaxReportPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // While privacy is unresolved, the seeded caches alone start nothing.
+    await waitFor(() => expect(userApi.getParanoidMediaState).toHaveBeenCalled());
+    expect(portfolioApi.getPortfolioTaxSettings).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+
+    resolvePrivacy(PARANOID_MEDIA);
+
+    expect(await screen.findByText('Unlock your vault')).toBeInTheDocument();
+    expect(portfolioApi.listPortfolios).not.toHaveBeenCalled();
+    expect(portfolioApi.getPortfolioTaxSettings).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
   });
 });

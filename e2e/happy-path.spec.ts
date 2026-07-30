@@ -42,14 +42,14 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   // button, must show up on the watchlist page via SPA navigation (no reload).
   await openAssetAndWatchFromDetail(owner, 'V', 'V');
   const primaryNav = owner.getByRole('navigation', { name: 'Primary' });
-  await primaryNav.getByRole('link', { name: 'Workboard' }).click();
-  await expect(owner).toHaveURL(/\/workboard$/);
+  await primaryNav.getByRole('link', { name: 'Workbench' }).click();
+  await expect(owner).toHaveURL(/\/workbench$/);
   const watchlistTable = owner.getByRole('table');
   await expect(watchlistTable.getByRole('link', { name: 'V' })).toBeVisible({ timeout: 15_000 });
 
   // build conglomerate
-  await owner.goto('/workboard/conglomerates/new');
-  await owner.getByLabel('Conglomerate name').fill('E2E Basket');
+  await owner.goto('/workbench/blueprints/new');
+  await owner.getByLabel('Blueprint name').fill('E2E Basket');
   const builderSearch = owner.getByRole('searchbox', { name: 'Search assets' });
   // exact: role-name matching is substring-based, and background catalog
   // enrichment can add sibling listings (AAPL.SW, MSFT.MX, …) to the results.
@@ -62,7 +62,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   // Locale-agnostic 2-dp: EN "100.00%" (en-GB) vs DE "100,00 %" (de-AT with narrow space).
   await expect(positionsRegion.getByRole('status')).toHaveText(/^100[.,]00\s*%$/);
   await owner.getByRole('button', { name: 'Activate' }).click();
-  await expect(owner).toHaveURL(/\/workboard\/conglomerates\/[^/]+$/, { timeout: 20_000 });
+  await expect(owner).toHaveURL(/\/workbench\/blueprints\/[^/]+$/, { timeout: 20_000 });
 
   // allocate → buy list (the deviation table has a "Cost" column the
   // always-present Positions table does not, so this only passes once the
@@ -72,7 +72,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
 
   // add to portfolio
   await owner.getByRole('button', { name: 'Add to Portfolio' }).click();
-  const transactionDialog = owner.getByRole('dialog', { name: /record transaction/i });
+  const transactionDialog = owner.getByRole('dialog', { name: /new transaction/i });
   await expect(transactionDialog).toBeVisible();
   await transactionDialog.getByRole('button', { name: 'Record' }).click();
   await expect(transactionDialog).toBeHidden();
@@ -93,7 +93,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await expect(cashDialog).toBeHidden();
 
   await owner.getByRole('button', { name: '+ Transaction' }).click();
-  const buyDialog = owner.getByRole('dialog', { name: /record transaction/i });
+  const buyDialog = owner.getByRole('dialog', { name: /new transaction/i });
   await buyDialog.getByRole('searchbox', { name: 'Search assets' }).fill('SAP');
   await buyDialog.getByRole('button', { name: 'Select SAP.DE', exact: true }).click();
   await buyDialog.getByLabel('Quantity for SAP.DE').fill('4');
@@ -118,12 +118,22 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   // follow the active portfolio, then switch back to the default.
   const switcher = owner.getByRole('button', { name: 'Switch portfolio' });
   await switcher.click();
-  await owner.getByRole('menuitem', { name: '+ New portfolio' }).click();
-  const newPortfolioDialog = owner.getByRole('dialog', { name: 'New portfolio' });
-  await newPortfolioDialog.getByLabel('Portfolio name').fill('Growth');
-  await newPortfolioDialog.getByRole('button', { name: 'Create' }).click();
-  await expect(newPortfolioDialog).toBeHidden();
+  // The switcher's single create entry point is the add-portfolio wizard:
+  // name → icon → book → done, one gold primary per step.
+  await owner.getByRole('menuitem', { name: 'Add portfolio' }).click();
+  const wizard = owner.getByRole('dialog', { name: 'Add portfolio' });
+  await wizard.getByLabel('Portfolio name').fill('Growth');
+  await wizard.getByRole('button', { name: 'Continue' }).click();
+  await wizard.getByRole('radio', { name: 'Savings' }).click();
+  await wizard.getByRole('button', { name: 'Continue' }).click();
+  await wizard.getByRole('radio', { name: /Just me/ }).click();
+  await wizard.getByRole('button', { name: 'Continue' }).click();
+  // Created: the summary reads it back, and the primary activates it.
+  await wizard.getByRole('button', { name: 'Open portfolio' }).click();
+  await expect(wizard).toBeHidden();
   await expect(switcher).toContainText('Growth');
+  // The icon picked in the wizard is the one the trigger now carries.
+  await expect(switcher.locator('svg[data-icon="piggy-bank"]')).toBeVisible();
   await expect(owner.getByText('Your portfolio is empty')).toBeVisible({ timeout: 15_000 });
 
   await switcher.click();
@@ -137,7 +147,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   // the Settings visibility toggle; ALL sharing now lives on /social/my-shared
   // and flows through the AudiencePicker. Share to "all_friends" so anyone who
   // later becomes a friend of the owner inherits access via the audience model.
-  await owner.goto('/social/my-shared');
+  await owner.goto('/people/shared');
   const mainRow = owner.getByRole('listitem').filter({ hasText: 'Main' });
   await mainRow.getByRole('button', { name: 'Share' }).click();
   const audiencePicker = owner.getByRole('dialog', { name: /Share/ });
@@ -147,7 +157,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await expect(audiencePicker).toBeHidden();
 
   // owner sends the friend request
-  await owner.goto('/social/friends');
+  await owner.goto('/people');
   await owner.getByLabel('Username or email').fill(friendUsername);
   await owner.getByRole('button', { name: 'Send request' }).click();
   await expect(owner.getByText(/we've sent your friend request/i)).toBeVisible();
@@ -155,7 +165,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   // second account accepts the request and sees the shared portfolio via the
   // friend card's expansion (V4-P0b — the standalone Shared-With-Me tab is
   // retired; per-friend shares live inside the friend row).
-  await friend.goto('/social/friends');
+  await friend.goto('/people');
   await expect(friend.getByText(ownerUsername)).toBeVisible({ timeout: 15_000 });
   await friend.getByRole('button', { name: 'Accept' }).click();
 
@@ -175,11 +185,11 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
 
   // V2-P11: owner shares the watchlist to friends; the already-accepted friend
   // sees the "General" watchlist read-only inside the same friend-card row.
-  await owner.goto('/workboard');
+  await owner.goto('/workbench');
   await owner.getByRole('button', { name: 'Share with friends' }).click();
   await expect(owner.getByRole('button', { name: 'Shared with friends' })).toBeVisible();
 
-  await friend.goto('/social/friends');
+  await friend.goto('/people');
   const friendCardAgain = friend.getByRole('button', { name: ownerUsername });
   await expect(friendCardAgain).toBeVisible({ timeout: 15_000 });
   await friendCardAgain.click();

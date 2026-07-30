@@ -11,10 +11,10 @@ import {
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
-import { cx } from '../../lib/cx';
 import { getSharedConglomerate, previewSharedConglomerateSandbox } from '../../lib/socialApi';
 import { formatPercent, formatSignedPercent } from '../../lib/format';
-import { EmptyState, Skeleton, StatCard } from '../../ui';
+import { EmptyState, Skeleton } from '../../ui';
+import { Button, Icon, Input, PageHead, Seg, Stat, StatStrip } from '../../ui/origin';
 import { PriceChart, type ChartPoint } from '../../ui/charts';
 import { useDebounce } from '../hooks/useDebounce';
 import { NestedBadge } from '../workboard/ConglomeratesListPage';
@@ -73,24 +73,25 @@ export function SharedConglomeratePage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <BackLink />
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-neutral-100">{data.name}</h2>
-          <ItemFollowButton kind="conglomerate" subjectId={id} ownerId={data.owner.id} />
-        </div>
-        <p className="text-sm text-neutral-500">
-          {t('social.shared.sharedByStatus', {
-            username: data.owner.username,
-            status:
-              data.status === 'active'
-                ? t('workboard.conglomerates.status.active')
-                : t('workboard.conglomerates.status.draft'),
-          })}
-        </p>
-        {data.description ? <p className="text-sm text-neutral-400">{data.description}</p> : null}
-      </div>
+    <div className="flex flex-col">
+      <BackLink />
+      <PageHead
+        actions={<ItemFollowButton kind="conglomerate" subjectId={id} ownerId={data.owner.id} />}
+        sub={t('social.shared.sharedByStatus', {
+          username: data.owner.username,
+          status:
+            data.status === 'active'
+              ? t('workboard.conglomerates.status.active')
+              : t('workboard.conglomerates.status.draft'),
+        })}
+        title={data.name}
+      >
+        {data.description ? (
+          <p className="bt-soft" style={{ marginTop: 6, maxWidth: '62ch' }}>
+            {data.description}
+          </p>
+        ) : null}
+      </PageHead>
 
       {data.positions.length === 0 ? (
         <EmptyState
@@ -98,7 +99,7 @@ export function SharedConglomeratePage() {
           description={t('social.shared.noPositionsDescription')}
         />
       ) : (
-        <ul className="divide-y divide-neutral-800">
+        <ul className="bt-band bt-t-rule bt-b-rule flex flex-col">
           {data.positions.map((p) => (
             <li
               key={p.kind === 'asset' ? p.assetId : p.childId}
@@ -106,26 +107,28 @@ export function SharedConglomeratePage() {
             >
               {p.kind === 'asset' ? (
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-neutral-100">{p.asset.symbol}</p>
-                  <p className="truncate text-xs text-neutral-500">{p.asset.name}</p>
+                  <p className="bt-row-title truncate">{p.asset.symbol}</p>
+                  <p className="bt-row-sub truncate">{p.asset.name}</p>
                 </div>
               ) : (
                 <div className="flex min-w-0 items-center gap-2">
-                  <p className="truncate text-sm font-medium text-neutral-100">{p.child.name}</p>
+                  <p className="bt-row-title truncate">{p.child.name}</p>
                   <NestedBadge />
                 </div>
               )}
-              <span className="shrink-0 text-sm font-medium tabular-nums text-neutral-200">
-                {formatPercent(p.weightPct)}
-              </span>
+              <span className="bt-num bt-soft shrink-0">{formatPercent(p.weightPct)}</span>
             </li>
           ))}
         </ul>
       )}
 
-      <WhatIfSandbox conglomerateId={id} positions={data.positions} />
+      <div className="bt-section">
+        <WhatIfSandbox conglomerateId={id} positions={data.positions} />
+      </div>
 
-      <CommentThread kind="conglomerate" subjectId={id} />
+      <div className="bt-section">
+        <CommentThread kind="conglomerate" subjectId={id} />
+      </div>
     </div>
   );
 }
@@ -221,57 +224,47 @@ function WhatIfSandbox({
   );
 
   return (
-    <section className="rounded-xl border border-neutral-800 bg-neutral-900/40">
+    <section className="bt-panel">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+        className="bt-band__row flex w-full items-center justify-between gap-3 text-left"
+        style={{
+          background: 'none',
+          border: 0,
+          color: 'inherit',
+          cursor: 'pointer',
+          font: 'inherit',
+        }}
       >
         <span className="flex flex-col">
-          <span className="text-sm font-semibold text-neutral-100">
-            {t('social.shared.sandbox.toggle')}
-          </span>
-          <span className="text-xs text-neutral-500">{t('social.shared.sandbox.subtitle')}</span>
+          <span className="bt-h3">{t('social.shared.sandbox.toggle')}</span>
+          <span className="bt-meta">{t('social.shared.sandbox.subtitle')}</span>
         </span>
-        <span aria-hidden="true" className="text-neutral-500">
-          {open ? '▲' : '▼'}
+        <span aria-hidden="true" className="bt-muted flex">
+          <Icon name={open ? 'chevron-up' : 'chevron-down'} size={16} />
         </span>
       </button>
 
       {open ? (
-        <div className="flex flex-col gap-4 border-t border-neutral-800 px-4 py-4">
-          <p className="text-xs text-neutral-500">{t('social.shared.sandbox.description')}</p>
+        <div className="bt-t-rule flex flex-col gap-4" style={{ padding: '16px 20px 18px' }}>
+          <p className="bt-meta" style={{ maxWidth: '68ch' }}>
+            {t('social.shared.sandbox.description')}
+          </p>
 
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div
-              role="group"
-              aria-label={t('social.shared.sandbox.rangeAriaLabel')}
-              className="inline-flex rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
-            >
-              {BACKTEST_PREVIEW_RANGES.map((token) => {
-                const selected = token === range;
-                return (
-                  <button
-                    key={token}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => setRange(token)}
-                    className={cx(
-                      'rounded px-2 py-1 text-xs font-medium transition-colors',
-                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-                      selected
-                        ? 'bg-sky-600 text-white'
-                        : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-                    )}
-                  >
-                    {rangeLabel(t, token)}
-                  </button>
-                );
-              })}
-            </div>
-            <button
-              type="button"
+            <Seg
+              ariaLabel={t('social.shared.sandbox.rangeAriaLabel')}
+              onChange={setRange}
+              options={BACKTEST_PREVIEW_RANGES.map((token) => ({
+                value: token,
+                label: rangeLabel(t, token),
+              }))}
+              value={range}
+            />
+            <Button
+              disabled={isPristine}
               onClick={() =>
                 setWeights(
                   Object.fromEntries(
@@ -279,20 +272,14 @@ function WhatIfSandbox({
                   ),
                 )
               }
-              disabled={isPristine}
-              className={cx(
-                'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-                isPristine
-                  ? 'cursor-not-allowed text-neutral-600'
-                  : 'text-sky-300 hover:bg-neutral-800',
-              )}
+              size="sm"
+              variant="quiet"
             >
               {t('social.shared.sandbox.reset')}
-            </button>
+            </Button>
           </div>
 
-          <ul className="flex flex-col gap-2">
+          <ul className="bt-band flex flex-col">
             {positions.map((position) => {
               const id = constituentId(position);
               return (
@@ -314,43 +301,47 @@ function WhatIfSandbox({
           </ul>
 
           {!allPositive ? (
-            <p className="text-xs text-amber-300">
+            <p className="bt-gold" style={{ fontSize: 12 }}>
               {t('social.shared.sandbox.weightsPositiveHint')}
             </p>
           ) : preview.isError ? (
-            <p className="text-xs text-red-300">{t('social.shared.sandbox.previewError')}</p>
+            <p className="bt-neg" style={{ fontSize: 12 }}>
+              {t('social.shared.sandbox.previewError')}
+            </p>
           ) : preview.isLoading ? (
             <Skeleton height="h-56" />
           ) : preview.data && chartPoints.length > 0 ? (
             <>
-              <PriceChart
-                series={chartPoints}
-                showRangeToggle={false}
-                loading={preview.isFetching}
-                height={220}
-                ariaLabel={t('social.shared.sandbox.chartAriaLabel')}
-              />
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <StatCard
+              <div className="bt-chart">
+                <PriceChart
+                  series={chartPoints}
+                  showRangeToggle={false}
+                  loading={preview.isFetching}
+                  height={220}
+                  ariaLabel={t('social.shared.sandbox.chartAriaLabel')}
+                />
+              </div>
+              <StatStrip>
+                <Stat
                   label={t('workboard.backtest.stats.totalReturn')}
                   value={formatSignedPercent(preview.data.stats.totalReturnPct)}
                 />
-                <StatCard
+                <Stat
                   label={t('workboard.backtest.stats.cagr')}
                   value={formatSignedPercent(preview.data.stats.cagrPct)}
                 />
-                <StatCard
+                <Stat
                   label={t('workboard.backtest.stats.maxDrawdown')}
                   value={formatSignedPercent(preview.data.stats.maxDrawdownPct)}
                 />
-                <StatCard
+                <Stat
                   label={t('workboard.backtest.stats.volatility')}
                   value={formatPercent(preview.data.stats.volatilityPct)}
                 />
-              </div>
+              </StatStrip>
             </>
           ) : (
-            <p className="text-xs text-neutral-500">{t('social.shared.sandbox.empty')}</p>
+            <p className="bt-meta">{t('social.shared.sandbox.empty')}</p>
           )}
         </div>
       ) : null}
@@ -386,21 +377,14 @@ function SandboxWeightRow({
   }, [weight, draft]);
 
   return (
-    <li className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 sm:flex-row sm:items-center sm:gap-4">
+    <li className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:gap-4">
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="flex min-w-0 items-center gap-2">
-          <span
-            className={cx(
-              'truncate text-sm font-semibold text-neutral-100',
-              nested ? undefined : 'font-mono',
-            )}
-          >
-            {label}
-          </span>
+          <span className="bt-row-title truncate">{label}</span>
           {nested ? <NestedBadge /> : null}
         </span>
         {name ? (
-          <span className="truncate text-xs text-neutral-500" title={name}>
+          <span className="bt-row-sub truncate" title={name}>
             {name}
           </span>
         ) : null}
@@ -414,10 +398,11 @@ function SandboxWeightRow({
           value={weight}
           onChange={(e) => onWeight(Number(e.target.value))}
           aria-label={t('social.shared.sandbox.weightSliderAriaLabel', { symbol: label })}
-          className="min-w-0 flex-1 accent-sky-500"
+          className="min-w-0 flex-1"
+          style={{ accentColor: 'var(--bt-gold)' }}
         />
-        <div className="flex items-center gap-1">
-          <input
+        <div className="flex items-center gap-1.5">
+          <Input
             type="number"
             min={0}
             max={100}
@@ -431,9 +416,10 @@ function SandboxWeightRow({
               if (Number.isFinite(parsed)) onWeight(parsed);
             }}
             aria-label={t('social.shared.sandbox.weightAriaLabel', { symbol: label })}
-            className="w-20 rounded-md bg-neutral-950 px-2 py-1.5 text-right text-sm tabular-nums text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            className="bt-num"
+            style={{ minHeight: 30, padding: '3px 8px', textAlign: 'right', width: 84 }}
           />
-          <span aria-hidden="true" className="text-sm text-neutral-500">
+          <span aria-hidden="true" className="bt-muted">
             %
           </span>
         </div>
@@ -446,8 +432,9 @@ function BackLink() {
   const t = useT();
   return (
     <Link
-      to="/social/friends"
-      className="w-fit text-xs text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      to="/people"
+      className="bt-link w-fit self-start"
+      style={{ fontSize: 12.5, marginBottom: 10 }}
     >
       {t('social.shared.backToFriends')}
     </Link>

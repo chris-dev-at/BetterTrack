@@ -1,3 +1,15 @@
+/**
+ * Declarative paranoid-mode enforcement inventory AND its executable
+ * composition (#907 built the inventory, #884 wired the guards onto it).
+ *
+ * The inventory half is still the single source of truth: the completeness
+ * harness proves every mounted route, callable context method and registered
+ * job carries exactly one policy, and the composition half below consumes those
+ * same arrays — there is no second hand-maintained kill list. Imports stay
+ * limited to the error helpers, the Express handler type and the domain-event
+ * type so the data remains readable without dragging in a service graph.
+ */
+
 import type { RequestHandler } from 'express';
 
 import type { DomainEvent } from '../../events';
@@ -6,6 +18,7 @@ import { ApiError, forbidden, notFound } from '../../errors';
 /** Stable error code for every server-side surface killed in paranoid mode. */
 export const PARANOID_MODE_ERROR_CODE = 'PARANOID_MODE' as const;
 
+/** Stable capability names shared by the #884 enforcement composition. */
 export type ParanoidKilledCapability =
   | 'publicProfile'
   | 'sharing'
@@ -17,11 +30,85 @@ export type ParanoidKilledCapability =
   | 'portfolioJobs'
   | 'portfolioWebhooks';
 
+export interface ParanoidSurfaceSource {
+  readonly file: string;
+  readonly symbol: string;
+}
+
+export interface ParanoidRouteSurface {
+  readonly kind: 'route';
+  readonly source: ParanoidSurfaceSource;
+  readonly method: string;
+  /**
+   * API-relative under `/api/v1` (for example `/portfolios/{portfolioId}`),
+   * or root-relative for endpoints mounted outside that prefix.
+   */
+  readonly path: string;
+}
+
+/** Synthetic method identity for an explicit-path opaque `app.use` leaf mount. */
+export const PARANOID_OPAQUE_MOUNT_METHOD = '<opaque-mount>';
+
+/** Synthetic method identity for an `app.all`/`router.all` route. */
+export const PARANOID_ALL_METHODS_ROUTE_METHOD = '<all-methods>';
+
+export interface ParanoidServiceSurface {
+  readonly kind: 'service';
+  readonly source: ParanoidSurfaceSource;
+  readonly service: string;
+  readonly method: string;
+}
+
+/** Synthetic method identity used when an AppContext field is directly callable. */
+export const PARANOID_DIRECT_SERVICE_CALL = '<call>';
+
+export interface ParanoidJobSurface {
+  readonly kind: 'job';
+  readonly source: ParanoidSurfaceSource;
+  readonly name: string;
+}
+
+/** A named internal account path that needs a tracked temporary exception. */
+export interface ParanoidInternalSurface {
+  readonly kind: 'internal';
+  readonly source: ParanoidSurfaceSource;
+}
+
+export type ParanoidSurface =
+  | ParanoidRouteSurface
+  | ParanoidServiceSurface
+  | ParanoidJobSurface
+  | ParanoidInternalSurface;
+
+export interface ParanoidGuardedClassification {
+  readonly disposition: 'guarded';
+  readonly capability: ParanoidKilledCapability;
+}
+
+export interface ParanoidExemptClassification {
+  readonly disposition: 'exempt';
+  /** Why keeping this surface available does not expose server-side portfolio data. */
+  readonly reason: string;
+  /** Temporary exceptions remain visible to the follow-up that closes them. */
+  readonly knownGapIssue?: 884;
+  readonly knownGapId?: string;
+}
+
+export type ParanoidSurfaceClassification =
+  | ParanoidGuardedClassification
+  | ParanoidExemptClassification;
+
 export interface ParanoidRouteRule {
   readonly method?: string;
   readonly exact?: string;
   readonly prefix?: string;
   readonly pattern?: RegExp;
+  /** Required for exemptions that apply only to one known opaque handler. */
+  readonly source?: ParanoidSurfaceSource;
+}
+
+export interface ParanoidExemptRouteRule extends ParanoidRouteRule {
+  readonly reason: string;
 }
 
 export type ParanoidServiceSubject =
@@ -32,30 +119,8 @@ export type ParanoidServiceSubject =
   | 'portfolioIdFirstAllowMissing'
   | 'assetIdFirst'
   | 'paranoidWebhookSubjects'
-  /**
-   * The service performs identity-only discovery and holds every dynamically
-   * discovered required/optional principal through its own complete action.
-   */
   | 'dynamicPrincipals'
-  /**
-   * The method itself resolves a live audience/profile predicate and returns a
-   * uniform 404 when the target is not currently public.
-   */
   | 'intrinsic';
-
-export interface ParanoidServiceBinding {
-  readonly capability: ParanoidKilledCapability;
-  /** AppContext property holding the executable service. */
-  readonly service: string;
-  /** Exact method names, `*`, or a prefix glob such as `submit*`. */
-  readonly methods: readonly string[];
-  /** How the proxy resolves the account whose mode controls the call. */
-  readonly subject: ParanoidServiceSubject;
-  /** Portfolio webhook events are suppressed rather than surfaced as errors. */
-  readonly action?: 'throw' | 'skip';
-  /** Semantic proof obligation exercised by the matrix for internally guarded branches. */
-  readonly coverage?: readonly ParanoidSemanticCoverage[];
-}
 
 export type ParanoidSemanticCoverage =
   | 'accountMode'
@@ -63,18 +128,69 @@ export type ParanoidSemanticCoverage =
   | 'ownedAssetProvenance'
   | 'queuedPrincipals';
 
-export type ParanoidServiceExemption =
+/** One executable proxy binding, applied by {@link guardRegisteredServices}. */
+export interface ParanoidServiceBinding {
+  readonly capability: ParanoidKilledCapability;
+  readonly service: string;
+  /** Exact method names, `*`, or a prefix glob such as `submit*`. */
+  readonly methods: readonly string[];
+  readonly subject: ParanoidServiceSubject;
+  readonly action?: 'throw' | 'skip';
+  readonly coverage?: readonly ParanoidSemanticCoverage[];
+}
+
+/** Explicit non-killed policy for a context service method. */
+export interface ParanoidServiceExemption {
+  readonly service: string;
+  readonly methods: readonly string[];
+  readonly handling: 'kept' | 'internallyFiltered' | 'dynamicPrincipals';
+  readonly reason: string;
+  readonly coverage?: readonly ParanoidSemanticCoverage[];
+}
+
+export type ParanoidJobMode =
+  | 'kept'
+  | 'internallyFiltered'
+  | 'portfolio'
+  | 'perUser'
+  | 'serviceFiltered'
+  | 'event';
+
+export type ParanoidJobPolicy =
   | {
-      readonly service: string;
-      readonly methods: readonly string[];
-      readonly handling: 'kept';
+      readonly capability: ParanoidKilledCapability;
+      readonly mode: ParanoidJobMode;
     }
   | {
-      readonly service: string;
-      readonly methods: readonly string[];
-      readonly handling: 'internallyFiltered' | 'dynamicPrincipals';
-      readonly coverage: readonly [ParanoidSemanticCoverage, ...ParanoidSemanticCoverage[]];
+      readonly capability: null;
+      readonly mode: ParanoidJobMode;
+      readonly reason: string;
+      readonly knownGapId?: string;
     };
+
+export interface ParanoidJobPolicyEntry {
+  readonly surface: ParanoidJobSurface;
+  readonly policy: ParanoidJobPolicy;
+}
+
+export interface ParanoidKillRegistryEntry {
+  readonly capability: ParanoidKilledCapability;
+  readonly routes: readonly ParanoidRouteRule[];
+  readonly services: readonly ParanoidServiceBinding[];
+  readonly scopes: readonly string[];
+  readonly jobs: readonly string[];
+  readonly webhookEventTypes: readonly string[];
+}
+
+export const PARANOID_ROUTE_TABLE_SOURCE: ParanoidSurfaceSource = {
+  file: 'apps/api/src/app.ts',
+  symbol: 'createApp',
+};
+
+export const PARANOID_ACCOUNT_CONTEXT_SOURCE: ParanoidSurfaceSource = {
+  file: 'apps/api/src/http/context.ts',
+  symbol: 'AppContext',
+};
 
 const serviceBinding = (
   capability: ParanoidKilledCapability,
@@ -89,6 +205,20 @@ const serviceBinding = (
   subject,
   methods,
   ...(action ? { action } : {}),
+  ...(coverage ? { coverage } : {}),
+});
+
+const serviceExemption = (
+  service: string,
+  methods: readonly string[],
+  handling: ParanoidServiceExemption['handling'],
+  reason: string,
+  coverage?: readonly ParanoidSemanticCoverage[],
+): ParanoidServiceExemption => ({
+  service,
+  methods,
+  handling,
+  reason,
   ...(coverage ? { coverage } : {}),
 });
 
@@ -226,59 +356,64 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
 ] as const;
 
 /**
- * Explicit classifications for non-killed methods on every mixed service
- * above. App composition compares these plus the killed bindings with every
- * real method, so a new method cannot silently default open.
+ * Explicit non-killed policy for every mixed service above. `reason` is
+ * deliberately mandatory: "not guarded" is never an implicit default.
  */
 export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = [
-  {
-    // A fresh basket has no constituents and delete surfaces no asset row, so
-    // neither can carry the owner's custom-asset provenance.
-    service: 'conglomerate',
-    methods: ['create', 'remove'],
-    handling: 'kept',
-  },
-  {
-    // Private baskets stay usable in paranoid mode, but a CONSTITUENT may be
-    // the account's own custom asset. Every branch that would surface, embed,
-    // or price one is scoped to global market assets under the caller's
-    // transition lock.
-    service: 'conglomerate',
-    methods: ['list', 'get', 'update', 'replacePositions', 'activate', 'resolved', 'allocate'],
-    handling: 'internallyFiltered',
-    coverage: ['accountMode', 'ownedAssetProvenance'],
-  },
-  {
-    service: 'workboard',
-    methods: ['removeItem', 'reorder', 'createWatchlist', 'deleteWatchlist'],
-    handling: 'kept',
-  },
-  {
-    service: 'workboard',
-    methods: ['list', 'listInWatchlist', 'listWatchlists', 'addItem', 'renameWatchlist'],
-    handling: 'internallyFiltered',
-    coverage: ['accountMode', 'ownedAssetProvenance'],
-  },
-  {
-    service: 'workboard',
-    methods: ['itemsForSharedView'],
-    handling: 'internallyFiltered',
-    coverage: ['dynamicPrincipals', 'ownedAssetProvenance'],
-  },
-  {
-    service: 'ideas',
-    methods: ['list', 'get', 'create', 'update', 'remove'],
-    handling: 'kept',
-  },
-  {
-    service: 'backtest',
-    methods: ['runPreview', 'runComparison'],
-    handling: 'internallyFiltered',
-    coverage: ['accountMode', 'ownedAssetProvenance'],
-  },
-  {
-    service: 'social',
-    methods: [
+  serviceExemption(
+    'conglomerate',
+    ['create', 'remove'],
+    'kept',
+    'A fresh basket has no constituents and delete surfaces no asset row, so neither can carry the owner custom-asset provenance.',
+  ),
+  serviceExemption(
+    'conglomerate',
+    ['list', 'get', 'update', 'replacePositions', 'activate', 'resolved', 'allocate'],
+    'internallyFiltered',
+    'Private baskets stay usable, but a CONSTITUENT may be the account own custom asset; every branch that would surface, embed or price one is scoped to global market assets under the caller transition lock.',
+    ['accountMode', 'ownedAssetProvenance'],
+  ),
+  serviceExemption(
+    'workboard',
+    ['removeItem', 'reorder', 'createWatchlist', 'deleteWatchlist'],
+    'kept',
+    'Local workboard organization remains available and does not expose server-side portfolio values.',
+  ),
+  serviceExemption(
+    'workboard',
+    ['list', 'listInWatchlist', 'listWatchlists', 'addItem', 'renameWatchlist'],
+    'internallyFiltered',
+    'The service filters account-owned asset provenance before returning or accepting workboard rows.',
+    ['accountMode', 'ownedAssetProvenance'],
+  ),
+  serviceExemption(
+    'workboard',
+    ['itemsForSharedView'],
+    'internallyFiltered',
+    'Shared-view discovery resolves its audience principals before exposing any item.',
+    ['dynamicPrincipals', 'ownedAssetProvenance'],
+  ),
+  serviceExemption(
+    'ideas',
+    ['list', 'get', 'create', 'update', 'remove'],
+    'kept',
+    'Ideas stay private local notes.',
+  ),
+  serviceExemption(
+    'backtest',
+    ['runPreview', 'runComparison'],
+    'internallyFiltered',
+    'Draft backtests resolve only allowed assets and never require a server portfolio read.',
+    ['accountMode', 'ownedAssetProvenance'],
+  ),
+  // The social service is deliberately split three ways rather than carrying one
+  // blanket `internallyFiltered` claim: friendship and the caller's own profile
+  // read are plain repository passthroughs that filter nothing, and declaring a
+  // `dynamicPrincipals` coverage for them would be a label without an
+  // implementation — the same hole the `ownedAssetProvenance` probe set closes.
+  serviceExemption(
+    'social',
+    [
       'sendRequest',
       'listRequests',
       'accept',
@@ -286,6 +421,14 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
       'cancel',
       'listFriends',
       'removeFriend',
+      'getProfileSettings',
+    ],
+    'kept',
+    'Friendship lifecycle and the caller own profile settings are kept surfaces holding no server-side portfolio content; they perform no filtering and claim none.',
+  ),
+  serviceExemption(
+    'social',
+    [
       'followItem',
       'listFollowing',
       'listFollowers',
@@ -294,15 +437,21 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
       'getSharedPortfolio',
       'getSharedConglomerate',
       'getSharedWatchlist',
-      'getProfileSettings',
-      'updateProfileSettings',
     ],
-    handling: 'internallyFiltered',
-    coverage: ['dynamicPrincipals'],
-  },
-  {
-    service: 'mirror',
-    methods: [
+    'internallyFiltered',
+    'These reads and item follows resolve the affected owner/counterpart principals under their locks and preserve no-leak behavior for unavailable content.',
+    ['dynamicPrincipals'],
+  ),
+  serviceExemption(
+    'social',
+    ['updateProfileSettings'],
+    'internallyFiltered',
+    'A public opt-in holds the caller own account transition lock through the final write, so an update started before enable cannot republish after it commits.',
+    ['accountMode'],
+  ),
+  serviceExemption(
+    'mirror',
+    [
       'attachMemberCopy',
       'inviteMember',
       'acceptInvite',
@@ -311,152 +460,483 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
       'handleAccountDeletion',
       'runConsistencySweep',
     ],
-    handling: 'dynamicPrincipals',
-    coverage: ['dynamicPrincipals', 'queuedPrincipals'],
-  },
-  {
-    service: 'assets',
-    methods: ['*'],
-    handling: 'internallyFiltered',
-    coverage: ['accountMode', 'ownedAssetProvenance'],
-  },
-  {
-    service: 'search',
-    methods: ['search', 'searchWithFreshness', 'catalogFreshness'],
-    handling: 'internallyFiltered',
-    coverage: ['accountMode', 'ownedAssetProvenance'],
-  },
-  {
-    service: 'search',
-    methods: ['enrichmentSettled'],
-    handling: 'kept',
-  },
-  {
-    service: 'marketIntel',
-    methods: ['capabilities', 'dividends', 'earnings', 'news', 'splits'],
-    handling: 'internallyFiltered',
-    coverage: ['accountMode', 'ownedAssetProvenance'],
-  },
-  {
-    service: 'marketIntel',
-    methods: ['earningsCalendar'],
-    handling: 'internallyFiltered',
-    coverage: ['accountMode', 'ownedAssetProvenance'],
-  },
-  {
-    service: 'chat',
-    methods: ['openConversation', 'listConversations', 'markRead'],
-    handling: 'kept',
-  },
-  {
-    service: 'chat',
-    methods: ['getThread', 'sendMessage'],
-    handling: 'internallyFiltered',
-    coverage: ['dynamicPrincipals', 'ownedAssetProvenance'],
-  },
-  {
-    service: 'aiFeatures',
-    methods: ['conglomerateDraft'],
-    handling: 'kept',
-  },
-  {
-    service: 'snapshots',
-    methods: ['recomputeAll'],
-    handling: 'internallyFiltered',
-    coverage: ['accountMode'],
-  },
-  {
-    service: 'imports',
-    methods: ['listBrokers'],
-    handling: 'kept',
-  },
-  {
-    service: 'expenseImports',
-    methods: ['listBanks'],
-    handling: 'kept',
-  },
-  {
-    service: 'alerts',
-    methods: ['remove'],
-    handling: 'kept',
-  },
-  {
-    service: 'alerts',
-    methods: ['list', 'create', 'update', 'rearm'],
-    handling: 'internallyFiltered',
-    coverage: ['accountMode', 'ownedAssetProvenance', 'dynamicPrincipals'],
-  },
-  {
-    service: 'standingOrders',
-    methods: ['processDueOrders'],
-    handling: 'internallyFiltered',
-    coverage: ['accountMode'],
-  },
+    'dynamicPrincipals',
+    'Membership lifecycle work resolves every affected chain principal before applying its action.',
+    ['dynamicPrincipals', 'queuedPrincipals'],
+  ),
+  serviceExemption(
+    'assets',
+    ['*'],
+    'internallyFiltered',
+    'Asset reads enforce global-or-owned asset provenance and hide foreign custom assets.',
+    ['accountMode', 'ownedAssetProvenance'],
+  ),
+  serviceExemption(
+    'search',
+    ['search', 'searchWithFreshness', 'catalogFreshness'],
+    'internallyFiltered',
+    'Search and freshness reads filter custom-asset provenance before returning a result.',
+    ['accountMode', 'ownedAssetProvenance'],
+  ),
+  serviceExemption(
+    'search',
+    ['enrichmentSettled'],
+    'kept',
+    'The enrichment wait primitive carries no account or portfolio content.',
+  ),
+  serviceExemption(
+    'marketIntel',
+    ['capabilities', 'dividends', 'earnings', 'news', 'splits', 'earningsCalendar'],
+    'internallyFiltered',
+    'Market-intelligence reads scope each asset to global-or-owned provenance before querying providers.',
+    ['accountMode', 'ownedAssetProvenance'],
+  ),
+  serviceExemption(
+    'chat',
+    ['openConversation', 'listConversations', 'markRead'],
+    'kept',
+    'Private chat metadata remains separate from portfolio data.',
+  ),
+  serviceExemption(
+    'chat',
+    ['getThread', 'sendMessage'],
+    'internallyFiltered',
+    'Thread access resolves both conversation principals before it reads or writes a message.',
+    ['dynamicPrincipals', 'ownedAssetProvenance'],
+  ),
+  serviceExemption(
+    'aiFeatures',
+    ['conglomerateDraft'],
+    'kept',
+    'The NL builder produces a reviewed draft from catalog search rather than reading a server portfolio.',
+  ),
+  serviceExemption(
+    'snapshots',
+    ['recomputeAll'],
+    'internallyFiltered',
+    'The bulk snapshot repair skips paranoid accounts before it materializes a portfolio series.',
+    ['accountMode'],
+  ),
+  serviceExemption(
+    'imports',
+    ['listBrokers'],
+    'kept',
+    'Available broker mapper metadata contains no user data.',
+  ),
+  serviceExemption(
+    'expenseImports',
+    ['listBanks'],
+    'kept',
+    'Available bank mapper metadata contains no user data.',
+  ),
+  serviceExemption(
+    'alerts',
+    ['remove'],
+    'kept',
+    'Deleting an existing alert does not read or create server-side portfolio content.',
+  ),
+  serviceExemption(
+    'alerts',
+    ['list', 'create', 'update', 'rearm'],
+    'internallyFiltered',
+    'Alert operations resolve asset provenance and affected followers before returning or mutating data.',
+    ['accountMode', 'ownedAssetProvenance', 'dynamicPrincipals'],
+  ),
+  serviceExemption(
+    'standingOrders',
+    ['processDueOrders'],
+    'internallyFiltered',
+    'The scheduler skips accounts whose privacy mode forbids server-side portfolio execution.',
+    ['accountMode'],
+  ),
 ] as const;
 
-export type ParanoidJobMode =
-  | 'kept'
-  | 'internallyFiltered'
-  | 'portfolio'
-  | 'perUser'
-  | 'serviceFiltered'
-  | 'event';
+/**
+ * The remainder of the callable AppContext is deliberately enumerated too.
+ * These are not §8 portfolio rails, but making every one explicit means a new
+ * context service cannot silently bypass the completeness gate.
+ */
+export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = [
+  serviceExemption(
+    'redis',
+    ['*'],
+    'kept',
+    'Infrastructure Redis client; it has no account-facing policy of its own.',
+  ),
+  serviceExemption(
+    'logger',
+    ['*'],
+    'kept',
+    'Process logging infrastructure; it does not expose account content.',
+  ),
+  serviceExemption(
+    'auth',
+    ['*'],
+    'kept',
+    'Authentication, sessions, and recovery remain available to a paranoid account.',
+  ),
+  serviceExemption(
+    'google',
+    ['*'],
+    'kept',
+    'Identity-provider linking is account security metadata, not portfolio data.',
+  ),
+  serviceExemption(
+    'twoFactor',
+    ['*'],
+    'kept',
+    'Two-factor enrollment and verification remain available for account security.',
+  ),
+  serviceExemption(
+    'passkeys',
+    ['*'],
+    'kept',
+    'Passkey management is authentication material, not portfolio content.',
+  ),
+  serviceExemption(
+    'adminTwoFactor',
+    ['*'],
+    'kept',
+    'Administrator assurance is an admin-security rail, not a user portfolio rail.',
+  ),
+  serviceExemption(
+    'admin',
+    ['*'],
+    'kept',
+    'Administrator operations are independently authorized and do not run as a user portfolio surface.',
+  ),
+  serviceExemption(
+    'apiKeys',
+    ['*'],
+    'kept',
+    'API-key governance is credential management; portfolio scopes are classified separately.',
+  ),
+  serviceExemption(
+    'oauth',
+    ['*'],
+    'kept',
+    'OAuth client and grant lifecycle is credential management; portfolio scopes are classified separately.',
+  ),
+  serviceExemption(
+    'marketData',
+    ['*'],
+    'kept',
+    'Provider/cache primitives operate on public market references, not account portfolio rows.',
+  ),
+  serviceExemption(
+    'paranoidVault',
+    ['*'],
+    'kept',
+    'The opaque ciphertext vault is the deliberate paranoid-mode data home.',
+  ),
+  serviceExemption(
+    'paranoidGuard',
+    ['*'],
+    'kept',
+    'The transition guard IS the enforcement primitive every killed surface routes through; guarding it with itself would be circular.',
+  ),
+  serviceExemption(
+    'webhooks',
+    ['*'],
+    'kept',
+    'Webhook subscription metadata is separate from the event bridge that suppresses portfolio events.',
+  ),
+  serviceExemption(
+    'notifications',
+    ['*'],
+    'kept',
+    'Notification inbox and device settings remain available while server alerts continue to operate.',
+  ),
+  serviceExemption(
+    'notificationSettings',
+    ['*'],
+    'kept',
+    'Notification preferences are account metadata, not portfolio content.',
+  ),
+  serviceExemption(
+    'telegramSetup',
+    ['*'],
+    'kept',
+    'Telegram channel setup is account notification configuration.',
+  ),
+  serviceExemption(
+    'discordSetup',
+    ['*'],
+    'kept',
+    'Discord channel setup is account notification configuration.',
+  ),
+  serviceExemption(
+    'accountSettings',
+    ['*'],
+    'kept',
+    'Account defaults are profile metadata rather than portfolio content.',
+  ),
+  serviceExemption(
+    'accountDeletion',
+    ['*'],
+    'kept',
+    'A user must always be able to delete their account.',
+  ),
+  serviceExemption(
+    'dataExport',
+    ['*'],
+    'kept',
+    'Export lifecycle metadata stays available; payload policy is handled by the paranoid vault/export flow.',
+  ),
+  serviceExemption(
+    'announcements',
+    ['*'],
+    'kept',
+    'Announcement delivery is global product communication, not portfolio data.',
+  ),
+  serviceExemption(
+    'notificationDispatcher',
+    ['*'],
+    'kept',
+    'Notification delivery infrastructure is independent of the portfolio rails it receives.',
+  ),
+  serviceExemption(
+    'digestService',
+    ['*'],
+    'kept',
+    'Digest scheduling is delivery infrastructure; portfolio-producing jobs are classified separately.',
+  ),
+  serviceExemption(
+    'notify',
+    ['*'],
+    'kept',
+    'The notification entry point is transport infrastructure, not a portfolio read surface.',
+  ),
+  serviceExemption(
+    'presence',
+    ['*'],
+    'kept',
+    'Presence is transient UI metadata and contains no portfolio data.',
+  ),
+  serviceExemption(
+    'realtime',
+    ['*'],
+    'kept',
+    'Gateway lifecycle methods are transport infrastructure; room authorization has its own tracked gap below.',
+  ),
+  serviceExemption(
+    'liveMode',
+    ['*'],
+    'kept',
+    'Live quote polling is market-data transport over allowed assets, not a portfolio read surface.',
+  ),
+  serviceExemption(
+    'events',
+    ['*'],
+    'kept',
+    'The typed event bus is process infrastructure; event payload policies are classified separately.',
+  ),
+  serviceExemption(
+    'idempotency',
+    ['*'],
+    'kept',
+    'Idempotency bookkeeping is transient request infrastructure.',
+  ),
+  serviceExemption(
+    'queues',
+    ['*'],
+    'kept',
+    'The BullMQ queue registry is producer infrastructure; each queued portfolio operation has its own policy.',
+  ),
+  serviceExemption(
+    'observability',
+    ['*'],
+    'kept',
+    'Observability is operator infrastructure and does not expose user portfolio content.',
+  ),
+  serviceExemption(
+    'health',
+    ['*'],
+    'kept',
+    'Health checks are operational diagnostics, not portfolio data.',
+  ),
+  serviceExemption(
+    'readiness',
+    ['*'],
+    'kept',
+    'Readiness checks are dependency diagnostics, not portfolio data.',
+  ),
+  serviceExemption(
+    'problems',
+    ['*'],
+    'kept',
+    'Problems-page capture is operational diagnostics, not a user portfolio rail.',
+  ),
+  serviceExemption('monitoring', ['*'], 'kept', 'Monitoring controls are operator infrastructure.'),
+  serviceExemption(
+    'usageAnalytics',
+    ['*'],
+    'kept',
+    'Usage analytics is first-party aggregate telemetry, not portfolio content.',
+  ),
+  serviceExemption(
+    'featureFlags',
+    ['*'],
+    'kept',
+    'Feature-flag evaluation is runtime configuration infrastructure.',
+  ),
+  serviceExemption(
+    'ai',
+    ['*'],
+    'kept',
+    'AI provider controls are capability/configuration plumbing; user portfolio insight calls are classified on aiFeatures.',
+  ),
+] as const;
 
-export interface ParanoidJobPolicy {
-  readonly capability: ParanoidKilledCapability | null;
-  readonly mode: ParanoidJobMode;
-}
+const jobPolicy = (
+  file: string,
+  symbol: string,
+  name: string,
+  policy: ParanoidJobPolicy,
+): ParanoidJobPolicyEntry => ({
+  surface: {
+    kind: 'job',
+    source: {
+      file: `apps/api/src/jobs/definitions/${file}`,
+      symbol,
+    },
+    name,
+  },
+  policy,
+});
 
 /**
- * Exhaustive job classification. Tests compare these keys with ALL_QUEUE_NAMES,
- * so adding a queue without choosing kept/killed behavior fails the matrix.
+ * Every production registration must declare its paranoid-mode handling by
+ * concrete definition source as well as queue name. A replacement handler on
+ * an existing queue is therefore a new, unclassified candidate.
  */
-export const PARANOID_JOB_POLICIES: Readonly<Record<string, ParanoidJobPolicy>> = {
-  'alerts.evaluate': { capability: null, mode: 'internallyFiltered' },
-  'prices.refreshDaily': { capability: null, mode: 'kept' },
-  'prices.backfill': { capability: null, mode: 'kept' },
-  'fx.refreshSpot': { capability: null, mode: 'kept' },
-  'notifications.dispatch': { capability: null, mode: 'kept' },
-  'notifications.digestDaily': { capability: null, mode: 'kept' },
-  'notifications.digestWeekly': { capability: null, mode: 'kept' },
-  'notifications.deferredDelivery': { capability: null, mode: 'kept' },
-  'data.export': { capability: null, mode: 'kept' },
-  'data.exportCleanup': { capability: null, mode: 'kept' },
-  'snapshots.recompute': { capability: 'portfolioJobs', mode: 'portfolio' },
-  'snapshots.backfill': { capability: 'portfolioJobs', mode: 'serviceFiltered' },
-  'usage.rollup': { capability: null, mode: 'kept' },
-  'notifications.earningsRemind': { capability: 'portfolioJobs', mode: 'perUser' },
-  'marketIntel.dividendScan': { capability: 'portfolioJobs', mode: 'perUser' },
-  'standingOrders.process': { capability: 'standingOrderExecution', mode: 'perUser' },
-  'mirror.replicate': { capability: 'mirrorchain', mode: 'serviceFiltered' },
-  'mirror.inviteCleanup': { capability: null, mode: 'kept' },
-  'mirror.consistencySweep': { capability: 'mirrorchain', mode: 'serviceFiltered' },
-  'webhooks.deliver': { capability: 'portfolioWebhooks', mode: 'event' },
-  'webhooks.deliveryCleanup': { capability: null, mode: 'kept' },
-  'apiKeys.requestLogCleanup': { capability: null, mode: 'kept' },
-  'system.heartbeat': { capability: null, mode: 'kept' },
-} as const;
-
-export interface ParanoidKillRegistryEntry {
-  readonly capability: ParanoidKilledCapability;
-  readonly routes: readonly ParanoidRouteRule[];
-  readonly services: readonly ParanoidServiceBinding[];
-  readonly scopes: readonly string[];
-  readonly jobs: readonly string[];
-  readonly webhookEventTypes: readonly string[];
-}
+export const PARANOID_JOB_POLICIES: readonly ParanoidJobPolicyEntry[] = [
+  jobPolicy('heartbeat.ts', 'heartbeatJob', 'system.heartbeat', {
+    capability: null,
+    mode: 'kept',
+    reason: 'The heartbeat is deployment-health infrastructure.',
+  }),
+  jobPolicy('marketDataJobs.ts', 'createPricesRefreshDailyJob', 'prices.refreshDaily', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Global market-price refresh has no account-owned input.',
+  }),
+  jobPolicy('marketDataJobs.ts', 'createPricesBackfillJob', 'prices.backfill', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Global market-history backfill has no account-owned input.',
+  }),
+  jobPolicy('marketDataJobs.ts', 'createFxRefreshSpotJob', 'fx.refreshSpot', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Global FX refresh has no account-owned input.',
+  }),
+  // Known gap #884: custom-asset alerts are still enumerated by the evaluator.
+  // Keep this explicit temporary exemption visible until #884 adds the guard.
+  jobPolicy('alertsJob.ts', 'createAlertsEvaluateJob', 'alerts.evaluate', {
+    capability: null,
+    mode: 'internallyFiltered',
+    reason:
+      'The queue survives paranoid mode: the handler splits itself into an unguarded global-asset rail and a per-owner custom-asset rail that runs inside the owning account transition lock. The binding is the executable proof that filtering exists.',
+  }),
+  jobPolicy('notificationsJob.ts', 'createNotificationsDispatchJob', 'notifications.dispatch', {
+    capability: null,
+    mode: 'kept',
+    reason:
+      'Notification delivery is transport infrastructure; event ownership is handled at its producer.',
+  }),
+  jobPolicy('digestJobs.ts', 'createDigestDailyJob', 'notifications.digestDaily', {
+    capability: null,
+    mode: 'kept',
+    reason:
+      'Digest delivery is notification transport; portfolio-producing jobs are classified separately.',
+  }),
+  jobPolicy('digestJobs.ts', 'createDigestWeeklyJob', 'notifications.digestWeekly', {
+    capability: null,
+    mode: 'kept',
+    reason:
+      'Digest delivery is notification transport; portfolio-producing jobs are classified separately.',
+  }),
+  jobPolicy('digestJobs.ts', 'createDeferredDeliveryJob', 'notifications.deferredDelivery', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Deferred delivery only releases already-classified notifications.',
+  }),
+  jobPolicy('exportJobs.ts', 'createExportBuildJob', 'data.export', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Export job metadata is handled by the vault/export protocol.',
+  }),
+  jobPolicy('exportJobs.ts', 'createExportCleanupJob', 'data.exportCleanup', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Expired export cleanup is retention infrastructure.',
+  }),
+  jobPolicy('snapshotJobs.ts', 'createSnapshotsRecomputeJob', 'snapshots.recompute', {
+    capability: 'portfolioJobs',
+    mode: 'portfolio',
+  }),
+  jobPolicy('snapshotJobs.ts', 'createSnapshotsBackfillJob', 'snapshots.backfill', {
+    capability: 'portfolioJobs',
+    mode: 'serviceFiltered',
+  }),
+  jobPolicy('usageAnalyticsJobs.ts', 'createUsageRollupJob', 'usage.rollup', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Usage rollups are aggregate telemetry, not portfolio content.',
+  }),
+  jobPolicy('earningsReminderJob.ts', 'createEarningsReminderJob', 'notifications.earningsRemind', {
+    capability: 'portfolioJobs',
+    mode: 'perUser',
+  }),
+  jobPolicy('dividendEventsJob.ts', 'createDividendEventsScanJob', 'marketIntel.dividendScan', {
+    capability: 'portfolioJobs',
+    mode: 'perUser',
+  }),
+  jobPolicy('standingOrdersJob.ts', 'createStandingOrdersJob', 'standingOrders.process', {
+    capability: 'standingOrderExecution',
+    mode: 'perUser',
+  }),
+  jobPolicy('mirrorJobs.ts', 'createMirrorReplicateJob', 'mirror.replicate', {
+    capability: 'mirrorchain',
+    mode: 'serviceFiltered',
+  }),
+  jobPolicy('mirrorJobs.ts', 'createMirrorInviteCleanupJob', 'mirror.inviteCleanup', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Expired invite cleanup only removes stale security tokens.',
+  }),
+  jobPolicy('mirrorJobs.ts', 'createMirrorConsistencySweepJob', 'mirror.consistencySweep', {
+    capability: 'mirrorchain',
+    mode: 'serviceFiltered',
+  }),
+  jobPolicy('webhookJobs.ts', 'createWebhookDeliverJob', 'webhooks.deliver', {
+    capability: 'portfolioWebhooks',
+    mode: 'event',
+  }),
+  jobPolicy('webhookJobs.ts', 'createWebhookDeliveryCleanupJob', 'webhooks.deliveryCleanup', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Webhook delivery-log cleanup is retention infrastructure.',
+  }),
+  jobPolicy('apiKeyJobs.ts', 'createApiKeyRequestLogCleanupJob', 'apiKeys.requestLogCleanup', {
+    capability: null,
+    mode: 'kept',
+    reason: 'API-key audit-log cleanup is retention infrastructure.',
+  }),
+] as const;
 
 const servicesFor = (capability: ParanoidKilledCapability): readonly ParanoidServiceBinding[] =>
   PARANOID_SERVICE_BINDINGS.filter((binding) => binding.capability === capability);
 
 const jobsFor = (capability: ParanoidKilledCapability): readonly string[] =>
-  Object.entries(PARANOID_JOB_POLICIES)
-    .filter(([, policy]) => policy.capability === capability)
-    .map(([name]) => name);
+  PARANOID_JOB_POLICIES.filter((entry) => entry.policy.capability === capability).map(
+    (entry) => entry.surface.name,
+  );
 
 /**
- * The one executable §8 registry. Routes, service proxies, scopes, jobs and
- * webhook event types are all consumed by production composition helpers.
+ * The typed §8 kill registry. It is intentionally declarative in this issue;
+ * #884 will consume it to mount the actual route/service/job enforcement.
  */
 export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
   {
@@ -595,67 +1075,412 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
   },
 ] as const;
 
-/**
- * Explicit kept classification for route groups that mix with killed routes.
- * Whole kept routers use compact prefixes; mixed routers enumerate their kept
- * families so a newly mounted path cannot silently default to allowed.
- */
-export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidRouteRule[] = [
-  { exact: '/version' },
-  { exact: '/health' },
-  { exact: '/feature-flags' },
-  { exact: '/search' },
-  { prefix: '/auth/' },
-  { exact: '/account' },
-  { prefix: '/account/' },
-  { prefix: '/admin/' },
-  { prefix: '/oauth/' },
-  { exact: '/conglomerates' },
-  { prefix: '/conglomerates/' },
-  { exact: '/chat/conversations' },
-  { prefix: '/chat/conversations/' },
-  { exact: '/notifications' },
-  { prefix: '/notifications/' },
-  { exact: '/alerts' },
-  { pattern: /^\/alerts\/(?!sharing$)[^/]+(?:\/rearm)?$/ },
-  { exact: '/vault' },
-  { prefix: '/vault/' },
-  { exact: '/workboard' },
-  { exact: '/workboard/watchlists' },
-  { prefix: '/workboard/watchlists/' },
-  { exact: '/workboard/reorder' },
-  { pattern: /^\/workboard\/(?!sharing$)[^/]+$/ },
-  {
-    pattern:
-      /^\/assets\/[^/]+(?:\/(?:quote|history|daily-closes|intel(?:\/(?:dividends|earnings|news|splits))?))?$/,
+const keptRoutes = (
+  reason: string,
+  rules: readonly ParanoidRouteRule[],
+): readonly ParanoidExemptRouteRule[] => rules.map((rule) => ({ ...rule, reason }));
+
+const productionOpaqueRoute = ({
+  mountedPath,
+  normalizedPath,
+  handler,
+  occurrence = 1,
+}: {
+  readonly mountedPath: string;
+  readonly normalizedPath: string;
+  readonly handler: string;
+  readonly occurrence?: number;
+}): ParanoidRouteRule => ({
+  method: PARANOID_OPAQUE_MOUNT_METHOD,
+  exact: normalizedPath,
+  source: {
+    ...PARANOID_ROUTE_TABLE_SOURCE,
+    symbol: `${PARANOID_ROUTE_TABLE_SOURCE.symbol}.${handler}[${occurrence}]@${mountedPath}`,
   },
-  { exact: '/assets/intel/earnings-calendar' },
-  { exact: '/backtest/preview' },
-  { exact: '/backtest/compare' },
-  { exact: '/ideas' },
-  { pattern: /^\/ideas\/[^/]+$/ },
-  { exact: '/social/requests' },
-  { prefix: '/social/requests/' },
-  { exact: '/social/friends' },
-  { prefix: '/social/friends/' },
-  { exact: '/social/profile' },
-  { exact: '/ai/capability' },
-  { method: 'POST', exact: '/ai/conglomerate-draft' },
-  { exact: '/settings/webhooks' },
-  { prefix: '/settings/webhooks/' },
-  { exact: '/settings/notifications' },
-  { exact: '/settings/telegram' },
-  { prefix: '/settings/telegram/' },
-  { exact: '/settings/discord' },
-  { prefix: '/settings/discord/' },
-  { exact: '/settings/account' },
-  { exact: '/settings/api-keys' },
-  { prefix: '/settings/api-keys/' },
-  { exact: '/settings/oauth-clients' },
-  { prefix: '/settings/oauth-clients/' },
-  { exact: '/settings/oauth-grants' },
-  { prefix: '/settings/oauth-grants/' },
-] as const;
+});
+
+/**
+ * Explicit kept route classification. Mixed routers enumerate their allowed
+ * families so a newly mounted endpoint cannot fall through to an implicit allow.
+ */
+export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
+  ...keptRoutes(
+    'These origin-root opaque mounts are the known instrumentation, browser-security, parsing, and terminal error middleware; concrete operations are classified separately.',
+    [
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: '<anonymous>',
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: 'helmetMiddleware',
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: '<anonymous>',
+        occurrence: 2,
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: 'jsonParser',
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: 'cookieParser',
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: '<anonymous>',
+        occurrence: 3,
+      }),
+    ],
+  ),
+  ...keptRoutes(
+    'These API-root opaque mounts are the known authentication, audit, rate-limit, request-policy and paranoid-capability middleware; concrete operations are classified separately.',
+    [
+      // Nine now: #884 adds the registry-driven paranoid route guard
+      // ({@link createParanoidRouteGuard}) after the request-policy middleware.
+      // It is the enforcement point for the killed route families below, so it
+      // is itself kept — a guard that killed its own mount would 403 every
+      // request a paranoid account makes.
+      ...Array.from({ length: 9 }, (_, index) =>
+        productionOpaqueRoute({
+          mountedPath: '/api/v1',
+          normalizedPath: '/',
+          handler: '<anonymous>',
+          occurrence: index + 1,
+        }),
+      ),
+      productionOpaqueRoute({
+        mountedPath: '/api/v1',
+        normalizedPath: '/',
+        handler: 'enforcePasswordChange',
+      }),
+    ],
+  ),
+  ...keptRoutes(
+    'These exact opaque mounts are the production session-admission middleware; concrete operations are classified separately.',
+    [
+      productionOpaqueRoute({
+        mountedPath: '/api/v1/assets',
+        normalizedPath: '/assets',
+        handler: 'requireUser',
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/api/v1/assets',
+        normalizedPath: '/assets',
+        handler: 'requireUser',
+        occurrence: 2,
+      }),
+      ...[
+        '/backtest',
+        '/expenses',
+        '/analytics',
+        '/social',
+        '/mirrorchain',
+        '/chat',
+        '/ai',
+        '/settings',
+        '/oauth',
+      ].map((normalizedPath) =>
+        productionOpaqueRoute({
+          mountedPath: `/api/v1${normalizedPath}`,
+          normalizedPath,
+          handler: 'requireUser',
+        }),
+      ),
+    ],
+  ),
+  ...keptRoutes(
+    'This exact opaque mount is the production chat feature gate; concrete chat operations are classified separately.',
+    [
+      productionOpaqueRoute({
+        mountedPath: '/api/v1/chat',
+        normalizedPath: '/chat',
+        handler: '<anonymous>',
+      }),
+    ],
+  ),
+  ...keptRoutes('Public self-documenting API documentation contains no account data.', [
+    { method: 'GET', exact: '/docs' },
+    { method: 'GET', exact: '/openapi.json' },
+  ]),
+  ...keptRoutes('Public deployment metadata contains no account data.', [
+    { exact: '/version' },
+    { exact: '/health' },
+    { exact: '/health/ready' },
+    { exact: '/feature-flags' },
+  ]),
+  ...keptRoutes('Catalog search is provenance-filtered and has no server portfolio read.', [
+    { exact: '/search' },
+  ]),
+  ...keptRoutes('Authentication and recovery remain available to a paranoid account.', [
+    { prefix: '/auth/' },
+  ]),
+  ...keptRoutes('Account lifecycle and export metadata remain available.', [
+    { exact: '/account' },
+    { prefix: '/account/' },
+  ]),
+  ...keptRoutes('Administrator routes are independently authorized operational surfaces.', [
+    { exact: '/admin' },
+    { prefix: '/admin/' },
+  ]),
+  ...keptRoutes('OAuth credential lifecycle is separate from portfolio scopes.', [
+    { prefix: '/oauth/' },
+  ]),
+  ...keptRoutes(
+    'Conglomerate definitions are local configuration; sharing is classified separately.',
+    [{ exact: '/conglomerates' }, { prefix: '/conglomerates/' }],
+  ),
+  ...keptRoutes('Private chat remains separate from server-side portfolio content.', [
+    { exact: '/chat/conversations' },
+    { prefix: '/chat/conversations/' },
+  ]),
+  ...keptRoutes('Notification inbox and device preferences remain available.', [
+    { exact: '/notifications' },
+    { prefix: '/notifications/' },
+  ]),
+  ...keptRoutes('Alert CRUD is provenance-filtered; sharing settings are classified separately.', [
+    { exact: '/alerts' },
+    { pattern: /^\/alerts\/(?!sharing$)[^/]+(?:\/rearm)?$/ },
+  ]),
+  ...keptRoutes('The opaque ciphertext vault is the paranoid-mode data home.', [
+    { exact: '/vault' },
+    { prefix: '/vault/' },
+  ]),
+  ...keptRoutes(
+    'Local workboard organization remains available; sharing settings are classified separately.',
+    [
+      { exact: '/workboard' },
+      { prefix: '/workboard/watchlists/' },
+      { pattern: /^\/workboard\/(?!sharing$)[^/]+$/ },
+    ],
+  ),
+  ...keptRoutes('Per-asset market reads enforce global-or-owned asset provenance.', [
+    {
+      pattern:
+        /^\/assets\/[^/]+(?:\/(?:quote|history|daily-closes|intel(?:\/(?:dividends|earnings|news|splits))?))?$/,
+    },
+    { exact: '/assets/intel/earnings-calendar' },
+  ]),
+  ...keptRoutes(
+    'Local draft backtests do not read a server portfolio; shared previews are classified separately.',
+    [{ exact: '/backtest/preview' }, { exact: '/backtest/compare' }],
+  ),
+  ...keptRoutes(
+    'Ideas remain private local notes; cloning a shared idea is classified separately.',
+    [{ exact: '/ideas' }, { pattern: /^\/ideas\/[^/]+$/ }],
+  ),
+  ...keptRoutes(
+    'Friendship and profile-settings operations preserve their no-leak authorization semantics.',
+    [
+      { exact: '/social/requests' },
+      { prefix: '/social/requests/' },
+      { exact: '/social/friends' },
+      { prefix: '/social/friends/' },
+      { exact: '/social/profile' },
+    ],
+  ),
+  ...keptRoutes('AI capability and reviewed draft endpoints do not read a server portfolio.', [
+    { exact: '/ai/capability' },
+    { method: 'POST', exact: '/ai/conglomerate-draft' },
+  ]),
+  ...keptRoutes(
+    'Notification, account, API-key, OAuth, and webhook settings are account configuration.',
+    [
+      { exact: '/settings/webhooks' },
+      { prefix: '/settings/webhooks/' },
+      { exact: '/settings/notifications' },
+      { exact: '/settings/telegram' },
+      { prefix: '/settings/telegram/' },
+      { exact: '/settings/discord' },
+      { prefix: '/settings/discord/' },
+      { exact: '/settings/account' },
+      { exact: '/settings/api-keys' },
+      { prefix: '/settings/api-keys/' },
+      { exact: '/settings/oauth-clients' },
+      { prefix: '/settings/oauth-clients/' },
+      { exact: '/settings/oauth-grants' },
+      { prefix: '/settings/oauth-grants/' },
+    ],
+  ),
+];
+
+export interface ParanoidKnownGap {
+  readonly id: string;
+  readonly issue: 884;
+  readonly label: string;
+  readonly surface: ParanoidSurface;
+  readonly classification: ParanoidExemptClassification;
+}
+
+/**
+ * Review findings that were classified as temporary exemptions until #884 could
+ * close them. All four are now closed by the enforcement composition in this
+ * module and its call sites, so the list is empty — the type and the accessor
+ * stay so a future finding can be tracked the same way rather than becoming an
+ * implicit permanent exemption.
+ *
+ * Closed by #884:
+ *  - `market-intel-watch-only-queries` — the watch-only market-intelligence
+ *    reads now carry `isNull(assets.ownerId)` and pick account-owned rows up per
+ *    user inside that account's transition lock.
+ *  - `alerts-evaluate-custom-asset-enumeration` — `alerts.evaluate` runs a
+ *    global rail plus an owner-guarded custom rail discovered from identity-only
+ *    metadata, and its definition carries the `internallyFiltered` binding.
+ *  - `mirror-member-copy-owner-anchor` — the join anchor is chosen from the
+ *    guarded principal set, current owner first.
+ *  - `portfolio-room-authorization-window` — `handleRoomJoin` holds the viewer's
+ *    account lock across `canViewPortfolio`, `socket.join` and the ack, and
+ *    `portfolio.changed` reauthorizes every established viewer.
+ */
+export const PARANOID_KNOWN_GAPS: readonly ParanoidKnownGap[] = [] as const;
+
+/** True only when a mounted route surface meets one complete declarative rule. */
+export function routeMatches(rule: ParanoidRouteRule, surface: ParanoidRouteSurface): boolean {
+  if (rule.method && rule.method !== surface.method) return false;
+  if (rule.exact !== undefined && rule.exact !== surface.path) return false;
+  if (rule.prefix !== undefined && !surface.path.startsWith(rule.prefix)) return false;
+  if (rule.pattern !== undefined && !rule.pattern.test(surface.path)) return false;
+  if (
+    rule.source &&
+    (rule.source.file !== surface.source.file || rule.source.symbol !== surface.source.symbol)
+  ) {
+    return false;
+  }
+  return (
+    rule.exact !== undefined ||
+    rule.prefix !== undefined ||
+    rule.pattern !== undefined ||
+    rule.source !== undefined
+  );
+}
+
+/** Match an exact method, all methods, or a suffix `*` method family. */
+export function serviceMethodMatches(pattern: string, method: string): boolean {
+  return (
+    pattern === '*' ||
+    (pattern.endsWith('*') && method.startsWith(pattern.slice(0, -1))) ||
+    pattern === method
+  );
+}
+
+function guarded(capability: ParanoidKilledCapability): ParanoidGuardedClassification {
+  return { disposition: 'guarded', capability };
+}
+
+function exempt(
+  reason: string,
+  knownGapIssue?: 884,
+  knownGapId?: string,
+): ParanoidExemptClassification {
+  return {
+    disposition: 'exempt',
+    reason,
+    ...(knownGapIssue ? { knownGapIssue } : {}),
+    ...(knownGapId ? { knownGapId } : {}),
+  };
+}
+
+/** All route classifications so the harness can detect missing or overlapping rules. */
+export function paranoidRouteClassifications(
+  surface: ParanoidRouteSurface,
+): readonly ParanoidSurfaceClassification[] {
+  const classifications: ParanoidSurfaceClassification[] = [];
+  for (const entry of PARANOID_KILL_REGISTRY) {
+    if (entry.routes.some((rule) => routeMatches(rule, surface))) {
+      classifications.push(guarded(entry.capability));
+    }
+  }
+  for (const rule of PARANOID_KEPT_ROUTE_RULES) {
+    if (routeMatches(rule, surface)) classifications.push(exempt(rule.reason));
+  }
+  return classifications;
+}
+
+/** All service classifications so the harness can detect missing or overlapping methods. */
+export function paranoidServiceClassifications(
+  service: string,
+  method: string,
+): readonly ParanoidSurfaceClassification[] {
+  const classifications: ParanoidSurfaceClassification[] = [];
+  for (const binding of PARANOID_SERVICE_BINDINGS) {
+    if (
+      binding.service === service &&
+      binding.methods.some((pattern) => serviceMethodMatches(pattern, method))
+    ) {
+      classifications.push(guarded(binding.capability));
+    }
+  }
+  for (const exemptionRule of [
+    ...PARANOID_SERVICE_EXEMPTIONS,
+    ...PARANOID_CONTEXT_SERVICE_EXEMPTIONS,
+  ]) {
+    if (
+      exemptionRule.service === service &&
+      exemptionRule.methods.some((pattern) => serviceMethodMatches(pattern, method))
+    ) {
+      classifications.push(exempt(exemptionRule.reason));
+    }
+  }
+  return classifications;
+}
+
+/** All job classifications, matched by queue and concrete production source. */
+export function paranoidJobClassifications(
+  surface: ParanoidJobSurface,
+): readonly ParanoidSurfaceClassification[] {
+  return PARANOID_JOB_POLICIES.filter(
+    (entry) =>
+      entry.surface.name === surface.name &&
+      entry.surface.source.file === surface.source.file &&
+      entry.surface.source.symbol === surface.source.symbol,
+  ).map(({ policy }) => {
+    if (policy.capability) return guarded(policy.capability);
+    const knownGap = PARANOID_KNOWN_GAPS.find((gap) => gap.id === policy.knownGapId);
+    return exempt(policy.reason, knownGap?.issue, policy.knownGapId);
+  });
+}
+
+/**
+ * Typed completeness accessor. It never applies a guard: callers can ask the
+ * registry whether a discovered route, context method, job, or named internal
+ * review finding has exactly one policy without recreating the kill set.
+ */
+export function paranoidSurfaceClassifications(
+  surface: ParanoidSurface,
+): readonly ParanoidSurfaceClassification[] {
+  if (surface.kind === 'route') return paranoidRouteClassifications(surface);
+  if (surface.kind === 'service') {
+    return paranoidServiceClassifications(surface.service, surface.method);
+  }
+  if (surface.kind === 'job') return paranoidJobClassifications(surface);
+  return PARANOID_KNOWN_GAPS.filter(
+    (gap) =>
+      gap.surface.kind === 'internal' &&
+      gap.surface.source.file === surface.source.file &&
+      gap.surface.source.symbol === surface.source.symbol,
+  ).map((gap) => gap.classification);
+}
+
+/** Returns the one policy, or `undefined` when a surface is missing or overlaps. */
+export function paranoidSurfaceClassification(
+  surface: ParanoidSurface,
+): ParanoidSurfaceClassification | undefined {
+  const classifications = paranoidSurfaceClassifications(surface);
+  return classifications.length === 1 ? classifications[0] : undefined;
+}
+
+/** Convenience predicate for future composition and the completeness harness. */
+export function isParanoidSurfaceClassified(surface: ParanoidSurface): boolean {
+  return paranoidSurfaceClassification(surface) !== undefined;
+}
 
 const KILLED_SCOPES = new Set(PARANOID_KILL_REGISTRY.flatMap((entry) => entry.scopes));
 const PARANOID_WEBHOOK_EVENTS = new Set(
@@ -690,20 +1515,26 @@ export const PARANOID_WEBHOOK_SUBJECT_POLICIES = {
   Record<DomainEvent['type'], 'recipient' | 'recipientAndActor' | 'mirrorPrincipals'>
 >;
 
-function routeMatches(rule: ParanoidRouteRule, method: string, path: string): boolean {
-  if (rule.method && rule.method !== method) return false;
-  if (rule.exact !== undefined && rule.exact !== path) return false;
-  if (rule.prefix !== undefined && !path.startsWith(rule.prefix)) return false;
-  if (rule.pattern !== undefined && !rule.pattern.test(path)) return false;
-  return rule.exact !== undefined || rule.prefix !== undefined || rule.pattern !== undefined;
-}
+/**
+ * The live request's (method, path) as a route surface. The runtime guard has
+ * no source identity to offer, so a rule that pins one (the opaque middleware
+ * mounts) can never match a real API request — exactly right, since those are
+ * `app.use` leaves rather than endpoints.
+ */
+const requestSurface = (method: string, path: string): ParanoidRouteSurface => ({
+  kind: 'route',
+  source: PARANOID_ROUTE_TABLE_SOURCE,
+  method,
+  path,
+});
 
 export function paranoidCapabilityForRoute(
   method: string,
   path: string,
 ): ParanoidKilledCapability | null {
+  const surface = requestSurface(method, path);
   for (const entry of PARANOID_KILL_REGISTRY) {
-    if (entry.routes.some((rule) => routeMatches(rule, method, path))) return entry.capability;
+    if (entry.routes.some((rule) => routeMatches(rule, surface))) return entry.capability;
   }
   return null;
 }
@@ -715,13 +1546,14 @@ export function paranoidClassificationsForRoute(
   method: string,
   path: string,
 ): ParanoidRouteClassification[] {
+  const surface = requestSurface(method, path);
   const matches: ParanoidRouteClassification[] = [];
   for (const entry of PARANOID_KILL_REGISTRY) {
-    if (entry.routes.some((rule) => routeMatches(rule, method, path))) {
+    if (entry.routes.some((rule) => routeMatches(rule, surface))) {
       matches.push(entry.capability);
     }
   }
-  if (PARANOID_KEPT_ROUTE_RULES.some((rule) => routeMatches(rule, method, path))) {
+  if (PARANOID_KEPT_ROUTE_RULES.some((rule) => routeMatches(rule, surface))) {
     matches.push('kept');
   }
   return matches;
@@ -1078,8 +1910,34 @@ export function guardRegisteredServices<T extends Record<string, object>>(
   return guarded;
 }
 
+/**
+ * Queue-name index over the source-keyed policy array. Each production queue is
+ * classified exactly once, so the runtime lookups (`bindParanoidJob`, the
+ * per-user filter) can stay keyed by name while the completeness harness keeps
+ * matching on the concrete definition source as well.
+ */
+const JOB_POLICY_BY_NAME: ReadonlyMap<string, ParanoidJobPolicy> = (() => {
+  const byName = new Map<string, ParanoidJobPolicy>();
+  for (const entry of PARANOID_JOB_POLICIES) {
+    if (byName.has(entry.surface.name)) {
+      throw new Error(`paranoid job registry classifies ${entry.surface.name} twice`);
+    }
+    byName.set(entry.surface.name, entry.policy);
+  }
+  return byName;
+})();
+
+/** Every classified queue name, for the registry-vs-queue-catalog drift check. */
+export function paranoidJobPolicyNames(): string[] {
+  return [...JOB_POLICY_BY_NAME.keys()];
+}
+
+export function hasParanoidJobPolicy(name: string): boolean {
+  return JOB_POLICY_BY_NAME.has(name);
+}
+
 export function paranoidJobPolicy(name: string): ParanoidJobPolicy {
-  const policy = PARANOID_JOB_POLICIES[name];
+  const policy = JOB_POLICY_BY_NAME.get(name);
   if (!policy) throw new Error(`paranoid job registry omitted ${name}`);
   return policy;
 }

@@ -25,7 +25,9 @@ RUN pnpm deploy --filter @bettertrack/api --prod /deploy
 # ── runner: minimal production image ────────────────────────────────────────
 FROM node:22-alpine AS runner
 WORKDIR /app
-RUN addgroup -S bettertrack && adduser -S bettertrack -G bettertrack
+RUN addgroup -S bettertrack && adduser -S bettertrack -G bettertrack \
+    && mkdir -p /var/lib/bettertrack/exports \
+    && chown -R bettertrack:bettertrack /var/lib/bettertrack
 
 # Deploy marker (GET /api/v1/version): the commit + UTC build time this image was
 # built from, passed as build args by compose (GIT_SHA/GIT_BUILD_TIME) and read

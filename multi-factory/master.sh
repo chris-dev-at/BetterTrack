@@ -35,6 +35,8 @@ CONTROL=$MFSTATE/control; LOGS=$MFSTATE/logs; CIFIX=$MFSTATE/ci-fix
 : "${MF_COMPOSER_DISCOVERY_ATTEMPTS:=6}" # no-cache post-create snapshots (GitHub lists can lag)
 : "${MF_COMPOSER_DISCOVERY_SLEEP:=2}" # seconds between post-create snapshots
 : "${MF_CIFIX_PROTOCOL_BACKOFF:=300}" # delay before the one no-head protocol retry
+: "${MF_APPROVAL_READ_MAX:=40}"   # consecutive approval-read failures before the queue head parks to a human
+: "${MF_MERGE_FAIL_MAX:=40}"      # same-head merge refusals (BLOCKED/DRAFT/protection) before parking to a human
 : "${MF_DRY_RUN:=0}"
 if [ -z "${MF_MASTER_SESSION:-}" ]; then
   MF_MASTER_NONCE=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
@@ -121,10 +123,12 @@ inflight_issues(){
 # ---- GitHub reads (REST only — the search index lags ~30s+, BRIEF §5.1) ----------
 TICK_ISSUES=${TICK_ISSUES:-/tmp/mf-tick-issues.json}
 fetch_issues(){ # open autopilot issues, PRs filtered out; [] on any failure
-  gh api "repos/$REPO/issues?labels=autopilot&state=open&per_page=100" \
-    --jq '[.[]|select(.pull_request==null)|{number,title,body,labels:[.labels[].name]}]' \
+  # Single jq parse of GitHub's original JSON — one parser, one contract for
+  # every later jq read of the tick file (see mf_pr_comments_json).
+  gh api "repos/$REPO/issues?labels=autopilot&state=open&per_page=100" 2>/dev/null \
+    | jq -c '[.[]|select(.pull_request==null)|{number,title,body,labels:[.labels[].name]}]' \
     >"$TICK_ISSUES.tmp" 2>/dev/null && mv -f "$TICK_ISSUES.tmp" "$TICK_ISSUES" \
-    || { [ -f "$TICK_ISSUES" ] || echo '[]' >"$TICK_ISSUES"; }
+    || { rm -f "$TICK_ISSUES.tmp"; [ -f "$TICK_ISSUES" ] || echo '[]' >"$TICK_ISSUES"; }
 }
 issue_body(){ jq -r --argjson n "$1" '.[]|select(.number==$n).body // ""' "$TICK_ISSUES"; }
 issue_numbers_asc(){ jq -r 'sort_by(.number)|.[].number' "$TICK_ISSUES"; }
@@ -192,7 +196,7 @@ runnable_issues(){
 enqueue_merge(){ # $1=pr $2=issue $3=claims $4=head $5=kind $6=comment id
   local pr=$1 issue=$2 claims=$3 approved_head=$4 approval_kind=$5 approval_comment_id=$6
   local existing touches payload
-  existing=$(find "$QUEUE" -maxdepth 1 -type f -name "*-pr$pr.json" -print -quit 2>/dev/null)
+  existing=$(find "$QUEUE" -maxdepth 1 -type f -name "[0-9]*-pr$pr.json" -print -quit 2>/dev/null)
   if [ -n "$existing" ]; then
     jq -e --arg h "$approved_head" --arg k "$approval_kind" --arg id "$approval_comment_id" \
       '.approved_head==$h and .approval_kind==$k and (.approval_comment_id|tostring)==$id' \
@@ -1285,16 +1289,103 @@ ci_fix_red_step(){ # $1=queue file $2=issue $3=pr $4=approved head
   fi
 }
 
+# A BEHIND update re-parents the PR onto newer main. That always changes the head
+# SHA, which invalidates the head-bound approval even when the PR's own diff is
+# untouched. With several workers merging, every merge invalidates every other
+# queued PR and the queue re-reviews far more than it lands (measured 2026-07-26:
+# 4 merges against 21 invalidations). Carry the approval forward only when main's
+# new commits touched NONE of the files this PR changes — then the reviewed
+# contribution cannot have interacted with what moved. Any overlap, any read
+# failure, any truncated compare falls through to a fresh review. CI still gates
+# the merged result either way.
+carry_forward_ok(){ # $1=pr $2=head before update; 0 = safe to carry the approval
+  local pr=$1 head=$2 base cmp main_files pr_files overlap
+  base=$(gh api "repos/$REPO/compare/main...$head" -q '.merge_base_commit.sha' 2>/dev/null) || return 1
+  [ -n "$base" ] && [ "$base" != null ] || return 1
+  cmp=$(gh api "repos/$REPO/compare/$base...main" 2>/dev/null) || return 1
+  # A truncated compare cannot prove disjointness.
+  jq -e '((.truncated // false) | not) and ((.files // []) | length) < 300' \
+    <<<"$cmp" >/dev/null 2>&1 || return 1
+  main_files=$(jq -r '(.files // [])[].filename' <<<"$cmp" 2>/dev/null | sort -u) || return 1
+  pr_files=$(gh pr view "$pr" --json files -q '.files[].path' 2>/dev/null | sort -u) || return 1
+  [ -n "$pr_files" ] || return 1
+  overlap=$(comm -12 <(printf '%s\n' "$main_files") <(printf '%s\n' "$pr_files"))
+  [ -z "$overlap" ]
+}
+
+queue_carry_head(){ # $1=queue file $2=new head — record the SHA we now expect to merge
+  local f=$1 nh=$2 updated
+  updated=$(jq -c --arg h "$nh" --arg at "$(date -Is)" \
+    '. + {carried_head:$h, carried_at:$at}' "$f" 2>/dev/null) || return 1
+  [ -n "$updated" ] || return 1
+  atomic_write "$f" "$updated"
+}
+
+# A DIRTY (conflicting) queue head can never merge and update-branch cannot fix
+# it — the conflict needs real resolution. Previously the merger retried the
+# merge forever ("retaining queue record"), jamming the FIFO head and starving
+# every PR behind it. One bounded fixer attempt merges main into the branch and
+# resolves faithfully; the pushed head then fails the approval head check on the
+# next tick, which routes the PR through a fresh review (requeue_for_review).
+# No pushed head → a human. The marker file makes the single attempt durable
+# across master restarts; a crash inside the window costs at most a premature
+# human escalation, never a loop.
+conflict_fix_step(){ # $1=queue file $2=issue $3=pr $4=approved head
+  local f=$1 n=$2 pr=$3 approved_head=$4 current fixed_head stale
+  # The marker is scoped to the exact approved head: a marker orphaned by a
+  # transient post-attempt head-read failure (queue entry then requeued by the
+  # head check) must never consume the attempt budget of a LATER,
+  # freshly-approved head — independent-review find, 2026-07-28. Stale sibling
+  # markers for other heads of the same PR are swept here; their heads can no
+  # longer merge, so their budget is moot.
+  local marker=$QUEUE/.conflictfix-pr$3-$4
+  for stale in "$QUEUE"/.conflictfix-pr$3-*; do
+    [ -e "$stale" ] || continue
+    [ "$stale" = "$marker" ] || rm -f "$stale"
+  done
+  if [ -f "$marker" ]; then
+    current=$(mf_pr_head "$pr") || { log "merger: cannot reconcile conflict-fix for PR #$pr — retrying next tick"; return 0; }
+    if [ -n "$current" ] && [ "$current" != "$approved_head" ]; then
+      rm -f "$marker"
+      requeue_for_review "$f" "$n" "conflict-fix pushed ${current:0:12}"
+    else
+      log "merger: PR #$pr still conflicts with main after its one conflict-fix attempt"
+      mark_human "$n" "PR #$pr conflicts with main after the factory's one conflict-fix attempt"
+      rm -f "$f" "$marker"
+    fi
+    return 0
+  fi
+  : >"$marker"
+  log "merger: PR #$pr conflicts with main — one conflict-fix attempt"
+  mstatus conflict-fix "$pr"
+  CC_ISSUE=$n mf_cc ci-fix "$(issue_difficulty "$n")" \
+    "PR #$pr of $REPO conflicts with its base branch (main) and cannot merge. cd into the repo, check out the PR branch, merge origin/main into it, and resolve every conflict faithfully — preserve both the PR's reviewed intent and main's newer changes; no test deletion, no skips. Run the affected tests locally, then push. A pushed head always requires a fresh factory review." || true
+  fixed_head=$(mf_pr_head "$pr") || { log "merger: cannot read head after conflict-fix on PR #$pr — durable marker retained"; return 0; }
+  if [ -n "$fixed_head" ] && [ "$fixed_head" != "$approved_head" ]; then
+    rm -f "$marker"
+    requeue_for_review "$f" "$n" "conflict-fix pushed ${fixed_head:0:12}"
+  else
+    log "merger: conflict-fix produced no pushed head on PR #$pr"
+    mark_human "$n" "PR #$pr conflicts with main; the factory's conflict-fix attempt pushed nothing"
+    rm -f "$f" "$marker"
+  fi
+}
+
 queue_approval_check(){ # $1=queue JSON; sets QUEUE_APPROVAL_STATE
-  local f=$1 pr head kind comment_id comments current
+  local f=$1 pr head effective kind comment_id comments current
   QUEUE_APPROVAL_STATE=invalid
   pr=$(jq -r '.pr' "$f")
   head=$(jq -r '.approved_head // ""' "$f")
+  # carried_head is set only when a BEHIND update provably left this PR's own
+  # contribution untouched (see carry_forward_ok). The canonical approval comment
+  # still names approved_head and is always validated against it: carrying
+  # forward moves which SHA we expect to merge, never what was reviewed.
+  effective=$(jq -r '.carried_head // .approved_head // ""' "$f")
   kind=$(jq -r '.approval_kind // ""' "$f")
   comment_id=$(jq -r '.approval_comment_id // ""' "$f")
-  [ -n "$head" ] && [ -n "$comment_id" ] || return 0
+  [ -n "$head" ] && [ -n "$effective" ] && [ -n "$comment_id" ] || return 0
   current=$(mf_pr_head "$pr") || return 1
-  if [ "$current" != "$head" ]; then
+  if [ "$current" != "$effective" ]; then
     QUEUE_APPROVAL_STATE=changed
     return 0
   fi
@@ -1343,7 +1434,10 @@ merger_step(){
   local f=$QUEUE/$head pr n approved_head ci_state
   pr=$(jq -r '.pr' "$f"); n=$(jq -r '.issue' "$f")
   ci_state=$(ci_fix_state_file "$n" "$pr")
-  approved_head=$(jq -r '.approved_head // ""' "$f")
+  # The SHA we now expect to merge: the carried head when a BEHIND update was
+  # proven non-interacting, else the originally approved one. queue_approval_check
+  # independently validates the approval comment against the original approved_head.
+  approved_head=$(jq -r '.carried_head // .approved_head // ""' "$f")
   if [ "$MF_DRY_RUN" = 1 ]; then log "DRY: would merge PR #$pr (issue #$n)"; rm -f "$f"; return 0; fi
   local pstate
   pstate=$(gh pr view "$pr" --json state -q '.state' 2>/dev/null || echo unknown)
@@ -1356,15 +1450,55 @@ merger_step(){
   esac
 
   # Approval is bound to both one canonical comment and the exact code SHA.
-  # Read failures are transient and never consume/drop the queue record.
+  # Read failures are usually transient — but a deterministic one (observed
+  # live: an unparseable comment payload on PR #891) must not jam the FIFO
+  # forever. Bounded consecutive failures park the head with a human instead.
+  local apprfail=$QUEUE/.apprfail-pr$pr afails
   if ! queue_approval_check "$f"; then
-    log "merger: approval read failed for PR #$pr — retrying next tick"
+    afails=$(cat "$apprfail" 2>/dev/null || echo 0)
+    case "$afails" in ''|*[!0-9]*) afails=0;; esac
+    afails=$((afails + 1))
+    if [ "$afails" -ge "$MF_APPROVAL_READ_MAX" ]; then
+      log "merger: approval unreadable for PR #$pr after $afails consecutive attempts — parking with a human"
+      mark_human "$n" "approval state for queued PR #$pr is unreadable after $afails attempts"
+      rm -f "$f" "$apprfail"
+    else
+      atomic_write "$apprfail" "$afails"
+      log "merger: approval read failed for PR #$pr — retrying next tick ($afails/$MF_APPROVAL_READ_MAX)"
+    fi
     return 0
   fi
+  rm -f "$apprfail"
   case "$QUEUE_APPROVAL_STATE" in
     changed) requeue_for_review "$f" "$n" "head changed from ${approved_head:0:12}"; return 0;;
     invalid) requeue_for_review "$f" "$n" "canonical approval missing/malformed"; return 0;;
   esac
+
+  # A DIRTY (conflicting) head can never merge and typically has NO fresh CI
+  # rollup — GitHub cannot build its merge commit — so it must short-circuit
+  # BEFORE the CI gate or it wedges the queue head as forever-"pending". This
+  # exact wedge WAS the 2026-07-28 queue jam: PR #891 sat DIRTY with an empty
+  # rollup at the FIFO head from 05:38 UTC, starving every PR behind it
+  # (#890/#873 shared the state). The read is reused for the BEHIND decision
+  # after the CI gate; a stale value there only costs one failed merge
+  # attempt, which retries with fresh state.
+  local merge_state
+  merge_state=$(gh pr view "$pr" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null) || {
+    log "merger: merge-state read failed for PR #$pr — retrying next tick"
+    return 0
+  }
+  if [ "$merge_state" = DIRTY ]; then
+    # Re-check the head immediately before spending a fixer run — a push in the
+    # intervening second requeues for review instead of wasting an LLM call.
+    local dirty_head
+    dirty_head=$(mf_pr_head "$pr") || return 0
+    if [ "$dirty_head" != "$approved_head" ]; then
+      requeue_for_review "$f" "$n" "head changed from ${approved_head:0:12}"
+      return 0
+    fi
+    conflict_fix_step "$f" "$n" "$pr" "$approved_head"
+    return 0
+  fi
 
   # CI rollup, non-blocking (empty rollup = checks not reported yet = pending).
   local rollup_state rollup_json
@@ -1386,19 +1520,23 @@ merger_step(){
 
   # Green. A strict-BEHIND update changes code and therefore invalidates review;
   # update now, then let the normal head check requeue it for a fresh review.
-  local merge_state current_head
-  merge_state=$(gh pr view "$pr" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null) || {
-    log "merger: merge-state read failed for PR #$pr — retrying next tick"
-    return 0
-  }
+  local current_head
   current_head=$(mf_pr_head "$pr") || return 0
   if [ "$current_head" != "$approved_head" ]; then
     requeue_for_review "$f" "$n" "head changed before merge"
     return 0
   fi
   if [ "$merge_state" = BEHIND ]; then
+    local can_carry=1 new_head
+    carry_forward_ok "$pr" "$current_head" && can_carry=0
     if gh pr update-branch "$pr" >/dev/null 2>&1; then
-      log "merger: updated BEHIND PR #$pr; fresh review required"
+      new_head=$(mf_pr_head "$pr" 2>/dev/null || true)
+      if [ "$can_carry" = 0 ] && [ -n "$new_head" ] && [ "$new_head" != "$current_head" ] \
+        && queue_carry_head "$f" "$new_head"; then
+        log "merger: updated BEHIND PR #$pr; main touched no file it changes — approval carried to ${new_head:0:12}"
+      else
+        log "merger: updated BEHIND PR #$pr; fresh review required"
+      fi
     else
       log "merger: update-branch failed for PR #$pr — retrying next tick"
     fi
@@ -1414,10 +1552,29 @@ merger_step(){
       requeue_for_review "$f" "$n" "head changed during merge attempt"
       return 0
     fi
-    log "merger: merge command failed without a head change — retaining queue record"
+    # Same-head refusals (BLOCKED by protection, DRAFT, an admin rule) are the
+    # last unbounded head-of-line trap — bound them like approval reads. The
+    # counter is head-scoped so a stale head's budget never leaks onto a new
+    # head (a re-approval at the SAME head deliberately resumes its count).
+    local mergefail=$QUEUE/.mergefail-pr$pr-$approved_head mfails stale
+    for stale in "$QUEUE"/.mergefail-pr$pr-*; do
+      [ -e "$stale" ] || continue
+      [ "$stale" = "$mergefail" ] || rm -f "$stale"
+    done
+    mfails=$(cat "$mergefail" 2>/dev/null || echo 0)
+    case "$mfails" in ''|*[!0-9]*) mfails=0;; esac
+    mfails=$((mfails + 1))
+    if [ "$mfails" -ge "$MF_MERGE_FAIL_MAX" ]; then
+      log "merger: merge refused $mfails times without a head change on PR #$pr — parking with a human"
+      mark_human "$n" "PR #$pr cannot merge (state $merge_state) after $mfails same-head attempts — likely branch protection, draft status, or an admin rule"
+      rm -f "$f" "$mergefail"
+      return 0
+    fi
+    atomic_write "$mergefail" "$mfails"
+    log "merger: merge command failed without a head change — retaining queue record ($mfails/$MF_MERGE_FAIL_MAX)"
     return 0
   fi
-  rm -f "$f" "$ci_state"
+  rm -f "$f" "$ci_state" "$QUEUE"/.mergefail-pr"$pr"-* 2>/dev/null
 }
 
 finalize_issue(){ # $1=pr $2=issue

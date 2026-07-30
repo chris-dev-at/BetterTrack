@@ -12,7 +12,6 @@ import {
 } from '../../lib/conglomerateApi';
 import { cx } from '../../lib/cx';
 import { listPortfolios } from '../../lib/portfolioApi';
-import { searchAssets } from '../../lib/searchApi';
 import {
   WATCHLISTS_QUERY_KEY,
   addToWorkboard,
@@ -20,7 +19,7 @@ import {
   listWorkboard,
 } from '../../lib/workboardApi';
 import { EmptyState, MarketStateBadge, Skeleton } from '../../ui';
-import { useDebounce } from '../hooks/useDebounce';
+import { useAssetSearch } from './useAssetSearch';
 import {
   ACTIVE_SUM,
   canAddPosition,
@@ -33,14 +32,8 @@ import {
 import { CapabilityTags } from '../assets/capabilityTags';
 import { TransactionDialog, type TransactionDialogAsset } from './TransactionDialog';
 
-const DEBOUNCE_MS = 300;
-/** Owner directive (#248 §3 / §13.2 V2-P1): search works from a single character. */
-const MIN_CHARS = 1;
-/** Mirror the server-side quote/search cache TTL (PROJECTPLAN.md §6.2, 60 req/min/user). */
+/** Reused by the lazily-fetched supporting queries below (watchlists, portfolios). */
 const SEARCH_STALE_MS = 30_000;
-/** When the API answers `enriching: true` (§6.2), poll for the enriched catalog rows. */
-const ENRICH_POLL_MS = 1_500;
-const ENRICH_TIMEOUT_MS = 10_000;
 
 // Search only ever returns catalog/provider (market) assets — a user's custom
 // off-market assets are not in the search index, so `type: 'custom'` can never
@@ -48,16 +41,16 @@ const ENRICH_TIMEOUT_MS = 10_000;
 // fallback below) and is dropped so no CUSTOM slice lingers in an asset-type map
 // (V3-P2, issue #325).
 const TYPE_BADGE: Record<string, string> = {
-  stock: 'bg-sky-900/60 text-sky-300',
+  stock: 'bt-badge--blue',
   etf: 'bg-violet-900/60 text-violet-300',
   index: 'bg-orange-900/60 text-orange-300',
-  fx: 'bg-emerald-900/60 text-emerald-300',
-  commodity: 'bg-amber-900/60 text-amber-300',
+  fx: 'bt-badge--pos',
+  commodity: 'bt-badge--gold',
   crypto: 'bg-pink-900/60 text-pink-300',
 };
 
 export interface AssetSearchBoxProps {
-  /** Called after any per-result action fires — lets a palette close itself. */
+  /** Called after any per-result action fires — lets a host dialog close itself. */
   onAction?: () => void;
   /**
    * Picker mode (PROJECTPLAN.md §7.3 — "used by … buy dialogs"). When provided,
@@ -71,9 +64,15 @@ export interface AssetSearchBoxProps {
 }
 
 /**
- * Debounced search box + results list (PROJECTPLAN.md §6.2, §7.3 `AssetSearchBox`).
- * Reused by the `/search` page, the ⌘K palette, the Conglomerate Builder, and
- * buy dialogs. Self-contained: owns the query state and TanStack Query fetch.
+ * The **rich** asset search surface (PROJECTPLAN.md §6.2, §7.3 `AssetSearchBox`):
+ * a search input plus result rows carrying the per-result direct actions
+ * (watchlist, → Blueprint, → Portfolio). Used by the `/search` page, the
+ * Conglomerate Builder, buy/alert dialogs and the Compare control.
+ *
+ * The ⌘K palette deliberately does **not** reuse these rows — a universal
+ * palette row is one target you open, not a strip of sub-actions — but it does
+ * reuse the same fetch through {@link useAssetSearch}, so both surfaces share
+ * one debounce, cache and enrichment policy.
  */
 export function AssetSearchBox({
   onAction,
@@ -83,7 +82,6 @@ export function AssetSearchBox({
 }: AssetSearchBoxProps) {
   const t = useT();
   const [query, setQuery] = useState('');
-  const debouncedQuery = useDebounce(query.trim(), DEBOUNCE_MS);
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -100,20 +98,15 @@ export function AssetSearchBox({
     Record<string, { status: 'pending' | 'done' | 'error'; message?: string }>
   >({});
 
-  const enabled = debouncedQuery.length >= MIN_CHARS;
-
-  /** Flips true once a background enrichment poll has run for `ENRICH_TIMEOUT_MS` without settling. */
-  const [enrichTimedOut, setEnrichTimedOut] = useState(false);
-
-  const { data, isFetching, isError } = useQuery({
-    queryKey: ['search', debouncedQuery],
-    queryFn: ({ signal }) => searchAssets(debouncedQuery, signal),
+  const {
+    query: debouncedQuery,
     enabled,
-    staleTime: SEARCH_STALE_MS,
-    retry: false,
-    refetchInterval: (query) =>
-      query.state.data?.enriching === true && !enrichTimedOut ? ENRICH_POLL_MS : false,
-  });
+    results,
+    isFetching,
+    isError,
+    isEnriching,
+    hasLoaded,
+  } = useAssetSearch(query);
 
   // The user's current watchlist membership, so the icon is state-aware from
   // the first render — not only after a click in this session (§13.2).
@@ -146,16 +139,6 @@ export function AssetSearchBox({
     enabled: withDirectActions && conglomeratePickerFor !== null,
     staleTime: 30_000,
   });
-
-  useEffect(() => {
-    setEnrichTimedOut(false);
-    if (data?.enriching !== true) return;
-    const timer = setTimeout(() => setEnrichTimedOut(true), ENRICH_TIMEOUT_MS);
-    return () => clearTimeout(timer);
-  }, [debouncedQuery, data?.enriching]);
-
-  const results: SearchResultItem[] = data?.results ?? [];
-  const isEnriching = data?.enriching === true && !enrichTimedOut;
 
   /** Idle | pending | done | error, merging the fetched membership with any in-flight click. */
   function workboardStatusFor(item: SearchResultItem): 'idle' | 'pending' | 'done' | 'error' {
@@ -269,11 +252,11 @@ export function AssetSearchBox({
   }
 
   function handleCreateConglomerate() {
-    navigate('/workboard/conglomerates/new');
+    navigate('/workbench/blueprints/new');
     onAction?.();
   }
 
-  const showSkeleton = isFetching && data === undefined;
+  const showSkeleton = isFetching && !hasLoaded;
   const showEmpty = enabled && !isFetching && !isError && results.length === 0 && !isEnriching;
   const showError = isError && !isFetching;
   const showSearching = enabled && !showSkeleton && isEnriching;
@@ -288,11 +271,7 @@ export function AssetSearchBox({
         onChange={(e) => setQuery(e.target.value)}
         placeholder={placeholder ?? t('assets.searchBox.placeholder')}
         aria-label={t('assets.searchBox.inputAria')}
-        className={cx(
-          'w-full rounded-md bg-neutral-950 px-4 py-3 text-sm text-neutral-100',
-          'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-          'focus:outline-none focus:ring-2 focus:ring-sky-500',
-        )}
+        className={cx('bt-input w-full px-4 py-3', '', '')}
       />
 
       {showSkeleton ? (
@@ -302,7 +281,7 @@ export function AssetSearchBox({
           aria-busy="true"
         >
           {Array.from({ length: 4 }, (_, i) => (
-            <li key={i} className="flex items-center gap-3 rounded-md bg-neutral-900 p-3">
+            <li key={i} className="bt-panel bt-panel--soft flex items-center gap-3 p-3">
               <Skeleton variant="block" width="w-16" height="h-4" />
               <Skeleton variant="line" width="w-40" height="h-4" />
             </li>
@@ -313,7 +292,8 @@ export function AssetSearchBox({
       {showError ? (
         <p
           role="alert"
-          className="rounded-md border border-red-800 bg-red-950/60 px-3 py-2 text-sm text-red-300"
+          className="px-3 py-2 text-sm bt-neg"
+          style={{ background: 'var(--bt-neg-soft)', borderRadius: 6 }}
         >
           {t('assets.searchBox.failed')}
         </p>
@@ -328,7 +308,7 @@ export function AssetSearchBox({
       ) : null}
 
       {showSearching ? (
-        <p role="status" aria-live="polite" className="px-1 text-xs text-neutral-500">
+        <p role="status" aria-live="polite" className="px-1 text-xs bt-muted">
           {t('assets.searchBox.searchingMore')}
         </p>
       ) : null}
@@ -412,31 +392,29 @@ function ResultRow({
   onPortfolio,
 }: ResultRowProps) {
   const t = useT();
-  const badgeClass = TYPE_BADGE[item.type] ?? 'bg-neutral-800 text-neutral-400';
+  const badgeClass = TYPE_BADGE[item.type] ?? '';
   const conglomerateRef = useRef<HTMLDivElement>(null);
   usePopoverDismiss(conglomeratePickerOpen, onCloseConglomeratePicker, conglomerateRef);
 
   return (
-    <li className="group relative flex flex-col gap-2 rounded-md bg-neutral-900 px-3 py-2.5 hover:bg-neutral-800/80 sm:flex-row sm:items-center">
+    <li className="bt-panel bt-panel--soft group relative flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">
       <button
         type="button"
         onClick={onOpen}
         aria-label={t('assets.searchBox.openAria', { symbol: item.symbol, name: item.name })}
-        className="flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+        className="flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded text-left"
       >
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-sm font-semibold text-neutral-100">{item.symbol}</span>
-          <span className={cx('rounded px-1.5 py-0.5 text-xs font-medium', badgeClass)}>
-            {item.type}
-          </span>
+          <span className="font-mono text-sm font-semibold">{item.symbol}</span>
+          <span className={cx('bt-badge px-1.5 py-0.5 text-xs', badgeClass)}>{item.type}</span>
           <MarketStateBadge state={item.marketState} />
           <CapabilityTags type={item.type} />
         </div>
-        <span className="truncate text-xs text-neutral-400">
+        <span className="truncate text-xs bt-muted">
           {item.name}
           {item.exchange ? <> · {item.exchange}</> : null}
           {' · '}
-          <span className="text-neutral-500">{item.currency}</span>
+          <span className="bt-muted">{item.currency}</span>
         </span>
       </button>
 
@@ -546,9 +524,9 @@ function WatchlistControl({
         }
         className={cx(
           'rounded p-1.5 transition-colors',
-          added ? 'text-sky-400' : 'text-neutral-500 hover:bg-neutral-700 hover:text-neutral-100',
-          status === 'error' && 'text-red-400',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+          added ? 'bt-link' : 'bt-muted',
+          status === 'error' && 'bt-neg',
+          '',
           'disabled:cursor-not-allowed disabled:opacity-60',
         )}
       >
@@ -561,7 +539,7 @@ function WatchlistControl({
         aria-label={t('assets.searchBox.chooseWatchlistAria', { symbol: item.symbol })}
         aria-haspopup="menu"
         aria-expanded={listPickerOpen}
-        className="rounded p-0.5 text-xs text-neutral-600 hover:text-neutral-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+        className="rounded p-0.5 text-xs bt-muted hover:bt-soft"
       >
         ▾
       </button>
@@ -570,7 +548,8 @@ function WatchlistControl({
         <div
           role="menu"
           aria-label={t('assets.searchBox.watchlistsMenuAria', { symbol: item.symbol })}
-          className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border border-neutral-700 bg-neutral-900 p-2 text-xs shadow-xl"
+          className="bt-popover w-48 p-2 text-xs"
+          style={{ right: 0, top: 'calc(100% + 4px)' }}
         >
           {(listsQuery.data?.watchlists ?? []).map((list) => (
             <button
@@ -581,13 +560,13 @@ function WatchlistControl({
                 onAdd(list.isDefault ? undefined : list.id);
                 setListPickerOpen(false);
               }}
-              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-neutral-200 hover:bg-neutral-800"
+              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left bt-soft"
             >
               {list.name}
-              {list.isDefault && added ? <span className="text-sky-400">✓</span> : null}
+              {list.isDefault && added ? <span className="bt-link">✓</span> : null}
             </button>
           ))}
-          {listsQuery.isLoading ? <p className="px-2 py-1.5 text-neutral-600">…</p> : null}
+          {listsQuery.isLoading ? <p className="px-2 py-1.5 bt-muted">…</p> : null}
         </div>
       ) : null}
     </div>
@@ -638,28 +617,25 @@ function ConglomeratePicker({
     <div
       role="menu"
       aria-label={t('assets.searchBox.pickerMenuAria', { symbol: item.symbol })}
-      className="absolute right-0 top-full z-10 mt-1 w-64 rounded-md border border-neutral-700 bg-neutral-900 p-2 shadow-xl"
+      className="bt-popover w-64 p-2"
+      style={{ right: 0, top: 'calc(100% + 4px)' }}
     >
       <div className="flex items-center justify-between px-1 pb-1">
-        <span className="text-xs font-medium text-neutral-400">
-          {t('assets.searchBox.pickerTitle')}
-        </span>
+        <span className="text-xs font-medium bt-muted">{t('assets.searchBox.pickerTitle')}</span>
         <button
           type="button"
           onClick={onClose}
           aria-label={t('common.close')}
-          className="rounded p-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+          className="rounded p-0.5 bt-muted hover:bt-soft"
         >
           ✕
         </button>
       </div>
 
       {isLoading ? (
-        <p className="px-1 py-2 text-xs text-neutral-500">{t('common.loading')}</p>
+        <p className="px-1 py-2 text-xs bt-muted">{t('common.loading')}</p>
       ) : conglomerates.length === 0 ? (
-        <p className="px-1 py-2 text-xs text-neutral-500">
-          {t('assets.searchBox.noConglomerates')}
-        </p>
+        <p className="px-1 py-2 text-xs bt-muted">{t('assets.searchBox.noConglomerates')}</p>
       ) : (
         <ul className="flex max-h-40 flex-col gap-0.5 overflow-y-auto">
           {conglomerates.map((c) => (
@@ -669,7 +645,7 @@ function ConglomeratePicker({
                 role="menuitem"
                 onClick={() => onPick(c)}
                 disabled={pending}
-                className="w-full rounded px-2 py-1.5 text-left text-sm text-neutral-200 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
+                className="w-full rounded px-2 py-1.5 text-left text-sm bt-soft disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {c.name}
               </button>
@@ -679,18 +655,18 @@ function ConglomeratePicker({
       )}
 
       {addState?.status === 'done' ? (
-        <p className="mt-1 px-1 text-xs text-emerald-400">
+        <p className="mt-1 px-1 text-xs bt-pos">
           {t('assets.searchBox.addedTo', { name: addState.message ?? '' })}
         </p>
       ) : null}
       {addState?.status === 'error' ? (
-        <p className="mt-1 px-1 text-xs text-red-400">{addState.message}</p>
+        <p className="mt-1 px-1 text-xs bt-neg">{addState.message}</p>
       ) : null}
 
       <button
         type="button"
         onClick={onCreateNew}
-        className="mt-1 w-full rounded px-2 py-1.5 text-left text-xs text-sky-400 hover:bg-neutral-800"
+        className="mt-1 w-full rounded px-2 py-1.5 text-left text-xs bt-link"
       >
         {t('assets.searchBox.createNewConglomerate')}
       </button>
@@ -701,7 +677,7 @@ function ConglomeratePicker({
 /** A single-action result row for picker mode (`onSelect`). The whole row is the button. */
 function SelectRow({ item, onSelect }: { item: SearchResultItem; onSelect: () => void }) {
   const t = useT();
-  const badgeClass = TYPE_BADGE[item.type] ?? 'bg-neutral-800 text-neutral-400';
+  const badgeClass = TYPE_BADGE[item.type] ?? '';
   return (
     <li>
       <button
@@ -709,27 +685,25 @@ function SelectRow({ item, onSelect }: { item: SearchResultItem; onSelect: () =>
         onClick={onSelect}
         aria-label={t('assets.searchBox.selectAria', { symbol: item.symbol })}
         className={cx(
-          'flex w-full items-center gap-3 rounded-md bg-neutral-900 px-3 py-2.5 text-left',
-          'transition-colors hover:bg-neutral-800/80',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+          'bt-panel bt-panel--soft flex w-full items-center gap-3 px-3 py-2.5 text-left',
+          'transition-colors /80',
+          '',
         )}
       >
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-sm font-semibold text-neutral-100">{item.symbol}</span>
-            <span className={cx('rounded px-1.5 py-0.5 text-xs font-medium', badgeClass)}>
-              {item.type}
-            </span>
+            <span className="font-mono text-sm font-semibold">{item.symbol}</span>
+            <span className={cx('bt-badge px-1.5 py-0.5 text-xs', badgeClass)}>{item.type}</span>
             <CapabilityTags type={item.type} />
           </div>
-          <span className="truncate text-xs text-neutral-400">
+          <span className="truncate text-xs bt-muted">
             {item.name}
             {item.exchange ? <> · {item.exchange}</> : null}
             {' · '}
-            <span className="text-neutral-500">{item.currency}</span>
+            <span className="bt-muted">{item.currency}</span>
           </span>
         </div>
-        <span aria-hidden="true" className="shrink-0 text-xs text-sky-400">
+        <span aria-hidden="true" className="shrink-0 text-xs bt-link">
           {t('assets.searchBox.select')}
         </span>
       </button>
@@ -756,8 +730,8 @@ function ActionButton({
       aria-label={ariaLabel}
       className={cx(
         'rounded px-2 py-1 text-xs font-medium transition-colors',
-        'text-neutral-400 hover:bg-neutral-700 hover:text-neutral-100',
-        'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+        'bt-muted',
+        '',
         'disabled:cursor-not-allowed disabled:opacity-50',
       )}
     >

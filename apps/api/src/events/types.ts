@@ -344,6 +344,26 @@ export interface BudgetExceededEvent {
 }
 
 /**
+ * Ephemeral realtime-credential invalidation. Credential services publish this
+ * after a session, personal key, OAuth grant, or whole account is invalidated;
+ * every API process then disconnects its matching local sockets. It deliberately
+ * carries only public credential ids (a session's public hash, never its cookie
+ * secret), and the gateway's bounded revalidation is the fail-closed backstop
+ * when Redis pub/sub delivery is missed.
+ */
+export interface RealtimePrincipalInvalidatedEvent {
+  type: 'realtime.principal.invalidated';
+  userId: string;
+  /** `all` terminates every credential family for the account. */
+  kind: 'session' | 'personal' | 'oauth' | 'all';
+  /** The public session handle, API-key id, or OAuth-grant id; null means that family. */
+  credentialId: string | null;
+  /** Keep one credential alive when revoking every other session. */
+  exceptCredentialId: string | null;
+  occurredAt: string;
+}
+
+/**
  * MIRRORCHAIN membership-lifecycle notices (§13.5 V5-P7, design §11). The eight
  * `mirror.*` types share ONE event shape (they join the matrix as one compact
  * group row): `userId` is the recipient, `chainName` renders the notice without
@@ -407,6 +427,7 @@ export type DomainEvent =
   | ChatMessageEvent
   | DividendEventNotice
   | BudgetExceededEvent
+  | RealtimePrincipalInvalidatedEvent
   | MirrorNotificationEvent;
 
 /** The `type` discriminant of {@link DomainEvent}. */
@@ -437,6 +458,7 @@ export const DOMAIN_EVENT_TYPES = [
   'chat.message',
   'dividend.event',
   'budget.exceeded',
+  'realtime.principal.invalidated',
   'mirror.invite',
   'mirror.member_joined',
   'mirror.member_left',

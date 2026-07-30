@@ -1144,6 +1144,88 @@ describe('GET /api/v1/portfolios/:id/history (performance-% mode, #125)', () => 
     expect(res.body.performance.at(-1).pct).toBeCloseTo(10, 9);
   });
 
+  /**
+   * A taxed sell whose proceeds LEAVE the portfolio (#125 regression): the tax
+   * settlement is a linked cash movement carrying the sell's `transactionId`,
+   * but it does NOT make the sell cash-funded. Suppressing the sell's external
+   * outflow because *some* linked movement exists strips the proceeds out of the
+   * flow series while the holdings still vanish from the value curve — booking a
+   * phantom loss the user never took.
+   */
+  async function taxedSellPerformance(addProceedsToCash: boolean): Promise<number> {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+    const taxed = await agent
+      .patch('/api/v1/settings/taxes')
+      .set(...XRW)
+      .send({ mode: 'manual_per_trade' });
+    expect(taxed.status).toBe(200);
+
+    await h.db.insert(schema.priceHistory).values([
+      { assetId: asset.id, date: dayOffset(-3), close: '100' },
+      { assetId: asset.id, date: dayOffset(-2), close: '150' },
+      { assetId: asset.id, date: dayOffset(-1), close: '150' },
+    ]);
+    // Cash to settle the tax from, then a plain (not cash-funded) buy.
+    const deposit = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 1000, executedAt: tsOffset(-4) });
+    expect(deposit.status, JSON.stringify(deposit.body)).toBeLessThan(300);
+    const bought = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 10, price: 100, executedAt: tsOffset(-3) });
+    expect(bought.status, JSON.stringify(bought.body)).toBe(201);
+    // Sell the lot at 150 for a 500 gain; 10 % of it settles as withheld tax.
+    const sold = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'sell',
+        quantity: 10,
+        price: 150,
+        executedAt: tsOffset(-2),
+        addProceedsToCash,
+        taxRatePct: 10,
+      });
+    expect(sold.status, JSON.stringify(sold.body)).toBe(201);
+    // The tax leg really is linked to the sell — the shape that triggered the bug.
+    const settlements = await h.db
+      .select()
+      .from(schema.portfolioCashMovements)
+      .where(
+        and(
+          eq(schema.portfolioCashMovements.portfolioId, pid),
+          eq(schema.portfolioCashMovements.kind, 'tax_withholding'),
+        ),
+      );
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0]!.transactionId).not.toBeNull();
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(res.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
+    return res.body.performance.at(-1).pct as number;
+  }
+
+  it('a taxed sell that pays proceeds OUT books its outflow — no phantom loss', async () => {
+    // Start of the sell day: 1 000 cash + 10 shares at the 100 close = 2 000.
+    // The shares rise to 1 500 and are sold out of the portfolio; 50 tax is
+    // withheld from cash. The portfolio earned 500 and paid 50 → +22.5 % on
+    // 2 000, and the 1 500 that left is a withdrawal, not a loss.
+    expect(await taxedSellPerformance(false)).toBeCloseTo(22.5, 9);
+  });
+
+  it('parking the same proceeds in cash reports the SAME return', async () => {
+    // The invariant: where the money sits afterwards is not performance.
+    expect(await taxedSellPerformance(true)).toBeCloseTo(22.5, 9);
+  });
+
   it('re-bases a range slice to 0 % at the window start (1M shows that month’s TWR)', async () => {
     const h = await createTestApp({ marketData: createStubMarketData() });
     const user = await h.seedUser();

@@ -75,6 +75,19 @@ export interface ParanoidRehydrationServiceDeps {
   toCashEur?: (amount: number, currency: string, day: string) => Promise<number>;
   /** Test-only stage hook proving each transaction-stage rolls back completely. */
   afterStage?: (stage: ParanoidRehydrationStage) => void | Promise<void>;
+  /** Test-only per-row quantum override proving the numeric(20,8) rounding envelope. */
+  testOnlyTransactionQuantityRoundingTolerance?: bigint;
+  /** Test-only structural trace proving ordering and replay stay linearly bounded. */
+  testOnlyObserveSolvencyReplay?: (trace: ParanoidSolvencyReplayTrace) => void;
+}
+
+export interface ParanoidSolvencyReplayTrace {
+  transactionRows: number;
+  transactionReplayVisits: number;
+  cashMovementRows: number;
+  cashMovementReplayVisits: number;
+  /** Fixed normalized-timestamp-plus-UUID radix passes per ordered ledger. */
+  replayOrderKeyPasses: number;
 }
 
 export type ParanoidRehydrationStage =
@@ -113,12 +126,41 @@ interface ExactDecimal {
 
 const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
 const pow10 = (scale: number): bigint => 10n ** BigInt(scale);
+const TRANSACTION_QUANTITY_STORAGE_PRECISION = 20;
+const TRANSACTION_QUANTITY_STORAGE_SCALE = 8;
+const CASH_AMOUNT_STORAGE_PRECISION = 20;
+const CASH_AMOUNT_STORAGE_SCALE = 6;
 /**
  * Normal batch validation runs against the unrounded client quantities with a
- * 1e-9 epsilon, then PostgreSQL rounds each row independently to scale 8. Two
- * epsilon-valid inputs can therefore persist one scale-8 quantum apart.
+ * 1e-9 epsilon, then PostgreSQL rounds each row independently to scale 8, so
+ * every persisted row can sit up to one scale-8 quantum away from the value
+ * that was validated. The position preflight below therefore allows a sell
+ * shortfall of one quantum PER contributing stored row (#917) — multi-row
+ * drift (e.g. four buys of `0.1000000049` plus their exact-sum sell) quantizes
+ * to a multi-quantum shortfall no single fixed tolerance covers. A shortfall
+ * beyond the per-row envelope still fails closed as a genuine oversell.
+ *
+ * Values are represented as integers at their column scale, so `1n` is derived
+ * from the storage definition: it is exactly one `numeric(20,8)` quantum
+ * (`10^-8`), not an independently chosen epsilon.
+ *
+ * **The cash ledger deliberately gets no counterpart — it stays exact.** The
+ * envelope above is only justified because the rounding that produces a quantity
+ * shortfall is already invisible when the document is captured. Cash has no such
+ * preimage: every writer floors amounts to whole cents before storage
+ * (`floorCents`, §5.4) and `persistedNumeric` hard-rejects a document amount
+ * finer than scale 6, so no cash amount is ever quantized away. An exact scale-6
+ * cash shortfall is therefore always a genuine overdraw, and a per-row allowance
+ * could only admit overdraw — never rescue a reachable ledger. If #918 makes the
+ * money columns quantize at this boundary instead of rejecting, the envelope
+ * arrives with the rounding that justifies it.
  */
 const PERSISTED_QUANTITY_ROUNDING_TOLERANCE = 1n;
+
+const UUID_RADIX_DIGITS = 32;
+const TIMESTAMP_RADIX_DIGITS = 17;
+const REPLAY_ORDER_KEY_PASSES = TIMESTAMP_RADIX_DIGITS + UUID_RADIX_DIGITS;
+const JAVASCRIPT_DATE_MIN_MS = -8_640_000_000_000_000n;
 
 function exactDecimal(value: string, label: string): ExactDecimal {
   const match = DECIMAL_PATTERN.exec(value);
@@ -151,6 +193,154 @@ function persistedNumeric(value: string, precision: number, scale: number, label
     );
   }
   return decimal.coefficient * pow10(scale - decimal.scale);
+}
+
+function absolute(value: bigint): bigint {
+  return value < 0n ? -value : value;
+}
+
+function roundToScale(value: ExactDecimal, scale: number): bigint {
+  if (value.scale <= scale) {
+    return value.coefficient * pow10(scale - value.scale);
+  }
+
+  const divisor = pow10(value.scale - scale);
+  const quotient = value.coefficient / divisor;
+  const remainder = value.coefficient % divisor;
+  // PostgreSQL numeric coercion rounds halfway cases away from zero.
+  if (absolute(remainder) * 2n < divisor) return quotient;
+  return quotient + (value.coefficient < 0n ? -1n : 1n);
+}
+
+function fixedScaleDecimal(value: bigint, scale: number): string {
+  const sign = value < 0n ? '-' : '';
+  const digits = absolute(value)
+    .toString()
+    .padStart(scale + 1, '0');
+  if (scale === 0) return sign + digits;
+  return `${sign}${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+}
+
+function exactDecimalFromPublicNumber(value: number, label: string): ExactDecimal {
+  if (!Number.isFinite(value)) {
+    throw new ParanoidRehydrationError('INVALID_REFERENCE', `${label} is not finite`);
+  }
+  const match = /^(-?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(String(value));
+  if (!match) {
+    throw new ParanoidRehydrationError('INVALID_REFERENCE', `${label} is not a decimal`);
+  }
+  const fraction = match[3] ?? '';
+  const exponent = Number(match[4] ?? 0);
+  let coefficient = BigInt(`${match[2]}${fraction}`);
+  let scale = fraction.length - exponent;
+  if (scale < 0) {
+    coefficient *= pow10(-scale);
+    scale = 0;
+  }
+  return {
+    coefficient: match[1] === '-' ? -coefficient : coefficient,
+    scale,
+  };
+}
+
+/**
+ * Mirror PostgreSQL's `numeric(20,8)` coercion before the pre-write position
+ * replay. Paranoid-vault transactions can retain the user's raw decimal input;
+ * the restore repository will round it on insert, so comparing raw values here
+ * would validate a different position history than the one we persist.
+ */
+function quantizedTransactionQuantity(value: string): bigint {
+  const label = 'transaction quantity';
+  const quantized = roundToScale(exactDecimal(value, label), TRANSACTION_QUANTITY_STORAGE_SCALE);
+  if (absolute(quantized) >= pow10(TRANSACTION_QUANTITY_STORAGE_PRECISION)) {
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      `${label} exceeds its persisted precision`,
+    );
+  }
+  return quantized;
+}
+
+function publicNumberReadback(value: bigint, scale: number, label: string): number {
+  const readback = Number(fixedScaleDecimal(value, scale));
+  if (!Number.isFinite(readback)) {
+    throw new ParanoidRehydrationError('INVALID_REFERENCE', `${label} is not finite`);
+  }
+  return readback;
+}
+
+function publicNumberAtScale(value: number, scale: number, label: string): bigint {
+  return roundToScale(exactDecimalFromPublicNumber(value, label), scale);
+}
+
+interface PersistedReplayRow {
+  id: string;
+  data: { executedAt: string };
+}
+
+function replayOrderKey(row: PersistedReplayRow): string {
+  const timestamp = BigInt(Date.parse(row.data.executedAt)) - JAVASCRIPT_DATE_MIN_MS;
+  const timestampKey = timestamp.toString().padStart(TIMESTAMP_RADIX_DIGITS, '0');
+  const uuidKey = row.id.replaceAll('-', '').toLowerCase();
+  return timestampKey + uuidKey;
+}
+
+function radixDigit(character: string): number {
+  const code = character.charCodeAt(0);
+  return code <= 57 ? code - 48 : code - 87;
+}
+
+/**
+ * Stable `(executedAt, id)` ordering without comparison sort. ISO timestamps
+ * normalize through `Date` to one bounded 17-digit millisecond key and UUIDs
+ * to 32 hex digits. LSD radix ordering therefore costs at most 49 fixed passes,
+ * followed by the single solvency replay below: O(49n + n), with one key and
+ * one ledger state per row/group. No row scans siblings or replays a group.
+ */
+function orderedForPersistedReplay<T extends PersistedReplayRow>(input: readonly T[]): T[] {
+  if (input.length < 2) return [...input];
+  let ordered = input.map((row) => ({ key: replayOrderKey(row), row }));
+  let scratch = new Array<(typeof ordered)[number]>(ordered.length);
+
+  for (let position = REPLAY_ORDER_KEY_PASSES - 1; position >= 0; position -= 1) {
+    const counts = new Uint32Array(16);
+    for (const entry of ordered) {
+      counts[radixDigit(entry.key[position]!)]! += 1;
+    }
+    const offsets = new Uint32Array(16);
+    for (let digit = 1; digit < offsets.length; digit += 1) {
+      offsets[digit] = offsets[digit - 1]! + counts[digit - 1]!;
+    }
+    for (const entry of ordered) {
+      const digit = radixDigit(entry.key[position]!);
+      scratch[offsets[digit]!] = entry;
+      offsets[digit]! += 1;
+    }
+    [ordered, scratch] = [scratch, ordered];
+  }
+
+  return ordered.map((entry) => entry.row);
+}
+
+/**
+ * One typed pre-write diagnostic for both ledgers: which entity, which field,
+ * the persisted value, and why it fails. `INVALID_CASH_LEDGER` is the single
+ * ledger-solvency code — it covers position oversell too, despite reading as
+ * cash-only, because it is the taxonomy PD3b routing and the sibling paranoid
+ * work already key off; the message names the ledger that actually failed. A
+ * dedicated `INVALID_SOLVENCY` code belongs to whichever change first surfaces
+ * these on the wire.
+ */
+function solvencyError(
+  entity: EntityOf<'transaction'> | EntityOf<'cashMovement'>,
+  field: 'quantity' | 'amountEur',
+  persistedValue: string,
+  reason: string,
+): ParanoidRehydrationError {
+  return new ParanoidRehydrationError(
+    'INVALID_CASH_LEDGER',
+    `${entity.kind}[${entity.id}].${field}=${JSON.stringify(persistedValue)} ${reason}`,
+  );
 }
 
 function requirePositive(value: bigint, label: string): void {
@@ -411,7 +601,7 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
   }
 
   for (const transaction of rows(entities, 'transaction')) {
-    const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
+    const quantity = quantizedTransactionQuantity(transaction.data.quantity);
     const price = persistedNumeric(transaction.data.price, 20, 6, 'transaction price');
     const fee = persistedNumeric(transaction.data.fee, 20, 6, 'transaction fee');
     requirePositive(quantity, 'transaction quantity');
@@ -576,12 +766,12 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
  * Database checks remain defense in depth; this reports malformed decrypted vaults
  * as one clean failure and makes the no-write guarantee directly testable.
  */
-interface ValidatedGraph {
-  /** Sells whose apparent oversell is exactly one scale-8 storage quantum. */
-  storageRoundingSellIds: ReadonlySet<string>;
-}
-
-function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGraph {
+function validateGraph(
+  userId: string,
+  entities: readonly Entity[],
+  transactionQuantityRoundingTolerance: bigint,
+  observeSolvencyReplay?: (trace: ParanoidSolvencyReplayTrace) => void,
+): void {
   validateUniqueRestoredIds(entities);
   validateOwnedRows(userId, entities);
   validatePersistedDates(entities);
@@ -1178,12 +1368,11 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
   }
 
   // The repository's persisted replay order is `(executed_at, id)`, not the
-  // arbitrary client array order. Preserve that ordering here so solvency checks
-  // accept exactly the ledger history normal reads will replay after restore.
-  const orderedMovements = [...movements].sort(
-    (a, b) =>
-      Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
-  );
+  // arbitrary client array order. The fixed-radix order plus the loops below
+  // visit each ledger row exactly once after ordering.
+  const orderedMovements = orderedForPersistedReplay(movements);
+  const transactionRows = rows(entities, 'transaction');
+  const orderedTransactions = orderedForPersistedReplay(transactionRows);
   // Replica application deliberately waives the ordinary solvency gate because
   // copy-local tax state can skew a source. Once that copy becomes a fork, its
   // sync-tagged rows are the only durable provenance available in the strict
@@ -1193,57 +1382,107 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
       .filter((movement) => movement.data.source === SOURCE_TAG_SYNC_MIRRORCHAIN)
       .map((movement) => movement.data.sourceId),
   );
-  const storageRoundingSellIds = new Set<string>();
 
+  let cashMovementReplayVisits = 0;
+  let transactionReplayVisits = 0;
   try {
+    // Cash stays exact: amounts are stored at whole cents and rejected beyond
+    // scale 6, so integer scale-6 accumulation IS the persisted balance (see
+    // PERSISTED_QUANTITY_ROUNDING_TOLERANCE for why quantities differ).
     const balancesBySource = new Map<string, bigint>();
     for (const movement of orderedMovements) {
-      const amount = persistedNumeric(movement.data.amountEur, 20, 6, 'cash-movement amount');
+      cashMovementReplayVisits += 1;
+      const amount = persistedNumeric(
+        movement.data.amountEur,
+        CASH_AMOUNT_STORAGE_PRECISION,
+        CASH_AMOUNT_STORAGE_SCALE,
+        'cash-movement amount',
+      );
       const requiredSign = CASH_MOVEMENT_SIGN[movement.data.kind];
       if (amount === 0n || (requiredSign === 1 ? amount < 0n : amount > 0n)) {
-        throw new Error('cash-movement amount has the wrong sign');
+        throw solvencyError(movement, 'amountEur', movement.data.amountEur, 'has the wrong sign');
       }
       const balance = (balancesBySource.get(movement.data.sourceId) ?? 0n) + amount;
       if (balance < 0n && !mirrorReplicaSourceIds.has(movement.data.sourceId)) {
-        throw new Error('cash source would become negative');
+        throw solvencyError(
+          movement,
+          'amountEur',
+          movement.data.amountEur,
+          'would overdraw its cash source',
+        );
       }
       balancesBySource.set(movement.data.sourceId, balance);
     }
-    const transactionsByPortfolioAsset = new Map<string, EntityOf<'transaction'>[]>();
-    for (const transaction of rows(entities, 'transaction')) {
+
+    const positionsByPortfolioAsset = new Map<
+      string,
+      { publicQuantity: number; epochRows: bigint }
+    >();
+    for (const transaction of orderedTransactions) {
+      transactionReplayVisits += 1;
       const key = `${transaction.data.portfolioId}\u0000${transaction.data.assetId}`;
-      const group = transactionsByPortfolioAsset.get(key) ?? [];
-      group.push(transaction);
-      transactionsByPortfolioAsset.set(key, group);
-    }
-    for (const transactions of transactionsByPortfolioAsset.values()) {
-      const orderedTransactions = [...transactions].sort(
-        (a, b) =>
-          Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
+      const state = positionsByPortfolioAsset.get(key) ?? {
+        publicQuantity: 0,
+        epochRows: 0n,
+      };
+      const quantity = quantizedTransactionQuantity(transaction.data.quantity);
+      const publicQuantity = publicNumberReadback(
+        quantity,
+        TRANSACTION_QUANTITY_STORAGE_SCALE,
+        'transaction quantity',
       );
-      let held = 0n;
-      for (const transaction of orderedTransactions) {
-        const quantity = persistedNumeric(transaction.data.quantity, 20, 8, 'transaction quantity');
-        if (transaction.data.side === 'buy') {
-          held += quantity;
-        } else {
-          const shortfall = quantity - held;
-          if (
-            shortfall > 0n &&
-            shortfall <= PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
-            !transaction.data.allowUncovered
-          ) {
-            storageRoundingSellIds.add(transaction.id);
-          }
-          if (
-            shortfall > PERSISTED_QUANTITY_ROUNDING_TOLERANCE &&
-            !transaction.data.allowUncovered
-          ) {
-            throw new Error('transaction would oversell its position');
-          }
-          held = shortfall > 0n ? 0n : held - quantity;
+      state.epochRows += 1n;
+
+      if (transaction.data.side === 'buy') {
+        state.publicQuantity += publicQuantity;
+      } else {
+        // Persist the accumulated public-number holding back to the same scale
+        // before comparison. This is the normal service's observable holding:
+        // it accepts the high-magnitude exact-prefix lifecycle while an exact
+        // sell with no public-number preimage still exceeds that holding.
+        const persistedHolding = publicNumberAtScale(
+          state.publicQuantity,
+          TRANSACTION_QUANTITY_STORAGE_SCALE,
+          'transaction holding',
+        );
+        const shortfall = quantity - persistedHolding;
+        const allowance = state.epochRows * transactionQuantityRoundingTolerance;
+        if (shortfall > allowance && !transaction.data.allowUncovered) {
+          throw solvencyError(
+            transaction,
+            'quantity',
+            transaction.data.quantity,
+            'would oversell its position',
+          );
+        }
+
+        state.publicQuantity -= publicQuantity;
+        // `allowUncovered` acknowledges that a sell MAY exceed the holding; it
+        // never asserts that this one does, and the contract documents it as
+        // ignored on a covered sell. The write path agrees: `reducePosition`
+        // closes the position at 0 only when the sell actually exceeds the held
+        // quantity and otherwise keeps `held -= quantity`
+        // (packages/domain/src/holdings.ts). So key the clamp off the shortfall
+        // alone — an acknowledged oversell already lands in `shortfall > 0n` and
+        // closes at 0, while a flagged *covered* sell keeps its remainder for the
+        // rows that follow instead of stranding them as a phantom oversell.
+        if (shortfall > 0n) {
+          state.publicQuantity = 0;
+        }
+        // A closed position starts a new bounded rounding epoch; old rows can
+        // never widen a later lifecycle's allowance.
+        if (
+          publicNumberAtScale(
+            state.publicQuantity,
+            TRANSACTION_QUANTITY_STORAGE_SCALE,
+            'transaction holding',
+          ) === 0n
+        ) {
+          state.publicQuantity = 0;
+          state.epochRows = 0n;
         }
       }
+      positionsByPortfolioAsset.set(key, state);
     }
   } catch (error) {
     if (error instanceof ParanoidRehydrationError) throw error;
@@ -1252,7 +1491,13 @@ function validateGraph(userId: string, entities: readonly Entity[]): ValidatedGr
       error instanceof Error ? error.message : 'cash ledger is invalid',
     );
   }
-  return { storageRoundingSellIds };
+  observeSolvencyReplay?.({
+    transactionRows: transactionRows.length,
+    transactionReplayVisits,
+    cashMovementRows: movements.length,
+    cashMovementReplayVisits,
+    replayOrderKeyPasses: REPLAY_ORDER_KEY_PASSES,
+  });
 }
 
 interface ReferencedAsset {
@@ -1324,6 +1569,11 @@ export function createParanoidRehydrationService(
   deps: ParanoidRehydrationServiceDeps,
 ): ParanoidRehydrationService {
   const now = deps.now ?? (() => new Date());
+  const transactionQuantityRoundingTolerance =
+    deps.testOnlyTransactionQuantityRoundingTolerance ?? PERSISTED_QUANTITY_ROUNDING_TOLERANCE;
+  if (transactionQuantityRoundingTolerance < 0n) {
+    throw new Error('transaction quantity rounding tolerance must not be negative');
+  }
   const toCashEur =
     deps.toCashEur ??
     (async (amount, currency) => {
@@ -1350,7 +1600,12 @@ export function createParanoidRehydrationService(
       // Tombstones exist for client-side merge convergence only. Construct and
       // validate the restore graph from live facts before any database mutation.
       const entities = liveEntities(normalizedRequest.document);
-      const validatedGraph = validateGraph(userId, entities);
+      validateGraph(
+        userId,
+        entities,
+        transactionQuantityRoundingTolerance,
+        deps.testOnlyObserveSolvencyReplay,
+      );
 
       return withParanoidRehydrationTransaction(deps.db, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);
@@ -1423,7 +1678,6 @@ export function createParanoidRehydrationService(
           portfolioIds: rows(entities, 'portfolio').map((portfolio) => portfolio.id),
           now: now(),
           toEur: toCashEur,
-          storageRoundingSellIds: validatedGraph.storageRoundingSellIds,
         });
         await stage('taxReplay');
 

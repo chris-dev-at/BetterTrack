@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -35,7 +35,60 @@ export interface CreateOAuthClientInput {
   isPublic: boolean;
   isFirstParty?: boolean;
   logoUrl?: string | null;
+  logoBytes?: Buffer | null;
+  logoContentType?: string | null;
 }
+
+/**
+ * Browser/API-facing client metadata. Logo bytes deliberately stay out of list
+ * queries; callers need only know whether the dedicated byte endpoint exists.
+ */
+export type OAuthClientListRow = Pick<
+  OAuthClientRow,
+  'id' | 'clientId' | 'name' | 'redirectUris' | 'scopes' | 'isPublic' | 'isFirstParty' | 'createdAt'
+> & { hasLogo: boolean };
+
+/**
+ * Client fields needed by authorize/token flows. This is intentionally narrower
+ * than OAuthClientRow so a token exchange can never pull the cached logo blob.
+ */
+export type OAuthClientLookupRow = Pick<
+  OAuthClientRow,
+  | 'id'
+  | 'clientId'
+  | 'name'
+  | 'clientSecretHash'
+  | 'redirectUris'
+  | 'scopes'
+  | 'isPublic'
+  | 'isFirstParty'
+> & { hasLogo: boolean };
+
+export type OAuthGrantClientRow = Pick<OAuthClientRow, 'clientId' | 'name' | 'scopes'>;
+
+const oauthClientListSelection = {
+  id: oauthClients.id,
+  clientId: oauthClients.clientId,
+  name: oauthClients.name,
+  redirectUris: oauthClients.redirectUris,
+  scopes: oauthClients.scopes,
+  isPublic: oauthClients.isPublic,
+  isFirstParty: oauthClients.isFirstParty,
+  createdAt: oauthClients.createdAt,
+  hasLogo: sql<boolean>`${oauthClients.logoBytes} IS NOT NULL`,
+} as const;
+
+const oauthClientLookupSelection = {
+  id: oauthClients.id,
+  clientId: oauthClients.clientId,
+  name: oauthClients.name,
+  clientSecretHash: oauthClients.clientSecretHash,
+  redirectUris: oauthClients.redirectUris,
+  scopes: oauthClients.scopes,
+  isPublic: oauthClients.isPublic,
+  isFirstParty: oauthClients.isFirstParty,
+  hasLogo: sql<boolean>`${oauthClients.logoBytes} IS NOT NULL`,
+} as const;
 
 export interface CreateOAuthAuthCodeInput {
   codeHash: string;
@@ -78,6 +131,23 @@ export interface OAuthAuthorizationCodeExchange {
     expiresAt: Date;
   }): Promise<OAuthRefreshTokenRow>;
 }
+
+export interface RotateOAuthRefreshTokenInput {
+  tokenId: string;
+  grantId: string;
+  rotatedAt: Date;
+  accessToken: {
+    tokenHash: string;
+    scopes: string[];
+    expiresAt: Date;
+  };
+  refreshToken: {
+    tokenHash: string;
+    expiresAt: Date;
+  };
+}
+
+export type OAuthRefreshTokenRotation = 'rotated' | 'replayed';
 
 function createAuthorizationCodeExchange(
   executor: Pick<Database, 'select' | 'insert' | 'update'>,
@@ -152,15 +222,17 @@ export function createOAuthRepository(db: Database) {
           isPublic: input.isPublic,
           isFirstParty: input.isFirstParty ?? false,
           logoUrl: input.logoUrl ?? null,
+          logoBytes: input.logoBytes ?? null,
+          logoContentType: input.logoContentType ?? null,
         })
         .returning();
       if (!row) throw new Error('Failed to insert OAuth client');
       return row;
     },
 
-    async listClientsForUser(userId: string): Promise<OAuthClientRow[]> {
+    async listClientsForUser(userId: string): Promise<OAuthClientListRow[]> {
       return db
-        .select()
+        .select(oauthClientListSelection)
         .from(oauthClients)
         .where(eq(oauthClients.userId, userId))
         .orderBy(desc(oauthClients.createdAt));
@@ -168,9 +240,9 @@ export function createOAuthRepository(db: Database) {
 
     // ── First-party (admin-managed) clients ─────────────────────────────────
     /** Every admin-registered first-party app (owned by the system, not a user). */
-    async listFirstPartyClients(): Promise<OAuthClientRow[]> {
+    async listFirstPartyClients(): Promise<OAuthClientListRow[]> {
       return db
-        .select()
+        .select(oauthClientListSelection)
         .from(oauthClients)
         .where(eq(oauthClients.isFirstParty, true))
         .orderBy(desc(oauthClients.createdAt));
@@ -178,14 +250,32 @@ export function createOAuthRepository(db: Database) {
 
     /**
      * Delete a first-party client by id (admin panel; cascades grants/tokens).
+     * Lock and retain the active grant principals before the cascade so the
+     * service can disconnect precisely those live OAuth sockets afterwards.
      * Scoped to `is_first_party` so this path can never touch a user-owned app.
      */
-    async deleteFirstPartyClient(id: string): Promise<OAuthClientRow | undefined> {
-      const [row] = await db
-        .delete(oauthClients)
-        .where(and(eq(oauthClients.id, id), eq(oauthClients.isFirstParty, true)))
-        .returning();
-      return row;
+    async deleteFirstPartyClient(id: string) {
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const [client] = await executor
+          .select()
+          .from(oauthClients)
+          .where(and(eq(oauthClients.id, id), eq(oauthClients.isFirstParty, true)))
+          .limit(1)
+          .for('update');
+        if (!client) return undefined;
+
+        const activeGrants = await executor
+          .select({ id: oauthGrants.id, userId: oauthGrants.userId })
+          .from(oauthGrants)
+          .where(and(eq(oauthGrants.clientId, client.id), isNull(oauthGrants.revokedAt)));
+        const [deleted] = await executor
+          .delete(oauthClients)
+          .where(eq(oauthClients.id, client.id))
+          .returning();
+        if (!deleted) throw new Error('Failed to delete OAuth client');
+        return { client: deleted, activeGrants };
+      });
     },
 
     /** Resolve a first-party client by internal id (admin edit: before-state + 404). */
@@ -254,35 +344,75 @@ export function createOAuthRepository(db: Database) {
     },
 
     /** Resolve a client by its public `btc_…` identifier (authorize/token flows). */
-    async findClientByClientId(clientId: string): Promise<OAuthClientRow | undefined> {
+    async findClientByClientId(clientId: string): Promise<OAuthClientLookupRow | undefined> {
       const [row] = await db
-        .select()
+        .select(oauthClientLookupSelection)
         .from(oauthClients)
         .where(eq(oauthClients.clientId, clientId))
         .limit(1);
       return row;
     },
 
+    /** Read only the already-cached raster bytes; never fetch the source URL. */
+    async findClientLogoByClientId(
+      clientId: string,
+    ): Promise<{ bytes: Buffer; contentType: string } | undefined> {
+      const [row] = await db
+        .select({
+          bytes: oauthClients.logoBytes,
+          contentType: oauthClients.logoContentType,
+        })
+        .from(oauthClients)
+        .where(and(eq(oauthClients.clientId, clientId), eq(oauthClients.isFirstParty, false)))
+        .limit(1);
+      if (!row?.bytes || !row.contentType) return undefined;
+      return { bytes: row.bytes, contentType: row.contentType };
+    },
+
     /**
      * Delete a client the caller owns (cascades grants, codes and tokens).
-     * Returns the deleted row, or undefined when the id isn't the caller's — so
-     * the service can 404 without leaking another user's client ids.
+     * Lock and retain active grant principals before the cascade so the service
+     * can disconnect precisely those live OAuth sockets afterwards. Returns
+     * undefined when the id isn't the caller's, avoiding a client-id leak.
      */
-    async deleteClient(userId: string, id: string): Promise<OAuthClientRow | undefined> {
-      const [row] = await db
-        .delete(oauthClients)
-        .where(and(eq(oauthClients.id, id), eq(oauthClients.userId, userId)))
-        .returning();
-      return row;
+    async deleteClient(userId: string, id: string) {
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const [client] = await executor
+          .select()
+          .from(oauthClients)
+          .where(and(eq(oauthClients.id, id), eq(oauthClients.userId, userId)))
+          .limit(1)
+          .for('update');
+        if (!client) return undefined;
+
+        const activeGrants = await executor
+          .select({ id: oauthGrants.id, userId: oauthGrants.userId })
+          .from(oauthGrants)
+          .where(and(eq(oauthGrants.clientId, client.id), isNull(oauthGrants.revokedAt)));
+        const [deleted] = await executor
+          .delete(oauthClients)
+          .where(eq(oauthClients.id, client.id))
+          .returning();
+        if (!deleted) throw new Error('Failed to delete OAuth client');
+        return { client: deleted, activeGrants };
+      });
     },
 
     // ── Grants ───────────────────────────────────────────────────────────────
     /** The caller's active grants joined to the granting app's name + public id. */
     async listGrantsForUser(
       userId: string,
-    ): Promise<{ grant: OAuthGrantRow; client: OAuthClientRow }[]> {
+    ): Promise<{ grant: OAuthGrantRow; client: OAuthGrantClientRow }[]> {
       return db
-        .select({ grant: oauthGrants, client: oauthClients })
+        .select({
+          grant: oauthGrants,
+          client: {
+            clientId: oauthClients.clientId,
+            name: oauthClients.name,
+            scopes: oauthClients.scopes,
+          },
+        })
         .from(oauthGrants)
         .innerJoin(oauthClients, eq(oauthGrants.clientId, oauthClients.id))
         .where(and(eq(oauthGrants.userId, userId), isNull(oauthGrants.revokedAt)))
@@ -395,14 +525,22 @@ export function createOAuthRepository(db: Database) {
      * removed from the app is denied immediately; a scope added to the app is not
      * silently granted to a token that never consented to it).
      */
-    async findAccessTokenByHash(
-      tokenHash: string,
-    ): Promise<
-      | { token: OAuthAccessTokenRow; grant: OAuthGrantRow; user: UserRow; client: OAuthClientRow }
+    async findAccessTokenByHash(tokenHash: string): Promise<
+      | {
+          token: OAuthAccessTokenRow;
+          grant: OAuthGrantRow;
+          user: UserRow;
+          client: Pick<OAuthClientRow, 'scopes'>;
+        }
       | undefined
     > {
       const [row] = await db
-        .select({ token: oauthAccessTokens, grant: oauthGrants, user: users, client: oauthClients })
+        .select({
+          token: oauthAccessTokens,
+          grant: oauthGrants,
+          user: users,
+          client: { scopes: oauthClients.scopes },
+        })
         .from(oauthAccessTokens)
         .innerJoin(oauthGrants, eq(oauthAccessTokens.grantId, oauthGrants.id))
         .innerJoin(users, eq(oauthGrants.userId, users.id))
@@ -437,14 +575,55 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
-    /** Atomically consume (rotate) a refresh token; undefined if already used. */
-    async consumeRefreshToken(id: string): Promise<OAuthRefreshTokenRow | undefined> {
-      const [row] = await db
-        .update(oauthRefreshTokens)
-        .set({ consumedAt: new Date() })
-        .where(and(eq(oauthRefreshTokens.id, id), isNull(oauthRefreshTokens.consumedAt)))
-        .returning();
-      return row;
+    /**
+     * Consume one refresh token and insert its replacement pair in the same
+     * transaction. A concurrent caller that loses the atomic consume revokes
+     * the whole grant before returning, so the winner's just-issued pair is
+     * already unusable once both exchanges settle.
+     */
+    async rotateRefreshToken(
+      input: RotateOAuthRefreshTokenInput,
+    ): Promise<OAuthRefreshTokenRotation> {
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const [consumed] = await executor
+          .update(oauthRefreshTokens)
+          .set({ consumedAt: input.rotatedAt })
+          .where(
+            and(
+              eq(oauthRefreshTokens.id, input.tokenId),
+              eq(oauthRefreshTokens.grantId, input.grantId),
+              isNull(oauthRefreshTokens.consumedAt),
+            ),
+          )
+          .returning({ id: oauthRefreshTokens.id });
+
+        if (!consumed) {
+          await executor
+            .update(oauthGrants)
+            .set({ revokedAt: input.rotatedAt })
+            .where(and(eq(oauthGrants.id, input.grantId), isNull(oauthGrants.revokedAt)));
+          return 'replayed';
+        }
+
+        const [accessToken] = await executor
+          .insert(oauthAccessTokens)
+          .values({ grantId: input.grantId, ...input.accessToken })
+          .returning({ id: oauthAccessTokens.id });
+        if (!accessToken) throw new Error('Failed to insert OAuth access token');
+
+        const [refreshToken] = await executor
+          .insert(oauthRefreshTokens)
+          .values({ grantId: input.grantId, ...input.refreshToken })
+          .returning({ id: oauthRefreshTokens.id });
+        if (!refreshToken) throw new Error('Failed to insert OAuth refresh token');
+
+        await executor
+          .update(oauthGrants)
+          .set({ lastUsedAt: input.rotatedAt })
+          .where(eq(oauthGrants.id, input.grantId));
+        return 'rotated';
+      });
     },
   };
 }

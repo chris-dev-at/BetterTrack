@@ -113,6 +113,21 @@ export const oauthLogoUrlSchema = z
   .url()
   .refine((u) => u.toLowerCase().startsWith('https://'), 'Logo URL must be https.');
 
+/** Public API-relative path for cached OAuth logo bytes; never a source URL. */
+export const oauthClientLogoPathSchema = z
+  .string()
+  .regex(/^\/oauth\/client-logos\/btc_[A-Za-z0-9_-]+$/);
+
+export const oauthClientLogoParamsSchema = z
+  .object({
+    clientId: z
+      .string()
+      .regex(/^btc_[A-Za-z0-9_-]+$/)
+      .max(200),
+  })
+  .strict();
+export type OAuthClientLogoParams = z.infer<typeof oauthClientLogoParamsSchema>;
+
 export const createOAuthClientRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(80),
@@ -164,8 +179,8 @@ export const oauthClientSummarySchema = z
     public: z.boolean(),
     /** Admin-managed official app (trusted; consent auto-approved, BT-branded). */
     firstParty: z.boolean(),
-    /** Consent-screen icon for third-party apps; null for first-party. */
-    logoUrl: z.string().nullable(),
+    /** First-party API path for cached logo bytes; never the registered source URL. */
+    logoPath: oauthClientLogoPathSchema.nullable(),
     createdAt: z.string(),
   })
   .strict();
@@ -209,20 +224,30 @@ export const OAUTH_CODE_CHALLENGE_METHODS = ['S256'] as const;
 export const oauthCodeChallengeMethodSchema = z.enum(OAUTH_CODE_CHALLENGE_METHODS);
 
 /**
+ * Shared authorize-request fields for the consent read, approval and denial
+ * paths. Approval and denial intentionally accept and validate the exact same
+ * protocol input so neither path can drift into reflecting a different state or
+ * redirect target.
+ */
+const oauthAuthorizationRequestShape = {
+  // The SPA forwards the whole authorize request it received; `response_type`
+  // is accepted (and ignored) so it need not strip it before responding.
+  response_type: z.literal('code').optional(),
+  client_id: z.string().trim().min(1),
+  redirect_uri: z.string().trim().min(1),
+  scope: z.string().trim().min(1),
+  state: z.string().trim().max(1024).optional(),
+  code_challenge: z.string().trim().max(256).optional(),
+  code_challenge_method: oauthCodeChallengeMethodSchema.optional(),
+};
+
+/**
  * `GET /oauth/authorization-details` query — the SPA consent screen reads the
  * authorize request (standard OAuth param names) to render "App X wants to…".
  * PKCE fields are optional here and enforced by the service against the client.
  */
 export const oauthAuthorizationDetailsQuerySchema = z
-  .object({
-    response_type: z.literal('code').optional(),
-    client_id: z.string().trim().min(1),
-    redirect_uri: z.string().trim().min(1),
-    scope: z.string().trim().min(1),
-    state: z.string().trim().max(1024).optional(),
-    code_challenge: z.string().trim().max(256).optional(),
-    code_challenge_method: oauthCodeChallengeMethodSchema.optional(),
-  })
+  .object(oauthAuthorizationRequestShape)
   .strip();
 export type OAuthAuthorizationDetailsQuery = z.infer<typeof oauthAuthorizationDetailsQuerySchema>;
 
@@ -236,8 +261,8 @@ export const oauthAuthorizationDetailsResponseSchema = z
         /** Trusted official app: the consent screen shows BetterTrack branding
          * and auto-approves (no scope-approval prompt). */
         firstParty: z.boolean(),
-        /** Third-party app icon for the consent screen; null for first-party. */
-        logoUrl: z.string().nullable(),
+        /** First-party API path for cached logo bytes; null falls back to a letter. */
+        logoPath: oauthClientLogoPathSchema.nullable(),
       })
       .strict(),
     scopes: z.array(z.object({ scope: apiKeyScopeSchema, label: z.string() }).strict()).min(1),
@@ -254,23 +279,22 @@ export type OAuthAuthorizationDetailsResponse = z.infer<
  * the service mints a single-use code and returns where to send the browser
  * (the registered redirect URI with `?code=…&state=…`, custom scheme included).
  */
-export const oauthApproveRequestSchema = z
-  .object({
-    // The SPA forwards the whole authorize request it received; `response_type`
-    // is accepted (and ignored) so it need not strip it before approving.
-    response_type: z.literal('code').optional(),
-    client_id: z.string().trim().min(1),
-    redirect_uri: z.string().trim().min(1),
-    scope: z.string().trim().min(1),
-    state: z.string().trim().max(1024).optional(),
-    code_challenge: z.string().trim().max(256).optional(),
-    code_challenge_method: oauthCodeChallengeMethodSchema.optional(),
-  })
-  .strict();
+export const oauthApproveRequestSchema = z.object(oauthAuthorizationRequestShape).strict();
 export type OAuthApproveRequest = z.infer<typeof oauthApproveRequestSchema>;
 
 export const oauthApproveResponseSchema = z.object({ redirectTo: z.string() }).strict();
 export type OAuthApproveResponse = z.infer<typeof oauthApproveResponseSchema>;
+
+/**
+ * `POST /oauth/deny` — the user declined consent. The service validates the
+ * authorize request exactly as approval does, then returns the registered
+ * redirect URI with the RFC 6749 denial error and original state.
+ */
+export const oauthDenyRequestSchema = z.object(oauthAuthorizationRequestShape).strict();
+export type OAuthDenyRequest = z.infer<typeof oauthDenyRequestSchema>;
+
+export const oauthDenyResponseSchema = z.object({ redirectTo: z.string() }).strict();
+export type OAuthDenyResponse = z.infer<typeof oauthDenyResponseSchema>;
 
 // ── Token endpoint (public, machine-to-machine) ─────────────────────────────
 export const oauthTokenRequestSchema = z.discriminatedUnion('grant_type', [

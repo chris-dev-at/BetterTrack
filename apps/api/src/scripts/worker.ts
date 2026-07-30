@@ -27,18 +27,22 @@ import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
 import {
   ALL_QUEUE_NAMES,
+  assembleRegisteredJobDefinitions,
   assertParanoidJobBindings,
   bindParanoidJob,
   createBackfillScheduler,
   createDeadLetter,
   createExportBuildJob,
   createExportCleanupJob,
-  createJobDefinitions,
   createJobWorkers,
+  createAlertsEvaluateJob,
+  createFxRefreshSpotJob,
   createParanoidUserJobFilter,
   createMirrorReplicateJob,
   createMirrorInviteCleanupJob,
   createMirrorConsistencySweepJob,
+  createPricesBackfillJob,
+  createPricesRefreshDailyJob,
   createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
   createApiKeyRequestLogCleanupJob,
@@ -54,6 +58,7 @@ import {
   createDividendEventsScanJob,
   createStandingOrdersJob,
   dividendNotifyGate,
+  heartbeatJob,
   jobConnectionFactory,
   registerSchedules,
   type JobContext,
@@ -454,33 +459,47 @@ const webhookBridge = createWebhookBridge({
   paranoid: paranoidGuard,
 });
 
-const definitions = [
-  ...createJobDefinitions({
-    db,
-    marketData,
-    notify,
-    paranoid: paranoidGuard,
-    // Custom assets (the `manual` provider) are durable in our own DB; the price
-    // jobs must not fetch them (see MarketDataJobDeps.isLocalProvider).
-    isLocalProvider: (providerId) =>
-      providerRegistry.has(providerId) && providerRegistry.get(providerId).local === true,
+const coreJobDeps = {
+  db,
+  marketData,
+  notify,
+  paranoid: paranoidGuard,
+  // Custom assets (the `manual` provider) are durable in our own DB; the price
+  // jobs must not fetch them (see MarketDataJobDeps.isLocalProvider).
+  isLocalProvider: (providerId: string) =>
+    providerRegistry.has(providerId) && providerRegistry.get(providerId).local === true,
+};
+
+const definitions = assembleRegisteredJobDefinitions({
+  heartbeatJob,
+  createPricesRefreshDailyJob: createPricesRefreshDailyJob(coreJobDeps),
+  createPricesBackfillJob: createPricesBackfillJob(coreJobDeps),
+  createFxRefreshSpotJob: createFxRefreshSpotJob(coreJobDeps),
+  // `alerts.evaluate` survives paranoid mode but splits itself into an
+  // unguarded global rail and an owner-locked custom-asset rail; the factory
+  // returns the definition already carrying that `internallyFiltered` binding.
+  createAlertsEvaluateJob: createAlertsEvaluateJob(coreJobDeps),
+  createNotificationsDispatchJob: createNotificationsDispatchJob({
+    dispatcher,
+    webhooks: webhookBridge,
   }),
-  createNotificationsDispatchJob({ dispatcher, webhooks: webhookBridge }),
-  createDigestDailyJob({ digest: digestService }),
-  createDigestWeeklyJob({ digest: digestService }),
-  createDeferredDeliveryJob({ digest: digestService }),
-  createExportBuildJob({ exportService: dataExportService }),
-  createExportCleanupJob({ exportService: dataExportService }),
-  bindParanoidJob(createSnapshotsRecomputeJob({ snapshots }), {
+  createDigestDailyJob: createDigestDailyJob({ digest: digestService }),
+  createDigestWeeklyJob: createDigestWeeklyJob({ digest: digestService }),
+  createDeferredDeliveryJob: createDeferredDeliveryJob({ digest: digestService }),
+  createExportBuildJob: createExportBuildJob({ exportService: dataExportService }),
+  createExportCleanupJob: createExportCleanupJob({ exportService: dataExportService }),
+  createSnapshotsRecomputeJob: bindParanoidJob(createSnapshotsRecomputeJob({ snapshots }), {
     mode: 'portfolio',
     runIfAllowed: runPortfolioJobIfAllowed,
   }),
-  bindParanoidJob(createSnapshotsBackfillJob({ snapshots }), { mode: 'serviceFiltered' }),
-  createUsageRollupJob({ usageAnalytics }),
+  createSnapshotsBackfillJob: bindParanoidJob(createSnapshotsBackfillJob({ snapshots }), {
+    mode: 'serviceFiltered',
+  }),
+  createUsageRollupJob: createUsageRollupJob({ usageAnalytics }),
   // V5-P5 market intelligence (#582): the daily opt-in earnings-reminder scan
   // over every user's held + watched assets. Gated by MARKET_INTEL_ENABLED — a
   // no-op scan when the arc is unconfigured. Idempotency store = ctx.redis.
-  bindParanoidJob(
+  createEarningsReminderJob: bindParanoidJob(
     createEarningsReminderJob({
       intelRepo: createMarketIntelRepository(db),
       marketData,
@@ -492,7 +511,7 @@ const definitions = [
   ),
   // V5-P5 dividend-event scan (#581): fires opt-in ex-date reminders for held
   // assets. Gated by MARKET_INTEL_ENABLED; per-user opt-in read from the matrix.
-  bindParanoidJob(
+  createDividendEventsScanJob: bindParanoidJob(
     createDividendEventsScanJob({
       repo: createMarketIntelRepository(db),
       marketData,
@@ -505,43 +524,52 @@ const definitions = [
   ),
   // V5-P6b standing orders (#593): the daily scan that books each active order's
   // newest due occurrence exactly once.
-  bindParanoidJob(createStandingOrdersJob({ standingOrders }), {
+  createStandingOrdersJob: bindParanoidJob(createStandingOrdersJob({ standingOrders }), {
     mode: 'perUser',
     filter: standingOrderParanoidFilter,
   }),
   // V5-P7 MIRRORCHAIN (#644): per-chain replication — strictly ordered,
   // idempotent, watermark-resumed; permanent failure dead-letters → Problems.
-  bindParanoidJob(createMirrorReplicateJob({ mirror, enqueue: enqueueMirrorReplicate }), {
-    mode: 'serviceFiltered',
-  }),
+  createMirrorReplicateJob: bindParanoidJob(
+    createMirrorReplicateJob({ mirror, enqueue: enqueueMirrorReplicate }),
+    { mode: 'serviceFiltered' },
+  ),
   // V5-P7 MIRRORCHAIN (#680): the daily sweep that retires pending invites past
   // the 30-day token-hygiene horizon (frees the pending-unique slot).
-  createMirrorInviteCleanupJob({ repo: mirrorchainRepo }),
+  createMirrorInviteCleanupJob: createMirrorInviteCleanupJob({ repo: mirrorchainRepo }),
   // V5-P7 MIRRORCHAIN (#684): the daily defense-in-depth repair sweep — re-applies
   // §7 succession to any ownerless chain and surfaces the two crash residuals
   // (design §2 (a)/(b)) onto the admin Problems page.
-  bindParanoidJob(createMirrorConsistencySweepJob({ mirror, problems }), {
-    mode: 'serviceFiltered',
-  }),
+  createMirrorConsistencySweepJob: bindParanoidJob(
+    createMirrorConsistencySweepJob({ mirror, problems }),
+    { mode: 'serviceFiltered' },
+  ),
   // V5-P10 outbound webhooks (#648): the signed delivery job (retry/backoff via
   // job options + auto-disable) and the daily delivery-log retention sweep.
-  bindParanoidJob(createWebhookDeliverJob({ dispatcher: webhookDispatcher }), {
-    mode: 'event',
-    runIfAllowed: async (userIds, action) => {
-      try {
-        await paranoidGuard.runAllowedMany(userIds, 'portfolioWebhooks', action);
-        return true;
-      } catch (error) {
-        if (error instanceof ParanoidModeError) return false;
-        throw error;
-      }
+  createWebhookDeliverJob: bindParanoidJob(
+    createWebhookDeliverJob({ dispatcher: webhookDispatcher }),
+    {
+      mode: 'event',
+      runIfAllowed: async (userIds, action) => {
+        try {
+          await paranoidGuard.runAllowedMany(userIds, 'portfolioWebhooks', action);
+          return true;
+        } catch (error) {
+          if (error instanceof ParanoidModeError) return false;
+          throw error;
+        }
+      },
     },
+  ),
+  createWebhookDeliveryCleanupJob: createWebhookDeliveryCleanupJob({
+    deliveries: webhookDeliveryRepo,
   }),
-  createWebhookDeliveryCleanupJob({ deliveries: webhookDeliveryRepo }),
   // V5-P10 API-key governance (issue 2/2): the daily retention sweep over the
   // bounded per-key request-log audit trail.
-  createApiKeyRequestLogCleanupJob({ requestLog: createApiKeyRequestLogRepository(db) }),
-];
+  createApiKeyRequestLogCleanupJob: createApiKeyRequestLogCleanupJob({
+    requestLog: createApiKeyRequestLogRepository(db),
+  }),
+});
 
 assertParanoidJobBindings(definitions, ALL_QUEUE_NAMES);
 
@@ -569,6 +597,10 @@ const running = createJobWorkers({
 const metricsServer = createMetricsServer(config, logger);
 
 const scheduled = await registerSchedules(registry, definitions);
+// Enqueue one immediate proof on every successful bootstrap. The healthcheck
+// only turns green after a BullMQ worker consumes it and writes the canonical
+// Redis marker; the repeatable schedule keeps that proof fresh thereafter.
+await registry.enqueue(heartbeatJob.name, {});
 logger.info({ queues: definitions.map((d) => d.name), scheduled }, 'BetterTrack worker started');
 
 let shuttingDown = false;

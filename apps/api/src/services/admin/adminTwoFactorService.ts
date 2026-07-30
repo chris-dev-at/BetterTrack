@@ -15,7 +15,8 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
 import { generateRecoveryCodes, normalizeRecoveryCode } from '../auth/totp';
-import type { TwoFactorService } from '../auth/twoFactorService';
+import type { TwoFactorMutationResult, TwoFactorService } from '../auth/twoFactorService';
+import type { SessionSecurityContext, SessionService } from '../sessions/sessionService';
 
 /**
  * Mandatory admin-login two-factor authentication (PROJECTPLAN.md §6.12, #400).
@@ -38,17 +39,27 @@ import type { TwoFactorService } from '../auth/twoFactorService';
  */
 export interface AdminTwoFactorService {
   /** The admin's own 2FA methods + the mandatory-setup gate state. */
-  status(adminId: string): Promise<AdminTwoFactorStatusResponse>;
+  status(adminId: string, session: SessionSecurityContext): Promise<AdminTwoFactorStatusResponse>;
   /** Begin TOTP enrollment — provisional encrypted secret + provisioning URI. */
-  enrollTotp(adminId: string, ip?: string | null): Promise<TwoFactorEnrollResponse>;
+  enrollTotp(
+    adminId: string,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
+  ): Promise<TwoFactorEnrollResponse>;
   /** Confirm TOTP with a current code; recovery codes returned iff first method. */
   confirmTotp(
     adminId: string,
     code: string,
-    ip?: string | null,
-  ): Promise<TwoFactorMethodEnabledResponse>;
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
+  ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
   /** Turn TOTP off with a valid factor (re-enroll = disable then enroll). */
-  disableTotp(adminId: string, code: string, ip?: string | null): Promise<void>;
+  disableTotp(
+    adminId: string,
+    code: string,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
+  ): Promise<TwoFactorMutationResult<void>>;
   /**
    * Set (first time) or change the 2FA email and send a confirmation code to it.
    * A fresh 2FA `proof` (current TOTP code or unused recovery code) is REQUIRED
@@ -59,21 +70,28 @@ export interface AdminTwoFactorService {
     adminId: string,
     email: string,
     proof: string | undefined,
+    session: SessionSecurityContext,
     ip?: string | null,
   ): Promise<void>;
   /** Confirm the emailed code — activates the email method on the new address. */
   confirmEmail(
     adminId: string,
     code: string,
-    ip?: string | null,
-  ): Promise<TwoFactorMethodEnabledResponse>;
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
+  ): Promise<TwoFactorMutationResult<TwoFactorMethodEnabledResponse>>;
   /** Turn the email method off (session-authorized); clears the 2FA email. */
-  disableEmail(adminId: string, ip?: string | null): Promise<void>;
+  disableEmail(
+    adminId: string,
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
+  ): Promise<TwoFactorMutationResult<void>>;
   /** Regenerate the recovery codes (only while some method is on; old set voided). */
   regenerateRecoveryCodes(
     adminId: string,
-    ip?: string | null,
-  ): Promise<TwoFactorRecoveryCodesResponse>;
+    ip: string | null | undefined,
+    session: SessionSecurityContext,
+  ): Promise<TwoFactorMutationResult<TwoFactorRecoveryCodesResponse>>;
 }
 
 export interface AdminTwoFactorServiceDeps {
@@ -83,6 +101,7 @@ export interface AdminTwoFactorServiceDeps {
   audit: AuditService;
   redis: Redis;
   email: EmailService;
+  sessions: Pick<SessionService, 'destroyAllForUser'>;
 }
 
 // The admin email-method setup code (#400): a short-lived numeric code proving the
@@ -96,21 +115,52 @@ const emailSetupKey = (adminId: string) => `admin_2fa_email_setup:${adminId}`;
 interface EmailSetupState {
   email: string;
   codeHash: string;
+  securityGeneration: number;
 }
 
 export function createAdminTwoFactorService(
   deps: AdminTwoFactorServiceDeps,
 ): AdminTwoFactorService {
-  const { twoFactorRepo, twoFactor, audit, redis, email } = deps;
+  const { twoFactorRepo, twoFactor, audit, redis, email, sessions } = deps;
 
-  /** Issue a fresh recovery-code batch, persisting only the hashes (§6.1). */
-  async function issueRecoveryCodes(adminId: string): Promise<string[]> {
+  /** Generate a fresh recovery-code batch; the repository persists it atomically. */
+  function recoveryCodeBatch(): { codes: string[]; hashes: string[] } {
     const codes = generateRecoveryCodes();
-    await twoFactorRepo.replaceRecoveryCodes(
-      adminId,
-      codes.map((code) => hashToken(normalizeRecoveryCode(code))),
-    );
-    return codes;
+    return {
+      codes,
+      hashes: codes.map((code) => hashToken(normalizeRecoveryCode(code))),
+    };
+  }
+
+  async function invalidateSessions(adminId: string): Promise<void> {
+    try {
+      await sessions.destroyAllForUser(adminId);
+    } catch {
+      // The committed generation rejects every old cookie even when eager
+      // Redis cleanup is unavailable.
+    }
+  }
+
+  async function invalidEmailSetup(adminId: string): Promise<never> {
+    await redis.del(emailSetupKey(adminId));
+    throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
+  }
+
+  async function parseEmailSetup(adminId: string, raw: string): Promise<EmailSetupState> {
+    try {
+      const parsed = JSON.parse(raw) as Partial<EmailSetupState>;
+      if (
+        typeof parsed.email !== 'string' ||
+        typeof parsed.codeHash !== 'string' ||
+        !Number.isSafeInteger(parsed.securityGeneration) ||
+        parsed.securityGeneration! < 0
+      ) {
+        return invalidEmailSetup(adminId);
+      }
+      return parsed as EmailSetupState;
+    } catch {
+      return invalidEmailSetup(adminId);
+    }
   }
 
   /**
@@ -127,39 +177,51 @@ export function createAdminTwoFactorService(
   }
 
   return {
-    async status(adminId) {
+    async status(adminId, session) {
       const state = await twoFactorRepo.getState(adminId);
-      if (!state) throw unauthorized();
+      if (!state || state.securityGeneration !== session.securityGeneration) {
+        throw unauthorized();
+      }
       const anyOn = state.enabled || state.emailEnabled;
+      const recoveryCodesRemaining = anyOn
+        ? await twoFactorRepo.countUnusedRecoveryCodes(adminId)
+        : 0;
+      const current = await twoFactorRepo.getState(adminId);
+      if (!current || current.securityGeneration !== session.securityGeneration) {
+        throw unauthorized();
+      }
+      const currentAnyOn = current.enabled || current.emailEnabled;
       return {
-        setupRequired: !anyOn,
-        totpEnabled: state.enabled,
-        totpPending: !state.enabled && state.secret !== null,
-        emailEnabled: state.emailEnabled,
-        twoFactorEmail: state.twoFactorEmail,
-        recoveryCodesRemaining: anyOn ? await twoFactorRepo.countUnusedRecoveryCodes(adminId) : 0,
+        setupRequired: !currentAnyOn,
+        totpEnabled: current.enabled,
+        totpPending: !current.enabled && current.secret !== null,
+        emailEnabled: current.emailEnabled,
+        twoFactorEmail: current.twoFactorEmail,
+        recoveryCodesRemaining: currentAnyOn ? recoveryCodesRemaining : 0,
       };
     },
 
-    enrollTotp(adminId, ip) {
-      return twoFactor.enrollTotp(adminId, ip);
+    enrollTotp(adminId, ip, session) {
+      return twoFactor.enrollTotp(adminId, ip, session);
     },
 
-    confirmTotp(adminId, code, ip) {
-      return twoFactor.confirmTotp(adminId, code, ip);
+    confirmTotp(adminId, code, ip, session) {
+      return twoFactor.confirmTotp(adminId, code, ip, session);
     },
 
-    disableTotp(adminId, code, ip) {
-      return twoFactor.disableTotp(adminId, code, ip);
+    disableTotp(adminId, code, ip, session) {
+      return twoFactor.disableTotp(adminId, code, ip, session);
     },
 
-    regenerateRecoveryCodes(adminId, ip) {
-      return twoFactor.regenerateRecoveryCodes(adminId, ip);
+    regenerateRecoveryCodes(adminId, ip, session) {
+      return twoFactor.regenerateRecoveryCodes(adminId, ip, session);
     },
 
-    async startEmailEnrollment(adminId, address, proof, ip) {
+    async startEmailEnrollment(adminId, address, proof, session, ip) {
       const state = await twoFactorRepo.getState(adminId);
-      if (!state) throw unauthorized();
+      if (!state || state.securityGeneration !== session.securityGeneration) {
+        throw unauthorized();
+      }
 
       // Changing/setting the 2FA email once enrolled clears a fresh 2FA proof
       // (decision 3); the first-time set during forced enrollment does not.
@@ -185,7 +247,18 @@ export function createAdminTwoFactorService(
       }
 
       const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
-      const setup: EmailSetupState = { email: address, codeHash: hashToken(code) };
+      // Factor proof may have taken time. Re-read immediately before persisting
+      // or sending so a request admitted at G cannot create setup authority
+      // after a transition committed G+1.
+      const current = await twoFactorRepo.getState(adminId);
+      if (!current || current.securityGeneration !== session.securityGeneration) {
+        throw unauthorized();
+      }
+      const setup: EmailSetupState = {
+        email: address,
+        codeHash: hashToken(code),
+        securityGeneration: session.securityGeneration,
+      };
       await redis.set(
         emailSetupKey(adminId),
         JSON.stringify(setup),
@@ -210,7 +283,7 @@ export function createAdminTwoFactorService(
       });
     },
 
-    async confirmEmail(adminId, code, ip) {
+    async confirmEmail(adminId, code, ip, session) {
       const state = await twoFactorRepo.getState(adminId);
       if (!state) throw unauthorized();
 
@@ -218,12 +291,17 @@ export function createAdminTwoFactorService(
       if (!raw) {
         throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
       }
-      let setup: EmailSetupState;
-      try {
-        setup = JSON.parse(raw) as EmailSetupState;
-      } catch {
-        await redis.del(emailSetupKey(adminId));
-        throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
+      const setup = await parseEmailSetup(adminId, raw);
+      const securityGeneration = session?.securityGeneration ?? state.securityGeneration;
+      if (state.securityGeneration !== securityGeneration) {
+        // Preserve a newer setup if this is an older in-flight request.
+        if (setup.securityGeneration !== state.securityGeneration) {
+          await redis.del(emailSetupKey(adminId));
+        }
+        throw unauthorized();
+      }
+      if (setup.securityGeneration !== securityGeneration) {
+        return invalidEmailSetup(adminId);
       }
       if (hashToken(code.trim()) !== setup.codeHash) {
         throw badRequest('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
@@ -233,9 +311,15 @@ export function createAdminTwoFactorService(
       // First method on ⇒ issue the shared recovery codes; a change/second method
       // leaves the existing set intact.
       const isFirstMethod = !state.enabled && !state.emailEnabled;
-      await twoFactorRepo.setTwoFactorEmail(adminId, setup.email);
-      await twoFactorRepo.setEmailEnabled(adminId, true);
-      const recoveryCodes = isFirstMethod ? await issueRecoveryCodes(adminId) : null;
+      const recovery = isFirstMethod ? recoveryCodeBatch() : null;
+      const committedGeneration = await twoFactorRepo.confirmEmail(
+        adminId,
+        setup.email,
+        recovery?.hashes ?? null,
+        setup.securityGeneration,
+      );
+      if (committedGeneration === null) throw unauthorized();
+      const recoveryCodes = recovery?.codes ?? null;
       await audit.record({
         actorId: adminId,
         action: AuditAction.TwoFactorEmailEnabled,
@@ -243,10 +327,14 @@ export function createAdminTwoFactorService(
         targetId: adminId,
         ip,
       });
-      return { recoveryCodes };
+      await invalidateSessions(adminId);
+      return {
+        response: { recoveryCodes },
+        securityGeneration: committedGeneration,
+      };
     },
 
-    async disableEmail(adminId, ip) {
+    async disableEmail(adminId, ip, session) {
       const state = await twoFactorRepo.getState(adminId);
       if (!state?.emailEnabled) {
         throw badRequest(
@@ -254,11 +342,14 @@ export function createAdminTwoFactorService(
           'TWO_FACTOR_NOT_ENABLED',
         );
       }
-      await twoFactorRepo.setEmailEnabled(adminId, false);
-      await twoFactorRepo.setTwoFactorEmail(adminId, null);
+      const securityGeneration = await twoFactorRepo.disableEmail(
+        adminId,
+        true,
+        !state.enabled,
+        session?.securityGeneration ?? state.securityGeneration,
+      );
+      if (securityGeneration === null) throw unauthorized();
       await redis.del(emailSetupKey(adminId));
-      // Recovery codes are shared: drop them only if the TOTP method is also off.
-      if (!state.enabled) await twoFactorRepo.clearRecoveryCodes(adminId);
       await audit.record({
         actorId: adminId,
         action: AuditAction.TwoFactorEmailDisabled,
@@ -266,6 +357,8 @@ export function createAdminTwoFactorService(
         targetId: adminId,
         ip,
       });
+      await invalidateSessions(adminId);
+      return { response: undefined, securityGeneration };
     },
   };
 }

@@ -15,6 +15,7 @@ pages render instantly.
 | `mobile.html`    | Mobile placeholder — English                |
 | `mobile.de.html` | Mobile placeholder — German                 |
 | `styles.css`     | Shared styles (app dark aesthetic)          |
+| `landing.js`     | CSP-safe runtime link + registration wiring |
 | `screens/*.svg`  | Feature screenshots                         |
 | `env.js`         | Runtime origin config (regenerated at boot) |
 
@@ -28,21 +29,23 @@ pass is part of V3-P13.
 > carry no external dependencies, so the pages stay instant. Swapping in raster
 > captures from the seeded stack (which needs Docker) is a drop-in replacement.
 
-## Web-app link origin
+## Runtime origins
 
 The "Open the web app" links resolve at runtime from `window.__BT_LANDING__.webOrigin`,
-set by `env.js`. In the container that file is regenerated from `env.js.template`
-by `docker-entrypoint.sh` (an nginx `/docker-entrypoint.d` hook) using
-`BT_WEB_ORIGIN` — so the origin is configurable per deploy, never baked in. The
-committed `env.js` is the local default.
+and the registration-mode probe reads `window.__BT_LANDING__.apiOrigin`. In the
+container, `env.js` is regenerated from `env.js.template` by
+`docker-entrypoint.sh` (an nginx `/docker-entrypoint.d` hook). The Compose service
+passes the same mode, domain, TLS, subdomain, port, and explicit-origin inputs as
+the front proxy, so links, fetches, and the CSP always agree without a rebuild.
+The committed `env.js` is the local default.
 
 ## Serving it
 
 Built and served by the `landing` service in `infra/docker-compose.yml`
 (`apps/landing/Dockerfile`, nginx:alpine). Host-port publishing lives in the mode
-overlays — `docker-compose.ports.yml` exposes `BT_PORT_LANDING` (default `8082`);
-in subdomains mode the reverse proxy reaches it internally. The 5-origin topology
-wiring (nginx templates, Cloudflare, deploy guide) is V3-P12 arc (c).
+overlays: the `web` front proxy exposes the product port (default `8082`) in ports
+mode and reaches the landing container internally in both modes. The 5-origin
+topology wiring (nginx templates, Cloudflare, deploy guide) is V3-P12 arc (c).
 
 Preview locally without Docker by opening `site/index.html` in a browser, or:
 

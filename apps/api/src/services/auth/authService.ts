@@ -25,6 +25,8 @@ import type { RegistrationTokenRepository } from '../../data/repositories/regist
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
 import { accountDisabled, badRequest, conflict, tooManyRequests, unauthorized } from '../../errors';
+import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
+import type { Logger } from '../../logger';
 import { applyAccountDefaultsAtRegistration } from '../account/accountDefaults';
 import type { AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
@@ -34,7 +36,16 @@ import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import { describeUserAgent } from '../sessions/deviceLabel';
-import { isPersistent, type SessionService } from '../sessions/sessionService';
+import {
+  authenticationMethodOf,
+  isPersistent,
+  mfaAssuranceOf,
+  type SecurityMutationContext,
+  type SessionAuthenticationMethod,
+  type SessionMfaAssurance,
+  type SessionMfaMethod,
+  type SessionService,
+} from '../sessions/sessionService';
 import {
   clearLoginThrottle,
   clearPasswordThrottle,
@@ -63,6 +74,9 @@ export interface AuthServiceDeps {
   /** Per-(channel, type) override seeding for the V4-P0d account-defaults matrix. */
   notificationRepo: Pick<NotificationRepository, 'upsertChannelConfig'>;
   sessions: SessionService;
+  /** Best-effort lifecycle fan-out to disconnect already-open session sockets. */
+  events?: Pick<EventBus, 'publish'>;
+  logger?: Pick<Logger, 'warn'>;
   audit: AuditService;
   passwordHasher: PasswordHasher;
   email: EmailService;
@@ -90,6 +104,10 @@ export interface SessionResult {
   sessionId: string;
   /** Whether the minted session is persistent (V4-P2b) — drives the cookie's Max-Age. */
   persistent: boolean;
+}
+
+export interface PasswordChangeResult {
+  user: UserRow;
 }
 
 /** The login-time 2FA challenge handed back when an account has 2FA enabled (§6.1). */
@@ -179,17 +197,24 @@ export interface AuthService {
    * (V3-P11a) — a throttled write to a side key that never touches the fixed
    * 30-day window (§6.1). `userAgent` comes from the request; omit it off the
    * request path. Returns the resolved user together with the session's
-   * persistence marker (V4-P2b) so the caller can re-issue the matching cookie.
+   * persistence marker (V4-P2b) for explicit renewal/security-rotation handlers.
    */
   resolveSession(
     sessionId: string,
     userAgent?: string | null,
-  ): Promise<{ user: UserRow; persistent: boolean } | null>;
+  ): Promise<{
+    user: UserRow;
+    persistent: boolean;
+    securityGeneration: number;
+    authenticationMethod: SessionAuthenticationMethod | null;
+    mfaAssurance: SessionMfaAssurance | null;
+  } | null>;
   changePassword(
     userId: string,
     input: ChangePasswordRequest,
+    security: SecurityMutationContext,
     ip?: string | null,
-  ): Promise<SessionResult>;
+  ): Promise<PasswordChangeResult>;
   validateInvite(token: string): Promise<{ valid: boolean; email: string | null }>;
   acceptInvite(input: AcceptInviteRequest, ip?: string | null): Promise<SessionResult>;
   /**
@@ -267,6 +292,12 @@ export interface AuthService {
    * device id is null/unknown.
    */
   forgetDevice(deviceId: string | null, ip?: string | null): Promise<void>;
+  /**
+   * Record that first-run setup is done for this account — finished or dismissed
+   * (§6.12). Set-once and idempotent: replaying it never moves the stored
+   * timestamp, so a double-clicked "Do this later" is harmless.
+   */
+  completeFirstRun(userId: string): Promise<UserRow>;
   /** Enable the PIN or change it to a new value (§6.1). */
   setPin(userId: string, pin: string, ip?: string | null): Promise<UserRow>;
   /** Turn the PIN gate off (§6.1). */
@@ -337,6 +368,10 @@ const emailCodeKey = (token: string) => `2fa_email_code:${token}`;
 /** The Redis-side pending-2FA state — never a session, so no route honours it. */
 interface Pending2faState {
   userId: string;
+  /** Durable authority generation that established the first-factor proof. */
+  securityGeneration: number;
+  /** First-factor path that established this pending challenge. */
+  authenticationMethod?: SessionAuthenticationMethod;
   /** A pre-login session id to rotate out on successful verify, if any. */
   priorSessionId?: string;
   /**
@@ -375,6 +410,8 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     portfolioRepo,
     notificationRepo,
     sessions,
+    events,
+    logger,
     audit,
     passwordHasher,
     email,
@@ -406,6 +443,52 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     PIN_TOKEN_ACCOUNT_NAMESPACE,
     config.rateLimits.loginAccount,
   );
+
+  async function publishSessionInvalidation(
+    event: Omit<RealtimePrincipalInvalidatedEvent, 'type' | 'kind' | 'occurredAt'>,
+  ): Promise<void> {
+    if (!events) return;
+    try {
+      await events.publish({
+        type: 'realtime.principal.invalidated',
+        kind: 'session',
+        ...event,
+        occurredAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      // Session deletion already succeeded. The gateway's periodic principal
+      // revalidation is the fail-closed backstop for a missed pub/sub signal.
+      logger?.warn({ err, userId: event.userId }, 'session realtime invalidation publish failed');
+    }
+  }
+
+  const invalidateSession = (userId: string, sessionId: string): Promise<void> =>
+    publishSessionInvalidation({
+      userId,
+      credentialId: sha256Base64Url(sessionId),
+      exceptCredentialId: null,
+    });
+
+  const invalidateAllSessions = (
+    userId: string,
+    exceptSessionId: string | null = null,
+  ): Promise<void> =>
+    publishSessionInvalidation({
+      userId,
+      credentialId: null,
+      exceptCredentialId: exceptSessionId ? sha256Base64Url(exceptSessionId) : null,
+    });
+
+  /**
+   * Destroy a session and notify the socket owner that actually held it. Login
+   * rotation can intentionally switch accounts, so the caller being signed in
+   * is not necessarily the owner of the cookie being replaced.
+   */
+  async function destroySessionAndInvalidate(sessionId: string): Promise<void> {
+    const priorSession = await sessions.get(sessionId);
+    await sessions.destroy(sessionId);
+    if (priorSession) await invalidateSession(priorSession.userId, sessionId);
+  }
 
   /** Load and parse a pending-2FA state; null when missing/expired/corrupt. */
   async function loadPending(token: string): Promise<Pending2faState | null> {
@@ -488,13 +571,19 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
    */
   async function issueTwoFactorChallenge(
     user: UserRow,
+    securityGeneration: number,
     ip?: string | null,
     priorSessionId?: string,
     persistent?: boolean,
+    authenticationMethod: SessionAuthenticationMethod = 'password',
   ): Promise<TwoFactorChallenge> {
     const methods = await twoFactor.getMethods(user.id);
     const pendingToken = randomBytes(32).toString('base64url');
-    const state: Pending2faState = { userId: user.id };
+    const state: Pending2faState = {
+      userId: user.id,
+      securityGeneration,
+      authenticationMethod,
+    };
     if (priorSessionId) state.priorSessionId = priorSessionId;
     // Carry the password-step persistence choice to the verify step (V4-P2b).
     if (persistent !== undefined) state.persistent = persistent;
@@ -517,6 +606,21 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
   }
 
   const clearFailures = (userId: string) => clearLoginThrottle(redis, userId);
+  const destroySessionBestEffort = async (sessionId: string): Promise<void> => {
+    try {
+      await sessions.destroy(sessionId);
+    } catch {
+      // Durable generation equality is the revocation boundary. Redis deletion
+      // is eager cleanup only and may not turn a committed transition into a 500.
+    }
+  };
+  const destroyAllSessionsBestEffort = async (userId: string): Promise<void> => {
+    try {
+      await sessions.destroyAllForUser(userId);
+    } catch {
+      // See destroySessionBestEffort: every surviving cookie is already stale.
+    }
+  };
   // Correct-password clear that deliberately spares the second-factor throttle
   // so its §10 escalation lock accumulates across re-logins (see
   // clearPasswordThrottle). Used at the password step; the full clear above runs
@@ -534,7 +638,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     user: UserRow,
     ip?: string | null,
   ): Promise<{ sessionId: string; user: UserRow }> {
-    const sessionId = await sessions.create(user.id, false);
+    const sessionId = await sessions.create(user.id, user.securityGeneration, false, {
+      method: 'pin',
+    });
     const now = new Date();
     await userRepo.setLastLogin(user.id, now);
     await audit.record({
@@ -630,6 +736,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (await twoFactor.isEnabled(user.id)) {
         const challenge = await issueTwoFactorChallenge(
           user,
+          user.securityGeneration,
           ip,
           currentSessionId ?? undefined,
           persistent,
@@ -638,8 +745,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       }
 
       // Session rotation: drop any pre-login session before minting a new id.
-      if (currentSessionId) await sessions.destroy(currentSessionId);
-      const sessionId = await sessions.create(user.id, persistent);
+      if (currentSessionId) {
+        await destroySessionAndInvalidate(currentSessionId);
+      }
+      const sessionId = await sessions.create(user.id, user.securityGeneration, persistent, {
+        method: 'password',
+      });
 
       const now = new Date();
       await userRepo.setLastLogin(user.id, now);
@@ -673,19 +784,26 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (!state) throw pendingInvalid();
       const { userId } = state;
 
+      const user = await userRepo.findById(userId);
+      if (
+        !user ||
+        user.status !== 'active' ||
+        !Number.isSafeInteger(state.securityGeneration) ||
+        state.securityGeneration !== user.securityGeneration
+      ) {
+        // The first-factor authority is valid only at the generation that
+        // issued this challenge. Password, factor, recovery, and role changes
+        // all advance it, so reject before consuming any second factor.
+        await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
+        throw pendingInvalid();
+      }
+
       // Already cooling down from prior wrong factors: reject before verifying so
       // blocked retries — even a correct code — cannot brute-force through the
       // cooldown (§10). Mirrors the password limiter's peek-before-check.
       const cooling = await twoFactorThrottle.peek(userId);
       if (cooling > 0) {
         throw tooManyRequests(cooling, 'Too many incorrect codes. Please wait and try again.');
-      }
-
-      const user = await userRepo.findById(userId);
-      if (!user || user.status !== 'active') {
-        // Account vanished/suspended mid-challenge: drop the pending state.
-        await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
-        throw pendingInvalid();
       }
 
       // 2FA turned off between challenge issue and verify: every factor now
@@ -702,15 +820,22 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // then as a TOTP — the two are disjoint, so order only affects which state
       // a match burns.
       let ok = false;
+      let mfaMethod: SessionMfaMethod | null = null;
       if (recoveryCode) {
         ok = await twoFactor.consumeRecoveryCode(userId, recoveryCode);
+        if (ok) mfaMethod = 'recovery';
       } else if (code) {
-        ok =
-          (await consumeEmailCode(pendingToken, code)) ||
-          (await twoFactor.verifyTotpCode(userId, code));
+        const emailVerified = await consumeEmailCode(pendingToken, code);
+        if (emailVerified) {
+          ok = true;
+          mfaMethod = 'email';
+        } else if (await twoFactor.verifyTotpCode(userId, code)) {
+          ok = true;
+          mfaMethod = 'totp';
+        }
       }
 
-      if (!ok) {
+      if (!ok || !mfaMethod) {
         const decision = await twoFactorThrottle.consume(userId);
         await audit.record({
           action: AuditAction.TwoFactorVerifyFail,
@@ -728,16 +853,33 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw unauthorized('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
       }
 
-      // Verified: burn the pending state + email code, clear the throttles, and
-      // mint the real session (rotating out any pre-login id).
-      await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
+      // Claim the verified challenge atomically before minting a session. Two
+      // requests may both load the same state and validate the same live TOTP;
+      // Redis DEL elects exactly one winner, while expiry or a concurrent
+      // verifier makes every other request fail closed.
+      const claimed = (await redis.del(pendingKey(pendingToken))) === 1;
+      if (!claimed) {
+        await redis.del(emailCodeKey(pendingToken));
+        throw pendingInvalid();
+      }
+      await redis.del(emailCodeKey(pendingToken));
       await twoFactorThrottle.reset(userId);
       await clearFailures(userId);
-      if (state.priorSessionId) await sessions.destroy(state.priorSessionId);
+      if (state.priorSessionId) {
+        await destroySessionAndInvalidate(state.priorSessionId);
+      }
       // Honour the persistence choice made at the password step (V4-P2b); a
       // reset-originated challenge carries none → persistent, today's behavior.
       const persistent = state.persistent ?? true;
-      const sessionId = await sessions.create(userId, persistent);
+      const sessionId = await sessions.create(userId, state.securityGeneration, persistent, {
+        method:
+          authenticationMethodOf({ authenticationMethod: state.authenticationMethod }) ??
+          // Legacy pending states carried no provenance marker. They are
+          // short-lived, so preserve their pre-deploy password-session behavior
+          // across a rolling deploy instead of minting an unusable session.
+          'password',
+        mfaAssurance: { method: mfaMethod, verifiedAt: Date.now() },
+      });
 
       const now = new Date();
       await userRepo.setLastLogin(userId, now);
@@ -757,7 +899,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const state = await loadPending(pendingToken);
       if (!state) throw pendingInvalid();
       const user = await userRepo.findById(state.userId);
-      if (!user || user.status !== 'active') {
+      if (
+        !user ||
+        user.status !== 'active' ||
+        !Number.isSafeInteger(state.securityGeneration) ||
+        state.securityGeneration !== user.securityGeneration
+      ) {
         await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
         throw pendingInvalid();
       }
@@ -776,7 +923,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     },
 
     async logout(sessionId) {
+      const session = await sessions.get(sessionId);
       await sessions.destroy(sessionId);
+      if (session) await invalidateSession(session.userId, sessionId);
     },
 
     async resolveSession(sessionId, userAgent) {
@@ -785,7 +934,21 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const user = await userRepo.findById(data.userId);
       if (!user || user.status !== 'active') {
         // Disabled/deleted out from under a live session → terminate it.
-        await sessions.destroy(sessionId);
+        await destroySessionBestEffort(sessionId);
+        await invalidateSession(data.userId, sessionId);
+        return null;
+      }
+      // The equality check happens only after the fresh durable user read. Thus
+      // a request that loaded its Redis record before promotion/reset but loads
+      // the user afterward sees the new generation and fails closed. Legacy,
+      // malformed, and stale records are never normalized in place.
+      if (
+        !Number.isSafeInteger(data.securityGeneration) ||
+        data.securityGeneration < 0 ||
+        data.securityGeneration !== user.securityGeneration
+      ) {
+        await destroySessionBestEffort(sessionId);
+        await invalidateSession(data.userId, sessionId);
         return null;
       }
       // Admin session policy (§13.5 V5-P13c): admin sessions carry an ABSOLUTE
@@ -797,7 +960,8 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (user.role === 'admin') {
         const lifetimeMs = (await appSettings.getAdminSessionLifetimeHours()) * 60 * 60 * 1000;
         if (Date.now() - data.createdAt >= lifetimeMs) {
-          await sessions.destroy(sessionId);
+          await destroySessionBestEffort(sessionId);
+          await invalidateSession(data.userId, sessionId);
           return null;
         }
       }
@@ -810,13 +974,19 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (userAgent !== undefined) {
         await sessions.touchLastSeen(sessionId, userAgent);
       }
-      return { user, persistent: isPersistent(data) };
+      return {
+        user,
+        persistent: isPersistent(data),
+        securityGeneration: data.securityGeneration,
+        authenticationMethod: authenticationMethodOf(data),
+        mfaAssurance: mfaAssuranceOf(data),
+      };
     },
 
-    async changePassword(userId, input, ip) {
-      // The target is always THIS session's account (`userId` came from the
-      // session cookie), so the outcome never depends on any admin session
-      // elsewhere — no context leakage (§6.1, #248 item 6).
+    async changePassword(userId, input, security, ip) {
+      // The target is always the authenticated principal's own account. Cookie
+      // callers carry their exact session generation; bearer callers carry the
+      // generation read while their token was authenticated.
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
 
@@ -835,11 +1005,21 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (!policy.ok) throw badRequest(policy.reason, 'WEAK_PASSWORD');
 
       const passwordHash = await passwordHasher.hash(input.newPassword);
-      await userRepo.updatePassword(user.id, passwordHash, false);
+      const securityGeneration = await userRepo.updatePassword(
+        user.id,
+        passwordHash,
+        false,
+        security.securityGeneration,
+      );
+      if (securityGeneration === null) throw unauthorized();
 
-      // Kill every session, then re-establish one for the current device.
-      await sessions.destroyAllForUser(user.id);
-      const sessionId = await sessions.create(user.id);
+      // Cleanup is best effort: even a Redis failure leaves every prior cookie
+      // fenced by the committed generation. Security transitions deliberately
+      // retain no session, including the acting cookie; every device must log in
+      // again explicitly at the committed generation. No session survives, so
+      // the realtime invalidation carries no exception.
+      await destroyAllSessionsBestEffort(user.id);
+      await invalidateAllSessions(user.id);
 
       await audit.record({
         actorId: user.id,
@@ -851,10 +1031,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       const updated = await userRepo.findById(user.id);
       return {
-        user: updated ?? { ...user, passwordHash, mustChangePassword: false },
-        sessionId,
-        // A password change re-establishes a normal persistent session (§6.1).
-        persistent: true,
+        user: updated ?? {
+          ...user,
+          passwordHash,
+          mustChangePassword: false,
+          securityGeneration,
+        },
       };
     },
 
@@ -933,7 +1115,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
-      const sessionId = await sessions.create(user.id);
+      const sessionId = await sessions.create(user.id, user.securityGeneration, true, {
+        method: 'registration',
+      });
       return { user, sessionId, persistent: true };
     },
 
@@ -944,10 +1128,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Everything below is skipped for a non-match, but the caller always sees
       // the same generic acknowledgement — no user enumeration (§6.1).
       if (user && user.role === 'user' && user.status === 'active') {
-        // One outstanding link per account: drop any prior token before issuing.
-        await passwordResetRepo.deleteForUser(user.id);
         const { token, tokenHash } = generateToken();
-        await passwordResetRepo.create({
+        // The repository serializes concurrent issues around the owning user,
+        // replacing any prior token in the same transaction.
+        await passwordResetRepo.issue({
           userId: user.id,
           tokenHash,
           expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
@@ -958,14 +1142,19 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           targetId: user.id,
           ip,
         });
-        // Best-effort send after the token is committed — a mail failure never
-        // throws back (§6.11). The email_log row is written either way (§6.10).
+        // Best-effort send after the token is committed. SMTP latency must never
+        // become an account-existence oracle; the detached send still owns the
+        // normal email_log and failure-audit semantics (§6.10/§6.11).
         const resetUrl = `${config.appOrigin}/reset/${token}`;
-        await email.sendPasswordReset({
-          to: user.email,
-          resetUrl,
-          audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
-        });
+        void email
+          .sendPasswordReset({
+            to: user.email,
+            resetUrl,
+            audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
+          })
+          .catch((err) => {
+            logger?.warn({ err, userId: user.id }, 'detached password-reset email failed');
+          });
       }
     },
 
@@ -974,9 +1163,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         badRequest('This reset link is invalid or has expired.', 'INVALID_RESET');
 
       const record = await passwordResetRepo.findByTokenHash(hashToken(token));
-      if (!record || record.usedAt || new Date(record.expiresAt).getTime() <= Date.now()) {
-        throw invalid();
-      }
+      if (!record) throw invalid();
 
       const user = await userRepo.findById(record.userId);
       // The token was only ever issued to an active user-kind account; re-check
@@ -986,15 +1173,25 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const policy = checkPasswordPolicy(newPassword);
       if (!policy.ok) throw badRequest(policy.reason, 'WEAK_PASSWORD');
 
-      const passwordHash = await passwordHasher.hash(newPassword);
-      await userRepo.updatePassword(user.id, passwordHash, false);
+      // One conditional write linearizes completion before the expensive hash or
+      // any credential/session mutation. A concurrent loser stops here.
+      if (!(await passwordResetRepo.consume(record.id, new Date()))) throw invalid();
 
-      // Consume this token and revoke every other outstanding one for the user.
-      await passwordResetRepo.markUsed(record.id, new Date());
+      const passwordHash = await passwordHasher.hash(newPassword);
+      const securityGeneration = await userRepo.updatePassword(
+        user.id,
+        passwordHash,
+        false,
+        user.securityGeneration,
+      );
+      if (securityGeneration === null) throw invalid();
+
+      // Revoke every other outstanding token after the password transition.
       await passwordResetRepo.deleteForUser(user.id);
 
       // A password change kills all sessions (§6.1).
-      await sessions.destroyAllForUser(user.id);
+      await destroyAllSessionsBestEffort(user.id);
+      await invalidateAllSessions(user.id);
 
       await audit.record({
         actorId: user.id,
@@ -1016,15 +1213,29 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // on, withhold the session and require a second factor, mirroring login;
       // otherwise the reset lands the user signed in with no redundant prompt.
       if (await twoFactor.isEnabled(user.id)) {
-        const challenge = await issueTwoFactorChallenge(user, ip);
+        const challenge = await issueTwoFactorChallenge(
+          user,
+          securityGeneration,
+          ip,
+          undefined,
+          undefined,
+          'password_reset',
+        );
         return { status: 'two_factor_required', challenge };
       }
 
-      const sessionId = await sessions.create(user.id);
+      const sessionId = await sessions.create(user.id, securityGeneration, true, {
+        method: 'password_reset',
+      });
       const updated = await userRepo.findById(user.id);
       return {
         status: 'authenticated',
-        user: updated ?? { ...user, passwordHash, mustChangePassword: false },
+        user: updated ?? {
+          ...user,
+          passwordHash,
+          mustChangePassword: false,
+          securityGeneration,
+        },
         sessionId,
         // A completed reset lands a normal persistent session (§6.1, #268).
         persistent: true,
@@ -1178,7 +1389,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
-      const sessionId = await sessions.create(user.id);
+      const sessionId = await sessions.create(user.id, user.securityGeneration, true, {
+        method: 'registration',
+      });
       return { status: 'authenticated', user, sessionId, persistent: true };
     },
 
@@ -1187,6 +1400,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // The session guard already resolved this user, but re-check the account.
       if (!user || user.status !== 'active') {
         await sessions.destroy(sessionId);
+        await invalidateSession(userId, sessionId);
         throw unauthorized();
       }
       if (!user.pinEnabled || !user.pinHash) {
@@ -1213,6 +1427,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           // full password login (§6.1). Clear the tally with the session.
           await redis.del(pinFailCountKey(user.id));
           await sessions.destroy(sessionId);
+          await invalidateSession(user.id, sessionId);
           throw unauthorized(
             'Too many incorrect PIN attempts. Please sign in with your password.',
             'PIN_FALLBACK_LOGIN',
@@ -1388,6 +1603,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       }
     },
 
+    async completeFirstRun(userId) {
+      const user = await userRepo.findById(userId);
+      if (!user) throw unauthorized();
+      // Not audited: this is a UI progress flag with no security meaning — it
+      // grants nothing and gates nothing but a client-side redirect.
+      const updated = await userRepo.markFirstRunCompleted(user.id, new Date());
+      return updated ?? user;
+    },
+
     async setPin(userId, pin, ip) {
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
@@ -1486,11 +1710,20 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const wasCurrent =
         currentSessionId !== null && sha256Base64Url(currentSessionId) === publicId;
       const revoked = await sessions.revokeForUser(userId, publicId);
+      if (revoked) {
+        await publishSessionInvalidation({
+          userId,
+          credentialId: publicId,
+          exceptCredentialId: null,
+        });
+      }
       return { revoked, wasCurrent };
     },
 
     async revokeOtherSessions(userId, currentSessionId) {
-      return sessions.revokeOthersForUser(userId, currentSessionId);
+      const revoked = await sessions.revokeOthersForUser(userId, currentSessionId);
+      if (revoked > 0) await invalidateAllSessions(userId, currentSessionId);
+      return revoked;
     },
   };
 }

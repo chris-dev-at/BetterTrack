@@ -9,6 +9,7 @@ import type {
   ImportRowFlag,
   ImportRowResult,
 } from '@bettertrack/contracts';
+import { IMPORT_MAX_DISTINCT_INSTRUMENTS } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
@@ -23,7 +24,8 @@ import {
 } from '../../lib/importsApi';
 import { listCashSources, listPortfolios } from '../../lib/portfolioApi';
 import { EmptyState, MoneyText } from '../../ui';
-import { Alert, Button, cx } from '../components/ui';
+import { Badge, Button, Field, PageHead, Select, type BadgeTone } from '../../ui/origin';
+import { Alert } from '../components/ui';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
 
 /**
@@ -36,32 +38,36 @@ import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitc
 
 const AUTO_BROKER = 'auto';
 
-const FLAG_CLASSES: Record<ImportRowFlag, string> = {
-  mapped: 'bg-emerald-500/15 text-emerald-300',
-  duplicate: 'bg-amber-500/15 text-amber-300',
-  unmapped: 'bg-sky-500/15 text-sky-300',
-  error: 'bg-red-500/15 text-red-300',
+const FLAG_TONES: Record<ImportRowFlag, BadgeTone> = {
+  mapped: 'pos',
+  duplicate: 'gold',
+  unmapped: 'blue',
+  error: 'neg',
 };
 
-const RESULT_CLASSES: Record<ImportRowResult, string> = {
-  applied: 'bg-emerald-500/15 text-emerald-300',
-  skipped_duplicate: 'bg-amber-500/15 text-amber-300',
-  skipped_unmapped: 'bg-sky-500/15 text-sky-300',
-  skipped_error: 'bg-neutral-500/15 text-neutral-300',
-  failed: 'bg-red-500/15 text-red-300',
+const RESULT_TONES: Record<ImportRowResult, BadgeTone> = {
+  applied: 'pos',
+  skipped_duplicate: 'gold',
+  skipped_unmapped: 'blue',
+  skipped_error: 'neutral',
+  failed: 'neg',
 };
+
+/**
+ * Upload rejections. §8 error messages are server-authored English, so the codes
+ * this surface owns a translated string for are mapped here and the rest still
+ * render verbatim — the systemic error-code → i18n sweep is #739.
+ */
+function uploadErrorMessage(err: unknown, t: TranslateFn): string {
+  if (!(err instanceof ApiError)) return t('portfolio.import.uploadFailed');
+  if (err.code === 'IMPORT_TOO_MANY_INSTRUMENTS') {
+    return t('portfolio.import.tooManyInstruments', { max: IMPORT_MAX_DISTINCT_INSTRUMENTS });
+  }
+  return err.message;
+}
 
 function FlagBadge({ flag, t }: { flag: ImportRowFlag; t: TranslateFn }) {
-  return (
-    <span
-      className={cx(
-        'inline-block rounded px-1.5 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide',
-        FLAG_CLASSES[flag],
-      )}
-    >
-      {t(`portfolio.import.flag.${flag}`)}
-    </span>
-  );
+  return <Badge tone={FLAG_TONES[flag]}>{t(`portfolio.import.flag.${flag}`)}</Badge>;
 }
 
 /** The instrument cell: resolved catalog asset, or the file's own identity. */
@@ -69,48 +75,44 @@ function InstrumentCell({ row }: { row: ImportRow }) {
   if (row.asset) {
     return (
       <span className="flex items-baseline gap-2">
-        <span className="font-mono text-xs font-semibold text-neutral-100">{row.asset.symbol}</span>
-        <span className="truncate text-xs text-neutral-500">{row.asset.name}</span>
+        <span className="bt-row-title">{row.asset.symbol}</span>
+        <span className="bt-row-sub truncate">{row.asset.name}</span>
       </span>
     );
   }
   const identity = row.name ?? row.symbol ?? row.isin;
   return identity ? (
-    <span className="truncate text-xs text-neutral-400">{identity}</span>
+    <span className="bt-muted truncate">{identity}</span>
   ) : (
-    <span className="text-neutral-600">{EM_DASH}</span>
+    <span className="bt-muted">{EM_DASH}</span>
   );
 }
 
 function PreviewRow({ row, t }: { row: ImportRow; t: TranslateFn }) {
   return (
-    <tr className="border-t border-neutral-800/60 text-xs">
-      <td className="px-3 py-2 text-neutral-500">{row.rowIndex}</td>
-      <td className="px-3 py-2 text-neutral-400">
-        {row.executedAt ? formatDate(row.executedAt) : EM_DASH}
-      </td>
-      <td className="px-3 py-2 text-neutral-300">
-        {row.kind ? t(`portfolio.import.kind.${row.kind}`) : EM_DASH}
-      </td>
-      <td className="max-w-56 px-3 py-2">
+    <tr>
+      <td className="bt-muted">{row.rowIndex}</td>
+      <td className="bt-muted">{row.executedAt ? formatDate(row.executedAt) : EM_DASH}</td>
+      <td className="bt-soft">{row.kind ? t(`portfolio.import.kind.${row.kind}`) : EM_DASH}</td>
+      <td className="max-w-56">
         <InstrumentCell row={row} />
       </td>
-      <td className="px-3 py-2 text-right tabular-nums text-neutral-300">
+      <td className="is-num bt-soft">
         {row.quantity === null ? EM_DASH : formatQuantity(row.quantity)}
       </td>
-      <td className="px-3 py-2 text-right tabular-nums text-neutral-300">
+      <td className="is-num bt-soft">
         {row.price === null || !row.currency ? (
           EM_DASH
         ) : (
           <MoneyText amount={row.price} currency={row.currency} />
         )}
       </td>
-      <td className="px-3 py-2 text-right tabular-nums text-neutral-300">
+      <td className="is-num bt-soft">
         {row.amountEur === null ? EM_DASH : <MoneyText amount={row.amountEur} currency="EUR" />}
       </td>
-      <td className="px-3 py-2">
+      <td>
         <FlagBadge flag={row.flag} t={t} />
-        {row.message ? <div className="mt-1 max-w-64 text-neutral-500">{row.message}</div> : null}
+        {row.message ? <div className="bt-meta mt-1 max-w-64">{row.message}</div> : null}
       </td>
     </tr>
   );
@@ -169,7 +171,7 @@ export function ImportPage() {
       setError(null);
     },
     onError: (err) => {
-      setError(err instanceof ApiError ? err.message : t('portfolio.import.uploadFailed'));
+      setError(uploadErrorMessage(err, t));
     },
   });
 
@@ -205,224 +207,212 @@ export function ImportPage() {
   const counts = preview?.batch.counts;
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold text-neutral-100">{t('portfolio.import.title')}</h1>
-        <p className="max-w-3xl text-sm text-neutral-400">{t('portfolio.import.intro')}</p>
-      </header>
+    <div>
+      <PageHead title={t('portfolio.import.title')}>
+        <p className="bt-page-sub" style={{ maxWidth: 720 }}>
+          {t('portfolio.import.intro')}
+        </p>
+      </PageHead>
 
       {error ? <Alert tone="error">{error}</Alert> : null}
 
       {/* ── Step 1: file + broker ── */}
-      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950/40 p-4">
-        <h2 className="text-sm font-semibold text-neutral-200">
-          {t('portfolio.import.uploadTitle')}
-        </h2>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-          <label className="flex flex-col gap-1 text-xs text-neutral-400">
-            {t('portfolio.import.fileLabel')}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv,text/csv"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 file:mr-3 file:rounded file:border-0 file:bg-neutral-700 file:px-2 file:py-1 file:text-xs file:text-neutral-100"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-neutral-400">
-            {t('portfolio.import.brokerLabel')}
-            <select
-              value={brokerChoice}
-              onChange={(e) => setBrokerChoice(e.target.value)}
-              className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200"
+      <section className="bt-section">
+        <div
+          className="bt-panel bt-panel--soft bt-panel--pad flex flex-col gap-3"
+          style={{ borderColor: 'var(--bt-border-strong)', borderStyle: 'dashed' }}
+        >
+          <h2 className="bt-h3">{t('portfolio.import.uploadTitle')}</h2>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <Field htmlFor="import-file" label={t('portfolio.import.fileLabel')}>
+              <input
+                accept=".csv,text/csv"
+                className="bt-input cursor-pointer file:mr-3 file:cursor-pointer file:rounded file:border-0 file:bg-[var(--bt-surface-strong)] file:px-2 file:py-1 file:text-xs file:font-medium file:text-[var(--bt-text)]"
+                id="import-file"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                ref={fileInputRef}
+                type="file"
+              />
+            </Field>
+            <Field htmlFor="import-broker" label={t('portfolio.import.brokerLabel')}>
+              <Select
+                id="import-broker"
+                onChange={(e) => setBrokerChoice(e.target.value)}
+                value={brokerChoice}
+              >
+                <option value={AUTO_BROKER}>{t('portfolio.import.brokerAuto')}</option>
+                {(brokersQuery.data?.brokers ?? []).map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.label}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Button
+              disabled={!file || !activePortfolio}
+              loading={uploadMutation.isPending}
+              onClick={upload}
             >
-              <option value={AUTO_BROKER}>{t('portfolio.import.brokerAuto')}</option>
-              {(brokersQuery.data?.brokers ?? []).map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <Button
-            type="button"
-            onClick={upload}
-            disabled={!file || !activePortfolio || uploadMutation.isPending}
-          >
-            {uploadMutation.isPending
-              ? t('portfolio.import.uploading')
-              : t('portfolio.import.uploadCta')}
-          </Button>
+              {uploadMutation.isPending
+                ? t('portfolio.import.uploading')
+                : t('portfolio.import.uploadCta')}
+            </Button>
+          </div>
         </div>
       </section>
 
       {/* ── Step 2: staged preview + confirm ── */}
       {preview && counts ? (
-        <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h2 className="text-sm font-semibold text-neutral-200">
-              {t('portfolio.import.previewTitle', { filename: preview.batch.filename })}
-            </h2>
-            <span className="text-xs text-neutral-500">
-              {t('portfolio.import.detectedBroker', { broker: preview.batch.brokerLabel })}
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-2 text-xs">
-            <span className="text-neutral-400">
-              {t('portfolio.import.counts.total', { count: counts.total })}
-            </span>
-            <span className="text-emerald-300">
-              {t('portfolio.import.counts.mapped', { count: counts.mapped })}
-            </span>
-            <span className="text-amber-300">
-              {t('portfolio.import.counts.duplicate', { count: counts.duplicate })}
-            </span>
-            <span className="text-sky-300">
-              {t('portfolio.import.counts.unmapped', { count: counts.unmapped })}
-            </span>
-            <span className="text-red-300">
-              {t('portfolio.import.counts.error', { count: counts.error })}
-            </span>
-          </div>
-
-          {preview.rows.length === 0 ? (
-            <EmptyState
-              icon="📄"
-              title={t('portfolio.import.previewEmptyTitle')}
-              description={t('portfolio.import.previewEmptyBody')}
-            />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[44rem]">
-                <thead>
-                  <tr className="text-[0.65rem] uppercase tracking-wide text-neutral-600">
-                    <th scope="col" className="px-3 py-1 text-left font-medium">
-                      {t('portfolio.import.table.row')}
-                    </th>
-                    <th scope="col" className="px-3 py-1 text-left font-medium">
-                      {t('portfolio.import.table.date')}
-                    </th>
-                    <th scope="col" className="px-3 py-1 text-left font-medium">
-                      {t('portfolio.import.table.type')}
-                    </th>
-                    <th scope="col" className="px-3 py-1 text-left font-medium">
-                      {t('portfolio.import.table.instrument')}
-                    </th>
-                    <th scope="col" className="px-3 py-1 text-right font-medium">
-                      {t('portfolio.import.table.quantity')}
-                    </th>
-                    <th scope="col" className="px-3 py-1 text-right font-medium">
-                      {t('portfolio.import.table.price')}
-                    </th>
-                    <th scope="col" className="px-3 py-1 text-right font-medium">
-                      {t('portfolio.import.table.amount')}
-                    </th>
-                    <th scope="col" className="px-3 py-1 text-left font-medium">
-                      {t('portfolio.import.table.status')}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {preview.rows.map((row) => (
-                    <PreviewRow key={row.id} row={row} t={t} />
-                  ))}
-                </tbody>
-              </table>
+        <section className="bt-section">
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="bt-h3">
+                {t('portfolio.import.previewTitle', { filename: preview.batch.filename })}
+              </h2>
+              <span className="bt-meta">
+                {t('portfolio.import.detectedBroker', { broker: preview.batch.brokerLabel })}
+              </span>
             </div>
-          )}
+            <div className="flex flex-wrap gap-2">
+              <Badge>{t('portfolio.import.counts.total', { count: counts.total })}</Badge>
+              <Badge tone="pos">
+                {t('portfolio.import.counts.mapped', { count: counts.mapped })}
+              </Badge>
+              <Badge tone="gold">
+                {t('portfolio.import.counts.duplicate', { count: counts.duplicate })}
+              </Badge>
+              <Badge tone="blue">
+                {t('portfolio.import.counts.unmapped', { count: counts.unmapped })}
+              </Badge>
+              <Badge tone="neg">
+                {t('portfolio.import.counts.error', { count: counts.error })}
+              </Badge>
+            </div>
 
-          {result === null ? (
-            <div className="flex flex-col gap-3 border-t border-neutral-800/60 pt-3 sm:flex-row sm:items-end sm:justify-between">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-                <label className="flex flex-col gap-1 text-xs text-neutral-400">
-                  {t('portfolio.import.cashSourceLabel')}
-                  <select
-                    value={cashSourceId}
-                    onChange={(e) => setCashSourceId(e.target.value)}
-                    className="rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200"
+            {preview.rows.length === 0 ? (
+              <EmptyState
+                description={t('portfolio.import.previewEmptyBody')}
+                icon="📄"
+                title={t('portfolio.import.previewEmptyTitle')}
+              />
+            ) : (
+              <div className="bt-table-wrap bt-table-wrap--panel">
+                <table className="bt-table" style={{ minWidth: '44rem' }}>
+                  <thead>
+                    <tr>
+                      <th scope="col">{t('portfolio.import.table.row')}</th>
+                      <th scope="col">{t('portfolio.import.table.date')}</th>
+                      <th scope="col">{t('portfolio.import.table.type')}</th>
+                      <th scope="col">{t('portfolio.import.table.instrument')}</th>
+                      <th className="is-num" scope="col">
+                        {t('portfolio.import.table.quantity')}
+                      </th>
+                      <th className="is-num" scope="col">
+                        {t('portfolio.import.table.price')}
+                      </th>
+                      <th className="is-num" scope="col">
+                        {t('portfolio.import.table.amount')}
+                      </th>
+                      <th scope="col">{t('portfolio.import.table.status')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.rows.map((row) => (
+                      <PreviewRow key={row.id} row={row} t={t} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {result === null ? (
+              <div
+                className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"
+                style={{ borderTop: '1px solid var(--bt-border)', paddingTop: 12 }}
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                  <Field htmlFor="import-cash-source" label={t('portfolio.import.cashSourceLabel')}>
+                    <Select
+                      id="import-cash-source"
+                      onChange={(e) => setCashSourceId(e.target.value)}
+                      value={cashSourceId}
+                    >
+                      <option value="">{t('portfolio.import.cashSourceMain')}</option>
+                      {(cashSourcesQuery.data?.sources ?? [])
+                        .filter((s) => !s.isMain)
+                        .map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                          </option>
+                        ))}
+                    </Select>
+                  </Field>
+                  <label className="flex items-center gap-2 pb-2">
+                    <input
+                      checked={linkCash}
+                      className="h-4 w-4"
+                      onChange={(e) => setLinkCash(e.target.checked)}
+                      style={{ accentColor: 'var(--bt-gold)' }}
+                      type="checkbox"
+                    />
+                    <span className="bt-meta">{t('portfolio.import.linkCashLabel')}</span>
+                  </label>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    disabled={discardMutation.isPending || applyMutation.isPending}
+                    onClick={() => discardMutation.mutate()}
                   >
-                    <option value="">{t('portfolio.import.cashSourceMain')}</option>
-                    {(cashSourcesQuery.data?.sources ?? [])
-                      .filter((s) => !s.isMain)
-                      .map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <label className="flex items-center gap-2 pb-2 text-xs text-neutral-300">
-                  <input
-                    type="checkbox"
-                    checked={linkCash}
-                    onChange={(e) => setLinkCash(e.target.checked)}
-                    className="h-4 w-4 rounded border-neutral-600 bg-neutral-900"
-                  />
-                  {t('portfolio.import.linkCashLabel')}
-                </label>
+                    {t('portfolio.import.discardCta')}
+                  </Button>
+                  <Button
+                    disabled={applyMutation.isPending || counts.mapped === 0}
+                    loading={applyMutation.isPending}
+                    onClick={() => applyMutation.mutate()}
+                    variant="primary"
+                  >
+                    {applyMutation.isPending
+                      ? t('portfolio.import.applying')
+                      : t('portfolio.import.applyCta', { count: counts.mapped })}
+                  </Button>
+                </div>
               </div>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => discardMutation.mutate()}
-                  disabled={discardMutation.isPending || applyMutation.isPending}
-                >
-                  {t('portfolio.import.discardCta')}
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() => applyMutation.mutate()}
-                  disabled={applyMutation.isPending || counts.mapped === 0}
-                >
-                  {applyMutation.isPending
-                    ? t('portfolio.import.applying')
-                    : t('portfolio.import.applyCta', { count: counts.mapped })}
-                </Button>
-              </div>
-            </div>
-          ) : null}
-          {result === null && counts.mapped === 0 ? (
-            <p className="text-xs text-neutral-500">{t('portfolio.import.nothingToApply')}</p>
-          ) : null}
+            ) : null}
+            {result === null && counts.mapped === 0 ? (
+              <p className="bt-meta">{t('portfolio.import.nothingToApply')}</p>
+            ) : null}
+          </div>
         </section>
       ) : null}
 
       {/* ── Step 3: per-row result report ── */}
       {result ? (
-        <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950/40 p-4">
-          <h2 className="text-sm font-semibold text-neutral-200">
-            {t('portfolio.import.resultTitle')}
-          </h2>
-          <p className="text-sm text-neutral-300">
-            {t('portfolio.import.resultSummary', {
-              applied: result.applied,
-              skipped: result.skipped,
-              failed: result.failed,
-            })}
-          </p>
-          <ul className="flex flex-col gap-1">
-            {result.rows.map((row) => (
-              <li key={row.id} className="flex flex-wrap items-baseline gap-2 text-xs">
-                <span className="text-neutral-500">
-                  {t('portfolio.import.table.row')} {row.rowIndex}
-                </span>
-                <span
-                  className={cx(
-                    'inline-block rounded px-1.5 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide',
-                    RESULT_CLASSES[row.result],
-                  )}
-                >
-                  {t(`portfolio.import.result.${row.result}`)}
-                </span>
-                {row.message ? <span className="text-neutral-500">{row.message}</span> : null}
-              </li>
-            ))}
-          </ul>
-          <div>
-            <Button type="button" variant="secondary" onClick={reset}>
-              {t('portfolio.import.startOver')}
-            </Button>
+        <section className="bt-section">
+          <div className="flex flex-col gap-3">
+            <h2 className="bt-h3">{t('portfolio.import.resultTitle')}</h2>
+            <p className="bt-soft">
+              {t('portfolio.import.resultSummary', {
+                applied: result.applied,
+                skipped: result.skipped,
+                failed: result.failed,
+              })}
+            </p>
+            <ul className="bt-band flex flex-col">
+              {result.rows.map((row) => (
+                <li className="flex flex-wrap items-baseline gap-2 py-2" key={row.id}>
+                  <span className="bt-meta">
+                    {t('portfolio.import.table.row')} {row.rowIndex}
+                  </span>
+                  <Badge tone={RESULT_TONES[row.result]}>
+                    {t(`portfolio.import.result.${row.result}`)}
+                  </Badge>
+                  {row.message ? <span className="bt-meta">{row.message}</span> : null}
+                </li>
+              ))}
+            </ul>
+            <div>
+              <Button onClick={reset}>{t('portfolio.import.startOver')}</Button>
+            </div>
           </div>
         </section>
       ) : null}

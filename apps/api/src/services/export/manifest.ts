@@ -212,6 +212,31 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   expense_budget_fires: skipped(
     'Expense budget per-period fired-marker (V5-P9) — internal exactly-once alert bookkeeping, not user data.',
   ),
+  // V5 cash fusion (migration 0075): the classification layer ON the exported
+  // cash movements — flat tags, the movement↔tag links, portfolio-scoped budgets
+  // and tag-assigning rules. The money itself is already exported as
+  // `cashMovements`; these are user-owned labels/config whose own export coverage
+  // lands with the same later export sweep as expense_*/standing_orders (the
+  // phase that also re-points the routes), and the fired-marker is internal
+  // exactly-once alert bookkeeping.
+  cash_tags: skipped(
+    'Cash-flow tags (V5 cash fusion) — user-owned labels on the exported cash movements; export coverage lands with a later export sweep.',
+  ),
+  cash_movement_tags: skipped(
+    'Cash-flow movement↔tag links (V5 cash fusion) — labelling of rows already exported as cashMovements; export coverage lands with a later export sweep.',
+  ),
+  cash_budgets: skipped(
+    'Cash-flow per-tag budgets (V5 cash fusion); user-owned config, export coverage lands with a later export sweep.',
+  ),
+  cash_budget_fires: skipped(
+    'Cash-flow budget per-period fired-marker (V5 cash fusion) — internal exactly-once alert bookkeeping, not user data.',
+  ),
+  cash_rules: skipped(
+    'Cash-flow auto-tagging rules (V5 cash fusion); user-owned config, export coverage lands with a later export sweep.',
+  ),
+  cash_rule_tags: skipped(
+    'Cash-flow rule↔tag links (V5 cash fusion); part of the rule config, export coverage lands with a later export sweep.',
+  ),
   // V5-P10 outbound webhooks (#648): the subscription config is user-owned but
   // carries a stored signing secret (encrypted at rest, shown once) that must
   // never leave the server — like discord_webhooks; its non-secret config export
@@ -242,6 +267,15 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   ),
   paranoid_vault_history: skipped(
     'Paranoid-vault bounded ciphertext history (V5-P13) — the corruption/bad-write safety net; opaque superseded blobs, not user data to carry out.',
+  ),
+  paranoid_vault_server_candidates: skipped(
+    'Paranoid-vault inactive server candidate (V5-P13 PD6) — short-lived opaque ciphertext staged only for a verified media transition.',
+  ),
+  paranoid_vault_retired: skipped(
+    'Paranoid-vault recoverable retired ciphertext (V5-P13 PD6) — opaque copies retained only until a client-proved purge.',
+  ),
+  paranoid_vault_retirements: skipped(
+    'Paranoid-vault retirement proof and retention bookkeeping (V5-P13 PD6) — non-portfolio transition metadata.',
   ),
   paranoid_rehydration_receipts: skipped(
     'Paranoid-disable idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
@@ -341,6 +375,15 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   expense_rules: 'vault',
   expense_budgets: 'vault',
   expense_budget_fires: 'vault',
+  // V5 cash fusion — the tag/budget/rule layer on the cash ledger. Money content
+  // by construction (a tag name IS spending information), so it goes where the
+  // movements it labels go.
+  cash_tags: 'vault',
+  cash_movement_tags: 'vault',
+  cash_budgets: 'vault',
+  cash_budget_fires: 'vault',
+  cash_rules: 'vault',
+  cash_rule_tags: 'vault',
 
   // ── server: identity + auth (kept, unchanged) ──────────────────────────────
   users: 'server',
@@ -426,6 +469,9 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   // explicitly server-classified (§1).
   paranoid_vaults: 'server',
   paranoid_vault_history: 'server',
+  paranoid_vault_server_candidates: 'server',
+  paranoid_vault_retired: 'server',
+  paranoid_vault_retirements: 'server',
   // PD3a completion receipt + non-sensitive data-home metadata remain server-side.
   paranoid_rehydration_receipts: 'server',
 };
@@ -456,6 +502,26 @@ export const PARANOID_REHYDRATION_POLICY: Record<string, ParanoidRehydrationPoli
   portfolio_daily_snapshots: purgeOnly(),
   portfolio_snapshot_state: purgeOnly(),
   expense_budget_fires: purgeOnly(),
+  // V5 cash fusion (migration 0075) — PURGE-ONLY *for now*, and that is a
+  // deliberate, bounded statement of today's truth rather than a preference:
+  // phase 1 ships only the schema + the backfill, so no service writes these
+  // tables and the client's vault document emits none of these entity kinds. A
+  // `restore` policy would claim coverage the client cannot deliver — exactly
+  // what this file's header forbids ("a classification can never claim coverage
+  // the collector doesn't deliver") — and would ship six dead insertion branches.
+  //
+  // THE PHASE THAT GIVES THESE TABLES A WRITER MUST FLIP THEM TO `restore`,
+  // otherwise disabling paranoid mode silently drops a user's tags, budgets and
+  // rules. The strict payload schemas already exist (`VAULT_ENTITY_ROW_SCHEMAS`),
+  // so the flip is policy + handler + insert branch. `paranoidClassification`'s
+  // "cash-flow tables" test fails the moment a cash repository appears, so the
+  // requirement cannot be forgotten rather than merely being written down here.
+  cash_tags: purgeOnly(),
+  cash_movement_tags: purgeOnly(),
+  cash_budgets: purgeOnly(),
+  cash_budget_fires: purgeOnly(),
+  cash_rules: purgeOnly(),
+  cash_rule_tags: purgeOnly(),
 };
 
 /**

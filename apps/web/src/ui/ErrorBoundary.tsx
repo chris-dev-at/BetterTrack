@@ -1,7 +1,6 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Component, type ReactNode } from 'react';
 
 import { useT } from '../i18n';
-import { reportError } from '../lib/sentry';
 
 export interface ErrorBoundaryProps {
   children: ReactNode;
@@ -10,11 +9,41 @@ export interface ErrorBoundaryProps {
    * button is shown.
    */
   fallback?: ReactNode;
+  /**
+   * When this value changes while the boundary is showing an error, the error
+   * clears and children re-render. Unlike keying the boundary itself (the old
+   * shell pattern), a reset key never unmounts healthy children — route
+   * transitions keep long-lived subtrees (overlays, docks) mounted.
+   */
+  resetKey?: unknown;
 }
 
-interface ErrorBoundaryState {
-  hasError: boolean;
-  error: Error | null;
+type ErrorBoundaryState =
+  | { hasError: false; correlationId: null }
+  | { hasError: true; correlationId: string };
+
+const correlationIds = new WeakMap<object, string>();
+
+function createCorrelationId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+
+  const random = Math.random().toString(36).slice(2, 10).padEnd(8, '0');
+  return `bt-${Date.now().toString(36)}-${random}`;
+}
+
+function correlationIdFor(error: unknown): string {
+  if (typeof error !== 'object' || error === null) {
+    return createCorrelationId();
+  }
+
+  const existing = correlationIds.get(error);
+  if (existing) return existing;
+
+  const correlationId = createCorrelationId();
+  correlationIds.set(error, correlationId);
+  return correlationId;
 }
 
 /**
@@ -25,52 +54,55 @@ interface ErrorBoundaryState {
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, correlationId: null };
   }
 
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return { hasError: true, error };
+  static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
+    return { hasError: true, correlationId: correlationIdFor(error) };
   }
 
-  override componentDidCatch(error: Error, info: ErrorInfo): void {
-    // Report render-time errors to error tracking (§13.4 V4-P5a). A no-op when
-    // Sentry is disabled (no DSN), so behavior is unchanged without a DSN.
-    reportError(error, { componentStack: info.componentStack });
+  override componentDidUpdate(prevProps: ErrorBoundaryProps): void {
+    if (this.state.hasError && prevProps.resetKey !== this.props.resetKey) this.reset();
   }
 
   reset = (): void => {
-    this.setState({ hasError: false, error: null });
+    this.setState({ hasError: false, correlationId: null });
   };
 
   override render(): ReactNode {
     if (!this.state.hasError) return this.props.children;
     if (this.props.fallback !== undefined) return this.props.fallback;
 
-    return <DefaultErrorFallback errorMessage={this.state.error?.message} onRetry={this.reset} />;
+    return <DefaultErrorFallback correlationId={this.state.correlationId} onRetry={this.reset} />;
   }
 }
 
 /** Hook-friendly default fallback — class components can't call `useT` themselves. */
 function DefaultErrorFallback({
-  errorMessage,
+  correlationId,
   onRetry,
 }: {
-  errorMessage: string | undefined;
+  correlationId: string;
   onRetry: () => void;
 }) {
   const t = useT();
   return (
     <div
       role="alert"
-      className="flex flex-col items-center gap-4 rounded-lg border border-red-900 bg-red-950/40 px-6 py-8 text-center"
+      className="flex flex-col items-center gap-4 rounded-lg border px-6 py-8 text-center"
+      // Same negative-tone recipe the shared Alert uses: a 10%-alpha wash with a
+      // low-alpha border of the same hue, both derived from the semantic token.
+      style={{
+        background: 'var(--bt-neg-soft)',
+        borderColor: 'color-mix(in srgb, var(--bt-neg) 26%, transparent)',
+      }}
     >
-      <p className="text-sm font-medium text-red-300">{t('common.errorTitle')}</p>
-      {errorMessage ? <p className="text-xs text-neutral-500">{errorMessage}</p> : null}
-      <button
-        type="button"
-        onClick={onRetry}
-        className="rounded-md bg-neutral-800 px-3 py-1.5 text-sm text-neutral-100 hover:bg-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-      >
+      <p className="bt-neg text-sm font-medium">{t('common.errorTitle')}</p>
+      <p className="bt-muted text-sm">{t('common.errorFallbackMessage')}</p>
+      <p className="bt-muted font-mono text-xs">
+        {t('common.errorCorrelationId', { id: correlationId })}
+      </p>
+      <button type="button" onClick={onRetry} className="bt-btn bt-btn--sm">
         {t('common.retry')}
       </button>
     </div>

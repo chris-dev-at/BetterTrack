@@ -19,6 +19,11 @@ HB=$STATUS/worker-$WORKER_ID.hb
 : "${MF_PROTOCOL_ATTEMPTS:=2}"; : "${MF_PROTOCOL_RETRY_SLEEP:=20}"
 : "${MF_GH_READ_ATTEMPTS:=3}"; : "${MF_GH_READ_RETRY_SLEEP:=10}"
 : "${MF_COMMENT_DISCOVERY_ATTEMPTS:=4}"; : "${MF_COMMENT_DISCOVERY_SLEEP:=5}"
+: "${MF_REVALIDATE_MAX:=3}"; : "${MF_QUEUE_PROBE_MAX:=40}"
+# A non-numeric knob must disable nothing silently: fall back to the default.
+case "$MF_REVALIDATE_MAX" in ''|*[!0-9]*) MF_REVALIDATE_MAX=3;; esac
+case "$MF_QUEUE_PROBE_MAX" in ''|*[!0-9]*) MF_QUEUE_PROBE_MAX=40;; esac
+MF_REVALIDATE_MAX=$((10#$MF_REVALIDATE_MAX)); MF_QUEUE_PROBE_MAX=$((10#$MF_QUEUE_PROBE_MAX))
 export LOG_TAG="[w$WORKER_ID]"
 export MF_EVENTLOG=$LOGS/events.log
 export WORKER_ID
@@ -34,9 +39,11 @@ if [ "${MF_SOURCE_ONLY:-0}" != 1 ]; then
   . /work/mf/mflib.sh
 fi
 
-# owner 2026-07-22 (b): Fable meter critical — EVERY stage of diff:max issues runs at hard (Opus),
-# writer included; only the composer (master, rare ≤2-issues runs) still spends Fable.
-post_write_diff(){ local d="$1"; [ "$d" = max ] && d=hard; echo "$d"; }
+# The 2026-07-22 "Fable meter critical" post_write_diff demotion (every diff:max
+# stage forced to hard) is GONE — superseded by the owner's 2026-07-28 per-slot
+# routing directive: diff:max now resolves to the max row as configured. To
+# re-cap Fable, edit the max row's writer/completion slots in models.json; never
+# reinstate a blanket demotion here, it silently bypasses the configured table.
 
 atomic_write(){ local tmp; tmp=$(mktemp "$(dirname "$1")/.tmp.XXXXXX") || return 1
   printf '%s\n' "$2" >"$tmp" && mv -f "$tmp" "$1"; }
@@ -105,7 +112,7 @@ hb_stop(){
 enqueue_merge(){ # $1=pr $2=issue $3=approved head $4=reviewer|checker $5=comment id
   local pr=$1 issue=$2 approved_head=$3 approval_kind=$4 approval_comment_id=$5
   local existing touches payload
-  existing=$(find "$QUEUE" -maxdepth 1 -type f -name "*-pr$pr.json" -print -quit 2>/dev/null)
+  existing=$(find "$QUEUE" -maxdepth 1 -type f -name "[0-9]*-pr$pr.json" -print -quit 2>/dev/null)
   if [ -n "$existing" ]; then
     jq -e --arg h "$approved_head" --arg k "$approval_kind" --arg id "$approval_comment_id" \
       '.approved_head==$h and .approval_kind==$k and (.approval_comment_id|tostring)==$id' \
@@ -149,8 +156,11 @@ add_dep_to_issue(){ # $1=issue $2=dep-number
 }
 
 issue_json_read(){ # $1=issue number
-  gh api "repos/$REPO/issues/$1" \
-    --jq '{number,title,body,labels:[.labels[].name],created_at}' 2>/dev/null
+  # Single-parse rule (see mf_pr_comments_json): never re-parse gojq output —
+  # this JSON feeds mf_issue_json_valid, which parses it with C jq.
+  local raw
+  raw=$(gh api "repos/$REPO/issues/$1" 2>/dev/null) || return 1
+  jq -c '{number,title,body,labels:[.labels[].name],created_at}' <<<"$raw"
 }
 
 # A checker-created relocation is deliberately born without `autopilot`. Only
@@ -236,7 +246,7 @@ review_comment_discover(){ # $1=before comments JSON $2=PR $3=expected head
 }
 
 run_reviewer(){ # $1=issue $2=pr $3=difficulty
-  local n=$1 pr=$2 difficulty=$3 attempt before="" head="" transport prompt
+  local n=$1 pr=$2 difficulty=$3 attempt before="" head="" transport prompt slot
   for attempt in $(seq 1 "$MF_PROTOCOL_ATTEMPTS"); do
     pr_snapshot "$pr" || { log "review protocol: pre-read failed"; continue; }
     if [ -z "$head" ] || [ "$PR_SNAPSHOT_HEAD" != "$head" ]; then
@@ -255,7 +265,13 @@ run_reviewer(){ # $1=issue $2=pr $3=difficulty
     prompt=$(sed \
       -e "s/{{PR}}/$pr/g" -e "s/{{N}}/$n/g" -e "s/{{HEAD}}/$head/g" \
       "$MF_PROMPTS/reviewer.md")
-    if mf_cc reviewer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
+    # First-review-vs-later is derived from evidence that already exists on the
+    # PR: a prior canonical FACTORY-VERDICT comment (any head) means a review
+    # already happened, so this run is completion-model work. No durable state
+    # file — a resume after a restart re-reads the same comments and lands on
+    # the same answer.
+    if mf_has_canonical_review "$before"; then slot=completion; else slot=reviewer1; fi
+    if CC_SLOT=$slot mf_cc reviewer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
     if review_comment_discover "$before" "$pr" "$head"; then
       LAST_REVIEW_VERDICT=$MF_COMMENT_MARKER
       LAST_REVIEW_BODY=$MF_COMMENT_BODY
@@ -282,7 +298,9 @@ run_fixer(){ # $1=issue $2=pr $3=difficulty $4=optional diagnosis prefix
     prompt="${prefix}${prefix:+
 
 }$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")"
-    if mf_cc fixer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
+    # Fixers only ever run after a rejecting review, so they are always
+    # completion-slot work by construction.
+    if CC_SLOT=completion mf_cc fixer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
     after=$(mf_pr_head "$pr") || { log "fixer protocol: post-head read failed"; continue; }
     if [ -n "$after" ] && [ "$after" != "$before" ]; then
       LAST_FIXER_HEAD=$after
@@ -298,7 +316,7 @@ run_fixer(){ # $1=issue $2=pr $3=difficulty $4=optional diagnosis prefix
 # the second fixer is never allowed to fall through to triage unreviewed.
 review_fix_cycle(){ # $1=issue $2=pr
   local n=$1 pr=$2 review_diff round
-  review_diff=$(post_write_diff "$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")")
+  review_diff=$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")
   REVIEW_CYCLE_RESULT=protocol
   run_reviewer "$n" "$pr" "$review_diff" || return 1
   if [ "$LAST_REVIEW_VERDICT" = "FACTORY-VERDICT: APPROVE" ]; then
@@ -308,7 +326,7 @@ review_fix_cycle(){ # $1=issue $2=pr
   for round in 1 2; do
     log "fix round $round/2: changes requested"
     wstatus fixing "$n" "$pr"
-    run_fixer "$n" "$pr" "$(post_write_diff "$CYCLE_DIFF")" || return 1
+    run_fixer "$n" "$pr" "$CYCLE_DIFF" || return 1
     wstatus reviewing "$n" "$pr"
     run_reviewer "$n" "$pr" "$review_diff" || return 1
     if [ "$LAST_REVIEW_VERDICT" = "FACTORY-VERDICT: APPROVE" ]; then
@@ -353,10 +371,20 @@ run_checker(){ # $1=issue $2=pr $3=optional durable checkpoint file
       -e "s/{{N}}/$n/g" -e "s/{{PR}}/$pr/g" -e "s/{{HEAD}}/$head/g" \
       -e "s|{{RUN_ID}}|$run_id|g" -e "s|{{MANIFEST}}|$manifest|g" \
       "$MF_PROMPTS/checker.md")
+    if [ "${TRIAGE_RELOC:-false}" = true ]; then
+      prompt="$prompt
+
+HARD CONSTRAINT FOR THIS INVOCATION: issue #$n was itself created by an earlier
+checker relocation. The triage chain is capped at depth 1, so Case 2 (RELOCATE)
+is NOT available to you — do not create a follow-up issue and do not emit a
+RELOCATE verdict; orchestration will refuse it and the issue will go to a human.
+Choose Case 1 (RETRY_ESCALATED) with a precise diagnosis, or Case 3
+(NEEDS_HUMAN) if only a human can settle it."
+    fi
     prompt="$prompt
 
 $(checker_materials "$n" "$pr")"
-    if mf_cc checker "$(role_diff checker)" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
+    if CC_SLOT=completion mf_cc checker "$(role_diff checker)" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
     pr_snapshot "$pr" || { log "checker protocol: post-PR read failed; suppressing model retry"; return 1; }
     after_comments=$PR_SNAPSHOT_COMMENTS
     after_parent=$(mf_pr_comments_json "$n") \
@@ -460,12 +488,16 @@ triage_state_save(){ # $1=file $2=issue $3=pr $4=stage
     --arg run_id "${LAST_CHECKER_RUN_ID:-}" --arg difficulty "${TRIAGE_ESC_DIFF:-}" \
     --arg fixer_base_head "${TRIAGE_FIXER_BASE_HEAD:-}" \
     --arg fixer_head "${TRIAGE_FIXER_HEAD:-}" --arg outcome "${TRIAGE_OUTCOME:-}" \
+    --argjson revalidations "${TRIAGE_REVALIDATIONS:-0}" \
+    --argjson reviews_spent "${TRIAGE_REVIEWS_SPENT:-0}" \
+    --argjson probe_failures "${TRIAGE_PROBE_FAILURES:-0}" \
     --arg at "$(date -Is)" \
     '{issue:$issue,pr:$pr,stage:$stage,
       checker:{verdict:$verdict,body:$body,comment_id:$comment_id,head:$head,
         new_issue:$new_issue,disposition:$disposition,run_id:$run_id},
       escalated:{difficulty:$difficulty,fixer_base_head:$fixer_base_head,fixer_head:$fixer_head},
-      outcome:$outcome,updated_at:$at}')"
+      outcome:$outcome,revalidations:$revalidations,
+      reviews_spent:$reviews_spent,probe_failures:$probe_failures,updated_at:$at}')"
 }
 
 triage_state_load(){ # $1=file
@@ -482,6 +514,15 @@ triage_state_load(){ # $1=file
   TRIAGE_FIXER_BASE_HEAD=$(jq -r '.escalated.fixer_base_head // ""' "$f")
   TRIAGE_FIXER_HEAD=$(jq -r '.escalated.fixer_head // ""' "$f")
   TRIAGE_OUTCOME=$(jq -r '.outcome // ""' "$f")
+  TRIAGE_REVALIDATIONS=$(jq -r '.revalidations // 0' "$f")
+  case "$TRIAGE_REVALIDATIONS" in *[!0-9]*|"") TRIAGE_REVALIDATIONS=0;; esac
+  TRIAGE_REVALIDATIONS=$((10#$TRIAGE_REVALIDATIONS))
+  TRIAGE_REVIEWS_SPENT=$(jq -r '.reviews_spent // 0' "$f")
+  case "$TRIAGE_REVIEWS_SPENT" in *[!0-9]*|"") TRIAGE_REVIEWS_SPENT=0;; esac
+  TRIAGE_REVIEWS_SPENT=$((10#$TRIAGE_REVIEWS_SPENT))
+  TRIAGE_PROBE_FAILURES=$(jq -r '.probe_failures // 0' "$f")
+  case "$TRIAGE_PROBE_FAILURES" in *[!0-9]*|"") TRIAGE_PROBE_FAILURES=0;; esac
+  TRIAGE_PROBE_FAILURES=$((10#$TRIAGE_PROBE_FAILURES))
 }
 
 triage_accept_checkpoint(){ # $1=state file $2=issue $3=pr
@@ -502,7 +543,7 @@ run_escalated_fixer_once(){ # $1=issue $2=pr $3=difficulty $4=known base head $5
   prompt="${prefix}${prefix:+
 
 }$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")"
-  if mf_cc fixer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
+  if CC_SLOT=completion mf_cc fixer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
   after=$(mf_pr_head "$pr") || {
     log "escalated fixer: post-head read failed (transport=$transport)"
     return 1
@@ -527,12 +568,16 @@ close_pr_idempotent(){ # $1=pr
 }
 
 triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked, 2=protocol
-  local n=$1 pr=$2 reloc=$3 sf current esc
+  local n=$1 pr=$2 reloc=$3 sf current esc prstate qentry
+  # The chain cap exists to stop relocate chains, not to deny a relocated issue
+  # any triage at all. Blanket-failing here meant a split child's FIRST rejection
+  # was terminal — no diagnosis, no escalated retry — which killed four children
+  # on 2026-07-27 after each had already paid for a full write+review cycle.
+  # A relocated issue now gets the normal one-pass triage; only the RELOCATE
+  # verdict is refused, so depth stays capped at 1.
+  TRIAGE_RELOC=$reloc
+  TRIAGE_FAIL_REASON=""
   sf=$(triage_state_file "$n" "$pr")
-  if [ "$reloc" = true ] && [ ! -f "$sf" ]; then
-    mark_human "$n" "relocated issue rejected again — triage chain cap (depth 1)"
-    return 1
-  fi
   hb_ensure
   wstatus triage "$n" "$pr"
 
@@ -542,7 +587,8 @@ triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked
     LAST_CHECKER_VERDICT=""; LAST_CHECKER_BODY=""; LAST_CHECKER_COMMENT_ID=""
     LAST_CHECKER_HEAD=""; LAST_CHECKER_NEW=""; LAST_CHECKER_PR_DISPOSITION=""
     LAST_CHECKER_RUN_ID=""; TRIAGE_ESC_DIFF=""; TRIAGE_FIXER_BASE_HEAD=""
-    TRIAGE_FIXER_HEAD=""; TRIAGE_OUTCOME=""
+    TRIAGE_FIXER_HEAD=""; TRIAGE_OUTCOME=""; TRIAGE_REVALIDATIONS=0
+    TRIAGE_REVIEWS_SPENT=0; TRIAGE_PROBE_FAILURES=0
     triage_state_save "$sf" "$n" "$pr" checker-running || return 2
     if ! run_checker "$n" "$pr" "$sf"; then
       TRIAGE_OUTCOME=human
@@ -558,8 +604,56 @@ triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked
   while :; do
     case "$TRIAGE_STAGE" in
       complete)
-        [ "$TRIAGE_OUTCOME" = enqueued ] && return 0
-        return 1;;
+        if [ "$TRIAGE_OUTCOME" != enqueued ]; then
+          # Re-assert the park: an owner re-arm that skips archiving this
+          # state file would otherwise respin the scheduler loop for free.
+          [ "$TRIAGE_OUTCOME" = human ] && mark_human "$n" \
+            "triage already terminal for PR #$pr — re-arm requires archiving its state/triage file"
+          return 1
+        fi
+        # "enqueued" is terminal only while that enqueue is still alive. The
+        # merger deletes the queue entry when the approved head goes stale
+        # (update-branch, conflict-fix) and expects a fresh review — so a
+        # resumed state whose entry is gone while the PR is still open must
+        # re-earn its approval at the current head, or every reassignment
+        # returns "done" untouched and the scheduler loops on the issue.
+        # Every unverifiable read stays terminal (no spend), but only
+        # MF_QUEUE_PROBE_MAX times: a permanently unreadable queue parks
+        # loudly instead of spinning silently forever.
+        if qentry=$(find "$QUEUE" -maxdepth 1 -type f -name "[0-9]*-pr$pr.json" -print -quit 2>/dev/null); then
+          if [ "$TRIAGE_PROBE_FAILURES" -gt 0 ]; then
+            TRIAGE_PROBE_FAILURES=0
+            triage_state_save "$sf" "$n" "$pr" complete || :
+          fi
+        else
+          TRIAGE_PROBE_FAILURES=$((TRIAGE_PROBE_FAILURES+1))
+          if [ "$TRIAGE_PROBE_FAILURES" -gt "$MF_QUEUE_PROBE_MAX" ]; then
+            TRIAGE_OUTCOME=human
+            mark_human "$n" "merge-queue unreadable across $TRIAGE_PROBE_FAILURES probes"
+            triage_state_save "$sf" "$n" "$pr" complete || return 2
+            return 1
+          fi
+          # Best-effort save, deliberately: if the triage dir is ALSO
+          # unwritable the counter cannot advance and this stays a free
+          # no-op loop — a whole-volume outage is an ops incident caught
+          # by heartbeats, not something state can fix.
+          triage_state_save "$sf" "$n" "$pr" complete || :
+          return 0
+        fi
+        [ -n "$qentry" ] && return 0
+        prstate=$(gh pr view "$pr" --json state -q .state 2>/dev/null) || return 0
+        [ "$prstate" = OPEN ] || return 0
+        TRIAGE_REVALIDATIONS=$((TRIAGE_REVALIDATIONS+1))
+        if [ "$TRIAGE_REVALIDATIONS" -gt "$MF_REVALIDATE_MAX" ]; then
+          TRIAGE_OUTCOME=human
+          mark_human "$n" "queued approval invalidated $TRIAGE_REVALIDATIONS times without merging"
+          triage_state_save "$sf" "$n" "$pr" complete || return 2
+          return 1
+        fi
+        log "triage: enqueued outcome stale for PR #$pr (queue entry gone, PR open) — fresh review ($TRIAGE_REVALIDATIONS/$MF_REVALIDATE_MAX)"
+        TRIAGE_STAGE=escalated-review-pending
+        triage_state_save "$sf" "$n" "$pr" "$TRIAGE_STAGE" || return 2
+        continue;;
       checker-running)
         # The process died with a checker in flight. Never issue a second checker:
         # exact recovery of an uncommitted remote side effect is impossible.
@@ -580,7 +674,7 @@ triage(){ # $1=issue $2=pr $3=relocated(true|false); 0=enqueued, 1=human/blocked
         triage_state_save "$sf" "$n" "$pr" "$TRIAGE_STAGE" || return 2
         log "triage: one escalated fixer at diff:$esc (was diff:$CYCLE_DIFF)"
         wstatus fixing "$n" "$pr"
-        if run_escalated_fixer_once "$n" "$pr" "$(post_write_diff "$esc")" \
+        if run_escalated_fixer_once "$n" "$pr" "$esc" \
           "$TRIAGE_FIXER_BASE_HEAD" \
           "TRIAGE DIAGNOSIS BRIEF (address this root cause):
 $LAST_CHECKER_BODY"; then
@@ -613,22 +707,74 @@ $LAST_CHECKER_BODY"; then
         triage_state_save "$sf" "$n" "$pr" complete || return 2
         return 1;;
       escalated-review-pending)
+        # A live queue entry means the merger already owns an approval for
+        # this PR (stalled-worker salvage, a prior revalidation's enqueue):
+        # never pay for a review under it. Probe failure requeues unspent,
+        # bounded by MF_QUEUE_PROBE_MAX like the complete stage.
+        if qentry=$(find "$QUEUE" -maxdepth 1 -type f -name "[0-9]*-pr$pr.json" -print -quit 2>/dev/null); then
+          TRIAGE_PROBE_FAILURES=0
+        else
+          TRIAGE_PROBE_FAILURES=$((TRIAGE_PROBE_FAILURES+1))
+          if [ "$TRIAGE_PROBE_FAILURES" -gt "$MF_QUEUE_PROBE_MAX" ]; then
+            TRIAGE_OUTCOME=human
+            mark_human "$n" "merge-queue unreadable across $TRIAGE_PROBE_FAILURES probes"
+            triage_state_save "$sf" "$n" "$pr" complete || return 2
+            return 1
+          fi
+          triage_state_save "$sf" "$n" "$pr" "$TRIAGE_STAGE" || :
+          TRIAGE_FAIL_REASON="merge-queue probe failed"
+          return 2
+        fi
+        if [ -n "$qentry" ]; then
+          TRIAGE_OUTCOME=enqueued
+          triage_state_save "$sf" "$n" "$pr" complete || return 2
+          return 0
+        fi
+        # The budget is spent HERE, where the money is: incremented and
+        # persisted before the reviewer runs, so a latched stage (reviewer
+        # artifact failure, queue write failure → return 2 → resume) can
+        # never buy reviews past the cap while the transition counter sits
+        # frozen. One unit above MF_REVALIDATE_MAX covers the designed
+        # post-escalated-fixer review.
+        TRIAGE_REVIEWS_SPENT=$((TRIAGE_REVIEWS_SPENT+1))
+        if [ "$TRIAGE_REVIEWS_SPENT" -gt "$((MF_REVALIDATE_MAX+1))" ]; then
+          TRIAGE_OUTCOME=human
+          mark_human "$n" "triage review budget exhausted ($TRIAGE_REVIEWS_SPENT attempts) without a clean verdict"
+          triage_state_save "$sf" "$n" "$pr" complete || return 2
+          return 1
+        fi
+        triage_state_save "$sf" "$n" "$pr" "$TRIAGE_STAGE" || return 2
         wstatus reviewing "$n" "$pr"
         run_reviewer "$n" "$pr" \
-          "$(post_write_diff "$(diff_at_least "$TRIAGE_ESC_DIFF" "$(review_floor)")")" \
-          || return 2
+          "$(diff_at_least "${TRIAGE_ESC_DIFF:-$CYCLE_DIFF}" "$(review_floor)")" \
+          || { TRIAGE_FAIL_REASON="reviewer artifact contract failed"; return 2; }
         if [ "$LAST_REVIEW_VERDICT" = "FACTORY-VERDICT: APPROVE" ]; then
-          enqueue_merge "$pr" "$n" "$LAST_REVIEW_HEAD" reviewer "$LAST_REVIEW_COMMENT_ID" \
-            || return 2
+          if ! enqueue_merge "$pr" "$n" "$LAST_REVIEW_HEAD" reviewer "$LAST_REVIEW_COMMENT_ID"; then
+            # An entry that appeared between the probe and this write is a
+            # concurrent salvage, not a protocol failure: the merger owns it,
+            # and it validates approvals canonically before merging.
+            qentry=$(find "$QUEUE" -maxdepth 1 -type f -name "[0-9]*-pr$pr.json" -print -quit 2>/dev/null)
+            [ -n "$qentry" ] || { TRIAGE_FAIL_REASON="merge-queue write failed"; return 2; }
+            log "triage: PR #$pr already queued under a different approval — merger owns it"
+          fi
           TRIAGE_OUTCOME=enqueued
           triage_state_save "$sf" "$n" "$pr" complete || return 2
           return 0
         fi
         TRIAGE_OUTCOME=human
-        mark_human "$n" "review not clean after escalated retry (no appeal)"
+        mark_human "$n" "review not clean after retry (no appeal)"
         triage_state_save "$sf" "$n" "$pr" complete || return 2
         return 1;;
       relocate-publish-pending)
+        # Depth cap: a relocated issue may be diagnosed and retried, but may not
+        # spawn a further relocation. run_checker is told this up front, so
+        # reaching here means the checker ignored the instruction.
+        if [ "${TRIAGE_RELOC:-false}" = true ]; then
+          TRIAGE_OUTCOME=human
+          mark_human "$n" "relocated issue may not relocate again — triage chain cap (depth 1)"
+          triage_state_save "$sf" "$n" "$pr" complete || return 2
+          return 1
+        fi
         publish_relocation "$LAST_CHECKER_NEW" "$n" "$LAST_CHECKER_RUN_ID" || return 2
         TRIAGE_STAGE=relocate-action-pending
         triage_state_save "$sf" "$n" "$pr" "$TRIAGE_STAGE" || return 2
@@ -645,8 +791,11 @@ $LAST_CHECKER_BODY"; then
         [ "$LAST_CHECKER_PR_DISPOSITION" = BLOCKED ] || return 2
         log "triage: RELOCATE, PR blocked on #$LAST_CHECKER_NEW"
         add_dep_to_issue "$n" "$LAST_CHECKER_NEW" || return 2
-        gh label create "blocked-by:#$LAST_CHECKER_NEW" --color D93F0B >/dev/null 2>&1 || true
-        gh issue edit "$n" --add-label "blocked-by:#$LAST_CHECKER_NEW" >/dev/null 2>&1 || return 2
+        # One static label as the human-visible breadcrumb; the machine truth
+        # is the body-level dep written by add_dep_to_issue above. Per-blocker
+        # labels (blocked-by:#N) polluted the repo label namespace.
+        gh label create blocked --color D93F0B >/dev/null 2>&1 || true
+        gh issue edit "$n" --add-label blocked >/dev/null 2>&1 || return 2
         close_pr_idempotent "$pr" || return 2
         gh issue edit "$n" --remove-label "in-progress,mf:worker-$WORKER_ID" >/dev/null 2>&1 || true
         TRIAGE_OUTCOME=blocked
@@ -783,6 +932,9 @@ run_cycle(){ # $1=issue $2=relocated
   hb_ensure
   wstatus writing "$n"
   log "=== issue #$n [diff:$CYCLE_DIFF] ==="
+  # An assignment means the scheduler saw every body-level dep closed, so the
+  # cosmetic blocked breadcrumb (if any) is stale now — self-clean it.
+  gh issue edit "$n" --remove-label blocked >/dev/null 2>&1 || true
 
   if [ "$MF_DRY_RUN" = 1 ]; then
     log "DRY: would write/review issue #$n"
@@ -817,7 +969,7 @@ run_cycle(){ # $1=issue $2=relocated
       local writer_transport=1 w_try
       for w_try in $(seq 1 "${WRITER_RETRIES:-2}"); do
         hb_ensure
-        if mf_cc writer "$(post_write_diff "$CYCLE_DIFF")" \
+        if CC_SLOT=writer mf_cc writer "$CYCLE_DIFF" \
           "$(with_pack "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")")"; then
           writer_transport=0
           break
@@ -896,7 +1048,7 @@ run_cycle(){ # $1=issue $2=relocated
     triage "$n" "$pr" "$reloc"
     local triage_rc=$?
     if [ "$triage_rc" -eq 2 ]; then
-      protocol_requeue "$n" "checker/escalation artifact contract failed" "$pr"
+      protocol_requeue "$n" "${TRIAGE_FAIL_REASON:-checker/escalation artifact contract failed}" "$pr"
       hb_stop
       return 1
     elif [ "$triage_rc" -ne 0 ]; then

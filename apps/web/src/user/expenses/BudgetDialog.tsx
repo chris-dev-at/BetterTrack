@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import type { ExpenseBudgetProgress, ExpenseCategory } from '@bettertrack/contracts';
@@ -12,13 +12,8 @@ import {
   updateExpenseBudget,
 } from '../../lib/expensesApi';
 import { Dialog } from '../components/Dialog';
-import { Alert, Button, cx } from '../components/ui';
-
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
+import { Alert } from '../components/ui';
+import { Button, Field } from '../../ui/origin';
 
 export interface BudgetDialogProps {
   /** Edit mode — the budget being edited (amount only; category is fixed). */
@@ -45,6 +40,8 @@ export function BudgetDialog({
   const t = useT();
   const queryClient = useQueryClient();
   const isEdit = !!existing;
+  const categoryFieldId = useId();
+  const amountFieldId = useId();
 
   // Only expense categories without an existing budget can receive one.
   const options = useMemo(
@@ -101,17 +98,19 @@ export function BudgetDialog({
       onClose={onClose}
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('expenses.budgets.dialog.category')}
-          </span>
+        <Field label={t('expenses.budgets.dialog.category')} htmlFor={categoryFieldId}>
           {isEdit ? (
-            <span className="rounded-md bg-neutral-900 px-3 py-2 text-sm text-neutral-300">
+            <span
+              id={categoryFieldId}
+              className="bt-input"
+              style={{ display: 'flex', alignItems: 'center', color: 'var(--bt-text-soft)' }}
+            >
               {existing?.categoryName}
             </span>
           ) : (
             <select
-              className={inputClass}
+              id={categoryFieldId}
+              className="bt-select"
               value={categoryId}
               onChange={(e) => setCategoryId(e.target.value)}
               disabled={noOptions}
@@ -123,18 +122,14 @@ export function BudgetDialog({
               ))}
             </select>
           )}
-        </label>
+        </Field>
 
-        {noOptions ? (
-          <p className="text-sm text-neutral-500">{t('expenses.budgets.dialog.noCategories')}</p>
-        ) : null}
+        {noOptions ? <p className="bt-meta">{t('expenses.budgets.dialog.noCategories')}</p> : null}
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('expenses.budgets.dialog.amount')}
-          </span>
+        <Field label={t('expenses.budgets.dialog.amount')} htmlFor={amountFieldId}>
           <input
-            className={inputClass}
+            id={amountFieldId}
+            className="bt-input"
             type="number"
             inputMode="decimal"
             min="0"
@@ -144,15 +139,15 @@ export function BudgetDialog({
             placeholder="0.00"
             autoFocus
           />
-        </label>
+        </Field>
 
         {formError ? <Alert tone="error">{formError}</Alert> : null}
 
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="secondary" onClick={onClose}>
+          <Button type="button" variant="quiet" onClick={onClose}>
             {t('common.cancel')}
           </Button>
-          <Button type="submit" disabled={mutation.isPending || noOptions}>
+          <Button type="submit" variant="primary" disabled={mutation.isPending || noOptions}>
             {mutation.isPending ? t('common.saving') : t('common.save')}
           </Button>
         </div>

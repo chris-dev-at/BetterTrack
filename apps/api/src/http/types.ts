@@ -19,6 +19,8 @@ export interface AuthUser {
   /** Current account mode, refreshed from the user row on every authenticated request. */
   privacyMode: PrivacyMode;
   lastLoginAt: Date | string | null;
+  /** When first-run setup was finished/dismissed; `null` = never (§6.12). */
+  firstRunCompletedAt: Date | string | null;
   createdAt: Date | string;
 }
 
@@ -27,6 +29,8 @@ declare global {
   namespace Express {
     interface Request {
       sessionId?: string;
+      /** Exact durable generation proven by the resolved cookie session (#888). */
+      sessionSecurityGeneration?: number;
       /**
        * Whether the resolved cookie session is persistent ("stay signed in") vs
        * ephemeral (V4-P2b, §399 §A). Set alongside `sessionId` by `loadSession`
@@ -47,6 +51,12 @@ declare global {
         id: string;
         scopes: string[];
         kind: 'personal' | 'oauth';
+        /**
+         * Exact durable account-security generation read while authenticating
+         * this bearer. Security mutations use it as their compare-and-swap
+         * fence; it is internal request state and never enters a response.
+         */
+        securityGeneration: number;
         /**
          * Resolved per-key rate tier (§13.5 V5-P10) for a personal key — the
          * limiter reads (limit, windowSec) from here. Absent for OAuth grants and

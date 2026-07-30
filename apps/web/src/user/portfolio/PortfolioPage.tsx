@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Time } from 'lightweight-charts';
@@ -39,22 +39,22 @@ import {
   formatQuantity,
   formatSignedPercent,
 } from '../../lib/format';
-import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
+import { EmptyState, MoneyText } from '../../ui';
+import { Badge, Button, PageHead, Seg, SkeletonBlock, Stat, StatStrip } from '../../ui/origin';
 import { AllocationDonut, PriceChart } from '../../ui/charts';
+import { MAIN_SERIES, POSITIVE } from '../../ui/charts/palette';
 import type { AllocationSegment, PriceRange } from '../../ui/charts';
-import { Alert, Button } from '../components/ui';
+import { Alert } from '../components/ui';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
 import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { CashDialog } from './CashDialog';
 import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
 import { CustomInvestmentDialog } from './CustomInvestmentDialog';
 import {
-  ConvertChainDialog,
   MemberSheet,
   MirrorAttributionChip,
   MirrorAvatarStack,
   MirrorForkProvenanceLine,
-  MirrorInviteStepDialog,
 } from './MirrorchainPanel';
 
 // ─── Range mapping ──────────────────────────────────────────────────────────
@@ -76,27 +76,17 @@ function toHistoryRange(r: PriceRange): PortfolioHistoryRange {
 /** §6.9 caches the series 1 h; mirror that as the client staleTime. */
 const HISTORY_STALE_MS = 3_600_000;
 
-// ─── Totals header ────────────────────────────────────────────────────────────
+// ─── Totals hero ────────────────────────────────────────────────────────────
 
 function DeltaPct({ value }: { value: number | null }) {
-  const cls =
-    value == null
-      ? 'text-neutral-400'
-      : value > 0
-        ? 'text-emerald-400'
-        : value < 0
-          ? 'text-red-400'
-          : 'text-neutral-400';
-  return <span className={cx('tabular-nums', cls)}>{formatSignedPercent(value)}</span>;
+  const cls = value == null ? 'bt-muted' : value > 0 ? 'bt-pos' : value < 0 ? 'bt-neg' : 'bt-muted';
+  return <span className={cx('bt-num', cls)}>{formatSignedPercent(value)}</span>;
 }
 
 /**
- * Compact liquidity ring (V3-P0 redesign, #322): a small invested-vs-liquid
- * donut that belongs in the overview instead of the old full-width split bar the
- * owner found "out of place". Same data — the invested share (sky) and its cash
- * complement (emerald) — drawn as two arcs of a single ring with the liquid
- * share called out in the centre. Purely decorative shape; the accessible
- * description carries both percentages.
+ * Compact liquidity ring (V3-P0 redesign, #322): invested share (analytical
+ * blue) vs. its liquid complement (jade), drawn as two arcs of a single ring.
+ * Decorative shape; the accessible description carries both percentages.
  */
 function LiquidityRing({ investedPct, cashPct }: { investedPct: number; cashPct: number }) {
   const t = useT();
@@ -124,9 +114,8 @@ function LiquidityRing({ investedPct, cashPct }: { investedPct: number; cashPct:
           cy="32"
           r={radius}
           fill="none"
-          stroke="currentColor"
+          stroke="var(--bt-surface-strong)"
           strokeWidth="8"
-          className="text-neutral-800"
         />
         <circle
           cx="32"
@@ -134,8 +123,7 @@ function LiquidityRing({ investedPct, cashPct }: { investedPct: number; cashPct:
           r={radius}
           fill="none"
           strokeWidth="8"
-          className="text-sky-500"
-          stroke="currentColor"
+          stroke={MAIN_SERIES}
           strokeDasharray={`${investedLen} ${circumference}`}
         />
         <circle
@@ -144,24 +132,23 @@ function LiquidityRing({ investedPct, cashPct }: { investedPct: number; cashPct:
           r={radius}
           fill="none"
           strokeWidth="8"
-          className="text-emerald-500"
-          stroke="currentColor"
+          stroke={POSITIVE}
           strokeDasharray={`${circumference - investedLen} ${circumference}`}
           strokeDashoffset={-investedLen}
         />
       </svg>
-      <div className="text-xs text-neutral-400" aria-hidden="true">
+      <div className="bt-meta" aria-hidden="true">
         <div className="flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full bg-sky-500" />
+          <span className="bt-dot" style={{ background: MAIN_SERIES }} />
           <span>
-            <span className="font-medium text-neutral-200">{formatPercent(investedPct)}</span>{' '}
+            <span className="bt-soft font-medium">{formatPercent(investedPct)}</span>{' '}
             {t('portfolio.overview.liquidityRing.investedLegend')}
           </span>
         </div>
         <div className="mt-1 flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+          <span className="bt-dot" style={{ background: POSITIVE }} />
           <span>
-            <span className="font-medium text-neutral-200">{formatPercent(cashPct)}</span>{' '}
+            <span className="bt-soft font-medium">{formatPercent(cashPct)}</span>{' '}
             {t('portfolio.overview.liquidityRing.liquidLegend')}
           </span>
         </div>
@@ -171,42 +158,10 @@ function LiquidityRing({ investedPct, cashPct }: { investedPct: number; cashPct:
 }
 
 /**
- * Net-worth headline (#311): the primary figure is the portfolio's total worth
- * — holdings + cash — with the invested/cash composition spelled out and a
- * compact liquidity ring answering "how liquid am I?" at a glance.
+ * Totals hero (#311, Origin recomposition): the net-worth headline leads the
+ * canvas — no box — with the invested/cash composition, the liquidity ring and
+ * a ruled stat strip sharing one baseline underneath.
  */
-function NetWorthHeadline({ totals }: { totals: PortfolioTotals }) {
-  const t = useT();
-  // Clamp the invested share to [0, 100] and derive the cash share as its
-  // complement, so the two always sum to exactly 100 % of the headline total.
-  const investedPct =
-    totals.totalValueEur > 0
-      ? Math.min(100, Math.max(0, (totals.marketValueEur / totals.totalValueEur) * 100))
-      : null;
-  const cashPct = investedPct == null ? null : 100 - investedPct;
-
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-x-8 gap-y-4 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-      <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-          {t('portfolio.overview.netWorth.label')}
-        </p>
-        <p className="mt-1 text-3xl font-semibold tracking-tight text-neutral-100">
-          <MoneyText amount={totals.totalValueEur} />
-        </p>
-        <p className="mt-1 text-sm text-neutral-400">
-          <MoneyText amount={totals.marketValueEur} />{' '}
-          {t('portfolio.overview.netWorth.investedWord')} &middot;{' '}
-          <MoneyText amount={totals.cashEur} /> {t('portfolio.overview.netWorth.cashWord')}
-        </p>
-      </div>
-      {investedPct != null && cashPct != null ? (
-        <LiquidityRing investedPct={investedPct} cashPct={cashPct} />
-      ) : null}
-    </div>
-  );
-}
-
 function TotalsHeader({
   totals,
   onDeposit,
@@ -217,56 +172,69 @@ function TotalsHeader({
   onWithdraw: () => void;
 }) {
   const t = useT();
+  const investedPct =
+    totals.totalValueEur > 0
+      ? Math.min(100, Math.max(0, (totals.marketValueEur / totals.totalValueEur) * 100))
+      : null;
+  const cashPct = investedPct == null ? null : 100 - investedPct;
+
   return (
-    <section aria-label={t('portfolio.overview.totalsAriaLabel')} className="flex flex-col gap-3">
-      <NetWorthHeadline totals={totals} />
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <StatCard
+    <section aria-label={t('portfolio.overview.totalsAriaLabel')} className="flex flex-col gap-5">
+      <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
+        <div>
+          <p className="bt-label">{t('portfolio.overview.netWorth.label')}</p>
+          <p className="bt-hero-value" style={{ marginTop: 4 }}>
+            <MoneyText amount={totals.totalValueEur} />
+          </p>
+          <p className="bt-meta" style={{ marginTop: 5 }}>
+            <MoneyText amount={totals.marketValueEur} />{' '}
+            {t('portfolio.overview.netWorth.investedWord')} &middot;{' '}
+            <MoneyText amount={totals.cashEur} /> {t('portfolio.overview.netWorth.cashWord')}
+          </p>
+        </div>
+        {investedPct != null && cashPct != null ? (
+          <LiquidityRing investedPct={investedPct} cashPct={cashPct} />
+        ) : null}
+      </div>
+      <StatStrip>
+        <Stat
           label={t('portfolio.overview.field.marketValue')}
           value={<MoneyText amount={totals.marketValueEur} />}
         />
-        <StatCard
+        <Stat
           label={t('portfolio.overview.field.invested')}
           value={<MoneyText amount={totals.investedEur} />}
         />
-        <StatCard
+        <Stat
+          delta={<DeltaPct value={totals.unrealizedPnlPct} />}
           label={t('portfolio.overview.field.unrealizedPnl')}
           value={<MoneyText amount={totals.unrealizedPnlEur} signed />}
-          subValue={<DeltaPct value={totals.unrealizedPnlPct} />}
         />
-        <StatCard
+        <Stat
+          delta={<DeltaPct value={totals.dayChangePct} />}
           label={t('portfolio.overview.field.dayChange')}
           value={<MoneyText amount={totals.dayChangeEur} signed />}
-          subValue={<DeltaPct value={totals.dayChangePct} />}
         />
-        <StatCard
-          label={t('portfolio.overview.field.cash')}
-          value={<MoneyText amount={totals.cashEur} />}
-          subValue={
+        <Stat
+          delta={
             <span className="flex gap-2">
-              <button
-                type="button"
-                onClick={onDeposit}
-                className="text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-              >
+              <button className="bt-link" onClick={onDeposit} type="button">
                 {t('portfolio.overview.depositButton')}
               </button>
-              <button
-                type="button"
-                onClick={onWithdraw}
-                className="text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-              >
+              <button className="bt-link" onClick={onWithdraw} type="button">
                 {t('portfolio.overview.withdrawButton')}
               </button>
             </span>
           }
+          label={t('portfolio.overview.field.cash')}
+          value={<MoneyText amount={totals.cashEur} />}
         />
-      </div>
+      </StatStrip>
     </section>
   );
 }
 
-// ─── Allocation donuts ──────────────────────────────────────────────────────
+// ─── Allocation ─────────────────────────────────────────────────────────────
 
 function AllocationSection({ holdings, cashEur }: { holdings: Holding[]; cashEur: number }) {
   const t = useT();
@@ -299,27 +267,32 @@ function AllocationSection({ holdings, cashEur }: { holdings: Holding[]; cashEur
   if (byAsset.length === 0) return null;
 
   return (
-    <section
-      aria-label={t('portfolio.overview.allocationAriaLabel')}
-      className="grid gap-6 sm:grid-cols-2"
-    >
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-        <h3 className="mb-4 text-sm font-semibold text-neutral-200">
-          {t('portfolio.overview.allocation.byAssetTitle')}
-        </h3>
-        <AllocationDonut
-          data={byAsset}
-          title={t('portfolio.overview.allocation.byAssetChartTitle')}
-        />
-      </div>
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-        <h3 className="mb-4 text-sm font-semibold text-neutral-200">
-          {t('portfolio.overview.allocation.byTypeTitle')}
-        </h3>
-        <AllocationDonut
-          data={byType}
-          title={t('portfolio.overview.allocation.byTypeChartTitle')}
-        />
+    <section aria-label={t('portfolio.overview.allocationAriaLabel')} className="bt-section">
+      <div
+        style={{
+          display: 'grid',
+          gap: 'clamp(20px, 4vw, 44px)',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+        }}
+      >
+        <div>
+          <h3 className="bt-h3" style={{ marginBottom: 14 }}>
+            {t('portfolio.overview.allocation.byAssetTitle')}
+          </h3>
+          <AllocationDonut
+            data={byAsset}
+            title={t('portfolio.overview.allocation.byAssetChartTitle')}
+          />
+        </div>
+        <div>
+          <h3 className="bt-h3" style={{ marginBottom: 14 }}>
+            {t('portfolio.overview.allocation.byTypeTitle')}
+          </h3>
+          <AllocationDonut
+            data={byType}
+            title={t('portfolio.overview.allocation.byTypeChartTitle')}
+          />
+        </div>
       </div>
     </section>
   );
@@ -350,22 +323,23 @@ function rankHoldings(holdings: Holding[], metric: RankMetric): RankedHolding[] 
 
 function RankedHoldingRow({ holding, pct, deltaEur }: RankedHolding) {
   return (
-    <li className="flex items-center justify-between gap-3">
+    <li className="flex items-center justify-between gap-3 py-2">
       <div className="min-w-0">
         <Link
+          className="bt-row-title bt-link"
+          style={{ color: 'inherit' }}
           to={`/assets/${holding.asset.id}`}
-          className="block truncate font-mono text-sm font-medium text-neutral-100 hover:text-sky-400"
         >
           {holding.asset.symbol}
         </Link>
-        <p className="max-w-[10rem] truncate text-xs text-neutral-500" title={holding.asset.name}>
+        <p className="bt-row-sub max-w-[12rem] truncate" title={holding.asset.name}>
           {holding.asset.name}
         </p>
       </div>
       <div className="flex shrink-0 flex-col items-end">
         <DeltaPct value={pct} />
         {deltaEur != null ? (
-          <span className="text-xs text-neutral-500">
+          <span className="bt-meta">
             <MoneyText amount={deltaEur} signed />
           </span>
         ) : null}
@@ -377,14 +351,16 @@ function RankedHoldingRow({ holding, pct, deltaEur }: RankedHolding) {
 function RankedList({ title, items }: { title: string; items: RankedHolding[] }) {
   const t = useT();
   return (
-    <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-      <h3 className="mb-3 text-sm font-semibold text-neutral-200">{title}</h3>
+    <div>
+      <h3 className="bt-h3" style={{ marginBottom: 6 }}>
+        {title}
+      </h3>
       {items.length === 0 ? (
-        <p className="text-sm text-neutral-500">
+        <p className="bt-meta" style={{ padding: '10px 0' }}>
           {t('portfolio.overview.winnersLosers.nothingToShow')}
         </p>
       ) : (
-        <ul className="flex flex-col gap-3">
+        <ul className="bt-band flex flex-col">
           {items.map((item) => (
             <RankedHoldingRow key={item.holding.asset.id} {...item} />
           ))}
@@ -412,46 +388,26 @@ function WinnersLosersSection({ holdings }: { holdings: Holding[] }) {
     .slice(0, WINNERS_LOSERS_LIMIT);
 
   return (
-    <section
-      aria-label={t('portfolio.overview.winnersLosers.ariaLabel')}
-      className="flex flex-col gap-3"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold text-neutral-200">
-          {t('portfolio.overview.winnersLosers.heading')}
-        </h2>
-        <div className="flex gap-1 rounded p-0.5 ring-1 ring-inset ring-neutral-800">
-          <button
-            type="button"
-            aria-pressed={metric === 'day'}
-            onClick={() => setMetric('day')}
-            className={cx(
-              'rounded px-2 py-1 text-xs font-medium transition-colors',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              metric === 'day'
-                ? 'bg-sky-600 text-white'
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-            )}
-          >
-            {t('portfolio.overview.winnersLosers.dayMetric')}
-          </button>
-          <button
-            type="button"
-            aria-pressed={metric === 'total'}
-            onClick={() => setMetric('total')}
-            className={cx(
-              'rounded px-2 py-1 text-xs font-medium transition-colors',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              metric === 'total'
-                ? 'bg-sky-600 text-white'
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-            )}
-          >
-            {t('portfolio.overview.winnersLosers.totalMetric')}
-          </button>
-        </div>
+    <section aria-label={t('portfolio.overview.winnersLosers.ariaLabel')} className="bt-section">
+      <div className="bt-section__head">
+        <h2 className="bt-h2">{t('portfolio.overview.winnersLosers.heading')}</h2>
+        <Seg
+          ariaLabel={t('portfolio.overview.winnersLosers.heading')}
+          onChange={setMetric}
+          options={[
+            { value: 'day', label: t('portfolio.overview.winnersLosers.dayMetric') },
+            { value: 'total', label: t('portfolio.overview.winnersLosers.totalMetric') },
+          ]}
+          value={metric}
+        />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div
+        style={{
+          display: 'grid',
+          gap: 'clamp(20px, 4vw, 44px)',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+        }}
+      >
         <RankedList title={t('portfolio.overview.winnersLosers.topWinners')} items={winners} />
         <RankedList title={t('portfolio.overview.winnersLosers.topLosers')} items={losers} />
       </div>
@@ -487,19 +443,18 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
   return (
     <section
       aria-label={t('portfolio.overview.recentTransactions.ariaLabel')}
-      className="flex flex-col gap-3"
+      className="bt-section"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-neutral-200">
-          {t('portfolio.overview.recentTransactions.heading')}
-        </h2>
+      <div className="bt-section__head">
+        <h2 className="bt-h2">{t('portfolio.overview.recentTransactions.heading')}</h2>
         {showFilter ? (
-          <label className="flex items-center gap-1.5 text-xs text-neutral-400">
+          <label className="bt-meta flex items-center gap-1.5">
             {t('portfolio.sourceTag.filterLabel')}
             <select
-              value={sourceFilter}
+              className="bt-select"
               onChange={(e) => setSourceFilter(e.target.value)}
-              className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-xs text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              style={{ minHeight: 28, padding: '2px 26px 2px 8px', width: 'auto', fontSize: 12 }}
+              value={sourceFilter}
             >
               <option value="all">{t('portfolio.sourceTag.filterAll')}</option>
               {sourceTags.map((tag) => (
@@ -511,62 +466,48 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
           </label>
         ) : null}
       </div>
-      <div className="overflow-x-auto rounded-lg border border-neutral-800">
-        <table className="w-full text-left text-sm">
+      <div className="bt-table-wrap">
+        <table className="bt-table">
           <thead>
-            <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
-              <th scope="col" className="px-3 py-2">
-                {t('portfolio.overview.field.asset')}
-              </th>
-              <th scope="col" className="px-3 py-2">
-                {t('portfolio.overview.field.side')}
-              </th>
-              <th scope="col" className="px-3 py-2 text-right">
+            <tr>
+              <th scope="col">{t('portfolio.overview.field.asset')}</th>
+              <th scope="col">{t('portfolio.overview.field.side')}</th>
+              <th className="is-num" scope="col">
                 {t('portfolio.overview.field.qty')}
               </th>
-              <th scope="col" className="px-3 py-2 text-right">
+              <th className="is-num" scope="col">
                 {t('portfolio.overview.field.price')}
               </th>
-              <th scope="col" className="px-3 py-2">
-                {t('portfolio.overview.field.date')}
-              </th>
+              <th scope="col">{t('portfolio.overview.field.date')}</th>
             </tr>
           </thead>
           <tbody>
             {recent.map((txn) => (
-              <tr key={txn.id} className="border-b border-neutral-800 last:border-b-0">
-                <td className="min-w-0 px-3 py-2">
+              <tr key={txn.id}>
+                <td className="min-w-0">
                   <div className="flex items-center gap-2">
                     <Link
+                      className="bt-row-title"
+                      style={{ textDecoration: 'none' }}
                       to={`/assets/${txn.assetId}`}
-                      className="font-mono text-sm font-medium text-neutral-100 hover:text-sky-400"
                     >
                       {txn.asset.symbol}
                     </Link>
                     <SourceBadge source={txn.source} />
                   </div>
                 </td>
-                <td className="px-3 py-2">
-                  <span
-                    className={cx(
-                      'rounded px-1.5 py-0.5 text-xs font-medium',
-                      txn.side === 'buy'
-                        ? 'bg-emerald-900/50 text-emerald-300'
-                        : 'bg-amber-900/50 text-amber-300',
-                    )}
-                  >
+                <td>
+                  <Badge tone={txn.side === 'buy' ? 'pos' : 'gold'}>
                     {txn.side === 'buy'
                       ? t('portfolio.overview.side.buy')
                       : t('portfolio.overview.side.sell')}
-                  </span>
+                  </Badge>
                 </td>
-                <td className="px-3 py-2 text-right tabular-nums">
-                  {formatQuantity(txn.quantity)}
-                </td>
-                <td className="px-3 py-2 text-right">
+                <td className="is-num">{formatQuantity(txn.quantity)}</td>
+                <td className="is-num">
                   <MoneyText amount={txn.price} currency={txn.asset.currency} unitPrice />
                 </td>
-                <td className="px-3 py-2 text-neutral-400">{formatDate(txn.executedAt)}</td>
+                <td className="bt-muted">{formatDate(txn.executedAt)}</td>
               </tr>
             ))}
           </tbody>
@@ -603,30 +544,28 @@ function HoldingsTable({
 }: HoldingsTableProps) {
   const t = useT();
   return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-800">
-      <table className="w-full text-left text-sm">
+    <div className="bt-table-wrap">
+      <table className="bt-table">
         <thead>
-          <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
-            <th scope="col" className="w-5 pl-2" aria-hidden="true" />
-            <th scope="col" className="px-3 py-2">
-              {t('portfolio.overview.field.asset')}
-            </th>
-            <th scope="col" className="px-3 py-2 text-right">
+          <tr>
+            <th aria-hidden="true" className="is-shrink" scope="col" />
+            <th scope="col">{t('portfolio.overview.field.asset')}</th>
+            <th className="is-num" scope="col">
               {t('portfolio.overview.field.qty')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right">
+            <th className="is-num" scope="col">
               {t('portfolio.overview.field.avgCost')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right">
+            <th className="is-num" scope="col">
               {t('portfolio.overview.field.price')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right">
+            <th className="is-num" scope="col">
               {t('portfolio.overview.field.marketValue')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right">
+            <th className="is-num" scope="col">
               {t('portfolio.overview.field.unrealizedPnl')}
             </th>
-            <th scope="col" className="px-3 py-2 text-right">
+            <th className="is-num" scope="col">
               {t('portfolio.overview.field.day')}
             </th>
           </tr>
@@ -686,8 +625,8 @@ function HoldingRow({
 
   return (
     <>
-      <tr className="border-b border-neutral-800 last:border-b-0">
-        <td className="w-5 pl-2">
+      <tr>
+        <td className="is-shrink">
           <button
             type="button"
             onClick={onToggle}
@@ -697,47 +636,48 @@ function HoldingRow({
                 ? t('portfolio.overview.holdings.collapseRow', { symbol: asset.symbol })
                 : t('portfolio.overview.holdings.expandRow', { symbol: asset.symbol })
             }
-            className="rounded p-1 text-neutral-500 transition-colors hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            className="bt-btn bt-btn--quiet bt-btn--sm bt-btn--icon"
           >
             <span aria-hidden="true">{isExpanded ? '▾' : '▸'}</span>
           </button>
         </td>
-        <td className="min-w-0 px-3 py-3">
+        <td className="min-w-0">
           <Link
+            className="bt-row-title"
+            style={{ textDecoration: 'none' }}
             to={`/assets/${asset.id}`}
-            className="block font-mono text-sm font-medium text-neutral-100 transition-colors hover:text-sky-400"
           >
             {asset.symbol}
           </Link>
-          <p className="max-w-[12rem] truncate text-xs text-neutral-500" title={asset.name}>
+          <p className="bt-row-sub max-w-[14rem] truncate" title={asset.name}>
             {asset.name}
           </p>
         </td>
-        <td className="px-3 py-3 text-right tabular-nums">{formatQuantity(h.quantity)}</td>
-        <td className="px-3 py-3 text-right">
+        <td className="is-num">{formatQuantity(h.quantity)}</td>
+        <td className="is-num">
           <MoneyText amount={h.avgCost} currency={asset.currency} unitPrice />
         </td>
-        <td className="px-3 py-3 text-right">
+        <td className="is-num">
           <MoneyText amount={h.price} currency={asset.currency} unitPrice />
         </td>
-        <td className="px-3 py-3 text-right">
+        <td className="is-num">
           <MoneyText amount={h.marketValueEur} />
         </td>
-        <td className="px-3 py-3 text-right">
+        <td className="is-num">
           <div className="flex flex-col items-end">
             <MoneyText amount={h.unrealizedPnlEur} signed />
             {h.unrealizedPnlPct != null ? (
-              <span className="text-xs">
+              <span className="bt-meta">
                 <DeltaPct value={h.unrealizedPnlPct} />
               </span>
             ) : null}
           </div>
         </td>
-        <td className="px-3 py-3 text-right">
+        <td className="is-num">
           <div className="flex flex-col items-end">
             <MoneyText amount={h.dayChangeEur} signed />
             {h.dayChangePct != null ? (
-              <span className="text-xs">
+              <span className="bt-meta">
                 <DeltaPct value={h.dayChangePct} />
               </span>
             ) : null}
@@ -746,17 +686,14 @@ function HoldingRow({
       </tr>
 
       {isExpanded ? (
-        <tr className="border-b border-neutral-800 bg-neutral-950/40 last:border-b-0">
-          <td colSpan={8} className="px-4 py-4">
+        <tr style={{ background: 'var(--bt-bg-raised)' }}>
+          <td colSpan={8} style={{ padding: '14px 16px' }}>
             <div className="flex flex-col gap-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h4 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                  {t('portfolio.overview.holdings.transactionsHeading')}
-                </h4>
+                <h4 className="bt-label">{t('portfolio.overview.holdings.transactionsHeading')}</h4>
                 <div className="flex gap-2">
                   {asset.isCustom ? (
                     <Button
-                      variant="secondary"
                       onClick={() =>
                         onEditValuePoints({
                           id: asset.id,
@@ -769,53 +706,46 @@ function HoldingRow({
                           smoothing: asset.smoothing ?? false,
                         })
                       }
+                      size="sm"
                     >
                       {t('portfolio.overview.holdings.editValuePoints')}
                     </Button>
                   ) : null}
-                  <Button variant="secondary" onClick={() => onRecord(dialogAsset)}>
+                  <Button onClick={() => onRecord(dialogAsset)} size="sm">
                     {t('portfolio.overview.recordButton')}
                   </Button>
                 </div>
               </div>
 
               {h.realizedPnl !== 0 ? (
-                <p className="text-xs text-neutral-500">
+                <p className="bt-meta">
                   {t('portfolio.overview.holdings.realizedPnlLabel')}{' '}
                   <MoneyText amount={h.realizedPnl} currency={asset.currency} signed />
                 </p>
               ) : null}
 
               {transactions.length === 0 ? (
-                <p className="text-sm text-neutral-500">
-                  {t('portfolio.overview.holdings.noTransactions')}
-                </p>
+                <p className="bt-meta">{t('portfolio.overview.holdings.noTransactions')}</p>
               ) : (
-                <table className="w-full text-left text-xs">
+                <table className="bt-table" style={{ fontSize: 12.5 }}>
                   <thead>
-                    <tr className="text-neutral-500">
-                      <th scope="col" className="py-1 pr-3 font-medium">
-                        {t('portfolio.overview.field.date')}
-                      </th>
-                      <th scope="col" className="py-1 pr-3 font-medium">
-                        {t('portfolio.overview.field.side')}
-                      </th>
-                      <th scope="col" className="py-1 pr-3 text-right font-medium">
+                    <tr>
+                      <th scope="col">{t('portfolio.overview.field.date')}</th>
+                      <th scope="col">{t('portfolio.overview.field.side')}</th>
+                      <th className="is-num" scope="col">
                         {t('portfolio.overview.field.qty')}
                       </th>
-                      <th scope="col" className="py-1 pr-3 text-right font-medium">
+                      <th className="is-num" scope="col">
                         {t('portfolio.overview.field.price')}
                       </th>
-                      <th scope="col" className="py-1 pr-3 text-right font-medium">
+                      <th className="is-num" scope="col">
                         {t('portfolio.overview.field.fee')}
                       </th>
-                      <th scope="col" className="py-1 pr-3 font-medium">
-                        {t('portfolio.overview.field.note')}
-                      </th>
+                      <th scope="col">{t('portfolio.overview.field.note')}</th>
                       <th
-                        scope="col"
-                        className="py-1 text-right font-medium"
                         aria-label={t('portfolio.overview.holdings.actionsAriaLabel')}
+                        className="is-num"
+                        scope="col"
                       />
                     </tr>
                   </thead>
@@ -858,60 +788,46 @@ function TransactionRow({
   const [confirming, setConfirming] = useState(false);
 
   return (
-    <tr className="border-t border-neutral-800/60">
-      <td className="py-2 pr-3 text-neutral-300">{formatDate(txn.executedAt)}</td>
-      <td className="py-2 pr-3">
+    <tr>
+      <td className="bt-soft">{formatDate(txn.executedAt)}</td>
+      <td>
         <span className="inline-flex items-center gap-1.5">
-          <span
-            className={cx(
-              'rounded px-1.5 py-0.5 text-xs font-medium',
-              txn.side === 'buy'
-                ? 'bg-emerald-900/50 text-emerald-300'
-                : 'bg-amber-900/50 text-amber-300',
-            )}
-          >
+          <Badge tone={txn.side === 'buy' ? 'pos' : 'gold'}>
             {txn.side === 'buy'
               ? t('portfolio.overview.side.buy')
               : t('portfolio.overview.side.sell')}
-          </span>
+          </Badge>
           <SourceBadge source={txn.source} />
           {txn.mirror ? <MirrorAttributionChip attribution={txn.mirror.addedBy} /> : null}
         </span>
       </td>
-      <td className="py-2 pr-3 text-right tabular-nums text-neutral-300">
-        {formatQuantity(txn.quantity)}
-      </td>
-      <td className="py-2 pr-3 text-right text-neutral-300">
+      <td className="is-num bt-soft">{formatQuantity(txn.quantity)}</td>
+      <td className="is-num bt-soft">
         <MoneyText amount={txn.price} currency={currency} unitPrice />
       </td>
-      <td className="py-2 pr-3 text-right text-neutral-300">
+      <td className="is-num bt-soft">
         {txn.fee > 0 ? <MoneyText amount={txn.fee} currency={currency} /> : EM_DASH}
       </td>
-      <td
-        className="max-w-[10rem] truncate py-2 pr-3 text-neutral-500"
-        title={txn.note ?? undefined}
-      >
+      <td className="bt-muted max-w-[10rem] truncate" title={txn.note ?? undefined}>
         {txn.note ?? EM_DASH}
       </td>
-      <td className="py-2 text-right">
+      <td className="is-num">
         {confirming ? (
           <span className="inline-flex items-center gap-1">
-            <span className="text-neutral-400">
-              {t('portfolio.overview.transaction.deleteConfirm')}
-            </span>
+            <span className="bt-muted">{t('portfolio.overview.transaction.deleteConfirm')}</span>
             <button
-              type="button"
-              onClick={onDelete}
+              className="bt-btn bt-btn--danger bt-btn--sm"
               disabled={deleting}
-              className="rounded px-1.5 py-0.5 text-red-400 hover:bg-neutral-800 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              onClick={onDelete}
+              type="button"
             >
               {deleting ? '…' : t('common.yes')}
             </button>
             <button
-              type="button"
-              onClick={() => setConfirming(false)}
+              className="bt-btn bt-btn--quiet bt-btn--sm"
               disabled={deleting}
-              className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              onClick={() => setConfirming(false)}
+              type="button"
             >
               {t('common.no')}
             </button>
@@ -919,22 +835,22 @@ function TransactionRow({
         ) : (
           <span className="inline-flex items-center gap-1">
             <button
-              type="button"
-              onClick={onEdit}
               aria-label={t('portfolio.overview.transaction.editAriaLabel', {
                 date: formatDate(txn.executedAt),
               })}
-              className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              className="bt-btn bt-btn--quiet bt-btn--sm"
+              onClick={onEdit}
+              type="button"
             >
               {t('common.edit')}
             </button>
             <button
-              type="button"
-              onClick={() => setConfirming(true)}
               aria-label={t('portfolio.overview.transaction.deleteAriaLabel', {
                 date: formatDate(txn.executedAt),
               })}
-              className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              className="bt-btn bt-btn--quiet bt-btn--sm"
+              onClick={() => setConfirming(true)}
+              type="button"
             >
               ✕
             </button>
@@ -981,9 +897,9 @@ function RecategorizeBanner() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <span>{t('portfolio.recategorize.message')}</span>
         <Button
-          variant="secondary"
-          onClick={() => dismissMutation.mutate()}
           disabled={dismissMutation.isPending}
+          onClick={() => dismissMutation.mutate()}
+          size="sm"
         >
           {t('portfolio.recategorize.dismiss')}
         </Button>
@@ -1031,45 +947,26 @@ function DividendIntelSection() {
   const total = view === 'monthly' ? proj.monthlyTotalEur : proj.yearlyTotalEur;
 
   return (
-    <section
-      aria-label={t('portfolio.dividends.ariaLabel')}
-      className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-base font-semibold text-neutral-200">
-          {t('portfolio.dividends.title')}
-        </h2>
-        <div
-          role="group"
-          aria-label={t('portfolio.dividends.viewGroupLabel')}
-          className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
-        >
-          {(['monthly', 'yearly'] as const).map((token) => (
-            <button
-              key={token}
-              type="button"
-              aria-pressed={token === view}
-              onClick={() => setView(token)}
-              className={cx(
-                'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-                token === view
-                  ? 'bg-sky-600 text-white'
-                  : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-              )}
-            >
-              {t(`portfolio.dividends.view.${token}`)}
-            </button>
-          ))}
-        </div>
+    <section aria-label={t('portfolio.dividends.ariaLabel')} className="bt-section">
+      <div className="bt-section__head">
+        <h2 className="bt-h2">{t('portfolio.dividends.title')}</h2>
+        <Seg
+          ariaLabel={t('portfolio.dividends.viewGroupLabel')}
+          onChange={setView}
+          options={[
+            { value: 'monthly', label: t('portfolio.dividends.view.monthly') },
+            { value: 'yearly', label: t('portfolio.dividends.view.yearly') },
+          ]}
+          value={view}
+        />
       </div>
 
       {hasProjection ? (
         <p className="flex items-baseline gap-2">
-          <span className="text-2xl font-semibold tabular-nums text-neutral-100">
+          <span className="bt-num" style={{ fontSize: 24, fontWeight: 630 }}>
             {formatMoney(total, 'EUR')}
           </span>
-          <span className="text-xs text-neutral-500">
+          <span className="bt-meta">
             {view === 'monthly'
               ? t('portfolio.dividends.perMonth')
               : t('portfolio.dividends.perYear')}
@@ -1078,26 +975,25 @@ function DividendIntelSection() {
       ) : null}
 
       {entries.length > 0 ? (
-        <div className="flex flex-col gap-1.5">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-            {t('portfolio.dividends.calendarTitle')}
-          </h3>
-          <ul className="flex flex-col divide-y divide-neutral-800/70">
+        <div className="flex flex-col gap-1.5" style={{ marginTop: 12 }}>
+          <h3 className="bt-label">{t('portfolio.dividends.calendarTitle')}</h3>
+          <ul className="bt-band flex flex-col">
             {visibleEntries.map((entry) => (
               <li
                 key={`${entry.assetId}:${entry.exDate ?? entry.payDate ?? ''}`}
-                className="flex items-center justify-between gap-3 py-1.5 text-sm"
+                className="flex items-center justify-between gap-3 py-2 text-sm"
               >
                 <Link
-                  to={`/assets/${entry.assetId}`}
-                  className="truncate font-medium text-neutral-200 hover:text-sky-400"
+                  className="bt-row-title"
+                  style={{ textDecoration: 'none' }}
                   title={entry.name}
+                  to={`/assets/${entry.assetId}`}
                 >
                   {entry.symbol}
                 </Link>
-                <span className="flex items-center gap-2 text-xs tabular-nums text-neutral-400">
+                <span className="bt-meta flex items-center gap-2">
                   {entry.amount != null ? (
-                    <span className="text-neutral-300">
+                    <span className="bt-soft bt-num">
                       {formatMoney(entry.amount, entry.currency ?? undefined)}
                     </span>
                   ) : null}
@@ -1108,9 +1004,16 @@ function DividendIntelSection() {
           </ul>
           {entries.length > 3 ? (
             <button
-              type="button"
+              className="bt-link self-start"
               onClick={() => setShowAll((v) => !v)}
-              className="self-start text-xs text-sky-400 hover:underline"
+              style={{
+                fontSize: 12.5,
+                background: 'none',
+                border: 0,
+                cursor: 'pointer',
+                padding: 0,
+              }}
+              type="button"
             >
               {showAll
                 ? t('portfolio.dividends.showLess')
@@ -1126,10 +1029,12 @@ function DividendIntelSection() {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 /**
- * Portfolio page (PROJECTPLAN.md §6.9, §7.2). Totals header, value-over-time
- * chart, allocation donuts, and a holdings table whose rows expand to their
- * transactions. Transactions and custom investments are created/edited through
- * the `TransactionDialog`, `ValuePointEditor` and `CustomInvestmentDialog`.
+ * Portfolio overview (PROJECTPLAN.md §6.9; Origin recomposition per
+ * docs/redesign/REAL_APP_REDESIGN_PROMPT.md): one continuous working canvas —
+ * net-worth hero + ruled stat strip, the value-over-time chart integrated into
+ * the page, allocation, holdings with expandable transaction rows, winners/
+ * losers, dividend intelligence and the recent ledger, separated by rules
+ * instead of nested cards. All writes flow through the existing dialogs.
  */
 export function PortfolioPage() {
   const t = useT();
@@ -1144,15 +1049,11 @@ export function PortfolioPage() {
   const [cashDialogKind, setCashDialogKind] = useState<'deposit' | 'withdrawal' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [memberSheetOpen, setMemberSheetOpen] = useState(false);
-  const [convertOpen, setConvertOpen] = useState(false);
-  // After Convert succeeds, jump straight to the friend-picker invite step
-  // (§4/§11 zero-config AC) — NOT the full member sheet.
-  const [inviteStepChainId, setInviteStepChainId] = useState<string | null>(null);
 
   // The API is portfolio_id-scoped (§6.8): resolve the active portfolio, then
   // thread its id through every scoped read/write. The active one is named by
   // the `?portfolio=` routing param the switcher sets (§13.2 V2-P8), falling
-  // back to the default — so switching in the header re-scopes this whole page.
+  // back to the default — so switching in the topbar re-scopes this whole page.
   const [searchParams] = useSearchParams();
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
@@ -1263,14 +1164,9 @@ export function PortfolioPage() {
   if (portfoliosQuery.isLoading || (portfolioId !== null && portfolioQuery.isLoading)) {
     return (
       <div className="flex flex-col gap-6">
-        <Skeleton height="h-8" width="w-48" />
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Skeleton height="h-20" />
-          <Skeleton height="h-20" />
-          <Skeleton height="h-20" />
-          <Skeleton height="h-20" />
-        </div>
-        <Skeleton height="h-80" />
+        <SkeletonBlock height={32} width={210} />
+        <SkeletonBlock height={92} />
+        <SkeletonBlock height={320} />
       </div>
     );
   }
@@ -1355,41 +1251,32 @@ export function PortfolioPage() {
             onClose={() => setMemberSheetOpen(false)}
           />
         ) : null}
-        {convertOpen && portfolio && !portfolio.mirror ? (
-          <ConvertChainDialog
-            portfolioId={portfolio.id}
-            portfolioName={portfolio.name}
-            onClose={() => setConvertOpen(false)}
-            onConverted={(chainId) => {
-              setConvertOpen(false);
-              refetchAll();
-              setInviteStepChainId(chainId);
-            }}
-          />
-        ) : null}
-        {inviteStepChainId ? (
-          <MirrorInviteStepDialog
-            chainId={inviteStepChainId}
-            onClose={() => setInviteStepChainId(null)}
-            onDone={() => {
-              setInviteStepChainId(null);
-              refetchAll();
-            }}
-          />
-        ) : null}
       </>
     );
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col">
       <PageHeader
         onRecord={() => setTxnDialog({ kind: 'create' })}
         onNewCustom={() => setCustomOpen(true)}
-        onMakeGroup={portfolio && !portfolio.mirror ? () => setConvertOpen(true) : undefined}
       />
 
       <RecategorizeBanner />
+
+      {/* Above the empty/non-empty split on purpose: an invited member's copy is
+          empty until the first ops replicate, and hiding the chain surface there
+          left them with no way to see who is in it or whether it had synced. */}
+      {portfolio?.mirror ? (
+        <div style={{ marginBottom: 14 }}>
+          <MirrorAvatarStack badge={portfolio.mirror} onClick={() => setMemberSheetOpen(true)} />
+        </div>
+      ) : null}
+      {portfolio?.mirrorFork ? (
+        <div style={{ marginBottom: 14 }}>
+          <MirrorForkProvenanceLine fork={portfolio.mirrorFork} />
+        </div>
+      ) : null}
 
       {isEmpty ? (
         <EmptyState
@@ -1398,16 +1285,13 @@ export function PortfolioPage() {
           description={t('portfolio.overview.emptyState.description')}
           cta={
             <div className="flex flex-wrap justify-center gap-2">
-              <Button onClick={() => setTxnDialog({ kind: 'create' })}>
+              <Button onClick={() => setTxnDialog({ kind: 'create' })} variant="primary">
                 {t('portfolio.overview.emptyState.recordButton')}
               </Button>
-              <Button variant="secondary" onClick={() => setCustomOpen(true)}>
+              <Button onClick={() => setCustomOpen(true)}>
                 {t('portfolio.overview.emptyState.newCustomButton')}
               </Button>
-              <Link
-                to="/assets/search"
-                className="rounded px-3 py-2 text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-              >
+              <Link className="bt-btn bt-btn--quiet" to="/assets/search">
                 {t('portfolio.overview.emptyState.searchLink')}
               </Link>
             </div>
@@ -1415,82 +1299,72 @@ export function PortfolioPage() {
         />
       ) : (
         <>
-          {portfolio?.mirror ? (
-            <MirrorAvatarStack badge={portfolio.mirror} onClick={() => setMemberSheetOpen(true)} />
-          ) : null}
-          {portfolio?.mirrorFork ? <MirrorForkProvenanceLine fork={portfolio.mirrorFork} /> : null}
           <TotalsHeader
             totals={totals}
             onDeposit={() => setCashDialogKind('deposit')}
             onWithdraw={() => setCashDialogKind('withdrawal')}
           />
 
-          <section
-            aria-label={t('portfolio.overview.chart.heading')}
-            className="flex flex-col gap-3"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold text-neutral-200">
-                {t('portfolio.overview.chart.heading')}
-              </h2>
+          <section aria-label={t('portfolio.overview.chart.heading')} className="bt-section">
+            <div className="bt-section__head">
+              <h2 className="bt-h2">{t('portfolio.overview.chart.heading')}</h2>
               <div className="flex flex-wrap items-center gap-2">
-                <div
-                  role="group"
-                  aria-label={t('portfolio.overview.chart.displayModeAriaLabel')}
-                  className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
-                >
-                  <ModeButton selected={!perfMode} onClick={() => setPerfMode(false)}>
-                    {t('portfolio.overview.chart.valueMode')}
-                  </ModeButton>
-                  <ModeButton selected={perfMode} onClick={() => setPerfMode(true)}>
-                    {t('portfolio.overview.chart.performanceMode')}
-                  </ModeButton>
-                </div>
-                {/* Overlay-assets + deeper analysis moved to Portfolio →
-                    Analytics (§13.3 V3-P9); the overview keeps only the simple
-                    curve (owner: "too technical" here). Carry the active
-                    portfolio so the deep-dive opens the same portfolio (#322). */}
+                <Seg
+                  ariaLabel={t('portfolio.overview.chart.displayModeAriaLabel')}
+                  onChange={(mode) => setPerfMode(mode === 'perf')}
+                  options={[
+                    { value: 'value', label: t('portfolio.overview.chart.valueMode') },
+                    { value: 'perf', label: t('portfolio.overview.chart.performanceMode') },
+                  ]}
+                  value={perfMode ? 'perf' : 'value'}
+                />
+                {/* Overlay-assets + deeper analysis live in Analysis (§13.3
+                    V3-P9); the overview keeps only the simple curve. Carry the
+                    active portfolio so the deep-dive opens the same one (#322). */}
                 <Link
+                  className="bt-link"
+                  style={{ fontSize: 12.5 }}
                   to={{
-                    pathname: '/portfolio/analytics',
+                    pathname: '/portfolio/analysis',
                     search: activeParam
                       ? `?${ACTIVE_PORTFOLIO_PARAM}=${encodeURIComponent(activeParam)}`
                       : '',
                   }}
-                  className="rounded-md px-2.5 py-1 text-xs font-medium text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
                 >
                   {t('portfolio.overview.chart.analyticsLink')}
                 </Link>
               </div>
             </div>
             {perfMode ? (
-              <p className="text-xs text-neutral-500">{t('portfolio.overview.chart.perfHint')}</p>
+              <p className="bt-meta" style={{ marginBottom: 8 }}>
+                {t('portfolio.overview.chart.perfHint')}
+              </p>
             ) : null}
-            <PriceChart
-              series={chartPoints}
-              mode={perfMode ? 'baseline' : 'area'}
-              percentValues={perfMode}
-              range={range}
-              ranges={PORTFOLIO_RANGES}
-              onRangeChange={setRange}
-              loading={historyQuery.isLoading || historyQuery.isFetching}
-              ariaLabel={
-                perfMode
-                  ? t('portfolio.overview.chart.ariaLabelPerformance')
-                  : t('portfolio.overview.chart.ariaLabelValue')
-              }
-            />
+            <div className="bt-chart">
+              <PriceChart
+                series={chartPoints}
+                mode={perfMode ? 'baseline' : 'area'}
+                percentValues={perfMode}
+                range={range}
+                ranges={PORTFOLIO_RANGES}
+                onRangeChange={setRange}
+                loading={historyQuery.isLoading || historyQuery.isFetching}
+                height={340}
+                ariaLabel={
+                  perfMode
+                    ? t('portfolio.overview.chart.ariaLabelPerformance')
+                    : t('portfolio.overview.chart.ariaLabelValue')
+                }
+              />
+            </div>
           </section>
 
           <AllocationSection holdings={holdings} cashEur={totals.cashEur} />
 
-          <section
-            aria-label={t('portfolio.overview.holdingsAriaLabel')}
-            className="flex flex-col gap-3"
-          >
-            <h2 className="text-lg font-semibold text-neutral-200">
-              {t('portfolio.overview.holdingsHeading')}
-            </h2>
+          <section aria-label={t('portfolio.overview.holdingsAriaLabel')} className="bt-section">
+            <div className="bt-section__head">
+              <h2 className="bt-h2">{t('portfolio.overview.holdingsHeading')}</h2>
+            </div>
             {actionError ? <Alert tone="error">{actionError}</Alert> : null}
             <HoldingsTable
               holdings={holdings}
@@ -1520,69 +1394,27 @@ export function PortfolioPage() {
   );
 }
 
-/** One segment of the €/% chart display-mode toggle (#125). */
-function ModeButton({
-  selected,
-  onClick,
-  children,
-}: {
-  selected: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      onClick={onClick}
-      className={cx(
-        'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-        'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-        selected
-          ? 'bg-sky-600 text-white'
-          : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-function PageHeader({
-  onRecord,
-  onNewCustom,
-  onMakeGroup,
-}: {
-  onRecord: () => void;
-  onNewCustom: () => void;
-  /**
-   * MIRRORCHAIN (V5-P7 M5, design §11): "Make this a group portfolio" — the
-   * convert entry point on an existing non-chain portfolio. Absent (no button)
-   * when the active portfolio is already a synced copy (design §1 uniqueness)
-   * or when the page has no active portfolio (loading/error).
-   */
-  onMakeGroup?: () => void;
-}) {
+/**
+ * MIRRORCHAIN (V5-P7 M5, design §11): the "Make this a group portfolio" convert
+ * entry point used to stand permanently in these actions. It is a once-in-a-
+ * portfolio's-life decision, so it moved to the Settings tab
+ * (`PortfolioSettingsPage`) — the overview header keeps only the two things you
+ * do every day. Chain *status* (avatar stack → member sheet) still lives here.
+ */
+function PageHeader({ onRecord, onNewCustom }: { onRecord: () => void; onNewCustom: () => void }) {
   const t = useT();
   return (
-    <div className="flex flex-wrap items-end justify-between gap-3">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
-          {t('portfolio.overview.title')}
-        </h1>
-        <p className="mt-1 text-sm text-neutral-400">{t('portfolio.overview.subtitle')}</p>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {onMakeGroup ? (
-          <Button variant="secondary" onClick={onMakeGroup}>
-            {t('mirrorchain.actions.makeGroup')}
+    <PageHead
+      actions={
+        <>
+          <Button onClick={onNewCustom}>{t('portfolio.overview.newCustomButton')}</Button>
+          <Button onClick={onRecord} variant="primary">
+            {t('portfolio.overview.recordButton')}
           </Button>
-        ) : null}
-        <Button variant="secondary" onClick={onNewCustom}>
-          {t('portfolio.overview.newCustomButton')}
-        </Button>
-        <Button onClick={onRecord}>{t('portfolio.overview.recordButton')}</Button>
-      </div>
-    </div>
+        </>
+      }
+      sub={t('portfolio.overview.subtitle')}
+      title={t('portfolio.overview.title')}
+    />
   );
 }

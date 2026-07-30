@@ -119,12 +119,16 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     kind: ShareKind,
     subjectId: string,
     action: (access: ThreadAccess) => Promise<T>,
+    // Comment-scoped callers keep their own COMMENT_NOT_FOUND code: a reaction
+    // on an unreachable thread must stay indistinguishable from a reaction on a
+    // deleted comment, which is what the route contract already promises.
+    notFound: () => Error = THREAD_NOT_FOUND,
   ): Promise<T> {
     const candidate = await resolveAccess(viewerId, kind, subjectId);
-    if (!candidate) throw THREAD_NOT_FOUND();
+    if (!candidate) throw notFound();
     const revalidateAndRun = async () => {
       const access = await resolveAccess(viewerId, kind, subjectId);
-      if (!access || access.ownerId !== candidate.ownerId) throw THREAD_NOT_FOUND();
+      if (!access || access.ownerId !== candidate.ownerId) throw notFound();
       return action(access);
     };
     return deps.paranoid
@@ -139,9 +143,10 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
     optionalActorIds: readonly string[],
     action: (access: ThreadAccess, allowedActorIds: readonly string[]) => Promise<T>,
     additionalRequiredActorIds: readonly string[] = [],
+    notFound: () => Error = THREAD_NOT_FOUND,
   ): Promise<T> {
     const candidate = await resolveAccess(viewerId, kind, subjectId);
-    if (!candidate) throw THREAD_NOT_FOUND();
+    if (!candidate) throw notFound();
     if (!deps.paranoid) {
       return action(candidate, []);
     }
@@ -151,7 +156,7 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
       'sharing',
       async (allowedOptionalActorIds) => {
         const access = await resolveAccess(viewerId, kind, subjectId);
-        if (!access || access.ownerId !== candidate.ownerId) throw THREAD_NOT_FOUND();
+        if (!access || access.ownerId !== candidate.ownerId) throw notFound();
         return action(access, [
           ...new Set([
             viewerId,
@@ -326,11 +331,17 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
       if (!candidate || candidate.deletedAt) throw COMMENT_NOT_FOUND();
       if (!deps.paranoid) {
         // Reacting needs the SAME access as reading the thread the comment lives in.
-        return withLockedAccess(viewerId, candidate.kind, candidate.subjectId, async () => {
-          await reactions.toggleComment(viewerId, commentId, emoji);
-          const summary = await reactions.summaryForComment(viewerId, commentId);
-          return { reactions: toReactionSummaries(summary) };
-        });
+        return withLockedAccess(
+          viewerId,
+          candidate.kind,
+          candidate.subjectId,
+          async () => {
+            await reactions.toggleComment(viewerId, commentId, emoji);
+            const summary = await reactions.summaryForComment(viewerId, commentId);
+            return { reactions: toReactionSummaries(summary) };
+          },
+          COMMENT_NOT_FOUND,
+        );
       }
       const reactionActorIds = await reactions.listActorIdsForComment(commentId);
       return withLockedAccessAndOptionalActors(
@@ -354,6 +365,7 @@ export function createCommentService(deps: CommentServiceDeps): CommentService {
           return { reactions: toReactionSummaries(summary) };
         },
         [candidate.authorId],
+        COMMENT_NOT_FOUND,
       );
     },
   };

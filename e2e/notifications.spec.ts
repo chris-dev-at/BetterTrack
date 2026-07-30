@@ -29,7 +29,7 @@ test('notifications: bell deep-link + read archives it into the Archived view', 
 
   // Sender fires a friend request at the recipient (but nobody accepts) — that
   // produces exactly one `friend.request` in-app notification for the recipient.
-  await sender.page.goto('/social/friends');
+  await sender.page.goto('/people');
   await sender.page.getByLabel('Username or email').fill(recipient.username);
   await sender.page.getByRole('button', { name: 'Send request' }).click();
   await expect(sender.page.getByText(/we've sent your friend request/i)).toBeVisible();
@@ -51,7 +51,7 @@ test('notifications: bell deep-link + read archives it into the Archived view', 
   const row = recipient.page.getByRole('link', { name: /New friend request/ });
   await expect(row).toBeVisible();
   await row.click();
-  await expect(recipient.page).toHaveURL(/\/social\/friends(#requests)?$/);
+  await expect(recipient.page).toHaveURL(/\/people(#requests)?$/);
 
   // read = archive: the row is now read, so it has left the active inbox — the
   // bell badge is gone and the dropdown no longer lists it.
@@ -61,9 +61,12 @@ test('notifications: bell deep-link + read archives it into the Archived view', 
   await recipient.page.getByRole('button', { name: 'Notifications', exact: true }).click();
   await expect(recipient.page.getByRole('link', { name: /New friend request/ })).toHaveCount(0);
 
-  // …and it is retained under the Archived view on the full notifications page.
-  await recipient.page.goto('/settings/notifications');
-  await recipient.page.getByRole('button', { name: 'Archived' }).click();
+  // …and it is retained under the Archived view in the notification log (the
+  // inbox split out of the notification PREFERENCES panel in R2).
+  await recipient.page.goto('/control/notification-log');
+  // The view filter is a tablist (`role="tab"`), so an explicit `button` role
+  // never matched it — this locator was wrong before the split too.
+  await recipient.page.getByRole('tab', { name: 'Archived' }).click();
   await expect(recipient.page.getByText('New friend request').first()).toBeVisible({
     timeout: 15_000,
   });

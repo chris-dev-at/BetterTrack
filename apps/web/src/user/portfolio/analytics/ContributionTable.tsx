@@ -26,7 +26,7 @@ export function ContributionTable({
 
   if (rows.length === 0) {
     return (
-      <p className="rounded-md bg-neutral-900/60 px-3 py-4 text-sm text-neutral-500">
+      <p className="bt-panel bt-panel--soft bt-muted px-3 py-4 text-sm">
         {t('portfolio.analytics.contribution.empty')}
       </p>
     );
@@ -37,7 +37,7 @@ export function ContributionTable({
       <table className="w-full min-w-[36rem] border-collapse text-sm">
         <caption className="sr-only">{t('portfolio.analytics.contribution.caption')}</caption>
         <thead>
-          <tr className="border-b border-neutral-800 text-left text-xs uppercase tracking-wide text-neutral-500">
+          <tr className="bt-label text-left" style={{ borderBottom: '1px solid var(--bt-border)' }}>
             <th scope="col" className="py-2 pr-3 font-medium">
               {t('portfolio.analytics.contribution.asset')}
             </th>
@@ -60,10 +60,10 @@ export function ContributionTable({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.asset.id} className="border-b border-neutral-900">
+            <tr key={row.asset.id} className="">
               <td className="py-2 pr-3">
-                <span className="font-mono text-neutral-100">{row.asset.symbol}</span>
-                <span className="ml-2 truncate text-xs text-neutral-500">{row.asset.name}</span>
+                <span className="bt-row-title">{row.asset.symbol}</span>
+                <span className="bt-row-sub ml-2 truncate">{row.asset.name}</span>
               </td>
               <td className="py-2 pr-3 text-right">
                 <MoneyText amount={row.value} currency={baseCurrency} />
@@ -74,10 +74,10 @@ export function ContributionTable({
               <td className="py-2 pr-3 text-right">
                 <MoneyText amount={row.pnl} currency={baseCurrency} signed />
               </td>
-              <td className="py-2 pr-3 text-right tabular-nums text-neutral-300">
+              <td className="bt-soft py-2 pr-3 text-right tabular-nums">
                 {formatPercent(row.weight * 100)}
               </td>
-              <td className="py-2 text-right tabular-nums text-neutral-300">
+              <td className="bt-soft py-2 text-right tabular-nums">
                 {formatSignedPercent(row.contributionPct)}
               </td>
             </tr>

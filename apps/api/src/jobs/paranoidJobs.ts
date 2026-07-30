@@ -3,8 +3,9 @@ import {
   isParanoidKilledWebhookEvent,
   paranoidWebhookSubjectIds,
   ParanoidModeError,
+  hasParanoidJobPolicy,
   paranoidJobPolicy,
-  PARANOID_JOB_POLICIES,
+  paranoidJobPolicyNames,
   type ParanoidModeGuard,
 } from '../services/account/paranoidEnforcement';
 
@@ -144,7 +145,7 @@ export function assertParanoidJobBindings(
   definitions: readonly JobDefinition[],
   allQueueNames: readonly string[],
 ): void {
-  const classified = Object.keys(PARANOID_JOB_POLICIES).sort();
+  const classified = paranoidJobPolicyNames().sort();
   const queues = [...allQueueNames].sort();
   if (
     classified.length !== queues.length ||
@@ -161,7 +162,8 @@ export function assertParanoidJobBindings(
     rows.push(definition);
     byName.set(definition.name, rows);
   }
-  for (const [name, policy] of Object.entries(PARANOID_JOB_POLICIES)) {
+  for (const name of classified) {
+    const policy = paranoidJobPolicy(name);
     const matches = byName.get(name) ?? [];
     if (matches.length !== 1) {
       throw new Error(
@@ -180,7 +182,7 @@ export function assertParanoidJobBindings(
     }
   }
   for (const name of byName.keys()) {
-    if (!(name in PARANOID_JOB_POLICIES)) {
+    if (!hasParanoidJobPolicy(name)) {
       throw new Error(`paranoid job registry has unclassified definition ${name}`);
     }
   }

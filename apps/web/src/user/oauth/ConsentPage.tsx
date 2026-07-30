@@ -6,9 +6,10 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 
 import { Wordmark } from '../../components/Wordmark';
 import { useT } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
+import { ApiError, apiAssetUrl } from '../../lib/apiClient';
 import {
   approveAuthorization,
+  denyAuthorization,
   getAuthorizationDetails,
   type OAuthAuthorizeParams,
 } from '../../lib/oauthApi';
@@ -41,8 +42,8 @@ import { Alert, Button, Spinner } from '../components/ui';
  * Security posture (§10): we NEVER navigate to `redirect_uri` on our own. An
  * invalid/unknown client or a bad redirect URI is a 400 from the details
  * endpoint and is rendered as an inline error — the browser only ever reaches
- * the redirect URI via the service-signed `redirectTo` returned by an explicit
- * Approve.
+ * the redirect URI via the service-validated `redirectTo` returned by an
+ * explicit approval or denial.
  */
 
 /** Pull the OAuth authorize params off the URL, or null if a required one is absent. */
@@ -68,13 +69,17 @@ function readParams(sp: URLSearchParams): OAuthAuthorizeParams | null {
   return params;
 }
 
-/** Centered, standalone card scaffold (this screen sits outside the app chrome). */
+/**
+ * Centered, standalone card scaffold (this screen sits outside the app chrome),
+ * built on the Origin gate. Widened past the 400px auth default because consent
+ * carries an app identity, a scope list and a redirect URI.
+ */
 function ConsentShell({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-[#0b0e14] px-4 pb-12 pt-[10vh] sm:pt-[14vh]">
-      <div className="mx-auto w-full max-w-md">
-        <div className="mb-8 text-center">
-          <Wordmark edition="Web" className="text-2xl" />
+    <div className="bt-app bt-gate">
+      <div className="bt-gate__card" style={{ width: 'min(480px, 100%)' }}>
+        <div className="bt-gate__brand text-center">
+          <Wordmark edition="Web" />
         </div>
         {children}
       </div>
@@ -85,43 +90,58 @@ function ConsentShell({ children }: { children: ReactNode }) {
 /**
  * The requesting app's identity on the consent screen: a first-party (official)
  * app shows the BetterTrack mark + an "Official app" badge; a third-party app
- * shows its own logo (when set) or a lettered placeholder.
+ * shows its server-cached logo (when set) or a lettered placeholder.
  */
 function AppIdentity({
   name,
-  logoUrl,
+  logoPath,
   firstParty,
 }: {
   name: string;
-  logoUrl: string | null;
+  logoPath: string | null;
   firstParty: boolean;
 }) {
   const t = useT();
+  const [logoFailed, setLogoFailed] = useState(false);
+  const logoUrl = logoPath && !logoFailed ? apiAssetUrl(logoPath) : null;
   return (
     <div className="flex items-center gap-3">
       {firstParty ? (
-        <div className="grid h-12 w-12 place-items-center rounded-xl bg-sky-500/15 text-base font-bold text-sky-300 ring-1 ring-sky-500/40">
+        <div
+          className="grid h-12 w-12 shrink-0 place-items-center rounded-lg text-base font-bold"
+          style={{
+            background: 'var(--bt-gold-soft)',
+            border: '1px solid var(--bt-border-accent)',
+            color: 'var(--bt-gold)',
+          }}
+        >
           {t('auth.oauthConsent.logoBadge')}
         </div>
       ) : logoUrl ? (
         <img
           src={logoUrl}
           alt=""
-          className="h-12 w-12 rounded-xl object-cover ring-1 ring-neutral-700"
+          className="h-12 w-12 shrink-0 rounded-lg object-cover"
+          style={{ border: '1px solid var(--bt-border-strong)' }}
+          onError={() => setLogoFailed(true)}
         />
       ) : (
-        <div className="grid h-12 w-12 place-items-center rounded-xl bg-neutral-800 text-lg font-semibold text-neutral-300 ring-1 ring-neutral-700">
+        <div
+          className="bt-soft grid h-12 w-12 shrink-0 place-items-center rounded-lg text-lg font-semibold"
+          style={{
+            background: 'var(--bt-surface-strong)',
+            border: '1px solid var(--bt-border-strong)',
+          }}
+        >
           {name.charAt(0).toUpperCase()}
         </div>
       )}
       <div className="min-w-0">
-        <div className="truncate font-semibold text-neutral-100">{name}</div>
+        <div className="bt-h3 truncate">{name}</div>
         {firstParty ? (
-          <div className="text-xs font-medium text-sky-400">
-            {t('auth.oauthConsent.firstParty')}
-          </div>
+          <div className="bt-gold text-xs font-medium">{t('auth.oauthConsent.firstParty')}</div>
         ) : (
-          <div className="text-xs text-neutral-500">{t('auth.oauthConsent.thirdParty')}</div>
+          <div className="bt-row-sub">{t('auth.oauthConsent.thirdParty')}</div>
         )}
       </div>
     </div>
@@ -134,7 +154,7 @@ export function ConsentPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
-  const [cancelled, setCancelled] = useState(false);
+  const [denialFailed, setDenialFailed] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
 
@@ -146,7 +166,7 @@ export function ConsentPage() {
   const query = useQuery({
     queryKey: ['oauth', 'authorization-details', search],
     queryFn: ({ signal }) => getAuthorizationDetails(params as OAuthAuthorizeParams, signal),
-    enabled: params != null && !cancelled,
+    enabled: params != null && !denialFailed,
     retry: false,
   });
 
@@ -158,6 +178,16 @@ export function ConsentPage() {
       window.location.href = result.redirectTo;
     },
     onError: () => setApproveError(t('auth.oauthConsent.approveError')),
+  });
+
+  const deny = useMutation({
+    mutationFn: () => denyAuthorization(params as OAuthAuthorizeParams),
+    onSuccess: (result) => {
+      // As with approval, only the API-validated destination is trusted. The
+      // raw redirect_uri from the browser query is never used for navigation.
+      window.location.href = result.redirectTo;
+    },
+    onError: () => setDenialFailed(true),
   });
 
   // "Use another account" — end this session, then land on /login carrying the
@@ -180,22 +210,22 @@ export function ConsentPage() {
   if (params == null) {
     return (
       <ConsentShell>
-        <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div>
           <Alert tone="error">{t('auth.oauthConsent.invalidRequest')}</Alert>
         </div>
       </ConsentShell>
     );
   }
 
-  // ── User declined: no code is issued; we do NOT touch redirect_uri. ──
-  if (cancelled) {
+  // ── Denial could not produce a validated callback: stay local and make it
+  // clear that no access was granted. Never fall back to the raw redirect URI. ──
+  if (denialFailed) {
     return (
       <ConsentShell>
-        <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-          <h1 className="text-lg font-semibold text-neutral-100">
-            {t('auth.oauthConsent.cancelledTitle')}
-          </h1>
-          <p className="text-sm text-neutral-400">{t('auth.oauthConsent.cancelledBody')}</p>
+        <div className="flex flex-col gap-4">
+          <Alert tone="error">{t('auth.oauthConsent.denyError')}</Alert>
+          <h1 className="bt-h2">{t('auth.oauthConsent.cancelledTitle')}</h1>
+          <p className="bt-muted text-sm">{t('auth.oauthConsent.cancelledBody')}</p>
           <Button onClick={() => navigate('/', { replace: true })}>
             {t('auth.oauthConsent.goToApp')}
           </Button>
@@ -207,7 +237,7 @@ export function ConsentPage() {
   if (query.isPending) {
     return (
       <ConsentShell>
-        <div className="grid place-items-center rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div className="grid place-items-center py-6">
           <Spinner label={t('auth.oauthConsent.loading')} />
         </div>
       </ConsentShell>
@@ -223,7 +253,7 @@ export function ConsentPage() {
         : t('auth.oauthConsent.loadError');
     return (
       <ConsentShell>
-        <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div>
           <Alert tone="error">{message}</Alert>
         </div>
       </ConsentShell>
@@ -242,10 +272,10 @@ export function ConsentPage() {
   if (details.client.firstParty) {
     return (
       <ConsentShell>
-        <div className="flex flex-col gap-5 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <div className="flex flex-col gap-5">
           {approveError ? <Alert tone="error">{approveError}</Alert> : null}
-          <AppIdentity name={details.client.name} logoUrl={null} firstParty />
-          <p className="text-sm text-neutral-400">{signedInAs}</p>
+          <AppIdentity name={details.client.name} logoPath={null} firstParty />
+          <p className="bt-muted text-sm">{signedInAs}</p>
           <div className="flex flex-col gap-2 sm:flex-row-reverse">
             <Button
               className="sm:flex-1"
@@ -278,16 +308,16 @@ export function ConsentPage() {
   // alongside (V4-P2b). ──
   return (
     <ConsentShell>
-      <div className="flex flex-col gap-5 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+      <div className="flex flex-col gap-5">
         {approveError ? <Alert tone="error">{approveError}</Alert> : null}
         <AppIdentity
           name={details.client.name}
-          logoUrl={details.client.logoUrl}
+          logoPath={details.client.logoPath}
           firstParty={false}
         />
-        <p className="text-sm text-neutral-400">{signedInAs}</p>
-        <p className="text-sm text-neutral-400">
-          <span className="font-medium text-neutral-200">{details.client.name}</span>{' '}
+        <p className="bt-muted text-sm">{signedInAs}</p>
+        <p className="bt-muted text-sm">
+          <span className="bt-soft font-medium">{details.client.name}</span>{' '}
           {t('auth.oauthConsent.wantsAccess')}
         </p>
 
@@ -295,16 +325,16 @@ export function ConsentPage() {
             groups (Portfolio, Social, …) instead of a flat run of lines. */}
         <ScopeSummary items={details.scopes} />
 
-        <p className="break-all text-xs text-neutral-500">
+        <p className="bt-muted break-all text-xs">
           {t('auth.oauthConsent.returnedTo')}{' '}
-          <code className="font-mono text-neutral-400">{details.redirectUri}</code>
+          <code className="bt-soft font-mono">{details.redirectUri}</code>
           {t('auth.oauthConsent.revokeHint')}
         </p>
 
         <div className="flex flex-col gap-2 sm:flex-row-reverse">
           <Button
             className="sm:flex-1"
-            disabled={approve.isPending || switching}
+            disabled={approve.isPending || deny.isPending || switching}
             onClick={() => {
               setApproveError(null);
               approve.mutate();
@@ -317,16 +347,19 @@ export function ConsentPage() {
           <Button
             variant="secondary"
             className="sm:flex-1"
-            disabled={approve.isPending || switching}
-            onClick={() => setCancelled(true)}
+            disabled={approve.isPending || deny.isPending || switching}
+            onClick={() => {
+              setApproveError(null);
+              deny.mutate();
+            }}
           >
             {t('common.cancel')}
           </Button>
         </div>
         <button
           type="button"
-          className="text-center text-sm font-medium text-neutral-400 hover:text-neutral-200 disabled:opacity-60"
-          disabled={approve.isPending || switching}
+          className="bt-btn bt-btn--quiet"
+          disabled={approve.isPending || deny.isPending || switching}
           onClick={() => void handleUseAnotherAccount()}
         >
           {t('auth.oauthConsent.useAnotherAccount')}

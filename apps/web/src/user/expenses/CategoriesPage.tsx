@@ -10,7 +10,8 @@ import {
   listExpenseCategories,
 } from '../../lib/expensesApi';
 import { EmptyState, Skeleton } from '../../ui';
-import { Alert, Button } from '../components/ui';
+import { Alert } from '../components/ui';
+import { Button } from '../../ui/origin';
 
 import { CategoryDialog } from './CategoryDialog';
 
@@ -51,8 +52,10 @@ export function CategoriesPage() {
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-neutral-500">{t('expenses.categories.subtitle')}</p>
-        <Button onClick={() => setCreating(true)}>{t('expenses.categories.new')}</Button>
+        <p className="bt-meta">{t('expenses.categories.subtitle')}</p>
+        <Button onClick={() => setCreating(true)} variant="primary">
+          {t('expenses.categories.new')}
+        </Button>
       </div>
 
       {query.isPending ? (
@@ -63,7 +66,7 @@ export function CategoriesPage() {
       ) : query.isError ? (
         <div className="flex flex-wrap items-center gap-3">
           <Alert tone="error">{t('expenses.categories.loadError')}</Alert>
-          <Button variant="secondary" onClick={retryCategories} disabled={query.isFetching}>
+          <Button onClick={retryCategories} disabled={query.isFetching}>
             {t('common.retry')}
           </Button>
         </div>
@@ -82,54 +85,45 @@ export function CategoriesPage() {
           if (group.length === 0) return null;
           return (
             <div key={direction} className="flex flex-col gap-2">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                {t(`expenses.direction.${direction}Plural`)}
-              </h2>
-              <ul className="flex flex-col divide-y divide-neutral-800 rounded-lg border border-neutral-800">
+              <h2 className="bt-label">{t(`expenses.direction.${direction}Plural`)}</h2>
+              <ul
+                className="bt-band flex flex-col"
+                style={{ borderBlock: '1px solid var(--bt-border)' }}
+              >
                 {group.map((category) => (
-                  <li key={category.id} className="flex items-center gap-3 px-4 py-2.5">
+                  <li key={category.id} className="bt-band__row flex items-center gap-3">
                     <span
                       className="h-3 w-3 shrink-0 rounded-full"
                       style={{ backgroundColor: category.color }}
                       aria-hidden="true"
                     />
-                    <span className="min-w-0 flex-1 truncate text-sm text-neutral-200">
-                      {category.name}
-                    </span>
+                    <span className="bt-row-title min-w-0 flex-1 truncate">{category.name}</span>
                     {confirmDeleteId === category.id ? (
                       <span className="flex shrink-0 items-center gap-1">
-                        <button
-                          type="button"
+                        <Button
+                          variant="danger"
+                          size="sm"
                           onClick={() => remove.mutate(category.id)}
                           disabled={remove.isPending}
-                          className="rounded px-2 py-1 text-xs font-medium text-red-400 hover:bg-red-950/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                         >
                           {t('common.confirm')}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDeleteId(null)}
-                          className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
-                        >
+                        </Button>
+                        <Button variant="quiet" size="sm" onClick={() => setConfirmDeleteId(null)}>
                           {t('common.cancel')}
-                        </button>
+                        </Button>
                       </span>
                     ) : (
                       <span className="flex shrink-0 items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => setEditing(category)}
-                          className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
-                        >
+                        <Button variant="quiet" size="sm" onClick={() => setEditing(category)}>
                           {t('common.edit')}
-                        </button>
-                        <button
-                          type="button"
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
                           onClick={() => setConfirmDeleteId(category.id)}
-                          className="rounded px-2 py-1 text-xs text-neutral-500 hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                         >
                           {t('common.delete')}
-                        </button>
+                        </Button>
                       </span>
                     )}
                   </li>

@@ -261,9 +261,9 @@ export type UpdateAccountSettingsRequest = z.infer<typeof updateAccountSettingsR
  *     invite / password-reset model). The token is minted behind the re-auth
  *     and short-lived, so it doubles as the download's "fresh re-auth" proof.
  *  2. `GET` — poll the latest job's status (no secret in the response).
- *  3. `GET /download?token=` — the session owner streams the zip while the
- *     token matches and the job is `ready` and unexpired; a foreign or expired
- *     token fails closed.
+ *  3. `POST /download` — exchange the raw token in the request body for the zip.
+ *     The session owner may consume a matching, ready, unexpired token exactly
+ *     once; a foreign, expired, or replayed token fails closed.
  */
 
 /** Lifecycle of one export job. `expired` is a ready job past its download window. */
@@ -311,8 +311,9 @@ export type ExportStatusResponse = z.infer<typeof exportStatusResponseSchema>;
 
 /**
  * `POST /account/export` response — the freshly-created job plus the RAW,
- * single-delivery download token. The client keeps it to build the download
- * URL once the job is `ready`; the server retains only its hash.
+ * single-delivery download token. The client holds it in memory until the job
+ * is `ready`, then exchanges it in a POST body; the server retains only its
+ * hash.
  */
 export const exportRequestResponseSchema = z
   .object({
@@ -324,9 +325,9 @@ export const exportRequestResponseSchema = z
   .strict();
 export type ExportRequestResponse = z.infer<typeof exportRequestResponseSchema>;
 
-/** `GET /account/export/download?token=` query — the raw download token. */
-export const exportDownloadQuerySchema = z.object({ token: z.string().min(1).max(200) }).strict();
-export type ExportDownloadQuery = z.infer<typeof exportDownloadQuerySchema>;
+/** `POST /account/export/download` body — the one-time raw download token. */
+export const exportDownloadRequestSchema = z.object({ token: z.string().min(1).max(200) }).strict();
+export type ExportDownloadRequest = z.infer<typeof exportDownloadRequestSchema>;
 
 // --- Telegram + Discord channels (§13.4 V4-P10) ----------------------------
 //

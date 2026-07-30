@@ -6,6 +6,8 @@ import type { ChatRepository } from '../../data/repositories/chatRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { AppConfig } from '../../config/env';
 import { badRequest, tooManyRequests, unauthorized } from '../../errors';
+import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
+import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { ACCOUNT_DELETE_NAMESPACE } from '../auth/loginThrottle';
 import type { TwoFactorService } from '../auth/twoFactorService';
@@ -44,6 +46,9 @@ export interface AccountDeletionServiceDeps {
   userRepo: UserRepository;
   chatRepo: ChatRepository;
   sessions: SessionService;
+  /** Lifecycle fan-out terminates existing cookie and bearer sockets after deletion. */
+  events: Pick<EventBus, 'publish'>;
+  logger?: Pick<Logger, 'warn'>;
   audit: AuditService;
   passwordHasher: PasswordHasher;
   twoFactor: TwoFactorService;
@@ -73,8 +78,19 @@ export interface AccountDeletionService {
 export function createAccountDeletionService(
   deps: AccountDeletionServiceDeps,
 ): AccountDeletionService {
-  const { config, redis, userRepo, chatRepo, sessions, audit, passwordHasher, twoFactor, mirror } =
-    deps;
+  const {
+    config,
+    redis,
+    userRepo,
+    chatRepo,
+    sessions,
+    events,
+    logger,
+    audit,
+    passwordHasher,
+    twoFactor,
+    mirror,
+  } = deps;
 
   // Per-account wrong-credential throttle (§10) on the same escalation ladder
   // as failed logins, independent of the per-IP limiter the route carries.
@@ -101,6 +117,23 @@ export function createAccountDeletionService(
       throw unauthorized('Current password is incorrect.', 'INVALID_CREDENTIALS');
     }
     throw unauthorized('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
+  }
+
+  async function invalidateAllRealtimePrincipals(userId: string): Promise<void> {
+    try {
+      await events.publish({
+        type: 'realtime.principal.invalidated',
+        userId,
+        kind: 'all',
+        credentialId: null,
+        exceptCredentialId: null,
+        occurredAt: new Date().toISOString(),
+      } satisfies RealtimePrincipalInvalidatedEvent);
+    } catch (err) {
+      // The durable cascade has already made every credential unusable. Gateway
+      // revalidation remains the fail-closed fallback for a missed fan-out.
+      logger?.warn({ err, userId }, 'account deletion realtime invalidation publish failed');
+    }
   }
 
   return {
@@ -151,6 +184,10 @@ export function createAccountDeletionService(
       // every other member's copy + the chain stay intact (V5-P7 M4).
       await mirror.handleAccountDeletion(userId);
       await userRepo.remove(userId);
+      // The row cascade has now revoked every credential family. Disconnect any
+      // socket that authenticated before deletion rather than waiting for its
+      // bounded revalidation sweep.
+      await invalidateAllRealtimePrincipals(userId);
       await chatRepo.purgeOrphanedConversations();
 
       // The account is gone, so the trail carries no actor FK — only the

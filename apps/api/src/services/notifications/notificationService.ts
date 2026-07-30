@@ -1,10 +1,13 @@
-import type {
-  DevicePlatform,
-  MarkReadRequest,
-  Notification,
-  NotificationListResponse,
-  NotificationView,
-  WebPushSubscribeRequest,
+import {
+  WEB_PUSH_ENDPOINT_UNSAFE,
+  WEB_PUSH_MAX_SUBSCRIPTIONS,
+  WEB_PUSH_SUBSCRIPTION_LIMIT_REACHED,
+  type DevicePlatform,
+  type MarkReadRequest,
+  type Notification,
+  type NotificationListResponse,
+  type NotificationView,
+  type WebPushSubscribeRequest,
 } from '@bettertrack/contracts';
 
 import type { DeviceTokenRepository } from '../../data/repositories/deviceTokenRepository';
@@ -13,7 +16,8 @@ import type {
   NotificationRepository,
 } from '../../data/repositories/notificationRepository';
 import type { PushSubscriptionRepository } from '../../data/repositories/pushSubscriptionRepository';
-import { notFound } from '../../errors';
+import { badRequest, notFound } from '../../errors';
+import { UnsafeOutboundUrlError, assertSafeOutboundUrl } from '../security/outboundUrlGuard';
 
 /**
  * User-scoped notification surface (PROJECTPLAN.md §6.10, §8; #368, #437):
@@ -129,12 +133,38 @@ export function createNotificationService(deps: NotificationServiceDeps): Notifi
 
     deleteDevice: (userId, token) => devices.deleteForUser(userId, token),
 
-    subscribeWebPush: (userId, sub) =>
-      webPushSubs.upsert(userId, {
-        endpoint: sub.endpoint,
-        p256dh: sub.keys.p256dh,
-        auth: sub.keys.auth,
-      }),
+    async subscribeWebPush(userId, sub) {
+      try {
+        // Persistence-time validation catches unsafe literals and local names
+        // without making registration depend on DNS. Delivery repeats the full
+        // guard with fresh DNS answers immediately before egress.
+        await assertSafeOutboundUrl(sub.endpoint, { resolveDns: false });
+      } catch (err) {
+        if (err instanceof UnsafeOutboundUrlError) {
+          throw badRequest(
+            'Web Push endpoint must be a safe public HTTPS URL.',
+            WEB_PUSH_ENDPOINT_UNSAFE,
+          );
+        }
+        throw err;
+      }
+
+      const stored = await webPushSubs.upsertWithinLimit(
+        userId,
+        {
+          endpoint: sub.endpoint,
+          p256dh: sub.keys.p256dh,
+          auth: sub.keys.auth,
+        },
+        WEB_PUSH_MAX_SUBSCRIPTIONS,
+      );
+      if (!stored) {
+        throw badRequest(
+          `You can have at most ${WEB_PUSH_MAX_SUBSCRIPTIONS} Web Push subscriptions.`,
+          WEB_PUSH_SUBSCRIPTION_LIMIT_REACHED,
+        );
+      }
+    },
 
     unsubscribeWebPush: (userId, endpoint) => webPushSubs.deleteForUser(userId, endpoint),
   };

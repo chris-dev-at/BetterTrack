@@ -14,20 +14,34 @@ import { Splash } from '../components/ui';
  * opens `/s/:token`, which resolves the token to a live read-only view of the
  * shared item — and nothing else. A revoked/unknown token, or one whose owner
  * narrowed the audience, renders a friendly "no longer available" (the API 404s).
+ *
+ * It renders OUTSIDE the app shell, so it puts on the Origin frame itself:
+ * `bt-app` supplies the graphite canvas, ivory type and focus ring, and a
+ * single centered reading column (the shell's own narrow canvas width) carries
+ * a compact wordmark header over the content.
  */
+
+/** The shell's narrow content column, reproduced for the standalone pages. */
+const COLUMN = {
+  marginInline: 'auto',
+  maxWidth: 880,
+  paddingInline: 'clamp(16px, 3.4vw, 48px)',
+  width: '100%',
+} as const;
+
 function Shell({ children }: { children: React.ReactNode }) {
   const t = useT();
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100">
-      <header className="border-b border-neutral-800 px-6 py-4">
-        <div className="mx-auto flex max-w-3xl items-center justify-between">
+    <div className="bt-app">
+      <header className="bt-b-rule">
+        <div className="flex items-center justify-between gap-3 py-4" style={COLUMN}>
           <Wordmark edition="Web" className="text-lg" />
-          <span className="text-xs uppercase tracking-wide text-neutral-500">
-            {t('publicShare.readOnly')}
-          </span>
+          <span className="bt-label">{t('publicShare.readOnly')}</span>
         </div>
       </header>
-      <main className="mx-auto max-w-3xl px-6 py-8">{children}</main>
+      <main className="py-10" style={COLUMN}>
+        {children}
+      </main>
     </div>
   );
 }
@@ -47,7 +61,7 @@ export function PublicSharePage() {
   if (isError || !data) {
     return (
       <Shell>
-        <p className="text-sm text-neutral-400">{t('publicShare.notFound')}</p>
+        <p className="bt-soft">{t('publicShare.notFound')}</p>
       </Shell>
     );
   }
@@ -58,45 +72,52 @@ export function PublicSharePage() {
       <Shell>
         <div className="flex flex-col gap-6">
           <div>
-            <h1 className="text-2xl font-semibold">{p.name}</h1>
-            <p className="text-sm text-neutral-500">
+            <h1 className="bt-page-title">{p.name}</h1>
+            <p className="bt-page-sub">
               {t('publicShare.ownerLabel', { username: p.owner.username })}
             </p>
           </div>
-          <div className="rounded-lg border border-neutral-800 p-4">
-            <p className="text-xs uppercase tracking-wide text-neutral-500">
-              {t('publicShare.netWorth')}
+          {/* The headline value leads the canvas rather than sitting in a box. */}
+          <div>
+            <p className="bt-label">{t('publicShare.netWorth')}</p>
+            <p className="bt-hero-value" style={{ marginTop: 4 }}>
+              {formatMoney(p.totals.totalValueEur, 'EUR')}
             </p>
-            <p className="text-3xl font-semibold">{formatMoney(p.totals.totalValueEur, 'EUR')}</p>
           </div>
           {p.history.points.length > 0 ? (
             <section aria-label={t('publicShare.valueOverTime')}>
-              <h2 className="mb-2 text-sm font-semibold text-neutral-300">
+              <h2 className="bt-h3" style={{ marginBottom: 10 }}>
                 {t('publicShare.valueOverTime')}
               </h2>
-              <PriceChart
-                series={p.history.points.map((pt) => ({
-                  time: pt.date as Time,
-                  value: pt.valueEur,
-                }))}
-                mode="area"
-                showRangeToggle={false}
-                ariaLabel={t('publicShare.valueOverTime')}
-              />
+              <div className="bt-chart">
+                <PriceChart
+                  series={p.history.points.map((pt) => ({
+                    time: pt.date as Time,
+                    value: pt.valueEur,
+                  }))}
+                  mode="area"
+                  showRangeToggle={false}
+                  ariaLabel={t('publicShare.valueOverTime')}
+                />
+              </div>
             </section>
           ) : null}
           <section>
-            <h2 className="mb-2 text-sm font-semibold text-neutral-300">
+            <h2 className="bt-h3" style={{ marginBottom: 6 }}>
               {t('publicShare.holdings')}
             </h2>
-            <ul className="divide-y divide-neutral-800">
+            <ul className="bt-band bt-t-rule bt-b-rule flex flex-col">
               {p.holdings.map((h) => (
-                <li key={h.asset.id} className="flex items-center justify-between gap-3 py-2">
+                <li
+                  key={h.asset.id}
+                  className="flex items-center justify-between gap-3"
+                  style={{ padding: '10px 0' }}
+                >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{h.asset.symbol}</p>
-                    <p className="truncate text-xs text-neutral-500">{h.asset.name}</p>
+                    <p className="bt-row-title truncate">{h.asset.symbol}</p>
+                    <p className="bt-row-sub truncate">{h.asset.name}</p>
                   </div>
-                  <span className="shrink-0 text-sm text-neutral-300">
+                  <span className="bt-num bt-soft shrink-0">
                     {formatMoney(h.marketValueEur ?? 0, 'EUR')}
                   </span>
                 </li>
@@ -114,34 +135,33 @@ export function PublicSharePage() {
       <Shell>
         <div className="flex flex-col gap-6">
           <div>
-            <h1 className="text-2xl font-semibold">{c.name}</h1>
-            <p className="text-sm text-neutral-500">
+            <h1 className="bt-page-title">{c.name}</h1>
+            <p className="bt-page-sub">
               {t('publicShare.ownerLabel', { username: c.owner.username })}
             </p>
           </div>
           <section>
-            <h2 className="mb-2 text-sm font-semibold text-neutral-300">
+            <h2 className="bt-h3" style={{ marginBottom: 6 }}>
               {t('publicShare.positions')}
             </h2>
-            <ul className="divide-y divide-neutral-800">
+            <ul className="bt-band bt-t-rule bt-b-rule flex flex-col">
               {c.positions.map((pos) => (
                 <li
                   key={pos.kind === 'asset' ? pos.assetId : pos.childId}
-                  className="flex items-center justify-between gap-3 py-2"
+                  className="flex items-center justify-between gap-3"
+                  style={{ padding: '10px 0' }}
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">
+                    <p className="bt-row-title truncate">
                       {pos.kind === 'asset' ? pos.asset.symbol : pos.child.name}
                     </p>
-                    <p className="truncate text-xs text-neutral-500">
+                    <p className="bt-row-sub truncate">
                       {pos.kind === 'asset'
                         ? pos.asset.name
                         : t('workboard.conglomerates.nestedBadge')}
                     </p>
                   </div>
-                  <span className="shrink-0 text-sm text-neutral-300">
-                    {formatPercent(pos.weightPct)}
-                  </span>
+                  <span className="bt-num bt-soft shrink-0">{formatPercent(pos.weightPct)}</span>
                 </li>
               ))}
             </ul>
@@ -156,24 +176,28 @@ export function PublicSharePage() {
     <Shell>
       <div className="flex flex-col gap-6">
         <div>
-          <h1 className="text-2xl font-semibold">{w.name}</h1>
-          <p className="text-sm text-neutral-500">
+          <h1 className="bt-page-title">{w.name}</h1>
+          <p className="bt-page-sub">
             {t('publicShare.ownerLabel', { username: w.owner.username })}
           </p>
         </div>
         <section>
-          <h2 className="mb-2 text-sm font-semibold text-neutral-300">
+          <h2 className="bt-h3" style={{ marginBottom: 6 }}>
             {t('publicShare.watchedAssets')}
           </h2>
-          <ul className="divide-y divide-neutral-800">
+          <ul className="bt-band bt-t-rule bt-b-rule flex flex-col">
             {w.items.map((item) => (
-              <li key={item.id} className="flex items-center justify-between gap-3 py-2">
+              <li
+                key={item.id}
+                className="flex items-center justify-between gap-3"
+                style={{ padding: '10px 0' }}
+              >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{item.asset.symbol}</p>
-                  <p className="truncate text-xs text-neutral-500">{item.asset.name}</p>
+                  <p className="bt-row-title truncate">{item.asset.symbol}</p>
+                  <p className="bt-row-sub truncate">{item.asset.name}</p>
                 </div>
                 {item.asset.exchange ? (
-                  <span className="shrink-0 text-xs text-neutral-500">{item.asset.exchange}</span>
+                  <span className="bt-meta shrink-0">{item.asset.exchange}</span>
                 ) : null}
               </li>
             ))}

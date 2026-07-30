@@ -18,26 +18,21 @@ export interface ComingSoonProps {
  * §7.4). Every route flagged **[Coming Soon]** in §7.2 renders one of these so a
  * deep link resolves to an intentional, on-brand page instead of a 404 or a
  * blank area. Purely presentational — no network.
+ *
+ * Rendered in the Origin "parked surface" family (styles/origin.css `bt-parked`):
+ * a dashed-bordered panel with a faint gold wash and a gold flag — present in
+ * the IA, honest about waiting on its build. Same props, same copy, same keys.
  */
 export function ComingSoon({ title, description, icon = '🚧', className }: ComingSoonProps) {
   const t = useT();
   return (
-    <section
-      className={cx(
-        'flex flex-col items-center justify-center gap-4 rounded-lg border border-dashed border-neutral-800 bg-neutral-900/40 px-6 py-16 text-center',
-        className,
-      )}
-    >
-      <span className="text-4xl text-neutral-600" aria-hidden="true">
+    <section className={cx('bt-parked', className)}>
+      <span className="mb-3 block text-3xl" style={{ color: 'var(--bt-faint)' }} aria-hidden="true">
         {icon}
       </span>
-      <div className="flex flex-col items-center gap-2">
-        <span className="inline-flex items-center rounded-full bg-neutral-800 px-2.5 py-0.5 text-[0.68rem] font-semibold uppercase tracking-wide text-neutral-400 ring-1 ring-inset ring-neutral-700">
-          {t('common.comingSoon')}
-        </span>
-        <h1 className="text-xl font-semibold tracking-tight text-neutral-100">{title}</h1>
-        {description ? <p className="max-w-md text-sm text-neutral-500">{description}</p> : null}
-      </div>
+      <span className="bt-parked__flag">{t('common.comingSoon')}</span>
+      <h1 className="bt-parked__title">{title}</h1>
+      {description ? <p className="bt-parked__body">{description}</p> : null}
     </section>
   );
 }

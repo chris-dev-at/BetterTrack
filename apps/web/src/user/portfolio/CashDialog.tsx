@@ -31,12 +31,6 @@ export interface CashDialogProps {
   today?: string;
 }
 
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
-
 function isoToday(today?: string): string {
   if (today) return today;
   return new Date().toISOString().slice(0, 10);
@@ -161,22 +155,12 @@ export function CashDialog({
           {t('portfolio.cash.title')}
         </span>
 
-        <div
-          className="flex gap-1 rounded-md bg-neutral-950 p-1 ring-1 ring-inset ring-neutral-700"
-          role="group"
-          aria-label={t('portfolio.cash.kindGroupAriaLabel')}
-        >
+        <div className="bt-seg" role="group" aria-label={t('portfolio.cash.kindGroupAriaLabel')}>
           <button
             type="button"
             onClick={() => setKind('deposit')}
             aria-pressed={kind === 'deposit'}
-            className={cx(
-              'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              kind === 'deposit'
-                ? 'bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-600'
-                : 'text-neutral-400 hover:text-neutral-200',
-            )}
+            className={cx('flex-1', kind === 'deposit' && 'is-active')}
           >
             {t('portfolio.cash.depositTab')}
           </button>
@@ -184,28 +168,20 @@ export function CashDialog({
             type="button"
             onClick={() => setKind('withdrawal')}
             aria-pressed={kind === 'withdrawal'}
-            className={cx(
-              'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              kind === 'withdrawal'
-                ? 'bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-600'
-                : 'text-neutral-400 hover:text-neutral-200',
-            )}
+            className={cx('flex-1', kind === 'withdrawal' && 'is-active')}
           >
             {t('portfolio.cash.withdrawTab')}
           </button>
         </div>
 
         {showPicker ? (
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">
-              {t('portfolio.cash.sourceLabel')}
-            </span>
+          <div className="bt-field">
+            <label>{t('portfolio.cash.sourceLabel')}</label>
             <select
               value={sourceId ?? ''}
               onChange={(e) => setSourceId(e.target.value)}
               aria-label={t('portfolio.cash.sourceLabel')}
-              className={inputClass}
+              className="bt-select"
             >
               {pickable.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -213,13 +189,11 @@ export function CashDialog({
                 </option>
               ))}
             </select>
-          </label>
+          </div>
         ) : null}
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.cash.amountLabel')}
-          </span>
+        <div className="bt-field">
+          <label>{t('portfolio.cash.amountLabel')}</label>
           <input
             type="number"
             inputMode="decimal"
@@ -228,13 +202,13 @@ export function CashDialog({
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             aria-label={t('portfolio.cash.amountAriaLabel')}
-            className={inputClass}
+            className="bt-input"
           />
-        </label>
+        </div>
 
         {amountValid ? (
           <p
-            className="text-xs text-neutral-400"
+            className="text-xs bt-muted"
             role="status"
             aria-label={t('portfolio.cash.previewAriaLabel')}
           >
@@ -244,11 +218,11 @@ export function CashDialog({
               <>
                 {t('portfolio.cash.available')}{' '}
                 <MoneyText amount={preview.availableEur} currency="EUR" /> &rarr;{' '}
-                <span className={blockedByPreview ? 'text-red-400' : 'text-neutral-200'}>
+                <span className={blockedByPreview ? 'bt-neg' : 'bt-soft'}>
                   <MoneyText amount={preview.afterEur} currency="EUR" />
                 </span>
                 {blockedByPreview ? (
-                  <span className="ml-1 text-red-400">
+                  <span className="ml-1 bt-neg">
                     ({t('portfolio.cash.short')}{' '}
                     <MoneyText amount={preview.shortfallEur} currency="EUR" />)
                   </span>
@@ -258,32 +232,28 @@ export function CashDialog({
           </p>
         ) : null}
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.cash.dateLabel')}
-          </span>
+        <div className="bt-field">
+          <label>{t('portfolio.cash.dateLabel')}</label>
           <input
             type="date"
             value={date}
             onChange={(e) => setDate(e.target.value)}
             aria-label={t('portfolio.cash.dateLabel')}
-            className={inputClass}
+            className="bt-input"
           />
-        </label>
+        </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('portfolio.cash.noteLabel')}
-          </span>
+        <div className="bt-field">
+          <label>{t('portfolio.cash.noteLabel')}</label>
           <input
             type="text"
             value={note}
             maxLength={1000}
             onChange={(e) => setNote(e.target.value)}
             aria-label={t('portfolio.cash.noteAriaLabel')}
-            className={inputClass}
+            className="bt-input"
           />
-        </label>
+        </div>
 
         {error ? <Alert tone="error">{error}</Alert> : null}
 

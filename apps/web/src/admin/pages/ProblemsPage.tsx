@@ -17,11 +17,11 @@ type KindFilter = ProblemKind | 'all';
 type StatusFilter = ProblemStatus | 'all';
 
 /**
- * Admin Problems page (PROJECTPLAN.md §13.5 V5-P2 arc (d), the Sentry
- * replacement). Lists captured problems — unhandled errors, permanently-failed
- * jobs and provider failures — next to Health, with kind/status filters,
- * occurrence counts, an expandable detail (scrubbed message + context) and a
- * resolve/reopen flow. All copy is localized through `admin.problems.*`.
+ * Admin Problems page (PROJECTPLAN.md §13.5 V5-P2 arc (d)). Lists captured
+ * problems — unhandled errors, permanently-failed jobs and provider failures —
+ * next to Health, with kind/status filters, occurrence counts, an expandable
+ * detail (scrubbed message + context) and a resolve/reopen flow. All copy is
+ * localized through `admin.problems.*`.
  */
 export function ProblemsPage() {
   const t = useT();

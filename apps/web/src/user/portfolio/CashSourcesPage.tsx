@@ -15,8 +15,9 @@ import {
   listPortfolios,
   restoreCashSource,
 } from '../../lib/portfolioApi';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert } from '../components/ui';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
+import { Badge, Button, PageHead } from '../../ui/origin';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
 import { activeSources, sortSourcesMainFirst } from './cashSourceUtils';
 import { CashDialog } from './CashDialog';
@@ -134,105 +135,59 @@ function SourceRow({
   const canArchive = !source.isMain && !archived && Math.abs(source.balanceEur) < 0.005;
 
   return (
-    <tr className={cx('border-b border-neutral-800 last:border-b-0', archived && 'opacity-60')}>
-      <td className="px-3 py-3">
+    <tr className={archived ? 'opacity-60' : undefined}>
+      <td>
         <div className="flex items-center gap-2">
-          <span className="font-medium text-neutral-100">{source.name}</span>
-          {source.isMain ? (
-            <span className="rounded bg-sky-900/50 px-1.5 py-0.5 text-xs font-medium text-sky-300">
-              {t('portfolio.cashSources.mainBadge')}
-            </span>
-          ) : null}
-          {archived ? (
-            <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-xs font-medium text-neutral-400">
-              {t('portfolio.cashSources.archivedBadge')}
-            </span>
-          ) : null}
+          <span className="bt-row-title">{source.name}</span>
+          {source.isMain ? <Badge>{t('portfolio.cashSources.mainBadge')}</Badge> : null}
+          {archived ? <Badge>{t('portfolio.cashSources.archivedBadge')}</Badge> : null}
           {source.mirror ? <MirrorAttributionChip attribution={source.mirror.addedBy} /> : null}
         </div>
       </td>
-      <td className="px-3 py-3 text-neutral-400">{typeLabel(t, source)}</td>
-      <td className="px-3 py-3 text-right">
+      <td className="bt-muted">{typeLabel(t, source)}</td>
+      <td className="is-num">
         <MoneyText amount={source.balanceEur} currency="EUR" />
       </td>
-      <td className="px-3 py-3 text-right tabular-nums text-neutral-400">
-        {share !== null ? formatPercent(share) : EM_DASH}
-      </td>
-      <td className="px-3 py-3 text-right">
+      <td className="is-num bt-muted">{share !== null ? formatPercent(share) : EM_DASH}</td>
+      <td className="is-num">
         {archived ? (
-          <button
-            type="button"
-            onClick={onRestore}
-            disabled={busy}
-            className="rounded px-1.5 py-0.5 text-sky-400 hover:bg-neutral-800 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-          >
+          <Button disabled={busy} onClick={onRestore} size="sm" variant="quiet">
             {t('portfolio.cashSources.restoreAction')}
-          </button>
+          </Button>
         ) : (
-          <div className="flex flex-wrap items-center justify-end gap-1 text-xs">
-            <button
-              type="button"
-              onClick={onDeposit}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-sky-400 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            >
+          <div className="flex flex-wrap items-center justify-end gap-1">
+            <Button onClick={onDeposit} size="sm" variant="quiet">
               <DepositIcon />
               {t('portfolio.cashSources.depositButton')}
-            </button>
-            <button
-              type="button"
-              onClick={onWithdraw}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-sky-400 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            >
+            </Button>
+            <Button onClick={onWithdraw} size="sm" variant="quiet">
               <WithdrawIcon />
               {t('portfolio.cashSources.withdrawButton')}
-            </button>
-            <button
-              type="button"
-              onClick={onSetBalance}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-neutral-300 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            >
+            </Button>
+            <Button onClick={onSetBalance} size="sm" variant="quiet">
               <SetBalanceIcon />
               {t('portfolio.cashSources.setBalanceAction')}
-            </button>
+            </Button>
             {!source.isMain ? (
-              <button
-                type="button"
-                onClick={onRename}
-                className="rounded px-1.5 py-0.5 text-neutral-300 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-              >
+              <Button onClick={onRename} size="sm" variant="quiet">
                 {t('portfolio.cashSources.renameAction')}
-              </button>
+              </Button>
             ) : null}
             {canArchive ? (
               confirmArchive ? (
                 <span className="inline-flex items-center gap-1">
-                  <span className="text-neutral-400">
-                    {t('portfolio.cashSources.archiveConfirm')}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={onArchive}
-                    disabled={busy}
-                    className="rounded px-1.5 py-0.5 text-red-400 hover:bg-neutral-800 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-                  >
+                  <span className="bt-muted">{t('portfolio.cashSources.archiveConfirm')}</span>
+                  <Button disabled={busy} onClick={onArchive} size="sm" variant="danger">
                     {t('common.yes')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmArchive(false)}
-                    className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-                  >
+                  </Button>
+                  <Button onClick={() => setConfirmArchive(false)} size="sm" variant="quiet">
                     {t('common.no')}
-                  </button>
+                  </Button>
                 </span>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => setConfirmArchive(true)}
-                  className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-                >
+                <Button onClick={() => setConfirmArchive(true)} size="sm" variant="quiet">
                   {t('portfolio.cashSources.archiveAction')}
-                </button>
+                </Button>
               )
             ) : null}
           </div>
@@ -271,21 +226,17 @@ function HistorySection({
   const showFilter = sourceTags.length > 1;
 
   return (
-    <section
-      aria-label={t('portfolio.cashSources.history.heading')}
-      className="flex flex-col gap-3"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-neutral-200">
-          {t('portfolio.cashSources.history.heading')}
-        </h2>
+    <section aria-label={t('portfolio.cashSources.history.heading')} className="bt-section">
+      <div className="bt-section__head">
+        <h2 className="bt-h2">{t('portfolio.cashSources.history.heading')}</h2>
         {showFilter ? (
-          <label className="flex items-center gap-1.5 text-xs text-neutral-400">
+          <label className="bt-meta flex items-center gap-1.5">
             {t('portfolio.sourceTag.filterLabel')}
             <select
-              value={sourceFilter}
+              className="bt-select"
               onChange={(e) => setSourceFilter(e.target.value)}
-              className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-xs text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              style={{ minHeight: 28, padding: '2px 26px 2px 8px', width: 'auto', fontSize: 12 }}
+              value={sourceFilter}
             >
               <option value="all">{t('portfolio.sourceTag.filterAll')}</option>
               {sourceTags.map((tag) => (
@@ -298,57 +249,46 @@ function HistorySection({
         ) : null}
       </div>
       {ordered.length === 0 ? (
-        <p className="text-sm text-neutral-500">{t('portfolio.cashSources.history.empty')}</p>
+        <p className="bt-meta" style={{ padding: '10px 0' }}>
+          {t('portfolio.cashSources.history.empty')}
+        </p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-neutral-800">
-          <table className="w-full text-left text-sm">
+        <div className="bt-table-wrap">
+          <table className="bt-table">
             <thead>
-              <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
-                <th scope="col" className="px-3 py-2">
-                  {t('portfolio.cashSources.history.sourceColumn')}
-                </th>
-                <th scope="col" className="px-3 py-2">
-                  {t('portfolio.cashSources.history.kindColumn')}
-                </th>
-                <th scope="col" className="px-3 py-2 text-right">
+              <tr>
+                <th scope="col">{t('portfolio.cashSources.history.sourceColumn')}</th>
+                <th scope="col">{t('portfolio.cashSources.history.kindColumn')}</th>
+                <th className="is-num" scope="col">
                   {t('portfolio.cashSources.history.amountColumn')}
                 </th>
-                <th scope="col" className="px-3 py-2">
-                  {t('portfolio.cashSources.history.dateColumn')}
-                </th>
-                <th scope="col" className="px-3 py-2">
-                  {t('portfolio.cashSources.history.noteColumn')}
-                </th>
+                <th scope="col">{t('portfolio.cashSources.history.dateColumn')}</th>
+                <th scope="col">{t('portfolio.cashSources.history.noteColumn')}</th>
               </tr>
             </thead>
             <tbody>
               {ordered.map((m) => (
-                <tr key={m.id} className="border-b border-neutral-800 last:border-b-0">
-                  <td className="px-3 py-2 text-neutral-200">
-                    {sourceNames.get(m.sourceId) ?? EM_DASH}
-                  </td>
-                  <td className="px-3 py-2 text-neutral-400">
+                <tr key={m.id}>
+                  <td className="bt-soft">{sourceNames.get(m.sourceId) ?? EM_DASH}</td>
+                  <td className="bt-muted">
                     <span className="inline-flex flex-wrap items-center gap-1.5">
                       <span>{kindLabel(t, m.kind)}</span>
                       <SourceBadge source={m.source} />
                       {m.mirror ? <MirrorAttributionChip attribution={m.mirror.addedBy} /> : null}
                     </span>
                     {m.counterpartSourceId ? (
-                      <span className="ml-1 text-neutral-500">
+                      <span className="bt-muted ml-1">
                         {t('portfolio.cashSources.history.counterpart', {
                           name: sourceNames.get(m.counterpartSourceId) ?? EM_DASH,
                         })}
                       </span>
                     ) : null}
                   </td>
-                  <td className="px-3 py-2 text-right">
+                  <td className="is-num">
                     <MoneyText amount={m.amountEur} currency="EUR" signed />
                   </td>
-                  <td className="px-3 py-2 text-neutral-400">{formatDate(m.executedAt)}</td>
-                  <td
-                    className="max-w-[12rem] truncate px-3 py-2 text-neutral-500"
-                    title={m.note ?? undefined}
-                  >
+                  <td className="bt-muted">{formatDate(m.executedAt)}</td>
+                  <td className="bt-muted max-w-[12rem] truncate" title={m.note ?? undefined}>
                     {m.note ?? EM_DASH}
                   </td>
                 </tr>
@@ -471,67 +411,53 @@ export function CashSourcesPage() {
   const hasArchived = sources.some((s) => s.archivedAt !== null);
 
   return (
-    <div className="flex flex-col gap-8">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
-            {t('portfolio.cashSources.title')}
-          </h1>
-          <p className="mt-1 max-w-xl text-sm text-neutral-400">
-            {t('portfolio.cashSources.subtitle')}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          {active.length > 1 ? (
-            <Button variant="secondary" onClick={() => setDialog({ kind: 'transfer' })}>
-              <TransferIcon />
-              {t('portfolio.cashSources.transferButton')}
+    <div className="flex flex-col">
+      <PageHead
+        actions={
+          <>
+            {active.length > 1 ? (
+              <Button onClick={() => setDialog({ kind: 'transfer' })}>
+                <TransferIcon />
+                {t('portfolio.cashSources.transferButton')}
+              </Button>
+            ) : null}
+            <Button onClick={() => setDialog({ kind: 'create' })} variant="primary">
+              {t('portfolio.cashSources.addButton')}
             </Button>
-          ) : null}
-          <Button onClick={() => setDialog({ kind: 'create' })}>
-            {t('portfolio.cashSources.addButton')}
-          </Button>
-        </div>
-      </div>
+          </>
+        }
+        sub={t('portfolio.cashSources.subtitle')}
+        title={t('portfolio.cashSources.title')}
+      />
 
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-        <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-          {t('portfolio.cashSources.totalLabel')}
-        </p>
-        <p className="mt-1 text-2xl font-semibold tracking-tight text-neutral-100">
+      <div>
+        <p className="bt-label">{t('portfolio.cashSources.totalLabel')}</p>
+        <p className="bt-num" style={{ marginTop: 4, fontSize: 24, fontWeight: 630 }}>
           <MoneyText amount={totalActive} currency="EUR" />
         </p>
       </div>
 
-      {actionError ? <Alert tone="error">{actionError}</Alert> : null}
-
-      <section className="flex flex-col gap-3">
+      <section className="bt-section flex flex-col gap-3">
+        {actionError ? <Alert tone="error">{actionError}</Alert> : null}
         {sources.length === 0 ? (
           <EmptyState icon="🏦" title={t('portfolio.cashSources.empty')} />
         ) : (
-          <div className="overflow-x-auto rounded-lg border border-neutral-800">
-            <table
-              className="w-full text-left text-sm"
-              aria-label={t('portfolio.cashSources.listAriaLabel')}
-            >
+          <div className="bt-table-wrap">
+            <table aria-label={t('portfolio.cashSources.listAriaLabel')} className="bt-table">
               <thead>
-                <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
-                  <th scope="col" className="px-3 py-2">
-                    {t('portfolio.cashSources.nameColumn')}
-                  </th>
-                  <th scope="col" className="px-3 py-2">
-                    {t('portfolio.cashSources.typeColumn')}
-                  </th>
-                  <th scope="col" className="px-3 py-2 text-right">
+                <tr>
+                  <th scope="col">{t('portfolio.cashSources.nameColumn')}</th>
+                  <th scope="col">{t('portfolio.cashSources.typeColumn')}</th>
+                  <th className="is-num" scope="col">
                     {t('portfolio.cashSources.balanceColumn')}
                   </th>
-                  <th scope="col" className="px-3 py-2 text-right">
+                  <th className="is-num" scope="col">
                     {t('portfolio.cashSources.shareLabel')}
                   </th>
                   <th
-                    scope="col"
-                    className="px-3 py-2 text-right"
                     aria-label={t('portfolio.cashSources.actionsColumn')}
+                    className="is-num"
+                    scope="col"
                   />
                 </tr>
               </thead>
@@ -565,9 +491,10 @@ export function CashSourcesPage() {
 
         {hasArchived || showArchived ? (
           <button
-            type="button"
+            className="bt-link self-start"
             onClick={() => setShowArchived((v) => !v)}
-            className="self-start text-xs text-neutral-500 hover:text-neutral-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            style={{ fontSize: 12.5, background: 'none', border: 0, cursor: 'pointer', padding: 0 }}
+            type="button"
           >
             {showArchived
               ? t('portfolio.cashSources.hideArchived')

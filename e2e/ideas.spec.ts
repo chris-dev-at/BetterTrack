@@ -9,7 +9,7 @@ import { befriend, provisionUser } from './support/users';
  * V4-P9 Ideas e2e (issue #505). One drive over the shipped flow:
  *   1. Author saves a Workboard analysis (a conglomerate + a yearly-rebalance
  *      backtest) as a named idea with a thesis note.
- *   2. Reopening the idea from `/workboard/ideas` restores that exact state —
+ *   2. Reopening the idea from `/workbench/ideas` restores that exact state —
  *      the same conglomerate, thesis text, and yearly rebalance mode.
  *   3. Sharing the idea to ONE `specific_friend` shows no friction dialog
  *      (the mid tier of the §16 ladder), and the recipient sees the shared
@@ -59,14 +59,14 @@ test('ideas: save → reopen restores, share specific-friends read-only + clone,
   // Success alert names the saved idea; the "View in Ideas" affordance appears.
   await expect(saveDialog.getByText(new RegExp(IDEA_NAME))).toBeVisible({ timeout: 15_000 });
   await saveDialog.getByRole('button', { name: 'View in Ideas' }).click();
-  await expect(A).toHaveURL(/\/workboard\/ideas$/);
+  await expect(A).toHaveURL(/\/workbench\/ideas$/);
 
   // Step 2 — the Ideas list has the row; opening it restores the saved state,
   // including the yearly-rebalance mode (the "same analysis" contract).
   const ideaRow = A.getByRole('listitem').filter({ hasText: IDEA_NAME });
   await expect(ideaRow).toBeVisible();
   await ideaRow.getByRole('link', { name: 'Open' }).click();
-  await expect(A).toHaveURL(/\/workboard\/ideas\/[^/]+$/);
+  await expect(A).toHaveURL(/\/workbench\/ideas\/[^/]+$/);
   await expect(A.getByRole('heading', { name: IDEA_NAME })).toBeVisible();
   await expect(A.getByText(THESIS)).toBeVisible();
   await expect(
@@ -78,7 +78,7 @@ test('ideas: save → reopen restores, share specific-friends read-only + clone,
   // Step 3 — share the idea to ONE specific friend. The mid tier of the
   // friction ladder must render no confirm dialog (that's the point of picking
   // "specific friends" over "all friends" / "public link").
-  await A.goto('/workboard/ideas');
+  await A.goto('/workbench/ideas');
   await A.getByRole('listitem')
     .filter({ hasText: IDEA_NAME })
     .getByRole('button', { name: 'Share' })
@@ -99,19 +99,19 @@ test('ideas: save → reopen restores, share specific-friends read-only + clone,
   // — read-only, with a Clone action that lands a byte-exact PRIVATE copy in
   // their own /workboard/ideas.
   const B = chosen.page;
-  await B.goto('/social/friends');
+  await B.goto('/people');
   await B.getByRole('button', { name: author.username }).click();
   const sharedLink = B.getByRole('link', { name: new RegExp(IDEA_NAME) });
   await expect(sharedLink).toBeVisible({ timeout: 15_000 });
   await sharedLink.click();
-  await expect(B).toHaveURL(/\/social\/shared-with-me\/ideas\/[^/]+$/);
+  await expect(B).toHaveURL(/\/people\/shared\/ideas\/[^/]+$/);
   await expect(B.getByText(new RegExp(`Shared by ${author.username}`, 'i'))).toBeVisible();
   await expect(B.getByText(/read-only idea/i)).toBeVisible();
 
   await B.getByRole('button', { name: /Clone to my ideas/i }).click();
-  await expect(B).toHaveURL(/\/workboard\/ideas\/[^/]+$/, { timeout: 20_000 });
+  await expect(B).toHaveURL(/\/workbench\/ideas\/[^/]+$/, { timeout: 20_000 });
   await expect(B.getByRole('heading', { name: IDEA_NAME })).toBeVisible();
-  await B.goto('/workboard/ideas');
+  await B.goto('/workbench/ideas');
   await expect(B.getByRole('listitem').filter({ hasText: IDEA_NAME })).toBeVisible();
 
   // Step 4 — the author sends an idea chip in chat to the EXCLUDED friend. The
@@ -119,7 +119,7 @@ test('ideas: save → reopen restores, share specific-friends read-only + clone,
   // server-side chip resolution flips `viewable: false` and their message
   // renders the no-leak state — a kind-only label + "Not shared with you"
   // — never the idea's name (V3-P8, "sending never widens access").
-  await A.goto('/social/chat');
+  await A.goto('/people/chat');
   await A.getByRole('button', { name: 'New message' }).click();
   const newMsg = A.getByRole('dialog', { name: 'New message' });
   await newMsg.getByRole('button', { name: excluded.username }).click();
@@ -130,7 +130,7 @@ test('ideas: save → reopen restores, share specific-friends read-only + clone,
 
   // The chip lands on the excluded friend's side after realtime + poll flush.
   const C = excluded.page;
-  await C.goto('/social/chat');
+  await C.goto('/people/chat');
   const excludedConvo = C.getByRole('button').filter({ hasText: author.username });
   await expect(excludedConvo).toBeVisible({ timeout: 20_000 });
   await excludedConvo.click();

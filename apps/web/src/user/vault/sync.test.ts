@@ -1,8 +1,8 @@
-import { webcrypto } from 'node:crypto';
+import { generateKeyPairSync, webcrypto } from 'node:crypto';
 
 import 'fake-indexeddb/auto';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   decodeVaultEnvelope as decodeContractEnvelope,
@@ -11,7 +11,11 @@ import {
   VAULT_HISTORY_MEDIUM_HEADER,
   VAULT_HISTORY_PAGE_MAX,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
-  type VaultDocumentV1,
+  VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER,
+  vaultClientSecuritySchema,
+  type ParanoidVaultMediaState,
+  type VaultClientSecurity,
+  type VaultDocument,
   type VaultEntity,
   type VaultEnvelopeHeader,
 } from '@bettertrack/contracts';
@@ -30,6 +34,10 @@ import {
   type LocalDataHomeStorage,
   type LocalVaultRecord,
 } from './localDataHome';
+import type { DriveDataHome } from './drive';
+import { createVaultMediaSwitcher, type VaultMediaApi } from './media/mediaSwitcher';
+import { createVaultRetirementProofManager } from './media/retirementProof';
+import { createVaultEnvelopeAuthenticator } from './media/verification';
 import { createMemoryVaultQuarantineStore } from './quarantine';
 import {
   createCurrentServerRestoreCandidateSource,
@@ -40,7 +48,11 @@ import {
   type RestoreCandidate,
 } from './restore';
 import { createServerBlobDataHome } from './serverBlobDataHome';
-import { createVaultSyncEngine } from './sync';
+import {
+  createVaultSyncEngine as createBaseVaultSyncEngine,
+  type VaultDocumentReconcileContext,
+  type VaultSyncEngineOptions,
+} from './sync';
 import { deterministicRandom, VECTOR_DEVICE_ID, VECTOR_KEY_ID, VECTOR_WRITE_ID } from './vectors';
 
 const DEVICE_A = VECTOR_DEVICE_ID;
@@ -50,6 +62,15 @@ const ENTITY_B = '018f0000-0000-7000-8000-000000000011';
 const ENTITY_C = '018f0000-0000-7000-8000-000000000012';
 const ENTITY_D = '018f0000-0000-7000-8000-000000000013';
 const KEY = new Uint8Array(32).fill(9);
+const CURRENT_CLIENT_SECURITY: VaultClientSecurity = (() => {
+  const pair = generateKeyPairSync('ed25519');
+  return vaultClientSecuritySchema.parse({
+    retirementProof: {
+      publicKey: pair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64url'),
+      privateKey: pair.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64url'),
+    },
+  });
+})();
 const WRAPPED = {
   keyId: VECTOR_KEY_ID,
   kdf: {
@@ -61,6 +82,25 @@ const WRAPPED = {
   },
   wrappedVk: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
 };
+
+type TestVaultSyncEngineOptions = Omit<
+  VaultSyncEngineOptions,
+  'documentReconciler' | 'requiresCompleteMutationProvenance'
+> &
+  Partial<
+    Pick<VaultSyncEngineOptions, 'documentReconciler' | 'requiresCompleteMutationProvenance'>
+  >;
+
+function createVaultSyncEngine(options: TestVaultSyncEngineOptions) {
+  return createBaseVaultSyncEngine({
+    documentReconciler: (document, context) => ({
+      document,
+      mutations: context.mutations,
+    }),
+    requiresCompleteMutationProvenance: false,
+    ...options,
+  });
+}
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
@@ -86,7 +126,7 @@ function entity(
   };
 }
 
-function document(rows: VaultEntity[]): VaultDocumentV1 {
+function document(rows: VaultEntity[]): VaultDocument {
   return { schemaVersion: 1, entities: { transaction: rows }, mergeLog: [] };
 }
 
@@ -106,7 +146,7 @@ function header(
 }
 
 async function encrypted(
-  value: VaultDocumentV1,
+  value: VaultDocument,
   version: number,
   deviceId = DEVICE_A,
   writeId = VECTOR_WRITE_ID,
@@ -167,6 +207,7 @@ describe('vault DataHome boundaries', () => {
     const blob = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 3);
     const calls: RequestInit[] = [];
     const mismatch = createServerBlobDataHome({
+      retirementProofPublicKey: () => 'client-held-public-verifier',
       fetch: async (_url, init = {}) => {
         calls.push(init);
         return init.method === 'PUT'
@@ -186,6 +227,7 @@ describe('vault DataHome boundaries', () => {
     expect(calls[1]?.headers).toMatchObject({
       'If-Match': '"2"',
       'Content-Type': 'application/octet-stream',
+      [VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER]: 'client-held-public-verifier',
     });
   });
 
@@ -448,6 +490,132 @@ describe('versioned encrypted local cache', () => {
 });
 
 describe('CAS-aware vault synchronization', () => {
+  it('surfaces a document reconciliation failure as a pending conflict without committing', async () => {
+    const localDocument = document([entity(ENTITY_A, 1, DEVICE_A)]);
+    const localEnvelope = await encrypted(localDocument, 1);
+    const remoteEnvelope = await encrypted(
+      document([entity(ENTITY_B, 1, DEVICE_B)]),
+      2,
+      DEVICE_B,
+      '018f0000-0000-7000-8000-0000000000b2',
+    );
+    const local = createLocalDataHome({
+      scope: 'document-reconciliation-failure',
+      storage: memoryLocalStorage(),
+    });
+    await seedLocal(local, localEnvelope, true);
+    const primary = memoryRemote(remoteEnvelope, 2);
+    const engine = createVaultSyncEngine({
+      local,
+      primary,
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      now: () => '2026-07-25T10:02:00.000Z',
+      quarantine: createMemoryVaultQuarantineStore(),
+      documentReconciler() {
+        throw new Error('The durable baseline violates the portfolio invariant.');
+      },
+      requiresCompleteMutationProvenance: false,
+    });
+
+    const expectedConflict = {
+      status: 'conflict',
+      active: { document: localDocument, header: { vaultVersion: 1 } },
+      pending: { document: localDocument, header: { vaultVersion: 1 } },
+      lastFailure: expect.stringContaining(
+        'The durable baseline violates the portfolio invariant.',
+      ),
+    };
+    await expect(engine.start()).resolves.toMatchObject(expectedConflict);
+    await expect(engine.reconnect()).resolves.toMatchObject(expectedConflict);
+    expect(primary.writeCalls).toBe(0);
+    await expect(local.read()).resolves.toMatchObject({
+      status: 'ok',
+      envelope: localEnvelope,
+      info: { version: 1, pendingRemote: true },
+    });
+  });
+
+  it('passes every original mutation member to reconciliation before entity winners are filtered', async () => {
+    const initialDocument = document([entity(ENTITY_A, 0, DEVICE_A, { state: 'initial' })]);
+    const initial = await encrypted(initialDocument, 1);
+    const remoteWinner = document([entity(ENTITY_A, 1, DEVICE_B, { state: 'remote-winner' })]);
+    const remoteV2 = await encrypted(
+      remoteWinner,
+      2,
+      DEVICE_B,
+      '018f0000-0000-7000-8000-0000000000b2',
+    );
+    const local = createLocalDataHome({
+      scope: 'complete-mutation-provenance',
+      storage: memoryLocalStorage(),
+    });
+    await seedLocal(local, initial, false);
+    const primary = memoryRemote(initial, 1, [remoteV2]);
+    const observed: VaultDocumentReconcileContext[] = [];
+    const engine = createVaultSyncEngine({
+      local,
+      primary,
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      now: () => '2026-07-25T10:02:00.000Z',
+      quarantine: createMemoryVaultQuarantineStore(),
+      documentReconciler(merged, context) {
+        observed.push(context);
+        expect(merged.entities.transaction).toEqual([
+          expect.objectContaining({ id: ENTITY_A, deletedAt: null }),
+          expect.objectContaining({ id: ENTITY_B, deletedAt: null }),
+        ]);
+        return {
+          document: { ...merged, entities: context.remote.entities },
+          mutations: [],
+        };
+      },
+    });
+    await engine.start();
+
+    await expect(
+      engine.mutate(({ document: value }) => ({
+        ...value,
+        entities: {
+          ...value.entities,
+          transaction: [
+            {
+              ...value.entities.transaction![0]!,
+              rev: 1,
+              editedAt: '2026-07-25T10:01:00.000Z',
+              editedBy: DEVICE_A,
+              deletedAt: '2026-07-25T10:01:00.000Z',
+            },
+            entity(ENTITY_B, 1, DEVICE_A, { state: 'local-only' }),
+          ],
+        },
+      })),
+    ).resolves.toMatchObject({ status: 'synced' });
+
+    expect(observed[0]?.mutations).toHaveLength(1);
+    expect(observed[0]?.mutations[0]?.changes.map((change) => change.id)).toEqual([
+      ENTITY_A,
+      ENTITY_B,
+    ]);
+    expect(observed[0]?.mutations[0]?.changes).toEqual([
+      expect.objectContaining({
+        id: ENTITY_A,
+        before: expect.objectContaining({ deletedAt: null }),
+        after: expect.objectContaining({ deletedAt: '2026-07-25T10:01:00.000Z' }),
+      }),
+      expect.objectContaining({
+        id: ENTITY_B,
+        before: undefined,
+        after: expect.objectContaining({ deletedAt: null }),
+      }),
+    ]);
+    expect(engine.state.active?.document.entities).toEqual(remoteWinner.entities);
+    expect(engine.state.active?.document.mergeLog).toHaveLength(1);
+  });
+
   it('keeps readable remote data active but read-only when the local CAS version is unavailable', async () => {
     const remoteV2 = await encrypted(
       document([entity(ENTITY_B, 2, DEVICE_B)]),
@@ -1334,6 +1502,7 @@ describe('restore candidate seam', () => {
 
   it('adds blind server history and restores a selected version only through a new CAS', async () => {
     const historical = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 2);
+    const retainedHistoricalBytes = historical.slice();
     const current = await encrypted(document([entity(ENTITY_B, 3, DEVICE_B)]), 3);
     const archivedAt = '2026-07-25T10:05:00.000Z';
     const urls: string[] = [];
@@ -1394,24 +1563,226 @@ describe('restore candidate seam', () => {
     ]);
 
     let activatedVersion: number | null = null;
+    let activatedDocument: VaultDocument | null = null;
     await expect(
       picker.restore(candidate, {
         vaultKey: KEY,
         activeVersion: 3,
+        currentClientSecurity: CURRENT_CLIENT_SECURITY,
         encrypt: (value, version) => encrypted(value, version),
-        activate: (_value, _envelope, version) => {
+        activate: (value, _envelope, version) => {
+          activatedDocument = value;
           activatedVersion = version;
         },
       }),
     ).resolves.toEqual({ status: 'restored', version: 4 });
     expect(destination.expectedVersions).toEqual([3]);
     expect(activatedVersion).toBe(4);
+    expect(activatedDocument).toMatchObject({
+      schemaVersion: 2,
+      clientSecurity: CURRENT_CLIENT_SECURITY,
+    });
+    expect(historical).toEqual(retainedHistoricalBytes);
+    expect(candidate.envelope).toEqual(retainedHistoricalBytes);
 
     const restored = await destination.read();
     expect(restored).toMatchObject({ status: 'ok', info: { version: 4 } });
     if (restored.status !== 'ok') throw new Error('Expected restored remote bytes.');
     await expect(decryptVaultDocument(restored.envelope, KEY)).resolves.toMatchObject({
-      document: { entities: { transaction: [expect.objectContaining({ id: ENTITY_A })] } },
+      document: {
+        schemaVersion: 2,
+        clientSecurity: CURRENT_CLIENT_SECURITY,
+        entities: { transaction: [expect.objectContaining({ id: ENTITY_A })] },
+      },
+    });
+  });
+
+  it('enrols, writes, restores a v1 candidate, then reuses the proof for retirement', async () => {
+    const legacy = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 2);
+    const enrolledProof = createVaultRetirementProofManager(
+      webcrypto.subtle as unknown as SubtleCrypto,
+    );
+    const enrolled = await enrolledProof.ensure(document([entity(ENTITY_B, 3, DEVICE_B)]));
+    if (enrolled.document.schemaVersion !== 2) {
+      throw new Error('Expected retirement proof enrolment to upgrade the document.');
+    }
+    const enrolledSecurity = enrolled.document.clientSecurity;
+    const current = await encrypted(enrolled.document, 3);
+    const destination = memoryRemote(current, 3);
+    const picker = createRestorePicker([], destination);
+    const candidate: RestoreCandidate = {
+      id: 'legacy-before-proof-enrolment',
+      source: 'server-history',
+      medium: 'server',
+      envelope: legacy,
+      version: 2,
+      updatedAt: '2026-07-25T10:00:00.000Z',
+      status: 'available',
+    };
+
+    await expect(
+      picker.restore(candidate, {
+        vaultKey: KEY,
+        activeVersion: 3,
+        currentClientSecurity: enrolledSecurity,
+        encrypt: (value, version) => encrypted(value, version),
+        activate: () => undefined,
+      }),
+    ).resolves.toEqual({ status: 'restored', version: 4 });
+
+    const restored = await destination.read();
+    if (restored.status !== 'ok') throw new Error('Expected the restored vault document.');
+    const opened = await decryptVaultDocument(restored.envelope, KEY);
+    expect(opened.document).toMatchObject({
+      schemaVersion: 2,
+      clientSecurity: enrolledSecurity,
+      entities: { transaction: [expect.objectContaining({ id: ENTITY_A })] },
+    });
+    const reopenedProof = createVaultRetirementProofManager(
+      webcrypto.subtle as unknown as SubtleCrypto,
+    );
+    await expect(reopenedProof.ensure(opened.document)).resolves.toMatchObject({
+      changed: false,
+    });
+    expect(reopenedProof.publicKey).toBe(enrolledProof.publicKey);
+
+    const activeMedia: ParanoidVaultMediaState = {
+      mediaSet: ['server', 'drive'],
+      driveAttestedVersion: 4,
+      server: { disposition: 'active', candidate: null, retired: null },
+    };
+    const retiredMedia: ParanoidVaultMediaState = {
+      mediaSet: ['drive'],
+      driveAttestedVersion: 4,
+      server: {
+        disposition: 'retired',
+        candidate: null,
+        retired: {
+          version: 4,
+          retiredAt: '2026-07-28T10:00:00.000Z',
+          purgeAfter: '2026-08-04T10:00:00.000Z',
+        },
+      },
+    };
+    const driveCopy: DriveDataHome = {
+      medium: 'drive',
+      async read() {
+        return {
+          status: 'ok',
+          medium: 'drive',
+          envelope: restored.envelope.slice(),
+          info: {
+            medium: 'drive',
+            version: 4,
+            sizeBytes: restored.envelope.byteLength,
+            updatedAt: null,
+          },
+        };
+      },
+      async observeReplicas() {
+        return {
+          observations: [await this.read()],
+          async converge() {
+            throw new Error('The single-file test Drive cannot converge duplicates.');
+          },
+          async deleteIfUnchanged() {
+            throw new Error('The retirement regression does not delete Drive.');
+          },
+        };
+      },
+      async info() {
+        return {
+          status: 'ok',
+          medium: 'drive',
+          info: {
+            medium: 'drive',
+            version: 4,
+            sizeBytes: restored.envelope.byteLength,
+            updatedAt: null,
+          },
+        };
+      },
+      async write() {
+        throw new Error('The retirement regression does not write Drive.');
+      },
+    };
+    const transition = vi.fn(async () => retiredMedia);
+    const mediaApi: VaultMediaApi = {
+      getState: async () => ({ privacyMode: 'paranoid', mediaState: activeMedia }),
+      transition,
+      async stageServerCandidate() {
+        throw new Error('The retirement regression does not stage a server candidate.');
+      },
+      async readServerCandidate() {
+        throw new Error('The retirement regression does not read a server candidate.');
+      },
+      async requestPurgeChallenge() {
+        throw new Error('The retirement regression does not request a purge challenge.');
+      },
+      async purgeRetired() {
+        throw new Error('The retirement regression does not purge server bytes.');
+      },
+    };
+    const switcher = createVaultMediaSwitcher({
+      api: mediaApi,
+      server: destination,
+      drive: driveCopy,
+      authenticate: createVaultEnvelopeAuthenticator(KEY),
+      retirementProof: reopenedProof,
+    });
+    await expect(switcher.remove('server')).resolves.toMatchObject({
+      status: 'ok',
+      media: { mediaSet: ['drive'], server: { disposition: 'retired' } },
+    });
+    expect(transition).toHaveBeenCalledTimes(1);
+
+    await expect(
+      reopenedProof.sign({
+        retiredVersion: 4,
+        observedVersion: 4,
+        challenge: 'r'.repeat(40),
+      }),
+    ).resolves.toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+
+  it('fails closed before writing when a v1 restore has no current proof material', async () => {
+    const legacy = await encrypted(document([entity(ENTITY_A, 1, DEVICE_A)]), 2);
+    const current = await encrypted(document([entity(ENTITY_B, 3, DEVICE_B)]), 3);
+    const destination = memoryRemote(current, 3);
+    const picker = createRestorePicker([], destination);
+    const encrypt = vi.fn((value: VaultDocument, version: number) => encrypted(value, version));
+    const activate = vi.fn();
+
+    await expect(
+      picker.restore(
+        {
+          id: 'legacy-without-current-proof',
+          source: 'server-history',
+          medium: 'server',
+          envelope: legacy,
+          version: 2,
+          updatedAt: null,
+          status: 'available',
+        },
+        {
+          vaultKey: KEY,
+          activeVersion: 3,
+          currentClientSecurity: null,
+          encrypt,
+          activate,
+        },
+      ),
+    ).resolves.toMatchObject({
+      status: 'invalid-selection',
+      reason: expect.stringMatching(/retirement proof material is required/i),
+    });
+    expect(encrypt).not.toHaveBeenCalled();
+    expect(destination.writeCalls).toBe(0);
+    expect(activate).not.toHaveBeenCalled();
+    await expect(destination.read()).resolves.toMatchObject({
+      status: 'ok',
+      envelope: current,
+      info: { version: 3 },
     });
   });
 
@@ -1522,7 +1893,8 @@ describe('restore candidate seam', () => {
     const options = {
       vaultKey: KEY,
       activeVersion: 3,
-      encrypt: (value: VaultDocumentV1, version: number) => encrypted(value, version),
+      currentClientSecurity: CURRENT_CLIENT_SECURITY,
+      encrypt: (value: VaultDocument, version: number) => encrypted(value, version),
       activate: () => {
         activations += 1;
       },
@@ -1592,6 +1964,7 @@ describe('restore candidate seam', () => {
       picker.restore(candidate, {
         vaultKey: KEY,
         activeVersion: 3,
+        currentClientSecurity: CURRENT_CLIENT_SECURITY,
         encrypt: (value, version) => encrypted(value, version),
         activate: (_value, _envelope, version) => {
           activatedVersion = version;
@@ -1628,6 +2001,7 @@ describe('restore candidate seam', () => {
       picker.restore(candidate, {
         vaultKey: KEY,
         activeVersion: 3,
+        currentClientSecurity: CURRENT_CLIENT_SECURITY,
         encrypt: (value, version) => encrypted(value, version),
         activate: () => undefined,
       }),
@@ -1681,6 +2055,7 @@ describe('restore candidate seam', () => {
         picker.restore(candidate, {
           vaultKey: candidate.status === 'unreadable' ? new Uint8Array(32).fill(8) : KEY,
           activeVersion: 3,
+          currentClientSecurity: CURRENT_CLIENT_SECURITY,
           encrypt: (value, version) => encrypted(value, version),
           activate: () => {
             activations += 1;
@@ -1717,6 +2092,7 @@ describe('restore candidate seam', () => {
       picker.restore(candidate, {
         vaultKey: KEY,
         activeVersion: 3,
+        currentClientSecurity: CURRENT_CLIENT_SECURITY,
         encrypt: (value, version) => encrypted(value, version),
         activate: (_value, _envelope, version) => {
           activatedVersion = version;

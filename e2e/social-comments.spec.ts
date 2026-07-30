@@ -46,14 +46,14 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   // ── Provision a friend group with only `member` in it (via the owner's own
   //    session — group management itself is friend-groups.spec's job). ──
   const groupName = 'E2 Comment Circle';
-  const groupRes = await ownerApi.post(apiV1('/social/groups'), {
+  const groupRes = await ownerApi.post(apiV1('/people/groups'), {
     headers: CSRF_HEADERS,
     data: { name: groupName },
   });
   expect(groupRes.ok(), await groupRes.text()).toBeTruthy();
   const groupId = ((await groupRes.json()) as { id: string }).id;
 
-  const friendsRes = await ownerApi.get(apiV1('/social/friends'));
+  const friendsRes = await ownerApi.get(apiV1('/people'));
   expect(friendsRes.ok(), await friendsRes.text()).toBeTruthy();
   const friends = (
     (await friendsRes.json()) as { friends: { user: { id: string; username: string } }[] }
@@ -61,7 +61,7 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   const memberUserId = friends.find((f) => f.user.username === member.username)?.user.id;
   expect(memberUserId, 'member must be an accepted friend').toBeTruthy();
 
-  const addRes = await ownerApi.post(apiV1(`/social/groups/${groupId}/members`), {
+  const addRes = await ownerApi.post(apiV1(`/people/groups/${groupId}/members`), {
     headers: CSRF_HEADERS,
     data: { userId: memberUserId },
   });
@@ -77,7 +77,7 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   expect(portfolioId, 'owner has a default Main portfolio').toBeTruthy();
 
   // ── Owner shares "Main" to the group audience (real audience picker). ──
-  await owner.page.goto('/social/my-shared');
+  await owner.page.goto('/people/shared');
   const portfolioRow = owner.page.getByRole('listitem').filter({ hasText: 'Main' });
   await portfolioRow.getByRole('button', { name: 'Share' }).click();
   const picker = owner.page.getByRole('dialog', { name: /Share/ });
@@ -88,7 +88,7 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   await expect(picker).toBeHidden();
 
   // ── The in-audience member opens the shared portfolio → the comment thread. ──
-  await member.page.goto('/social/friends');
+  await member.page.goto('/people');
   await member.page.getByRole('button', { name: owner.username }).click();
   const sharedLink = member.page.getByRole('link', { name: /Main/ });
   await expect(sharedLink).toBeVisible({ timeout: 15_000 });
@@ -144,7 +144,7 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   await expect(member.page.getByText('No comments yet.')).toBeVisible();
 
   // ── The equally-befriended NON-member sees neither the item nor its thread. ──
-  await outsider.page.goto('/social/friends');
+  await outsider.page.goto('/people');
   await outsider.page.getByRole('button', { name: owner.username }).click();
   await expect(
     outsider.page.getByText(new RegExp(`${owner.username} isn't sharing anything`, 'i')),
@@ -153,7 +153,7 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   // Fail-closed at the API too: the thread (and its reaction state) is a uniform
   // 404 for a viewer the audience does not admit (§6.9 no-enumeration).
   const outsiderThread = await outsider.context.request.get(
-    apiV1(`/social/items/portfolio/${portfolioId}/thread`),
+    apiV1(`/people/items/portfolio/${portfolioId}/thread`),
   );
   expect(outsiderThread.status()).toBe(404);
 
@@ -178,7 +178,7 @@ test('comments: a public link stays read-only with no comment or reaction UI', a
   await apiRequest.dispose();
 
   // Owner mints a public link for "Main" through the real picker (strong-ack tier).
-  await owner.page.goto('/social/my-shared');
+  await owner.page.goto('/people/shared');
   const portfolioRow = owner.page.getByRole('listitem').filter({ hasText: 'Main' });
   await portfolioRow.getByRole('button', { name: 'Share' }).click();
   const picker = owner.page.getByRole('dialog', { name: /Share/ });

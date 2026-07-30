@@ -133,6 +133,17 @@ export const TAX_YEAR_TIME_ZONE = 'Europe/Vienna';
  */
 export const QTY_EPSILON = 1e-9;
 
+/**
+ * One scale-8 storage quantum (#917). Quantities persist as `numeric(20,8)`:
+ * the write path epsilon-validates the raw client values, then PostgreSQL
+ * rounds each row independently to scale 8, so every stored row can sit up to
+ * one quantum away from the raw value that was validated. A replayed position
+ * can therefore show a spurious shortfall bounded by one quantum per
+ * contributing stored row — {@link realizedSellsEur} waives exactly that
+ * envelope; anything beyond it fails closed as a genuine oversell.
+ */
+export const QTY_STORAGE_QUANTUM = 1e-8;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -300,10 +311,15 @@ interface FifoLot {
   perUnitEur: number;
 }
 
-/** Per-asset replay state — one variant per {@link CostBasisStrategy}. */
+/**
+ * Per-asset replay state — one variant per {@link CostBasisStrategy}.
+ * `driftRows` counts the stored rows feeding the open position (each bounded
+ * to one {@link QTY_STORAGE_QUANTUM} of rounding drift, #917); it resets when
+ * the position closes so a clean round trip never widens the next envelope.
+ */
 type PositionState =
-  | { strategy: 'moving-average'; held: number; avg: number }
-  | { strategy: 'fifo'; lots: FifoLot[] };
+  | { strategy: 'moving-average'; held: number; avg: number; driftRows: number }
+  | { strategy: 'fifo'; lots: FifoLot[]; driftRows: number };
 
 const fifoHeld = (lots: readonly FifoLot[]): number =>
   lots.reduce((sum, lot) => sum + lot.units, 0);
@@ -353,7 +369,14 @@ function consumeFifoLots(lots: FifoLot[], quantity: number, id: string): number 
  * A sell exceeding the held quantity beyond {@link QTY_EPSILON} throws unless
  * acknowledged as uncovered (#369) — the primary oversell gate lives on the
  * write path; here it means the caller fed an inconsistent log, and a silently
- * wrong basis would poison every tax figure downstream. An uncovered sell
+ * wrong basis would poison every tax figure downstream. One exception (#917):
+ * a shortfall within one {@link QTY_STORAGE_QUANTUM} per contributing stored
+ * row is `numeric(20,8)` rounding drift, not an oversell — the write path
+ * validated the raw values before PostgreSQL rounded the rows apart. Such a
+ * sell closes the position like an exact one: the held units release their
+ * strategy basis, the dust remainder takes the sale price (0 gain) and is not
+ * reported as uncovered. The envelope is per-row, never a blanket loosening —
+ * a shortfall beyond it still fails closed. An uncovered sell
  * behaves the same under both strategies: the covered shares release their
  * strategy basis, the uncovered remainder is basised at the supplied entry
  * price (or the sale price → 0 gain), and the position closes at 0.
@@ -373,8 +396,8 @@ export function realizedSellsEur(
   const realizations: SellRealizationEur[] = [];
   const emptyPosition = (): PositionState =>
     strategy === 'fifo'
-      ? { strategy: 'fifo', lots: [] }
-      : { strategy: 'moving-average', held: 0, avg: 0 };
+      ? { strategy: 'fifo', lots: [], driftRows: 0 }
+      : { strategy: 'moving-average', held: 0, avg: 0, driftRows: 0 };
 
   for (const { t } of ordered) {
     if (!Number.isFinite(t.quantity) || t.quantity <= 0) {
@@ -386,6 +409,9 @@ export function realizedSellsEur(
     assertFiniteNonNegative(t.feeEur, 'Transaction feeEur', t.id);
 
     const pos = positions.get(t.assetId) ?? emptyPosition();
+    // Every stored row of the open position — the current one included — can
+    // carry up to one quantum of numeric(20,8) rounding drift (#917).
+    pos.driftRows += 1;
 
     if (t.side === 'buy') {
       if (pos.strategy === 'moving-average') {
@@ -404,7 +430,16 @@ export function realizedSellsEur(
     } else if (t.side === 'sell') {
       const heldUnits = pos.strategy === 'moving-average' ? pos.held : fifoHeld(pos.lots);
       const oversell = t.quantity > heldUnits + QTY_EPSILON;
-      if (oversell && !t.allowUncovered) {
+      // Storage-rounding drift (#917): the write path validated the raw values,
+      // then numeric(20,8) rounded each row independently — a shortfall within
+      // one quantum per contributing stored row is a persistence artifact. It
+      // closes the position like an exact sell; beyond the envelope it is a
+      // genuine oversell and fails closed.
+      const storageDrift =
+        oversell &&
+        !t.allowUncovered &&
+        t.quantity - heldUnits <= pos.driftRows * QTY_STORAGE_QUANTUM + QTY_EPSILON;
+      if (oversell && !t.allowUncovered && !storageDrift) {
         // Not an acknowledged uncovered sell (issue #369): a genuine oversell in
         // the replay means the caller fed an inconsistent log, and a silently
         // wrong basis would poison every tax figure downstream.
@@ -426,7 +461,11 @@ export function realizedSellsEur(
           t.id,
         );
       }
-      const uncoveredBasisEur = t.uncoveredEntryPriceEur ?? t.priceEur;
+      // Waived drift always basises its dust at the sale price (0 gain) — it is
+      // rounding residue of covered shares, not a phantom acquisition (#917).
+      const uncoveredBasisEur = storageDrift
+        ? t.priceEur
+        : (t.uncoveredEntryPriceEur ?? t.priceEur);
       const proceedsEur = t.quantity * t.priceEur - t.feeEur;
       const coveredBasisEur =
         pos.strategy === 'moving-average'
@@ -444,7 +483,9 @@ export function realizedSellsEur(
         proceedsEur,
         costBasisEur,
         realizedPnlEur: proceedsEur - costBasisEur,
-        uncoveredQuantity: uncovered,
+        // Waived drift is not "basis unknown" — the shares had real recorded
+        // acquisitions; only their stored quantities rounded apart (#917).
+        uncoveredQuantity: storageDrift ? 0 : uncovered,
       });
       if (pos.strategy === 'moving-average') {
         if (oversell) {
@@ -460,6 +501,11 @@ export function realizedSellsEur(
         }
       } else if (oversell || fifoHeld(pos.lots) <= QTY_EPSILON) {
         pos.lots.length = 0;
+      }
+      // A closed position starts the next round trip clean — including its
+      // storage-drift envelope (#917).
+      if (pos.strategy === 'moving-average' ? pos.held === 0 : pos.lots.length === 0) {
+        pos.driftRows = 0;
       }
     } else {
       throw new TaxComputationError(

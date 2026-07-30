@@ -43,6 +43,13 @@ export {
   type ParanoidUserJobFilter,
 } from './paranoidJobs';
 export {
+  assembleRegisteredJobDefinitions,
+  JOB_REGISTRATION_DESCRIPTORS,
+  type JobRegistrationDescriptor,
+  type JobRegistrationSource,
+  type RegisteredJobDefinitions,
+} from './definitions/registration';
+export {
   createJobDefinitions,
   heartbeatJob,
   HEARTBEAT_SCHEDULER_ID,

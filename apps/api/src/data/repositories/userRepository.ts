@@ -1,4 +1,4 @@
-import { count, eq, gte, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, count, eq, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { users, type UserRow } from '../schema';
@@ -26,10 +26,21 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
  * All user SQL lives here (PROJECTPLAN.md §4.3). Email is normalised to
  * lowercase; username lookups are case-insensitive.
  */
-export function createUserRepository(db: Database) {
+function createUserQueries(db: Database) {
   return {
     async findById(id: string): Promise<UserRow | undefined> {
       const [row] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+      return row;
+    },
+
+    /**
+     * Re-read and lock one administrator-edit target inside the caller's
+     * transaction. The active-administrator set is locked first by
+     * `withSerializedAdminMutation`, so every admin mutation takes locks in the
+     * same order.
+     */
+    async findByIdForUpdate(id: string): Promise<UserRow | undefined> {
+      const [row] = await db.select().from(users).where(eq(users.id, id)).limit(1).for('update');
       return row;
     },
 
@@ -87,13 +98,28 @@ export function createUserRepository(db: Database) {
       id: string,
       passwordHash: string,
       mustChangePassword: boolean,
-    ): Promise<void> {
-      await db
+      expectedSecurityGeneration?: number,
+    ): Promise<number | null> {
+      const [updated] = await db
         .update(users)
         // Setting any password makes it usable (§13.4 V4-P4b): a Google-only
         // account that later completes a password reset can then unlink Google.
-        .set({ passwordHash, mustChangePassword, hasUsablePassword: true, updatedAt: new Date() })
-        .where(eq(users.id, id));
+        // The generation increment is in this SAME statement/commit (#888);
+        // callers cannot replace a credential and forget to fence old sessions.
+        .set({
+          passwordHash,
+          mustChangePassword,
+          hasUsablePassword: true,
+          securityGeneration: sql`${users.securityGeneration} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(
+          expectedSecurityGeneration === undefined
+            ? eq(users.id, id)
+            : and(eq(users.id, id), eq(users.securityGeneration, expectedSecurityGeneration)),
+        )
+        .returning({ securityGeneration: users.securityGeneration });
+      return updated?.securityGeneration ?? null;
     },
 
     async setStatus(id: string, status: 'active' | 'disabled'): Promise<void> {
@@ -146,8 +172,19 @@ export function createUserRepository(db: Database) {
         .where(eq(users.id, id));
     },
 
-    async setRole(id: string, role: 'user' | 'admin'): Promise<void> {
-      await db.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, id));
+    async setRole(id: string, role: 'user' | 'admin'): Promise<number | null> {
+      const [updated] = await db
+        .update(users)
+        // Role and generation are one row update, hence one PostgreSQL commit:
+        // no observer can see the new authority with the old generation.
+        .set({
+          role,
+          securityGeneration: sql`${users.securityGeneration} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, id))
+        .returning({ securityGeneration: users.securityGeneration });
+      return updated?.securityGeneration ?? null;
     },
 
     /**
@@ -290,6 +327,23 @@ export function createUserRepository(db: Database) {
         .where(eq(users.id, id));
     },
 
+    /**
+     * Mark first-run setup as finished/dismissed (§6.12).
+     *
+     * **Idempotency key: the user id, set-once.** The `IS NULL` guard means a
+     * replayed request — a double-clicked "Do this later", a retried finish —
+     * cannot move an already-recorded timestamp. Returns the row either way, so
+     * the caller always answers with the caller's real current state.
+     */
+    async markFirstRunCompleted(id: string, when: Date): Promise<UserRow | undefined> {
+      await db
+        .update(users)
+        .set({ firstRunCompletedAt: when, updatedAt: new Date() })
+        .where(and(eq(users.id, id), isNull(users.firstRunCompletedAt)));
+      const [row] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+      return row;
+    },
+
     async remove(id: string): Promise<void> {
       await db.delete(users).where(eq(users.id, id));
     },
@@ -330,6 +384,37 @@ export function createUserRepository(db: Database) {
         .from(users)
         .where(sql`${users.role} = 'admin' and ${users.status} = 'active'`);
       return row?.c ?? 0;
+    },
+  };
+}
+
+type UserQueries = ReturnType<typeof createUserQueries>;
+
+export function createUserRepository(db: Database) {
+  const queries = createUserQueries(db);
+  return {
+    ...queries,
+
+    /**
+     * Serialize every admin user mutation against the complete set of active
+     * administrators. A concurrent disable, demotion, or delete therefore
+     * re-counts only after the preceding mutation commits; it can never make a
+     * decision from the same stale count.
+     *
+     * The callback receives transaction-scoped queries only (no nested
+     * transaction primitive), keeping every user-field edit in one commit.
+     */
+    async withSerializedAdminMutation<T>(mutation: (users: UserQueries) => Promise<T>): Promise<T> {
+      return db.transaction(async (tx) => {
+        const transaction = tx as unknown as Database;
+        await transaction
+          .select({ id: users.id })
+          .from(users)
+          .where(and(eq(users.role, 'admin'), eq(users.status, 'active')))
+          .orderBy(users.id)
+          .for('update');
+        return mutation(createUserQueries(transaction));
+      });
     },
   };
 }

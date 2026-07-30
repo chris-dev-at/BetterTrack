@@ -1,7 +1,18 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, ReactNode } from 'react';
 
 import { useT } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
+import { TAGLINE } from '../../ui/Disclaimer';
+import { AuthFigures } from './AuthFigures';
+
+/*
+ * Legacy shared primitives, reskinned onto the Origin design system
+ * (docs/redesign/REAL_APP_REDESIGN_PROMPT.md, styles/origin.css). The exported
+ * API and prop semantics are unchanged on purpose: dozens of not-yet-rebuilt
+ * dialogs render through these, so mapping the internals onto `bt-*` reskins
+ * all of them at once. Visual rules live in origin.css — anything without a
+ * `bt-*` class reaches for a token rather than a Tailwind palette color.
+ */
 
 /** Tiny class-name joiner — avoids a dependency for one helper (mirrors admin/ui). */
 export function cx(...parts: Array<string | false | null | undefined>): string {
@@ -10,11 +21,11 @@ export function cx(...parts: Array<string | false | null | undefined>): string {
 
 type ButtonVariant = 'primary' | 'secondary' | 'ghost';
 
+/** Legacy variant → Origin control class (`primary` is the single gold action). */
 const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
-  primary: 'bg-sky-600 text-white hover:bg-sky-500 disabled:bg-sky-900 disabled:text-sky-300',
-  secondary:
-    'bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-700',
-  ghost: 'text-neutral-300 hover:bg-neutral-800 hover:text-white',
+  primary: 'bt-btn bt-btn--primary',
+  secondary: 'bt-btn',
+  ghost: 'bt-btn bt-btn--quiet',
 };
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -23,17 +34,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 export function Button({ variant = 'primary', className, type, ...rest }: ButtonProps) {
   return (
-    <button
-      type={type ?? 'button'}
-      className={cx(
-        'inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium',
-        'transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-        'disabled:cursor-not-allowed disabled:opacity-80',
-        BUTTON_VARIANTS[variant],
-        className,
-      )}
-      {...rest}
-    />
+    <button type={type ?? 'button'} className={cx(BUTTON_VARIANTS[variant], className)} {...rest} />
   );
 }
 
@@ -42,40 +43,72 @@ interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   hint?: string;
 }
 
+/**
+ * Label + control + hint, as one `bt-field` column.
+ *
+ * `className` lands on the field wrapper rather than the `<input>`: `bt-input`
+ * owns the control's own box (it is a full-width 34px control), and origin.css
+ * is unlayered, so a caller's Tailwind utility would lose the cascade against
+ * it. Sizing the field is what every caller actually wants — `sm:w-40` on the
+ * wrapper produces exactly the width the input then fills.
+ */
 export function TextField({ label, hint, id, className, ...rest }: TextFieldProps) {
   const inputId = id ?? rest.name ?? label.toLowerCase().replace(/\s+/g, '-');
   return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={inputId} className="text-sm font-medium text-neutral-300">
-        {label}
-      </label>
-      <input
-        id={inputId}
-        className={cx(
-          'rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-          'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-          'focus:outline-none focus:ring-2 focus:ring-sky-500',
-          'disabled:cursor-not-allowed disabled:text-neutral-400',
-          className,
-        )}
-        {...rest}
-      />
-      {hint ? <p className="text-xs text-neutral-500">{hint}</p> : null}
+    <div className={cx('bt-field', className)}>
+      <label htmlFor={inputId}>{label}</label>
+      <input id={inputId} className="bt-input" {...rest} />
+      {hint ? <p className="bt-field__hint">{hint}</p> : null}
+    </div>
+  );
+}
+
+/**
+ * Native checkbox styling. `accent-color` paints the box and its tick in the
+ * brand gold with a browser-correct contrasting check — no custom control, so
+ * the native keyboard/AT semantics are untouched.
+ */
+export const CHECKBOX_STYLE: CSSProperties = { accentColor: 'var(--bt-gold)' };
+
+/** A hairline rule broken by a small uppercase label — "… or …". */
+export function OrDivider({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="h-px flex-1" style={{ background: 'var(--bt-border)' }} />
+      <span className="bt-label">{label}</span>
+      <span className="h-px flex-1" style={{ background: 'var(--bt-border)' }} />
     </div>
   );
 }
 
 type AlertTone = 'error' | 'success' | 'info';
 
-const ALERT_TONES: Record<AlertTone, string> = {
-  error: 'border-red-800 bg-red-950/60 text-red-200',
-  success: 'border-emerald-800 bg-emerald-950/60 text-emerald-200',
-  info: 'border-neutral-700 bg-neutral-900 text-neutral-300',
+/**
+ * Tone surfaces built straight from the semantic tokens: a 10%-alpha wash, the
+ * full-strength hue for the text, and a 1px border of the same hue at low alpha.
+ * Token-driven so the light theme flips with the rest of the system.
+ */
+const ALERT_TONES: Record<AlertTone, CSSProperties> = {
+  error: {
+    background: 'var(--bt-neg-soft)',
+    borderColor: 'color-mix(in srgb, var(--bt-neg) 26%, transparent)',
+    color: 'var(--bt-neg)',
+  },
+  success: {
+    background: 'var(--bt-pos-soft)',
+    borderColor: 'color-mix(in srgb, var(--bt-pos) 26%, transparent)',
+    color: 'var(--bt-pos)',
+  },
+  info: {
+    background: 'var(--bt-blue-soft)',
+    borderColor: 'color-mix(in srgb, var(--bt-blue) 26%, transparent)',
+    color: 'var(--bt-blue)',
+  },
 };
 
 export function Alert({ tone, children }: { tone: AlertTone; children: ReactNode }) {
   return (
-    <div role="alert" className={cx('rounded-md border px-3 py-2 text-sm', ALERT_TONES[tone])}>
+    <div role="alert" className="rounded-md border px-3 py-2 text-sm" style={ALERT_TONES[tone]}>
       {children}
     </div>
   );
@@ -84,9 +117,10 @@ export function Alert({ tone, children }: { tone: AlertTone; children: ReactNode
 export function Spinner({ label }: { label?: string }) {
   const t = useT();
   return (
-    <div className="flex items-center gap-3 text-sm text-neutral-400" role="status">
+    <div className="bt-muted flex items-center gap-3 text-sm" role="status">
       <span
-        className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-600 border-t-sky-400"
+        className="h-4 w-4 animate-spin rounded-full border-2"
+        style={{ borderColor: 'var(--bt-border-strong)', borderTopColor: 'var(--bt-gold)' }}
         aria-hidden="true"
       />
       <span>{label ?? t('common.loading')}</span>
@@ -97,7 +131,7 @@ export function Spinner({ label }: { label?: string }) {
 /** Full-screen branded splash, shown while the session bootstraps. */
 export function Splash({ label }: { label?: string }) {
   return (
-    <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
+    <div className="bt-app grid place-items-center">
       <div className="flex flex-col items-center gap-4 text-center">
         <Wordmark edition="Web" className="text-2xl" />
         <Spinner label={label} />
@@ -116,14 +150,17 @@ export function Toast({ children, onDismiss }: { children: ReactNode; onDismiss:
     <div
       role="alert"
       aria-live="polite"
-      className="fixed right-4 top-4 z-50 flex max-w-sm items-start gap-3 rounded-md border border-amber-700 bg-amber-950/95 px-4 py-3 text-sm text-amber-200 shadow-lg"
+      className="bt-toast"
+      // The gold inset rule marks it as an attention notice without importing a
+      // second surface color — the same accent idiom the active rail item uses.
+      style={{ boxShadow: 'inset 2px 0 0 var(--bt-gold), var(--bt-shadow-menu)' }}
     >
       <span className="flex-1">{children}</span>
       <button
         type="button"
         onClick={onDismiss}
         aria-label={t('common.dismiss')}
-        className="shrink-0 text-amber-400 hover:text-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+        className="bt-btn bt-btn--quiet bt-btn--sm bt-btn--icon shrink-0"
       >
         ✕
       </button>
@@ -137,16 +174,40 @@ export function Toast({ children, onDismiss }: { children: ReactNode; onDismiss:
  * and not flush to the top (PROJECTPLAN.md §6.1, issue #89). The top offset is
  * viewport-height-relative so it scales down on short viewports instead of
  * pushing the card off-screen.
+ *
+ * Composed as the Origin gate (`bt-gate` / `bt-gate__card`): ONE card holds the
+ * wordmark, the subtitle and the screen's content — no card inside a card. It
+ * carries `bt-app` itself because auth screens render outside the app shell.
+ *
+ * **Split gate (R2).** From 900px up the same markup becomes two columns: a
+ * graphite brand panel holding the wordmark and the single {@link TAGLINE} line
+ * over a slow ambient tint, and a working column carrying this card's content
+ * straight on the canvas (the card chrome drops away — see origin.css). Every
+ * child screen keeps its markup, so field labels, names and roles are untouched.
+ * Below 900px the brand panel is `display: none` and the card renders exactly
+ * the centered single-column gate it always did — which is also what jsdom sees,
+ * so unit tests keep asserting against one wordmark and one subtitle.
  */
 export function AuthCard({ subtitle, children }: { subtitle: string; children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-[#0b0e14] px-4 pb-12 pt-[12vh] sm:pt-[16vh]">
-      <div className="mx-auto w-full max-w-sm">
-        <div className="mb-8 text-center">
-          <Wordmark edition="Web" className="text-2xl" />
-          <p className="mt-1 text-sm text-neutral-500">{subtitle}</p>
+    <div className="bt-app bt-gate bt-gate--split">
+      {/* Brand panel — decorative twin of the card's own wordmark, so it is
+          hidden from assistive tech: the card below always announces the mark. */}
+      <aside className="bt-gate__brandpanel" aria-hidden="true">
+        <AuthFigures />
+        <Wordmark edition="Web" className="bt-gate__mark" />
+        <p className="bt-gate__tagline">{TAGLINE}</p>
+      </aside>
+      <div className="bt-gate__column">
+        <div className="bt-gate__card">
+          <div className="bt-gate__brand text-center">
+            <span className="bt-gate__brand-mark">
+              <Wordmark edition="Web" />
+            </span>
+            <p className="bt-meta mt-1 font-normal">{subtitle}</p>
+          </div>
+          {children}
         </div>
-        {children}
       </div>
     </div>
   );

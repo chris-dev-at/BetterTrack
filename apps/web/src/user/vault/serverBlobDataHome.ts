@@ -1,4 +1,9 @@
-import { parseVaultEtag, VAULT_CONTENT_TYPE, vaultEtag } from '@bettertrack/contracts';
+import {
+  parseVaultEtag,
+  VAULT_CONTENT_TYPE,
+  VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER,
+  vaultEtag,
+} from '@bettertrack/contracts';
 
 import { apiBaseUrl } from '../../lib/runtimeConfig';
 
@@ -20,6 +25,11 @@ const CSRF_VALUE = 'BetterTrack';
 export interface ServerBlobDataHomeOptions {
   url?: string;
   fetch?: typeof fetch;
+  /**
+   * Public verifier for the client-held retirement key. It is safe metadata;
+   * the matching private key remains encrypted in the browser vault.
+   */
+  retirementProofPublicKey?: () => string | null;
 }
 
 /** Maps the shipped opaque server blob endpoint without parsing error bodies. */
@@ -70,6 +80,10 @@ export function createServerBlobDataHome(options: ServerBlobDataHomeOptions = {}
         'Content-Type': VAULT_CONTENT_TYPE,
         [CSRF_HEADER]: CSRF_VALUE,
       };
+      const retirementProofPublicKey = options.retirementProofPublicKey?.() ?? null;
+      if (retirementProofPublicKey) {
+        headers[VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER] = retirementProofPublicKey;
+      }
       if (ifVersion === null) headers['If-None-Match'] = '*';
       else headers['If-Match'] = vaultEtag(ifVersion);
 

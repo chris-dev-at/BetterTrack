@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import type { ExpenseBudgetProgress } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
+import { cx } from '../../lib/cx';
 import { formatMoney } from '../../lib/format';
 import {
   EXPENSE_BUDGETS_QUERY_KEY,
@@ -13,7 +14,8 @@ import {
   listExpenseCategories,
 } from '../../lib/expensesApi';
 import { EmptyState, Skeleton } from '../../ui';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert } from '../components/ui';
+import { Badge, Button } from '../../ui/origin';
 
 import { BudgetDialog } from './BudgetDialog';
 
@@ -25,11 +27,9 @@ import { BudgetDialog } from './BudgetDialog';
  * anti-bloat rule.
  */
 
-/** Progress-bar tint: over budget → red, close → amber, else green. */
+/** Progress-bar fill (Origin): analytical blue on track, negative red once exceeded. */
 function barTone(budget: ExpenseBudgetProgress): string {
-  if (budget.exceeded) return 'bg-red-500';
-  if (budget.amount > 0 && budget.spent / budget.amount >= 0.8) return 'bg-amber-500';
-  return 'bg-emerald-500';
+  return budget.exceeded ? 'var(--bt-neg)' : 'var(--bt-blue)';
 }
 
 export function BudgetsPage() {
@@ -79,8 +79,8 @@ export function BudgetsPage() {
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-neutral-500">{t('expenses.budgets.subtitle')}</p>
-        <Button onClick={() => setCreating(true)} disabled={!canCreateBudget}>
+        <p className="bt-meta">{t('expenses.budgets.subtitle')}</p>
+        <Button onClick={() => setCreating(true)} disabled={!canCreateBudget} variant="primary">
           {t('expenses.budgets.new')}
         </Button>
       </div>
@@ -93,9 +93,7 @@ export function BudgetsPage() {
       ) : prerequisitesFailed ? (
         <div className="flex flex-wrap items-center gap-3">
           <Alert tone="error">{t('expenses.budgets.loadError')}</Alert>
-          <Button variant="secondary" onClick={retryPrerequisites}>
-            {t('common.retry')}
-          </Button>
+          <Button onClick={retryPrerequisites}>{t('common.retry')}</Button>
         </div>
       ) : budgets.length === 0 ? (
         <EmptyState
@@ -103,80 +101,62 @@ export function BudgetsPage() {
           title={t('expenses.budgets.emptyTitle')}
           description={t('expenses.budgets.emptyDescription')}
           cta={
-            <button
-              type="button"
-              onClick={() => setCreating(true)}
-              disabled={!canCreateBudget}
-              className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            >
+            <Button variant="quiet" onClick={() => setCreating(true)} disabled={!canCreateBudget}>
               {t('expenses.budgets.emptyCta')}
-            </button>
+            </Button>
           }
         />
       ) : (
-        <ul className="flex flex-col gap-3">
+        <ul className="bt-band flex flex-col" style={{ borderBlock: '1px solid var(--bt-border)' }}>
           {budgets.map((b) => {
             const pct = b.amount > 0 ? Math.min(100, (b.spent / b.amount) * 100) : 0;
             return (
-              <li key={b.id} className="rounded-lg border border-neutral-800 p-4">
+              <li key={b.id} className="bt-band__row">
                 <div className="flex flex-wrap items-center gap-3">
                   <span
                     className="h-2.5 w-2.5 shrink-0 rounded-full"
                     style={{ backgroundColor: b.categoryColor }}
                     aria-hidden="true"
                   />
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-neutral-200">
-                    {b.categoryName}
-                  </span>
-                  {b.exceeded ? (
-                    <span className="shrink-0 rounded-full bg-red-950/60 px-2 py-0.5 text-xs font-medium text-red-400">
-                      {t('expenses.budgets.exceeded')}
-                    </span>
-                  ) : null}
-                  <span className="shrink-0 text-sm tabular-nums text-neutral-300">
+                  <span className="bt-row-title min-w-0 flex-1 truncate">{b.categoryName}</span>
+                  {b.exceeded ? <Badge tone="neg">{t('expenses.budgets.exceeded')}</Badge> : null}
+                  <span className="shrink-0 bt-num bt-soft">
                     {formatMoney(b.spent, b.currency)} / {formatMoney(b.amount, b.currency)}
                   </span>
                   <span className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
+                    <Button
+                      variant="quiet"
+                      size="sm"
                       onClick={() => setEditing(b)}
                       disabled={!canEditBudget}
-                      className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
                     >
                       {t('common.edit')}
-                    </button>
+                    </Button>
                     {confirmDeleteId === b.id ? (
                       <>
-                        <button
-                          type="button"
+                        <Button
+                          variant="danger"
+                          size="sm"
                           onClick={() => remove.mutate(b.id)}
                           disabled={remove.isPending}
-                          className="rounded px-2 py-1 text-xs font-medium text-red-400 hover:bg-red-950/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                         >
                           {t('common.confirm')}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDeleteId(null)}
-                          className="rounded px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
-                        >
+                        </Button>
+                        <Button variant="quiet" size="sm" onClick={() => setConfirmDeleteId(null)}>
                           {t('common.cancel')}
-                        </button>
+                        </Button>
                       </>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDeleteId(b.id)}
-                        className="rounded px-2 py-1 text-xs text-neutral-500 hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-                      >
+                      <Button variant="danger" size="sm" onClick={() => setConfirmDeleteId(b.id)}>
                         {t('common.delete')}
-                      </button>
+                      </Button>
                     )}
                   </span>
                 </div>
                 <div className="mt-3 flex items-center gap-3">
                   <div
-                    className="h-2 flex-1 overflow-hidden rounded-full bg-neutral-800"
+                    className="h-2 flex-1 overflow-hidden rounded-full"
+                    style={{ background: 'var(--bt-surface-strong)' }}
                     role="progressbar"
                     aria-valuenow={Math.round(pct)}
                     aria-valuemin={0}
@@ -184,15 +164,13 @@ export function BudgetsPage() {
                     aria-label={b.categoryName}
                   >
                     <div
-                      className={cx('h-full rounded-full', barTone(b))}
-                      style={{ width: `${pct}%` }}
+                      className="h-full rounded-full"
+                      style={{ width: `${pct}%`, background: barTone(b) }}
                     />
                   </div>
                   <span
-                    className={cx(
-                      'shrink-0 text-xs tabular-nums',
-                      b.remaining < 0 ? 'text-red-400' : 'text-neutral-500',
-                    )}
+                    className={cx('shrink-0 bt-num', b.remaining < 0 ? 'bt-neg' : 'bt-muted')}
+                    style={{ fontSize: 12 }}
                   >
                     {b.remaining < 0
                       ? t('expenses.budgets.over', {

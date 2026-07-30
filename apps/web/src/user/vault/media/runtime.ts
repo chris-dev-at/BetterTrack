@@ -1,0 +1,291 @@
+import { VAULT_DOCUMENT_VERSION, type VaultDocument } from '@bettertrack/contracts';
+
+import {
+  getParanoidMediaState,
+  purgeRetiredParanoidServer,
+  readParanoidServerCandidate,
+  requestRetiredServerPurgeChallenge,
+  stageParanoidServerCandidate,
+  transitionParanoidMedia,
+} from '../../../lib/userApi';
+import type { VaultKeyMaterial } from '../crypto';
+import type { DataHome } from '../dataHome';
+import {
+  createDriveDataHome,
+  createGoogleDriveTokenClient,
+  type DriveDataHome,
+  type GoogleDriveTokenClient,
+} from '../drive';
+import { createLocalDataHome } from '../localDataHome';
+import { createIndexedDbVaultQuarantineStore } from '../quarantine';
+import { createServerBlobDataHome } from '../serverBlobDataHome';
+import { createVaultSyncEngine, type VaultSyncEngine, type VaultSyncState } from '../sync';
+import { reconcilePortfolioDocument } from '../vaultPortfolioStore';
+import { VaultCryptoError } from '../errors';
+import { createDriveConnectionController, type DriveConnectionController } from './driveConnection';
+import { createVaultMediaSwitcher, type VaultMediaApi } from './mediaSwitcher';
+import {
+  createReplicaReconcileCoordinator,
+  createReplicatedVaultDataHome,
+} from './replicatedDataHome';
+import {
+  createVaultRetirementProofManager,
+  type VaultRetirementProofManager,
+} from './retirementProof';
+import { createVaultEnvelopeAuthenticator } from './verification';
+
+export interface VaultDriveSyncCoordinator {
+  readonly deviceId: string;
+  readonly state: VaultSyncState;
+  reconnect(): Promise<VaultSyncState>;
+  mutate: VaultSyncEngine['mutate'];
+}
+
+export interface UnlockedVaultDriveRuntimeOptions {
+  userId: string;
+  clientId: string;
+  tokens?: GoogleDriveTokenClient;
+  server?: DataHome;
+  drive?: DriveDataHome;
+  api?: VaultMediaApi;
+  sync?: VaultDriveSyncCoordinator;
+  retirementProof?: VaultRetirementProofManager;
+}
+
+export interface UnlockedVaultDriveRuntime {
+  readonly controller: DriveConnectionController;
+  /** The PD5 sync seam of this unlocked session — the PD7 money engine's read/write surface. */
+  readonly sync: VaultDriveSyncCoordinator;
+  readonly ready: Promise<void>;
+  readonly syncState: VaultSyncState;
+  reconnect(): Promise<VaultSyncState>;
+  dispose(): void;
+}
+
+/**
+ * Production composition boundary for one unlocked vault. The in-memory key,
+ * GIS client, Drive/server DataHomes, media switcher, proof signer, and existing
+ * PD5 sync coordinator meet only here; Settings receives the narrow controller.
+ */
+export function createUnlockedVaultDriveRuntime(
+  vaultKey: VaultKeyMaterial,
+  keyId: string,
+  options: UnlockedVaultDriveRuntimeOptions,
+): UnlockedVaultDriveRuntime {
+  const tokens = options.tokens ?? createGoogleDriveTokenClient({ clientId: options.clientId });
+  const retirementProof =
+    options.retirementProof ?? createVaultRetirementProofManager(globalThis.crypto.subtle);
+  const server =
+    options.server ??
+    createServerBlobDataHome({
+      retirementProofPublicKey: () => retirementProof.publicKey,
+    });
+  const drive =
+    options.drive ??
+    createDriveDataHome({
+      accountId: options.userId,
+      tokens,
+    });
+  const api: VaultMediaApi = options.api ?? {
+    getState: getParanoidMediaState,
+    transition: transitionParanoidMedia,
+    stageServerCandidate: stageParanoidServerCandidate,
+    readServerCandidate: readParanoidServerCandidate,
+    requestPurgeChallenge: requestRetiredServerPurgeChallenge,
+    purgeRetired: purgeRetiredParanoidServer,
+  };
+  const authenticate = createVaultEnvelopeAuthenticator(vaultKey);
+  const switcher = createVaultMediaSwitcher({
+    api,
+    server,
+    drive,
+    authenticate,
+    retirementProof,
+  });
+  const sync =
+    options.sync ??
+    createDefaultSyncCoordinator({
+      userId: options.userId,
+      vaultKey,
+      keyId,
+      api,
+      server,
+      drive,
+    });
+
+  let disposed = false;
+  let readyPromise: Promise<void> | null = null;
+
+  function requireActive(): void {
+    if (disposed) {
+      throw new VaultCryptoError('locked', 'The unlocked Drive runtime was disposed.');
+    }
+  }
+
+  // The seam handed out to the money engine/provider. Disposal (lock) revokes
+  // it: a stale holder — an in-flight export's final snapshot check, the
+  // fire-and-forget standing-order catch-up — fails locked instead of reading
+  // or mutating through the retired session's coordinator.
+  const guardedSync: VaultDriveSyncCoordinator = {
+    deviceId: sync.deviceId,
+    get state() {
+      requireActive();
+      return sync.state;
+    },
+    async reconnect() {
+      requireActive();
+      const state = await sync.reconnect();
+      requireActive();
+      return state;
+    },
+    async mutate(mutator) {
+      requireActive();
+      const state = await sync.mutate(mutator);
+      requireActive();
+      return state;
+    },
+  };
+
+  async function initialize(): Promise<void> {
+    requireActive();
+    const state = await sync.reconnect();
+    requireActive();
+    if (state.status !== 'synced' || state.active == null || state.pending != null) {
+      throw new Error('Every selected vault medium must be reconciled before storage changes.');
+    }
+    const ensured = await retirementProof.ensure(state.active.document);
+    requireActive();
+    if (ensured.changed) {
+      const committed = await sync.mutate(({ document }) =>
+        applyRetirementProofMaterial(document, ensured.document),
+      );
+      requireActive();
+      if (committed.status !== 'synced' || committed.active == null || committed.pending != null) {
+        throw new Error('Vault retirement proof material was not durably synchronized.');
+      }
+      const confirmed = await retirementProof.ensure(committed.active.document);
+      requireActive();
+      if (confirmed.changed) {
+        throw new Error('Committed vault retirement proof material could not be confirmed.');
+      }
+    }
+  }
+
+  function ready(): Promise<void> {
+    readyPromise ??= initialize().catch((cause) => {
+      readyPromise = null;
+      throw cause;
+    });
+    return readyPromise;
+  }
+
+  const controller = createDriveConnectionController({
+    tokens,
+    switcher,
+    ready,
+    resumeSync: async () => {
+      requireActive();
+      const state = await sync.reconnect();
+      requireActive();
+      return state;
+    },
+  });
+
+  return {
+    controller,
+    sync: guardedSync,
+    get ready() {
+      return ready();
+    },
+    get syncState() {
+      return sync.state;
+    },
+    async reconnect() {
+      requireActive();
+      const state = await sync.reconnect();
+      requireActive();
+      return state;
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      retirementProof.clear();
+      tokens.clear();
+    },
+  };
+}
+
+function applyRetirementProofMaterial(
+  current: VaultDocument,
+  prepared: VaultDocument,
+): VaultDocument {
+  if (prepared.schemaVersion !== VAULT_DOCUMENT_VERSION) {
+    throw new VaultCryptoError(
+      'document-invalid',
+      'Prepared vault retirement proof material is missing.',
+    );
+  }
+  if (current.schemaVersion === VAULT_DOCUMENT_VERSION) {
+    const currentProof = current.clientSecurity.retirementProof;
+    const preparedProof = prepared.clientSecurity.retirementProof;
+    if (
+      currentProof.publicKey !== preparedProof.publicKey ||
+      currentProof.privateKey !== preparedProof.privateKey
+    ) {
+      throw new VaultCryptoError(
+        'document-invalid',
+        'Vault retirement proof material changed during enrollment.',
+      );
+    }
+    return current;
+  }
+  return {
+    ...current,
+    schemaVersion: VAULT_DOCUMENT_VERSION,
+    clientSecurity: prepared.clientSecurity,
+  };
+}
+
+function createDefaultSyncCoordinator(options: {
+  userId: string;
+  vaultKey: VaultKeyMaterial;
+  keyId: string;
+  api: VaultMediaApi;
+  server: DataHome;
+  drive: DriveDataHome;
+}): VaultDriveSyncCoordinator {
+  const scope = `vault:${options.userId}:${options.keyId}`;
+  const primary = createReplicatedVaultDataHome(options);
+  const engine = createVaultSyncEngine({
+    local: createLocalDataHome({ scope }),
+    primary,
+    vaultKey: options.vaultKey,
+    deviceId: browserVaultDeviceId(options.userId, options.keyId),
+    writeId: () => globalThis.crypto.randomUUID(),
+    quarantine: createIndexedDbVaultQuarantineStore({ scope }),
+    documentReconciler: reconcilePortfolioDocument,
+    requiresCompleteMutationProvenance: true,
+  });
+  const replicaCoordinator = createReplicaReconcileCoordinator(engine, primary);
+  return {
+    deviceId: engine.deviceId,
+    get state() {
+      return replicaCoordinator.state;
+    },
+    reconnect: () => replicaCoordinator.reconnect(),
+    mutate: (mutator) => replicaCoordinator.mutate(mutator),
+  };
+}
+
+function browserVaultDeviceId(userId: string, keyId: string): string {
+  const storageKey = `bettertrack:vault-device:${userId}:${keyId}`;
+  try {
+    const stored = globalThis.localStorage?.getItem(storageKey);
+    if (stored) return stored;
+    const created = globalThis.crypto.randomUUID();
+    globalThis.localStorage?.setItem(storageKey, created);
+    return created;
+  } catch {
+    return globalThis.crypto.randomUUID();
+  }
+}

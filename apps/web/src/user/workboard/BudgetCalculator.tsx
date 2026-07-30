@@ -32,11 +32,7 @@ function allocateModes(t: TranslateFn): Array<{ value: AllocateMode; label: stri
   ];
 }
 
-const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
-);
+const inputClass = cx('bt-input w-full', '', '');
 
 /**
  * Selectable stepper granularities for the budget amount (V3-P0, #322): "how far
@@ -73,11 +69,7 @@ function ModeToggle({
 }) {
   const t = useT();
   return (
-    <div
-      role="group"
-      aria-label={t('workboard.calculator.buyingModeAriaLabel')}
-      className="inline-flex rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
-    >
+    <div role="group" aria-label={t('workboard.calculator.buyingModeAriaLabel')} className="bt-seg">
       {allocateModes(t).map(({ value, label }) => {
         const selected = value === active;
         return (
@@ -88,10 +80,8 @@ function ModeToggle({
             onClick={() => onSelect(value)}
             className={cx(
               'rounded px-2.5 py-1.5 text-xs font-medium transition-colors',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-              selected
-                ? 'bg-sky-600 text-white'
-                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+              '',
+              selected && 'is-active',
             )}
           >
             {label}
@@ -118,7 +108,7 @@ function AtLeastOneShareToggle({
   const label = t('workboard.calculator.atLeastOneShareLabel');
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-sm font-medium text-neutral-300">{label}</span>
+      <span className="text-sm font-medium bt-soft">{label}</span>
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -128,8 +118,8 @@ function AtLeastOneShareToggle({
           onClick={() => onChange(!checked)}
           className={cx(
             'relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-            checked ? 'bg-sky-600' : 'bg-neutral-700',
+            '',
+            checked ? 'bg-[var(--bt-gold)]' : 'bg-[var(--bt-surface-strong)]',
           )}
         >
           <span
@@ -140,7 +130,7 @@ function AtLeastOneShareToggle({
             )}
           />
         </button>
-        <span className="max-w-[14rem] text-xs text-neutral-500">
+        <span className="max-w-[14rem] text-xs bt-muted">
           {t('workboard.calculator.atLeastOneShareHint')}
         </span>
       </div>
@@ -155,10 +145,10 @@ function DeviationTable({ positions }: { positions: AllocatePosition[] }) {
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-800">
+    <div className="overflow-x-auto bt-panel">
       <table className="w-full text-left">
         <thead>
-          <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
+          <tr className="bt-b-rule bt-label">
             <th scope="col" className="px-3 py-2">
               {t('workboard.calculator.assetHeader')}
             </th>
@@ -182,37 +172,35 @@ function DeviationTable({ positions }: { positions: AllocatePosition[] }) {
         <tbody>
           {positions.map((p) => (
             <Fragment key={p.assetId}>
-              <tr
-                className={cx(
-                  'border-b border-neutral-800 last:border-b-0',
-                  p.note && 'border-b-0',
-                )}
-              >
+              <tr className={cx('bt-b-rule last:border-b-0', p.note && 'border-b-0')}>
                 <td className="px-3 py-3">
-                  <span className="font-mono text-sm font-medium text-neutral-100">{p.symbol}</span>
-                  <p className="max-w-[16rem] truncate text-xs text-neutral-500" title={p.name}>
+                  <span className="font-mono text-sm font-medium">{p.symbol}</span>
+                  <p className="max-w-[16rem] truncate text-xs bt-muted" title={p.name}>
                     {p.name}
                   </p>
                 </td>
-                <td className="px-3 py-3 text-right text-sm tabular-nums text-neutral-300">
+                <td className="px-3 py-3 text-right text-sm tabular-nums bt-soft">
                   {formatQuantity(p.qty)}
                 </td>
-                <td className="px-3 py-3 text-right text-sm tabular-nums text-neutral-300">
+                <td className="px-3 py-3 text-right text-sm tabular-nums bt-soft">
                   <MoneyText amount={p.costEur} />
                 </td>
-                <td className="px-3 py-3 text-right text-sm tabular-nums text-neutral-300">
+                <td className="px-3 py-3 text-right text-sm tabular-nums bt-soft">
                   {formatPercent(p.actualPct)}
                 </td>
-                <td className="px-3 py-3 text-right text-sm tabular-nums text-neutral-300">
+                <td className="px-3 py-3 text-right text-sm tabular-nums bt-soft">
                   {formatPercent(p.targetPct)}
                 </td>
-                <td className="px-3 py-3 text-right text-sm tabular-nums text-neutral-300">
+                <td className="px-3 py-3 text-right text-sm tabular-nums bt-soft">
                   {formatSignedPercent(p.deltaPp)}
                 </td>
               </tr>
               {p.note ? (
-                <tr className="border-b border-neutral-800 bg-amber-950/20 last:border-b-0">
-                  <td colSpan={6} className="px-3 pb-3 text-xs text-amber-300">
+                <tr
+                  className="bt-b-rule last:border-b-0"
+                  style={{ background: 'var(--bt-gold-soft)' }}
+                >
+                  <td colSpan={6} className="px-3 pb-3 text-xs bt-gold">
                     {p.unbuyable ? `⚠ ${p.note}` : p.note}
                   </td>
                 </tr>
@@ -240,8 +228,11 @@ function TotalsFooter({ result, budgetEur }: { result: AllocateResponse; budgetE
       />
       <StatCard
         label={t('workboard.calculator.withinBudgetLabel')}
-        value={withinBudget ? t('common.yes') : t('common.no')}
-        className={withinBudget ? undefined : 'ring-1 ring-inset ring-red-800'}
+        value={
+          <span className={withinBudget ? 'bt-pos' : 'bt-neg'}>
+            {withinBudget ? t('common.yes') : t('common.no')}
+          </span>
+        }
       />
     </div>
   );
@@ -336,7 +327,7 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
     <div className={cx('flex flex-col gap-4', className)}>
       <form onSubmit={handleCalculate} className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
+          <span className="text-sm font-medium bt-soft">
             {t('workboard.calculator.budgetLabel')}
           </span>
           <div className="flex items-stretch gap-1">
@@ -344,7 +335,7 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
               type="button"
               aria-label={t('workboard.calculator.decreaseBudgetAriaLabel', { step: activeStep })}
               onClick={() => setBudget((b) => stepBudget(b, -activeStep, activeStep))}
-              className="rounded-md bg-neutral-900 px-2.5 text-neutral-300 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              className="bt-btn bt-btn--sm"
             >
               −
             </button>
@@ -362,7 +353,7 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
               type="button"
               aria-label={t('workboard.calculator.increaseBudgetAriaLabel', { step: activeStep })}
               onClick={() => setBudget((b) => stepBudget(b, activeStep, activeStep))}
-              className="rounded-md bg-neutral-900 px-2.5 text-neutral-300 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              className="bt-btn bt-btn--sm"
             >
               +
             </button>
@@ -371,7 +362,7 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
 
         {mode === 'fractional' ? (
           <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">
+            <span className="text-sm font-medium bt-soft">
               {t('workboard.calculator.stepSizeLabel')}
             </span>
             <select

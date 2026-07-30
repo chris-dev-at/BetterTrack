@@ -1,0 +1,24 @@
+{
+  "description": "Server-generated TWR golden vectors. apps/api/src/__tests__/vaultClientTwrParity.test.ts drives these exact inputs through the real server pipeline (priceHistory + snapshot layer + GET /portfolios/:id/history?range=MAX) and asserts the server produces twrPct byte-for-byte; the paranoid client parity tests in clientMoney.test.ts consume the same vectors.",
+  "sinceInceptionMax": {
+    "closes": [100, 105, 110, 115, 120, 125, 128],
+    "quoteToday": 130,
+    "buy": { "quantity": 10, "price": 100, "fee": 5, "dayOffset": -7 },
+    "twrPct": [
+      -0.497512437810943, 4.47761194029852, 9.452736318407972, 14.427860696517424,
+      19.402985074626876, 24.37810945273633, 27.36318407960201, 29.35323383084578
+    ]
+  },
+  "splitDateCashBuy": {
+    "closes": [100, 105, 110, 115, 120, 125, 128],
+    "quoteToday": 130,
+    "buy": { "quantity": 10, "price": 100, "fee": 5, "dayOffset": -7 },
+    "depositEur": 2000,
+    "depositDayOffset": -8,
+    "linkedBuyMovement": { "amountEur": -1005, "dayOffset": -5 },
+    "twrPct": [
+      0, -0.16638935108153063, 1.4975041597337757, 3.161397670549082, 5.623483533808016,
+      8.08556939706695, 10.547655260325882, 12.024906778281231, 13.009741123584796
+    ]
+  }
+}

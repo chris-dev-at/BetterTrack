@@ -77,7 +77,8 @@ test('announcements: an active announcement reaches every user and stays dismiss
     timeout: 15_000,
   });
   // And the inbox notification remains (banner ≠ inbox — she can still read it).
-  await aliceReturnPage.goto('/settings/notifications');
+  // The inbox is the notification-log panel since the R2 split.
+  await aliceReturnPage.goto('/control/notification-log');
   await expect(aliceReturnPage.getByText('E2E scheduled maintenance').first()).toBeVisible({
     timeout: 15_000,
   });

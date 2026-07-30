@@ -187,14 +187,44 @@ describe('worker job metrics are scraped (guard 4, #632)', () => {
   });
 });
 
+describe('compose readiness and cross-container exports (#939)', () => {
+  const compose = read('infra/docker-compose.yml');
+  const apiBlock = compose.slice(compose.indexOf('\n  api:'), compose.indexOf('\n  worker:'));
+  const workerBlock = compose.slice(compose.indexOf('\n  worker:'), compose.indexOf('\n  db:'));
+  const buildConfig = read('apps/api/tsup.config.ts');
+  const dockerfile = read('apps/api/Dockerfile');
+  const exportPath = '/var/lib/bettertrack/exports';
+
+  it('gates api health on the DB + Redis readiness route', () => {
+    expect(apiBlock).toContain('/api/v1/health/ready');
+    expect(apiBlock).not.toContain('http://localhost:3000/api/v1/health ||');
+  });
+
+  it('ships and invokes the worker heartbeat probe with startup grace', () => {
+    expect(buildConfig).toContain("'src/scripts/workerHealth.ts'");
+    expect(workerBlock).toContain("['CMD', 'node', 'dist/scripts/workerHealth.js']");
+    expect(workerBlock).toContain('start_period: 3m');
+  });
+
+  it('mounts one writable export volume at the identical api and worker path', () => {
+    for (const serviceBlock of [apiBlock, workerBlock]) {
+      expect(serviceBlock).toContain(`BT_EXPORT_DIR: '${exportPath}'`);
+      expect(serviceBlock).toContain(`exportdata:${exportPath}`);
+    }
+    expect(compose.slice(compose.lastIndexOf('\nvolumes:'))).toContain('\n  exportdata:');
+    expect(dockerfile).toContain(`mkdir -p ${exportPath}`);
+    expect(dockerfile).toContain('chown -R bettertrack:bettertrack /var/lib/bettertrack');
+  });
+});
+
 describe('worker entry registers the durable notification consumer + bridge (guard 2)', () => {
   const workerEntry = read('apps/api/src/scripts/worker.ts');
 
   it('registers the notifications.dispatch consumer with the fully-built dispatcher + webhook bridge', () => {
     // V5-P10 (#648): the durable dispatch consumer also fans events out to the
     // webhook bridge — the ONE place every user-scoped event converges.
-    expect(workerEntry).toContain(
-      'createNotificationsDispatchJob({ dispatcher, webhooks: webhookBridge })',
+    expect(workerEntry).toMatch(
+      /createNotificationsDispatchJob\(\{\s*dispatcher,\s*webhooks: webhookBridge,\s*\}\)/,
     );
     expect(workerEntry).toContain('createNotificationDispatcher(');
   });
@@ -203,8 +233,11 @@ describe('worker entry registers the durable notification consumer + bridge (gua
     expect(workerEntry).toContain("registry.enqueue('notifications.dispatch', { event })");
   });
 
-  it('hands the center to the scheduled jobs so the alert evaluator emits durably', () => {
+  it('hands the center to the registered jobs so the alert evaluator emits durably', () => {
     expect(workerEntry).toContain('createNotificationCenter(');
-    expect(workerEntry).toMatch(/createJobDefinitions\(\{[\s\S]*?\bnotify\b[\s\S]*?\}\)/);
+    expect(workerEntry).toContain('assembleRegisteredJobDefinitions({');
+    expect(workerEntry).toMatch(
+      /const coreJobDeps = \{[\s\S]*?\bnotify,[\s\S]*?\};[\s\S]*?createAlertsEvaluateJob\(coreJobDeps\)/,
+    );
   });
 });

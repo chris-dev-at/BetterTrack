@@ -55,7 +55,7 @@ test('alerts: a price_above alert fires and surfaces in the notification bell', 
   expect(alertRes.ok(), await alertRes.text()).toBeTruthy();
 
   // The alert shows on the panel, initially Active.
-  await page.goto('/workboard/alerts');
+  await page.goto('/workbench/alerts');
   await expect(page.getByText(symbol)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText('Active')).toBeVisible();
 

@@ -376,10 +376,10 @@ describe('AnalyticsPage — compare mode', () => {
     renderPage();
     await screen.findByRole('table');
 
-    await user.click(screen.getByRole('button', { name: 'Conglomerate' }));
+    await user.click(screen.getByRole('button', { name: 'Blueprint' }));
 
     expect(await screen.findByText('Something went wrong. Please try again.')).toBeInTheDocument();
-    expect(screen.queryByText("You don't have any conglomerates yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText("You don't have any blueprints yet.")).not.toBeInTheDocument();
   });
 
   test('compare vs an asset/index renders both series overlaid + side-by-side stats', async () => {

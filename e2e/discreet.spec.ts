@@ -27,7 +27,7 @@ test('discreet mode masks every absolute amount on the portfolio surface and tog
   // Seed a real absolute amount on the default "Main" portfolio via the Cash
   // Sources page so at least one MoneyText paints a euro figure the sweep can
   // find (and later fail to find) on `/portfolio`.
-  await user.page.goto('/portfolio/cash');
+  await user.page.goto('/portfolio/cash-flow/accounts');
   await user.page.getByRole('button', { name: /Add cash movement|Add movement|Add cash/i }).click();
   await user.page
     .getByLabel(/Amount/i)

@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 
 import {
   adminTwoFactorEmailStartRequestSchema,
@@ -13,19 +13,33 @@ import {
   type UpdateAdminSessionPolicyRequest,
 } from '@bettertrack/contracts';
 
+import { unauthorized } from '../../errors';
+import type { SessionSecurityContext } from '../../services/sessions/sessionService';
 import type { AppContext } from '../context';
+import { clearSessionCookie } from '../cookies';
+import { requireAdminTwoFactor } from '../middleware/session';
 import { validateBody } from '../middleware/validate';
 import { toAdminSessionPolicy } from '../serializers';
+
+const sessionSecurityContextOf = (req: Request): SessionSecurityContext => {
+  if (req.sessionId && req.sessionSecurityGeneration !== undefined) {
+    return {
+      sessionId: req.sessionId,
+      securityGeneration: req.sessionSecurityGeneration,
+    };
+  }
+  throw unauthorized();
+};
 
 /**
  * Admin 2FA management endpoints under `/admin/security/2fa` (§6.12, #400).
  *
  * Registered FLAT onto the admin router (not a nested sub-router — the OpenAPI
- * coverage checker only reconstructs top-level mounts) and BEFORE the
- * {@link requireAdminTwoFactor} setup gate, so they stay reachable in the
- * not-yet-enrolled bootstrap state: they are exactly the "2FA enroll/confirm set"
- * the gate exempts. `requireAdmin` on the parent router fences them to admin
- * accounts (404 to everyone else).
+ * coverage checker only reconstructs top-level mounts). Every route carries a
+ * current-session gate: status/enroll/confirm admit the genuine password →
+ * first-enrollment bootstrap only while no factor exists; disable/recovery
+ * always require assurance. `requireAdmin` on the parent router fences them to
+ * admin accounts (404 to everyone else).
  *
  * The TOTP + recovery lifecycle mirrors the user endpoints (the service delegates
  * to the shared core); the email method targets the SEPARATE 2FA email.
@@ -33,60 +47,101 @@ import { toAdminSessionPolicy } from '../serializers';
 export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): void {
   // `ctx.adminTwoFactor` is read PER-REQUEST, never at mount — route factories
   // must stay side-effect free at mount time (checkOpenapiCoverage relies on it).
+  const allowFirstEnrollment = requireAdminTwoFactor(ctx, { allowBootstrap: true });
+  const requireCurrentAssurance = requireAdminTwoFactor(ctx);
 
-  router.get('/security/2fa/status', async (req, res) => {
-    res.json(await ctx.adminTwoFactor.status(req.authUser!.id));
+  router.get('/security/2fa/status', allowFirstEnrollment, async (req, res) => {
+    res.json(await ctx.adminTwoFactor.status(req.authUser!.id, sessionSecurityContextOf(req)));
   });
 
-  router.post('/security/2fa/totp/enroll', async (req, res) => {
-    res.json(await ctx.adminTwoFactor.enrollTotp(req.authUser!.id, req.ip));
+  router.post('/security/2fa/totp/enroll', allowFirstEnrollment, async (req, res) => {
+    res.json(
+      await ctx.adminTwoFactor.enrollTotp(req.authUser!.id, req.ip, sessionSecurityContextOf(req)),
+    );
   });
 
   router.post(
     '/security/2fa/totp/confirm',
+    allowFirstEnrollment,
     validateBody(twoFactorConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorConfirmRequest;
-      res.json(await ctx.adminTwoFactor.confirmTotp(req.authUser!.id, code, req.ip));
+      const result = await ctx.adminTwoFactor.confirmTotp(
+        req.authUser!.id,
+        code,
+        req.ip,
+        sessionSecurityContextOf(req),
+      );
+      clearSessionCookie(res, ctx.config);
+      res.json(result.response);
     },
   );
 
   router.post(
     '/security/2fa/totp/disable',
+    requireCurrentAssurance,
     validateBody(twoFactorDisableRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorDisableRequest;
-      await ctx.adminTwoFactor.disableTotp(req.authUser!.id, code, req.ip);
+      await ctx.adminTwoFactor.disableTotp(
+        req.authUser!.id,
+        code,
+        req.ip,
+        sessionSecurityContextOf(req),
+      );
+      clearSessionCookie(res, ctx.config);
       res.status(204).end();
     },
   );
 
   router.post(
     '/security/2fa/email/start',
+    allowFirstEnrollment,
     validateBody(adminTwoFactorEmailStartRequestSchema),
     async (req, res) => {
       const { email, proof } = req.valid?.body as AdminTwoFactorEmailStartRequest;
-      await ctx.adminTwoFactor.startEmailEnrollment(req.authUser!.id, email, proof, req.ip);
+      await ctx.adminTwoFactor.startEmailEnrollment(
+        req.authUser!.id,
+        email,
+        proof,
+        sessionSecurityContextOf(req),
+        req.ip,
+      );
       res.status(204).end();
     },
   );
 
   router.post(
     '/security/2fa/email/confirm',
+    allowFirstEnrollment,
     validateBody(twoFactorEmailConfirmRequestSchema),
     async (req, res) => {
       const { code } = req.valid?.body as TwoFactorEmailConfirmRequest;
-      res.json(await ctx.adminTwoFactor.confirmEmail(req.authUser!.id, code, req.ip));
+      const result = await ctx.adminTwoFactor.confirmEmail(
+        req.authUser!.id,
+        code,
+        req.ip,
+        sessionSecurityContextOf(req),
+      );
+      clearSessionCookie(res, ctx.config);
+      res.json(result.response);
     },
   );
 
-  router.post('/security/2fa/email/disable', async (req, res) => {
-    await ctx.adminTwoFactor.disableEmail(req.authUser!.id, req.ip);
+  router.post('/security/2fa/email/disable', requireCurrentAssurance, async (req, res) => {
+    await ctx.adminTwoFactor.disableEmail(req.authUser!.id, req.ip, sessionSecurityContextOf(req));
+    clearSessionCookie(res, ctx.config);
     res.status(204).end();
   });
 
-  router.post('/security/2fa/recovery-codes', async (req, res) => {
-    res.json(await ctx.adminTwoFactor.regenerateRecoveryCodes(req.authUser!.id, req.ip));
+  router.post('/security/2fa/recovery-codes', requireCurrentAssurance, async (req, res) => {
+    const result = await ctx.adminTwoFactor.regenerateRecoveryCodes(
+      req.authUser!.id,
+      req.ip,
+      sessionSecurityContextOf(req),
+    );
+    clearSessionCookie(res, ctx.config);
+    res.json(result.response);
   });
 }
 

@@ -9,11 +9,44 @@
 #   diff:easy | diff:normal | diff:intermediate | diff:hard | diff:max
 # The owner maps each difficulty to a provider+model+effort in the dashboard
 # (Models tab → state/control/models.json, read fresh before every agent run,
-# so changes apply from the next run without a restart):
+# so changes apply from the next run without a restart).
 #
-#   { "difficulties": { "<diff>": {"provider":"claude|claudex|codex|gemini",
-#                                  "model":"...", "effort":"..."} },
-#     "roles": { "composer":"<diff>", "checker":"<diff>", "reviewFloor":"<diff>" } }
+# Each difficulty carries up to THREE role slots (schema v2):
+#   writer     — writes the initial implementation
+#   reviewer1  — the FIRST review on a PR (one cross-vendor pass)
+#   completion — every later fixer AND every later reviewer until done
+#
+#   { "difficulties": { "<diff>": {
+#         "writer":     {"provider":"claude|claudex|codex|gemini","model":"...","effort":"..."},
+#         "reviewer1":  { ... }, "completion": { ... },
+#         "provider":"...", "model":"...", "effort":"..."   # flat legacy form (v1)
+#     } },
+#     "roles": { "composer":"<diff>" | {"provider":"...","model":"...","effort":"..."},
+#                "checker":"<diff>" | { ...same pin form... },
+#                "reviewFloor":"<diff>" } }
+#
+# Slot resolution (diff_cfg <diff> <slot>): the slot object wins; a missing or
+# non-object slot falls back to the flat legacy entry; a missing flat entry
+# falls back to the builtin all-Claude defaults. A PRESENT-but-malformed slot
+# or flat entry with a string provider stays explicit ("invalid|<provider>|")
+# and fails closed downstream — it never silently falls through —
+# a typo must never silently reroute a role to Claude. A v1 (flat-only) file
+# therefore keeps working unchanged: every slot resolves to the flat entry.
+#
+# Role pins: a roles.<role> entry may be an OBJECT instead of a difficulty
+# string — that pins the role to the exact provider/model/effort, bypassing
+# difficulty tiers and slots entirely. Works for any role mf_cc runs (composer,
+# checker, writer, reviewer, fixer, ci-fix). Pins are per-role, not per-slot:
+# a pinned reviewer covers BOTH review passes (reviewer1 and completion). A
+# STRING entry keeps today's meaning exactly — composer/checker resolve through
+# that difficulty via role_diff; strings under any other role name stay inert,
+# so the per-difficulty writer/reviewer1/completion slots remain authoritative
+# for issue work unless a role is explicitly pinned with an object. A
+# present-but-unusable pin (unknown provider, bad model/effort string, or any
+# Opus 5 model above xhigh effort — owner hard rule) is logged and IGNORED:
+# the role falls back to difficulty routing; a bad pin never bricks a run.
+# reviewFloor is always a difficulty name, never a pin. The composer route
+# gate (mf_composer_route_allowed) still applies to a pinned composer.
 #
 # Providers (all subscription auth, never committed — see autorun.sh auth sync):
 #   claude → claude CLI  (CLAUDE_CODE_OAUTH_TOKEN env; effort low|medium|high|xhigh|max)
@@ -30,9 +63,24 @@ MF_MODELS_FILE=${MF_MODELS_FILE:-$MFSTATE/control/models.json}
 MF_ROLE_TIMEOUT=${MF_ROLE_TIMEOUT:-7200}   # hard cap per provider role run (s)
 
 DIFF_ORDER="easy normal intermediate hard max"
+MF_SLOT_ORDER="writer reviewer1 completion"
 
 _MF_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$_MF_LIB_DIR/contracts.sh"
+
+mf_slot_valid(){ case " $MF_SLOT_ORDER " in *" $1 "*) return 0;; *) return 1;; esac; }
+
+# Builtin role → slot mapping, used when the caller does not pass CC_SLOT.
+# The reviewer's first-vs-later distinction needs PR evidence only the worker
+# has, so run_reviewer always passes CC_SLOT explicitly; reviewer1 here is only
+# the conservative default for a bare call.
+mf_role_slot(){
+  case "$1" in
+    writer|composer) echo writer;;
+    reviewer)        echo reviewer1;;
+    *)               echo completion;;   # fixer, checker, ci-fix, unknown roles
+  esac
+}
 
 diff_valid(){ case " $DIFF_ORDER " in *" $1 "*) return 0;; *) return 1;; esac; }
 
@@ -49,7 +97,8 @@ diff_next(){ # one difficulty harder; max stays max
   esac
 }
 
-diff_at_least(){ # $1=diff $2=floor → the harder of the two
+diff_at_least(){ # $1=diff $2=floor → the harder of the two; invalid diff takes the floor
+  diff_valid "$1" || { echo "$2"; return; }
   if [ "$(diff_index "$1")" -ge "$(diff_index "$2")" ]; then echo "$1"; else echo "$2"; fi
 }
 
@@ -97,10 +146,56 @@ diff_cfg_from_json(){ # $1=file $2=difficulty — invalid provider is explicit
   ' "$1" 2>/dev/null || true
 }
 
-diff_cfg(){ # $1=difficulty
-  local out=""
-  [ -f "$MF_MODELS_FILE" ] && out=$(diff_cfg_from_json "$MF_MODELS_FILE" "$1")
-  [ -n "$out" ] || out=$(diff_default_cfg "$1")
+diff_slot_cfg_from_json(){ # $1=file $2=difficulty $3=slot — invalid provider is explicit
+  jq -r --arg d "$2" --arg s "$3" '
+    .difficulties[$d]? // empty
+    | .[$s]? // empty
+    | if (type=="object"
+          and (.provider=="claude" or .provider=="claudex"
+               or .provider=="codex" or .provider=="gemini")
+          and ((.model // "") | type=="string" and length>0
+               and (contains("|") | not) and (test("[\\r\\n]") | not))
+          and ((.effort // "") | type=="string"
+               and (contains("|") | not) and (test("[\\r\\n]") | not)))
+      then [.provider, .model, (.effort // "")] | join("|")
+      elif (type=="object") and ((.provider // "") | type=="string" and length>0)
+      then ["invalid", .provider, ""] | join("|")
+      else empty
+      end
+  ' "$1" 2>/dev/null || true
+}
+
+mf_opus5_route_ok(){ # $1="provider|model|effort" — the Opus-5 ≤ xhigh owner rule
+  local provider model effort
+  IFS='|' read -r provider model effort <<<"$1"
+  mf_opus5_effort_ok "$model" "$effort"
+}
+
+diff_cfg(){ # $1=difficulty $2=slot (optional: writer|reviewer1|completion)
+  # The Opus-5 cap binds HERE too, not only in set-models/the editor — a
+  # hand-written models.json must never run Opus 5 above xhigh. An over-cap
+  # slot falls to the flat entry, an over-cap flat entry falls to the builtin
+  # default (mirrors role_pin_cfg's fall-back semantics). Notes go to stderr:
+  # diff_cfg runs inside command substitutions, so log() would corrupt the
+  # returned route string.
+  local d=$1 slot=${2:-} out=""
+  if [ -f "$MF_MODELS_FILE" ]; then
+    if [ -n "$slot" ]; then
+      out=$(diff_slot_cfg_from_json "$MF_MODELS_FILE" "$d" "$slot")
+      if [ -n "$out" ] && ! mf_opus5_route_ok "$out"; then
+        printf 'opus5 cap: %s.%s route exceeds xhigh — falling back\n' "$d" "$slot" >&2
+        out=""
+      fi
+    fi
+    if [ -z "$out" ]; then
+      out=$(diff_cfg_from_json "$MF_MODELS_FILE" "$d")
+      if [ -n "$out" ] && ! mf_opus5_route_ok "$out"; then
+        printf 'opus5 cap: %s flat route exceeds xhigh — using the builtin default\n' "$d" >&2
+        out=""
+      fi
+    fi
+  fi
+  [ -n "$out" ] || out=$(diff_default_cfg "$d")
   printf '%s\n' "$out"
 }
 
@@ -120,10 +215,59 @@ review_floor(){ # reviews never run below this difficulty (default: intermediate
   echo intermediate
 }
 
-mf_uses_claude(){ # 0 when ANY difficulty currently routes to the claude provider
-  local d
+# Owner hard rule: no Opus 5 run may ever exceed xhigh effort. Effort scale for
+# the claude provider is low|medium|high|xhigh|max; empty means the CLI default.
+mf_opus5_effort_ok(){ # $1=model $2=effort → 1 when an Opus 5 model exceeds xhigh
+  case "$1" in
+    claude-opus-5*|*/claude-opus-5*)
+      case "$2" in ''|low|medium|high|xhigh) return 0;; *) return 1;; esac;;
+  esac
+  return 0
+}
+
+# roles.<role> as an OBJECT is a direct model pin. Same field validation rules
+# as the slot parser (pipe/CRLF injection rejected, provider allowlisted), but
+# unlike slots a bad pin must FALL BACK, not fail closed — the explicit
+# "malformed||" marker lets mf_cc log the ignored pin before falling back to
+# difficulty routing. A string or absent entry yields empty (no pin).
+role_pin_cfg_from_json(){ # $1=file $2=role
+  jq -r --arg r "$2" '
+    .roles[$r]? // empty
+    | if (type=="object"
+          and (.provider=="claude" or .provider=="claudex"
+               or .provider=="codex" or .provider=="gemini")
+          and ((.model // "") | type=="string" and length>0
+               and (contains("|") | not) and (test("[\\r\\n]") | not))
+          and ((.effort // "") | type=="string"
+               and (contains("|") | not) and (test("[\\r\\n]") | not)))
+      then [.provider, .model, (.effort // "")] | join("|")
+      elif (type=="object") then "malformed||"
+      else empty
+      end
+  ' "$1" 2>/dev/null || true
+}
+
+role_pin_cfg(){ # $1=role → "provider|model|effort" pin, "malformed||", or "" (no pin)
+  local out="" provider model effort
+  [ -f "$MF_MODELS_FILE" ] || return 0
+  out=$(role_pin_cfg_from_json "$MF_MODELS_FILE" "$1")
+  [ -n "$out" ] || return 0
+  if [ "$out" != "malformed||" ]; then
+    IFS='|' read -r provider model effort <<<"$out"
+    mf_opus5_effort_ok "$model" "$effort" || out="malformed||"
+  fi
+  printf '%s\n' "$out"
+}
+
+mf_uses_claude(){ # 0 when ANY difficulty slot or role pin routes to the claude provider
+  local d s r
   for d in $DIFF_ORDER; do
-    case "$(diff_cfg "$d")" in claude\|*) return 0;; esac
+    for s in $MF_SLOT_ORDER; do
+      case "$(diff_cfg "$d" "$s")" in claude\|*) return 0;; esac
+    done
+  done
+  for r in composer checker writer reviewer fixer ci-fix; do
+    case "$(role_pin_cfg "$r")" in claude\|*) return 0;; esac
   done
   return 1
 }
@@ -681,13 +825,30 @@ This is a bounded planning run, not a repository audit.
 EOF
 }
 
-mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config and dispatch
-  local role=$1 d=$2 prompt=$3 cfg provider model effort
+mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config (pin or per-role slot) and dispatch
+  # A valid roles.<role> object pin wins outright. Otherwise the slot comes
+  # from CC_SLOT when the caller has evidence-based routing (the worker's
+  # first-review-vs-later distinction) or from the builtin role → slot mapping,
+  # and the difficulty tier resolves the model. An unknown CC_SLOT falls back
+  # to the role default; an unusable pin is logged and ignored.
+  local role=$1 d=$2 prompt=$3 slot cfg provider model effort route
   local sol_composer=0 sol_timeout=1200 sol_max_turns=40
-  cfg=$(diff_cfg "$d")
+  slot=${CC_SLOT:-}
+  mf_slot_valid "${slot:-x}" || slot=$(mf_role_slot "$role")
+  cfg=$(role_pin_cfg "$role")
+  if [ "$cfg" = "malformed||" ]; then
+    log "$role: ignoring unusable role pin in models.json (malformed entry or Opus 5 above xhigh) — using difficulty routing"
+    cfg=""
+  fi
+  if [ -n "$cfg" ]; then
+    route="pin"
+  else
+    cfg=$(diff_cfg "$d" "$slot")
+    route="diff:$d [$slot]"
+  fi
   IFS='|' read -r provider model effort <<<"$cfg"
   if [ "$role" = composer ] && ! mf_composer_route_allowed "$provider" "$model"; then
-    log "composer @ diff:$d → $provider/$model${effort:+ ($effort)}"
+    log "composer @ $route → $provider/$model${effort:+ ($effort)}"
     log "  ↳ composer route rejected — only Claude Fable, Claude Opus, or GPT-5.6 Sol may compose"
     return 1
   fi
@@ -703,7 +864,7 @@ mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config and dispatch
 
 $(mf_sol_composer_instructions)"
   fi
-  log "$role @ diff:$d → $provider/$model${effort:+ ($effort)}"
+  log "$role @ $route → $provider/$model${effort:+ ($effort)}"
   case "$provider" in
     claude)  CC_ROLE=$role CC_EFFORT=$effort cc "$model" "$prompt";;
     claudex)

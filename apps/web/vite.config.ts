@@ -4,15 +4,14 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vitest/config';
 
-// Release tag baked into the bundle at build time (§13.4 V4-P5a), so every
-// Sentry event the SPA reports carries the same `name@version` release as the
-// API. An explicit VITE_SENTRY_RELEASE (e.g. a git SHA from CI) wins; otherwise
-// it derives from this package's version. Injected via `define` as a global
-// constant so it is a compile-time literal with zero runtime env lookup.
+// Release tag baked into the bundle at build time. An explicit
+// VITE_APP_RELEASE (e.g. a git SHA from CI) wins; otherwise it derives from this
+// package's version. Injected via `define` as a global constant so it is a
+// compile-time literal with zero runtime env lookup.
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
   version: string;
 };
-const release = process.env.VITE_SENTRY_RELEASE ?? `bettertrack-web@${pkg.version}`;
+const release = process.env.VITE_APP_RELEASE ?? `bettertrack-web@${pkg.version}`;
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -33,5 +32,12 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
+    // The paranoid vault suites run the production Argon2id profile (64 MiB,
+    // t=3) plus real AES-GCM/zip work, and a shared CI runner needs seconds per
+    // derivation — one crypto vector test already spends >7s there. The 5s
+    // default would fail those on runner load rather than on a defect, so this
+    // matches apps/api's budget.
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
   },
 });

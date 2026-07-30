@@ -28,6 +28,8 @@ import type { RegistrationTokenRepository } from '../../data/repositories/regist
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { InviteRow, RegistrationTokenRow, UserRow } from '../../data/schema';
 import { badRequest, conflict, notFound } from '../../errors';
+import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
+import type { Logger } from '../../logger';
 import { applyAccountDefaultsAtRegistration } from '../account/accountDefaults';
 import type {
   AdminSessionPolicy,
@@ -63,6 +65,9 @@ export interface AdminServiceDeps {
   /** Suspension cleanup for delegated OAuth credentials. */
   oauth: Pick<OAuthService, 'revokeAllForUser'>;
   sessions: SessionService;
+  /** Best-effort lifecycle fan-out to terminate any connected principal. */
+  events?: Pick<EventBus, 'publish'>;
+  logger?: Pick<Logger, 'warn'>;
   audit: AuditService;
   passwordHasher: PasswordHasher;
   email: EmailService;
@@ -99,6 +104,8 @@ export function createAdminService(deps: AdminServiceDeps) {
     apiKeys,
     oauth,
     sessions,
+    events,
+    logger,
     audit,
     passwordHasher,
     email,
@@ -114,6 +121,33 @@ export function createAdminService(deps: AdminServiceDeps) {
     return user;
   }
 
+  async function destroySessionsBestEffort(userId: string): Promise<void> {
+    try {
+      await sessions.destroyAllForUser(userId);
+    } catch {
+      // Role/password commits already advanced the durable generation. Cleanup
+      // must not be promoted back into the authorization boundary.
+    }
+  }
+
+  async function invalidateAllRealtimePrincipals(userId: string): Promise<void> {
+    if (!events) return;
+    try {
+      await events.publish({
+        type: 'realtime.principal.invalidated',
+        userId,
+        kind: 'all',
+        credentialId: null,
+        exceptCredentialId: null,
+        occurredAt: new Date().toISOString(),
+      } satisfies RealtimePrincipalInvalidatedEvent);
+    } catch (err) {
+      // The status/credential mutation has completed; gateway revalidation is
+      // deliberately the fail-closed fallback when pub/sub delivery is down.
+      logger?.warn({ err, userId }, 'admin realtime invalidation publish failed');
+    }
+  }
+
   // V5-P0 kill-switch (§13.5): the account-defaults response advertises which
   // additive channels this deployment offers at all so the admin editor hides
   // their matrix columns when the flag is off.
@@ -121,9 +155,13 @@ export function createAdminService(deps: AdminServiceDeps) {
     return { telegram: config.telegram.enabled, discord: config.discord.enabled };
   }
 
-  async function ensureNotLastActiveAdmin(target: UserRow): Promise<void> {
-    if (target.role === 'admin' && target.status === 'active') {
-      const activeAdmins = await userRepo.countActiveAdmins();
+  async function ensureActiveAdminRemains(
+    repo: Pick<UserRepository, 'countActiveAdmins'>,
+    target: UserRow,
+    targetRemainsActiveAdmin: boolean,
+  ): Promise<void> {
+    if (target.role === 'admin' && target.status === 'active' && !targetRemainsActiveAdmin) {
+      const activeAdmins = await repo.countActiveAdmins();
       if (activeAdmins <= 1) {
         throw badRequest('Cannot remove the last active administrator.', 'LAST_ADMIN');
       }
@@ -141,18 +179,18 @@ export function createAdminService(deps: AdminServiceDeps) {
   }
 
   /**
-   * Status is the immediate kill switch; physical revocation follows it. If a
-   * revocation/session write throws, this operation throws too while preserving
-   * `disabled`. Re-enabling repeats revocation before restoring `active`, so a
-   * partial failure can never revive an old bearer credential.
+   * Finish a committed disable. Status is already the durable kill switch, so a
+   * cleanup failure remains fail-closed while a retry can repair it.
    */
-  async function disableUser(target: UserRow, actor: AdminActor, via?: 'bulk'): Promise<void> {
-    const changedStatus = target.status !== 'disabled';
-    if (changedStatus) {
-      await userRepo.setStatus(target.id, 'disabled');
-    }
+  async function finishDisableUser(
+    target: UserRow,
+    actor: AdminActor,
+    changedStatus: boolean,
+    via?: 'bulk',
+  ): Promise<void> {
     await revokeBearerCredentials(target.id);
     await sessions.destroyAllForUser(target.id);
+    await invalidateAllRealtimePrincipals(target.id);
     if (changedStatus) {
       await audit.record({
         actorId: actor.id,
@@ -165,12 +203,23 @@ export function createAdminService(deps: AdminServiceDeps) {
     }
   }
 
-  async function enableUser(target: UserRow, actor: AdminActor): Promise<void> {
+  /**
+   * Re-enabling must revoke stale credentials before the transaction can make
+   * the account active. A later transaction failure (including another field's
+   * uniqueness check) leaves it disabled with those bearer credentials revoked.
+   */
+  async function prepareEnableUser(target: UserRow): Promise<void> {
     // A failed disable can leave rows physically present but unreachable under
     // the status gate. Finish the same invalidation before making them reachable
     // again; revocation is idempotent for already-revoked rows.
     await revokeBearerCredentials(target.id);
-    await userRepo.setStatus(target.id, 'active');
+    // A prior disable can have failed after setting status but before session
+    // cleanup. Never restore `active` while that old cookie could reconnect.
+    await sessions.destroyAllForUser(target.id);
+    await invalidateAllRealtimePrincipals(target.id);
+  }
+
+  async function finishEnableUser(target: UserRow, actor: AdminActor): Promise<void> {
     // Re-enabling must let the user back in immediately — drop any failed-login
     // / lockout state accrued before they were disabled.
     await clearLoginThrottle(redis, target.id);
@@ -193,27 +242,34 @@ export function createAdminService(deps: AdminServiceDeps) {
     userIds: string[],
     actor: AdminActor,
   ): Promise<{ disabled: number; skipped: number }> {
-    const unique = [...new Set(userIds)];
-    let activeAdmins = await userRepo.countActiveAdmins();
-    const toDisable: UserRow[] = [];
-    let skipped = 0;
+    // Stable target order prevents two overlapping bulk requests from taking
+    // ordinary user-row locks in opposite order.
+    const unique = [...new Set(userIds)].sort();
+    const { toDisable, skipped } = await userRepo.withSerializedAdminMutation(async (repo) => {
+      const selected: UserRow[] = [];
+      let skippedCount = 0;
 
-    for (const id of unique) {
-      const target = await userRepo.findById(id);
-      if (!target || target.id === actor.id || target.status !== 'active') {
-        skipped += 1;
-        continue;
+      for (const id of unique) {
+        const target = await repo.findByIdForUpdate(id);
+        if (!target || target.id === actor.id || target.status !== 'active') {
+          skippedCount += 1;
+          continue;
+        }
+        if (target.role === 'admin' && (await repo.countActiveAdmins()) <= 1) {
+          skippedCount += 1;
+          continue;
+        }
+        await repo.setStatus(target.id, 'disabled');
+        selected.push(target);
       }
-      if (target.role === 'admin' && activeAdmins <= 1) {
-        skipped += 1;
-        continue;
-      }
-      toDisable.push(target);
-      if (target.role === 'admin') activeAdmins -= 1;
-    }
 
+      return { toDisable: selected, skipped: skippedCount };
+    });
+
+    // The transaction committed every status first. Cleanup cannot reopen an
+    // account if one target's credential/session revocation fails.
     for (const target of toDisable) {
-      await disableUser(target, actor, 'bulk');
+      await finishDisableUser(target, actor, true, 'bulk');
     }
 
     return { disabled: toDisable.length, skipped };
@@ -272,93 +328,157 @@ export function createAdminService(deps: AdminServiceDeps) {
     },
 
     async updateUser(id: string, input: UpdateUserRequest, actor: AdminActor): Promise<UserRow> {
-      const target = await loadUser(id);
+      let enablePrepared = false;
+      const runMutation = () =>
+        userRepo.withSerializedAdminMutation(async (repo) => {
+          const target = await repo.findByIdForUpdate(id);
+          if (!target) throw notFound('User not found.', 'USER_NOT_FOUND');
 
-      if (input.status === 'disabled') {
-        if (target.status !== 'disabled') {
-          if (target.id === actor.id) {
+          const statusChanged = input.status !== undefined && input.status !== target.status;
+          const roleChanged = input.role !== undefined && input.role !== target.role;
+
+          if (input.status === 'disabled' && statusChanged && target.id === actor.id) {
             throw badRequest('You cannot disable your own account.', 'SELF_ACTION');
           }
-          await ensureNotLastActiveAdmin(target);
-        }
-        // An explicit repeat disable repairs a previous fail-closed cleanup
-        // failure without ever making the account active again.
-        await disableUser(target, actor);
-      } else if (input.status === 'active' && target.status !== 'active') {
-        await enableUser(target, actor);
-      }
-
-      if (input.role && input.role !== target.role) {
-        if (input.role === 'user') {
-          if (target.id === actor.id) {
+          if (input.role === 'user' && roleChanged && target.id === actor.id) {
             throw badRequest('You cannot remove your own administrator role.', 'SELF_ACTION');
           }
-          await ensureNotLastActiveAdmin(target);
-        }
-        await userRepo.setRole(target.id, input.role);
+
+          const finalStatus = input.status ?? target.status;
+          const finalRole = input.role ?? target.role;
+          await ensureActiveAdminRemains(
+            repo,
+            target,
+            finalStatus === 'active' && finalRole === 'admin',
+          );
+
+          if (statusChanged && input.status === 'active' && !enablePrepared) {
+            return { kind: 'prepare-enable' as const, target };
+          }
+
+          if (statusChanged) {
+            await repo.setStatus(target.id, input.status!);
+          }
+
+          if (roleChanged) {
+            const securityGeneration = await repo.setRole(target.id, input.role!);
+            if (securityGeneration === null) throw notFound('User not found.', 'USER_NOT_FOUND');
+          }
+
+          let changedEmail: string | undefined;
+          if (input.email !== undefined) {
+            const normalized = input.email.trim().toLowerCase();
+            if (normalized !== target.email) {
+              const existing = await repo.findByEmail(normalized);
+              if (existing && existing.id !== target.id) {
+                throw conflict('An account already exists for this email.', 'EMAIL_TAKEN');
+              }
+              await repo.updateEmail(target.id, normalized);
+              changedEmail = normalized;
+            }
+          }
+
+          let changedUsername: string | undefined;
+          if (input.username !== undefined) {
+            const trimmed = input.username.trim();
+            if (trimmed.toLowerCase() !== target.username.toLowerCase()) {
+              const existing = await repo.findByUsername(trimmed);
+              if (existing && existing.id !== target.id) {
+                throw conflict('That username is already taken.', 'USERNAME_TAKEN');
+              }
+              await repo.updateUsername(target.id, trimmed);
+              changedUsername = trimmed;
+            }
+          }
+
+          // Chat ban toggle (§13.4 V4-P0d): server-enforced in the send path.
+          const changedChatBan =
+            input.chatBanned !== undefined && input.chatBanned !== target.chatBanned
+              ? input.chatBanned
+              : undefined;
+          if (changedChatBan !== undefined) {
+            await repo.setChatBanned(target.id, changedChatBan);
+          }
+
+          const user = await repo.findById(target.id);
+          if (!user) throw notFound('User not found.', 'USER_NOT_FOUND');
+          return {
+            kind: 'mutated' as const,
+            target,
+            user,
+            statusChanged,
+            roleChanged,
+            changedEmail,
+            changedUsername,
+            changedChatBan,
+          };
+        });
+      let outcome = await runMutation();
+      while (outcome.kind === 'prepare-enable') {
+        // `enablePrepared` bounds this to two passes. Cleanup stays between the
+        // no-op validation pass and the retry that can restore `active`, so no
+        // external repository is awaited while holding the transaction.
+        await prepareEnableUser(outcome.target);
+        enablePrepared = true;
+        outcome = await runMutation();
+      }
+      const mutation = outcome;
+
+      if (input.status === 'disabled') {
+        // An explicit repeat disable repairs a previous fail-closed cleanup
+        // failure without ever making the account active again.
+        await finishDisableUser(mutation.target, actor, mutation.statusChanged);
+      } else if (input.status === 'active' && mutation.statusChanged) {
+        await finishEnableUser(mutation.target, actor);
+      }
+
+      if (mutation.roleChanged) {
+        await destroySessionsBestEffort(mutation.target.id);
         await audit.record({
           actorId: actor.id,
           action: AuditAction.UserRoleChanged,
           targetType: 'user',
-          targetId: target.id,
+          targetId: mutation.target.id,
           ip: actor.ip,
           meta: { role: input.role },
         });
       }
 
-      if (input.email !== undefined) {
-        const normalized = input.email.trim().toLowerCase();
-        if (normalized !== target.email) {
-          const existing = await userRepo.findByEmail(normalized);
-          if (existing && existing.id !== target.id) {
-            throw conflict('An account already exists for this email.', 'EMAIL_TAKEN');
-          }
-          await userRepo.updateEmail(target.id, normalized);
-          await audit.record({
-            actorId: actor.id,
-            action: AuditAction.UserEmailChanged,
-            targetType: 'user',
-            targetId: target.id,
-            ip: actor.ip,
-            meta: { email: normalized },
-          });
-        }
-      }
-
-      if (input.username !== undefined) {
-        const trimmed = input.username.trim();
-        if (trimmed.toLowerCase() !== target.username.toLowerCase()) {
-          const existing = await userRepo.findByUsername(trimmed);
-          if (existing && existing.id !== target.id) {
-            throw conflict('That username is already taken.', 'USERNAME_TAKEN');
-          }
-          await userRepo.updateUsername(target.id, trimmed);
-          await audit.record({
-            actorId: actor.id,
-            action: AuditAction.UserUsernameChanged,
-            targetType: 'user',
-            targetId: target.id,
-            ip: actor.ip,
-            meta: { username: trimmed },
-          });
-        }
-      }
-
-      // Chat ban toggle (§13.4 V4-P0d): server-enforced in the send path. Banning
-      // never touches the user's sessions or threads — reading stays allowed — and
-      // unban restores sending on the next send with no cache flush.
-      if (input.chatBanned !== undefined && input.chatBanned !== target.chatBanned) {
-        await userRepo.setChatBanned(target.id, input.chatBanned);
+      if (mutation.changedEmail !== undefined) {
         await audit.record({
           actorId: actor.id,
-          action: input.chatBanned ? AuditAction.UserChatBanned : AuditAction.UserChatUnbanned,
+          action: AuditAction.UserEmailChanged,
           targetType: 'user',
-          targetId: target.id,
+          targetId: mutation.target.id,
+          ip: actor.ip,
+          meta: { email: mutation.changedEmail },
+        });
+      }
+
+      if (mutation.changedUsername !== undefined) {
+        await audit.record({
+          actorId: actor.id,
+          action: AuditAction.UserUsernameChanged,
+          targetType: 'user',
+          targetId: mutation.target.id,
+          ip: actor.ip,
+          meta: { username: mutation.changedUsername },
+        });
+      }
+
+      if (mutation.changedChatBan !== undefined) {
+        await audit.record({
+          actorId: actor.id,
+          action: mutation.changedChatBan
+            ? AuditAction.UserChatBanned
+            : AuditAction.UserChatUnbanned,
+          targetType: 'user',
+          targetId: mutation.target.id,
           ip: actor.ip,
         });
       }
 
-      return loadUser(id);
+      return mutation.user;
     },
 
     /** Bulk action from the admin user list (§6.12, §13.2). V1: bulk-disable. */
@@ -389,8 +509,10 @@ export function createAdminService(deps: AdminServiceDeps) {
       const target = await loadUser(id);
       const tempPassword = generateTempPassword();
       const passwordHash = await passwordHasher.hash(tempPassword);
-      await userRepo.updatePassword(target.id, passwordHash, true);
-      await sessions.destroyAllForUser(target.id);
+      const securityGeneration = await userRepo.updatePassword(target.id, passwordHash, true);
+      if (securityGeneration === null) throw notFound('User not found.', 'USER_NOT_FOUND');
+      await destroySessionsBestEffort(target.id);
+      await invalidateAllRealtimePrincipals(target.id);
       // Clear lockout so the user can sign in with the new temp password now.
       await clearLoginThrottle(redis, target.id);
       await audit.record({
@@ -423,19 +545,41 @@ export function createAdminService(deps: AdminServiceDeps) {
     },
 
     async deleteUser(id: string, confirmUsername: string, actor: AdminActor): Promise<void> {
-      const target = await loadUser(id);
-      if (target.username.toLowerCase() !== confirmUsername.trim().toLowerCase()) {
-        throw badRequest('Username confirmation does not match.', 'CONFIRMATION_MISMATCH');
-      }
-      if (target.id === actor.id) {
-        throw badRequest('You cannot delete your own account.', 'SELF_ACTION');
-      }
-      await ensureNotLastActiveAdmin(target);
+      // Reserve the removal by disabling the row under the serialized invariant
+      // lock. This status transition is the only part of a delete that changes
+      // the active-admin count; the later physical delete removes an already
+      // inactive row and therefore cannot take the count from one to zero. If
+      // later session or MIRRORCHAIN cleanup fails, any target (including an
+      // ordinary user) deliberately remains disabled and fail-closed for retry.
+      const target = await userRepo.withSerializedAdminMutation(async (repo) => {
+        const lockedTarget = await repo.findByIdForUpdate(id);
+        if (!lockedTarget) throw notFound('User not found.', 'USER_NOT_FOUND');
+        if (lockedTarget.username.toLowerCase() !== confirmUsername.trim().toLowerCase()) {
+          throw badRequest('Username confirmation does not match.', 'CONFIRMATION_MISMATCH');
+        }
+        if (lockedTarget.id === actor.id) {
+          throw badRequest('You cannot delete your own account.', 'SELF_ACTION');
+        }
+        await ensureActiveAdminRemains(repo, lockedTarget, false);
+        if (lockedTarget.status !== 'disabled') {
+          await repo.setStatus(lockedTarget.id, 'disabled');
+        }
+        return lockedTarget;
+      });
       await sessions.destroyAllForUser(target.id);
-      // MIRRORCHAIN §7: hand off any group portfolios the target owns BEFORE the
-      // row delete cascades their copy away (V5-P7 M4), so the chain survives.
+      await invalidateAllRealtimePrincipals(target.id);
+      // MIRRORCHAIN §7: hand off any group portfolios the target owns BEFORE
+      // the row delete cascades their copy away (V5-P7 M4), so the chain
+      // survives.
       await mirror.handleAccountDeletion(target.id);
-      await userRepo.remove(target.id);
+      await userRepo.withSerializedAdminMutation(async (repo) => {
+        const reserved = await repo.findByIdForUpdate(target.id);
+        if (!reserved) throw notFound('User not found.', 'USER_NOT_FOUND');
+        // A concurrent enable between reservation and cascade must re-pass the
+        // same invariant before this transaction removes the row.
+        await ensureActiveAdminRemains(repo, reserved, false);
+        await repo.remove(reserved.id);
+      });
       await audit.record({
         actorId: actor.id,
         action: AuditAction.UserDeleted,

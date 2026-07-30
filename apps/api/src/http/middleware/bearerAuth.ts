@@ -46,6 +46,7 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
           id: keyPrincipal.keyId,
           scopes: keyPrincipal.scopes,
           kind: 'personal',
+          securityGeneration: keyPrincipal.user.securityGeneration,
           // Carry the resolved per-key tier onto the request so the rate-limit
           // middleware can read (limit, windowSec) from it — without this the
           // limiter falls back to the config default and tier assignment has no
@@ -58,7 +59,12 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
       const oauthPrincipal = await ctx.oauth.authenticateToken(token);
       if (oauthPrincipal?.user.status === 'active') {
         req.authUser = toAuthUser(oauthPrincipal.user);
-        req.apiKey = { id: oauthPrincipal.grantId, scopes: oauthPrincipal.scopes, kind: 'oauth' };
+        req.apiKey = {
+          id: oauthPrincipal.grantId,
+          scopes: oauthPrincipal.scopes,
+          kind: 'oauth',
+          securityGeneration: oauthPrincipal.user.securityGeneration,
+        };
         next();
         return;
       }
@@ -202,6 +208,10 @@ function resolvePolicy(path: string): PathPolicy {
   if (path === '/settings/webhooks' || path.startsWith('/settings/webhooks/')) {
     return { kind: 'session-only' };
   }
+  // Client-encrypted vault media is strictly browser-cookie-session only. A
+  // personal API key or delegated OAuth bearer never gets to stage, retire,
+  // recover, or purge opaque vault bytes — even with account:security.
+  if (path === '/vault' || path.startsWith('/vault/')) return { kind: 'session-only' };
   // Notification preferences live under /settings but belong to the notifications
   // scope (#361), checked before the coarse `/settings` → social catch-all.
   if (path === '/settings/notifications' || path.startsWith('/settings/notifications/')) {

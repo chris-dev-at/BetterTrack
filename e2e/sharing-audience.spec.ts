@@ -27,7 +27,7 @@ test('sharing audience: portfolio shared to one specific friend, hidden from ano
   await befriend(owner, excluded);
 
   // Owner shares the default "Main" portfolio with the chosen friend only.
-  await owner.page.goto('/social/my-shared');
+  await owner.page.goto('/people/shared');
   const portfolioRow = owner.page.getByRole('listitem').filter({ hasText: 'Main' });
   await portfolioRow.getByRole('button', { name: 'Share' }).click();
 
@@ -41,7 +41,7 @@ test('sharing audience: portfolio shared to one specific friend, hidden from ano
   await expect(picker).toBeHidden();
 
   // The chosen friend sees the shared portfolio in the owner's friend overview.
-  await chosen.page.goto('/social/friends');
+  await chosen.page.goto('/people');
   await chosen.page.getByRole('button', { name: owner.username }).click();
   const sharedLink = chosen.page.getByRole('link', { name: /Main/ });
   await expect(sharedLink).toBeVisible({ timeout: 15_000 });
@@ -51,7 +51,7 @@ test('sharing audience: portfolio shared to one specific friend, hidden from ano
   });
 
   // The excluded friend — also a friend, but not in the audience — sees nothing.
-  await excluded.page.goto('/social/friends');
+  await excluded.page.goto('/people');
   await excluded.page.getByRole('button', { name: owner.username }).click();
   await expect(
     excluded.page.getByText(new RegExp(`${owner.username} isn't sharing anything`, 'i')),

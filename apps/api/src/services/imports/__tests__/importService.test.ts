@@ -4,14 +4,18 @@ import { fileURLToPath } from 'node:url';
 
 import request from 'supertest';
 import type { Application } from 'express';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   applyImportResponseSchema,
+  IMPORT_MAX_DISTINCT_INSTRUMENTS,
+  IMPORT_MAX_FILE_BYTES,
   importBrokerListResponseSchema,
   importPreviewResponseSchema,
+  type AssetSearchResult,
   type ApplyImportResponse,
   type ImportPreviewResponse,
+  type SearchResultItem,
 } from '@bettertrack/contracts';
 
 import * as schema from '../../../data/schema';
@@ -21,7 +25,12 @@ import { createPortfolioRepository } from '../../../data/repositories/portfolioR
 import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
-import { createImportService } from '../importService';
+import {
+  createImportService,
+  IMPORT_ENRICHMENT_QUERY_BUDGET,
+  IMPORT_ENRICHMENT_WAIT_BUDGET_MS,
+} from '../importService';
+import type { SearchService } from '../../search/searchService';
 import type { BrokerMapper } from '../types';
 
 /**
@@ -46,13 +55,53 @@ const IBKR_FIXTURE = readFixture('ibkr.csv');
 
 const HEADER = 'Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung';
 
+/**
+ * A multipart body built by hand so a test can control the exact framing —
+ * `boundary` may be a form Busboy accepts but supertest cannot express, and
+ * `field.extraHeaders` lets a part carry an oversized MIME header block.
+ */
+function rawMultipartUpload(
+  boundary: string,
+  field: { name: string; value: string; extraHeaders?: string[] },
+  csv: string,
+): Buffer {
+  return Buffer.from(
+    [
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="${field.name}"`,
+      ...(field.extraHeaders ?? []),
+      '',
+      field.value,
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="file"; filename="export.csv"',
+      'Content-Type: text/csv',
+      '',
+      csv,
+      `--${boundary}--`,
+      '',
+    ].join('\r\n'),
+  );
+}
+
 let harness: TestHarness;
 
 beforeEach(async () => {
   harness = await createTestApp({ marketData: createStubMarketData() });
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 type Agent = ReturnType<typeof request.agent>;
+
+function deferred<T>() {
+  let resolvePromise!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
+}
 
 async function loginAgent(app: Application, identifier: string, password: string): Promise<Agent> {
   const agent = request.agent(app);
@@ -220,6 +269,363 @@ describe('POST /imports — staged preview', () => {
       .field('portfolioId', pid);
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('IMPORT_FILE_REQUIRED');
+  });
+
+  it('maps an over-limit multipart field count to the import contract error', async () => {
+    const { agent, pid } = await setup();
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .field('portfolioId', pid)
+      .field('brokerId', 'trade_republic')
+      .field('unexpected', 'amplification')
+      .attach('file', Buffer.from(FIXTURE, 'utf8'), 'export.csv');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
+  it("rejects a part header block past Busboy's 16 KiB cap with the contract error", async () => {
+    const { agent, pid } = await setup();
+    const boundary = 'bettertrack-import-header-block';
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .set('Content-Type', `multipart/form-data; boundary=${boundary}`)
+      .send(
+        rawMultipartUpload(
+          boundary,
+          {
+            name: 'portfolioId',
+            value: pid,
+            // Busboy hard-fails a part whose header block passes MAX_HEADER_SIZE
+            // (16 KiB) with a plain `Malformed part header` Error. Not being a
+            // MulterError, it reached the terminal handler as an opaque 500
+            // before `uploadFile` grew its catch-all mapping.
+            extraHeaders: [`X-BetterTrack-Pad: ${'a'.repeat(17 * 1024)}`],
+          },
+          FIXTURE,
+        ),
+      );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
+  it('answers a pathological unterminated boundary promptly, never a 500', async () => {
+    const { agent } = await setup();
+    // The retired guard parsed this header itself, with a regex whose quoted-value
+    // alternation backtracked exponentially over a run of unterminated
+    // backslashes — one such request pinned the event loop. No hand-rolled parser
+    // sees the header now: Multer's `type-is` declines to classify it, so the
+    // request is simply an upload with no parts and fails contract validation.
+    // The property under test is the security one — a prompt 4xx, not a 500.
+    const startedAt = performance.now();
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .set('Content-Type', `multipart/form-data; boundary="${'\\'.repeat(64)}`)
+      .send(Buffer.from('--pathological\r\n', 'utf8'));
+
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts a quoted boundary containing a backslash, exactly as Busboy does', async () => {
+    const { agent, pid } = await setup();
+    // Busboy preserves the backslash before an ordinary quoted character, so
+    // this parses normally. The retired raw-stream guard 400ed it purely to stay
+    // byte-compatible with Busboy — a compatibility regression for non-browser
+    // clients that nothing may reintroduce.
+    const boundary = 'bettertrack-import\\q';
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .set('Content-Type', `multipart/form-data; boundary="${boundary}"`)
+      .send(rawMultipartUpload(boundary, { name: 'portfolioId', value: pid }, FIXTURE));
+
+    expect(res.status).toBe(201);
+    expect(() => importPreviewResponseSchema.parse(res.body)).not.toThrow();
+  });
+
+  it('keeps the specific file-size guidance on an oversized upload', async () => {
+    const { agent, pid } = await setup();
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .field('portfolioId', pid)
+      .attach('file', Buffer.alloc(IMPORT_MAX_FILE_BYTES + 1, 0x78), 'export.csv');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'IMPORT_FILE_INVALID',
+      message: 'The file exceeds the 5 MB upload limit.',
+    });
+  });
+
+  it('accepts the distinct-instrument cap and rejects cap+1 before queued resolution', async () => {
+    const { user, pid } = await setup();
+    const mapper: BrokerMapper = {
+      id: 'instrument_cap',
+      label: 'Instrument cap',
+      detect: () => 1,
+      map: (csv) =>
+        csv.records.map((record, index) => ({
+          line: record.line,
+          raw: record.raw,
+          ok: true,
+          row: {
+            kind: 'buy',
+            executedAt: new Date('2024-01-02T12:00:00.000Z'),
+            isin: null,
+            symbol: `ASSET-${index}`,
+            name: null,
+            quantity: 1,
+            price: 10,
+            fee: 0,
+            amountEur: null,
+            currency: 'EUR',
+            note: null,
+          },
+        })),
+    };
+    const searchCatalog = vi.fn(
+      async (_userId: string, _query: string, _options?: { allowEnrichment?: boolean }) => ({
+        results: [],
+        enriching: false,
+      }),
+    );
+    const search: SearchService = {
+      search: searchCatalog,
+      searchWithFreshness: async (userId, query) => ({
+        ...(await searchCatalog(userId, query)),
+        freshness: null,
+      }),
+      catalogFreshness: async () => null,
+      enrichmentSettled: async () => {},
+    };
+    let queuedResolutions = 0;
+    const imports = createImportService({
+      importRepo: createImportRepository(harness.db),
+      portfolioRepo: createPortfolioRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      search,
+      portfolio: harness.ctx.portfolio,
+      tax: harness.ctx.tax,
+      mappers: [mapper],
+      resolutionQueue: {
+        async run<T>(fn: () => Promise<T>): Promise<T> {
+          queuedResolutions += 1;
+          return fn();
+        },
+      },
+    });
+    const content = (count: number) =>
+      ['instrument', ...Array.from({ length: count }, (_, index) => `row-${index}`)].join('\n');
+
+    const atCap = await imports.createBatch(user.id, {
+      portfolioId: pid,
+      filename: 'at-cap.csv',
+      content: content(IMPORT_MAX_DISTINCT_INSTRUMENTS),
+      brokerId: mapper.id,
+    });
+    expect(atCap.batch.counts).toEqual({
+      total: IMPORT_MAX_DISTINCT_INSTRUMENTS,
+      mapped: 0,
+      unmapped: IMPORT_MAX_DISTINCT_INSTRUMENTS,
+      duplicate: 0,
+      error: 0,
+    });
+    // The bound that matters is provider-facing: enrichment-capable queries are
+    // capped exactly. Catalog-only reads never touch a provider, and the phases
+    // that produce them (local pass + pre-admission re-check + post-enrichment
+    // sweep) are each bounded by the distinct-instrument cap.
+    expect(
+      searchCatalog.mock.calls.filter(([, , options]) => options?.allowEnrichment !== false),
+    ).toHaveLength(IMPORT_ENRICHMENT_QUERY_BUDGET);
+    expect(
+      searchCatalog.mock.calls.filter(([, , options]) => options?.allowEnrichment === false).length,
+    ).toBeLessThanOrEqual(IMPORT_MAX_DISTINCT_INSTRUMENTS * 2 + IMPORT_ENRICHMENT_QUERY_BUDGET);
+    // Every resolution chain — local or enrichment — is admitted through the queue.
+    expect(queuedResolutions).toBe(searchCatalog.mock.calls.length);
+    const admittedAtCap = queuedResolutions;
+
+    await expect(
+      imports.createBatch(user.id, {
+        portfolioId: pid,
+        filename: 'over-cap.csv',
+        content: content(IMPORT_MAX_DISTINCT_INSTRUMENTS + 1),
+        brokerId: mapper.id,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      code: 'IMPORT_TOO_MANY_INSTRUMENTS',
+      message: expect.stringContaining(`at most ${IMPORT_MAX_DISTINCT_INSTRUMENTS} instruments`),
+    });
+    // The over-cap file is rejected before any catalog or provider work.
+    expect(searchCatalog).toHaveBeenCalledTimes(admittedAtCap);
+    expect(queuedResolutions).toBe(admittedAtCap);
+  });
+
+  /**
+   * The two constraints that must hold in ONE run: enrichment admissions stay
+   * capped, AND an identity the budget never admits still maps when a sibling
+   * query put its asset in the catalog mid-batch. `CatalogEnrichment.run()`
+   * upserts EVERY hit of a query, so the phase-1 catalog read is stale for the
+   * un-admitted tail — the stub below reproduces exactly that side effect.
+   */
+  it('maps an identity a sibling enrichment catalogued beyond the query budget', async () => {
+    const { user, pid } = await setup();
+    const identities = Array.from(
+      { length: IMPORT_ENRICHMENT_QUERY_BUDGET + 1 },
+      (_, index) => `TAIL${index}.DE`,
+    );
+    const firstSymbol = identities[0]!;
+    const lastSymbol = identities.at(-1)!;
+    const firstAsset = await seedAsset(firstSymbol, 'Tail First AG');
+    const lastAsset = await seedAsset(lastSymbol, 'Tail Last AG');
+
+    const mapper: BrokerMapper = {
+      id: 'tail_upsert',
+      label: 'Tail upsert',
+      detect: () => 1,
+      map: (csv) =>
+        csv.records.map((record, index) => ({
+          line: record.line,
+          raw: record.raw,
+          ok: true,
+          row: {
+            kind: 'buy',
+            executedAt: new Date('2024-01-02T12:00:00.000Z'),
+            isin: null,
+            symbol: identities[index] ?? `MISS-${index}`,
+            name: null,
+            quantity: 1,
+            price: 10,
+            fee: 0,
+            amountEur: null,
+            currency: 'EUR',
+            note: null,
+          },
+        })),
+    };
+
+    // The visible catalog, empty until the first admitted provider query — which
+    // then reveals its own asset AND the last identity's, mirroring the
+    // upsert-every-hit behavior of the real enrichment.
+    const catalog = new Map<string, SearchResultItem>();
+    const item = (asset: { id: string; symbol: string; name: string }): SearchResultItem => ({
+      id: asset.id,
+      symbol: asset.symbol,
+      name: asset.name,
+      type: 'stock',
+      exchange: 'XETRA',
+      currency: 'EUR',
+      providerId: 'yahoo',
+      providerRef: asset.symbol,
+      isCustom: false,
+    });
+    const searchCatalog = vi.fn(
+      async (_userId: string, query: string, options?: { allowEnrichment?: boolean }) => {
+        const enrichmentCapable = options?.allowEnrichment !== false;
+        const known = catalog.get(query.toUpperCase());
+        if (known) return { results: [known], enriching: false };
+        if (!enrichmentCapable) return { results: [], enriching: false };
+        // The first enrichment-capable miss "runs" a provider search.
+        catalog.set(firstSymbol.toUpperCase(), item(firstAsset));
+        catalog.set(lastSymbol.toUpperCase(), item(lastAsset));
+        return { results: [], enriching: true };
+      },
+    );
+    const search: SearchService = {
+      search: searchCatalog,
+      searchWithFreshness: async (userId, query) => ({
+        ...(await searchCatalog(userId, query)),
+        freshness: null,
+      }),
+      catalogFreshness: async () => null,
+      enrichmentSettled: async () => {},
+    };
+    const imports = createImportService({
+      importRepo: createImportRepository(harness.db),
+      portfolioRepo: createPortfolioRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      search,
+      portfolio: harness.ctx.portfolio,
+      tax: harness.ctx.tax,
+      mappers: [mapper],
+    });
+
+    const preview = await imports.createBatch(user.id, {
+      portfolioId: pid,
+      filename: 'tail-upsert.csv',
+      content: ['instrument', ...identities.map((_, index) => `row-${index}`)].join('\n'),
+      brokerId: mapper.id,
+    });
+
+    // The triggering identity resolves through its own settled enrichment…
+    expect(preview.rows[0]?.flag).toBe('mapped');
+    expect(preview.rows[0]?.asset?.id).toBe(firstAsset.id);
+    // …and the LAST identity — never admitted, because the budget ran out before
+    // its turn — still maps from the catalog row that query created.
+    expect(preview.rows.at(-1)?.flag).toBe('mapped');
+    expect(preview.rows.at(-1)?.asset?.id).toBe(lastAsset.id);
+    // Without the provider bound this would be one query per remaining identity.
+    expect(
+      searchCatalog.mock.calls.filter(([, , options]) => options?.allowEnrichment !== false).length,
+    ).toBeLessThanOrEqual(IMPORT_ENRICHMENT_QUERY_BUDGET);
+  });
+
+  it('bounds the whole batch enrichment wait while resolving later local identities', async () => {
+    const providerStarted = deferred<void>();
+    const providerResult = deferred<AssetSearchResult[]>();
+    const marketData = createStubMarketData({
+      search: () => {
+        providerStarted.resolve();
+        return providerResult.promise;
+      },
+    });
+    harness = await createTestApp({ marketData });
+    const { user, pid } = await setup();
+    const localAsset = await seedAsset('SLOW2.DE', 'Slow Two AG');
+    const csv = [
+      HEADER,
+      '2024-01-15;Kauf;Slow One AG;ZZ0000000001;1;10,00;0;-10,00;EUR',
+      '2024-01-16;Kauf;Slow Two AG;ZZ0000000002;1;10,00;0;-10,00;EUR',
+    ].join('\n');
+
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      const pending = harness.ctx.imports.createBatch(user.id, {
+        portfolioId: pid,
+        filename: 'slow-provider.csv',
+        content: csv,
+        brokerId: 'trade_republic',
+      });
+      await providerStarted.promise;
+      // `providerStarted` resolves just before the enrichment waiter registers
+      // its timeout. Flush that continuation before advancing fake time so this
+      // regression fails on its assertions instead of hanging nondeterministically.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(IMPORT_ENRICHMENT_WAIT_BUDGET_MS);
+
+      const preview = await pending;
+      expect(Date.now() - startedAt).toBeLessThanOrEqual(IMPORT_ENRICHMENT_WAIT_BUDGET_MS);
+      expect(preview.rows.map((row) => row.flag)).toEqual(['unmapped', 'mapped']);
+      expect(preview.rows[1]?.asset?.id).toBe(localAsset.id);
+      expect(marketData.calls.search).toBe(1);
+    } finally {
+      providerResult.resolve([]);
+      await harness.ctx.search.enrichmentSettled();
+    }
   });
 
   it('flags unresolvable instruments unmapped — never a silent match', async () => {

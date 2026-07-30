@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 
 import type { PortfolioSummary, StandingOrder } from '@bettertrack/contracts';
 
@@ -46,13 +46,10 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
     <section aria-labelledby="forecast-standing-orders-heading" className="flex flex-col gap-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2
-            id="forecast-standing-orders-heading"
-            className="text-sm font-semibold text-neutral-200"
-          >
+          <h2 id="forecast-standing-orders-heading" className="text-sm font-semibold bt-soft">
             {t('forecast.standingOrders.title')}
           </h2>
-          <p className="text-xs text-neutral-500">{t('forecast.standingOrders.subtitle')}</p>
+          <p className="text-xs bt-muted">{t('forecast.standingOrders.subtitle')}</p>
         </div>
         <Button onClick={() => setCreating(true)} disabled={disableCreate}>
           {t('forecast.standingOrders.newOrder')}
@@ -76,7 +73,7 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
               <button
                 type="button"
                 onClick={() => setCreating(true)}
-                className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                className="rounded text-sm bt-link"
               >
                 {t('forecast.standingOrders.emptyCta')}
               </button>
@@ -117,6 +114,13 @@ function StandingOrderRow({
   const t = useT();
   const queryClient = useQueryClient();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const rowId = useId();
+  const titleId = `${rowId}-title`;
+  const pauseResumeActionId = `${rowId}-pause-resume-action`;
+  const editActionId = `${rowId}-edit-action`;
+  const deleteActionId = `${rowId}-delete-action`;
+  const deleteConfirmYesActionId = `${rowId}-delete-confirm-yes-action`;
+  const deleteConfirmNoActionId = `${rowId}-delete-confirm-no-action`;
 
   const pauseMutation = useMutation({
     mutationFn: () => pauseStandingOrder(order.id),
@@ -135,14 +139,16 @@ function StandingOrderRow({
   const paused = order.status === 'paused';
 
   return (
-    <li className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 p-3">
+    <li className="flex flex-col gap-2 bt-panel p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex flex-col gap-0.5">
           <span className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-semibold text-neutral-100">{orderTitle(t, order)}</span>
+            <span id={titleId} className="text-sm font-semibold">
+              {orderTitle(t, order)}
+            </span>
             <StatusBadge paused={paused} />
           </span>
-          <span className="text-xs text-neutral-400">
+          <span className="text-xs bt-muted">
             {describeAmount(t, order)} · {describeCadence(t, order)}
             {order.endDate ? (
               <>
@@ -151,7 +157,7 @@ function StandingOrderRow({
               </>
             ) : null}
           </span>
-          <span className="text-xs text-neutral-500">
+          <span className="text-xs bt-muted">
             {order.nextRunDate
               ? t('forecast.standingOrders.list.nextRun', {
                   date: formatDate(order.nextRunDate),
@@ -164,10 +170,12 @@ function StandingOrderRow({
       <div className="flex flex-wrap items-center gap-3 pt-1 text-sm">
         {paused ? (
           <button
+            id={pauseResumeActionId}
             type="button"
             onClick={() => resumeMutation.mutate()}
             disabled={busy}
-            className="font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+            aria-labelledby={`${titleId} ${pauseResumeActionId}`}
+            className="font-medium bt-link disabled:cursor-not-allowed disabled:bt-muted"
           >
             {resumeMutation.isPending
               ? t('forecast.standingOrders.list.resuming')
@@ -175,10 +183,12 @@ function StandingOrderRow({
           </button>
         ) : (
           <button
+            id={pauseResumeActionId}
             type="button"
             onClick={() => pauseMutation.mutate()}
             disabled={busy}
-            className="font-medium text-amber-400 hover:text-amber-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+            aria-labelledby={`${titleId} ${pauseResumeActionId}`}
+            className="font-medium bt-gold hover:bt-gold disabled:cursor-not-allowed disabled:bt-muted"
           >
             {pauseMutation.isPending
               ? t('forecast.standingOrders.list.pausing')
@@ -186,41 +196,47 @@ function StandingOrderRow({
           </button>
         )}
         <button
+          id={editActionId}
           type="button"
           onClick={() => onEdit(order)}
           disabled={busy}
-          className="font-medium text-neutral-300 hover:text-neutral-100 disabled:cursor-not-allowed disabled:text-neutral-600"
+          aria-labelledby={`${titleId} ${editActionId}`}
+          className="font-medium bt-soft hover: disabled:cursor-not-allowed disabled:bt-muted"
         >
           {t('common.edit')}
         </button>
         {confirmingDelete ? (
           <span className="inline-flex items-center gap-2 text-xs">
-            <span className="text-neutral-400">
-              {t('forecast.standingOrders.list.deleteConfirm')}
-            </span>
+            <span className="bt-muted">{t('forecast.standingOrders.list.deleteConfirm')}</span>
             <button
+              id={deleteConfirmYesActionId}
               type="button"
               onClick={() => deleteMutation.mutate()}
               disabled={busy}
-              className="font-medium text-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+              aria-labelledby={`${titleId} ${deleteConfirmYesActionId}`}
+              className="font-medium bt-neg hover:bt-neg disabled:cursor-not-allowed disabled:bt-muted"
             >
               {deleteMutation.isPending ? t('common.saving') : t('common.yes')}
             </button>
             <button
+              id={deleteConfirmNoActionId}
               type="button"
               onClick={() => setConfirmingDelete(false)}
               disabled={busy}
-              className="font-medium text-neutral-400 hover:text-neutral-200 disabled:cursor-not-allowed disabled:text-neutral-600"
+              aria-labelledby={`${titleId} ${deleteConfirmNoActionId}`}
+              className="font-medium bt-muted hover:bt-soft disabled:cursor-not-allowed disabled:bt-muted"
             >
               {t('common.no')}
             </button>
           </span>
         ) : (
           <button
+            id={deleteActionId}
             type="button"
             onClick={() => setConfirmingDelete(true)}
             disabled={busy}
-            className="font-medium text-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+            aria-labelledby={`${titleId} ${deleteActionId}`}
+            className="font-medium bt-neg hover:bt-neg disabled:cursor-not-allowed disabled:bt-muted"
           >
             {t('common.delete')}
           </button>
@@ -240,9 +256,7 @@ function StatusBadge({ paused }: { paused: boolean }) {
     <span
       className={cx(
         'inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset',
-        paused
-          ? 'bg-neutral-800/60 text-neutral-400 ring-neutral-700'
-          : 'bg-emerald-900/40 text-emerald-300 ring-emerald-800/60',
+        paused ? 'bt-badge' : 'bt-badge bt-badge--pos',
       )}
     >
       {paused

@@ -94,22 +94,22 @@ export function createDiscordChannel(deps: CreateDiscordChannelDeps): DiscordCha
     // The URL is the secret — never log it, or `err` values that carry it.
     return paced(async () => {
       try {
-        let res = await fetchFn(url, {
+        const request: RequestInit = {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ content: text }),
-        });
+          body: JSON.stringify({
+            content: text,
+            allowed_mentions: { parse: [] },
+          }),
+        };
+        let res = await fetchFn(url, request);
         if (res.status === 429) {
           // Bucket-tripped — Discord tells us how long to wait. Bounded so we
           // never idle past a reasonable window (§13.4 V4-P10 "rate limits
           // respected", not "unbounded retry").
           const retryMs = parseRetryAfter(res.headers.get('retry-after'), maxRetryAfterMs);
           if (retryMs > 0) await sleep(retryMs);
-          res = await fetchFn(url, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ content: text }),
-          });
+          res = await fetchFn(url, request);
         }
         if (res.ok) return 'ok';
         if (res.status === 404 || res.status === 401) return 'gone';
@@ -163,8 +163,8 @@ export function createDiscordChannel(deps: CreateDiscordChannelDeps): DiscordCha
 
 /**
  * The rendered Discord message. Discord's `content` accepts up to 2000 chars
- * and Markdown formatting; we bold the title to make it scannable. No mention
- * roles / user references so a mischievous body can't ping @everyone.
+ * and Markdown formatting; we bold the title to make it scannable. The webhook
+ * payload disables all mention parsing so notification text cannot ping anyone.
  */
 function renderMessage(message: PushMessage): string {
   const title = message.title.slice(0, 200);

@@ -52,7 +52,7 @@ beforeEach(() => {
 });
 
 describe('ConglomeratesListPage', () => {
-  test('renders a card per Conglomerate with name, position count and status', async () => {
+  test('renders a card per Blueprint with name, position count and status', async () => {
     vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: CONGLOMERATES });
     renderPage();
 
@@ -80,13 +80,13 @@ describe('ConglomeratesListPage', () => {
     );
   });
 
-  test('renders a "New Conglomerate" card linking to /workboard/conglomerates/new', async () => {
+  test('renders a "New Blueprint" card linking to /workbench/blueprints/new', async () => {
     vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: CONGLOMERATES });
     renderPage();
 
     await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
-    const newCard = screen.getByText('New Conglomerate').closest('a');
-    expect(newCard).toHaveAttribute('href', '/workboard/conglomerates/new');
+    const newCard = screen.getByText('New Blueprint').closest('a');
+    expect(newCard).toHaveAttribute('href', '/workbench/blueprints/new');
   });
 
   test('links each card to its detail page', async () => {
@@ -95,15 +95,15 @@ describe('ConglomeratesListPage', () => {
 
     await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
     const card = screen.getByText('Core Growth').closest('a');
-    expect(card).toHaveAttribute('href', '/workboard/conglomerates/c1');
+    expect(card).toHaveAttribute('href', '/workbench/blueprints/c1');
   });
 
   test('shows a designed empty state when the user has none', async () => {
     vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: [] });
     renderPage();
 
-    await waitFor(() => expect(screen.getByText('No Conglomerates yet')).toBeInTheDocument());
-    expect(screen.getByText('New Conglomerate →')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('No Blueprints yet')).toBeInTheDocument());
+    expect(screen.getByText('New Blueprint →')).toBeInTheDocument();
   });
 
   test('shows an error message when the list fails to load', async () => {
@@ -111,7 +111,7 @@ describe('ConglomeratesListPage', () => {
     renderPage();
 
     await waitFor(() =>
-      expect(screen.getByText(/Could not load your Conglomerates/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Could not load your Blueprints/i)).toBeInTheDocument(),
     );
   });
 });

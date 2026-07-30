@@ -206,22 +206,21 @@ export function formatDerivedQuantity(quantity: number): string {
 }
 
 /**
- * Outlined field (#378 brand tokens): #171717 fill, #262626 border, tabular
- * figures, and the one accent — a gold ring on focus. Paired with a `group`
- * wrapper the label turns gold too (`group-focus-within`). Number spinners are
- * suppressed so the €-suffix / link adornment sits flush.
+ * Outlined field (Origin design system, styles/origin.css `bt-input`): raised
+ * fill, quiet border, tabular figures, and the one accent — a gold ring on
+ * focus. Paired with a `group` wrapper the label turns gold too
+ * (`group-focus-within`). Number spinners are suppressed so the €-suffix /
+ * link adornment sits flush.
  */
 const inputClass = cx(
-  'w-full rounded-lg bg-neutral-900 px-3 py-2.5 text-sm tabular-nums text-neutral-100',
-  'ring-1 ring-inset ring-neutral-800 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-[#F6B82E]',
+  'bt-input',
   '[&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&]:[-moz-appearance:textfield]',
 );
 
 /** Grey uppercase field label that turns gold while its field is focused. */
 function FieldLabel({ children }: { children: ReactNode }) {
   return (
-    <span className="text-[0.7rem] font-medium uppercase tracking-wide text-neutral-500 transition-colors group-focus-within:text-[#F6B82E]">
+    <span className="text-[0.7rem] font-medium uppercase tracking-wide text-[var(--bt-muted)] transition-colors group-focus-within:text-[var(--bt-gold)]">
       {children}
     </span>
   );
@@ -990,8 +989,8 @@ export function TransactionDialog(props: TransactionDialogProps) {
     <div className="flex flex-col gap-3">
       {error ? <Alert tone="error">{error}</Alert> : null}
       <div className="flex items-baseline justify-between">
-        <span className="text-sm text-neutral-400">{t('portfolio.transaction.total')}</span>
-        <span className="text-2xl font-bold tabular-nums text-[#F6B82E]">
+        <span className="text-sm bt-muted">{t('portfolio.transaction.total')}</span>
+        <span className="text-2xl font-bold tabular-nums bt-gold">
           {total == null ? '—' : <MoneyText amount={total} currency={totalCurrency} />}
         </span>
       </div>
@@ -999,11 +998,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
         type="submit"
         form={headingId}
         disabled={submitting || cashBlocksRecord || uncoveredBlocksRecord}
-        className={cx(
-          'w-full rounded-lg px-4 py-3 text-sm font-semibold text-black transition',
-          'bg-[#F6B82E] hover:bg-[#ffca4d] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F6B82E] focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-900',
-          'disabled:cursor-not-allowed disabled:opacity-50',
-        )}
+        className="bt-btn bt-btn--primary w-full"
       >
         {submitting ? t('portfolio.transaction.saving') : ctaLabel}
       </button>
@@ -1020,7 +1015,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
     >
       {picking ? (
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-neutral-400">{t('portfolio.transaction.searchPrompt')}</p>
+          <p className="text-sm bt-muted">{t('portfolio.transaction.searchPrompt')}</p>
           <AssetSearchBox
             onSelect={pickAsset}
             autoFocus
@@ -1036,7 +1031,10 @@ export function TransactionDialog(props: TransactionDialogProps) {
             // Editing an imported/synced row (V5-P0c): surface where it came from
             // so a hand edit is a deliberate choice, never a silent overwrite of
             // synced data. The badge stays quiet for `manual` (the common case).
-            <div className="flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs text-neutral-400">
+            <div
+              className="flex items-center gap-2 rounded-md border px-3 py-2 text-xs bt-muted"
+              style={{ borderColor: 'var(--bt-border)', background: 'var(--bt-surface-soft)' }}
+            >
               <span>{t('portfolio.sourceTag.filterLabel')}:</span>
               <SourceBadge source={transaction.source} />
             </div>
@@ -1200,7 +1198,7 @@ export interface RowUncovered {
 function AutoHint() {
   const t = useT();
   return (
-    <span className="ml-1 text-[0.65rem] font-normal uppercase tracking-wide text-[#F6B82E]">
+    <span className="ml-1 text-[0.65rem] font-normal uppercase tracking-wide bt-gold">
       {t('portfolio.transaction.autoHint')}
     </span>
   );
@@ -1268,26 +1266,20 @@ function SideToggle({
   t: TranslateFn;
   onChange: (side: TransactionSide) => void;
 }) {
-  const seg = (value: TransactionSide, selectedCls: string) =>
-    cx(
-      'flex-1 rounded-md px-3 py-2 text-sm font-semibold transition',
-      'focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500',
-      side === value ? selectedCls : 'text-neutral-400 hover:text-neutral-200',
-    );
   return (
     <div
       role="group"
       aria-label={t('portfolio.transaction.sideAria', { symbol })}
-      className="flex gap-2 rounded-lg bg-neutral-900 p-1 ring-1 ring-inset ring-neutral-800"
+      className="bt-seg w-full"
     >
       <button
         type="button"
         aria-pressed={side === 'buy'}
         onClick={() => onChange('buy')}
-        className={seg(
-          'buy',
-          'bg-emerald-500/10 text-emerald-400 ring-1 ring-inset ring-emerald-500/40',
-        )}
+        className={cx('flex-1', side === 'buy' && 'is-active')}
+        style={
+          side === 'buy' ? { background: 'var(--bt-pos-soft)', color: 'var(--bt-pos)' } : undefined
+        }
       >
         {t('portfolio.transaction.buy')}
       </button>
@@ -1295,7 +1287,10 @@ function SideToggle({
         type="button"
         aria-pressed={side === 'sell'}
         onClick={() => onChange('sell')}
-        className={seg('sell', 'bg-red-500/10 text-red-400 ring-1 ring-inset ring-red-500/40')}
+        className={cx('flex-1', side === 'sell' && 'is-active')}
+        style={
+          side === 'sell' ? { background: 'var(--bt-neg-soft)', color: 'var(--bt-neg)' } : undefined
+        }
       >
         {t('portfolio.transaction.sell')}
       </button>
@@ -1316,14 +1311,14 @@ function AssetCard({
   const body = (
     <>
       <span className="flex flex-col text-left">
-        <span className="text-[0.7rem] font-medium uppercase tracking-wide text-neutral-500">
+        <span className="text-[0.7rem] font-medium uppercase tracking-wide bt-muted">
           {t('portfolio.transaction.assetLabel')}
         </span>
-        <span className="font-mono text-base font-semibold text-neutral-100">{asset.symbol}</span>
-        <span className="truncate text-xs text-neutral-500">{asset.name}</span>
+        <span className="font-mono text-base font-semibold">{asset.symbol}</span>
+        <span className="truncate text-xs bt-muted">{asset.name}</span>
       </span>
       {onChangeAsset ? (
-        <span className="shrink-0 text-[#F6B82E]">
+        <span className="shrink-0 bt-gold">
           <Chevron />
         </span>
       ) : null}
@@ -1331,7 +1326,7 @@ function AssetCard({
   );
   if (!onChangeAsset) {
     return (
-      <div className="flex items-center justify-between gap-3 rounded-lg bg-neutral-900 px-4 py-3 ring-1 ring-inset ring-neutral-800">
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--bt-border-strong)] bg-[var(--bt-surface-strong)] px-4 py-3">
         {body}
       </div>
     );
@@ -1341,7 +1336,7 @@ function AssetCard({
       type="button"
       onClick={onChangeAsset}
       aria-label={t('portfolio.transaction.changeAssetAria')}
-      className="flex items-center justify-between gap-3 rounded-lg bg-neutral-900 px-4 py-3 text-left ring-1 ring-inset ring-neutral-800 transition hover:ring-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F6B82E]"
+      className="flex items-center justify-between gap-3 rounded-lg border border-[var(--bt-border-strong)] bg-[var(--bt-surface-strong)] px-4 py-3 text-left transition hover:bg-[var(--bt-surface-hover)]"
     >
       {body}
     </button>
@@ -1355,7 +1350,7 @@ function MaxChip({ symbol, t, onClick }: { symbol: string; t: TranslateFn; onCli
       type="button"
       onClick={onClick}
       aria-label={t('portfolio.transaction.maxAria', { symbol })}
-      className="rounded-md bg-[#F6B82E]/10 px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-[#F6B82E] ring-1 ring-inset ring-[#F6B82E]/30 transition hover:bg-[#F6B82E]/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F6B82E]"
+      className="rounded-md bg-[var(--bt-gold-soft)] px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--bt-gold)] ring-1 ring-inset ring-[var(--bt-border-accent)] transition hover:bg-[color-mix(in_srgb,var(--bt-gold)_20%,transparent)]"
     >
       {t('portfolio.transaction.max')}
     </button>
@@ -1383,11 +1378,11 @@ function ToggleSwitch({
       />
       <span
         aria-hidden="true"
-        className="h-5 w-9 rounded-full bg-neutral-700 transition-colors peer-checked:bg-[#F6B82E] peer-focus-visible:ring-2 peer-focus-visible:ring-[#F6B82E] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-neutral-900"
+        className="h-5 w-9 rounded-full border border-[var(--bt-border-strong)] bg-[var(--bt-surface-soft)] transition-colors peer-checked:border-[var(--bt-gold)] peer-checked:bg-[var(--bt-gold)]"
       />
       <span
         aria-hidden="true"
-        className="absolute left-0.5 h-4 w-4 rounded-full bg-white transition-transform peer-checked:translate-x-4"
+        className="absolute left-0.5 h-4 w-4 rounded-full bg-[var(--bt-muted)] transition-transform peer-checked:translate-x-4 peer-checked:bg-[var(--bt-gold-ink)]"
       />
     </span>
   );
@@ -1401,9 +1396,12 @@ function CashCard({ row, cash, t }: { row: Row; cash: RowCash; t: TranslateFn })
     : t('portfolio.transaction.payFromCash');
   const after = cash.preview?.afterEur ?? null;
   return (
-    <div className="flex flex-col gap-3 rounded-lg bg-neutral-900 p-4 ring-1 ring-inset ring-neutral-800">
+    <div
+      className="flex flex-col gap-3 rounded-lg border p-4"
+      style={{ background: 'var(--bt-surface-strong)', borderColor: 'var(--bt-border-strong)' }}
+    >
       <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-medium text-neutral-200">{toggleLabel}</span>
+        <span className="text-sm font-medium bt-soft">{toggleLabel}</span>
         <ToggleSwitch checked={cash.checked} onChange={cash.onToggle} ariaLabel={toggleLabel} />
       </div>
 
@@ -1414,16 +1412,16 @@ function CashCard({ row, cash, t }: { row: Row; cash: RowCash; t: TranslateFn })
           aria-label={t('portfolio.transaction.cashPreviewAria')}
         >
           {cash.loading || !cash.preview ? (
-            <span className="text-neutral-500">{t('portfolio.transaction.cashCalculating')}</span>
+            <span className="bt-muted">{t('portfolio.transaction.cashCalculating')}</span>
           ) : (
             <>
-              <span className="text-neutral-400">{t('portfolio.transaction.cashAfter')}</span>
+              <span className="bt-muted">{t('portfolio.transaction.cashAfter')}</span>
               <span className="flex items-center gap-2 tabular-nums">
-                <span className={cash.afterNegative ? 'text-red-400' : 'text-emerald-400'}>
+                <span className={cash.afterNegative ? 'bt-neg' : 'bt-pos'}>
                   <MoneyText amount={after} currency="EUR" />
                 </span>
                 {cash.afterNegative ? (
-                  <span className="text-xs text-red-400">
+                  <span className="text-xs bt-neg">
                     {t('portfolio.transaction.cashShort')}{' '}
                     <MoneyText amount={cash.preview.shortfallEur} currency="EUR" />
                   </span>
@@ -1435,17 +1433,21 @@ function CashCard({ row, cash, t }: { row: Row; cash: RowCash; t: TranslateFn })
       ) : null}
 
       {cash.checked && cash.backdatedShort ? (
-        <div className="flex flex-col gap-2 rounded-md border border-[#F6B82E]/40 bg-[#F6B82E]/10 p-3">
-          <p className="text-xs leading-relaxed text-[#F6B82E]">
+        <div
+          className="flex flex-col gap-2 rounded-md border p-3"
+          style={{ borderColor: 'var(--bt-border-accent)', background: 'var(--bt-gold-soft)' }}
+        >
+          <p className="text-xs leading-relaxed bt-gold">
             {t('portfolio.transaction.backdatedWarning', { date: cash.buyDate })}
           </p>
-          <label className="flex items-center gap-2 text-xs font-medium text-neutral-200">
+          <label className="flex items-center gap-2 text-xs font-medium bt-soft">
             <input
               type="checkbox"
               checked={cash.settleToday}
               onChange={cash.onToggleSettleToday}
               aria-label={t('portfolio.transaction.deductToday')}
-              className="h-4 w-4 rounded border-neutral-600 bg-neutral-900 text-[#F6B82E] focus:ring-[#F6B82E]"
+              className="h-4 w-4"
+              style={{ accentColor: 'var(--bt-gold)' }}
             />
             {t('portfolio.transaction.deductToday')}
           </label>
@@ -1476,17 +1478,15 @@ function UncoveredCard({
   const held = formatQuantity(uncovered.info.held);
   const sellQty = formatQuantity(uncovered.info.sellQty);
   const uncoveredQty = formatQuantity(uncovered.info.uncoveredQty);
-  const modeBtn = (mode: 'zero' | 'entry') =>
-    cx(
-      'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
-      'focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500',
-      uncovered.mode === mode
-        ? 'bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-700'
-        : 'text-neutral-400 hover:text-neutral-200',
-    );
   return (
-    <div className="flex flex-col gap-3 rounded-lg border border-red-500/40 bg-red-500/10 p-4">
-      <p className="text-sm font-medium text-red-300" role="alert">
+    <div
+      className="flex flex-col gap-3 rounded-lg border p-4"
+      style={{
+        borderColor: 'color-mix(in srgb, var(--bt-neg) 26%, transparent)',
+        background: 'var(--bt-neg-soft)',
+      }}
+    >
+      <p className="text-sm font-medium bt-neg" role="alert">
         {t('portfolio.transaction.uncoveredWarning', {
           symbol,
           held,
@@ -1494,28 +1494,29 @@ function UncoveredCard({
           uncovered: uncoveredQty,
         })}
       </p>
-      <p className="text-xs leading-relaxed text-neutral-300">
+      <p className="text-xs leading-relaxed bt-soft">
         {t('portfolio.transaction.uncoveredNoShorts')}
       </p>
 
-      <label className="flex items-center gap-2 text-sm font-medium text-neutral-100">
+      <label className="flex items-center gap-2 text-sm font-medium">
         <input
           type="checkbox"
           checked={uncovered.acknowledged}
           onChange={uncovered.onToggleAck}
           aria-label={t('portfolio.transaction.uncoveredAck')}
-          className="h-4 w-4 rounded border-neutral-600 bg-neutral-900 text-red-500 focus:ring-red-500"
+          className="h-4 w-4"
+          style={{ accentColor: 'var(--bt-neg)' }}
         />
         {t('portfolio.transaction.uncoveredAck')}
       </label>
 
       {uncovered.acknowledged ? (
         <div className="flex flex-col gap-2">
-          <span className="text-[0.7rem] font-medium uppercase tracking-wide text-neutral-500">
+          <span className="text-[0.7rem] font-medium uppercase tracking-wide bt-muted">
             {t('portfolio.transaction.uncoveredBasisLabel')}
           </span>
           <div
-            className="flex gap-1 rounded-lg bg-neutral-900 p-1 ring-1 ring-inset ring-neutral-800"
+            className="bt-seg w-full"
             role="group"
             aria-label={t('portfolio.transaction.uncoveredBasisLabel')}
           >
@@ -1523,7 +1524,7 @@ function UncoveredCard({
               type="button"
               onClick={() => uncovered.onSetMode('zero')}
               aria-pressed={uncovered.mode === 'zero'}
-              className={modeBtn('zero')}
+              className={cx('flex-1', uncovered.mode === 'zero' && 'is-active')}
             >
               {t('portfolio.transaction.uncoveredBasisZero')}
             </button>
@@ -1531,9 +1532,9 @@ function UncoveredCard({
               type="button"
               onClick={() => uncovered.onSetMode('entry')}
               aria-pressed={uncovered.mode === 'entry'}
-              className={modeBtn('entry')}
+              className={cx('flex-1', uncovered.mode === 'entry' && 'is-active')}
             >
-              {t('portfolio.transaction.uncoveredBasisEntry')}
+              {t('portfolio.transaction.uncoveredBasisInput')}
             </button>
           </div>
 
@@ -1551,14 +1552,14 @@ function UncoveredCard({
                   aria-label={t('portfolio.transaction.uncoveredEntryPriceAria', { symbol })}
                   className={cx(inputClass, 'pr-8')}
                 />
-                <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-sm text-neutral-500">
+                <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-sm bt-muted">
                   {currencySuffix(uncovered.currency)}
                 </span>
               </span>
             </label>
           ) : null}
 
-          <p className="text-xs leading-relaxed text-neutral-400">
+          <p className="text-xs leading-relaxed bt-muted">
             {t('portfolio.transaction.uncoveredNudge')}
           </p>
         </div>
@@ -1586,37 +1587,26 @@ function TaxCard({
   defaultActive?: boolean;
 }) {
   const isRate = row.taxUnit === 'rate';
-  const unitBtn = (unit: 'amount' | 'rate') =>
-    cx(
-      'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
-      'focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500',
-      row.taxUnit === unit
-        ? 'bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-700'
-        : 'text-neutral-400 hover:text-neutral-200',
-    );
   return (
-    <div className="flex flex-col gap-3 rounded-lg bg-neutral-900 p-4 ring-1 ring-inset ring-neutral-800">
+    <div
+      className="flex flex-col gap-3 rounded-lg border p-4"
+      style={{ background: 'var(--bt-surface-strong)', borderColor: 'var(--bt-border-strong)' }}
+    >
       <div className="flex flex-col gap-0.5">
-        <span className="text-sm font-medium text-neutral-200">
-          {t('portfolio.transaction.tax.title')}
-        </span>
-        <span className="text-xs text-neutral-500">
+        <span className="text-sm font-medium bt-soft">{t('portfolio.transaction.tax.title')}</span>
+        <span className="text-xs bt-muted">
           {defaultActive
             ? t('portfolio.transaction.tax.defaultHint')
             : t('portfolio.transaction.tax.description')}
         </span>
       </div>
       <div className="flex items-stretch gap-2">
-        <div
-          className="flex gap-1 rounded-lg bg-neutral-950 p-1 ring-1 ring-inset ring-neutral-800"
-          role="group"
-          aria-label={t('portfolio.transaction.tax.unitAria')}
-        >
+        <div className="bt-seg" role="group" aria-label={t('portfolio.transaction.tax.unitAria')}>
           <button
             type="button"
             onClick={() => onChange({ taxUnit: 'amount', taxTouched: true })}
             aria-pressed={!isRate}
-            className={unitBtn('amount')}
+            className={cx('flex-1', !isRate && 'is-active')}
           >
             {t('portfolio.transaction.tax.unitAmount')}
           </button>
@@ -1624,7 +1614,7 @@ function TaxCard({
             type="button"
             onClick={() => onChange({ taxUnit: 'rate', taxTouched: true })}
             aria-pressed={isRate}
-            className={unitBtn('rate')}
+            className={cx('flex-1', isRate && 'is-active')}
           >
             {t('portfolio.transaction.tax.unitRate')}
           </button>
@@ -1642,7 +1632,7 @@ function TaxCard({
             placeholder={t('portfolio.transaction.tax.placeholder')}
             className={cx(inputClass, 'pr-8')}
           />
-          <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-sm text-neutral-500">
+          <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-sm bt-muted">
             {isRate ? '%' : '€'}
           </span>
         </label>
@@ -1696,21 +1686,12 @@ function RowFields({
       ? t('portfolio.transaction.amountReceivedAria', { symbol })
       : t('portfolio.transaction.amountInvestedAria', { symbol });
 
-  const modeBtn = (mode: EntryMode) =>
-    cx(
-      'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
-      'focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500',
-      row.entryMode === mode
-        ? 'bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-700'
-        : 'text-neutral-400 hover:text-neutral-200',
-    );
-
   return (
-    <div className={cx('flex flex-col gap-5', showDivider && 'border-t border-neutral-800 pt-5')}>
+    <div className={cx('flex flex-col gap-5', showDivider && 'bt-t-rule pt-5')}>
       {showAssetHeader ? (
         <div className="flex items-baseline gap-2">
-          <span className="font-mono text-sm font-semibold text-neutral-100">{symbol}</span>
-          <span className="truncate text-xs text-neutral-500">{row.asset.name}</span>
+          <span className="font-mono text-sm font-semibold">{symbol}</span>
+          <span className="truncate text-xs bt-muted">{row.asset.name}</span>
         </div>
       ) : null}
 
@@ -1746,7 +1727,7 @@ function RowFields({
 
       {/* Quantity ⇄ Amount toggle. */}
       <div
-        className="flex gap-1 rounded-lg bg-neutral-900 p-1 ring-1 ring-inset ring-neutral-800"
+        className="bt-seg"
         role="group"
         aria-label={t('portfolio.transaction.entryModeAria', { symbol })}
       >
@@ -1754,7 +1735,7 @@ function RowFields({
           type="button"
           onClick={() => switchEntryMode(row, 'quantity', onChange)}
           aria-pressed={!isAmountMode}
-          className={modeBtn('quantity')}
+          className={cx('flex-1', !isAmountMode && 'is-active')}
         >
           {t('portfolio.transaction.byQuantity')}
         </button>
@@ -1762,7 +1743,7 @@ function RowFields({
           type="button"
           onClick={() => switchEntryMode(row, 'amount', onChange)}
           aria-pressed={isAmountMode}
-          className={modeBtn('amount')}
+          className={cx('flex-1', isAmountMode && 'is-active')}
         >
           {t('portfolio.transaction.byAmount')}
         </button>
@@ -1811,7 +1792,7 @@ function RowFields({
               className={cx(inputClass, link ? 'pr-14' : 'pr-8')}
             />
             <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center gap-1.5">
-              <span className="text-sm text-neutral-500">{currencySuffix(row.asset.currency)}</span>
+              <span className="text-sm bt-muted">{currencySuffix(row.asset.currency)}</span>
               {link ? (
                 <button
                   type="button"
@@ -1825,8 +1806,9 @@ function RowFields({
                   }
                   className={cx(
                     'pointer-events-auto rounded p-0.5 transition disabled:opacity-40',
-                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F6B82E]',
-                    link.linked ? 'text-[#F6B82E]' : 'text-neutral-500 hover:text-neutral-300',
+                    link.linked
+                      ? 'text-[var(--bt-gold)]'
+                      : 'bt-muted hover:text-[var(--bt-text-soft)]',
                   )}
                 >
                   <LinkGlyph linked={link.linked} />
@@ -1838,13 +1820,13 @@ function RowFields({
       </div>
 
       {link?.note ? (
-        <p className="-mt-2 text-xs text-amber-400" role="status">
+        <p className="-mt-2 text-xs bt-gold" role="status">
           {link.note}
         </p>
       ) : null}
 
       {link ? (
-        <p className="-mt-3 text-xs text-neutral-500" role="status">
+        <p className="-mt-3 text-xs bt-muted" role="status">
           {link.loading
             ? t('portfolio.transaction.priceHistoryLoading')
             : link.linked
@@ -1855,16 +1837,15 @@ function RowFields({
 
       {isAmountMode ? (
         <p
-          className="-mt-2 text-xs text-neutral-400"
+          className="-mt-2 text-xs bt-muted"
           role="status"
           aria-label={t('portfolio.transaction.derivedAria', { symbol })}
         >
           {derived ? (
             <>
-              ≈{' '}
-              <span className="font-mono text-neutral-200">{formatQuantity(derived.quantity)}</span>{' '}
+              ≈ <span className="font-mono bt-soft">{formatQuantity(derived.quantity)}</span>{' '}
               {symbol} {t('portfolio.transaction.derivedRecords')}{' '}
-              <span className="font-mono text-neutral-200">
+              <span className="font-mono bt-soft">
                 {formatMoney(derived.recordedAmount, row.asset.currency)}
               </span>
               {Math.abs(derived.residual) >= 0.005
@@ -1897,7 +1878,7 @@ function RowFields({
             placeholder="0"
             className={cx(inputClass, 'pr-8')}
           />
-          <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-sm text-neutral-500">
+          <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-sm bt-muted">
             {currencySuffix(row.asset.currency)}
           </span>
         </span>

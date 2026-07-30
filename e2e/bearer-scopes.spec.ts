@@ -35,7 +35,7 @@ test('bearer scopes: chat:write sends a DM; no notifications:read → 403; admin
 
     // Read the recipient's user id through the sender's session — `page.request`
     // shares cookies with the browser context, so this is a session-authed call
-    // (the bearer we mint below is deliberately blind to `/social/*`).
+    // (the bearer we mint below is deliberately blind to `/people/*`).
     const friendsRes = await sender.page.request.get(`${API_BASE_URL}/api/v1/social/friends`);
     expect(friendsRes.ok(), await friendsRes.text()).toBe(true);
     const friends = (await friendsRes.json()) as {
@@ -53,6 +53,9 @@ test('bearer scopes: chat:write sends a DM; no notifications:read → 403; admin
     // notifications nor social nor market is granted.
     await sender.page.goto('/settings/api');
     await sender.page.getByLabel('Name', { exact: true }).fill('bearer-scopes-e2e');
+    // The scope picker is a collapsed <details> (anti-bloat), so its checkboxes
+    // are display:none until the summary is opened.
+    await sender.page.getByText('Scopes', { exact: true }).click();
     await sender.page.getByRole('checkbox', { name: /Chat · write/i }).check();
     await sender.page.getByRole('button', { name: 'Create key' }).click();
 
@@ -104,7 +107,7 @@ test('bearer scopes: chat:write sends a DM; no notifications:read → 403; admin
 
     // The recipient sees the DM sent through the bearer — the message reached
     // the friend, not just the sender's own outbox.
-    await recipient.page.goto('/social/chat');
+    await recipient.page.goto('/people/chat');
     const conversation = recipient.page.getByRole('button').filter({ hasText: sender.username });
     await expect(conversation).toBeVisible({ timeout: 20_000 });
     await conversation.first().click();

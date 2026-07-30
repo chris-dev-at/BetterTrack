@@ -306,6 +306,8 @@ function strictCashMovementEntity(row: typeof portfolioCashMovements.$inferSelec
     createdAt: row.createdAt.toISOString(),
     note: row.note,
     source: row.source,
+    dedupHash: row.dedupHash,
+    originalCurrency: row.originalCurrency,
   });
 }
 
@@ -397,6 +399,105 @@ async function replaceNormalPortfolioGraphWithServerVault(
   });
 }
 
+async function storageRoundedQuantityFixture(
+  options: {
+    /** Raw vault decimals; every buy row shares the same raw quantity. */
+    rawQuantities?: { buy: string; sell: string };
+    buyCount?: number;
+    /** The numeric(20,8) rows the storage oracle must produce. */
+    storedQuantities?: { buy: string; sell: string };
+  } = {},
+) {
+  const rawQuantities = options.rawQuantities ?? { buy: '1.0000000046', sell: '1.0000000051' };
+  const buyCount = options.buyCount ?? 1;
+  const storedQuantities = options.storedQuantities ?? { buy: '1.00000000', sell: '1.00000001' };
+  const harness = await createTestApp();
+  const user = await harness.seedUser();
+  const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+  const [asset] = await harness.db
+    .insert(assets)
+    .values({
+      providerId: 'test',
+      providerRef: 'QUANTITY-ROUNDING.EUR',
+      ownerId: null,
+      type: 'stock',
+      symbol: 'QTY',
+      name: 'Quantity rounding boundary',
+      exchange: null,
+      currency: 'EUR',
+    })
+    .returning();
+  if (!asset) throw new Error('expected market asset');
+
+  await expect(
+    harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      ...Array.from({ length: buyCount }, (_, index) => ({
+        assetId: asset.id,
+        side: 'buy' as const,
+        quantity: Number(rawQuantities.buy),
+        price: 10,
+        fee: 0,
+        executedAt: `2026-07-23T10:${String(index).padStart(2, '0')}:00.000Z`,
+      })),
+      {
+        assetId: asset.id,
+        side: 'sell',
+        quantity: Number(rawQuantities.sell),
+        price: 11,
+        fee: 0,
+        executedAt: '2026-07-23T10:30:00.000Z',
+      },
+    ]),
+  ).resolves.toHaveLength(buyCount + 1);
+
+  const [sourcePortfolio] = await harness.db
+    .select()
+    .from(portfolios)
+    .where(eq(portfolios.id, portfolioId));
+  const sourceCashSources = await harness.db
+    .select()
+    .from(portfolioCashSources)
+    .where(eq(portfolioCashSources.portfolioId, portfolioId));
+  const sourceTransactions = await harness.db
+    .select()
+    .from(transactions)
+    .where(eq(transactions.portfolioId, portfolioId));
+  if (!sourcePortfolio) throw new Error('expected source portfolio');
+  expect(
+    sourceTransactions
+      .map((row) => ({ side: row.side, quantity: row.quantity }))
+      .sort((a, b) => a.side.localeCompare(b.side)),
+  ).toEqual([
+    ...Array.from({ length: buyCount }, () => ({ side: 'buy', quantity: storedQuantities.buy })),
+    { side: 'sell', quantity: storedQuantities.sell },
+  ]);
+
+  // Paranoid-mode input preserves the raw user decimals. The normal write
+  // above is the storage oracle: disable must validate these values as the same
+  // numeric(20,8) rows that the repository will restore.
+  const transactionEntities = sourceTransactions.map((row) => {
+    const transaction = strictTransactionEntity(row);
+    transaction.data.quantity = rawQuantities[row.side];
+    return transaction;
+  });
+
+  const input: ParanoidDisableRehydrationRequest = {
+    rehydrationId: REHYDRATION_ID,
+    document: {
+      schemaVersion: 1,
+      entities: [
+        strictPortfolioEntity(sourcePortfolio),
+        ...sourceCashSources.map(strictCashSourceEntity),
+        ...transactionEntities,
+      ],
+      mergeLog: [],
+    },
+  };
+
+  await replaceNormalPortfolioGraphWithServerVault(harness, user.id);
+  return { harness, user, portfolioId, rawQuantities, sourceTransactions, input };
+}
+
 function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequest {
   return {
     rehydrationId,
@@ -449,6 +550,8 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
           source: 'manual',
         }),
         entity(MOVEMENT_ID, 'cashMovement', {
+          dedupHash: null,
+          originalCurrency: null,
           portfolioId: PORTFOLIO_ID,
           sourceId: CASH_SOURCE_ID,
           kind: 'deposit',
@@ -509,6 +612,8 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
       source: 'manual',
     }),
     entity('018f0000-0000-7000-8000-000000000011', 'cashMovement', {
+      dedupHash: null,
+      originalCurrency: null,
       portfolioId: PORTFOLIO_ID,
       sourceId: CASH_SOURCE_ID,
       kind: 'dividend',
@@ -1130,82 +1235,9 @@ describe('paranoid rehydration service', () => {
     });
   });
 
-  it('round-trips an epsilon-valid transaction batch after scale-8 quantities round apart', async () => {
-    const harness = await createTestApp();
-    const user = await harness.seedUser();
-    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
-    const [asset] = await harness.db
-      .insert(assets)
-      .values({
-        providerId: 'test',
-        providerRef: 'QUANTITY-ROUNDING.EUR',
-        ownerId: null,
-        type: 'stock',
-        symbol: 'QTY',
-        name: 'Quantity rounding boundary',
-        exchange: null,
-        currency: 'EUR',
-      })
-      .returning();
-    if (!asset) throw new Error('expected market asset');
-
-    await expect(
-      harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
-        {
-          assetId: asset.id,
-          side: 'buy',
-          quantity: 1.0000000046,
-          price: 10,
-          fee: 0,
-          executedAt: '2026-07-23T10:00:00.000Z',
-        },
-        {
-          assetId: asset.id,
-          side: 'sell',
-          quantity: 1.0000000051,
-          price: 11,
-          fee: 0,
-          executedAt: '2026-07-23T10:01:00.000Z',
-        },
-      ]),
-    ).resolves.toHaveLength(2);
-
-    const [sourcePortfolio] = await harness.db
-      .select()
-      .from(portfolios)
-      .where(eq(portfolios.id, portfolioId));
-    const sourceCashSources = await harness.db
-      .select()
-      .from(portfolioCashSources)
-      .where(eq(portfolioCashSources.portfolioId, portfolioId));
-    const sourceTransactions = await harness.db
-      .select()
-      .from(transactions)
-      .where(eq(transactions.portfolioId, portfolioId));
-    if (!sourcePortfolio) throw new Error('expected source portfolio');
-    expect(
-      sourceTransactions
-        .map((row) => ({ side: row.side, quantity: row.quantity }))
-        .sort((a, b) => a.side.localeCompare(b.side)),
-    ).toEqual([
-      { side: 'buy', quantity: '1.00000000' },
-      { side: 'sell', quantity: '1.00000001' },
-    ]);
-
-    const input: ParanoidDisableRehydrationRequest = {
-      rehydrationId: REHYDRATION_ID,
-      document: {
-        schemaVersion: 1,
-        entities: [
-          strictPortfolioEntity(sourcePortfolio),
-          ...sourceCashSources.map(strictCashSourceEntity),
-          ...sourceTransactions.map(strictTransactionEntity),
-        ],
-        mergeLog: [],
-      },
-    };
-
-    await replaceNormalPortfolioGraphWithServerVault(harness, user.id);
+  it('rehydrates raw vault quantities to the same numeric(20,8) rows as normal writes', async () => {
+    const { harness, user, portfolioId, sourceTransactions, input } =
+      await storageRoundedQuantityFixture();
     await expect(
       createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
     ).resolves.toMatchObject({ idempotent: false });
@@ -1232,6 +1264,120 @@ describe('paranoid rehydration service', () => {
           allowUncovered: row.allowUncovered,
         }))
         .sort((a, b) => a.side.localeCompare(b.side)),
+    );
+  });
+
+  it('negative control: tightening the quantized quantity rule rejects the raw sell before restore', async () => {
+    const { harness, user, portfolioId, rawQuantities, input } =
+      await storageRoundedQuantityFixture();
+    const sell = input.document.entities.find(
+      (entry): entry is StrictTransactionEntity =>
+        entry.kind === 'transaction' && entry.data.side === 'sell',
+    );
+    if (!sell) throw new Error('expected raw sell transaction');
+    const stages: string[] = [];
+
+    await expect(
+      createParanoidRehydrationService({
+        db: harness.db,
+        testOnlyTransactionQuantityRoundingTolerance: 0n,
+        afterStage(stage) {
+          stages.push(stage);
+        },
+      }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({
+      code: 'INVALID_CASH_LEDGER',
+      message: `transaction[${sell.id}].quantity=${JSON.stringify(rawQuantities.sell)} would oversell its position`,
+    });
+    expect(stages).toEqual([]);
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
+    ).toEqual([]);
+  });
+
+  it('accepts a two-quantum shortfall at the per-row envelope boundary (#917)', async () => {
+    // One buy plus the sell itself are two stored rows: each may carry one
+    // scale-8 quantum of numeric(20,8) rounding, so a two-quantum shortfall is
+    // still explicable as storage drift — the real invariant is rows × quantum,
+    // not a fixed single quantum.
+    const { harness, user, portfolioId, input } = await storageRoundedQuantityFixture();
+    const sell = input.document.entities.find(
+      (entry): entry is StrictTransactionEntity =>
+        entry.kind === 'transaction' && entry.data.side === 'sell',
+    );
+    if (!sell) throw new Error('expected raw sell transaction');
+    sell.data.quantity = '1.00000002';
+
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+    expect(
+      await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
+    ).toHaveLength(2);
+  });
+
+  it('rejects a genuine oversell beyond the per-row rounding envelope before restore', async () => {
+    const { harness, user, portfolioId, input } = await storageRoundedQuantityFixture();
+    const sell = input.document.entities.find(
+      (entry): entry is StrictTransactionEntity =>
+        entry.kind === 'transaction' && entry.data.side === 'sell',
+    );
+    if (!sell) throw new Error('expected raw sell transaction');
+    // Two stored rows allow at most two quanta of rounding drift; three quanta
+    // cannot come from numeric(20,8) rounding and must fail closed.
+    sell.data.quantity = '1.00000003';
+    const stages: string[] = [];
+
+    await expect(
+      createParanoidRehydrationService({
+        db: harness.db,
+        afterStage(stage) {
+          stages.push(stage);
+        },
+      }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({
+      code: 'INVALID_CASH_LEDGER',
+      message: `transaction[${sell.id}].quantity="1.00000003" would oversell its position`,
+    });
+    expect(stages).toEqual([]);
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
+    ).toEqual([]);
+  });
+
+  it('accepts multi-row rounding drift: 4 × 0.1000000049 buys plus their exact-sum sell (#917 F1)', async () => {
+    // Four epsilon-valid buys each quantize half a quantum down while the
+    // exact-sum sell quantizes up — a two-quantum shortfall no fixed one-quantum
+    // tolerance covers. Paranoid disable must restore this account.
+    const { harness, user, portfolioId, sourceTransactions, input } =
+      await storageRoundedQuantityFixture({
+        rawQuantities: { buy: '0.1000000049', sell: '0.4000000196' },
+        buyCount: 4,
+        storedQuantities: { buy: '0.10000000', sell: '0.40000002' },
+      });
+
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    const restoredTransactions = await harness.db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.portfolioId, portfolioId));
+    expect(
+      restoredTransactions
+        .map((row) => ({ id: row.id, quantity: row.quantity, allowUncovered: row.allowUncovered }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    ).toEqual(
+      sourceTransactions
+        .map((row) => ({ id: row.id, quantity: row.quantity, allowUncovered: row.allowUncovered }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
     );
   });
 
@@ -1500,6 +1646,8 @@ describe('paranoid rehydration service', () => {
         source: 'import:flatex',
       }),
       entity(dividendMovementId, 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'dividend',
@@ -1942,6 +2090,8 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
       entity('018f0000-0000-7000-8000-00000000000e', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'dividend',
@@ -1957,6 +2107,8 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
       entity('018f0000-0000-7000-8000-00000000000f', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'tax_withholding',
@@ -2681,6 +2833,8 @@ describe('paranoid rehydration service', () => {
         }),
         ...captured.bookedRows.map((movement) =>
           entity(movement.id, 'cashMovement', {
+            dedupHash: null,
+            originalCurrency: null,
             portfolioId: movement.portfolioId,
             sourceId: movement.sourceId,
             kind: movement.kind,
@@ -2957,6 +3111,8 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
       entity(TRANSFER_OUT_ID, 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'sell_proceeds',
@@ -2995,6 +3151,8 @@ describe('paranoid rehydration service', () => {
     movement.data.createdAt = '2026-07-24T09:59:00.000Z';
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
@@ -3041,6 +3199,8 @@ describe('paranoid rehydration service', () => {
     gross.data.kind = 'sell_proceeds';
     gross.data.transactionId = TRANSACTION_ID;
     const settlement = entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+      dedupHash: null,
+      originalCurrency: null,
       portfolioId: PORTFOLIO_ID,
       sourceId: CASH_SOURCE_ID,
       kind: 'tax_withholding',
@@ -3087,6 +3247,8 @@ describe('paranoid rehydration service', () => {
       costBasis: 'moving-average' as const,
     };
     const settlement = entity('018f0000-0000-7000-8000-00000000000f', 'cashMovement', {
+      dedupHash: null,
+      originalCurrency: null,
       portfolioId: PORTFOLIO_ID,
       sourceId: CASH_SOURCE_ID,
       kind: 'tax_withholding',
@@ -3118,6 +3280,8 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
       entity('018f0000-0000-7000-8000-00000000000e', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'dividend',
@@ -3169,6 +3333,8 @@ describe('paranoid rehydration service', () => {
     movement.data.transactionId = TRANSACTION_ID;
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
@@ -3208,6 +3374,8 @@ describe('paranoid rehydration service', () => {
     movement.data.transactionId = TRANSACTION_ID;
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
@@ -3267,6 +3435,8 @@ describe('paranoid rehydration service', () => {
     );
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000f', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
@@ -3282,6 +3452,8 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
       entity('018f0000-0000-7000-8000-000000000000', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'withdrawal',
@@ -3428,6 +3600,8 @@ describe('paranoid rehydration service', () => {
         createdAt: editedAt,
       }),
       entity(TRANSFER_OUT_ID, 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: SECOND_PORTFOLIO_ID,
         sourceId: SECOND_CASH_SOURCE_ID,
         kind: 'buy',
@@ -3464,6 +3638,8 @@ describe('paranoid rehydration service', () => {
         createdAt: editedAt,
       }),
       entity(TRANSFER_OUT_ID, 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'transfer_out',

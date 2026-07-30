@@ -5,7 +5,7 @@ import helmet from 'helmet';
 import { createBullBoardRouter } from './http/bullBoard';
 import { createErrorHandler } from './http/errorHandler';
 import { createFeatureFlagsRouter } from './http/routes/featureFlagsRoutes';
-import { healthRouter } from './http/healthRouter';
+import { createHealthRouter } from './http/healthRouter';
 import { versionRouter } from './http/versionRouter';
 import { loadBearerAuth, enforceApiKeyScope } from './http/middleware/bearerAuth';
 import { createCorsMiddleware } from './http/middleware/cors';
@@ -91,6 +91,10 @@ export function createApp(ctx: AppContext) {
   // without spending the API rate limit. Only `/version` matches; every other
   // /api/v1 path falls through to the guarded chain.
   app.use('/api/v1', versionRouter);
+  // Public process probes (#939), mounted before every auth/session/rate-limit
+  // middleware. Liveness therefore has no dependency path; readiness performs
+  // only its explicit DB + Redis checks and remains usable while either is down.
+  app.use('/api/v1', createHealthRouter(ctx.readiness));
 
   const limiters = createRateLimiters(ctx);
 
@@ -141,7 +145,6 @@ export function createApp(ctx: AppContext) {
   // Mounted after the auth chain so `req.authUser` is resolved for the capture.
   app.use('/api/v1', createUsageCaptureMiddleware(ctx.usageAnalytics));
 
-  app.use('/api/v1', healthRouter);
   // SPA-bootstrap advertisement of the effective runtime feature flags (§13.5
   // V5-P2 arc (c)): the client reads this to hide any killed surface. Read-only
   // + non-sensitive (just the on/off map), so it needs no CSRF header and no
@@ -149,12 +152,17 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/feature-flags', createFeatureFlagsRouter(ctx));
   app.use('/api/v1/auth', createAuthRouter(ctx, limiters));
   app.use('/api/v1/account', createAccountRouter(ctx, limiters));
-  // bull-board queue inspector (§13.4 V4-P5a), mounted admin-only and BEFORE the
-  // admin router so `/api/v1/admin/queues` resolves here (a non-admin/anonymous
-  // request 404s at requireAdmin — §6.12 no-leak). Mounted at the app root rather
-  // than inside the admin router because it is itself a sub-router; the OpenAPI
-  // coverage gate's route walker only recurses one level of app-level mounts.
-  app.use('/api/v1/admin/queues', requireAdmin, createBullBoardRouter(ctx.queues));
+  // bull-board queue inspector (§13.4 V4-P5a), mounted BEFORE the admin router so
+  // `/api/v1/admin/queues` resolves here. Because it bypasses that parent router,
+  // repeat the COMPLETE boundary explicitly: admin limiter → no-leak role check
+  // → current-session MFA assurance. The adapter itself is read-only/redacted.
+  app.use(
+    '/api/v1/admin/queues',
+    limiters.admin,
+    requireAdmin,
+    requireAdminTwoFactor(ctx),
+    createBullBoardRouter(ctx.queues),
+  );
   app.use('/api/v1/admin', createAdminRouter(ctx, limiters));
   app.use('/api/v1/workboard', createWorkboardRouter(ctx));
   app.use('/api/v1/search', createSearchRouter(ctx, limiters));

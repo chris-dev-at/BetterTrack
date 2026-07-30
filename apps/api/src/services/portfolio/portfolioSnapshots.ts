@@ -385,6 +385,29 @@ export function createPortfolioSnapshotService(
   }
 
   /**
+   * The transactions whose money never crossed the portfolio boundary because
+   * they were settled against the cash ledger — a `buy` paid from cash or a
+   * `sell` whose proceeds were booked into cash. Their external flow was
+   * recorded when that cash entered/left the ledger, so counting the
+   * transaction again would double it (#125).
+   *
+   * **Only `buy` / `sell_proceeds` legs qualify.** A transaction can carry other
+   * linked movements — a V3-P4 `tax_withholding` / `tax_refund` settlement rides
+   * on its sell's `transactionId` (§16 2026-07-08) — and those say nothing about
+   * where the proceeds went. Keying on "has *any* linked movement" suppressed
+   * the outflow of a taxed sell that paid out instead of into cash, while the
+   * holdings still left the value curve: a phantom loss the user never took.
+   */
+  function cashSettledTxnIds(cashRecords: readonly CashMovementRecord[]): Set<string> {
+    const ids = new Set<string>();
+    for (const r of cashRecords) {
+      if (r.transactionId === null) continue;
+      if (r.kind === 'buy' || r.kind === 'sell_proceeds') ids.add(r.transactionId);
+    }
+    return ids;
+  }
+
+  /**
    * Backdated pay-from-cash buys settled as of a later day (#378): a linked
    * `buy` movement whose day differs from its transaction's day. Their TWR
    * compensator flow pair (+cost on the buy day, −cost on the settle day)
@@ -419,9 +442,7 @@ export function createPortfolioSnapshotService(
 
     const today = todayIso();
     const movements = cashRecords.map(toDomainMovement);
-    const linkedTxnIds = new Set(
-      cashRecords.map((r) => r.transactionId).filter((id): id is string => id !== null),
-    );
+    const linkedTxnIds = cashSettledTxnIds(cashRecords);
     const splitCashBuys = deriveSplitCashBuys(txns, cashRecords);
 
     let holdingsPoints: ValuePoint[] = [];
@@ -651,9 +672,7 @@ export function createPortfolioSnapshotService(
     const todayFlows: FlowPoint[] = externalCashFlowsForTwr(movements).filter(
       (f) => f.date === today,
     );
-    const linkedTxnIds = new Set(
-      cashRecords.map((r) => r.transactionId).filter((id): id is string => id !== null),
-    );
+    const linkedTxnIds = cashSettledTxnIds(cashRecords);
     const todayTxns = txns.filter(
       (t) =>
         t.executedAt.toISOString().slice(0, 10) === today &&

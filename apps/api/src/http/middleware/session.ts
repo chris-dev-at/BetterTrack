@@ -4,16 +4,18 @@ import { ADMIN_2FA_SETUP_REQUIRED } from '@bettertrack/contracts';
 
 import { adminAccountKind, forbidden, notFound, unauthorized } from '../../errors';
 import type { AppContext } from '../context';
-import { clearSessionCookie, setSessionCookie } from '../cookies';
 import { toAuthUser } from '../serializers';
 
 /**
  * Resolves the session cookie into `req.authUser` without rejecting — public
- * routes still work. Invalid/expired sessions are cleared; valid ones get a
- * rolling cookie + Redis TTL refresh.
+ * routes still work. Deliberately does not mutate the response cookie: a request
+ * that resolved an old session before a concurrent security rotation may finish
+ * afterward, and its stale Set-Cookie/clear-cookie header must not overwrite the
+ * a concurrent transition response. Explicit login, renewal, security-transition
+ * clearing, and logout handlers own every session-cookie write.
  */
 export function loadSession(ctx: AppContext): RequestHandler {
-  return async (req, res, next) => {
+  return async (req, _res, next) => {
     try {
       // A bearer (API-key) request already resolved its principal upstream and
       // carries no session — never let a stray cookie override it (§6.13).
@@ -30,18 +32,16 @@ export function loadSession(ctx: AppContext): RequestHandler {
       // last-seen (throttled) and capture the device on first-seen (V3-P11a).
       const resolved = await ctx.auth.resolveSession(sessionId, req.get('user-agent') ?? null);
       if (!resolved) {
-        clearSessionCookie(res, ctx.config);
         next();
         return;
       }
       req.sessionId = sessionId;
-      // Carry the session's persistence (V4-P2b) so the rolling cookie refresh
-      // below — and the PIN-verify handler — re-issue the SAME cookie flavour
-      // (Max-Age for persistent, browser-session for ephemeral) rather than
-      // silently upgrading an ephemeral session to a persistent cookie.
+      req.sessionSecurityGeneration = resolved.securityGeneration;
+      // Carry the session's persistence (V4-P2b) so explicit renewal handlers
+      // re-issue the SAME cookie flavour (Max-Age for persistent,
+      // browser-session for ephemeral) rather than silently upgrading it.
       req.sessionPersistent = resolved.persistent;
       req.authUser = toAuthUser(resolved.user);
-      setSessionCookie(res, ctx.config, sessionId, resolved.persistent);
       next();
     } catch (err) {
       next(err);
@@ -121,18 +121,18 @@ export const requireAdmin: RequestHandler = (req, _res, next) => {
 };
 
 /**
- * Mandatory admin-login 2FA gate (§6.12, #400). Mounted right AFTER
- * {@link requireAdmin} and AFTER the 2FA enroll/confirm sub-router, so it guards
- * every OTHER admin endpoint: a logged-in admin with no confirmed 2FA method gets
- * `403 ADMIN_2FA_SETUP_REQUIRED`, which the admin SPA turns into the forced
- * enrollment wizard. This is the bootstrap that makes "mandatory" deployable
- * without locking out the seeded admin — password login still succeeds, but the
- * admin can do nothing except enroll until a method is confirmed. An enrolled
- * admin can never reach here on a fresh login without first passing the shared
- * `two_factor_required` challenge (the session is withheld until it does), so this
- * gate only ever fires in the not-yet-enrolled state.
+ * Mandatory current-session admin MFA gate (§6.12, #400, #878). Account-wide
+ * enrollment is not assurance: every non-bootstrap admin request must resolve
+ * the exact cookie again and find a password first factor plus a second-factor
+ * method/time on that server-side session. `allowBootstrap` admits only a
+ * password-authenticated, unassured session while the account has no factor, so
+ * the first enrollment wizard remains deployable without widening any later
+ * factor-management route.
  */
-export function requireAdminTwoFactor(ctx: AppContext): RequestHandler {
+export function requireAdminTwoFactor(
+  ctx: AppContext,
+  options: { allowBootstrap?: boolean } = {},
+): RequestHandler {
   return async (req, _res, next) => {
     try {
       // requireAdmin already ran; be defensive if the mount order ever changes.
@@ -140,16 +140,54 @@ export function requireAdminTwoFactor(ctx: AppContext): RequestHandler {
         next();
         return;
       }
-      if (await ctx.twoFactor.isEnabled(req.authUser.id)) {
+      if (!req.sessionId) {
+        next(unauthorized());
+        return;
+      }
+
+      // Re-resolve the exact server-side session at the final authorization
+      // boundary. Besides validating expiry/generation again, this prevents a
+      // request from inheriting assurance that another browser established
+      // after `loadSession` ran.
+      const resolved = await ctx.auth.resolveSession(req.sessionId);
+      const authorization = await ctx.twoFactor.getAuthorizationState(req.authUser.id);
+      if (
+        !resolved ||
+        resolved.user.id !== req.authUser.id ||
+        resolved.user.role !== 'admin' ||
+        // A reset proves mailbox control and may mint an ordinary user session,
+        // but administrator authority still requires a fresh password login.
+        // Thus `password_reset` deliberately fails here until the admin signs
+        // in once with the newly chosen password.
+        resolved.authenticationMethod !== 'password' ||
+        !authorization ||
+        req.sessionSecurityGeneration === undefined ||
+        resolved.securityGeneration !== req.sessionSecurityGeneration ||
+        authorization.securityGeneration !== resolved.securityGeneration
+      ) {
+        next(unauthorized());
+        return;
+      }
+
+      if (!authorization.enabled) {
+        if (options.allowBootstrap && resolved.mfaAssurance === null) {
+          next();
+          return;
+        }
+        next(
+          forbidden(
+            'Two-factor authentication setup is required for admin accounts.',
+            ADMIN_2FA_SETUP_REQUIRED,
+          ),
+        );
+        return;
+      }
+
+      if (resolved.mfaAssurance) {
         next();
         return;
       }
-      next(
-        forbidden(
-          'Two-factor authentication setup is required for admin accounts.',
-          ADMIN_2FA_SETUP_REQUIRED,
-        ),
-      );
+      next(unauthorized());
     } catch (err) {
       next(err);
     }

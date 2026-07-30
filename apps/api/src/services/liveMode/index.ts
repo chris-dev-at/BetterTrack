@@ -1,5 +1,8 @@
 /** Live Mode — hot-asset registry, shared poll loops, ring buffer (§6.3, V3-P7b). */
 export {
+  LIVE_LOOP_COORDINATION_CHANNEL,
+  LIVE_LOOP_COORDINATION_INTERVAL_MS,
+  LIVE_LOOP_LEASE_TTL_MS,
   LIVE_POLL_INTERVAL_MS,
   LIVE_POLL_MAX_INTERVAL_MS,
   LIVE_RING_RETENTION_MS,

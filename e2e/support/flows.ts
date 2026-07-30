@@ -1,5 +1,23 @@
 import { expect, type Page } from '@playwright/test';
 
+/**
+ * Step a freshly created account past the first-run wizard.
+ *
+ * Creating an account — self-serve registration, invite accept, or the
+ * Google-assisted register form — now opens first-run setup at `/welcome`
+ * instead of Home (R2). Specs are about the app itself, so they assert the
+ * landing (a real regression guard for the redirect) and then take the wizard's
+ * always-available quiet exit.
+ *
+ * Deliberately strict: if the redirect ever breaks, this fails here with a clear
+ * message instead of leaving a later "Account menu" assertion to time out.
+ */
+export async function dismissFirstRun(page: Page): Promise<void> {
+  await expect(page).toHaveURL(/\/welcome$/, { timeout: 30_000 });
+  // Lazy route — wait for the wizard itself, not just the URL.
+  await page.getByRole('button', { name: 'Do this later' }).click({ timeout: 20_000 });
+}
+
 /** Drives the real /invite/:token page to provision a brand-new account. */
 export async function acceptInvite(
   page: Page,
@@ -11,7 +29,12 @@ export async function acceptInvite(
   await page.getByLabel('Username').fill(username);
   await page.getByLabel('Password').fill(password);
   await page.getByRole('button', { name: 'Create account' }).click();
-  await expect(page).toHaveURL(/\/portfolio$/, { timeout: 20_000 });
+  // A new account opens on first-run setup; skipping it lands the Home command
+  // center (`/`) exactly as before.
+  await dismissFirstRun(page);
+  await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({
+    timeout: 20_000,
+  });
 }
 
 /** Searches the local catalog and watches the first matching asset's symbol from the results row. */
@@ -48,7 +71,7 @@ export async function openAssetAndWatchFromDetail(
  * Build and activate a Conglomerate through the real Builder (§13.4 V4-P7/P9
  * e2e helper). Picks each asset by exact symbol via the local search box, then
  * Auto-balances to the ACTIVE_SUM (§6.5) and clicks Activate. Returns the
- * post-activation detail URL (`/workboard/conglomerates/:id`) so callers can
+ * post-activation detail URL (`/workbench/blueprints/:id`) so callers can
  * come back to it after side trips (creating another conglomerate, listing).
  */
 export async function activateConglomerate(
@@ -56,8 +79,8 @@ export async function activateConglomerate(
   name: string,
   picks: ReadonlyArray<{ query: string; symbol: string }>,
 ): Promise<string> {
-  await page.goto('/workboard/conglomerates/new');
-  await page.getByLabel('Conglomerate name').fill(name);
+  await page.goto('/workbench/blueprints/new');
+  await page.getByLabel('Blueprint name').fill(name);
   const search = page.getByRole('searchbox', { name: 'Search assets' });
   for (const p of picks) {
     // exact: role-name matching is substring-based, and background enrichment
@@ -70,12 +93,12 @@ export async function activateConglomerate(
   // Locale-agnostic 2-dp: EN "100.00%" vs DE "100,00 %" with narrow space.
   await expect(positions.getByRole('status')).toHaveText(/^100[.,]00\s*%$/);
   await page.getByRole('button', { name: 'Activate' }).click();
-  // `Activate` navigates to `/workboard/conglomerates/:id` at the *end* of
+  // `Activate` navigates to `/workbench/blueprints/:id` at the *end* of
   // handleActivate, after two awaited network calls — the click resolves before
-  // that, when the URL is still `/workboard/conglomerates/new`. Exclude `new`
+  // that, when the URL is still `/workbench/blueprints/new`. Exclude `new`
   // from the URL match AND wait for the detail-only <h1>{name}</h1> so we
   // capture the real detail URL rather than the builder's `/new` route.
-  await expect(page).toHaveURL(/\/workboard\/conglomerates\/(?!new(?:\/|$))[^/]+$/, {
+  await expect(page).toHaveURL(/\/workbench\/blueprints\/(?!new(?:\/|$))[^/]+$/, {
     timeout: 20_000,
   });
   await expect(page.getByRole('heading', { level: 1, name, exact: true })).toBeVisible();

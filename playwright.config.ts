@@ -26,6 +26,10 @@ import {
 const apiEnv = {
   ...process.env,
   NODE_ENV: 'development',
+  // Compressed multi-navigation specs pass through the Home command center's
+  // roll-up on every auth landing (Origin redesign), so the human-scale burst
+  // window needs e2e headroom; the steady-state limit stays enforced.
+  RATE_LIMIT_BURST_LIMIT: '240',
   DATABASE_URL,
   REDIS_URL,
   SESSION_SECRET,
@@ -43,6 +47,16 @@ const apiEnv = {
   BT_GOOGLE_AUTHORIZE_ENDPOINT: `${FAKE_GOOGLE_URL}/authorize`,
   BT_GOOGLE_TOKEN_ENDPOINT: `${FAKE_GOOGLE_URL}/token`,
   BT_GOOGLE_JWKS_URI: `${FAKE_GOOGLE_URL}/jwks`,
+};
+
+// Both processes read the API environment, but only the HTTP API needs the
+// default Prometheus listener. Keeping it off in the worker prevents both from
+// binding the same default port during an e2e run. A future worker-metrics e2e
+// test must explicitly enable a listener on an isolated port.
+const workerEnv = {
+  ...apiEnv,
+  BT_METRICS_ENABLED: 'false',
+  E2E_WORKER_HEALTH_PORT: WORKER_HEALTH_PORT,
 };
 
 export default defineConfig({
@@ -92,7 +106,7 @@ export default defineConfig({
     {
       command: 'node e2e/support/workerServer.mjs',
       url: WORKER_HEALTH_URL,
-      env: { ...apiEnv, E2E_WORKER_HEALTH_PORT: WORKER_HEALTH_PORT },
+      env: workerEnv,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
     },
