@@ -3,6 +3,9 @@
 The protected-branch-required CI `verify` job gates production dependency
 auditing and committed-secret scanning. Its dependency-audit policy lives in
 [`.github/security/dependency-audit-waivers.mjs`](../.github/security/dependency-audit-waivers.mjs).
+The Gitleaks release archive is version-pinned and SHA-256 verified. For pull
+requests the scanner receives the event's base and head SHAs directly, so its
+Git range covers every PR commit without depending on a paginated API list.
 
 An advisory must be fixed in a reviewed dependency update whenever practical.
 If a pre-existing advisory cannot safely be fixed in the same change, its waiver
