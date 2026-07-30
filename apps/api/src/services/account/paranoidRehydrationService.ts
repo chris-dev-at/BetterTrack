@@ -144,16 +144,25 @@ const CASH_AMOUNT_STORAGE_SCALE = 6;
  * from the storage definition: it is exactly one `numeric(20,8)` quantum
  * (`10^-8`), not an independently chosen epsilon.
  *
- * **The cash ledger deliberately gets no counterpart — it stays exact.** The
- * envelope above is only justified because the rounding that produces a quantity
- * shortfall is already invisible when the document is captured. Cash has no such
- * preimage: every writer floors amounts to whole cents before storage
- * (`floorCents`, §5.4) and `persistedNumeric` hard-rejects a document amount
- * finer than scale 6, so no cash amount is ever quantized away. An exact scale-6
- * cash shortfall is therefore always a genuine overdraw, and a per-row allowance
- * could only admit overdraw — never rescue a reachable ledger. If #918 makes the
- * money columns quantize at this boundary instead of rejecting, the envelope
- * arrives with the rounding that justifies it.
+ * **The cash ledger still gets no counterpart, but the reason changed with
+ * #918.** Cash amounts now pass through the same `persistedNumeric` rounding as
+ * every other money column, so "no cash amount is ever quantized away" is no
+ * longer what holds the exact gate up. What holds it up is reachability: the
+ * envelope above exists because a quantity shortfall has a preimage — the
+ * document captured the raw number a normal write validated, and PostgreSQL
+ * rounded it away per row. No reachable cash movement has such a preimage.
+ * Every client-authored amount is floored to whole cents before it enters the
+ * document (`floorCents`, §5.4 — `vaultPortfolioStore.ts` cash entries and
+ * standing-order cash rows), and an amount seeded from server rows is one
+ * PostgreSQL already stored at scale 6, so quantization is a no-op across the
+ * reachable set and cannot manufacture a shortfall. A sub-quantum cash
+ * drift can therefore only come from a hand-authored document, where a
+ * resulting shortfall is a fabrication rather than absorbable rounding: an
+ * allowance there could only admit overdraw, never rescue a reachable ledger.
+ * The moment a client emits a *computed* movement amount (a `quantity × price`
+ * tail rather than a floored entry) that preimage arrives and the per-row
+ * envelope must arrive with it. Both halves are pinned as conformance cases in
+ * `__tests__/paranoidRehydrationConformance.test.ts`.
  */
 const PERSISTED_QUANTITY_ROUNDING_TOLERANCE = 1n;
 
@@ -180,6 +189,13 @@ function exactDecimal(value: string, label: string): ExactDecimal {
  * IEEE-754. A strict vault may retain the raw number accepted by a normal write,
  * so sub-quantum digits must be rounded before validation and comparison. A
  * value that rounds beyond the column precision still fails before restore.
+ *
+ * A magnitude below half a quantum collapses to zero and loses its sign
+ * (`-0.0000004` at scale 6 becomes `0`). That is not a hole: PostgreSQL stores
+ * the same `0.000000`, so the positivity and sign gates downstream judge the
+ * value that will actually be persisted rather than the document's spelling of
+ * it — a "positive" amount the normal path could not store either is rejected
+ * on both paths.
  */
 function persistedNumeric(value: string, precision: number, scale: number, label: string): bigint {
   const quantized = roundToScale(exactDecimal(value, label), scale);
@@ -245,17 +261,18 @@ function exactDecimalFromPublicNumber(value: number, label: string): ExactDecima
  * replay. Paranoid-vault transactions can retain the user's raw decimal input;
  * the restore repository will round it on insert, so comparing raw values here
  * would validate a different position history than the one we persist.
+ *
+ * Named seam over `persistedNumeric` (#894): quantity is the one column whose
+ * quantization the solvency envelope below is written against, so the call
+ * sites stay readable — the mechanics are the shared money ones.
  */
 function quantizedTransactionQuantity(value: string): bigint {
-  const label = 'transaction quantity';
-  const quantized = roundToScale(exactDecimal(value, label), TRANSACTION_QUANTITY_STORAGE_SCALE);
-  if (absolute(quantized) >= pow10(TRANSACTION_QUANTITY_STORAGE_PRECISION)) {
-    throw new ParanoidRehydrationError(
-      'INVALID_REFERENCE',
-      `${label} exceeds its persisted precision`,
-    );
-  }
-  return quantized;
+  return persistedNumeric(
+    value,
+    TRANSACTION_QUANTITY_STORAGE_PRECISION,
+    TRANSACTION_QUANTITY_STORAGE_SCALE,
+    'transaction quantity',
+  );
 }
 
 function publicNumberReadback(value: bigint, scale: number, label: string): number {
@@ -1383,9 +1400,13 @@ function validateGraph(
   let cashMovementReplayVisits = 0;
   let transactionReplayVisits = 0;
   try {
-    // Cash stays exact: amounts are stored at whole cents and rejected beyond
-    // scale 6, so integer scale-6 accumulation IS the persisted balance (see
-    // PERSISTED_QUANTITY_ROUNDING_TOLERANCE for why quantities differ).
+    // Cash carries no rounding envelope. Amounts are quantized to scale 6 like
+    // every money column (#918), but every reachable writer emits at most cent
+    // scale, so that rounding is a no-op here and integer scale-6 accumulation
+    // IS the persisted balance. A shortfall produced by per-row rounding is
+    // therefore unreachable, and an exact shortfall is a genuine overdraw (see
+    // PERSISTED_QUANTITY_ROUNDING_TOLERANCE for the full argument and for why
+    // quantities differ).
     const balancesBySource = new Map<string, bigint>();
     for (const movement of orderedMovements) {
       cashMovementReplayVisits += 1;
