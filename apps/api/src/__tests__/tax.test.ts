@@ -1947,6 +1947,47 @@ describe('uncovered sell — sell a stock you do not hold (issue #369)', () => {
   });
 });
 
+// ─── Storage-quantum shortfall keeps reports rendering (#917) ─────────────────
+
+describe('storage-quantum shortfall in the report replay (#917)', () => {
+  it('a same-batch pair rounded one quantum apart still renders every tax report', async () => {
+    // Batch validation accepts the raw pair (5e-10 apart, within the 1e-9
+    // epsilon); numeric(20,8) then persists buy 1.00000000 / sell 1.00000001.
+    // Every later report read replays those stored rows — it must waive the
+    // quantum instead of throwing forever, with no allow_uncovered flip.
+    const { agent, pid, asset } = await setup();
+    await trade(agent, pid, {
+      transactions: [
+        {
+          assetId: asset.id,
+          side: 'buy',
+          quantity: 1.0000000046,
+          price: 100,
+          executedAt: '2026-01-10T10:00:00.000Z',
+        },
+        {
+          assetId: asset.id,
+          side: 'sell',
+          quantity: 1.0000000051,
+          price: 110,
+          executedAt: '2026-02-10T10:00:00.000Z',
+        },
+      ],
+    });
+    const stored = await harness.db.select().from(schema.transactions);
+    expect(stored.map((t) => t.quantity).sort()).toEqual(['1.00000000', '1.00000001']);
+    expect(stored.every((t) => !t.allowUncovered)).toBe(true);
+
+    const years = await yearSummaries(agent, pid);
+    expect(years).toHaveLength(1);
+    // The drift quantum realizes at the sale price (0 gain): the held share's
+    // own 10 EUR of gain is the whole realized P/L.
+    expect(years[0]).toMatchObject({ year: 2026, realizedPnlEur: 10 });
+    const report = await yearReport(agent, pid, 2026);
+    expect(report.year).toBe(2026);
+  });
+});
+
 // ─── Tax-report CSV export (V5-P4b, #583) ─────────────────────────────────────
 
 describe('tax-report CSV export', () => {
