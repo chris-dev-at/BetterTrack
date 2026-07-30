@@ -239,6 +239,7 @@ export function createSettingsRouter(ctx: AppContext): Router {
       redirectUris: body.redirectUris,
       scopes: body.scopes,
       public: body.public,
+      logoUrl: body.logoUrl ?? null,
       ip: req.ip ?? null,
     });
     res.status(201).json(result);

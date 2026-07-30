@@ -19,6 +19,7 @@ import { RegisterPage } from './auth/RegisterPage';
 import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
 import { VaultRuntimeProvider } from './vault/VaultRuntimeProvider';
+import { VaultMoneyEngineProvider } from './vault/engine/VaultMoneyEngineProvider';
 import { ForecastPage } from './forecast/ForecastPage';
 import { DashboardPage as ExpenseDashboardPage } from './expenses/DashboardPage';
 import { TransactionsPage as ExpenseTransactionsPage } from './expenses/TransactionsPage';
@@ -323,7 +324,7 @@ function VaultRuntimeRoot({ children }: { children: ReactNode }) {
       authenticated={status === 'authenticated'}
       userId={status === 'authenticated' ? user?.id : null}
     >
-      {children}
+      <VaultMoneyEngineProvider>{children}</VaultMoneyEngineProvider>
     </VaultRuntimeProvider>
   );
 }
