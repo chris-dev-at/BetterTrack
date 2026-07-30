@@ -26,6 +26,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Scan committed history for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_VERSION: '8.24.3'
+          GITLEAKS_ENABLE_COMMENTS: 'false'
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+
       - name: Enable Corepack
         run: corepack enable
 
@@ -36,6 +45,12 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Test production dependency-audit verifier
+        run: node --test .github/scripts/audit-production-dependencies.test.mjs
+
+      - name: Audit production dependencies
+        run: node .github/scripts/audit-production-dependencies.mjs
 
       - name: Typecheck
         run: pnpm typecheck

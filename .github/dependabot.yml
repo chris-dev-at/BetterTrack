@@ -9,33 +9,6 @@ updates:
         patterns:
           - '*'
 
-  - package-ecosystem: docker
-    directory: /apps/api
-    schedule:
-      interval: weekly
-    groups:
-      base-images:
-        patterns:
-          - '*'
-
-  - package-ecosystem: docker
-    directory: /apps/web
-    schedule:
-      interval: weekly
-    groups:
-      base-images:
-        patterns:
-          - '*'
-
-  - package-ecosystem: docker
-    directory: /apps/landing
-    schedule:
-      interval: weekly
-    groups:
-      base-images:
-        patterns:
-          - '*'
-
   - package-ecosystem: npm
     directory: /
     schedule:

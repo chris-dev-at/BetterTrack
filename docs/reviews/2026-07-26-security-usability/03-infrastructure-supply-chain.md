@@ -329,7 +329,9 @@ Re-running the same commit can execute different action code or service images. 
 
 **Remediation status (2026-07-30):** CI, nightly E2E, and application Dockerfile
 references were pinned by #952. Compose-file pins remain a separately scoped
-follow-up; grouped Dependabot updates now cover Actions, Docker, and npm.
+follow-up; grouped Dependabot updates cover Actions and npm, while Renovate's
+Dockerfile manager groups every deployable base-image stage into a reviewable
+digest update.
 
 ### INF-12 — CI lacks promised dependency and deployable-artifact security gates
 
