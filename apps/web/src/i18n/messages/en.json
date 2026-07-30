@@ -247,7 +247,6 @@
     "unknown": "unknown",
     "private": "Private",
     "friends": "Friends",
-    "soon": "Soon",
     "comingSoon": "Coming soon",
     "genericError": "Something went wrong. Please try again.",
     "continue": "Continue",
@@ -267,6 +266,13 @@
       "loadingChart": "Loading chart…",
       "noPriceData": "No price data for this range yet.",
       "priceChartAria": "Price chart",
+      "priceChartSummary": "Period: {{startDate}} to {{endDate}}. Start: {{startValue}}. End: {{endValue}}. Change: {{change}} ({{changePercent}}). Minimum: {{minimum}} on {{minimumDate}}. Maximum: {{maximum}} on {{maximumDate}}.",
+      "priceChartDataExpand": "Show chart data",
+      "priceChartDataCollapse": "Hide chart data",
+      "priceChartDataTableCaption": "Chart data",
+      "priceChartDataDate": "Date",
+      "priceChartDataValue": "Value",
+      "priceChartDataSampled": "Showing {{shown}} of {{total}} plotted points.",
       "allocationFallbackTitle": "Allocation breakdown"
     },
     "marketState": {
@@ -500,12 +506,9 @@
     "openSearch": "Open search (⌘K)",
     "accountMenu": "Account menu",
     "account": "Account",
-    "myPortfolio": "My Portfolio",
     "settings": "Settings",
     "discreetMode": "Discreet mode",
     "discreetModeError": "Couldn't save that change. Please try again.",
-    "inviteOthers": "Invite Others",
-    "shareProfile": "Share Profile",
     "logout": "Logout",
     "home": "Home",
     "portfolios": "Portfolio",
@@ -634,6 +637,8 @@
     },
     "notifications": {
       "title": "Notifications",
+      "bellAria": "Notifications",
+      "bellUnreadAria": "Notifications ({{count}} unread)",
       "loadError": {
         "title": "Couldn't load your notification settings"
       },

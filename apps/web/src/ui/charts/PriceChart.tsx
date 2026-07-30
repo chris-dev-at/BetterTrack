@@ -13,13 +13,25 @@ import {
   type ISeriesMarkersPluginApi,
   type Time,
 } from 'lightweight-charts';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 
 import { LOCALES, useI18n, useT } from '../../i18n';
 import * as palette from './palette';
 import { Spinner } from '../../user/components/ui';
 import { cx } from '../../lib/cx';
-import { DISCREET_MASK, formatPercent, isDiscreetMode } from '../../lib/format';
+import {
+  DISCREET_MASK,
+  EM_DASH,
+  formatDate,
+  formatDateTime,
+  formatDateTimeSeconds,
+  formatMoney,
+  formatPercent,
+  formatQuantity,
+  formatSignedPercent,
+  formatUnitPrice,
+  isDiscreetMode,
+} from '../../lib/format';
 import {
   PRICE_RANGES,
   type BenchmarkSeries,
@@ -74,6 +86,23 @@ export interface PriceChartProps {
    * arrive pre-expressed in % (no second normalization).
    */
   percentValues?: boolean;
+  /**
+   * ISO currency for monetary values in the primary series. Omit this for
+   * unitless series such as rebased base-100 backtests; `percentValues` takes
+   * precedence when both are supplied.
+   */
+  valueCurrency?: string;
+  /**
+   * Monetary primary-series values are totals by default. Asset history points
+   * are per-unit prices, whose sub-cent precision must remain readable.
+   */
+  valueFormat?: 'money' | 'unitPrice';
+  /**
+   * Expose the summary and expandable table for this chart. Callers which
+   * cannot yet identify a monetary series' currency may defer this until they
+   * can do so, rather than presenting it as a unitless index.
+   */
+  showDataAlternative?: boolean;
   /** Show a spinner instead of the chart (parent is fetching). */
   loading?: boolean;
   /**
@@ -154,6 +183,129 @@ function timeToDate(time: Time): Date {
   if (typeof time === 'number') return new Date(time * 1000);
   if (typeof time === 'string') return new Date(time);
   return new Date(Date.UTC(time.year, time.month - 1, time.day));
+}
+
+/** Keep the accessible data alternative bounded on dense intraday ranges. */
+const ACCESSIBLE_TABLE_POINT_LIMIT = 120;
+
+type ChartDatePrecision = 'date' | 'minute' | 'second';
+
+interface AccessibleChartData {
+  start: ChartPoint;
+  end: ChartPoint;
+  minimum: ChartPoint;
+  maximum: ChartPoint;
+  tablePoints: readonly ChartPoint[];
+  sampled: boolean;
+  totalPoints: number;
+  datePrecision: ChartDatePrecision;
+}
+
+/**
+ * Build the points used by the DOM alternative from the same finite data the
+ * canvas chart plots. A single point cannot describe a period or a change, so
+ * it intentionally has no summary/table rather than producing misleading data.
+ */
+function accessibleChartData(series: readonly ChartPoint[]): AccessibleChartData | null {
+  const plotted = series.filter((point) => Number.isFinite(point.value));
+  if (plotted.length < 2) return null;
+
+  let minimum = plotted[0]!;
+  let maximum = plotted[0]!;
+  let numericPointCount = 0;
+  let previousNumericTime: number | null = null;
+  let shortestNumericGapSeconds = Infinity;
+  const numericDayKeys = new Set<number>();
+  for (let index = 0; index < plotted.length; index += 1) {
+    const point = plotted[index]!;
+    if (point.value < minimum.value) minimum = point;
+    if (point.value > maximum.value) maximum = point;
+
+    if (typeof point.time === 'number' && Number.isFinite(point.time)) {
+      numericPointCount += 1;
+      numericDayKeys.add(Math.floor(point.time / 86_400));
+      if (previousNumericTime !== null && point.time > previousNumericTime) {
+        shortestNumericGapSeconds = Math.min(
+          shortestNumericGapSeconds,
+          point.time - previousNumericTime,
+        );
+      }
+      previousNumericTime = point.time;
+    }
+  }
+
+  // Numeric `Time` alone does not mean intraday: combined daily portfolio
+  // series use epoch seconds too. Show a clock only for a genuinely dense
+  // series, and retain seconds when neighbouring live points need them.
+  const hasIntradayTimes =
+    numericPointCount > 1 &&
+    (numericDayKeys.size < numericPointCount || shortestNumericGapSeconds < 12 * 60 * 60);
+  const datePrecision: ChartDatePrecision = hasIntradayTimes
+    ? shortestNumericGapSeconds < 60
+      ? 'second'
+      : 'minute'
+    : 'date';
+
+  const sampled = plotted.length > ACCESSIBLE_TABLE_POINT_LIMIT;
+  const tablePoints = sampled
+    ? Array.from({ length: ACCESSIBLE_TABLE_POINT_LIMIT }, (_, index) => {
+        const position = (index * (plotted.length - 1)) / (ACCESSIBLE_TABLE_POINT_LIMIT - 1);
+        return plotted[Math.round(position)]!;
+      })
+    : plotted;
+
+  return {
+    start: plotted[0]!,
+    end: plotted.at(-1)!,
+    minimum,
+    maximum,
+    tablePoints,
+    sampled,
+    totalPoints: plotted.length,
+    datePrecision,
+  };
+}
+
+/** Format each point through the shared date/date-time formatters. */
+function formatChartDate(time: Time, precision: ChartDatePrecision): string {
+  const date = timeToDate(time);
+  if (Number.isNaN(date.getTime())) return EM_DASH;
+  const iso = date.toISOString();
+  if (typeof time !== 'number' || precision === 'date') return formatDate(iso);
+  return precision === 'second' ? formatDateTimeSeconds(iso) : formatDateTime(iso);
+}
+
+function formatChartValue(
+  value: number,
+  percentValues: boolean,
+  valueCurrency: string | undefined,
+  valueFormat: 'money' | 'unitPrice',
+): string {
+  if (percentValues) return formatPercent(value);
+  // An omitted currency is intentional: backtests and comparisons are rebased
+  // indices, not money. `formatQuantity` keeps those values locale-aware and
+  // deliberately visible in discreet mode.
+  if (valueCurrency === undefined) return formatQuantity(value);
+  return valueFormat === 'unitPrice'
+    ? formatUnitPrice(value, valueCurrency)
+    : formatMoney(value, valueCurrency);
+}
+
+/** Mirror MoneyText's explicit positive sign while preserving discreet masking. */
+function formatSignedChartValue(
+  value: number,
+  percentValues: boolean,
+  valueCurrency: string | undefined,
+  valueFormat: 'money' | 'unitPrice',
+): string {
+  if (percentValues) return formatSignedPercent(value);
+  const formatted = formatChartValue(value, false, valueCurrency, valueFormat);
+  return value > 0 && formatted !== DISCREET_MASK ? `+${formatted}` : formatted;
+}
+
+function chartPointKey(time: Time): string {
+  if (typeof time === 'string' || typeof time === 'number') return String(time);
+  return `${time.year}-${time.month}-${time.day}`;
 }
 
 /**
@@ -277,6 +429,9 @@ export function PriceChart({
   markers = [],
   overlays = [],
   percentValues = false,
+  valueCurrency,
+  valueFormat = 'money',
+  showDataAlternative = true,
   loading = false,
   live = false,
   generation,
@@ -294,6 +449,9 @@ export function PriceChart({
   // Controlled when `range` is provided; otherwise track internally so the
   // toggle works standalone (and in tests with no parent).
   const [internalRange, setInternalRange] = useState<PriceRange>(range ?? defaultRange);
+  const [isDataTableOpen, setIsDataTableOpen] = useState(false);
+  const summaryId = useId();
+  const dataTableId = useId();
   const activeRange = range ?? internalRange;
 
   function selectRange(next: PriceRange) {
@@ -323,6 +481,57 @@ export function PriceChart({
   // Snapshot the discreet flag at chart-create time so a toggle mid-life
   // rebuilds the chart with the correct axis formatter (§13.5 V5-P13 arc (a)).
   const discreet = isDiscreetMode();
+  const dataAlternative = useMemo(
+    () => (showDataAlternative ? accessibleChartData(series) : null),
+    [series, showDataAlternative],
+  );
+  const summary = useMemo(() => {
+    if (!dataAlternative) return null;
+    const { datePrecision } = dataAlternative;
+    return t('common.charts.priceChartSummary', {
+      startDate: formatChartDate(dataAlternative.start.time, datePrecision),
+      endDate: formatChartDate(dataAlternative.end.time, datePrecision),
+      startValue: formatChartValue(
+        dataAlternative.start.value,
+        percentValues,
+        valueCurrency,
+        valueFormat,
+      ),
+      endValue: formatChartValue(
+        dataAlternative.end.value,
+        percentValues,
+        valueCurrency,
+        valueFormat,
+      ),
+      change: formatSignedChartValue(
+        dataAlternative.end.value - dataAlternative.start.value,
+        percentValues,
+        valueCurrency,
+        valueFormat,
+      ),
+      changePercent: formatSignedPercent(
+        dataAlternative.start.value === 0
+          ? null
+          : ((dataAlternative.end.value - dataAlternative.start.value) /
+              dataAlternative.start.value) *
+              100,
+      ),
+      minimum: formatChartValue(
+        dataAlternative.minimum.value,
+        percentValues,
+        valueCurrency,
+        valueFormat,
+      ),
+      minimumDate: formatChartDate(dataAlternative.minimum.time, datePrecision),
+      maximum: formatChartValue(
+        dataAlternative.maximum.value,
+        percentValues,
+        valueCurrency,
+        valueFormat,
+      ),
+      maximumDate: formatChartDate(dataAlternative.maximum.time, datePrecision),
+    });
+  }, [dataAlternative, discreet, locale, percentValues, t, valueCurrency, valueFormat]);
 
   // Create / tear down the chart instance. Keyed on the *shape* (mode, presence
   // of a benchmark, height) rather than the data, so wiggling data is cheap.
@@ -616,13 +825,82 @@ export function PriceChart({
           {emptyMessage ?? t('common.charts.noPriceData')}
         </div>
       ) : (
-        <div
-          ref={containerRef}
-          role="img"
-          aria-label={ariaLabel ?? t('common.charts.priceChartAria')}
-          className="w-full"
-          style={{ height }}
-        />
+        <div>
+          {summary ? (
+            <p className="sr-only" id={summaryId}>
+              {summary}
+            </p>
+          ) : null}
+          <div
+            ref={containerRef}
+            role="img"
+            aria-describedby={summary ? summaryId : undefined}
+            aria-label={ariaLabel ?? t('common.charts.priceChartAria')}
+            className="w-full"
+            style={{ height }}
+          />
+          {dataAlternative ? (
+            <>
+              <button
+                aria-controls={dataTableId}
+                aria-expanded={isDataTableOpen}
+                className="mt-1 text-xs bt-muted underline decoration-dotted underline-offset-2"
+                onClick={() => setIsDataTableOpen((open) => !open)}
+                type="button"
+              >
+                {t(
+                  isDataTableOpen
+                    ? 'common.charts.priceChartDataCollapse'
+                    : 'common.charts.priceChartDataExpand',
+                )}
+              </button>
+              {isDataTableOpen ? (
+                <div className="mt-2 overflow-x-auto" id={dataTableId}>
+                  {dataAlternative.sampled ? (
+                    <p className="mb-2 text-xs bt-muted">
+                      {t('common.charts.priceChartDataSampled', {
+                        shown: dataAlternative.tablePoints.length,
+                        total: dataAlternative.totalPoints,
+                      })}
+                    </p>
+                  ) : null}
+                  <table className="w-full text-left text-xs">
+                    <caption className="sr-only">
+                      {t('common.charts.priceChartDataTableCaption')}
+                    </caption>
+                    <thead className="bt-muted">
+                      <tr>
+                        <th className="py-1 pr-3 font-medium" scope="col">
+                          {t('common.charts.priceChartDataDate')}
+                        </th>
+                        <th className="py-1 text-right font-medium" scope="col">
+                          {t('common.charts.priceChartDataValue')}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dataAlternative.tablePoints.map((point, index) => (
+                        <tr key={`${chartPointKey(point.time)}-${index}`}>
+                          <td className="py-1 pr-3">
+                            {formatChartDate(point.time, dataAlternative.datePrecision)}
+                          </td>
+                          <td className="py-1 text-right tabular-nums">
+                            {formatChartValue(
+                              point.value,
+                              percentValues,
+                              valueCurrency,
+                              valueFormat,
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </div>
       )}
     </div>
   );

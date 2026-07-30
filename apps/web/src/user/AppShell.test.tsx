@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -12,12 +12,15 @@ vi.mock('../lib/portfolioApi');
 vi.mock('../lib/conglomerateApi');
 vi.mock('../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
+  WATCHLIST_SHARING_QUERY_KEY: ['workboard', 'sharing'],
   CONGLOMERATE_COMPARE_QUERY_KEY: ['workboard', 'compare'],
   listWorkboard: vi.fn(),
   addToWorkboard: vi.fn(),
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
   compareConglomerates: vi.fn(),
+  getWatchlistSharing: vi.fn(async () => ({ visibility: 'private' })),
+  updateWatchlistSharing: vi.fn(),
 }));
 vi.mock('../lib/notificationsApi', () => ({
   listNotifications: vi.fn(),
@@ -29,6 +32,7 @@ import { listNotifications } from '../lib/notificationsApi';
 import { listPortfolios } from '../lib/portfolioApi';
 import { listWorkboard } from '../lib/workboardApi';
 import { UserApp } from './UserApp';
+import { Dialog } from './components/Dialog';
 
 const member: MeResponse = {
   id: 'user-1',
@@ -423,6 +427,125 @@ test('the account menu lists profile, settings, discreet mode and Logout works',
 
   await user.click(within(menu).getByRole('menuitem', { name: 'Logout' }));
   expect(api.logout).toHaveBeenCalledOnce();
+});
+
+test('the live account menu supports roving focus and restores its trigger on Escape', async () => {
+  const user = userEvent.setup();
+  renderAt('/portfolio');
+
+  const trigger = await screen.findByRole('button', { name: 'Account menu' });
+  await user.click(trigger);
+  const menu = screen.getByRole('menu', { name: 'Account' });
+  const profile = within(menu).getByRole('menuitem', { name: 'My profile' });
+  const settings = within(menu).getByRole('menuitem', { name: 'Settings' });
+  const logoutItem = within(menu).getByRole('menuitem', { name: 'Logout' });
+
+  await waitFor(() => expect(profile).toHaveFocus());
+  await user.keyboard('{ArrowDown}');
+  expect(settings).toHaveFocus();
+  await user.keyboard('{ArrowUp}');
+  expect(profile).toHaveFocus();
+  await user.keyboard('{End}');
+  expect(logoutItem).toHaveFocus();
+  await user.keyboard('{Home}');
+  expect(profile).toHaveFocus();
+  await user.keyboard('{Escape}');
+
+  expect(screen.queryByRole('menu', { name: 'Account' })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+
+  await user.click(trigger);
+  const reopened = screen.getByRole('menu', { name: 'Account' });
+  await waitFor(() =>
+    expect(within(reopened).getByRole('menuitem', { name: 'My profile' })).toHaveFocus(),
+  );
+  fireEvent.mouseDown(document.body);
+
+  expect(screen.queryByRole('menu', { name: 'Account' })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+});
+
+test('the live Create menu supports roving focus and restores its trigger on Escape', async () => {
+  const user = userEvent.setup();
+  renderAt('/portfolio');
+
+  const trigger = await screen.findByRole('button', { name: 'Create' });
+  await user.click(trigger);
+  const menu = screen.getByRole('menu', { name: 'Create' });
+  const trade = within(menu).getByRole('menuitem', { name: 'Buy or sell' });
+  const cashFlow = within(menu).getByRole('menuitem', { name: 'Income or expense' });
+  const portfolio = within(menu).getByRole('menuitem', { name: 'New portfolio' });
+
+  await waitFor(() => expect(trade).toHaveFocus());
+  await user.keyboard('{ArrowDown}');
+  expect(cashFlow).toHaveFocus();
+  await user.keyboard('{ArrowUp}');
+  expect(trade).toHaveFocus();
+  await user.keyboard('{End}');
+  expect(portfolio).toHaveFocus();
+  await user.keyboard('{Home}');
+  expect(trade).toHaveFocus();
+  await user.keyboard('{Escape}');
+
+  expect(screen.queryByRole('menu', { name: 'Create' })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+
+  await user.click(trigger);
+  const reopened = screen.getByRole('menu', { name: 'Create' });
+  await waitFor(() =>
+    expect(within(reopened).getByRole('menuitem', { name: 'Buy or sell' })).toHaveFocus(),
+  );
+  fireEvent.mouseDown(document.body);
+
+  expect(screen.queryByRole('menu', { name: 'Create' })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+});
+
+test('the command shortcut cannot mount a palette inside an inert modal background', async () => {
+  render(
+    <MemoryRouter initialEntries={['/portfolio']}>
+      <Routes>
+        <Route path="/*" element={<UserApp />} />
+      </Routes>
+      <Dialog title="Blocking modal" onClose={() => undefined}>
+        <button type="button">Keep editing</button>
+      </Dialog>
+    </MemoryRouter>,
+  );
+
+  const modal = screen.getByRole('dialog', { name: 'Blocking modal' });
+  await waitFor(() => expect(document.querySelector('.bt-topbar')).not.toBeNull());
+  expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1);
+
+  fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
+  fireEvent.keyDown(document, { key: 'k', metaKey: true });
+
+  expect(document.querySelector('.bt-palette-overlay')).toBeNull();
+  expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1);
+  expect(modal).toBeInTheDocument();
+  expect(modal.contains(document.activeElement)).toBe(true);
+});
+
+test('the command shortcut still opens over the Control Center, which is modal but not inert', async () => {
+  // The settings hub every `/settings/*` route redirects onto. It is
+  // `aria-modal`, so a guard keyed on "any modal exists" would kill ⌘K across
+  // the entire hub — but it portals to <body> without inerting the shell, and
+  // the palette layers above it (z-index 76 vs 71), so the shortcut must work.
+  renderAt('/control/profile');
+  await screen.findByRole('dialog', { name: 'Control Center' });
+  expect(document.querySelector('[inert]')).toBeNull();
+
+  fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
+
+  const palette = await screen.findByRole('dialog', { name: 'Quick search' });
+  expect(palette).toHaveClass('bt-palette-overlay');
+  // Its own trap inerts the Control Center portal on the way in, and the
+  // shortcut still closes it from there.
+  await waitFor(() => expect(palette.contains(document.activeElement)).toBe(true));
+
+  fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
+  await waitFor(() => expect(document.querySelector('.bt-palette-overlay')).toBeNull());
+  expect(screen.getByRole('dialog', { name: 'Control Center' })).toBeInTheDocument();
 });
 
 // ─── Destinations & redirects ─────────────────────────────────────────────────

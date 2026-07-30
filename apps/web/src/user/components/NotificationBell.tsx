@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { REALTIME_SERVER_EVENTS } from '@bettertrack/contracts';
@@ -11,6 +11,8 @@ import { listNotifications, markNotificationsRead } from '../../lib/notification
 import { useRealtimeEvent } from '../../lib/realtime';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert, cx } from './ui';
+import { useOverlayEscape } from './overlayStack';
+import { restoreFocusTo } from './useFocusTrap';
 
 /** Read a string field from a notification payload, or null when absent/empty. */
 function payloadString(payload: unknown, key: string): string | null {
@@ -181,6 +183,8 @@ export function NotificationBell() {
   const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -204,21 +208,28 @@ export function NotificationBell() {
     },
   });
 
+  const closeAndRestoreFocus = useCallback(() => {
+    setOpen(false);
+    restoreFocusTo([triggerRef.current], { exclude: panelRef.current });
+  }, []);
+
+  // Non-modal, so it takes Escape through the shared overlay stack like every
+  // other popover: it closes only while it is the innermost open overlay, and
+  // it closes even when focus never entered the panel.
+  useOverlayEscape(open, closeAndRestoreFocus, panelRef);
+
   useEffect(() => {
     if (!open) return;
     function onPointerDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        closeAndRestoreFocus();
+      }
     }
     document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open]);
+  }, [closeAndRestoreFocus, open]);
 
   const unreadCount = query.data?.unreadCount ?? 0;
   const items = query.data?.items ?? [];
@@ -226,11 +237,16 @@ export function NotificationBell() {
   return (
     <div ref={rootRef} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
-        aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label={unreadCount > 0 ? `Notifications (${unreadCount} unread)` : 'Notifications'}
+        aria-controls={open ? 'bt-notifications-popover' : undefined}
+        aria-label={
+          unreadCount > 0
+            ? t('settings.notifications.bellUnreadAria', { count: unreadCount })
+            : t('settings.notifications.bellAria')
+        }
         className="relative grid h-9 w-9 place-items-center rounded-full bt-muted transition-colors hover:bt-soft"
       >
         <svg
@@ -263,9 +279,11 @@ export function NotificationBell() {
 
       {open ? (
         <div
-          role="dialog"
           aria-label={t('settings.notifications.title')}
           className="bt-popover w-80"
+          id="bt-notifications-popover"
+          ref={panelRef}
+          role="group"
           style={{ right: 0, top: 'calc(100% + 6px)', padding: 0 }}
         >
           <div className="flex items-center justify-between bt-b-rule px-3 py-2">
@@ -316,7 +334,7 @@ export function NotificationBell() {
                       markReadMutation.mutate({ ids: [notification.id] });
                     }
                   }}
-                  onNavigate={() => setOpen(false)}
+                  onNavigate={closeAndRestoreFocus}
                 />
               ))}
             </ul>
@@ -325,7 +343,7 @@ export function NotificationBell() {
           <div className="bt-t-rule px-3 py-2 text-center">
             <Link
               to="/settings/notifications"
-              onClick={() => setOpen(false)}
+              onClick={closeAndRestoreFocus}
               className="text-xs font-medium bt-link"
             >
               {t('settings.notifications.allTitle')}

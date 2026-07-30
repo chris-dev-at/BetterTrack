@@ -78,7 +78,9 @@ test('alerts: a price_above alert fires and surfaces in the notification bell', 
   }).toPass({ timeout: 30_000, intervals: [3_000] });
 
   await page.getByRole('button', { name: /Notifications/ }).click();
-  const bell = page.getByRole('dialog', { name: 'Notifications' });
+  // The popover is a non-modal `group`, not a dialog (NotificationBell): it
+  // never traps focus or inerts the page, so `dialog` would be a lie.
+  const bell = page.getByRole('group', { name: 'Notifications' });
   await expect(bell.getByText(`Price alert: ${symbol}`)).toBeVisible({ timeout: 10_000 });
 
   await owner.context.close();

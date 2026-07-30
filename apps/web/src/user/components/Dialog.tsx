@@ -1,9 +1,11 @@
 import { createPortal } from 'react-dom';
 import { useEffect } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, ReactNode, RefObject } from 'react';
 
 import { useT } from '../../i18n';
 import { cx } from './ui';
+import { useOverlayEscape } from './overlayStack';
+import { useFocusTrap } from './useFocusTrap';
 
 /**
  * Minimal accessible modal for the user app (mirrors the admin `Modal`): a dimmed
@@ -24,6 +26,7 @@ export function Dialog({
   footer,
   widthClassName = 'max-w-lg',
   dismissable = true,
+  restoreFocusRef,
 }: {
   title: string;
   description?: string;
@@ -40,20 +43,42 @@ export function Dialog({
   widthClassName?: string;
   /** Disable every incidental close affordance until a one-time value is acknowledged. */
   dismissable?: boolean;
+  /**
+   * A trigger outside this dialog to return focus to, for flows where one
+   * dialog replaces another and the element that opened this one is already
+   * gone by the time it closes.
+   */
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const t = useT();
+  const { containerRef, onKeyDown } = useFocusTrap<HTMLDivElement>({
+    inertBackground: true,
+    restoreFocusRef,
+  });
+
+  // Escape goes through the shared overlay stack: a dialog opened from inside
+  // another dialog closes alone, leaving its parent — and the context the user
+  // is halfway through — standing.
+  //
+  // Registered unconditionally, with `dismissable` gating the *callback*: an
+  // un-dismissable dialog still has to claim the keystroke, or the stack would
+  // route it to whatever overlay sits below and close the user's context out
+  // from under a panel that refuses to go away.
+  useOverlayEscape(
+    true,
+    () => {
+      if (dismissable) onClose();
+    },
+    containerRef,
+  );
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dismissable) onClose();
-    };
-    document.addEventListener('keydown', onKey);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
-      document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [dismissable, onClose]);
+  }, []);
 
   // Pinned-footer variant: a height-bounded flex column (bt-dialog__panel is one
   // already) so header and footer stay put while only the body scrolls. Plain
@@ -99,9 +124,11 @@ export function Dialog({
         }}
       >
         <div
+          ref={containerRef}
           role="dialog"
           aria-modal="true"
           aria-label={title}
+          tabIndex={-1}
           className={cx(
             'bt-dialog__panel w-full',
             footer === undefined && 'mt-12 sm:mt-0',
@@ -109,6 +136,7 @@ export function Dialog({
           )}
           style={panelStyle}
           onMouseDown={(e) => e.stopPropagation()}
+          onKeyDown={onKeyDown}
         >
           {head}
           <div className={cx('bt-dialog__body', footer !== undefined && 'flex-1')}>{children}</div>

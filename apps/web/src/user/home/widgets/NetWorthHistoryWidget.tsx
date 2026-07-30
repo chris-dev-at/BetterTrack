@@ -131,6 +131,7 @@ export function NetWorthHistoryWidget({
     combine: (results) => ({
       series: combineSamples(results.map((result) => normalizeSamples(result.data?.points ?? []))),
       loading: results.some((result) => result.isLoading || result.isFetching),
+      baseCurrency: results.find((result) => result.data !== undefined)?.data?.baseCurrency,
     }),
   });
 
@@ -151,6 +152,7 @@ export function NetWorthHistoryWidget({
         range={range}
         ranges={PERFORMANCE_RANGES}
         series={combined.series}
+        valueCurrency={combined.baseCurrency}
       />
     </div>
   );

@@ -258,6 +258,7 @@ export function SharedPortfolioPage() {
                 series={chartPoints}
                 mode="area"
                 showRangeToggle={false}
+                valueCurrency={query.data.baseCurrency}
                 ariaLabel={t('social.shared.portfolioChartAria')}
               />
             </div>

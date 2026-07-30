@@ -8,10 +8,13 @@ import type { MeResponse } from '@bettertrack/contracts';
 vi.mock('../lib/userApi');
 vi.mock('../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
+  WATCHLIST_SHARING_QUERY_KEY: ['workboard', 'sharing'],
   listWorkboard: vi.fn(),
   addToWorkboard: vi.fn(),
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
+  getWatchlistSharing: vi.fn(async () => ({ visibility: 'private' })),
+  updateWatchlistSharing: vi.fn(),
 }));
 // `/` now redirects to `/portfolio` (§7.2), so a couple of auth-flow tests land
 // on the Portfolio page. Auto-mock its data module so it settles without a real
