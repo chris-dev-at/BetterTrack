@@ -56,6 +56,7 @@ import {
 
 import type {
   AppendOpInput,
+  MirrorChainDisplayRow,
   MirrorInviteDetailRow,
   MirrorMemberDetailRow,
   MirrorchainRepository,
@@ -71,6 +72,7 @@ import type { MirrorChainMemberRow, MirrorChainOpRow, MirrorChainRow } from '../
 import { ApiError, badRequest, forbidden, notFound } from '../../errors';
 import type { EventBus, MirrorNotificationEvent } from '../../events';
 import type { Logger } from '../../logger';
+import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { PortfolioService } from '../portfolio/portfolioService';
@@ -130,6 +132,8 @@ const REPLICATE_LOCK_WAIT_MS = 30_000;
 const LOCK_POLL_MS = 25;
 /** Renew well inside the TTL — a long apply (join replay) must not outlive it. */
 const LOCK_RENEW_INTERVAL_MS = LOCK_TTL_MS / 3;
+/** A racing ownership transfer is re-discovered before a join is allowed to write. */
+const PRINCIPAL_GUARD_RETRY_LIMIT = 4;
 
 /** Compare-and-delete / compare-and-expire: only ever release or renew OUR lock. */
 const LOCK_RELEASE_SCRIPT =
@@ -192,6 +196,8 @@ export interface MirrorServiceDeps {
   logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
+  /** Defense in depth: paranoid accounts cannot create, join, or mutate chains. */
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'runAllowedMany' | 'runAllowedWithOptional'>;
 }
 
 export interface ReplicateChainResult {
@@ -502,6 +508,39 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   } = deps;
   const now = deps.now ?? Date.now;
   const maxMembers = deps.maxMembers ?? MIRROR_MAX_MEMBERS;
+  const assertMirrorAllowed = async (userId: string) => {
+    await deps.paranoid?.assertAllowed(userId, 'mirrorchain');
+  };
+  const runMirrorAllowedMany = <T>(
+    userIds: readonly string[],
+    action: () => Promise<T>,
+  ): Promise<T> =>
+    deps.paranoid ? deps.paranoid.runAllowedMany(userIds, 'mirrorchain', action) : action();
+  const runMirrorAllowedWithOptional = <T>(
+    requiredUserIds: readonly string[],
+    optionalUserIds: readonly string[],
+    action: (allowedOptionalUserIds: ReadonlySet<string>) => Promise<T>,
+  ): Promise<T> =>
+    deps.paranoid
+      ? deps.paranoid.runAllowedWithOptional(
+          requiredUserIds,
+          optionalUserIds,
+          'mirrorchain',
+          action,
+        )
+      : action(new Set(optionalUserIds));
+  const runMirrorIfAllowedMany = async (
+    userIds: readonly string[],
+    action: () => Promise<void>,
+  ): Promise<boolean> => {
+    try {
+      await runMirrorAllowedMany(userIds, action);
+      return true;
+    } catch (error) {
+      if (error instanceof ParanoidModeError) return false;
+      throw error;
+    }
+  };
 
   // ── Infrastructure ─────────────────────────────────────────────────────────
 
@@ -1118,6 +1157,74 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     return appliedCount;
   }
 
+  type ReplayPrincipalAttempt =
+    | { retry: true; principalIds: string[] }
+    | { retry: false; applied: number };
+
+  /**
+   * Replay one destination only while its account, every current chain member
+   * (including the owner), and every queued op actor/origin owner are normal.
+   * Principal discovery selects metadata only. The full op payload is loaded
+   * under those locks and the chain mutex; a newly appended op from an
+   * undiscovered principal forces rediscovery before any watermark or ledger
+   * write.
+   */
+  async function replayMemberIfAllowed(
+    chainId: string,
+    candidate: MirrorChainMemberRow,
+  ): Promise<{ ran: boolean; applied: number }> {
+    if (!candidate.userId) return { ran: false, applied: 0 };
+    let discoveredPrincipalIds = [
+      candidate.userId,
+      ...(await repo.listActiveMembers(chainId))
+        .map((member) => member.userId)
+        .filter((userId): userId is string => typeof userId === 'string'),
+      ...(await repo.listOpPrincipalIdsSince(chainId, candidate.appliedSeq)),
+    ];
+
+    for (let attempt = 0; attempt < PRINCIPAL_GUARD_RETRY_LIMIT; attempt += 1) {
+      const guardedIds = [...new Set(discoveredPrincipalIds)];
+      const guardedSet = new Set(guardedIds);
+      let result: ReplayPrincipalAttempt | undefined;
+      const ran = await runMirrorIfAllowedMany(guardedIds, async () => {
+        result = await withChainLock(
+          chainId,
+          async (): Promise<ReplayPrincipalAttempt> => {
+            const fresh = await repo.findActiveMembership(chainId, candidate.userId!);
+            if (!fresh?.portfolioId) return { retry: false, applied: 0 };
+            const [members, opPrincipalIds] = await Promise.all([
+              repo.listActiveMembers(chainId),
+              repo.listOpPrincipalIdsSince(chainId, fresh.appliedSeq),
+            ]);
+            const currentPrincipalIds = [
+              fresh.userId!,
+              ...members
+                .map((member) => member.userId)
+                .filter((userId): userId is string => typeof userId === 'string'),
+              ...opPrincipalIds,
+            ];
+            if (currentPrincipalIds.some((userId) => !guardedSet.has(userId))) {
+              return { retry: true, principalIds: [...new Set(currentPrincipalIds)] };
+            }
+            const ops = await repo.listOpsSince(chainId, fresh.appliedSeq);
+            return { retry: false, applied: await applyOpsToMember(fresh, ops) };
+          },
+          REPLICATE_LOCK_WAIT_MS,
+        );
+      });
+      if (!ran) return { ran: false, applied: 0 };
+      if (!result) throw new Error(`mirror: replay principal guard returned no result`);
+      if (!result.retry) return { ran: true, applied: result.applied };
+      discoveredPrincipalIds = result.principalIds;
+    }
+
+    throw new ApiError(
+      503,
+      'MIRROR_BUSY',
+      'This group portfolio is busy applying another change. Try again shortly.',
+    );
+  }
+
   /** The per-copy audit row (§2/§10): actor = the acting member, target = the local row. */
   async function recordOpAudit(
     member: MirrorChainMemberRow,
@@ -1447,7 +1554,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
 
   function summaryOf(
     member: MirrorChainMemberRow,
-    chain: MirrorChainRow,
+    chain: MirrorChainDisplayRow,
     memberCount: number,
   ): MirrorChainSummary {
     return {
@@ -1481,12 +1588,20 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     chain: { id: string; name: string },
     actorUsername: string,
     refId: string,
+    principals: {
+      actorId: string | null;
+      ownerId: string | null;
+      subjectUserIds?: readonly string[];
+    },
   ): Promise<void> {
     await notify.emit({
       type,
       userId: recipientUserId,
       chainId: chain.id,
       chainName: chain.name,
+      actorId: principals.actorId,
+      ownerId: principals.ownerId,
+      subjectUserIds: [...new Set(principals.subjectUserIds ?? [])],
       actorUsername,
       refId,
       occurredAt: new Date(now()).toISOString(),
@@ -1501,6 +1616,283 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   /** An invite past the §4 30-day token-hygiene horizon (age off `created_at`). */
   function inviteExpired(invite: { createdAt: Date }): boolean {
     return now() - invite.createdAt.getTime() > MIRROR_INVITE_TTL_MS;
+  }
+
+  type JoinPrincipalContext = {
+    chain: MirrorChainRow | null;
+    members: MirrorChainMemberRow[];
+    /**
+     * Exactly the accounts whose transition lock this scope holds. Any member
+     * copy the action reads or writes must belong to one of them.
+     */
+    guardedUserIds: ReadonlySet<string>;
+  };
+
+  type JoinPrincipalAttempt<T> = { retry: true; ownerId: string } | { retry: false; value: T };
+
+  /**
+   * A join/invite spans more than the acting account: the recipient, inviter,
+   * and chain owner all control whether server-side MIRRORCHAIN work remains
+   * legal. Discover the owner, acquire every account lock in one sorted guard,
+   * then acquire the chain lock and re-read ownership. If a transfer won in
+   * between, release and retry with the new owner before any write runs.
+   */
+  async function withJoinPrincipalGuards<T>(
+    chainId: string,
+    principalIds: readonly (string | null | undefined)[],
+    action: (context: JoinPrincipalContext) => Promise<T>,
+  ): Promise<T> {
+    const directPrincipalIds = [
+      ...new Set(principalIds.filter((userId): userId is string => typeof userId === 'string')),
+    ];
+    // Fast-fail known principals before any chain lookup. The complete,
+    // transition-serialized check still runs below after owner discovery.
+    await Promise.all(directPrincipalIds.map((userId) => assertMirrorAllowed(userId)));
+    let discoveredOwnerId = ownerOf(await repo.listActiveMembers(chainId))?.userId ?? null;
+
+    for (let attempt = 0; attempt < PRINCIPAL_GUARD_RETRY_LIMIT; attempt += 1) {
+      const guardedIds = [
+        ...new Set(
+          [...directPrincipalIds, discoveredOwnerId].filter(
+            (userId): userId is string => typeof userId === 'string',
+          ),
+        ),
+      ];
+      const guardedSet = new Set(guardedIds);
+      const result = await runMirrorAllowedMany(guardedIds, () =>
+        withChainLock(chainId, async (): Promise<JoinPrincipalAttempt<T>> => {
+          const chain = await repo.getChain(chainId);
+          const members = chain ? await repo.listActiveMembers(chainId) : [];
+          const ownerId = ownerOf(members)?.userId ?? null;
+          if (ownerId && !guardedSet.has(ownerId)) {
+            return { retry: true, ownerId };
+          }
+          return {
+            retry: false,
+            value: await action({ chain, members, guardedUserIds: guardedSet }),
+          };
+        }),
+      );
+      if (!result.retry) return result.value;
+      discoveredOwnerId = result.ownerId;
+    }
+
+    throw new ApiError(
+      503,
+      'MIRROR_BUSY',
+      'This group portfolio is busy applying another change. Try again shortly.',
+    );
+  }
+
+  type LifecyclePrincipalAttempt<T> =
+    | { retry: true; memberIds: string[] }
+    | { retry: false; value: T };
+
+  /**
+   * Serialize a membership lifecycle mutation against every account whose row,
+   * role, copy, notification, or ownership can change. Candidate member ids are
+   * discovered before locking; under the account locks and chain mutex the
+   * active set is re-read. A join that won in between forces bounded
+   * rediscovery before any write. The callback runs through audit, fan-out,
+   * enqueue, and response construction while all principals remain held.
+   */
+  async function withLifecyclePrincipalGuards<T>(
+    chainId: string,
+    directPrincipalIds: readonly string[],
+    action: (context: { chain: MirrorChainRow; members: MirrorChainMemberRow[] }) => Promise<T>,
+  ): Promise<T> {
+    let discoveredMemberIds = (await repo.listActiveMembers(chainId))
+      .map((member) => member.userId)
+      .filter((userId): userId is string => typeof userId === 'string');
+
+    for (let attempt = 0; attempt < PRINCIPAL_GUARD_RETRY_LIMIT; attempt += 1) {
+      const guardedIds = [...new Set([...directPrincipalIds, ...discoveredMemberIds])];
+      const guardedSet = new Set(guardedIds);
+      const result = await runMirrorAllowedMany(guardedIds, () =>
+        withChainLock(chainId, async (): Promise<LifecyclePrincipalAttempt<T>> => {
+          const chain = await repo.getChain(chainId);
+          if (!chain || chain.status !== 'active') throw chainNotFound();
+          const members = await repo.listActiveMembers(chainId);
+          const currentMemberIds = members
+            .map((member) => member.userId)
+            .filter((userId): userId is string => typeof userId === 'string');
+          if (currentMemberIds.some((userId) => !guardedSet.has(userId))) {
+            return { retry: true, memberIds: currentMemberIds };
+          }
+          return { retry: false, value: await action({ chain, members }) };
+        }),
+      );
+      if (!result.retry) return result.value;
+      discoveredMemberIds = result.memberIds;
+    }
+
+    throw new ApiError(
+      503,
+      'MIRROR_BUSY',
+      'This group portfolio is busy applying another change. Try again shortly.',
+    );
+  }
+
+  interface DynamicReadPrincipalSnapshot {
+    requiredUserIds: string[];
+    optionalUserIds: string[];
+    /** Stable identity-only fingerprint; no name/content fields are permitted. */
+    version: string;
+  }
+
+  /**
+   * Multi-principal reads discover ids before touching chain/profile/content
+   * fields, lock every required and optional account together, then repeat the
+   * identity-only discovery. A membership/owner/invite/op change that won in
+   * between retries before enrichment. Optional paranoid principals are handed
+   * to the reader as unavailable and filtered while their locks remain held.
+   */
+  async function withDynamicReadPrincipalGuards<T>(
+    discover: () => Promise<DynamicReadPrincipalSnapshot>,
+    read: (allowedOptionalUserIds: ReadonlySet<string>) => Promise<T>,
+  ): Promise<T> {
+    for (let attempt = 0; attempt < PRINCIPAL_GUARD_RETRY_LIMIT; attempt += 1) {
+      const discovered = await discover();
+      const result = await runMirrorAllowedWithOptional(
+        discovered.requiredUserIds,
+        discovered.optionalUserIds,
+        async (allowedOptionalUserIds): Promise<{ retry: true } | { retry: false; value: T }> => {
+          const current = await discover();
+          if (current.version !== discovered.version) return { retry: true };
+          return { retry: false, value: await read(allowedOptionalUserIds) };
+        },
+      );
+      if (!result.retry) return result.value;
+    }
+    throw new ApiError(
+      503,
+      'MIRROR_BUSY',
+      'This group portfolio is busy applying another change. Try again shortly.',
+    );
+  }
+
+  /**
+   * A synced ledger submit changes one logical portfolio, so every active copy
+   * owner is an affected principal even though only the origin copy is written
+   * synchronously. Hold the complete, revalidated active-member set through
+   * origin catch-up, mutation/op append, replication enqueue, and response
+   * construction. A join racing discovery triggers the lifecycle helper's
+   * bounded retry before any submit side effect.
+   */
+  async function withSubmitPrincipalGuards<T>(
+    userId: string,
+    membership: MirrorChainMemberRow,
+    action: (member: MirrorChainMemberRow) => Promise<T>,
+  ): Promise<T> {
+    return withLifecyclePrincipalGuards(membership.chainId, [userId], async ({ members }) => {
+      const current = members.find(
+        (member) =>
+          member.id === membership.id &&
+          member.userId === userId &&
+          member.portfolioId === membership.portfolioId,
+      );
+      if (!current) throw forbidden('You are no longer a member of this group portfolio.');
+      const caughtUp = await catchUpOrigin(current);
+      const result = await action(caughtUp);
+      await scheduleReplicate(membership.chainId);
+      return result;
+    });
+  }
+
+  async function attachMemberCopyUnderLock(
+    chain: MirrorChainRow,
+    existingMembers: MirrorChainMemberRow[],
+    guardedUserIds: ReadonlySet<string>,
+    userId: string,
+    opts?: { role?: 'manager' | 'member'; invitedBy?: string },
+  ): Promise<{ member: MirrorChainMemberRow; portfolioId: string }> {
+    if (existingMembers.some((member) => member.userId === userId)) {
+      throw badRequest('Already a member of this group portfolio.', 'MIRROR_ALREADY_MEMBER');
+    }
+    const username = await usernameOf(userId);
+
+    // The chain's Main identity: every copy's Main is linked to it (§8) — so
+    // ANY active copy would resolve it, but `getOrCreateMain` reads and may
+    // write that member's portfolio. Anchor only on a member whose account this
+    // scope already holds the transition lock for: `listActiveMembers` orders
+    // by join time, so the earliest-joined member is normally the FORMER owner
+    // after an ownership transfer, and reading their copy unguarded would let a
+    // paranoid transition win underneath the join. The current owner is always
+    // in the guarded set (`withJoinPrincipalGuards` re-reads ownership under
+    // the chain lock), so the preferred anchor is theirs.
+    const guardedAnchor = (member: MirrorChainMemberRow): boolean =>
+      Boolean(member.portfolioId) && member.userId !== null && guardedUserIds.has(member.userId);
+    const anchor =
+      existingMembers.find((member) => member.role === 'owner' && guardedAnchor(member)) ??
+      existingMembers.find(guardedAnchor);
+    if (!anchor?.portfolioId) {
+      throw badRequest('This group portfolio has no active copies to join.', 'MIRROR_NO_MEMBERS');
+    }
+    const anchorMain = await cashSourceRepo.getOrCreateMain(anchor.portfolioId);
+    const mainLink = await repo.findMirrorRowByLocal('cash_source', anchorMain.id);
+    if (!mainLink) throw new Error(`mirror: chain ${chain.id} has no linked Main source`);
+
+    // Auto-created, auto-named copy with the §1 collision suffix (§4).
+    let copyId: string | undefined;
+    for (let attempt = 1; attempt <= NAME_SUFFIX_ATTEMPTS && !copyId; attempt += 1) {
+      const name = attempt === 1 ? chain.name : `${chain.name} (${attempt})`;
+      try {
+        copyId = (await portfolio.createPortfolio(userId, { name })).id;
+      } catch (error) {
+        if (!isApiError(error, 'PORTFOLIO_NAME_TAKEN', 'CONFLICT')) throw error;
+      }
+    }
+    if (!copyId) {
+      throw new Error(`mirror: could not find a free portfolio name for "${chain.name}"`);
+    }
+
+    // Chain Main ↔ copy Main (§8): pre-linked so genesis' Main `source.create`
+    // op replays as an idempotent skip — one code path, no special casing.
+    const copyMain = await cashSourceRepo.getOrCreateMain(copyId);
+    await repo.insertMirrorRow({
+      chainId: chain.id,
+      kind: 'cash_source',
+      mirrorId: mainLink.mirrorId,
+      portfolioId: copyId,
+      localId: copyMain.id,
+      createdBy: chain.createdBy,
+      createdByUsername: chain.createdByUsername,
+    });
+
+    const member = await repo.insertMember({
+      chainId: chain.id,
+      userId,
+      username,
+      portfolioId: copyId,
+      role: opts?.role ?? 'member',
+      invitedBy: opts?.invitedBy ?? null,
+    });
+    const joined = await repo.appendOpsChecked(chain.id, userId, [
+      {
+        kind: 'member.joined',
+        actorUserId: userId,
+        actorUsername: username,
+        payload: {
+          opVersion: MIRROR_OP_VERSION,
+          kind: 'member.joined',
+          userId,
+          username,
+          role: opts?.role ?? 'member',
+        },
+      },
+    ]);
+    if ('refused' in joined) {
+      // The membership row was inserted just above, so any refusal here is a
+      // bug-level inconsistency — fail loudly rather than leave a member whose
+      // join never reached the oplog.
+      throw new Error(
+        `mirror: member.joined append refused (${joined.refused}) for chain ${chain.id}`,
+      );
+    }
+    // Join = plain oplog replay through the joiner's services (§2), driven by
+    // the replicate job; the copy shows its syncing state via the watermark.
+    await scheduleReplicate(chain.id);
+    return { member, portfolioId: copyId };
   }
 
   /** One activity-feed sentence per op kind (EN — the historical record, §6/§11). */
@@ -1554,34 +1946,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       default:
         return `${actor} made a change`;
     }
-  }
-
-  /**
-   * Run a membership mutation under the per-chain lock with the actor's role
-   * re-read INSIDE the lock, so a role change and a membership op the design's
-   * §5 race describes resolve by append order: whichever acquires the lock first
-   * wins, and the loser re-reads the now-stale role and is refused. `check`
-   * throws {@link mirrorForbidden} when the freshly-read role is insufficient.
-   */
-  async function withAuthorizedMember<T>(
-    chainId: string,
-    actorId: string,
-    check: (member: MirrorChainMemberRow, members: MirrorChainMemberRow[]) => void,
-    fn: (ctx: {
-      chain: MirrorChainRow;
-      actor: MirrorChainMemberRow;
-      members: MirrorChainMemberRow[];
-    }) => Promise<T>,
-  ): Promise<T> {
-    return withChainLock(chainId, async () => {
-      const chain = await repo.getChain(chainId);
-      if (!chain || chain.status !== 'active') throw chainNotFound();
-      const members = await repo.listActiveMembers(chainId);
-      const actor = members.find((m) => m.userId === actorId);
-      if (!actor) throw forbidden('You are not a member of this group portfolio.');
-      check(actor, members);
-      return fn({ chain, actor, members });
-    });
   }
 
   /** Append a chain/membership op as the authorized actor (already role-checked). */
@@ -1651,6 +2015,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
             chain,
             manager.username,
             refId,
+            {
+              actorId: departing?.userId ?? null,
+              ownerId: manager.userId,
+              subjectUserIds: manager.userId ? [manager.userId] : [],
+            },
           );
         }
       }
@@ -1669,7 +2038,10 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     await repo.markChainDissolved(chain.id, endedAt);
     for (const m of activeMembers) {
       if (m.userId && m.userId !== departing?.userId) {
-        await emitMirror('mirror.chain_dissolved', m.userId, chain, actor.username, chain.id);
+        await emitMirror('mirror.chain_dissolved', m.userId, chain, actor.username, chain.id, {
+          actorId: departing?.userId ?? null,
+          ownerId: departing?.userId ?? null,
+        });
       }
     }
     return { outcome: 'dissolved' };
@@ -1691,6 +2063,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async convertToChain(userId, portfolioId, opts) {
+      await assertMirrorAllowed(userId);
       const row = await portfolioRepo.findByIdForUser(userId, portfolioId);
       if (!row) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
       if (await repo.findActiveMembershipByPortfolio(portfolioId)) {
@@ -1950,87 +2323,16 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async attachMemberCopy(chainId, userId, opts) {
-      const chain = await repo.getChain(chainId);
-      if (!chain || chain.status !== 'active') {
-        throw notFound('Group portfolio not found.', 'MIRROR_CHAIN_NOT_FOUND');
-      }
-      if (await repo.findActiveMembership(chainId, userId)) {
-        throw badRequest('Already a member of this group portfolio.', 'MIRROR_ALREADY_MEMBER');
-      }
-      const username = await usernameOf(userId);
-
-      // The chain's Main identity: every copy's Main is linked to it (§8) —
-      // derive it from any active member's copy (there is always ≥1).
-      const existingMembers = await repo.listActiveMembers(chainId);
-      const anchor = existingMembers.find((m) => m.portfolioId);
-      if (!anchor?.portfolioId) {
-        throw badRequest('This group portfolio has no active copies to join.', 'MIRROR_NO_MEMBERS');
-      }
-      const anchorMain = await cashSourceRepo.getOrCreateMain(anchor.portfolioId);
-      const mainLink = await repo.findMirrorRowByLocal('cash_source', anchorMain.id);
-      if (!mainLink) throw new Error(`mirror: chain ${chainId} has no linked Main source`);
-
-      // Auto-created, auto-named copy with the §1 collision suffix (§4).
-      let copyId: string | undefined;
-      for (let attempt = 1; attempt <= NAME_SUFFIX_ATTEMPTS && !copyId; attempt++) {
-        const name = attempt === 1 ? chain.name : `${chain.name} (${attempt})`;
-        try {
-          copyId = (await portfolio.createPortfolio(userId, { name })).id;
-        } catch (err) {
-          if (!isApiError(err, 'PORTFOLIO_NAME_TAKEN', 'CONFLICT')) throw err;
-        }
-      }
-      if (!copyId) {
-        throw new Error(`mirror: could not find a free portfolio name for "${chain.name}"`);
-      }
-
-      // Chain Main ↔ copy Main (§8): pre-linked so genesis' Main `source.create`
-      // op replays as an idempotent skip — one code path, no special casing.
-      const copyMain = await cashSourceRepo.getOrCreateMain(copyId);
-      await repo.insertMirrorRow({
+      return withJoinPrincipalGuards(
         chainId,
-        kind: 'cash_source',
-        mirrorId: mainLink.mirrorId,
-        portfolioId: copyId,
-        localId: copyMain.id,
-        createdBy: chain.createdBy,
-        createdByUsername: chain.createdByUsername,
-      });
-
-      const member = await repo.insertMember({
-        chainId,
-        userId,
-        username,
-        portfolioId: copyId,
-        role: opts?.role ?? 'member',
-        invitedBy: opts?.invitedBy ?? null,
-      });
-      const joined = await repo.appendOpsChecked(chainId, userId, [
-        {
-          kind: 'member.joined',
-          actorUserId: userId,
-          actorUsername: username,
-          payload: {
-            opVersion: MIRROR_OP_VERSION,
-            kind: 'member.joined',
-            userId,
-            username,
-            role: opts?.role ?? 'member',
-          },
+        [userId, opts?.invitedBy],
+        async ({ chain, members, guardedUserIds }) => {
+          if (!chain || chain.status !== 'active') {
+            throw chainNotFound();
+          }
+          return attachMemberCopyUnderLock(chain, members, guardedUserIds, userId, opts);
         },
-      ]);
-      if ('refused' in joined) {
-        // The membership row was inserted just above, so any refusal here is a
-        // bug-level inconsistency — fail loudly rather than leave a member
-        // whose join never reached the oplog.
-        throw new Error(
-          `mirror: member.joined append refused (${joined.refused}) for chain ${chainId}`,
-        );
-      }
-      // Join = plain oplog replay through the joiner's services (§2), driven by
-      // the replicate job; the copy shows its syncing state via the watermark.
-      await scheduleReplicate(chainId);
-      return { member, portfolioId: copyId };
+      );
     },
 
     async replicateChain(chainId) {
@@ -2043,21 +2345,9 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         if (!member.userId || !member.portfolioId) continue;
         if (member.appliedSeq >= chain.lastSeq) continue;
         try {
-          // Each copy's replay holds the same per-chain lock the submit path
-          // does — never a second applier next to a submit's origin catch-up.
-          // The membership is re-read INSIDE the lock (the pre-lock rows are
-          // only a cheap skip): a concurrent submit may have advanced this
-          // copy's watermark while we waited.
-          applied += await withChainLock(
-            chainId,
-            async () => {
-              const fresh = await repo.findActiveMembership(chainId, member.userId!);
-              if (!fresh?.portfolioId) return 0;
-              const ops = await repo.listOpsSince(chainId, fresh.appliedSeq);
-              return applyOpsToMember(fresh, ops);
-            },
-            REPLICATE_LOCK_WAIT_MS,
-          );
+          const replay = await replayMemberIfAllowed(chainId, member);
+          if (!replay.ran) continue;
+          applied += replay.applied;
         } catch (err) {
           // This copy lags (never diverges, §2) — the others still catch up.
           failures.push({ memberId: member.id, err });
@@ -2104,9 +2394,33 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         if (!stalled.userId || !stalled.portfolioId) continue;
         if (stalled.appliedSeq >= chain.lastSeq) continue; // caught up — not stalled
         const refId = `${stalled.userId}:${stalled.appliedSeq}`;
-        await emitMirror('mirror.sync_stalled', stalled.userId, chain, stalled.username, refId);
+        const principalIds = [stalled.userId, ...(owner?.userId ? [owner.userId] : [])];
+        const eventPrincipals = {
+          actorId: stalled.userId,
+          ownerId: owner?.userId ?? null,
+          subjectUserIds: [stalled.userId],
+        };
+        await runMirrorIfAllowedMany(principalIds, async () => {
+          await emitMirror(
+            'mirror.sync_stalled',
+            stalled.userId!,
+            chain,
+            stalled.username,
+            refId,
+            eventPrincipals,
+          );
+        });
         if (owner?.userId && owner.userId !== stalled.userId) {
-          await emitMirror('mirror.sync_stalled', owner.userId, chain, stalled.username, refId);
+          await runMirrorIfAllowedMany(principalIds, async () => {
+            await emitMirror(
+              'mirror.sync_stalled',
+              owner.userId!,
+              chain,
+              stalled.username,
+              refId,
+              eventPrincipals,
+            );
+          });
         }
       }
     },
@@ -2114,6 +2428,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     // ── M3 membership lifecycle (design §§4–7, §11) ────────────────────────────
 
     async createChain(userId, name) {
+      await assertMirrorAllowed(userId);
       // "New group portfolio": a fresh empty portfolio becomes the origin copy,
       // then convert synthesizes just the chain.genesis (+ Main source.create).
       const created = await portfolio.createPortfolio(userId, { name });
@@ -2121,6 +2436,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async convertChain(userId, portfolioId, opts) {
+      await assertMirrorAllowed(userId);
       const { chain, member } = await service.convertToChain(userId, portfolioId, opts);
       await audit.record({
         actorId: userId,
@@ -2133,89 +2449,360 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async listChainsForUser(userId) {
-      const memberships = await repo.listActiveMembershipsForUser(userId);
-      const summaries: MirrorChainSummary[] = [];
-      for (const member of memberships) {
-        const chain = await repo.getChain(member.chainId);
-        if (!chain) continue;
-        const memberCount = await repo.countActiveMembers(member.chainId);
-        summaries.push(summaryOf(member, chain, memberCount));
-      }
-      return summaries;
+      const discover = async (): Promise<DynamicReadPrincipalSnapshot> => {
+        const memberships = await repo.listActiveMembershipPrincipalsForUser(userId);
+        const membersByChain = await Promise.all(
+          memberships.map(async (membership) => ({
+            chainId: membership.chainId,
+            members: await repo.listActiveMemberPrincipals(membership.chainId),
+          })),
+        );
+        const ownerIds = membersByChain
+          .map(({ members }) => members.find((member) => member.role === 'owner')?.userId ?? null)
+          .filter((ownerId): ownerId is string => ownerId !== null && ownerId !== userId);
+        return {
+          requiredUserIds: [userId],
+          optionalUserIds: [...new Set(ownerIds)],
+          version: JSON.stringify({
+            memberships: memberships.map(({ id, chainId }) => [id, chainId]),
+            owners: membersByChain.map(({ chainId, members }) => [
+              chainId,
+              members.find((member) => member.role === 'owner')?.userId ?? null,
+            ]),
+          }),
+        };
+      };
+
+      return withDynamicReadPrincipalGuards(discover, async (allowedOwnerIds) => {
+        const memberships = await repo.listActiveMembershipsForUser(userId);
+        const summaries: MirrorChainSummary[] = [];
+        for (const member of memberships) {
+          const principals = await repo.listActiveMemberPrincipals(member.chainId);
+          const ownerId =
+            principals.find((principal) => principal.role === 'owner')?.userId ?? null;
+          if (!ownerId || (ownerId !== userId && !allowedOwnerIds.has(ownerId))) continue;
+          const chain = await repo.getChainDisplay(member.chainId);
+          if (!chain) continue;
+          summaries.push(summaryOf(member, chain, principals.length));
+        }
+        return summaries;
+      });
     },
 
     async getMemberList(userId, chainId) {
-      const chain = await repo.getChain(chainId);
-      if (!chain) throw chainNotFound();
-      // Severed members lose chain access (design §6): a non-active membership
-      // (or none) 404s the member sheet.
-      const caller = await repo.findActiveMembership(chainId, userId);
-      if (!caller) throw chainNotFound();
-      const rows = await repo.listMembersDetailed(chainId);
-      return {
-        chainId: chain.id,
-        name: chain.name,
-        status: chain.status,
-        role: caller.role,
-        memberCap: maxMembers,
-        members: rows.map((r) => toMirrorMember(r, userId, chain.lastSeq)),
+      const discover = async (): Promise<DynamicReadPrincipalSnapshot> => {
+        const principals = await repo.listActiveMemberPrincipals(chainId);
+        const caller = principals.find((principal) => principal.userId === userId);
+        if (!caller) {
+          return {
+            requiredUserIds: [userId],
+            optionalUserIds: [],
+            version: JSON.stringify({ caller: null }),
+          };
+        }
+        const ownerId = principals.find((principal) => principal.role === 'owner')?.userId ?? null;
+        const requiredUserIds = [
+          ...new Set([userId, ownerId].filter((id): id is string => id !== null)),
+        ];
+        return {
+          requiredUserIds,
+          optionalUserIds: [
+            ...new Set(
+              principals
+                .map((principal) => principal.userId)
+                .filter((id): id is string => id !== null && !requiredUserIds.includes(id)),
+            ),
+          ],
+          version: JSON.stringify(
+            principals.map(({ id, userId: principalUserId, role }) => [id, principalUserId, role]),
+          ),
+        };
       };
+
+      return withDynamicReadPrincipalGuards(discover, async (allowedMemberIds) => {
+        const chain = await repo.getChainDisplay(chainId);
+        if (!chain) throw chainNotFound();
+        // Severed members lose chain access (design §6): a non-active membership
+        // (or none) 404s the member sheet.
+        const caller = await repo.findActiveMembership(chainId, userId);
+        if (!caller) throw chainNotFound();
+        const principals = await repo.listActiveMemberPrincipals(chainId);
+        const ownerId = principals.find((principal) => principal.role === 'owner')?.userId ?? null;
+        const allowedUserIds = [
+          ...new Set(
+            [userId, ownerId, ...allowedMemberIds].filter((id): id is string => id !== null),
+          ),
+        ];
+        const rows = await repo.listMembersDetailed(chainId, { allowedUserIds });
+        return {
+          chainId: chain.id,
+          name: chain.name,
+          status: chain.status,
+          role: caller.role,
+          memberCap: maxMembers,
+          members: rows
+            .filter(
+              (row) =>
+                row.userId === null ||
+                row.userId === userId ||
+                row.userId === ownerId ||
+                allowedMemberIds.has(row.userId),
+            )
+            .map((row) => toMirrorMember(row, userId, chain.lastSeq)),
+        };
+      });
     },
 
     async getActivity(userId, chainId, opts) {
-      const chain = await repo.getChain(chainId);
-      if (!chain) throw chainNotFound();
-      const caller = await repo.findActiveMembership(chainId, userId);
-      if (!caller) throw chainNotFound(); // severed access (§6)
-      const { limit } = opts;
-      const ops = await repo.listActivity(chainId, { before: opts.before, limit });
-      const entries: MirrorActivityEntry[] = ops.map((op) => ({
-        seq: op.seq,
-        kind: op.kind as MirrorOpKind,
-        actorUsername: op.actorUsername,
-        summary: activitySummary(op),
-        createdAt: op.createdAt.toISOString(),
-      }));
-      const nextCursor = ops.length === limit ? (ops[ops.length - 1]?.seq ?? null) : null;
-      return { entries, nextCursor };
+      const discover = async (): Promise<DynamicReadPrincipalSnapshot> => {
+        const members = await repo.listActiveMemberPrincipals(chainId);
+        const caller = members.find((member) => member.userId === userId);
+        if (!caller) {
+          return {
+            requiredUserIds: [userId],
+            optionalUserIds: [],
+            version: JSON.stringify({ caller: null }),
+          };
+        }
+        const ownerId = members.find((member) => member.role === 'owner')?.userId ?? null;
+        const ops = await repo.listActivityPrincipals(chainId, opts);
+        const requiredUserIds = [
+          ...new Set([userId, ownerId].filter((id): id is string => id !== null)),
+        ];
+        return {
+          requiredUserIds,
+          optionalUserIds: [
+            ...new Set(
+              ops
+                .map((op) => op.actorUserId)
+                .filter((id): id is string => id !== null && !requiredUserIds.includes(id)),
+            ),
+          ],
+          version: JSON.stringify({
+            members: members.map(({ id, userId: memberUserId, role }) => [id, memberUserId, role]),
+            ops: ops.map(({ seq, actorUserId }) => [seq, actorUserId]),
+          }),
+        };
+      };
+
+      return withDynamicReadPrincipalGuards(discover, async (allowedActorIds) => {
+        const chain = await repo.getChainDisplay(chainId);
+        if (!chain) throw chainNotFound();
+        const caller = await repo.findActiveMembership(chainId, userId);
+        if (!caller) throw chainNotFound(); // severed access (§6)
+        const members = await repo.listActiveMemberPrincipals(chainId);
+        const ownerId = members.find((member) => member.role === 'owner')?.userId ?? null;
+        const { limit } = opts;
+        const allowedActorUserIds = [
+          ...new Set(
+            [userId, ownerId, ...allowedActorIds].filter((id): id is string => id !== null),
+          ),
+        ];
+        const ops = await repo.listActivity(chainId, {
+          before: opts.before,
+          limit,
+          allowedActorUserIds,
+        });
+        const entries: MirrorActivityEntry[] = ops.map((op) => ({
+          seq: op.seq,
+          kind: op.kind as MirrorOpKind,
+          actorUsername: op.actorUsername,
+          summary: activitySummary(op),
+          createdAt: op.createdAt.toISOString(),
+        }));
+        const nextCursor = ops.length === limit ? (ops[ops.length - 1]?.seq ?? null) : null;
+        return { entries, nextCursor };
+      });
     },
 
     async listInvites(userId) {
-      const rows = await repo.listInvitesForUserDetailed(userId);
-      const incoming: MirrorInvite[] = [];
-      const outgoing: MirrorInvite[] = [];
-      for (const row of rows) {
-        // Stale (expired) invites are hidden until the daily sweep retires them
-        // (design §4) — they are never acceptable and never block a re-invite.
-        if (inviteExpired(row)) continue;
-        const dto = toInviteDto(row, userId);
-        (dto.direction === 'incoming' ? incoming : outgoing).push(dto);
-      }
-      return { incoming, outgoing };
+      const discover = async (): Promise<DynamicReadPrincipalSnapshot> => {
+        const invites = await repo.listInvitePrincipalsForUser(userId);
+        const ownerByChain = await Promise.all(
+          [...new Set(invites.map((invite) => invite.chainId))].map(async (chainId) => ({
+            chainId,
+            ownerId:
+              (await repo.listActiveMemberPrincipals(chainId)).find(
+                (member) => member.role === 'owner',
+              )?.userId ?? null,
+          })),
+        );
+        const relatedIds = [
+          ...invites.flatMap((invite) => [invite.fromUser, invite.toUser]),
+          ...ownerByChain.map(({ ownerId }) => ownerId),
+        ].filter((id): id is string => id !== null && id !== userId);
+        return {
+          requiredUserIds: [userId],
+          optionalUserIds: [...new Set(relatedIds)],
+          version: JSON.stringify({
+            invites: invites.map(({ id, chainId, fromUser, toUser, createdAt }) => [
+              id,
+              chainId,
+              fromUser,
+              toUser,
+              createdAt.toISOString(),
+            ]),
+            owners: ownerByChain.map(({ chainId, ownerId }) => [chainId, ownerId]),
+          }),
+        };
+      };
+
+      return withDynamicReadPrincipalGuards(discover, async (allowedPrincipalIds) => {
+        const identities = await repo.listInvitePrincipalsForUser(userId);
+        const identityById = new Map(identities.map((identity) => [identity.id, identity]));
+        const ownerByChain = new Map(
+          await Promise.all(
+            [...new Set(identities.map((invite) => invite.chainId))].map(
+              async (inviteChainId) =>
+                [
+                  inviteChainId,
+                  (await repo.listActiveMemberPrincipals(inviteChainId)).find(
+                    (member) => member.role === 'owner',
+                  )?.userId ?? null,
+                ] as const,
+            ),
+          ),
+        );
+        const allowedInviteIds = identities
+          .filter((identity) => {
+            const ownerId = ownerByChain.get(identity.chainId) ?? null;
+            if (!ownerId || inviteExpired(identity)) return false;
+            const relatedIds = [identity.fromUser, identity.toUser, ownerId].filter(
+              (id): id is string => id !== null && id !== userId,
+            );
+            return relatedIds.every((id) => allowedPrincipalIds.has(id));
+          })
+          .map((identity) => identity.id);
+        const rows = await repo.listInvitesForUserDetailed(userId, { allowedInviteIds });
+        const incoming: MirrorInvite[] = [];
+        const outgoing: MirrorInvite[] = [];
+        for (const row of rows) {
+          const identity = identityById.get(row.id);
+          if (!identity) continue;
+          // Stale (expired) invites are hidden until the daily sweep retires them
+          // (design §4) — they are never acceptable and never block a re-invite.
+          if (inviteExpired(row)) continue;
+          const dto = toInviteDto(row, userId);
+          (dto.direction === 'incoming' ? incoming : outgoing).push(dto);
+        }
+        return { incoming, outgoing };
+      });
     },
 
     async inviteMember(actorId, chainId, inviteeId) {
-      if (actorId === inviteeId) {
-        throw badRequest('You cannot invite yourself.', MIRROR_CANNOT_INVITE_SELF);
-      }
-      // Friends-only (design §4) — checked here at send AND again at accept.
-      if (!(await friendship.areFriends(actorId, inviteeId))) {
-        throw badRequest('You can only invite friends to a group portfolio.', MIRROR_NOT_FRIENDS);
-      }
-      const { chain, invite } = await withAuthorizedMember(
-        chainId,
-        actorId,
-        (actor) => {
-          if (!roleCan(actor.role, 'invite')) throw mirrorForbidden();
-        },
-        async ({ chain, members }) => {
-          if (members.some((m) => m.userId === inviteeId)) {
-            throw badRequest(
-              'That user is already a member of this group portfolio.',
-              'MIRROR_ALREADY_MEMBER',
+      return withJoinPrincipalGuards(chainId, [actorId, inviteeId], async ({ chain, members }) => {
+        if (!chain || chain.status !== 'active') throw chainNotFound();
+        if (actorId === inviteeId) {
+          throw badRequest('You cannot invite yourself.', MIRROR_CANNOT_INVITE_SELF);
+        }
+        const actor = members.find((member) => member.userId === actorId);
+        if (!actor) throw forbidden('You are not a member of this group portfolio.');
+        if (!roleCan(actor.role, 'invite')) throw mirrorForbidden();
+        // Friends-only (design §4) — checked here at send AND again at accept.
+        if (!(await friendship.areFriends(actorId, inviteeId))) {
+          throw badRequest('You can only invite friends to a group portfolio.', MIRROR_NOT_FRIENDS);
+        }
+        if (members.some((member) => member.userId === inviteeId)) {
+          throw badRequest(
+            'That user is already a member of this group portfolio.',
+            'MIRROR_ALREADY_MEMBER',
+          );
+        }
+        // Cap enforced at send (design §4) — active members only.
+        if (members.length >= maxMembers) {
+          throw new ApiError(
+            409,
+            MIRROR_MEMBER_CAP_REACHED,
+            `This group portfolio is full (max ${maxMembers} members).`,
+          );
+        }
+        // Pending-unique per (chain, invitee); declining/expiry allows a
+        // re-invite (§4). An expired-but-not-yet-swept pending invite no longer
+        // blocks — retire it so the pending-unique slot frees for a fresh send.
+        const pending = await repo.findPendingInvite(chainId, inviteeId);
+        if (pending) {
+          if (inviteExpired(pending)) {
+            await repo.setInviteStatus(pending.id, 'expired', new Date(now()));
+          } else {
+            throw new ApiError(
+              409,
+              MIRROR_INVITE_EXISTS,
+              'That user already has a pending invite to this group portfolio.',
             );
           }
-          // Cap enforced at send (design §4) — active members only.
+        }
+        const invite = await repo.createInvite({
+          chainId,
+          fromUser: actorId,
+          toUser: inviteeId,
+        });
+        const inviterName = await usernameOf(actorId);
+        await emitMirror('mirror.invite', inviteeId, chain, inviterName, invite.id, {
+          actorId,
+          ownerId: ownerOf(members)?.userId ?? null,
+          subjectUserIds: [inviteeId],
+        });
+        await audit.record({
+          actorId,
+          action: AuditAction.MirrorMemberInvited,
+          targetType: 'user',
+          targetId: inviteeId,
+          meta: { chainId, inviteId: invite.id },
+        });
+      });
+    },
+
+    async acceptInvite(userId, inviteId) {
+      await assertMirrorAllowed(userId);
+      const candidateInvite = await repo.getInvite(inviteId);
+      if (
+        !candidateInvite ||
+        candidateInvite.status !== 'pending' ||
+        candidateInvite.toUser !== userId
+      ) {
+        throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
+      }
+      return withJoinPrincipalGuards(
+        candidateInvite.chainId,
+        [userId, candidateInvite.fromUser],
+        async ({ chain, members, guardedUserIds }) => {
+          const invite = await repo.getInvite(inviteId);
+          if (
+            !invite ||
+            invite.status !== 'pending' ||
+            invite.toUser !== userId ||
+            invite.chainId !== candidateInvite.chainId
+          ) {
+            throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
+          }
+          // Invites expire with the standard token hygiene (design §4, 30 days):
+          // reject and retire the stale row while every relevant account remains
+          // guarded, freeing the pending-unique slot for a fresh re-invite.
+          if (inviteExpired(invite)) {
+            await repo.setInviteStatus(inviteId, 'expired', new Date(now()));
+            throw notFound('This invite has expired.', MIRROR_INVITE_NOT_FOUND);
+          }
+          if (!chain || chain.status !== 'active') {
+            await repo.setInviteStatus(inviteId, 'expired', new Date(now()));
+            throw notFound('That group portfolio is no longer available.', MIRROR_INVITE_NOT_FOUND);
+          }
+          // Friends-only re-checked (design §4): an unfriend between send and
+          // accept voids the invite, so a later re-invite is a fresh row.
+          if (!invite.fromUser || !(await friendship.areFriends(invite.fromUser, userId))) {
+            await repo.setInviteStatus(inviteId, 'revoked', new Date(now()));
+            throw badRequest(
+              'This invite is no longer valid because you are not friends with the inviter.',
+              MIRROR_NOT_FRIENDS,
+            );
+          }
+          // Idempotent: already a member (a prior accept whose invite update lost
+          // a crash race) — consume the invite and return the existing copy.
+          const existing = members.find((member) => member.userId === userId);
+          if (existing?.portfolioId) {
+            await repo.setInviteStatus(inviteId, 'accepted', new Date(now()));
+            return { chainId: invite.chainId, portfolioId: existing.portfolioId };
+          }
+          // Cap re-checked at accept under the same chain lock as insertion.
           if (members.length >= maxMembers) {
             throw new ApiError(
               409,
@@ -2223,110 +2810,49 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
               `This group portfolio is full (max ${maxMembers} members).`,
             );
           }
-          // Pending-unique per (chain, invitee); declining/expiry allows a
-          // re-invite (§4). An expired-but-not-yet-swept pending invite no longer
-          // blocks — retire it so the pending-unique slot frees for a fresh send.
-          const pending = await repo.findPendingInvite(chainId, inviteeId);
-          if (pending) {
-            if (inviteExpired(pending)) {
-              await repo.setInviteStatus(pending.id, 'expired', new Date(now()));
-            } else {
-              throw new ApiError(
-                409,
-                MIRROR_INVITE_EXISTS,
-                'That user already has a pending invite to this group portfolio.',
-              );
-            }
+          // Materialize the zero-config copy while recipient, inviter, current
+          // owner, and chain remain locked through every write and enqueue.
+          const { portfolioId } = await attachMemberCopyUnderLock(
+            chain,
+            members,
+            guardedUserIds,
+            userId,
+            { role: 'member', invitedBy: invite.fromUser },
+          );
+          await repo.setInviteStatus(inviteId, 'accepted', new Date(now()));
+          // Notify the owner a member joined. The join op advanced last_seq, so
+          // its value discriminates a re-join occurrence.
+          const chainAfter = (await repo.getChain(invite.chainId)) ?? chain;
+          const owner = ownerOf(members);
+          if (owner?.userId && owner.userId !== userId) {
+            const joinerName = await usernameOf(userId);
+            await emitMirror(
+              'mirror.member_joined',
+              owner.userId,
+              chainAfter,
+              joinerName,
+              `${userId}:${chainAfter.lastSeq}`,
+              {
+                actorId: userId,
+                ownerId: owner.userId,
+                subjectUserIds: [userId],
+              },
+            );
           }
-          const invite = await repo.createInvite({ chainId, fromUser: actorId, toUser: inviteeId });
-          return { chain, invite };
+          await audit.record({
+            actorId: userId,
+            action: AuditAction.MirrorMemberJoined,
+            targetType: 'mirror_chain',
+            targetId: invite.chainId,
+            meta: { chainId: invite.chainId, inviteId },
+          });
+          return { chainId: invite.chainId, portfolioId };
         },
       );
-      const inviterName = await usernameOf(actorId);
-      await emitMirror('mirror.invite', inviteeId, chain, inviterName, invite.id);
-      await audit.record({
-        actorId,
-        action: AuditAction.MirrorMemberInvited,
-        targetType: 'user',
-        targetId: inviteeId,
-        meta: { chainId, inviteId: invite.id },
-      });
-    },
-
-    async acceptInvite(userId, inviteId) {
-      const invite = await repo.getInvite(inviteId);
-      if (!invite || invite.status !== 'pending' || invite.toUser !== userId) {
-        throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
-      }
-      // Invites expire with the standard token hygiene (design §4, 30 days): a
-      // stale pending invite is rejected and marked expired at accept, freeing
-      // the (chain, invitee) pending-unique slot for a fresh re-invite.
-      if (inviteExpired(invite)) {
-        await repo.setInviteStatus(inviteId, 'expired', new Date(now()));
-        throw notFound('This invite has expired.', MIRROR_INVITE_NOT_FOUND);
-      }
-      const chain = await repo.getChain(invite.chainId);
-      if (!chain || chain.status !== 'active') {
-        await repo.setInviteStatus(inviteId, 'expired', new Date(now()));
-        throw notFound('That group portfolio is no longer available.', MIRROR_INVITE_NOT_FOUND);
-      }
-      // Friends-only re-checked (design §4): an unfriend between send and accept
-      // voids the invite (revoked), so a later re-invite is a fresh row.
-      if (!invite.fromUser || !(await friendship.areFriends(invite.fromUser, userId))) {
-        await repo.setInviteStatus(inviteId, 'revoked', new Date(now()));
-        throw badRequest(
-          'This invite is no longer valid because you are not friends with the inviter.',
-          MIRROR_NOT_FRIENDS,
-        );
-      }
-      // Idempotent: already a member (a prior accept whose invite update lost a
-      // crash race) — consume the invite and return the existing copy.
-      const existing = await repo.findActiveMembership(invite.chainId, userId);
-      if (existing?.portfolioId) {
-        await repo.setInviteStatus(inviteId, 'accepted', new Date(now()));
-        return { chainId: invite.chainId, portfolioId: existing.portfolioId };
-      }
-      // Cap re-checked at accept (design §4).
-      if ((await repo.countActiveMembers(invite.chainId)) >= maxMembers) {
-        throw new ApiError(
-          409,
-          MIRROR_MEMBER_CAP_REACHED,
-          `This group portfolio is full (max ${maxMembers} members).`,
-        );
-      }
-      // Materialize the copy via the M2 join path (auto-named + Main-linked +
-      // member.joined appended + replicate enqueued) — the member configures
-      // nothing (design §4).
-      const { portfolioId } = await service.attachMemberCopy(invite.chainId, userId, {
-        role: 'member',
-        invitedBy: invite.fromUser,
-      });
-      await repo.setInviteStatus(inviteId, 'accepted', new Date(now()));
-      // Notify the owner a member joined (design §5). The join op advanced the
-      // chain's last_seq, so its value discriminates a re-join occurrence.
-      const chainAfter = (await repo.getChain(invite.chainId)) ?? chain;
-      const owner = ownerOf(await repo.listActiveMembers(invite.chainId));
-      if (owner?.userId && owner.userId !== userId) {
-        const joinerName = await usernameOf(userId);
-        await emitMirror(
-          'mirror.member_joined',
-          owner.userId,
-          chainAfter,
-          joinerName,
-          `${userId}:${chainAfter.lastSeq}`,
-        );
-      }
-      await audit.record({
-        actorId: userId,
-        action: AuditAction.MirrorMemberJoined,
-        targetType: 'mirror_chain',
-        targetId: invite.chainId,
-        meta: { chainId: invite.chainId, inviteId },
-      });
-      return { chainId: invite.chainId, portfolioId };
     },
 
     async declineInvite(userId, inviteId) {
+      await assertMirrorAllowed(userId);
       const invite = await repo.getInvite(inviteId);
       if (!invite || invite.status !== 'pending' || invite.toUser !== userId) {
         throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
@@ -2335,6 +2861,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async revokeInvite(actorId, inviteId) {
+      await assertMirrorAllowed(actorId);
       const invite = await repo.getInvite(inviteId);
       if (!invite || invite.status !== 'pending') {
         throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
@@ -2346,71 +2873,67 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async setMemberRole(actorId, chainId, targetUserId, role) {
-      await withAuthorizedMember(
-        chainId,
-        actorId,
-        (actor) => {
-          if (!roleCan(actor.role, 'manage_roles')) throw mirrorForbidden();
-        },
-        async ({ actor, members }) => {
-          if (targetUserId === actor.userId) {
-            throw badRequest('You cannot change your own role.', MIRROR_FORBIDDEN);
-          }
-          const target = members.find((m) => m.userId === targetUserId);
-          if (!target) {
-            throw notFound(
-              'That member is not part of this group portfolio.',
-              MIRROR_MEMBER_NOT_FOUND,
-            );
-          }
-          // The owner role changes only via transfer (design §5).
-          if (target.role === 'owner') throw mirrorForbidden();
-          if (target.role === role) return; // idempotent
-          await repo.updateMemberRole(target.id, role);
-          await appendMembershipOp(
-            chainId,
-            { userId: actorId, username: actor.username },
-            role === 'manager'
-              ? {
-                  opVersion: MIRROR_OP_VERSION,
-                  kind: 'role.granted',
-                  userId: target.userId!,
-                  username: target.username,
-                  role: 'manager',
-                }
-              : {
-                  opVersion: MIRROR_OP_VERSION,
-                  kind: 'role.revoked',
-                  userId: target.userId!,
-                  username: target.username,
-                },
+      await withLifecyclePrincipalGuards(chainId, [actorId, targetUserId], async ({ members }) => {
+        const actor = members.find((member) => member.userId === actorId);
+        if (!actor) throw forbidden('You are not a member of this group portfolio.');
+        if (!roleCan(actor.role, 'manage_roles')) throw mirrorForbidden();
+        if (targetUserId === actor.userId) {
+          throw badRequest('You cannot change your own role.', MIRROR_FORBIDDEN);
+        }
+        const target = members.find((member) => member.userId === targetUserId);
+        if (!target) {
+          throw notFound(
+            'That member is not part of this group portfolio.',
+            MIRROR_MEMBER_NOT_FOUND,
           );
-        },
-      );
-      await audit.record({
-        actorId,
-        action: AuditAction.MirrorRoleChanged,
-        targetType: 'user',
-        targetId: targetUserId,
-        meta: { chainId, role },
+        }
+        // The owner role changes only via transfer (design §5).
+        if (target.role === 'owner') throw mirrorForbidden();
+        if (target.role === role) return; // idempotent
+        await repo.updateMemberRole(target.id, role);
+        await appendMembershipOp(
+          chainId,
+          { userId: actorId, username: actor.username },
+          role === 'manager'
+            ? {
+                opVersion: MIRROR_OP_VERSION,
+                kind: 'role.granted',
+                userId: target.userId!,
+                username: target.username,
+                role: 'manager',
+              }
+            : {
+                opVersion: MIRROR_OP_VERSION,
+                kind: 'role.revoked',
+                userId: target.userId!,
+                username: target.username,
+              },
+        );
+        await audit.record({
+          actorId,
+          action: AuditAction.MirrorRoleChanged,
+          targetType: 'user',
+          targetId: targetUserId,
+          meta: { chainId, role },
+        });
+        // The role.* op bumped last_seq — replicate so every copy skip-acks it
+        // and the sync-state read models settle to 100% (design §11).
+        await scheduleReplicate(chainId);
       });
-      // The role.* op bumped last_seq — replicate so every copy skip-acks it and
-      // the sync-state read models settle to 100% (design §11).
-      await scheduleReplicate(chainId);
     },
 
     async transferOwnership(actorId, chainId, toUserId) {
-      const { chain, seq } = await withAuthorizedMember(
+      await withLifecyclePrincipalGuards(
         chainId,
-        actorId,
-        (actor) => {
+        [actorId, toUserId],
+        async ({ chain, members }) => {
+          const actor = members.find((member) => member.userId === actorId);
+          if (!actor) throw forbidden('You are not a member of this group portfolio.');
           if (!roleCan(actor.role, 'transfer')) throw mirrorForbidden();
-        },
-        async ({ chain, actor, members }) => {
           if (toUserId === actor.userId) {
             throw badRequest('You are already the owner.', MIRROR_FORBIDDEN);
           }
-          const target = members.find((m) => m.userId === toUserId);
+          const target = members.find((member) => member.userId === toUserId);
           if (!target) {
             throw notFound(
               'The new owner must be an active member of this group portfolio.',
@@ -2433,46 +2956,50 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
               toUsername: target.username,
             },
           );
-          return { chain, seq: op!.seq };
+          // Notify every active member ownership changed (design §5). The acting
+          // old owner and new owner already know. Every member remains locked
+          // through the fan-out and enqueue.
+          const newOwnerName = await usernameOf(toUserId);
+          const refId = `${toUserId}:${op!.seq}`;
+          for (const member of members) {
+            if (member.userId && member.userId !== actorId && member.userId !== toUserId) {
+              await emitMirror(
+                'mirror.ownership_transferred',
+                member.userId,
+                chain,
+                newOwnerName,
+                refId,
+                {
+                  actorId,
+                  ownerId: toUserId,
+                  subjectUserIds: [toUserId],
+                },
+              );
+            }
+          }
+          await audit.record({
+            actorId,
+            action: AuditAction.MirrorOwnershipTransferred,
+            targetType: 'user',
+            targetId: toUserId,
+            meta: { chainId },
+          });
+          await scheduleReplicate(chainId);
         },
       );
-      // Notify every active member ownership changed (design §5). The acting old
-      // owner already knows; the NEW owner is skipped too — the copy reads
-      // "⟨actor⟩ is now the owner", which self-named reads wrong, and their own
-      // member sheet already shows the role. The op seq discriminates the notice
-      // so transferring ownership back to a prior owner is not silently deduped.
-      const newOwnerName = await usernameOf(toUserId);
-      const refId = `${toUserId}:${seq}`;
-      for (const m of await repo.listActiveMembers(chainId)) {
-        if (m.userId && m.userId !== actorId && m.userId !== toUserId) {
-          await emitMirror('mirror.ownership_transferred', m.userId, chain, newOwnerName, refId);
-        }
-      }
-      await audit.record({
-        actorId,
-        action: AuditAction.MirrorOwnershipTransferred,
-        targetType: 'user',
-        targetId: toUserId,
-        meta: { chainId },
-      });
-      // The owner.transferred op bumped last_seq — replicate so every copy
-      // skip-acks it and the sync-state read models settle to 100% (design §11).
-      await scheduleReplicate(chainId);
     },
 
     async removeMember(actorId, chainId, targetUserId) {
-      const { chain, targetName, seq, notifyOwnerId } = await withAuthorizedMember(
+      await withLifecyclePrincipalGuards(
         chainId,
-        actorId,
-        () => {
-          // The capability depends on the target's role — checked inside once
-          // the target is resolved (kick_member vs kick_manager, §5).
-        },
-        async ({ chain, actor, members }) => {
+        [actorId, targetUserId],
+        async ({ chain, members }) => {
+          const actor = members.find((member) => member.userId === actorId);
+          if (!actor) throw forbidden('You are not a member of this group portfolio.');
           if (targetUserId === actor.userId) {
             throw badRequest('Use Leave to remove yourself.', MIRROR_FORBIDDEN);
           }
-          const target = members.find((m) => m.userId === targetUserId);
+          const target = members.find((member) => member.userId === targetUserId);
           if (!target) {
             throw notFound(
               'That member is not part of this group portfolio.',
@@ -2497,75 +3024,75 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
             },
           );
           const owner = ownerOf(members);
-          return {
-            chain,
-            targetName: target.username,
-            seq: op!.seq,
-            notifyOwnerId: owner && owner.userId !== actorId ? owner.userId : null,
+          const ownerId = owner?.userId ?? null;
+          const principals = {
+            actorId,
+            ownerId,
+            subjectUserIds: [targetUserId],
           };
+          // The removed member is told (design §6); a manager's kick also tells
+          // the owner (design §5). Seq discriminates a re-kick after re-invite.
+          await emitMirror(
+            'mirror.removed',
+            targetUserId,
+            chain,
+            target.username,
+            `${targetUserId}:${op!.seq}`,
+            principals,
+          );
+          if (ownerId && ownerId !== actorId) {
+            await emitMirror(
+              'mirror.member_removed',
+              ownerId,
+              chain,
+              target.username,
+              `${targetUserId}:${op!.seq}`,
+              principals,
+            );
+          }
+          await audit.record({
+            actorId,
+            action: AuditAction.MirrorMemberRemoved,
+            targetType: 'user',
+            targetId: targetUserId,
+            meta: { chainId },
+          });
+          await scheduleReplicate(chainId);
         },
       );
-      // The removed member is told (design §6); a manager's kick also tells the
-      // owner (design §5). Seq discriminates a re-kick after a re-invite.
-      await emitMirror('mirror.removed', targetUserId, chain, targetName, `${targetUserId}:${seq}`);
-      if (notifyOwnerId) {
-        await emitMirror(
-          'mirror.member_removed',
-          notifyOwnerId,
-          chain,
-          targetName,
-          `${targetUserId}:${seq}`,
-        );
-      }
-      await audit.record({
-        actorId,
-        action: AuditAction.MirrorMemberRemoved,
-        targetType: 'user',
-        targetId: targetUserId,
-        meta: { chainId },
-      });
-      // The member.removed op bumped last_seq — replicate so the remaining
-      // copies skip-ack it and their sync-state read models settle (design §11).
-      await scheduleReplicate(chainId);
     },
 
     async leaveChain(userId, chainId) {
-      const outcome = await withAuthorizedMember(
-        chainId,
-        userId,
-        () => {
-          // Every role may leave (design §5): a plain leave for a member/manager,
-          // and §7 succession for the owner — the M3 stopgap 409 is gone (M4).
-        },
-        async ({ chain, actor, members }) => {
-          if (actor.role === 'owner') {
-            // §7: the owner departs → ownership passes to the oldest manager (or
-            // the chain dissolves with no manager). Tombstone the owner FIRST so
-            // there is never a moment with two active owners, then succeed; the
-            // owner keeps their own copy as a fork (§6).
-            await repo.endMembership(actor.id, 'left', new Date(now()));
-            const remaining = await repo.listActiveMembers(chainId);
-            const result = await runOwnerSuccession(
-              chain,
-              remaining,
+      await withLifecyclePrincipalGuards(chainId, [userId], async ({ chain, members }) => {
+        const actor = members.find((member) => member.userId === userId);
+        if (!actor) throw forbidden('You are not a member of this group portfolio.');
+        if (actor.role === 'owner') {
+          // §7: the owner departs → ownership passes to the oldest manager (or
+          // the chain dissolves with no manager). Tombstone the owner FIRST so
+          // there is never a moment with two active owners, then succeed; the
+          // owner keeps their own copy as a fork (§6).
+          await repo.endMembership(actor.id, 'left', new Date(now()));
+          const remaining = await repo.listActiveMembers(chainId);
+          const result = await runOwnerSuccession(
+            chain,
+            remaining,
+            { userId, username: actor.username },
+            'owner_left',
+          );
+          if (result.outcome === 'transferred') {
+            // The departing owner's member.left-equivalent tombstone op (§7).
+            await appendMembershipOp(
+              chainId,
               { userId, username: actor.username },
-              'owner_left',
+              {
+                opVersion: MIRROR_OP_VERSION,
+                kind: 'member.left',
+                userId,
+                username: actor.username,
+              },
             );
-            if (result.outcome === 'transferred') {
-              // The departing owner's member.left-equivalent tombstone op (§7).
-              await appendMembershipOp(
-                chainId,
-                { userId, username: actor.username },
-                {
-                  opVersion: MIRROR_OP_VERSION,
-                  kind: 'member.left',
-                  userId,
-                  username: actor.username,
-                },
-              );
-            }
-            return { chain, kind: 'owner' as const };
           }
+        } else {
           await repo.endMembership(actor.id, 'left', new Date(now()));
           const [op] = await appendMembershipOp(
             chainId,
@@ -2577,109 +3104,108 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
               username: actor.username,
             },
           );
-          const owner = ownerOf(members);
-          return {
-            chain,
-            kind: 'member' as const,
-            leaverName: actor.username,
-            seq: op!.seq,
-            notifyOwnerId: owner?.userId ?? null,
-          };
-        },
-      );
-      if (outcome.kind === 'member' && outcome.notifyOwnerId && outcome.notifyOwnerId !== userId) {
-        await emitMirror(
-          'mirror.member_left',
-          outcome.notifyOwnerId,
-          outcome.chain,
-          outcome.leaverName,
-          `${userId}:${outcome.seq}`,
-        );
-      }
-      await audit.record({
-        actorId: userId,
-        action: AuditAction.MirrorMemberLeft,
-        targetType: 'mirror_chain',
-        targetId: chainId,
-        meta: { chainId },
+          const ownerId = ownerOf(members)?.userId ?? null;
+          if (ownerId && ownerId !== userId) {
+            await emitMirror(
+              'mirror.member_left',
+              ownerId,
+              chain,
+              actor.username,
+              `${userId}:${op!.seq}`,
+              {
+                actorId: userId,
+                ownerId,
+                subjectUserIds: [userId],
+              },
+            );
+          }
+        }
+        await audit.record({
+          actorId: userId,
+          action: AuditAction.MirrorMemberLeft,
+          targetType: 'mirror_chain',
+          targetId: chainId,
+          meta: { chainId },
+        });
+        // The member.left / owner.transferred / chain.dissolved op bumped
+        // last_seq — replicate while every affected account remains held.
+        await scheduleReplicate(chainId);
       });
-      // The member.left / owner.transferred / chain.dissolved op bumped last_seq —
-      // replicate so the remaining copies skip-ack it and their sync-state read
-      // models settle (design §11).
-      await scheduleReplicate(chainId);
     },
 
     async renameChain(actorId, chainId, name) {
       const trimmed = name.trim();
-      await withAuthorizedMember(
-        chainId,
-        actorId,
-        (actor) => {
-          if (!roleCan(actor.role, 'rename')) throw mirrorForbidden();
-        },
-        async ({ actor }) => {
-          // The name is authoritative on the chain row (design §1); the chain UI
-          // renders it. Log a chain.rename op for the activity feed.
-          await repo.renameChain(chainId, trimmed);
-          await appendMembershipOp(
-            chainId,
-            { userId: actorId, username: actor.username },
-            { opVersion: MIRROR_OP_VERSION, kind: 'chain.rename', name: trimmed },
-          );
-        },
-      );
-      const updated = (await repo.getChain(chainId))!;
-      const member = (await repo.findActiveMembership(chainId, actorId))!;
-      const memberCount = await repo.countActiveMembers(chainId);
-      // The chain.rename op bumped last_seq — replicate so every copy skip-acks
-      // it and the sync-state read models settle to 100% (design §11).
-      await scheduleReplicate(chainId);
-      return summaryOf(member, updated, memberCount);
+      return withLifecyclePrincipalGuards(chainId, [actorId], async ({ members }) => {
+        const actor = members.find((member) => member.userId === actorId);
+        if (!actor) throw forbidden('You are not a member of this group portfolio.');
+        if (!roleCan(actor.role, 'rename')) throw mirrorForbidden();
+        // The name is authoritative on the chain row (design §1); the chain UI
+        // renders it. Log a chain.rename op for the activity feed.
+        await repo.renameChain(chainId, trimmed);
+        await appendMembershipOp(
+          chainId,
+          { userId: actorId, username: actor.username },
+          { opVersion: MIRROR_OP_VERSION, kind: 'chain.rename', name: trimmed },
+        );
+        const updated = await repo.getChainDisplay(chainId);
+        if (!updated) throw chainNotFound();
+        // The chain.rename op bumped last_seq — replicate so every copy skip-acks
+        // it and the sync-state read models settle to 100% (design §11).
+        await scheduleReplicate(chainId);
+        return summaryOf(actor, updated, members.length);
+      });
     },
 
     async dissolveChain(actorId, chainId) {
-      const { chain, members } = await withAuthorizedMember(
-        chainId,
-        actorId,
-        (actor) => {
-          if (!roleCan(actor.role, 'dissolve')) throw mirrorForbidden();
-        },
-        async ({ chain, actor, members }) => {
-          await appendMembershipOp(
-            chainId,
-            { userId: actorId, username: actor.username },
-            { opVersion: MIRROR_OP_VERSION, kind: 'chain.dissolved', reason: 'owner_dissolved' },
-          );
-          const endedAt = new Date(now());
-          for (const m of members) {
-            await repo.endMembership(m.id, 'dissolved', endedAt);
-          }
-          await repo.markChainDissolved(chainId, endedAt);
-          return { chain, members };
-        },
-      );
-      // Every copy becomes a fork (design §6); notify all former members but the
-      // acting owner.
-      const actorName = await usernameOf(actorId);
-      for (const m of members) {
-        if (m.userId && m.userId !== actorId) {
-          await emitMirror('mirror.chain_dissolved', m.userId, chain, actorName, chainId);
+      await withLifecyclePrincipalGuards(chainId, [actorId], async ({ chain, members }) => {
+        const actor = members.find((member) => member.userId === actorId);
+        if (!actor) throw forbidden('You are not a member of this group portfolio.');
+        if (!roleCan(actor.role, 'dissolve')) throw mirrorForbidden();
+        await appendMembershipOp(
+          chainId,
+          { userId: actorId, username: actor.username },
+          { opVersion: MIRROR_OP_VERSION, kind: 'chain.dissolved', reason: 'owner_dissolved' },
+        );
+        const endedAt = new Date(now());
+        for (const m of members) {
+          await repo.endMembership(m.id, 'dissolved', endedAt);
         }
-      }
-      await audit.record({
-        actorId,
-        action: AuditAction.MirrorChainDissolved,
-        targetType: 'mirror_chain',
-        targetId: chainId,
-        meta: { chainId },
+        await repo.markChainDissolved(chainId, endedAt);
+        // Every copy becomes a fork (design §6); notify all former members but
+        // the acting owner while those accounts remain locked.
+        for (const member of members) {
+          if (member.userId && member.userId !== actorId) {
+            await emitMirror(
+              'mirror.chain_dissolved',
+              member.userId,
+              chain,
+              actor.username,
+              chainId,
+              {
+                actorId,
+                ownerId: actorId,
+                subjectUserIds: members
+                  .map((row) => row.userId)
+                  .filter((userId): userId is string => typeof userId === 'string'),
+              },
+            );
+          }
+        }
+        await audit.record({
+          actorId,
+          action: AuditAction.MirrorChainDissolved,
+          targetType: 'mirror_chain',
+          targetId: chainId,
+          meta: { chainId },
+        });
+        // Every copy is now a fork, so replicate finds no active members and
+        // no-ops; enqueue still happens under the same principal locks.
+        await scheduleReplicate(chainId);
       });
-      // Uniform with the other membership ops (design §11). Every copy is now a
-      // fork, so this run finds no active members and no-ops — the sync-state
-      // read models no longer surface a dissolved chain anyway.
-      await scheduleReplicate(chainId);
     },
 
     async submitPortfolioDelete(userId, portfolioId) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.deletePortfolio(userId, portfolioId);
       // A synced copy is intercepted as leave-then-delete (§6): the copy leaves
@@ -2755,6 +3281,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
                 chain,
                 username,
                 `${userId}:${leftOp!.seq}`,
+                {
+                  actorId: userId,
+                  ownerId: owner.userId,
+                  subjectUserIds: [userId],
+                },
               );
             }
             await audit.record({
@@ -2774,15 +3305,29 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const ownerlessRepaired: MirrorConsistencySweepResult['ownerlessRepaired'] = [];
       // (0) Ownerless active chains → §7 succession (design §7 defense-in-depth).
       for (const chain of await repo.listOwnerlessActiveChains()) {
-        const repaired = await withChainLock(chain.id, async () => {
-          const fresh = await repo.getChain(chain.id);
-          if (!fresh || fresh.status !== 'active') return null;
-          const members = await repo.listActiveMembers(chain.id);
-          // A concurrent real transfer may have re-owned it between the scan and
-          // the lock — re-check under the lock before repairing.
-          if (members.some((m) => m.role === 'owner')) return null;
-          return runOwnerSuccession(fresh, members, null, 'repair_sweep');
+        const candidateMembers = await repo.listActiveMembers(chain.id);
+        const lockedUserIds = new Set(
+          candidateMembers.flatMap((member) => (member.userId ? [member.userId] : [])),
+        );
+        const repair = {
+          result: null as Awaited<ReturnType<typeof runOwnerSuccession>> | null,
+        };
+        const ran = await runMirrorIfAllowedMany([...lockedUserIds], async () => {
+          repair.result = await withChainLock(chain.id, async () => {
+            const fresh = await repo.getChain(chain.id);
+            if (!fresh || fresh.status !== 'active') return null;
+            const members = await repo.listActiveMembers(chain.id);
+            if (members.some((member) => member.userId && !lockedUserIds.has(member.userId))) {
+              return null;
+            }
+            // A concurrent real transfer may have re-owned it between the scan
+            // and the lock — re-check before repairing.
+            if (members.some((m) => m.role === 'owner')) return null;
+            return runOwnerSuccession(fresh, members, null, 'repair_sweep');
+          });
         });
+        if (!ran) continue;
+        const repaired = repair.result;
         if (repaired) {
           ownerlessRepaired.push({
             chainId: chain.id,
@@ -2811,12 +3356,12 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     // ── Submits ──────────────────────────────────────────────────────────────
 
     async submitTransactionsCreate(userId, portfolioId, inputs, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.createTransactions(userId, portfolioId, inputs, opts);
       await assertSyncableAssets(inputs.map((i) => i.assetId));
       const username = await usernameOf(userId);
-      const dtos = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const dtos = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         // The origin's normal, fully-validated write — it mints the row ids
         // that become the ops' mirror ids (§1); a rejection appends nothing.
         const created = await portfolio.createTransactions(userId, portfolioId, inputs, {
@@ -2875,16 +3420,15 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return created;
       });
-      await scheduleReplicate(membership.chainId);
       return dtos;
     },
 
     async submitTransactionUpdate(userId, portfolioId, txId, patch, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.updateTransaction(userId, portfolioId, txId, patch);
       const username = await usernameOf(userId);
-      const dto = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const dto = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const local = await transactionRepo.findByIdForUser(userId, txId);
         if (!local || local.portfolioId !== portfolioId) {
           throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
@@ -2940,16 +3484,15 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return outcome.result as TransactionDto;
       });
-      await scheduleReplicate(membership.chainId);
       return dto;
     },
 
     async submitTransactionDelete(userId, portfolioId, txId, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.deleteTransaction(userId, portfolioId, txId);
       const username = await usernameOf(userId);
-      await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const local = await transactionRepo.findByIdForUser(userId, txId);
         if (!local || local.portfolioId !== portfolioId) {
           throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
@@ -2986,16 +3529,15 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           [outcome],
         );
       });
-      await scheduleReplicate(membership.chainId);
     },
 
     async submitDividendRecord(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return tax.recordDividend(userId, portfolioId, input);
       await assertSyncableAssets([input.assetId]);
       const username = await usernameOf(userId);
-      const res = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const created = await tax.recordDividend(userId, portfolioId, input);
         await repo.insertMirrorRow({
           chainId: member.chainId,
@@ -3035,16 +3577,15 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return created;
       });
-      await scheduleReplicate(membership.chainId);
       return res;
     },
 
     async submitDividendDelete(userId, portfolioId, dividendId, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return tax.deleteDividend(userId, portfolioId, dividendId);
       const username = await usernameOf(userId);
-      await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const local = await taxRepo.findByIdForPortfolio(portfolioId, dividendId);
         if (!local) throw notFound('Dividend not found.', 'DIVIDEND_NOT_FOUND');
         const link = await repo.findMirrorRowByLocal('dividend', dividendId);
@@ -3079,23 +3620,24 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           [outcome],
         );
       });
-      await scheduleReplicate(membership.chainId);
     },
 
     async submitCashDeposit(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       return submitCashEntry(userId, portfolioId, input, 'cash.deposit');
     },
 
     async submitCashWithdraw(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       return submitCashEntry(userId, portfolioId, input, 'cash.withdraw');
     },
 
     async submitCashTransfer(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.transferCash(userId, portfolioId, input);
       const username = await usernameOf(userId);
-      const res = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const created = await portfolio.transferCash(userId, portfolioId, input);
         // One statement — a crash can never strand the pair half-linked.
         await repo.insertMirrorRows(
@@ -3137,16 +3679,15 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return created;
       });
-      await scheduleReplicate(membership.chainId);
       return res;
     },
 
     async submitSetCashBalance(userId, portfolioId, sourceId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.setCashBalance(userId, portfolioId, sourceId, input);
       const username = await usernameOf(userId);
-      const res = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const created = await portfolio.setCashBalance(userId, portfolioId, sourceId, input);
         // A zero delta records nothing, so no op is appended (design §8).
         if (!created.movement) return created;
@@ -3185,16 +3726,15 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return created;
       });
-      await scheduleReplicate(membership.chainId);
       return res;
     },
 
     async submitSourceCreate(userId, portfolioId, input) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.createCashSource(userId, portfolioId, input);
       const username = await usernameOf(userId);
-      const res = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const dto = await portfolio.createCashSource(userId, portfolioId, input);
         await repo.insertMirrorRow({
           chainId: member.chainId,
@@ -3228,16 +3768,15 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return dto;
       });
-      await scheduleReplicate(membership.chainId);
       return res;
     },
 
     async submitSourceUpdate(userId, portfolioId, sourceId, patch, opts) {
+      await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.updateCashSource(userId, portfolioId, sourceId, patch);
       const username = await usernameOf(userId);
-      const res = await withChainLock(membership.chainId, async () => {
-        const member = await catchUpOrigin(membership);
+      const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
         const current = await cashSourceRepo.findByIdForPortfolio(portfolioId, sourceId);
         if (!current) throw notFound('Cash source not found.', 'CASH_SOURCE_NOT_FOUND');
         const link = await repo.findMirrorRowByLocal('cash_source', sourceId);
@@ -3281,15 +3820,16 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
         return outcome.result as CashSourceDto;
       });
-      await scheduleReplicate(membership.chainId);
       return res;
     },
 
     async submitSourceArchive(userId, portfolioId, sourceId, opts) {
+      await assertMirrorAllowed(userId);
       return submitSourceFlip(userId, portfolioId, sourceId, 'source.archive', opts);
     },
 
     async submitSourceRestore(userId, portfolioId, sourceId, opts) {
+      await assertMirrorAllowed(userId);
       return submitSourceFlip(userId, portfolioId, sourceId, 'source.restore', opts);
     },
   };
@@ -3308,8 +3848,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         : portfolio.withdrawCash(userId, portfolioId, input);
     }
     const username = await usernameOf(userId);
-    const res = await withChainLock(membership.chainId, async () => {
-      const member = await catchUpOrigin(membership);
+    const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
       const created =
         kind === 'cash.deposit'
           ? await portfolio.depositCash(userId, portfolioId, input)
@@ -3349,7 +3888,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       );
       return created;
     });
-    await scheduleReplicate(membership.chainId);
     return res;
   }
 
@@ -3368,8 +3906,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         : portfolio.restoreCashSource(userId, portfolioId, sourceId);
     }
     const username = await usernameOf(userId);
-    const res = await withChainLock(membership.chainId, async () => {
-      const member = await catchUpOrigin(membership);
+    const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
       const link = await repo.findMirrorRowByLocal('cash_source', sourceId);
       if (!link) throw new Error(`mirror: cash source ${sourceId} is not mirror-linked`);
       const baseSeq = await checkEntityGuard(member.chainId, link.mirrorId, opts?.baseSeq);
@@ -3403,7 +3940,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       );
       return outcome.result as CashSourceDto;
     });
-    await scheduleReplicate(membership.chainId);
     return res;
   }
 

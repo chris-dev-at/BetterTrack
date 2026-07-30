@@ -23,6 +23,7 @@ import type { EventBus } from '../../events';
 import { badRequest, forbidden, notFound } from '../../errors';
 import { coerceProfileIcon } from '../../http/serializers';
 import type { Logger } from '../../logger';
+import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
 
@@ -57,12 +58,14 @@ export interface ChatServiceDeps {
   /** The ONE sharing-enforcement layer (#332) — chip resolution routes through it. */
   audience: AudienceService;
   /** §10 asset visibility for `asset` chips (global or the viewer's own custom asset). */
-  assets: Pick<AssetRepository, 'findByIdForUser'>;
+  assets: Pick<AssetRepository, 'findByIdForUser' | 'findGlobalById'>;
   /** Ephemeral bus (§4.5): carries ONLY the gateway's in-thread realtime push. */
   events: EventBus;
   /** The central notification pipeline (#368): the durable bell/email/push leg. */
   notify: NotificationCenter;
   logger?: Logger;
+  /** Mixed kept chat: only private/share chip branches take privacy locks. */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowed' | 'runAllowedMany'>;
 }
 
 export interface ChatService {
@@ -140,69 +143,120 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
     const notViewable: ChatChip = { kind, subjectId, viewable: false, title: null, subtitle: null };
 
     if (kind === 'asset') {
-      // Global market asset or the viewer's own custom asset; a foreign custom
-      // asset resolves to null — indistinguishable from missing (§10 no-leak).
-      const asset = await assets.findByIdForUser(subjectId, viewerId).catch(() => null);
-      return asset
-        ? { kind, subjectId, viewable: true, title: asset.symbol, subtitle: asset.name }
-        : notViewable;
-    }
-
-    // Shareable kinds — the enforcement layer decides, recomputed now (no cache).
-    const shareKind: ShareKind = kind;
-
-    // The owner (sender) always sees their own item; a non-owner falls through to
-    // the audience authorization below.
-    if (await audience.ownsSubject(viewerId, shareKind, subjectId).catch(() => false)) {
-      const identity = await audience.subjectIdentity(shareKind, subjectId).catch(() => undefined);
-      return identity
-        ? { kind, subjectId, viewable: true, title: identity.name, subtitle: null }
-        : notViewable;
-    }
-
-    if (shareKind === 'portfolio') {
-      const ref = await audience.authorizePortfolioRead(viewerId, subjectId).catch(() => undefined);
-      return ref
-        ? { kind, subjectId, viewable: true, title: ref.name, subtitle: ref.ownerUsername }
-        : notViewable;
-    }
-    if (shareKind === 'watchlist') {
-      const ref = await audience.authorizeWatchlistRead(viewerId, subjectId).catch(() => undefined);
-      return ref
-        ? { kind, subjectId, viewable: true, title: ref.name, subtitle: ref.ownerUsername }
-        : notViewable;
-    }
-    if (shareKind === 'idea') {
-      // idea (V4-P9) — like a conglomerate, the authorization returns the owner
-      // only; fetch the name ONLY after it passes, so a denied read discloses
-      // nothing (leak-free `viewable:false` otherwise).
-      const ref = await audience.authorizeIdeaRead(viewerId, subjectId).catch(() => undefined);
-      if (!ref) return notViewable;
-      const identity = await audience.subjectIdentity('idea', subjectId).catch(() => undefined);
-      return {
-        kind,
-        subjectId,
-        viewable: true,
-        title: identity?.name ?? null,
-        subtitle: ref.ownerUsername,
+      // Probe the global-only path first so public market chips remain usable
+      // for a paranoid viewer without touching any custom-asset row.
+      const global = await assets.findGlobalById(subjectId).catch(() => null);
+      if (global) {
+        return {
+          kind,
+          subjectId,
+          viewable: true,
+          title: global.symbol,
+          subtitle: global.name,
+        };
+      }
+      const resolveCustom = async (): Promise<ChatChip> => {
+        const asset = await assets.findByIdForUser(subjectId, viewerId).catch(() => null);
+        return asset?.ownerId === viewerId
+          ? { kind, subjectId, viewable: true, title: asset.symbol, subtitle: asset.name }
+          : notViewable;
       };
+      if (!deps.paranoid) return resolveCustom();
+      try {
+        return await deps.paranoid.runAllowed(viewerId, 'portfolioServer', resolveCustom);
+      } catch (error) {
+        if (error instanceof ParanoidModeError) return notViewable;
+        throw error;
+      }
     }
-    // conglomerate — the authorization returns the owner only; fetch the name
-    // ONLY after it passes, so a denied read discloses nothing.
-    const ref = await audience
-      .authorizeConglomerateRead(viewerId, subjectId)
-      .catch(() => undefined);
-    if (!ref) return notViewable;
-    const identity = await audience
-      .subjectIdentity('conglomerate', subjectId)
-      .catch(() => undefined);
-    return {
-      kind,
-      subjectId,
-      viewable: true,
-      title: identity?.name ?? null,
-      subtitle: ref.ownerUsername,
+
+    const resolveShareable = async (): Promise<ChatChip> => {
+      // Shareable kinds — the enforcement layer decides, recomputed now (no cache).
+      const shareKind: ShareKind = kind;
+
+      // The owner (sender) always sees their own item; a non-owner falls through
+      // to the audience authorization below.
+      if (await audience.ownsSubject(viewerId, shareKind, subjectId).catch(() => false)) {
+        const identity = await audience
+          .subjectIdentity(shareKind, subjectId)
+          .catch(() => undefined);
+        return identity
+          ? { kind, subjectId, viewable: true, title: identity.name, subtitle: null }
+          : notViewable;
+      }
+
+      if (shareKind === 'portfolio') {
+        return (
+          (await audience
+            .withAuthorizedPortfolioRead(viewerId, subjectId, async (ref) => ({
+              kind,
+              subjectId,
+              viewable: true as const,
+              title: ref.name,
+              subtitle: ref.ownerUsername,
+            }))
+            .catch(() => undefined)) ?? notViewable
+        );
+      }
+      if (shareKind === 'watchlist') {
+        return (
+          (await audience
+            .withAuthorizedWatchlistRead(viewerId, subjectId, async (ref) => ({
+              kind,
+              subjectId,
+              viewable: true as const,
+              title: ref.name,
+              subtitle: ref.ownerUsername,
+            }))
+            .catch(() => undefined)) ?? notViewable
+        );
+      }
+      if (shareKind === 'idea') {
+        // Fetch the name only after authorization; the owner lock remains held
+        // through identity lookup and final chip construction.
+        return (
+          (await audience
+            .withAuthorizedIdeaRead(viewerId, subjectId, async (ref) => {
+              const identity = await audience
+                .subjectIdentity('idea', subjectId)
+                .catch(() => undefined);
+              return {
+                kind,
+                subjectId,
+                viewable: true as const,
+                title: identity?.name ?? null,
+                subtitle: ref.ownerUsername,
+              };
+            })
+            .catch(() => undefined)) ?? notViewable
+        );
+      }
+      // conglomerate — authorization returns the owner only; fetch the name
+      // under the same held owner lock.
+      return (
+        (await audience
+          .withAuthorizedConglomerateRead(viewerId, subjectId, async (ref) => {
+            const identity = await audience
+              .subjectIdentity('conglomerate', subjectId)
+              .catch(() => undefined);
+            return {
+              kind,
+              subjectId,
+              viewable: true as const,
+              title: identity?.name ?? null,
+              subtitle: ref.ownerUsername,
+            };
+          })
+          .catch(() => undefined)) ?? notViewable
+      );
     };
+    if (!deps.paranoid) return resolveShareable();
+    try {
+      return await deps.paranoid.runAllowed(viewerId, 'sharing', resolveShareable);
+    } catch (error) {
+      if (error instanceof ParanoidModeError) return notViewable;
+      throw error;
+    }
   }
 
   async function toMessage(viewerId: string, row: ChatMessageRow): Promise<ChatMessage> {
@@ -220,16 +274,29 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
     };
   }
 
-  /** Whether a sender may attach a chip: they own the shareable, or can see the asset. */
+  /** Whether a sender may attach a chip, with killed chip kinds guarded in-place. */
   async function senderMayReference(
     senderId: string,
     kind: ChatChipKind,
     subjectId: string,
   ): Promise<boolean> {
     if (kind === 'asset') {
-      return Boolean(await assets.findByIdForUser(subjectId, senderId).catch(() => null));
+      // Global market-data chips stay available in paranoid mode and never
+      // touch an account-owned custom-asset row.
+      if (await assets.findGlobalById(subjectId).catch(() => null)) return true;
+      const ownsCustomAsset = async () => {
+        const asset = await assets.findByIdForUser(subjectId, senderId).catch(() => null);
+        return asset?.ownerId === senderId;
+      };
+      return deps.paranoid
+        ? deps.paranoid.runAllowed(senderId, 'portfolioServer', ownsCustomAsset)
+        : ownsCustomAsset();
     }
-    return audience.ownsSubject(senderId, kind, subjectId).catch(() => false);
+
+    const ownsShareable = () => audience.ownsSubject(senderId, kind, subjectId).catch(() => false);
+    return deps.paranoid
+      ? deps.paranoid.runAllowed(senderId, 'sharing', ownsShareable)
+      : ownsShareable();
   }
 
   return {

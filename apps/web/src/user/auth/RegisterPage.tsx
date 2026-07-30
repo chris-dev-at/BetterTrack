@@ -246,6 +246,10 @@ export function RegisterPage() {
         setPending(true);
         return;
       }
+      // Land the app; `FirstRunGate` diverts a never-set-up account to /welcome.
+      // Deliberately NOT a direct navigate to /welcome: the trigger belongs in
+      // one place for every registration mode (§6.12) — an admin-created user or
+      // an approved applicant never passes through this form at all.
       navigate('/', { replace: true });
     } catch (err) {
       setError(registerErrorMessage(t, err));

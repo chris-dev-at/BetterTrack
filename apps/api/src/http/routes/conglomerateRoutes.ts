@@ -68,17 +68,16 @@ export function createConglomerateRouter(ctx: AppContext): Router {
     async (req, res) => {
       const { conglomerateId } = req.valid?.params as { conglomerateId: string };
       const patch = req.valid?.body as UpdateConglomerateRequest;
-      const detail = await ctx.conglomerate.update(req.authUser!.id, conglomerateId, patch);
-      // Keep the legacy visibility toggle flowing into the single audience model
-      // (V3-P5): only after update confirmed ownership (else it 404s).
-      if (patch.visibility !== undefined) {
-        await ctx.social.applyAudienceVisibility(
-          req.authUser!.id,
-          'conglomerate',
-          conglomerateId,
-          patch.visibility,
-        );
-      }
+      // The visibility form is a mixed kept/sharing mutation. Its dedicated
+      // service entry point rejects before either persistence model can change.
+      const detail =
+        patch.visibility === undefined
+          ? await ctx.conglomerate.update(req.authUser!.id, conglomerateId, patch)
+          : await ctx.conglomerate.updateWithVisibility(
+              req.authUser!.id,
+              conglomerateId,
+              patch as UpdateConglomerateRequest & { visibility: 'private' | 'friends' },
+            );
       res.json(detail);
     },
   );

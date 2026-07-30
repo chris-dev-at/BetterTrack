@@ -83,6 +83,10 @@ export interface PortfolioSnapshotServiceDeps {
    * refill covers correctness either way; the job only accelerates it.
    */
   requestRecompute?: (portfolioId: string) => Promise<void>;
+  /** Fail-safe for stale reads/jobs after a user enters paranoid mode. */
+  isParanoidPortfolio?: (portfolioId: string) => Promise<boolean>;
+  /** Hold the account transition lock across each snapshot write path. */
+  runIfAllowedPortfolio?: (portfolioId: string, action: () => Promise<void>) => Promise<boolean>;
   logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
@@ -381,6 +385,29 @@ export function createPortfolioSnapshotService(
   }
 
   /**
+   * The transactions whose money never crossed the portfolio boundary because
+   * they were settled against the cash ledger — a `buy` paid from cash or a
+   * `sell` whose proceeds were booked into cash. Their external flow was
+   * recorded when that cash entered/left the ledger, so counting the
+   * transaction again would double it (#125).
+   *
+   * **Only `buy` / `sell_proceeds` legs qualify.** A transaction can carry other
+   * linked movements — a V3-P4 `tax_withholding` / `tax_refund` settlement rides
+   * on its sell's `transactionId` (§16 2026-07-08) — and those say nothing about
+   * where the proceeds went. Keying on "has *any* linked movement" suppressed
+   * the outflow of a taxed sell that paid out instead of into cash, while the
+   * holdings still left the value curve: a phantom loss the user never took.
+   */
+  function cashSettledTxnIds(cashRecords: readonly CashMovementRecord[]): Set<string> {
+    const ids = new Set<string>();
+    for (const r of cashRecords) {
+      if (r.transactionId === null) continue;
+      if (r.kind === 'buy' || r.kind === 'sell_proceeds') ids.add(r.transactionId);
+    }
+    return ids;
+  }
+
+  /**
    * Backdated pay-from-cash buys settled as of a later day (#378): a linked
    * `buy` movement whose day differs from its transaction's day. Their TWR
    * compensator flow pair (+cost on the buy day, −cost on the settle day)
@@ -415,9 +442,7 @@ export function createPortfolioSnapshotService(
 
     const today = todayIso();
     const movements = cashRecords.map(toDomainMovement);
-    const linkedTxnIds = new Set(
-      cashRecords.map((r) => r.transactionId).filter((id): id is string => id !== null),
-    );
+    const linkedTxnIds = cashSettledTxnIds(cashRecords);
     const splitCashBuys = deriveSplitCashBuys(txns, cashRecords);
 
     let holdingsPoints: ValuePoint[] = [];
@@ -647,9 +672,7 @@ export function createPortfolioSnapshotService(
     const todayFlows: FlowPoint[] = externalCashFlowsForTwr(movements).filter(
       (f) => f.date === today,
     );
-    const linkedTxnIds = new Set(
-      cashRecords.map((r) => r.transactionId).filter((id): id is string => id !== null),
-    );
+    const linkedTxnIds = cashSettledTxnIds(cashRecords);
     const todayTxns = txns.filter(
       (t) =>
         t.executedAt.toISOString().slice(0, 10) === today &&
@@ -730,41 +753,60 @@ export function createPortfolioSnapshotService(
   }
 
   async function invalidate(portfolioId: string, fromDay: string): Promise<void> {
-    // Dirty marker BEFORE the row delete: a reader that interleaves sees the
-    // marker and falls back to the engine rather than serving a gap.
-    await snapshotRepo.markDirty(portfolioId, fromDay);
-    await snapshotRepo.deleteFrom(portfolioId, fromDay);
-    if (requestRecompute) {
-      try {
-        await requestRecompute(portfolioId);
-      } catch (err) {
-        // The read path's lazy refill covers correctness; log and move on.
-        logger?.warn({ err, portfolioId }, 'snapshot recompute enqueue failed');
+    const apply = async () => {
+      if (await deps.isParanoidPortfolio?.(portfolioId)) return;
+      // Dirty marker BEFORE the row delete: a reader that interleaves sees the
+      // marker and falls back to the engine rather than serving a gap.
+      await snapshotRepo.markDirty(portfolioId, fromDay);
+      await snapshotRepo.deleteFrom(portfolioId, fromDay);
+      if (requestRecompute) {
+        try {
+          await requestRecompute(portfolioId);
+        } catch (err) {
+          // The read path's lazy refill covers correctness; log and move on.
+          logger?.warn({ err, portfolioId }, 'snapshot recompute enqueue failed');
+        }
       }
+    };
+    if (deps.runIfAllowedPortfolio) {
+      await deps.runIfAllowedPortfolio(portfolioId, apply);
+    } else {
+      await apply();
     }
   }
 
   async function recompute(portfolioId: string, opts: RecomputeOptions = {}): Promise<void> {
-    const state = await snapshotRepo.getState(portfolioId);
-    const artifacts = await computeArtifacts(portfolioId);
-    if (artifacts === null) {
-      // History vanished entirely (last transaction/movement deleted).
-      await snapshotRepo.clear(portfolioId);
-      return;
-    }
-    const result = await persist(
-      portfolioId,
-      artifacts,
-      { updatedAt: state?.updatedAt ?? null, dirtyFrom: state?.dirtyFrom ?? null },
-      opts.healFrom ?? null,
-    );
-    if (!result.applied) {
-      logger?.info({ portfolioId }, 'snapshot recompute raced an invalidation; skipped persist');
+    const apply = async () => {
+      if (await deps.isParanoidPortfolio?.(portfolioId)) return;
+      const state = await snapshotRepo.getState(portfolioId);
+      const artifacts = await computeArtifacts(portfolioId);
+      if (artifacts === null) {
+        // History vanished entirely (last transaction/movement deleted).
+        await snapshotRepo.clear(portfolioId);
+        return;
+      }
+      const result = await persist(
+        portfolioId,
+        artifacts,
+        { updatedAt: state?.updatedAt ?? null, dirtyFrom: state?.dirtyFrom ?? null },
+        opts.healFrom ?? null,
+      );
+      if (!result.applied) {
+        logger?.info({ portfolioId }, 'snapshot recompute raced an invalidation; skipped persist');
+      }
+    };
+    if (deps.runIfAllowedPortfolio) {
+      await deps.runIfAllowedPortfolio(portfolioId, apply);
+    } else {
+      await apply();
     }
   }
 
   return {
     async getSeries(portfolioId) {
+      if (await deps.isParanoidPortfolio?.(portfolioId)) {
+        return { points: [], flows: [], assets: [], fromSnapshots: false };
+      }
       // State FIRST: everything computed after this read is at least as fresh,
       // so the persist CAS can reject any computation an invalidation raced.
       const state = await snapshotRepo.getState(portfolioId);
@@ -827,6 +869,7 @@ export function createPortfolioSnapshotService(
     },
 
     async getOverlays(portfolioId) {
+      if (await deps.isParanoidPortfolio?.(portfolioId)) return [];
       const txns = await transactionRepo.listForPortfolio(portfolioId);
       if (txns.length === 0) return [];
       const today = todayIso();

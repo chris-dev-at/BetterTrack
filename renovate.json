@@ -1,0 +1,15 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "docker:pinDigests"],
+  "enabledManagers": ["dockerfile"],
+  "includePaths": ["apps/api/**", "apps/web/**", "apps/landing/**"],
+  "packageRules": [
+    {
+      "description": "Keep deployable Dockerfile base-image digest updates reviewable in one pull request.",
+      "matchManagers": ["dockerfile"],
+      "matchDatasources": ["docker"],
+      "groupName": "Docker base image digests",
+      "groupSlug": "docker-base-image-digests"
+    }
+  ]
+}

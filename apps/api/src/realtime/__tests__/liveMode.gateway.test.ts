@@ -1,6 +1,7 @@
 import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+import { eq } from 'drizzle-orm';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,6 +23,8 @@ import {
 } from '@bettertrack/contracts';
 
 import { createAssetRepository } from '../../data/repositories/assetRepository';
+import { withExclusiveParanoidTransitionTestLock } from '../../data/repositories/paranoidEnforcementRepository';
+import { assets, users } from '../../data/schema';
 import { realtimeAdmissionKeys } from '../../services/security/realtimeAdmission';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import { createStubMarketData, type StubMarketData } from '../../testing/marketDataStubs';
@@ -104,9 +107,12 @@ async function seedAsset(suffix = ''): Promise<string> {
   return row.id;
 }
 
-async function connectUser(email: string, username: string): Promise<ClientSocket> {
+async function connectAccount(
+  email: string,
+  username: string,
+): Promise<{ socket: ClientSocket; user: Awaited<ReturnType<TestHarness['seedUser']>> }> {
   const user = await harness.seedUser({ email, username });
-  return connectSeededUser(user);
+  return { socket: await connectSeededUser(user), user };
 }
 
 async function connectSeededUser(user: { email: string; password: string }): Promise<ClientSocket> {
@@ -124,7 +130,7 @@ async function connectSeededUser(user: { email: string; password: string }): Pro
     path: REALTIME_PATH,
     transports: ['websocket'],
     reconnection: false,
-    extraHeaders: { cookie },
+    extraHeaders: { Origin: harness.ctx.config.topology.webOrigin, cookie },
   });
   openSockets.push(socket);
   await new Promise<void>((resolve, reject) => {
@@ -132,6 +138,10 @@ async function connectSeededUser(user: { email: string; password: string }): Pro
     socket.once('connect_error', (err) => reject(err));
   });
   return socket;
+}
+
+async function connectUser(email: string, username: string): Promise<ClientSocket> {
+  return (await connectAccount(email, username)).socket;
 }
 
 function watch(
@@ -641,6 +651,98 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     await unwatch(alice, assetId);
     await unwatch(alice, assetId); // repeat: must not steal bob's count
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
+  });
+
+  it('evicts an established custom-asset watch when a paranoid transition wins', async () => {
+    const { socket, user } = await connectAccount(
+      'private-transition@bt.test',
+      'private_transition',
+    );
+    const [customAsset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'manual',
+        providerRef: `live-transition:${user.id}`,
+        ownerId: user.id,
+        type: 'custom',
+        symbol: 'PRIVATE-RACE',
+        name: 'Private transition asset',
+        currency: 'EUR',
+      })
+      .returning();
+    const frames = collectFrames(socket);
+
+    await expect(watch(socket, customAsset!.id, '10m')).resolves.toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
+    expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(1);
+
+    let releaseTransition!: () => void;
+    let transitionLocked!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseTransition = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      transitionLocked = resolve;
+    });
+    const transition = withExclusiveParanoidTransitionTestLock(harness.db, user.id, async () => {
+      await harness.db
+        .update(users)
+        .set({
+          privacyMode: 'paranoid',
+          paranoidMediaSet: ['drive'],
+          paranoidDriveAttestedVersion: 1,
+        })
+        .where(eq(users.id, user.id));
+      transitionLocked();
+      await release;
+    });
+    await locked;
+
+    // The next frame queues behind the winning transition. Once it commits,
+    // authorization fails closed before fan-out and releases the only loop ref.
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 2));
+    releaseTransition();
+    await transition;
+    await vi.waitFor(() => expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(0));
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 2));
+    const frameCount = frames.length;
+    const pollCount = stub.calls.poll;
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 5));
+    expect(frames).toHaveLength(frameCount);
+    expect(stub.calls.poll).toBe(pollCount);
+  });
+
+  it('blocks an owned custom-asset live read for paranoid accounts but keeps global quotes', async () => {
+    const { socket, user } = await connectAccount('private-live@bt.test', 'private_live');
+    const [customAsset] = await harness.db
+      .insert(assets)
+      .values({
+        providerId: 'manual',
+        providerRef: `live:${user.id}`,
+        ownerId: user.id,
+        type: 'custom',
+        symbol: 'PRIVATE',
+        name: 'Private live asset',
+        currency: 'EUR',
+      })
+      .returning();
+    const globalAssetId = await seedAsset();
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(users.id, user.id));
+
+    await expect(watch(socket, customAsset!.id, '10m')).resolves.toEqual({
+      ok: false,
+      error: 'NOT_FOUND',
+    });
+    expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(0);
+    await expect(watch(socket, globalAssetId, '10m')).resolves.toMatchObject({ ok: true });
   });
 
   it('releases a held watch even when the unwatch frame is rate-limited', async () => {

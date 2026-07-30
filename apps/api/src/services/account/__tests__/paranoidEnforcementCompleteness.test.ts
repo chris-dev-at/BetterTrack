@@ -485,8 +485,11 @@ describe('paranoid enforcement completeness', () => {
     ]);
   });
 
-  it('keeps each #884 review finding as an individually tracked temporary exemption', () => {
-    expect(PARANOID_KNOWN_GAPS).toHaveLength(4);
+  it('tracks every remaining review finding as an individual temporary exemption', () => {
+    // #884 closed all four findings this inventory was seeded with, so the list
+    // is empty. The shape assertion stays: a future gap must still name its
+    // issue and carry its own reason rather than becoming an implicit exemption.
+    expect(PARANOID_KNOWN_GAPS).toHaveLength(0);
     for (const gap of PARANOID_KNOWN_GAPS) {
       const classifications = paranoidSurfaceClassifications(gap.surface);
       expect(classifications, gap.label).toHaveLength(1);

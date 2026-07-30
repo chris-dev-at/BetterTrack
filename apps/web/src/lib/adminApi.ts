@@ -342,7 +342,7 @@ export async function listAudit(
   return auditLogListResponseSchema.parse(data);
 }
 
-// --- Admin: Problems (§13.5 V5-P2 arc (d), the Sentry replacement) ---------
+// --- Admin: Problems (§13.5 V5-P2 arc (d)) ---------------------------------
 
 export async function listProblems(
   params: { kind?: ProblemKind; status?: ProblemStatus; limit?: number } = {},

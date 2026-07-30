@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { cashRuleMatchTypeSchema } from './cash';
 import { expenseDirectionSchema, expenseRuleMatchTypeSchema } from './expenses';
 import {
   importBatchStatusSchema,
@@ -581,6 +582,13 @@ export const VAULT_ENTITY_KINDS = [
   'expenseRule',
   'expenseBudget',
   'expenseBudgetFire',
+  // V5 cash fusion — the classification layer on the portfolio cash ledger.
+  'cashTag',
+  'cashMovementTag',
+  'cashBudget',
+  'cashBudgetFire',
+  'cashRule',
+  'cashRuleTag',
 ] as const;
 export const vaultEntityKindSchema = z.enum(VAULT_ENTITY_KINDS);
 export type VaultEntityKind = z.infer<typeof vaultEntityKindSchema>;
@@ -712,6 +720,19 @@ const cashMovementRowSchema = z
     executedAt: timestampSchema,
     note: z.string().nullable(),
     source: z.string(),
+    // V5 cash fusion: the statement-import idempotency key and the non-EUR
+    // provenance marker. Both must round-trip — dropping `dedupHash` on restore
+    // would let a re-imported statement duplicate every row.
+    //
+    // `.default(null)` rather than a bare `.nullable()`: a vault document
+    // written BEFORE cash fusion has neither key, and on a `.strict()` schema a
+    // required-but-nullable field would fail it as VAULT_CORRUPT — a user's own
+    // older vault or backup would stop opening. Defaulting keeps the parsed type
+    // `string | null` (no `undefined` leaking into writers) while accepting the
+    // older shape, which is exactly what the absent keys mean: no import hash,
+    // amount genuinely in EUR.
+    dedupHash: z.string().nullable().default(null),
+    originalCurrency: currencyCodeSchema.nullable().default(null),
     createdAt: timestampSchema,
   })
   .strict();
@@ -909,6 +930,72 @@ const expenseBudgetFireRowSchema = z
   })
   .strict();
 
+// ── V5 cash fusion (migration 0075) ──
+// `systemKey` mirrors the `text` column rather than the `CashSystemTagKey` enum:
+// a restore must accept every value the column can already hold, so adding a
+// system key later cannot make an existing vault unrestorable.
+
+const cashTagRowSchema = z
+  .object({
+    userId: uuidSchema,
+    name: z.string(),
+    color: z.string(),
+    system: z.boolean(),
+    systemKey: z.string().nullable(),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+  })
+  .strict();
+
+const cashMovementTagRowSchema = z
+  .object({
+    movementId: uuidSchema,
+    tagId: uuidSchema,
+    createdAt: timestampSchema,
+  })
+  .strict();
+
+const cashBudgetRowSchema = z
+  .object({
+    portfolioId: uuidSchema,
+    tagId: uuidSchema,
+    /** NULL = the recurring monthly target; `YYYY-MM` = that month only. */
+    periodKey: monthSchema.nullable(),
+    amount: decimalStringSchema,
+    currency: currencyCodeSchema,
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+  })
+  .strict();
+
+const cashBudgetFireRowSchema = z
+  .object({
+    budgetId: uuidSchema,
+    periodKey: monthSchema,
+    firedAt: timestampSchema,
+  })
+  .strict();
+
+const cashRuleRowSchema = z
+  .object({
+    userId: uuidSchema,
+    matchType: cashRuleMatchTypeSchema,
+    pattern: z.string(),
+    priority: z.number().int(),
+    enabled: z.boolean(),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+  })
+  .strict();
+
+const cashRuleTagRowSchema = z
+  .object({
+    ruleId: uuidSchema,
+    tagId: uuidSchema,
+    createdAt: timestampSchema,
+  })
+  .strict();
+
 /** Exact Drizzle property names carried by each strict entity's `data` row. */
 export const VAULT_ENTITY_ROW_SCHEMAS = {
   portfolio: portfolioRowSchema,
@@ -931,6 +1018,12 @@ export const VAULT_ENTITY_ROW_SCHEMAS = {
   expenseRule: expenseRuleRowSchema,
   expenseBudget: expenseBudgetRowSchema,
   expenseBudgetFire: expenseBudgetFireRowSchema,
+  cashTag: cashTagRowSchema,
+  cashMovementTag: cashMovementTagRowSchema,
+  cashBudget: cashBudgetRowSchema,
+  cashBudgetFire: cashBudgetFireRowSchema,
+  cashRule: cashRuleRowSchema,
+  cashRuleTag: cashRuleTagRowSchema,
 } as const;
 
 /**
@@ -958,6 +1051,12 @@ export const VAULT_TABLE_ENTITY_KINDS = {
   expense_rules: 'expenseRule',
   expense_budgets: 'expenseBudget',
   expense_budget_fires: 'expenseBudgetFire',
+  cash_tags: 'cashTag',
+  cash_movement_tags: 'cashMovementTag',
+  cash_budgets: 'cashBudget',
+  cash_budget_fires: 'cashBudgetFire',
+  cash_rules: 'cashRule',
+  cash_rule_tags: 'cashRuleTag',
 } as const satisfies Record<string, VaultEntityKind>;
 
 const strictEntity = <Kind extends VaultEntityKind, Row extends z.AnyZodObject>(
@@ -987,6 +1086,12 @@ export const VAULT_ENTITY_SCHEMAS = {
   expenseRule: strictEntity('expenseRule', expenseRuleRowSchema),
   expenseBudget: strictEntity('expenseBudget', expenseBudgetRowSchema),
   expenseBudgetFire: strictEntity('expenseBudgetFire', expenseBudgetFireRowSchema),
+  cashTag: strictEntity('cashTag', cashTagRowSchema),
+  cashMovementTag: strictEntity('cashMovementTag', cashMovementTagRowSchema),
+  cashBudget: strictEntity('cashBudget', cashBudgetRowSchema),
+  cashBudgetFire: strictEntity('cashBudgetFire', cashBudgetFireRowSchema),
+  cashRule: strictEntity('cashRule', cashRuleRowSchema),
+  cashRuleTag: strictEntity('cashRuleTag', cashRuleTagRowSchema),
 } as const;
 
 export const vaultStrictEntitySchema = z.discriminatedUnion('kind', [
@@ -1010,6 +1115,12 @@ export const vaultStrictEntitySchema = z.discriminatedUnion('kind', [
   VAULT_ENTITY_SCHEMAS.expenseRule,
   VAULT_ENTITY_SCHEMAS.expenseBudget,
   VAULT_ENTITY_SCHEMAS.expenseBudgetFire,
+  VAULT_ENTITY_SCHEMAS.cashTag,
+  VAULT_ENTITY_SCHEMAS.cashMovementTag,
+  VAULT_ENTITY_SCHEMAS.cashBudget,
+  VAULT_ENTITY_SCHEMAS.cashBudgetFire,
+  VAULT_ENTITY_SCHEMAS.cashRule,
+  VAULT_ENTITY_SCHEMAS.cashRuleTag,
 ]);
 export type VaultStrictEntity = z.infer<typeof vaultStrictEntitySchema>;
 

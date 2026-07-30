@@ -23,8 +23,21 @@ import {
   createWebhookDeliveryRepository,
   createWebhookSubscriptionRepository,
 } from '../data/repositories/webhookRepository';
-import type { AlertTriggeredEvent } from '../events';
-import { WEBHOOK_DELIVERY_RETENTION_DAYS, createWebhookDeliveryCleanupJob } from '../jobs';
+import type {
+  AlertTriggeredEvent,
+  DividendEventNotice,
+  FollowAlertCreatedEvent,
+  FollowAlertFiredEvent,
+  MirrorNotificationEvent,
+  PortfolioSharedEvent,
+  WatchlistSharedEvent,
+} from '../events';
+import {
+  WEBHOOK_DELIVERY_RETENTION_DAYS,
+  bindParanoidJob,
+  createWebhookDeliveryCleanupJob,
+  type JobDefinition,
+} from '../jobs';
 import type { AuditService } from '../services/audit/auditService';
 import { decryptSecret, encryptSecret } from '../services/crypto/secretBox';
 import { DISPATCHABLE_EVENT_TYPES } from '../services/notifications/notificationDispatcher';
@@ -44,6 +57,21 @@ const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DELIVERY_A = '00000000-0000-7000-8000-0000000000aa';
 const DELIVERY_B = '00000000-0000-7000-8000-0000000000ab';
+const MIRROR_WEBHOOK_TYPES: readonly MirrorNotificationEvent['type'][] = [
+  'mirror.invite',
+  'mirror.member_joined',
+  'mirror.member_left',
+  'mirror.member_removed',
+  'mirror.removed',
+  'mirror.ownership_transferred',
+  'mirror.chain_dissolved',
+  'mirror.sync_stalled',
+];
+type FollowAlertEvent = FollowAlertCreatedEvent | FollowAlertFiredEvent;
+const FOLLOW_ALERT_WEBHOOK_TYPES: readonly FollowAlertEvent['type'][] = [
+  'follow.alert.created',
+  'follow.alert.fired',
+];
 
 type Agent = ReturnType<typeof request.agent>;
 
@@ -293,6 +321,302 @@ describe('signed delivery', () => {
     expect(recorder.requests).toHaveLength(0);
     const log = webhookDeliveryListResponseSchema.parse(await deliveriesFor(id));
     expect(log.deliveries).toHaveLength(0);
+  });
+
+  it('skips stale portfolio events after the owner enters paranoid mode', async () => {
+    const { userId, id } = await createSubscription(['dividend.event']);
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(schema.users.id, userId));
+    const event: DividendEventNotice = {
+      type: 'dividend.event',
+      userId,
+      assetId: '00000000-0000-7000-8000-000000000003',
+      symbol: 'PRIVATE',
+      exDate: '2026-08-01T00:00:00.000Z',
+      payDate: null,
+      amount: 1,
+      currency: 'EUR',
+      occurredAt: new Date().toISOString(),
+    };
+
+    await harness.ctx.webhookBridge.handleEvent(event);
+    expect(recorder.requests).toHaveLength(0);
+    const log = webhookDeliveryListResponseSchema.parse(await deliveriesFor(id));
+    expect(log.deliveries).toHaveLength(0);
+  });
+
+  it('skips stale sharing events for a paranoid recipient or sharing owner', async () => {
+    const recipient = await createSubscription(['portfolio.shared', 'watchlist.shared']);
+    const owner = await harness.seedUser({
+      email: 'webhook-sharing-owner@bettertrack.test',
+      username: 'webhook_sharing_owner',
+    });
+    const enqueued: WebhookDeliveryJob[] = [];
+    const bridge = createWebhookBridge({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      enqueue: async (job) => {
+        enqueued.push(job);
+      },
+      logger: harness.ctx.logger,
+      paranoid: harness.ctx.paranoidGuard,
+    });
+
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(schema.users.id, owner.id));
+    const ownerEvent: PortfolioSharedEvent = {
+      type: 'portfolio.shared',
+      userId: recipient.userId,
+      actorId: owner.id,
+      actorUsername: owner.username,
+      portfolioId: '00000000-0000-7000-8000-000000000071',
+      occurredAt: '2026-07-27T00:00:00.000Z',
+    };
+    await bridge.handleEvent(ownerEvent);
+
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'normal',
+        paranoidMediaSet: null,
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(schema.users.id, owner.id));
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(schema.users.id, recipient.userId));
+    const recipientEvent: WatchlistSharedEvent = {
+      type: 'watchlist.shared',
+      userId: recipient.userId,
+      actorId: owner.id,
+      actorUsername: owner.username,
+      watchlistId: '00000000-0000-7000-8000-000000000072',
+      occurredAt: '2026-07-27T00:00:00.000Z',
+    };
+    await bridge.handleEvent(recipientEvent);
+
+    expect(enqueued).toEqual([]);
+  });
+
+  it('checks alert owner and follower before enqueueing either follow-alert webhook', async () => {
+    const recipient = await createSubscription([...FOLLOW_ALERT_WEBHOOK_TYPES]);
+    const owner = await harness.seedUser({
+      email: 'webhook-alert-owner@bettertrack.test',
+      username: 'webhook_alert_owner',
+    });
+    const enqueued: WebhookDeliveryJob[] = [];
+    const bridge = createWebhookBridge({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      enqueue: async (job) => {
+        enqueued.push(job);
+      },
+      logger: harness.ctx.logger,
+      paranoid: harness.ctx.paranoidGuard,
+    });
+    const event = (type: FollowAlertEvent['type']): FollowAlertEvent => ({
+      type,
+      userId: recipient.userId,
+      actorId: owner.id,
+      actorUsername: owner.username,
+      alertId: '00000000-0000-7000-8000-000000000073',
+      assetId: '00000000-0000-7000-8000-000000000074',
+      occurredAt: '2026-07-27T00:00:00.000Z',
+    });
+    const setMode = async (userId: string, privacyMode: 'normal' | 'paranoid') => {
+      await harness.db
+        .update(schema.users)
+        .set({
+          privacyMode,
+          paranoidMediaSet: privacyMode === 'paranoid' ? ['drive'] : null,
+          paranoidDriveAttestedVersion: privacyMode === 'paranoid' ? 1 : null,
+        })
+        .where(eq(schema.users.id, userId));
+    };
+
+    await setMode(owner.id, 'paranoid');
+    for (const type of FOLLOW_ALERT_WEBHOOK_TYPES) await bridge.handleEvent(event(type));
+    await setMode(owner.id, 'normal');
+    await setMode(recipient.userId, 'paranoid');
+    for (const type of FOLLOW_ALERT_WEBHOOK_TYPES) await bridge.handleEvent(event(type));
+
+    expect(enqueued).toEqual([]);
+  });
+
+  it('checks alert owner and follower again at queued delivery for both follow-alert events', async () => {
+    const delivered: string[] = [];
+    const definition = {
+      name: 'webhooks.deliver',
+      async handler(job) {
+        delivered.push(job.data.event.type);
+      },
+    } as JobDefinition<'webhooks.deliver'>;
+    const checked: Array<{ type: string; userIds: readonly string[] }> = [];
+    let pendingType = '';
+    const guarded = bindParanoidJob(definition, {
+      mode: 'event',
+      runIfAllowed: async (userIds) => {
+        checked.push({ type: pendingType, userIds });
+        return false;
+      },
+    });
+
+    for (const [index, type] of FOLLOW_ALERT_WEBHOOK_TYPES.entries()) {
+      pendingType = type;
+      const event: FollowAlertEvent = {
+        type,
+        userId: `follower-${index}`,
+        actorId: `owner-${index}`,
+        actorUsername: 'owner',
+        alertId: '00000000-0000-7000-8000-000000000075',
+        assetId: '00000000-0000-7000-8000-000000000076',
+        occurredAt: '2026-07-27T00:00:00.000Z',
+      };
+      await guarded.handler(
+        {
+          data: {
+            subscriptionId: `subscription-${index}`,
+            deliveryId: `delivery-${index}`,
+            event,
+          },
+        } as never,
+        { logger: harness.ctx.logger } as never,
+      );
+    }
+
+    expect(delivered).toEqual([]);
+    expect(checked).toEqual(
+      FOLLOW_ALERT_WEBHOOK_TYPES.map((type, index) => ({
+        type,
+        userIds: [`follower-${index}`, `owner-${index}`],
+      })),
+    );
+  });
+
+  it('checks mirror recipient, actor, owner, and affected subjects before webhook enqueue', async () => {
+    const recipient = await createSubscription([...MIRROR_WEBHOOK_TYPES]);
+    const actor = await harness.seedUser({
+      email: 'webhook-mirror-actor@bettertrack.test',
+      username: 'webhook_mirror_actor',
+    });
+    const owner = await harness.seedUser({
+      email: 'webhook-mirror-owner@bettertrack.test',
+      username: 'webhook_mirror_owner',
+    });
+    const subject = await harness.seedUser({
+      email: 'webhook-mirror-subject@bettertrack.test',
+      username: 'webhook_mirror_subject',
+    });
+    const enqueued: WebhookDeliveryJob[] = [];
+    const bridge = createWebhookBridge({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      enqueue: async (job) => {
+        enqueued.push(job);
+      },
+      logger: harness.ctx.logger,
+      paranoid: harness.ctx.paranoidGuard,
+    });
+    const event = (type: MirrorNotificationEvent['type']): MirrorNotificationEvent => ({
+      type,
+      userId: recipient.userId,
+      chainId: '00000000-0000-7000-8000-000000000081',
+      chainName: 'Private chain',
+      actorId: actor.id,
+      ownerId: owner.id,
+      subjectUserIds: [subject.id],
+      actorUsername: actor.username,
+      refId: `ref:${type}`,
+      occurredAt: '2026-07-27T00:00:00.000Z',
+    });
+    const setMode = async (userId: string, privacyMode: 'normal' | 'paranoid') => {
+      await harness.db
+        .update(schema.users)
+        .set({
+          privacyMode,
+          paranoidMediaSet: privacyMode === 'paranoid' ? ['drive'] : null,
+          paranoidDriveAttestedVersion: privacyMode === 'paranoid' ? 1 : null,
+        })
+        .where(eq(schema.users.id, userId));
+    };
+
+    await setMode(actor.id, 'paranoid');
+    for (const type of MIRROR_WEBHOOK_TYPES) await bridge.handleEvent(event(type));
+    await setMode(actor.id, 'normal');
+    await setMode(owner.id, 'paranoid');
+    await bridge.handleEvent(event('mirror.invite'));
+    await setMode(owner.id, 'normal');
+    await setMode(subject.id, 'paranoid');
+    await bridge.handleEvent(event('mirror.member_removed'));
+
+    expect(enqueued).toEqual([]);
+  });
+
+  it('checks every mirror principal again when each queued webhook delivery runs', async () => {
+    const delivered: string[] = [];
+    const definition = {
+      name: 'webhooks.deliver',
+      async handler(job) {
+        delivered.push(job.data.event.type);
+      },
+    } as JobDefinition<'webhooks.deliver'>;
+    const checked: Array<{ type: string; userIds: readonly string[] }> = [];
+    let pendingType = '';
+    const guarded = bindParanoidJob(definition, {
+      mode: 'event',
+      runIfAllowed: async (userIds, _action) => {
+        checked.push({ type: pendingType, userIds });
+        return false;
+      },
+    });
+
+    for (const [index, type] of MIRROR_WEBHOOK_TYPES.entries()) {
+      pendingType = type;
+      const event: MirrorNotificationEvent = {
+        type,
+        userId: `recipient-${index}`,
+        chainId: '00000000-0000-7000-8000-000000000082',
+        chainName: 'Queued chain',
+        actorId: `actor-${index}`,
+        ownerId: `owner-${index}`,
+        subjectUserIds: [`subject-${index}`, `owner-${index}`],
+        actorUsername: 'actor',
+        refId: `queued:${index}`,
+        occurredAt: '2026-07-27T00:00:00.000Z',
+      };
+      await guarded.handler(
+        {
+          data: {
+            subscriptionId: `subscription-${index}`,
+            deliveryId: `delivery-${index}`,
+            event,
+          },
+        } as never,
+        { logger: harness.ctx.logger } as never,
+      );
+    }
+
+    expect(delivered).toEqual([]);
+    expect(checked).toEqual(
+      MIRROR_WEBHOOK_TYPES.map((type, index) => ({
+        type,
+        userIds: [`recipient-${index}`, `actor-${index}`, `owner-${index}`, `subject-${index}`],
+      })),
+    );
   });
 
   it('isolates a failed enqueue, exposes it for retry, and preserves replay delivery ids', async () => {

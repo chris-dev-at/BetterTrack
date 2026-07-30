@@ -11,7 +11,11 @@ import type {
   SearchResultItem,
   TransactionInput,
 } from '@bettertrack/contracts';
-import { IMPORT_MAX_ROWS, importSourceTag } from '@bettertrack/contracts';
+import {
+  IMPORT_MAX_DISTINCT_INSTRUMENTS,
+  IMPORT_MAX_ROWS,
+  importSourceTag,
+} from '@bettertrack/contracts';
 
 import { ApiError, badRequest, conflict, notFound } from '../../errors';
 import type {
@@ -23,6 +27,8 @@ import type { CashSourceRepository } from '../../data/repositories/cashSourceRep
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { TransactionRepository } from '../../data/repositories/transactionRepository';
 import type { Logger } from '../../logger';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
+import { createRequestQueue, type RequestQueue } from '../../providers/requestQueue';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { SearchService } from '../search/searchService';
 import type { TaxService } from '../tax/taxService';
@@ -62,6 +68,13 @@ export interface ImportServiceDeps {
   tax: TaxService;
   mappers: readonly BrokerMapper[];
   logger?: Logger;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
+  /**
+   * Shared process-local budget for import-driven catalog/provider resolution.
+   * Tests may inject a recording queue; production admits four concurrent
+   * resolution chains so one slow import cannot block every other user.
+   */
+  resolutionQueue?: RequestQueue;
 }
 
 export interface CreateImportBatchInput {
@@ -105,6 +118,57 @@ function rawInstrumentKey(row: NormalizedImportRow): string | null {
 
 const needsInstrument = (kind: NormalizedImportRow['kind']): boolean =>
   kind === 'buy' || kind === 'sell' || kind === 'dividend';
+
+/**
+ * One import may wait this long in total for background provider enrichment.
+ * Local catalog reads do not spend this budget.
+ */
+export const IMPORT_ENRICHMENT_WAIT_BUDGET_MS = 5_000;
+
+/**
+ * Hard admission ceiling for provider-backed search queries from one import.
+ * Sixteen fits inside the provider queue's five-second spacing window while
+ * staying far below the 150-instrument file cap. A query may coalesce or hit a
+ * provider cache, but it still spends one slot because it could start upstream
+ * work.
+ */
+export const IMPORT_ENRICHMENT_QUERY_BUDGET = 16;
+
+interface EnrichmentBudget {
+  remainingWaitMs: number;
+  remainingQueries: number;
+}
+
+interface InstrumentIdentity {
+  isin: string | null;
+  symbol: string | null;
+  name: string | null;
+}
+
+interface InstrumentLookupAttempt {
+  query: string;
+  matches(result: SearchResultItem): boolean;
+}
+
+function instrumentLookupAttempts(key: InstrumentIdentity): InstrumentLookupAttempt[] {
+  const attempts: InstrumentLookupAttempt[] = [];
+  if (key.symbol) {
+    const wanted = key.symbol.toUpperCase();
+    attempts.push({
+      query: key.symbol,
+      matches: (result) => result.symbol.toUpperCase() === wanted,
+    });
+  }
+  if (key.isin) {
+    const wanted = key.isin.toUpperCase();
+    attempts.push({ query: key.isin, matches: (result) => result.symbol.toUpperCase() === wanted });
+  }
+  if (key.name) {
+    const wanted = normalizeName(key.name);
+    attempts.push({ query: key.name, matches: (result) => normalizeName(result.name) === wanted });
+  }
+  return attempts;
+}
 
 /**
  * The COMPLETE staging boundary. Every normalized field a mapper emits is
@@ -163,46 +227,73 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
   const { importRepo, portfolioRepo, transactionRepo, cashSourceRepo, search, portfolio, tax } =
     deps;
   const registry = createMapperRegistry(deps.mappers);
+  // One queue per service instance is shared by every concurrent import request.
+  // Provider clients use the same RequestQueue primitive for their own outbound
+  // concurrency/spacing/backoff policy; this outer queue caps concurrent
+  // import-driven resolution chains and never retries business/search failures.
+  const resolutionQueue =
+    deps.resolutionQueue ?? createRequestQueue({ concurrency: 4, minSpacingMs: 0, maxRetries: 0 });
 
   async function requireOwnedPortfolio(userId: string, portfolioId: string): Promise<void> {
     const owned = await portfolioRepo.findByIdForUser(userId, portfolioId);
     if (!owned) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
   }
 
-  /**
-   * Resolve one instrument identity against the local catalog (§6.2) via the
-   * search service, accepting only exact matches: the file's ticker symbol, its
-   * ISIN used as a catalog symbol (common for custom assets), or the exact
-   * security name. When the first pass misses and the search kicked off a
-   * background provider enrichment, wait for it once and retry — a fresh
-   * instrument the user never opened can then still resolve. Anything less than
-   * an exact match returns null (→ `unmapped`, never a silent guess).
-   */
-  async function resolveInstrument(
+  /** Resolve an identity only from Postgres; this path can never start provider work. */
+  async function resolveInstrumentLocally(
     userId: string,
-    key: { isin: string | null; symbol: string | null; name: string | null },
+    key: InstrumentIdentity,
   ): Promise<SearchResultItem | null> {
-    const attempts: Array<{ query: string; matches: (r: SearchResultItem) => boolean }> = [];
-    if (key.symbol) {
-      const wanted = key.symbol.toUpperCase();
-      attempts.push({ query: key.symbol, matches: (r) => r.symbol.toUpperCase() === wanted });
+    for (const attempt of instrumentLookupAttempts(key)) {
+      const result = await search.search(userId, attempt.query, { allowEnrichment: false });
+      const hit = result.results.find(attempt.matches);
+      if (hit) return hit;
     }
-    if (key.isin) {
-      const wanted = key.isin.toUpperCase();
-      attempts.push({ query: key.isin, matches: (r) => r.symbol.toUpperCase() === wanted });
-    }
-    if (key.name) {
-      const wanted = normalizeName(key.name);
-      attempts.push({ query: key.name, matches: (r) => normalizeName(r.name) === wanted });
-    }
-    for (const attempt of attempts) {
-      let result = await search.search(userId, attempt.query);
-      let hit = result.results.find(attempt.matches);
-      if (!hit && result.enriching) {
-        await search.enrichmentSettled();
-        result = await search.search(userId, attempt.query);
-        hit = result.results.find(attempt.matches);
+    return null;
+  }
+
+  /**
+   * Admit provider enrichment for one unresolved identity under both per-batch
+   * ceilings. The query slot is spent before search because that call may launch
+   * fire-and-forget provider work. A settled retry is catalog-only, so neither
+   * retries nor exhausted imports can silently enqueue more upstream searches.
+   */
+  async function enrichInstrument(
+    userId: string,
+    key: InstrumentIdentity,
+    budget: EnrichmentBudget,
+  ): Promise<SearchResultItem | null> {
+    for (const attempt of instrumentLookupAttempts(key)) {
+      if (budget.remainingQueries <= 0 || budget.remainingWaitMs <= 0) return null;
+
+      budget.remainingQueries -= 1;
+      const result = await search.search(userId, attempt.query);
+      const immediateHit = result.results.find(attempt.matches);
+      if (immediateHit) return immediateHit;
+      if (!result.enriching) continue;
+
+      const waitMs = budget.remainingWaitMs;
+      const startedAt = Date.now();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settled = await Promise.race([
+        search.enrichmentSettled().then(() => true),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), waitMs);
+        }),
+      ]).finally(() => {
+        if (timer !== undefined) clearTimeout(timer);
+      });
+      budget.remainingWaitMs = Math.max(
+        0,
+        budget.remainingWaitMs - Math.max(0, Date.now() - startedAt),
+      );
+      if (!settled) {
+        budget.remainingWaitMs = 0;
+        return null;
       }
+
+      const refreshed = await search.search(userId, attempt.query, { allowEnrichment: false });
+      const hit = refreshed.results.find(attempt.matches);
       if (hit) return hit;
     }
     return null;
@@ -321,6 +412,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     },
 
     async createBatch(userId, input) {
+      await deps.paranoid?.assertAllowed(userId, 'imports');
       await requireOwnedPortfolio(userId, input.portfolioId);
 
       const csv = parseCsv(input.content);
@@ -350,13 +442,75 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
 
       const mapped = mapper.map(csv).map(guardStagedRow);
 
-      // Resolve each distinct instrument identity once (files repeat them a lot).
-      const resolutions = new Map<string, SearchResultItem | null>();
+      // Collect before resolving so an over-cap file is rejected without doing
+      // any catalog/provider work. Files repeat instruments heavily, so the raw
+      // identity key is resolved exactly once for the whole batch.
+      const instruments = new Map<string, NormalizedImportRow>();
       for (const line of mapped) {
         if (!line.ok || !needsInstrument(line.row.kind)) continue;
         const key = rawInstrumentKey(line.row);
-        if (key === null || resolutions.has(key)) continue;
-        resolutions.set(key, await resolveInstrument(userId, line.row));
+        if (key !== null && !instruments.has(key)) instruments.set(key, line.row);
+      }
+      if (instruments.size > IMPORT_MAX_DISTINCT_INSTRUMENTS) {
+        throw badRequest(
+          `The file contains more than ${IMPORT_MAX_DISTINCT_INSTRUMENTS} distinct instruments — split it into files with at most ${IMPORT_MAX_DISTINCT_INSTRUMENTS} instruments each.`,
+          'IMPORT_TOO_MANY_INSTRUMENTS',
+        );
+      }
+
+      // Resolution runs in three phases. The catalog MUTATES mid-batch —
+      // `CatalogEnrichment.run()` upserts every hit of a query, not just the
+      // identity that triggered it — so a read taken before enrichment is stale
+      // for every identity that never gets its own admission. Hence phase 3.
+
+      // Phase 1 — the complete local pass, before any provider work is admitted,
+      // so an already-catalogued instrument never depends on the budget.
+      const resolutions = new Map<string, SearchResultItem | null>();
+      const unresolved: Array<[key: string, row: NormalizedImportRow]> = [];
+      for (const [key, row] of instruments) {
+        const local = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+        resolutions.set(key, local);
+        if (local === null) unresolved.push([key, row]);
+      }
+
+      // Phase 2 — bounded enrichment for the misses, in file order.
+      const enrichmentBudget: EnrichmentBudget = {
+        remainingWaitMs: IMPORT_ENRICHMENT_WAIT_BUDGET_MS,
+        remainingQueries: IMPORT_ENRICHMENT_QUERY_BUDGET,
+      };
+      let enrichmentStarted = false;
+      for (const [key, row] of unresolved) {
+        if (enrichmentBudget.remainingQueries <= 0 || enrichmentBudget.remainingWaitMs <= 0) {
+          break;
+        }
+        // A sibling admission may already have upserted this identity. Re-reading
+        // is catalog-only, so it costs no slot and keeps one for a genuine miss.
+        if (enrichmentStarted) {
+          const appeared = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+          if (appeared !== null) {
+            resolutions.set(key, appeared);
+            continue;
+          }
+        }
+        enrichmentStarted = true;
+        const enriched = await resolutionQueue.run(() =>
+          enrichInstrument(userId, row, enrichmentBudget),
+        );
+        if (enriched !== null) resolutions.set(key, enriched);
+      }
+
+      // Phase 3 — the post-enrichment sweep. Every identity the budget never
+      // admitted still holds its phase-1 read, which is stale for any row a
+      // sibling query upserted meanwhile; without this pass a valid file stages
+      // `unmapped` rows whose asset is already sitting in Postgres. The sweep is
+      // catalog-only (`allowEnrichment: false`), so it can neither spend a query
+      // slot nor wait — it cannot re-open the provider amplification.
+      if (enrichmentStarted) {
+        for (const [key, row] of unresolved) {
+          if (resolutions.get(key) !== null) continue;
+          const local = await resolutionQueue.run(() => resolveInstrumentLocally(userId, row));
+          if (local !== null) resolutions.set(key, local);
+        }
       }
 
       const existing = await collectExistingHashes(userId, input.portfolioId);
@@ -457,12 +611,14 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     },
 
     async getBatch(userId, batchId) {
+      await deps.paranoid?.assertAllowed(userId, 'imports');
       const batch = await importRepo.findBatchForOwner(userId, batchId);
       if (!batch) throw notFound('Import not found.', 'IMPORT_NOT_FOUND');
       return buildPreview(batch);
     },
 
     async applyBatch(userId, batchId, input) {
+      await deps.paranoid?.assertAllowed(userId, 'imports');
       const batch = await importRepo.findBatchForOwner(userId, batchId);
       if (!batch) throw notFound('Import not found.', 'IMPORT_NOT_FOUND');
       if (batch.status !== 'pending') {
@@ -665,6 +821,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     },
 
     async discardBatch(userId, batchId) {
+      await deps.paranoid?.assertAllowed(userId, 'imports');
       const deleted = await importRepo.deleteBatchForOwner(userId, batchId);
       if (!deleted) throw notFound('Import not found.', 'IMPORT_NOT_FOUND');
     },

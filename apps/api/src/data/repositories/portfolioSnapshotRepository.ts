@@ -1,4 +1,4 @@
-import { asc, eq, min, sql } from 'drizzle-orm';
+import { and, asc, eq, exists, inArray, min, notExists, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -73,6 +73,13 @@ export interface AssetReference {
   portfolioId: string;
   /** ISO day of the portfolio's earliest transaction on the asset. */
   firstTxnDay: string;
+}
+
+/** A portfolio to rebuild + the first day its series exists on. */
+export interface SnapshotRepairTarget {
+  portfolioId: string;
+  /** ISO day of the portfolio's earliest transaction OR cash movement. */
+  firstEventDay: string;
 }
 
 function toRowRecord(row: PortfolioDailySnapshotRow): SnapshotRowRecord {
@@ -303,6 +310,88 @@ export function createPortfolioSnapshotRepository(db: Database) {
           portfolioId: r.portfolioId,
           firstTxnDay: r.firstExecutedAt!.toISOString().slice(0, 10),
         }));
+    },
+
+    /**
+     * Portfolios whose stored series was corrupted by the taxed-sell flow bug
+     * (#125 follow-up), each with the first day of its history.
+     *
+     * The signature is a SELL that has a linked tax settlement but NO linked
+     * `sell_proceeds` leg: its proceeds left the portfolio, yet the pre-fix
+     * exclusion set treated *any* linked cash movement as "settled in cash" and
+     * dropped the sell's external outflow. The holdings left the value curve
+     * with no flow explaining the drop. A sell that DID park its proceeds in
+     * cash is unaffected — the `sell_proceeds` leg is a genuine internal
+     * settlement — and so is an untaxed sell, which never had a linked movement
+     * to be confused by.
+     *
+     * Whole-system, like {@link listSnapshotTargets}: repairing derived rows is
+     * an operator action, so there is no user scope to apply.
+     */
+    async listTaxedSellFlowRepairTargets(): Promise<SnapshotRepairTarget[]> {
+      const affected = await db
+        .selectDistinct({ portfolioId: transactions.portfolioId })
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.side, 'sell'),
+            exists(
+              db
+                .select({ one: sql`1` })
+                .from(portfolioCashMovements)
+                .where(
+                  and(
+                    eq(portfolioCashMovements.transactionId, transactions.id),
+                    inArray(portfolioCashMovements.kind, ['tax_withholding', 'tax_refund']),
+                  ),
+                ),
+            ),
+            notExists(
+              db
+                .select({ one: sql`1` })
+                .from(portfolioCashMovements)
+                .where(
+                  and(
+                    eq(portfolioCashMovements.transactionId, transactions.id),
+                    eq(portfolioCashMovements.kind, 'sell_proceeds'),
+                  ),
+                ),
+            ),
+          ),
+        );
+      const ids = [...new Set(affected.map((r) => r.portfolioId))].sort();
+      if (ids.length === 0) return [];
+
+      // Inception = the earliest event of ANY kind, because the rebuild must
+      // start before the first snapshot row: a cash deposit can precede the
+      // first trade, and the chain is only correct if rebuilt from its head.
+      const [firstTxn, firstCash] = await Promise.all([
+        db
+          .select({ portfolioId: transactions.portfolioId, first: min(transactions.executedAt) })
+          .from(transactions)
+          .where(inArray(transactions.portfolioId, ids))
+          .groupBy(transactions.portfolioId),
+        db
+          .select({
+            portfolioId: portfolioCashMovements.portfolioId,
+            first: min(portfolioCashMovements.executedAt),
+          })
+          .from(portfolioCashMovements)
+          .where(inArray(portfolioCashMovements.portfolioId, ids))
+          .groupBy(portfolioCashMovements.portfolioId),
+      ]);
+
+      const earliest = new Map<string, string>();
+      for (const row of [...firstTxn, ...firstCash]) {
+        if (row.first === null) continue;
+        const day = row.first.toISOString().slice(0, 10);
+        const seen = earliest.get(row.portfolioId);
+        if (seen === undefined || day < seen) earliest.set(row.portfolioId, day);
+      }
+
+      return ids
+        .filter((id) => earliest.has(id))
+        .map((portfolioId) => ({ portfolioId, firstEventDay: earliest.get(portfolioId)! }));
     },
   };
 }

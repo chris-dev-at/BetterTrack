@@ -5,6 +5,12 @@ import { WEBHOOK_EVENT_TYPES } from '@bettertrack/contracts';
 import type { WebhookSubscriptionRepository } from '../../data/repositories/webhookRepository';
 import type { DomainEvent } from '../../events';
 import type { Logger } from '../../logger';
+import {
+  isParanoidKilledWebhookEvent,
+  paranoidWebhookSubjectIds,
+  ParanoidModeError,
+  type ParanoidModeGuard,
+} from '../account/paranoidEnforcement';
 
 import type { WebhookDeliveryJob } from './webhookDispatcher';
 
@@ -75,6 +81,11 @@ export interface WebhookBridgeDeps {
   /** Enqueue one delivery (durable BullMQ in prod; synchronous under test). */
   enqueue: (job: WebhookDeliveryJob) => Promise<void>;
   logger: Logger;
+  /**
+   * `runAllowedMany` gates the fan-out under every subject's transition lock;
+   * `isParanoid` only classifies an already-decided drop for the log line.
+   */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany' | 'isParanoid'>;
 }
 
 export interface WebhookBridge {
@@ -89,29 +100,61 @@ export function createWebhookBridge(deps: WebhookBridgeDeps): WebhookBridge {
       if (!isWebhookEventType(event.type)) return;
       const userId = eventUserId(event);
       if (!userId) return;
+      const enqueueDeliveries = async () => {
+        const subs = await subscriptions.findEnabledForUserEvent(userId, event.type);
+        let failedEnqueues = 0;
 
-      const subs = await subscriptions.findEnabledForUserEvent(userId, event.type);
-      let failedEnqueues = 0;
+        for (const sub of subs) {
+          try {
+            await enqueue({
+              subscriptionId: sub.id,
+              deliveryId: webhookDeliveryId(sub.id, event),
+              event,
+            });
+          } catch (err) {
+            failedEnqueues += 1;
+            logger.error(
+              { subscriptionId: sub.id, type: event.type, err },
+              'webhook bridge: delivery enqueue failed',
+            );
+          }
+        }
 
-      for (const sub of subs) {
-        try {
-          await enqueue({
-            subscriptionId: sub.id,
-            deliveryId: webhookDeliveryId(sub.id, event),
-            event,
-          });
-        } catch (err) {
-          failedEnqueues += 1;
-          logger.error(
-            { subscriptionId: sub.id, type: event.type, err },
-            'webhook bridge: delivery enqueue failed',
+        if (failedEnqueues > 0) {
+          throw new Error(
+            `webhook bridge: ${failedEnqueues} delivery ${failedEnqueues === 1 ? 'enqueue' : 'enqueues'} failed`,
           );
         }
-      }
+      };
 
-      if (failedEnqueues > 0) {
-        throw new Error(
-          `webhook bridge: ${failedEnqueues} delivery ${failedEnqueues === 1 ? 'enqueue' : 'enqueues'} failed`,
+      const paranoid = deps.paranoid;
+      if (!isParanoidKilledWebhookEvent(event) || !paranoid) {
+        await enqueueDeliveries();
+        return;
+      }
+      const subjectIds = paranoidWebhookSubjectIds(event);
+      try {
+        await paranoid.runAllowedMany(subjectIds, 'portfolioWebhooks', enqueueDeliveries);
+      } catch (error) {
+        if (!(error instanceof ParanoidModeError)) throw error;
+        // Fail-closed by design: the transition lock treats a subject id with NO
+        // account row exactly like a paranoid one, so a stale MIRRORCHAIN/sharing
+        // event whose actor has since DELETED their account drops for every
+        // remaining (normal) member too. That is the safe side, but the two
+        // reasons are operationally different — one is a privacy opt-out, the
+        // other a data-lifecycle artifact — so the drop is logged with the
+        // classification instead of vanishing. The reads below are unlocked and
+        // diagnostic only: a subject that flipped back to normal meanwhile is
+        // reported as unresolved, which never affects the drop decision itself.
+        const paranoidSubjectIds: string[] = [];
+        const unresolvedSubjectIds: string[] = [];
+        for (const subjectId of subjectIds) {
+          if (await paranoid.isParanoid(subjectId)) paranoidSubjectIds.push(subjectId);
+          else unresolvedSubjectIds.push(subjectId);
+        }
+        logger.warn(
+          { type: event.type, paranoidSubjectIds, unresolvedSubjectIds },
+          'webhook bridge: fan-out dropped by paranoid subject guard',
         );
       }
     },

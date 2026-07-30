@@ -14,6 +14,7 @@ import {
 import * as schema from '../data/schema';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
+import { withExclusiveParanoidTransitionTestLock } from '../data/repositories/paranoidEnforcementRepository';
 import { ApiError } from '../errors';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -88,6 +89,38 @@ async function mirrorAuditRows(portfolioId: string) {
     .from(schema.auditLog)
     .where(eq(schema.auditLog.action, 'mirror.op_applied'));
   return rows.filter((r) => (r.meta as { portfolioId?: string })?.portfolioId === portfolioId);
+}
+
+async function startWinningParanoidTransition(userId: string): Promise<{
+  finish(): Promise<void>;
+}> {
+  let releaseTransition!: () => void;
+  let transitionLocked!: () => void;
+  const release = new Promise<void>((resolve) => {
+    releaseTransition = resolve;
+  });
+  const locked = new Promise<void>((resolve) => {
+    transitionLocked = resolve;
+  });
+  const transition = withExclusiveParanoidTransitionTestLock(harness.db, userId, async () => {
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(schema.users.id, userId));
+    transitionLocked();
+    await release;
+  });
+  await locked;
+  return {
+    async finish() {
+      releaseTransition();
+      await transition;
+    },
+  };
 }
 
 describe('mirrorchain M2 — replication core', () => {
@@ -723,5 +756,57 @@ describe('mirrorchain M2 — replication core', () => {
     // And the concurrent submit itself succeeded + replicated to Alice.
     const aliceMoves = await createCashMovementRepository(harness.db).listForPortfolio(aPid);
     expect(aliceMoves.filter((m) => m.kind === 'deposit' && m.amountEur === 10)).toHaveLength(1);
+  });
+
+  it('does not rename a chain when a non-actor member transition wins first', async () => {
+    const { alice, bob, chain } = await setupChain();
+    const opCountBefore = (await mirrorRepo.listActivity(chain.id, { limit: 100 })).length;
+
+    const transition = await startWinningParanoidTransition(bob.id);
+    const rename = harness.ctx.mirror.renameChain(alice.id, chain.id, 'Must not land');
+    let settled = false;
+    void rename
+      .finally(() => {
+        settled = true;
+      })
+      .catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    await transition.finish();
+    await expect(rename).rejects.toMatchObject({ code: 'PARANOID_MODE' });
+    expect((await mirrorRepo.getChain(chain.id))?.name).toBe('Family');
+    expect(await mirrorRepo.listActivity(chain.id, { limit: 100 })).toHaveLength(opCountBefore);
+  });
+
+  it('skips a stale queued op when its author entered paranoid mode before replay', async () => {
+    const { alice, bob, aPid, bPid, chain } = await setupChain();
+    await harness.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 125 });
+    const bobMembershipBefore = await mirrorRepo.findActiveMembership(chain.id, bob.id);
+    const bobAuditBefore = (await mirrorAuditRows(bPid)).length;
+    expect((await sourceBalances(bob.id, bPid)).find((source) => source.isMain)?.balanceEur).toBe(
+      0,
+    );
+
+    await withExclusiveParanoidTransitionTestLock(harness.db, alice.id, async () => {
+      await harness.db
+        .update(schema.users)
+        .set({
+          privacyMode: 'paranoid',
+          paranoidMediaSet: ['drive'],
+          paranoidDriveAttestedVersion: 1,
+        })
+        .where(eq(schema.users.id, alice.id));
+    });
+
+    const result = await harness.ctx.mirror.replicateChain(chain.id);
+    const bobMembershipAfter = await mirrorRepo.findActiveMembership(chain.id, bob.id);
+    expect(result.applied).toBe(0);
+    expect(result.lagging).toBeGreaterThan(0);
+    expect(bobMembershipAfter?.appliedSeq).toBe(bobMembershipBefore?.appliedSeq);
+    expect((await sourceBalances(bob.id, bPid)).find((source) => source.isMain)?.balanceEur).toBe(
+      0,
+    );
+    expect((await mirrorAuditRows(bPid)).length).toBe(bobAuditBefore);
   });
 });

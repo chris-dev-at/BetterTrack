@@ -1,9 +1,9 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { ReactionEmoji, ShareKind } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import { itemReactions } from '../schema';
+import { itemComments, itemReactions } from '../schema';
 
 /**
  * Reaction SQL (§13.5 V5-P8). The ONE `item_reactions` table serves reactions on
@@ -33,6 +33,65 @@ function toAggregates(
 
 export function createItemReactionRepository(db: Database) {
   return {
+    /** Identity-only discovery for actors contributing to one item aggregate. */
+    async listActorIdsForItem(kind: ShareKind, subjectId: string): Promise<string[]> {
+      const rows = await db
+        .selectDistinct({ userId: itemReactions.userId })
+        .from(itemReactions)
+        .where(
+          and(
+            eq(itemReactions.targetType, 'item'),
+            eq(itemReactions.kind, kind),
+            eq(itemReactions.subjectId, subjectId),
+          ),
+        );
+      return rows.map((row) => row.userId);
+    },
+
+    /** Identity-only discovery for actors contributing to one comment aggregate. */
+    async listActorIdsForComment(commentId: string): Promise<string[]> {
+      const rows = await db
+        .selectDistinct({ userId: itemReactions.userId })
+        .from(itemReactions)
+        .where(
+          and(eq(itemReactions.targetType, 'comment'), eq(itemReactions.commentId, commentId)),
+        );
+      return rows.map((row) => row.userId);
+    },
+
+    /**
+     * Identity-only discovery for every live participant whose reaction could
+     * contribute to an item thread. No emoji, body, profile, or aggregate is
+     * selected before the service holds the participant privacy locks.
+     */
+    async listActorIdsForThread(kind: ShareKind, subjectId: string): Promise<string[]> {
+      const [itemActors, commentActors] = await Promise.all([
+        db
+          .selectDistinct({ userId: itemReactions.userId })
+          .from(itemReactions)
+          .where(
+            and(
+              eq(itemReactions.targetType, 'item'),
+              eq(itemReactions.kind, kind),
+              eq(itemReactions.subjectId, subjectId),
+            ),
+          ),
+        db
+          .selectDistinct({ userId: itemReactions.userId })
+          .from(itemReactions)
+          .innerJoin(itemComments, eq(itemComments.id, itemReactions.commentId))
+          .where(
+            and(
+              eq(itemReactions.targetType, 'comment'),
+              eq(itemComments.kind, kind),
+              eq(itemComments.subjectId, subjectId),
+              isNull(itemComments.deletedAt),
+            ),
+          ),
+      ]);
+      return [...new Set([...itemActors, ...commentActors].map((row) => row.userId))];
+    },
+
     /**
      * Toggle the viewer's reaction on an ITEM: remove it if present, else add it.
      * Idempotent per (user, item, emoji) via the partial unique index.
@@ -87,7 +146,9 @@ export function createItemReactionRepository(db: Database) {
       viewerId: string,
       kind: ShareKind,
       subjectId: string,
+      actorIds?: readonly string[],
     ): Promise<ReactionAggregate[]> {
+      if (actorIds?.length === 0) return [];
       const rows = await db
         .select({
           emoji: itemReactions.emoji,
@@ -100,6 +161,7 @@ export function createItemReactionRepository(db: Database) {
             eq(itemReactions.targetType, 'item'),
             eq(itemReactions.kind, kind),
             eq(itemReactions.subjectId, subjectId),
+            actorIds ? inArray(itemReactions.userId, [...actorIds]) : undefined,
           ),
         )
         .groupBy(itemReactions.emoji)
@@ -114,9 +176,10 @@ export function createItemReactionRepository(db: Database) {
     async summaryForComments(
       viewerId: string,
       commentIds: readonly string[],
+      actorIds?: readonly string[],
     ): Promise<Map<string, ReactionAggregate[]>> {
       const out = new Map<string, ReactionAggregate[]>();
-      if (commentIds.length === 0) return out;
+      if (commentIds.length === 0 || actorIds?.length === 0) return out;
       const rows = await db
         .select({
           commentId: itemReactions.commentId,
@@ -129,6 +192,7 @@ export function createItemReactionRepository(db: Database) {
           and(
             eq(itemReactions.targetType, 'comment'),
             inArray(itemReactions.commentId, [...commentIds]),
+            actorIds ? inArray(itemReactions.userId, [...actorIds]) : undefined,
           ),
         )
         .groupBy(itemReactions.commentId, itemReactions.emoji)
@@ -143,8 +207,12 @@ export function createItemReactionRepository(db: Database) {
     },
 
     /** Aggregate one comment's reactions (the toggle response). */
-    async summaryForComment(viewerId: string, commentId: string): Promise<ReactionAggregate[]> {
-      const map = await this.summaryForComments(viewerId, [commentId]);
+    async summaryForComment(
+      viewerId: string,
+      commentId: string,
+      actorIds?: readonly string[],
+    ): Promise<ReactionAggregate[]> {
+      const map = await this.summaryForComments(viewerId, [commentId], actorIds);
       return map.get(commentId) ?? [];
     },
   };

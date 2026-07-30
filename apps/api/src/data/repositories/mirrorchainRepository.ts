@@ -1,4 +1,18 @@
-import { and, asc, desc, eq, gt, isNotNull, lt, ne, notExists, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  notExists,
+  or,
+  sql,
+} from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import type {
@@ -16,6 +30,7 @@ import {
   mirrorChainOps,
   mirrorChains,
   mirrorRows,
+  portfolios,
   transactions,
   users,
 } from '../schema';
@@ -125,6 +140,35 @@ export interface MirrorInviteDetailRow extends MirrorChainInviteRow {
   toUsername: string;
 }
 
+/** Identity-only active member row used before any chain/profile enrichment. */
+export interface MirrorMemberPrincipalRow {
+  id: string;
+  chainId: string;
+  userId: string | null;
+  role: MirrorMemberRole;
+}
+
+/** Identity-only activity row used to discover authors before rendering summaries. */
+export interface MirrorActivityPrincipalRow {
+  seq: number;
+  actorUserId: string | null;
+}
+
+/** Identity-only invite row used before chain/user names are joined. */
+export interface MirrorInvitePrincipalRow {
+  id: string;
+  chainId: string;
+  fromUser: string | null;
+  toUser: string;
+  createdAt: Date;
+}
+
+/** Chain fields safe and sufficient for user-facing summaries/read rails. */
+export type MirrorChainDisplayRow = Pick<
+  MirrorChainRow,
+  'id' | 'name' | 'status' | 'lastSeq' | 'createdAt'
+>;
+
 export function createMirrorchainRepository(db: Database) {
   return {
     // --- Chains -------------------------------------------------------------
@@ -144,6 +188,21 @@ export function createMirrorchainRepository(db: Database) {
 
     async getChain(chainId: string): Promise<MirrorChainRow | null> {
       const [row] = await db.select().from(mirrorChains).where(eq(mirrorChains.id, chainId));
+      return row ?? null;
+    },
+
+    /** User-facing chain fields only; excludes creator attribution/provenance. */
+    async getChainDisplay(chainId: string): Promise<MirrorChainDisplayRow | null> {
+      const [row] = await db
+        .select({
+          id: mirrorChains.id,
+          name: mirrorChains.name,
+          status: mirrorChains.status,
+          lastSeq: mirrorChains.lastSeq,
+          createdAt: mirrorChains.createdAt,
+        })
+        .from(mirrorChains)
+        .where(eq(mirrorChains.id, chainId));
       return row ?? null;
     },
 
@@ -290,6 +349,31 @@ export function createMirrorchainRepository(db: Database) {
     },
 
     /**
+     * Account ids whose server-side content/attribution is carried by queued ops.
+     * This intentionally selects no payload or username: the replicate worker
+     * uses it only to acquire privacy locks before loading the full oplog window.
+     */
+    async listOpPrincipalIdsSince(chainId: string, afterSeq: number): Promise<string[]> {
+      const rows = await db
+        .select({
+          actorUserId: mirrorChainOps.actorUserId,
+          originOwnerId: portfolios.userId,
+        })
+        .from(mirrorChainOps)
+        .leftJoin(portfolios, eq(portfolios.id, mirrorChainOps.originPortfolioId))
+        .where(and(eq(mirrorChainOps.chainId, chainId), gt(mirrorChainOps.seq, afterSeq)));
+      return [
+        ...new Set(
+          rows.flatMap((row) =>
+            [row.actorUserId, row.originOwnerId].filter(
+              (userId): userId is string => typeof userId === 'string',
+            ),
+          ),
+        ),
+      ];
+    },
+
+    /**
      * The highest-seq op targeting `mirrorId` — the §3 conflict guard's
      * "entity's latest op" and the source of a row's `mirror.version`. Null when
      * the entity has no ops yet.
@@ -326,14 +410,41 @@ export function createMirrorchainRepository(db: Database) {
      */
     async listActivity(
       chainId: string,
-      opts: { before?: number; limit: number },
+      opts: { before?: number; limit: number; allowedActorUserIds?: readonly string[] },
     ): Promise<MirrorChainOpRow[]> {
+      const allowedActors =
+        opts.allowedActorUserIds === undefined
+          ? undefined
+          : or(
+              isNull(mirrorChainOps.actorUserId),
+              ...(opts.allowedActorUserIds.length > 0
+                ? [inArray(mirrorChainOps.actorUserId, [...opts.allowedActorUserIds])]
+                : []),
+            );
+      const where = and(
+        eq(mirrorChainOps.chainId, chainId),
+        opts.before !== undefined ? lt(mirrorChainOps.seq, opts.before) : undefined,
+        allowedActors,
+      );
+      return db
+        .select()
+        .from(mirrorChainOps)
+        .where(where)
+        .orderBy(desc(mirrorChainOps.seq))
+        .limit(opts.limit);
+    },
+
+    /** The same activity page as `listActivity`, selecting principal ids only. */
+    async listActivityPrincipals(
+      chainId: string,
+      opts: { before?: number; limit: number },
+    ): Promise<MirrorActivityPrincipalRow[]> {
       const where =
         opts.before !== undefined
           ? and(eq(mirrorChainOps.chainId, chainId), lt(mirrorChainOps.seq, opts.before))
           : eq(mirrorChainOps.chainId, chainId);
       return db
-        .select()
+        .select({ seq: mirrorChainOps.seq, actorUserId: mirrorChainOps.actorUserId })
         .from(mirrorChainOps)
         .where(where)
         .orderBy(desc(mirrorChainOps.seq))
@@ -402,12 +513,44 @@ export function createMirrorchainRepository(db: Database) {
         .orderBy(asc(mirrorChainMembers.joinedAt), asc(mirrorChainMembers.userId));
     },
 
+    /** Active chain principals only — no username, portfolio, or sync metadata. */
+    async listActiveMemberPrincipals(chainId: string): Promise<MirrorMemberPrincipalRow[]> {
+      return db
+        .select({
+          id: mirrorChainMembers.id,
+          chainId: mirrorChainMembers.chainId,
+          userId: mirrorChainMembers.userId,
+          role: mirrorChainMembers.role,
+        })
+        .from(mirrorChainMembers)
+        .where(
+          and(eq(mirrorChainMembers.chainId, chainId), eq(mirrorChainMembers.status, 'active')),
+        )
+        .orderBy(asc(mirrorChainMembers.joinedAt), asc(mirrorChainMembers.userId));
+    },
+
     /** A user's active memberships across all chains (switcher / deletion sweep). */
     async listActiveMembershipsForUser(userId: string): Promise<MirrorChainMemberRow[]> {
       return db
         .select()
         .from(mirrorChainMembers)
         .where(and(eq(mirrorChainMembers.userId, userId), eq(mirrorChainMembers.status, 'active')));
+    },
+
+    /** Caller membership identities only — the discovery pass for switcher reads. */
+    async listActiveMembershipPrincipalsForUser(
+      userId: string,
+    ): Promise<MirrorMemberPrincipalRow[]> {
+      return db
+        .select({
+          id: mirrorChainMembers.id,
+          chainId: mirrorChainMembers.chainId,
+          userId: mirrorChainMembers.userId,
+          role: mirrorChainMembers.role,
+        })
+        .from(mirrorChainMembers)
+        .where(and(eq(mirrorChainMembers.userId, userId), eq(mirrorChainMembers.status, 'active')))
+        .orderBy(asc(mirrorChainMembers.chainId), asc(mirrorChainMembers.id));
     },
 
     /**
@@ -451,13 +594,29 @@ export function createMirrorchainRepository(db: Database) {
      * §10/§11), earliest join first. Left join so an account-deleted member
      * (`user_id` SET NULL) still renders from the denormalized username.
      */
-    async listMembersDetailed(chainId: string): Promise<MirrorMemberDetailRow[]> {
+    async listMembersDetailed(
+      chainId: string,
+      options?: { allowedUserIds?: readonly string[] },
+    ): Promise<MirrorMemberDetailRow[]> {
+      const allowedMembers =
+        options?.allowedUserIds === undefined
+          ? undefined
+          : or(
+              isNull(mirrorChainMembers.userId),
+              ...(options.allowedUserIds.length > 0
+                ? [inArray(mirrorChainMembers.userId, [...options.allowedUserIds])]
+                : []),
+            );
       const rows = await db
         .select({ member: mirrorChainMembers, profileIcon: users.profileIcon })
         .from(mirrorChainMembers)
         .leftJoin(users, eq(users.id, mirrorChainMembers.userId))
         .where(
-          and(eq(mirrorChainMembers.chainId, chainId), eq(mirrorChainMembers.status, 'active')),
+          and(
+            eq(mirrorChainMembers.chainId, chainId),
+            eq(mirrorChainMembers.status, 'active'),
+            allowedMembers,
+          ),
         )
         .orderBy(asc(mirrorChainMembers.joinedAt), asc(mirrorChainMembers.userId));
       return rows.map((r) => ({ ...r.member, profileIcon: r.profileIcon ?? null }));
@@ -572,7 +731,11 @@ export function createMirrorchainRepository(db: Database) {
      * incoming (`to_user = userId`) and outgoing (`from_user = userId`), newest
      * first. `from_user` may be null (inviter's account deleted).
      */
-    async listInvitesForUserDetailed(userId: string): Promise<MirrorInviteDetailRow[]> {
+    async listInvitesForUserDetailed(
+      userId: string,
+      options?: { allowedInviteIds?: readonly string[] },
+    ): Promise<MirrorInviteDetailRow[]> {
+      if (options?.allowedInviteIds?.length === 0) return [];
       const fromU = alias(users, 'from_u');
       const toU = alias(users, 'to_u');
       const rows = await db
@@ -590,6 +753,9 @@ export function createMirrorchainRepository(db: Database) {
           and(
             eq(mirrorChainInvites.status, 'pending'),
             or(eq(mirrorChainInvites.toUser, userId), eq(mirrorChainInvites.fromUser, userId)),
+            options?.allowedInviteIds
+              ? inArray(mirrorChainInvites.id, [...options.allowedInviteIds])
+              : undefined,
           ),
         )
         .orderBy(desc(mirrorChainInvites.createdAt));
@@ -599,6 +765,26 @@ export function createMirrorchainRepository(db: Database) {
         fromUsername: r.fromUsername ?? null,
         toUsername: r.toUsername,
       }));
+    },
+
+    /** Pending invite identities only — no chain or profile names are joined. */
+    async listInvitePrincipalsForUser(userId: string): Promise<MirrorInvitePrincipalRow[]> {
+      return db
+        .select({
+          id: mirrorChainInvites.id,
+          chainId: mirrorChainInvites.chainId,
+          fromUser: mirrorChainInvites.fromUser,
+          toUser: mirrorChainInvites.toUser,
+          createdAt: mirrorChainInvites.createdAt,
+        })
+        .from(mirrorChainInvites)
+        .where(
+          and(
+            eq(mirrorChainInvites.status, 'pending'),
+            or(eq(mirrorChainInvites.toUser, userId), eq(mirrorChainInvites.fromUser, userId)),
+          ),
+        )
+        .orderBy(desc(mirrorChainInvites.createdAt));
     },
 
     // --- Mirror rows (logical↔local identity map) --------------------------

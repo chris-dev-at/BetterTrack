@@ -24,7 +24,8 @@ import {
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createVaultMoneyEngine } from './index';
-import { portfolioRangeStartIso } from './portfolioEngine';
+import { cashSettledTransactionIds, portfolioRangeStartIso } from './portfolioEngine';
+import type { ClientPortfolioModel } from './model';
 import serverTwrParity from './serverTwrParity.fixture.json';
 import {
   CLIENT_MONEY_IDS,
@@ -788,6 +789,35 @@ describe('paranoid client money engine', () => {
     ['2024-02-29', '5Y', '2019-02-28'],
   ] as const)('matches the server range clamp for %s minus %s', (today, range, expectedStart) => {
     expect(portfolioRangeStartIso(today, range)).toBe(expectedStart);
+  });
+
+  it('counts only buy/sell_proceeds legs as cash-settled — a tax leg is not one', () => {
+    // Mirrors the server's `cashSettledTxnIds`. A taxed sell that pays its
+    // proceeds OUT carries a `tax_withholding` leg on its own transactionId; if
+    // that suppressed the sell's external outflow, the vanished holdings would
+    // read as a loss the user never took (#125).
+    const movement = (
+      kind: 'buy' | 'sell_proceeds' | 'tax_withholding' | 'tax_refund' | 'deposit',
+      transactionId: string | null,
+    ) =>
+      ({
+        sourceId: 'source-1',
+        kind,
+        amountEur: kind === 'buy' || kind === 'tax_withholding' ? -100 : 100,
+        occurredAt: '2026-07-20T10:00:00.000Z',
+        transactionId,
+      }) as ClientPortfolioModel['cashMovements'][number];
+
+    const ids = cashSettledTransactionIds([
+      movement('buy', 'txn-funded'),
+      movement('sell_proceeds', 'txn-parked'),
+      movement('tax_withholding', 'txn-taxed'),
+      movement('tax_refund', 'txn-refunded'),
+      movement('deposit', null),
+    ]);
+    expect([...ids].sort()).toEqual(['txn-funded', 'txn-parked']);
+    expect(ids.has('txn-taxed')).toBe(false);
+    expect(ids.has('txn-refunded')).toBe(false);
   });
 
   it('matches the audited split-date cash-buy compensators', async () => {

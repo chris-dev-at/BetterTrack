@@ -35,6 +35,30 @@ const ELBA = fixture('raiffeisen-elba.csv');
 const N26 = fixture('n26.csv');
 const REVOLUT = fixture('revolut.csv');
 
+/** A hand-built multipart body, so a part can carry an oversized header block. */
+function rawMultipartUpload(
+  boundary: string,
+  field: { name: string; value: string; extraHeaders?: string[] },
+  csv: string,
+): Buffer {
+  return Buffer.from(
+    [
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="${field.name}"`,
+      ...(field.extraHeaders ?? []),
+      '',
+      field.value,
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="file"; filename="statement.csv"',
+      'Content-Type: text/csv',
+      '',
+      csv,
+      `--${boundary}--`,
+      '',
+    ].join('\r\n'),
+  );
+}
+
 let harness: TestHarness;
 
 beforeEach(async () => {
@@ -280,6 +304,51 @@ describe('preview-time category overrides', () => {
 });
 
 describe('import guards', () => {
+  it('maps an over-limit multipart field count to the expense-import contract error', async () => {
+    const { agent } = await setup();
+    const res = await agent
+      .post('/api/v1/expenses/import/preview')
+      .set(...XRW)
+      .field('bankId', 'n26')
+      .field('unexpected-one', 'amplification')
+      .field('unexpected-two', 'amplification')
+      .attach('file', Buffer.from(N26, 'utf8'), 'statement.csv');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'EXPENSE_IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
+  it("rejects a part header block past Busboy's 16 KiB cap with the contract error", async () => {
+    const { agent } = await setup();
+    const boundary = 'bettertrack-expense-header-block';
+    const res = await agent
+      .post('/api/v1/expenses/import/preview')
+      .set(...XRW)
+      .set('Content-Type', `multipart/form-data; boundary=${boundary}`)
+      .send(
+        rawMultipartUpload(
+          boundary,
+          {
+            name: 'bankId',
+            value: 'n26',
+            // Past MAX_HEADER_SIZE Busboy raises a plain `Malformed part header`
+            // Error, which is not a MulterError — it became an opaque 500 before
+            // `uploadFile` mapped every parse failure onto the §8 envelope.
+            extraHeaders: [`X-BetterTrack-Pad: ${'a'.repeat(17 * 1024)}`],
+          },
+          N26,
+        ),
+      );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'EXPENSE_IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
   it('rejects an unrecognized file, then accepts it with a manual bank pick', async () => {
     const { agent } = await setup();
     const generic = 'Foo,Bar,Baz\n1,2,3';

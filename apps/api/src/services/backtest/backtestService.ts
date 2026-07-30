@@ -35,6 +35,7 @@ import {
 import { compareSeriesStats } from '../../domain/seriesStats';
 import { notFound, unprocessable } from '../../errors';
 import type { MarketDataService } from '../../providers';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import { flattenConglomerate } from '../conglomerate/nesting';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 
@@ -166,6 +167,8 @@ export interface BacktestServiceDeps {
     viewerId: string,
     conglomerateId: string,
   ) => Promise<{ ownerId: string } | undefined>;
+  /** Hold viewer and shared-item owner through authorization and response construction. */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany' | 'runAllowedWithOptional'>;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
 }
@@ -251,6 +254,7 @@ export function backtestPreviewCacheKey(
   userId: string,
   input: BacktestPreviewInput,
   baseCurrency: string,
+  scope?: { globalOnly?: boolean },
 ): string {
   const canonical = JSON.stringify({
     positions: input.positions.map((p) => ({ assetId: p.assetId, weight: p.weight })),
@@ -259,6 +263,7 @@ export function backtestPreviewCacheKey(
     mode: input.mode ?? 'clip',
     rebalance: input.rebalance ?? 'none',
     baseCurrency,
+    ...(scope?.globalOnly ? { globalOnly: true } : {}),
   });
   const hash = createHash('sha256').update(canonical).digest('hex');
   return `backtest:preview:${userId}:${hash}`;
@@ -276,6 +281,7 @@ export function backtestComparisonCacheKey(
   userId: string,
   input: BacktestComparisonInput,
   baseCurrency: string,
+  scope?: { globalOnly?: boolean },
 ): string {
   const canonical = JSON.stringify({
     conglomerateIds: input.conglomerateIds,
@@ -283,6 +289,7 @@ export function backtestComparisonCacheKey(
     mode: input.mode ?? 'clip',
     rebalance: input.rebalance ?? 'none',
     baseCurrency,
+    ...(scope?.globalOnly ? { globalOnly: true } : {}),
   });
   const hash = createHash('sha256').update(canonical).digest('hex');
   return `backtest:compare:${userId}:${hash}`;
@@ -327,9 +334,11 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     userId: string,
     assetId: string,
     providerRange: HistoryRange,
-    opts?: { globalOnly?: boolean; redactIdentity?: boolean },
+    opts?: { globalOnly?: boolean; redactIdentity?: boolean; hidePrivateAsset?: boolean },
   ): Promise<BacktestAsset> {
-    const row = await assetRepo.findByIdForUser(assetId, userId);
+    const row = await assetRepo.findByIdForUser(assetId, userId, {
+      includeCustomAssets: opts?.hidePrivateAsset !== true,
+    });
     if (!row) {
       if (opts?.redactIdentity) throw sharedSandboxUnavailable();
       throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
@@ -374,15 +383,20 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     userId: string,
     conglomerateId: string,
     providerRange: HistoryRange,
+    globalOnly = false,
   ): Promise<ResolvedConglomerateBasket> {
-    const detail = await conglomerateRepo.findByIdForOwner(userId, conglomerateId);
+    const detail = await conglomerateRepo.findByIdForOwner(userId, conglomerateId, {
+      globalAssetMetadataOnly: globalOnly,
+    });
     if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
     const flat = await flattenConglomerate(
       // The root is already loaded — reuse it; children load owner-scoped.
       (id) =>
         id === conglomerateId
           ? Promise.resolve(detail)
-          : conglomerateRepo.findByIdForOwner(userId, id),
+          : conglomerateRepo.findByIdForOwner(userId, id, {
+              globalAssetMetadataOnly: globalOnly,
+            }),
       conglomerateId,
     );
     if (!flat || flat.positions.length === 0) {
@@ -393,7 +407,12 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     }
     const assets: BacktestAsset[] = [];
     for (const pos of flat.positions) {
-      assets.push(await loadBasketAsset(userId, pos.assetId, providerRange));
+      assets.push(
+        await loadBasketAsset(userId, pos.assetId, providerRange, {
+          globalOnly,
+          hidePrivateAsset: globalOnly,
+        }),
+      );
     }
     return {
       id: detail.id,
@@ -418,9 +437,15 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     userId: string,
     choice: BacktestBenchmarkInput,
     providerRange: HistoryRange,
+    globalOnly = false,
   ): Promise<ResolvedBenchmark> {
     if ('conglomerateId' in choice) {
-      const basket = await resolveConglomerateBasket(userId, choice.conglomerateId, providerRange);
+      const basket = await resolveConglomerateBasket(
+        userId,
+        choice.conglomerateId,
+        providerRange,
+        globalOnly,
+      );
       return {
         kind: 'conglomerate',
         refId: basket.id,
@@ -431,7 +456,10 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     }
 
     if ('assetId' in choice) {
-      const asset = await loadBasketAsset(userId, choice.assetId, providerRange);
+      const asset = await loadBasketAsset(userId, choice.assetId, providerRange, {
+        globalOnly,
+        hidePrivateAsset: globalOnly,
+      });
       return {
         kind: 'asset',
         refId: asset.assetId,
@@ -465,13 +493,28 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     };
   }
 
-  return {
-    async runPreview(userId, input, opts) {
+  type ScopedBacktestService = Omit<BacktestService, 'runPreview' | 'runComparison'> & {
+    runPreview(
+      userId: string,
+      input: BacktestPreviewInput,
+      opts: { baseCurrency?: string } | undefined,
+      globalOnly: boolean,
+    ): Promise<BacktestResponse>;
+    runComparison(
+      userId: string,
+      input: BacktestComparisonInput,
+      opts: { baseCurrency?: string } | undefined,
+      globalOnly: boolean,
+    ): Promise<BacktestComparisonResponse>;
+  };
+
+  const scoped: ScopedBacktestService = {
+    async runPreview(userId, input, opts, globalOnly) {
       const fx =
         opts?.baseCurrency === undefined
           ? currencyService
           : currencyService.withBase(opts.baseCurrency);
-      const key = backtestPreviewCacheKey(userId, input, fx.baseCurrency);
+      const key = backtestPreviewCacheKey(userId, input, fx.baseCurrency, { globalOnly });
       const cached = await redis.get(key);
       if (cached) {
         try {
@@ -487,14 +530,19 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       //    ownership-scoped path, see loadBasketAsset).
       const assets: BacktestAsset[] = [];
       for (const pos of input.positions) {
-        assets.push(await loadBasketAsset(userId, pos.assetId, providerRange));
+        assets.push(
+          await loadBasketAsset(userId, pos.assetId, providerRange, {
+            globalOnly,
+            hidePrivateAsset: globalOnly,
+          }),
+        );
       }
 
       // 2. Optional benchmark (V4-P7): resolve the choice — preset, catalog
       //    asset, or one of the caller's own conglomerates — into a second
       //    basket that will run through the same engine below.
       const resolvedBenchmark = input.benchmark
-        ? await resolveBenchmark(userId, input.benchmark, providerRange)
+        ? await resolveBenchmark(userId, input.benchmark, providerRange, globalOnly)
         : null;
 
       // 3. Requested window. The end is today; a finite range starts N years back
@@ -581,7 +629,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       return response;
     },
 
-    async runComparison(userId, input, opts) {
+    async runComparison(userId, input, opts, globalOnly) {
       const fx =
         opts?.baseCurrency === undefined
           ? currencyService
@@ -595,7 +643,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       // The per-series backtests are baseline-independent, so they memoise under
       // a key WITHOUT the baseline: re-picking the baseline hits this core and
       // only the cheap delta math re-runs.
-      const key = backtestComparisonCacheKey(userId, input, fx.baseCurrency);
+      const key = backtestComparisonCacheKey(userId, input, fx.baseCurrency, { globalOnly });
       let core: ComparisonCore | null = null;
       const cached = await redis.get(key);
       if (cached) {
@@ -606,7 +654,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
         }
       }
       if (core === null) {
-        core = await computeComparisonCore(userId, input, fx, mode, rebalance);
+        core = await computeComparisonCore(userId, input, fx, mode, rebalance, globalOnly);
         await redis.set(key, JSON.stringify(core), 'EX', PREVIEW_TTL_SECONDS);
       }
 
@@ -649,133 +697,167 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       // owner when the viewer may see this basket, otherwise a 404 — never a 403,
       // never data. Also covers the service constructed without the social guard.
       const authorize = deps.authorizeConglomerateRead;
-      const owner = authorize ? await authorize(viewerId, input.conglomerateId) : undefined;
-      if (!owner) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
+      const candidate = authorize ? await authorize(viewerId, input.conglomerateId) : undefined;
+      if (!candidate) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
 
-      // Read the basket AS THE OWNER — the viewer gains no owner scope; we only
-      // read what they are already authorized to see.
-      const detail = await conglomerateRepo.findByIdForOwner(owner.ownerId, input.conglomerateId);
-      if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
+      const render = async (owner: { ownerId: string }) => {
+        // Read the basket AS THE OWNER — the viewer gains no owner scope; we only
+        // read what they are already authorized to see.
+        const detail = await conglomerateRepo.findByIdForOwner(owner.ownerId, input.conglomerateId);
+        if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
 
-      // Arc c re-weights TOP-LEVEL constituents as opaque rows. A nested child
-      // keeps its stored internal weights; the shared flattener resolves those
-      // recursively after applying the viewer's local root allocation.
-      const constituents = detail.positions;
-      const assetConstituents = constituents.filter(
-        (position): position is Extract<ConglomerateConstituentRow, { kind: 'asset' }> =>
-          position.kind === 'asset',
-      );
-      const hasNestedConstituents = assetConstituents.length !== constituents.length;
-      const constituentId = (position: ConglomerateConstituentRow): string =>
-        position.kind === 'asset' ? position.assetId : position.childId;
-
-      // Pin the tweak set to the shared basket's real constituents: the viewer may
-      // re-weight only what the share already exposes, never add or drop an id. An
-      // id set that doesn't match exactly (a foreign id, a missing one, or a basket
-      // that changed under the viewer) is a 422 — the client refetches and resets.
-      const tweak = new Map(input.positions.map((p) => [p.id, p.weight]));
-      const idSetMatches =
-        tweak.size === constituents.length &&
-        constituents.every((position) => tweak.has(constituentId(position)));
-      if (!idSetMatches) {
-        throw unprocessable(
-          'Sandbox weights must cover exactly the shared basket’s constituents.',
-          'SANDBOX_POSITIONS_MISMATCH',
+        // Arc c re-weights TOP-LEVEL constituents as opaque rows. A nested child
+        // keeps its stored internal weights; the shared flattener resolves those
+        // recursively after applying the viewer's local root allocation.
+        const constituents = detail.positions;
+        const assetConstituents = constituents.filter(
+          (position): position is Extract<ConglomerateConstituentRow, { kind: 'asset' }> =>
+            position.kind === 'asset',
         );
-      }
+        const hasNestedConstituents = assetConstituents.length !== constituents.length;
+        const constituentId = (position: ConglomerateConstituentRow): string =>
+          position.kind === 'asset' ? position.assetId : position.childId;
 
-      const fx =
-        opts?.baseCurrency === undefined
-          ? currencyService
-          : currencyService.withBase(opts.baseCurrency);
-      const providerRange = PROVIDER_RANGE[input.range];
+        // Pin the tweak set to the shared basket's real constituents: the viewer may
+        // re-weight only what the share already exposes, never add or drop an id. An
+        // id set that doesn't match exactly (a foreign id, a missing one, or a basket
+        // that changed under the viewer) is a 422 — the client refetches and resets.
+        const tweak = new Map(input.positions.map((p) => [p.id, p.weight]));
+        const idSetMatches =
+          tweak.size === constituents.length &&
+          constituents.every((position) => tweak.has(constituentId(position)));
+        if (!idSetMatches) {
+          throw unprocessable(
+            'Sandbox weights must cover exactly the shared basket’s constituents.',
+            'SANDBOX_POSITIONS_MISMATCH',
+          );
+        }
 
-      let positions: Array<{ assetId: string; weight: number }>;
-      if (hasNestedConstituents) {
-        // Apply only the root overrides, then reuse the canonical recursive
-        // resolver. This preserves the stored child structure, cycle/depth
-        // invariants and effective-weight semantics instead of reimplementing
-        // nesting in the sandbox.
-        const flat = await flattenConglomerate(
-          (conglomerateId) =>
-            conglomerateId === detail.id
-              ? Promise.resolve(detail)
-              : conglomerateRepo.findByIdForOwner(owner.ownerId, conglomerateId),
-          detail.id,
-          { rootWeights: tweak },
-        );
-        positions =
-          flat?.positions.map((position) => ({
+        const fx =
+          opts?.baseCurrency === undefined
+            ? currencyService
+            : currencyService.withBase(opts.baseCurrency);
+        const providerRange = PROVIDER_RANGE[input.range];
+
+        let positions: Array<{ assetId: string; weight: number }>;
+        if (hasNestedConstituents) {
+          // Apply only the root overrides, then reuse the canonical recursive
+          // resolver. This preserves the stored child structure, cycle/depth
+          // invariants and effective-weight semantics instead of reimplementing
+          // nesting in the sandbox.
+          const flat = await flattenConglomerate(
+            (conglomerateId) =>
+              conglomerateId === detail.id
+                ? Promise.resolve(detail)
+                : conglomerateRepo.findByIdForOwner(owner.ownerId, conglomerateId),
+            detail.id,
+            { rootWeights: tweak },
+          );
+          positions =
+            flat?.positions.map((position) => ({
+              assetId: position.assetId,
+              weight: position.weightPct,
+            })) ?? [];
+        } else {
+          // Preserve the original flat-sandbox path exactly: pass raw top-level
+          // tweak weights to the engine without the flattener's percentage
+          // normalization round trip.
+          positions = assetConstituents.map((position) => ({
             assetId: position.assetId,
-            weight: position.weightPct,
-          })) ?? [];
-      } else {
-        // Preserve the original flat-sandbox path exactly: pass raw top-level
-        // tweak weights to the engine without the flattener's percentage
-        // normalization round trip.
-        positions = assetConstituents.map((position) => ({
-          assetId: position.assetId,
-          weight: tweak.get(position.assetId)!,
-        }));
-      }
-      if (positions.length === 0) {
-        throw unprocessable(
-          `Conglomerate ${detail.name} has no positions to backtest.`,
-          'BACKTEST_UNAVAILABLE',
-        );
-      }
-      // A nested row hides both descendant identities and its internal
-      // allocation. Even when every flattened asset also happens to be exposed
-      // directly at the root, a full contribution response could reveal the
-      // child's effective weights. Therefore response/error redaction is keyed
-      // to the presence of nesting itself, not to whether flattening introduced
-      // a previously unseen asset id.
-      // Asset rows at the shared root already expose their identity. Assets
-      // reachable only through a nested child remain opaque and must never be
-      // named by load failures.
-      const exposedAssetIds = new Set(assetConstituents.map((position) => position.assetId));
-      const assets: BacktestAsset[] = [];
-      for (const pos of positions) {
-        assets.push(
-          await loadBasketAsset(owner.ownerId, pos.assetId, providerRange, {
-            globalOnly: true,
-            redactIdentity: !exposedAssetIds.has(pos.assetId),
-          }),
-        );
-      }
+            weight: tweak.get(position.assetId)!,
+          }));
+        }
+        if (positions.length === 0) {
+          throw unprocessable(
+            `Conglomerate ${detail.name} has no positions to backtest.`,
+            'BACKTEST_UNAVAILABLE',
+          );
+        }
+        // A nested row hides both descendant identities and its internal
+        // allocation. Even when every flattened asset also happens to be exposed
+        // directly at the root, a full contribution response could reveal the
+        // child's effective weights. Therefore response/error redaction is keyed
+        // to the presence of nesting itself, not to whether flattening introduced
+        // a previously unseen asset id.
+        // Asset rows at the shared root already expose their identity. Assets
+        // reachable only through a nested child remain opaque and must never be
+        // named by load failures.
+        const exposedAssetIds = new Set(assetConstituents.map((position) => position.assetId));
+        const assets: BacktestAsset[] = [];
+        for (const pos of positions) {
+          assets.push(
+            await loadBasketAsset(owner.ownerId, pos.assetId, providerRange, {
+              globalOnly: true,
+              redactIdentity: !exposedAssetIds.has(pos.assetId),
+            }),
+          );
+        }
 
-      // Window resolution mirrors runPreview exactly (§6.6/§14) so the sandbox
-      // curve is apples-to-apples with the shared basket's own backtest.
-      const mode = input.mode ?? 'clip';
-      const end = todayIso();
-      const start =
-        input.range === 'MAX'
-          ? mode === 'clip'
-            ? commonStart(assets)
-            : earliestStart(assets)
-          : yearsBefore(end, RANGE_YEARS[input.range]);
+        // Window resolution mirrors runPreview exactly (§6.6/§14) so the sandbox
+        // curve is apples-to-apples with the shared basket's own backtest.
+        const mode = input.mode ?? 'clip';
+        const end = todayIso();
+        const start =
+          input.range === 'MAX'
+            ? mode === 'clip'
+              ? commonStart(assets)
+              : earliestStart(assets)
+            : yearsBefore(end, RANGE_YEARS[input.range]);
 
-      let result: BacktestResult;
-      try {
-        result = await backtest({
-          positions,
-          assets,
-          range: { start, end },
-          converter: fx,
-          baseCurrency: fx.baseCurrency,
-          mode,
-          rebalance: input.rebalance,
-        });
-      } catch (err) {
-        throw hasNestedConstituents ? mapSharedSandboxEngineError(err) : mapEngineError(err);
-      }
-      // No Redis memo and no writes: a viewer's slider-wiggle recomputes off the
-      // already-warm provider history, and the sandbox never persists a thing.
-      // Preserve the original full wire shape for flat baskets. Nested baskets
-      // use the aggregate DTO so descendant identities and effective internal
-      // weights cannot escape through contributions, entry events or notices.
-      return hasNestedConstituents ? toSharedSandboxResponse(result) : toResponse(result, null);
+        let result: BacktestResult;
+        try {
+          result = await backtest({
+            positions,
+            assets,
+            range: { start, end },
+            converter: fx,
+            baseCurrency: fx.baseCurrency,
+            mode,
+            rebalance: input.rebalance,
+          });
+        } catch (err) {
+          throw hasNestedConstituents ? mapSharedSandboxEngineError(err) : mapEngineError(err);
+        }
+        // No Redis memo and no writes: a viewer's slider-wiggle recomputes off the
+        // already-warm provider history, and the sandbox never persists a thing.
+        // Preserve the original full wire shape for flat baskets. Nested baskets
+        // use the aggregate DTO so descendant identities and effective internal
+        // weights cannot escape through contributions, entry events or notices.
+        return hasNestedConstituents ? toSharedSandboxResponse(result) : toResponse(result, null);
+      };
+
+      if (!deps.paranoid) return render(candidate);
+      return deps.paranoid.runAllowedMany([viewerId, candidate.ownerId], 'sharing', async () => {
+        const current = authorize ? await authorize(viewerId, input.conglomerateId) : undefined;
+        if (!current || current.ownerId !== candidate.ownerId) {
+          throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
+        }
+        return render(current);
+      });
     },
+  };
+
+  const withHypotheticalAssetScope = <T>(
+    userId: string,
+    action: (globalOnly: boolean) => Promise<T>,
+  ): Promise<T> => {
+    if (!deps.paranoid) return action(false);
+    return deps.paranoid.runAllowedWithOptional([], [userId], 'portfolioServer', (normalUserIds) =>
+      action(!normalUserIds.has(userId)),
+    );
+  };
+
+  return {
+    runPreview: (userId, input, opts) =>
+      withHypotheticalAssetScope(userId, (globalOnly) =>
+        scoped.runPreview(userId, input, opts, globalOnly),
+      ),
+    runComparison: (userId, input, opts) =>
+      withHypotheticalAssetScope(userId, (globalOnly) =>
+        scoped.runComparison(userId, input, opts, globalOnly),
+      ),
+    runSharedSandboxPreview: (viewerId, input, opts) =>
+      scoped.runSharedSandboxPreview(viewerId, input, opts),
   };
 
   /**
@@ -793,12 +875,13 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     fx: CurrencyService,
     mode: BacktestMode,
     rebalance: RebalanceFrequency,
+    globalOnly: boolean,
   ): Promise<ComparisonCore> {
     const providerRange = PROVIDER_RANGE[input.range];
 
     const baskets: ResolvedConglomerateBasket[] = [];
     for (const id of input.conglomerateIds) {
-      baskets.push(await resolveConglomerateBasket(userId, id, providerRange));
+      baskets.push(await resolveConglomerateBasket(userId, id, providerRange, globalOnly));
     }
 
     const end = todayIso();

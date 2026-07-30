@@ -250,6 +250,9 @@ test('invite accept: a valid token shows the fixed email and creates the account
     id: 'user-2',
     email: 'newbie@bettertrack.test',
     username: 'newbie',
+    // Brand-new account: FirstRunGate diverts it to setup. Set here rather than
+    // on `member`, which stands for an established user in every other test.
+    firstRunCompletedAt: null,
   });
 
   const user = userEvent.setup();
@@ -262,6 +265,11 @@ test('invite accept: a valid token shows the fixed email and creates the account
   await user.type(screen.getByLabelText('Username'), 'newbie');
   await user.type(screen.getByLabelText('Password'), 'a-brand-new-secret');
   await user.click(screen.getByRole('button', { name: 'Create account' }));
+
+  // Accepting an invite creates an account, so it lands on first-run setup —
+  // not on Home. Dismissing it opens the app exactly as before.
+  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Do this later' }));
 
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(api.acceptInvite).toHaveBeenCalledWith({
