@@ -2918,6 +2918,17 @@
   white-space: nowrap;
 }
 
+/* ── Chart footnote ──────────────────────────────────────────────────────────
+   One quiet line under a widget's chart, for something the curve cannot say
+   about itself: that the performance form is a time-weighted return, or that
+   it fell back to euro value because the scope covers more than one portfolio.
+   Sits tight under the plot so it reads as part of the chart, not as a stat. */
+
+.bt-home-chartnote {
+  margin-top: 8px;
+  text-wrap: pretty;
+}
+
 /* ===== R2: auth + firstrun ===================================================
  *
  * (1) The split auth gate. Above 900px the standalone auth screens become two

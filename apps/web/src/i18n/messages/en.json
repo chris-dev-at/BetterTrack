@@ -4002,6 +4002,10 @@
           "net": "Net",
           "columns": "In / out"
         },
+        "performance-chart": {
+          "value": "Value €",
+          "return": "Return %"
+        },
         "allocation": {
           "donut": "Donut",
           "bars": "Bars"
@@ -4054,7 +4058,10 @@
         "title": "Performance",
         "description": "One portfolio's value over time",
         "empty": "No portfolio to chart yet.",
-        "ariaLabel": "Value over time for {{name}}"
+        "ariaLabel": "Value over time for {{name}}",
+        "ariaLabelReturn": "Time-weighted return over time for {{name}}",
+        "returnHint": "Time-weighted return — deposits and withdrawals are neutralized, so the curve only moves when your holdings move.",
+        "returnNeedsOne": "Return % is only meaningful for a single portfolio, so this shows value instead. Scope the widget to one portfolio to see the return."
       },
       "cashflowChart": {
         "title": "Cash flow",

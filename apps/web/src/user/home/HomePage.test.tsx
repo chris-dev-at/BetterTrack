@@ -349,8 +349,11 @@ function storeBoard(...widgets: (WidgetType | [WidgetType, WidgetSettings])[]): 
   );
 }
 
-function renderHome() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+/**
+ * `client` is injectable so a test can inspect the cache the board wrote — used
+ * to prove the performance widget stores under the portfolio page's own key.
+ */
+function renderHome(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
     <I18nProvider initialLocale="en">
       <QueryClientProvider client={client}>
@@ -696,6 +699,141 @@ test('the all-portfolios curve reuses the per-portfolio history cache entry', as
       .mocked(getPortfolioHistory)
       .mock.calls.filter(([id, range]) => id === MAIN.id && range === '1M');
     expect(mainCalls).toHaveLength(1);
+  });
+});
+
+// ─── The performance chart's return form ─────────────────────────────────────
+
+/** A history whose % series is deliberately NOT derivable from its € values. */
+const RETURN_HISTORY: PortfolioHistoryResponse = {
+  ...HISTORY,
+  points: [
+    { date: '2026-07-01', valueEur: 100 },
+    { date: '2026-07-02', valueEur: 140 },
+  ],
+  // Value climbs 40 %, but most of that was a deposit — the honest time-weighted
+  // return is +2.5 %. These numbers exist to catch a widget that computes its own
+  // percentage from `points` instead of plotting the server's audited series.
+  performance: [
+    { date: '2026-07-01', pct: 0 },
+    { date: '2026-07-02', pct: 2.5 },
+  ],
+};
+
+test('the return form plots the server’s time-weighted % series, not the € values', async () => {
+  vi.mocked(getPortfolioHistory).mockResolvedValue(RETURN_HISTORY);
+  storeBoard(['performance-chart', { scope: MAIN.id, range: '1M', variant: 'return' }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Performance' });
+
+  await vi.waitFor(() => {
+    expect(chartMocks.setData).toHaveBeenCalledWith([
+      { time: '2026-07-01', value: 0 },
+      { time: '2026-07-02', value: 2.5 },
+    ]);
+  });
+  // Never the euro curve — the two are distinguishable precisely because 140 is
+  // not 2.5.
+  expect(chartMocks.setData).not.toHaveBeenCalledWith([
+    { time: '2026-07-01', value: 100 },
+    { time: '2026-07-02', value: 140 },
+  ]);
+  // The portfolio overview's own performance mode, reused: a 0-centred baseline.
+  expect(chartMocks.addSeries).toHaveBeenCalledWith('BaselineSeries', expect.anything());
+  expect(
+    within(widget).getByRole('img', { name: 'Time-weighted return over time for Main' }),
+  ).toBeInTheDocument();
+  // Labelled as time-weighted, so the number is never read as a price change.
+  expect(within(widget).getByText(/time-weighted return/i)).toBeInTheDocument();
+});
+
+test('the return form degrades to the € curve across several portfolios, and says why', async () => {
+  vi.mocked(getPortfolioHistory).mockResolvedValue(RETURN_HISTORY);
+  // "All portfolios" — percentages are not additive, so there is no honest
+  // aggregate return to show.
+  storeBoard(['performance-chart', { scope: 'all', range: '1M', variant: 'return' }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Performance' });
+
+  expect(
+    await within(widget).findByText(/only meaningful for a single portfolio/i),
+  ).toBeInTheDocument();
+
+  const seconds = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  await vi.waitFor(() => {
+    // Both portfolios summed, in euro — 100+100 then 140+140.
+    expect(chartMocks.setData).toHaveBeenCalledWith([
+      { time: seconds('2026-07-01'), value: 200 },
+      { time: seconds('2026-07-02'), value: 280 },
+    ]);
+  });
+  // The percentage must not appear anywhere: no baseline series, no pct data.
+  expect(chartMocks.addSeries).not.toHaveBeenCalledWith('BaselineSeries', expect.anything());
+  expect(chartMocks.setData).not.toHaveBeenCalledWith([
+    { time: '2026-07-01', value: 0 },
+    { time: '2026-07-02', value: 2.5 },
+  ]);
+});
+
+test('a two-portfolio set degrades too — a set is not one portfolio', async () => {
+  vi.mocked(getPortfolioHistory).mockResolvedValue(RETURN_HISTORY);
+  storeBoard([
+    'performance-chart',
+    { scope: 'selected', scopeIds: [MAIN.id, SAVINGS.id], range: '1M', variant: 'return' },
+  ]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Performance' });
+
+  expect(
+    await within(widget).findByText(/only meaningful for a single portfolio/i),
+  ).toBeInTheDocument();
+  // Wait for the chart to actually exist before asserting what it is NOT: a
+  // negative assertion made before `createChart` runs would pass either way.
+  const seconds = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  await vi.waitFor(() => {
+    expect(chartMocks.setData).toHaveBeenCalledWith([
+      { time: seconds('2026-07-01'), value: 200 },
+      { time: seconds('2026-07-02'), value: 280 },
+    ]);
+  });
+  expect(chartMocks.addSeries).not.toHaveBeenCalledWith('BaselineSeries', expect.anything());
+});
+
+test('a set naming exactly one portfolio still gets its return', async () => {
+  vi.mocked(getPortfolioHistory).mockResolvedValue(RETURN_HISTORY);
+  storeBoard([
+    'performance-chart',
+    { scope: 'selected', scopeIds: [SAVINGS.id], range: '1M', variant: 'return' },
+  ]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Performance' });
+
+  await vi.waitFor(() => {
+    expect(chartMocks.addSeries).toHaveBeenCalledWith('BaselineSeries', expect.anything());
+  });
+  expect(
+    within(widget).queryByText(/only meaningful for a single portfolio/i),
+  ).not.toBeInTheDocument();
+});
+
+test('the return form reads the same cache entry the portfolio page writes', async () => {
+  vi.mocked(getPortfolioHistory).mockResolvedValue(RETURN_HISTORY);
+  storeBoard(['performance-chart', { scope: MAIN.id, range: '1M', variant: 'return' }]);
+
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderHome(client);
+  await screen.findByRole('region', { name: 'Performance' });
+
+  // Spelled out literally rather than via `toHistoryRange`, so this fails if the
+  // widget's key ever drifts from PortfolioPage's own
+  // `['portfolio', portfolioId, 'history', toHistoryRange(range)]`. The two
+  // surfaces must never be able to show different numbers for the same window.
+  await vi.waitFor(() => {
+    expect(client.getQueryData(['portfolio', MAIN.id, 'history', '1M'])).toEqual(RETURN_HISTORY);
   });
 });
 

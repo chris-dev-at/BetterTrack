@@ -563,6 +563,23 @@ describe('clampVariant', () => {
     expect(clampVariant('attention', 'bars')).toBeUndefined();
   });
 
+  test('the performance chart offers value and return, defaulting to value', () => {
+    expect(clampVariant('performance-chart', 'return')).toBe('return');
+    expect(clampVariant('performance-chart', 'value')).toBe('value');
+    // Value is the default deliberately: it is the one form that is honest at
+    // every scope, so a board that has never touched the picker cannot be
+    // showing a percentage that means something other than it appears to.
+    expect(WIDGET_VARIANT_RULES['performance-chart']!.default).toBe('value');
+  });
+
+  test.each([
+    ['a form from a newer build', 'twrr'],
+    ['another type’s form', 'donut'],
+    ['not a string', 7],
+  ])('an unknown performance-chart form clamps to value — %s', (_label, value) => {
+    expect(clampVariant('performance-chart', value)).toBe('value');
+  });
+
   test('every declared default is one of that type’s own allowed forms', () => {
     const inconsistent = Object.entries(WIDGET_VARIANT_RULES).filter(
       ([, rules]) => rules !== undefined && !rules.allowed.includes(rules.default),
@@ -613,6 +630,13 @@ describe('variant parsing', () => {
 
   test('a form stored against a type that has none is dropped', () => {
     expect(variantOf('attention', { variant: 'bars' })).toBeUndefined();
+  });
+
+  test('an unknown performance-chart form is clamped, not dropped', () => {
+    // Clamped rather than dropped so the widget always has a resolvable form —
+    // and clamped to `value`, never to a percentage the payload never asked for.
+    expect(variantOf('performance-chart', { variant: 'twrr' })).toBe('value');
+    expect(variantOf('performance-chart', { variant: 'return' })).toBe('return');
   });
 
   test('parsing still never writes', () => {

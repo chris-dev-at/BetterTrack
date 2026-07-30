@@ -212,6 +212,15 @@ export const WIDGET_VARIANT_RULES: Partial<
   // "Did I save or burn money" (net polarity) vs. "what came in and what went
   // out each month" (the two gross figures side by side).
   'cashflow-chart': { allowed: ['net', 'columns'], default: 'net' },
+  // Euro value over time vs. the time-weighted return on that value, in percent.
+  //
+  // The `return` form is **single-portfolio only** and the widget degrades it to
+  // `value` whenever its scope resolves wider: `/history` returns a per-portfolio
+  // TWR, percentages are not additive, and an honest combined return would need
+  // the combined external flows — which that endpoint does not return. The
+  // degrade lives in the widget rather than here because it depends on the *live*
+  // portfolio list, which this module (a pure parser) cannot see.
+  'performance-chart': { allowed: ['value', 'return'], default: 'value' },
   // Shape of the whole vs. a ranked list you can read exact shares off.
   allocation: { allowed: ['donut', 'bars'], default: 'donut' },
   // Two labelled columns vs. a dense strip of chips that fits a small tile.

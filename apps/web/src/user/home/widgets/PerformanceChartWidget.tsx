@@ -9,6 +9,7 @@ import { getPortfolioHistory } from '../../../lib/portfolioApi';
 import { PriceChart } from '../../../ui/charts';
 import type { PriceRange } from '../../../ui/charts';
 import { Empty } from '../../../ui/origin';
+import { widgetVariant } from '../config';
 import { combineSamples, MAX_HISTORY_PORTFOLIOS, normalizeSamples } from './NetWorthHistoryWidget';
 import type { WidgetProps } from './types';
 
@@ -23,6 +24,23 @@ import type { WidgetProps } from './types';
  * the series with each portfolio contributing 0 before its own first datapoint
  * (`combineSamples`) — a portfolio opened last month lifts the total on the day
  * it opened instead of being back-projected across a history it never had.
+ *
+ * ## The `return` variant
+ *
+ * The same window, read as the **time-weighted return** on net worth instead of
+ * the euro value: the endpoint's `performance[]`, plotted through the very same
+ * baseline/percent mode the portfolio Overview's "Performance %" toggle uses, so
+ * the widget and the page cannot disagree about either the number or its format.
+ * It is not re-derived here — deposits and withdrawals are the only external
+ * flows and the server already chain-links them out.
+ *
+ * That series is **per portfolio**, so the variant is single-portfolio only.
+ * Percentages are not additive, and an honest combined return would need the
+ * summed external flows, which `/history` does not return. Rather than hide the
+ * variant when the scope is wider — which would make the picker flicker while
+ * the portfolio list loads — the widget *degrades* to the value curve and says
+ * so in a quiet line. The user never sees a percentage that silently means
+ * something other than what the picker claims.
  */
 
 /** The same window set the portfolio overview offers (§6.9 + §13.4 V4-P0). */
@@ -69,6 +87,15 @@ export function PerformanceChartWidget({
   const combining = scopedPortfolio === null;
   const portfolioId = scopedPortfolio?.id ?? null;
 
+  // The return form needs exactly one portfolio (see the module docblock). Any
+  // wider scope — "all", a multi-portfolio set, or a scope whose only target is
+  // archived and so resolved back to all — draws the combined VALUE curve.
+  const wantsReturn = widgetVariant('performance-chart', settings) === 'return';
+  const showingReturn = wantsReturn && !combining;
+  // Explain the degrade, but never mid-load: until the portfolio list arrives
+  // nothing has resolved yet, and a note shown then would flash on every mount.
+  const explainDegrade = wantsReturn && combining && !portfoliosLoading;
+
   const historyQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range)],
     queryFn: ({ signal }) =>
@@ -96,40 +123,64 @@ export function PerformanceChartWidget({
 
   // #556: 1D/1W points carry an intraday `time` — key on the exact instant so
   // the dense curve plots, versus the business-day string the daily ranges use.
-  const single = useMemo(
-    () =>
-      (historyQuery.data?.points ?? []).map((point) => ({
-        time:
-          point.time !== undefined
-            ? (Math.floor(Date.parse(point.time) / 1000) as Time)
-            : (point.date as Time),
-        value: point.valueEur,
-      })),
-    [historyQuery.data],
-  );
+  // `performance[]` is aligned 1:1 with `points[]` and keyed the same way, so
+  // both forms share one mapping — exactly as the portfolio overview does.
+  const single = useMemo(() => {
+    const at = (point: { date: string; time?: string }): Time =>
+      point.time !== undefined
+        ? (Math.floor(Date.parse(point.time) / 1000) as Time)
+        : (point.date as Time);
+    return showingReturn
+      ? (historyQuery.data?.performance ?? []).map((point) => ({
+          time: at(point),
+          value: point.pct,
+        }))
+      : (historyQuery.data?.points ?? []).map((point) => ({
+          time: at(point),
+          value: point.valueEur,
+        }));
+  }, [historyQuery.data, showingReturn]);
 
   // Nothing to draw: no portfolio resolved at all, or none left to combine.
   if (!portfoliosLoading && (combining ? charted.length === 0 : portfolioId === null)) {
     return <Empty title={t('home.widgets.performanceChart.empty')} />;
   }
 
+  const scopeName = combining ? t('home.builder.scopeAll') : (scopedPortfolio?.name ?? '');
+
   return (
-    <div className="bt-chart">
-      <PriceChart
-        ariaLabel={t('home.widgets.performanceChart.ariaLabel', {
-          name: combining ? t('home.builder.scopeAll') : (scopedPortfolio?.name ?? ''),
-        })}
-        height={size === 'l' ? 300 : 220}
-        loading={
-          portfoliosLoading ||
-          (combining ? combined.loading : historyQuery.isLoading || historyQuery.isFetching)
-        }
-        mode="area"
-        onRangeChange={(next) => onSettingsChange({ range: next })}
-        range={range}
-        ranges={PERFORMANCE_RANGES}
-        series={combining ? combined.series : single}
-      />
+    <div>
+      <div className="bt-chart">
+        <PriceChart
+          ariaLabel={
+            showingReturn
+              ? t('home.widgets.performanceChart.ariaLabelReturn', { name: scopeName })
+              : t('home.widgets.performanceChart.ariaLabel', { name: scopeName })
+          }
+          height={size === 'l' ? 300 : 220}
+          loading={
+            portfoliosLoading ||
+            (combining ? combined.loading : historyQuery.isLoading || historyQuery.isFetching)
+          }
+          // The portfolio overview's own "Performance %" mode, reused whole: the
+          // 0-centred baseline (green above, red below) and the `x.xx %` axis and
+          // crosshair come from the chart, not from a second copy here.
+          mode={showingReturn ? 'baseline' : 'area'}
+          onRangeChange={(next) => onSettingsChange({ range: next })}
+          percentValues={showingReturn}
+          range={range}
+          ranges={PERFORMANCE_RANGES}
+          series={combining ? combined.series : single}
+        />
+      </div>
+      {showingReturn ? (
+        <p className="bt-meta bt-home-chartnote">{t('home.widgets.performanceChart.returnHint')}</p>
+      ) : null}
+      {explainDegrade ? (
+        <p className="bt-meta bt-home-chartnote">
+          {t('home.widgets.performanceChart.returnNeedsOne')}
+        </p>
+      ) : null}
     </div>
   );
 }
