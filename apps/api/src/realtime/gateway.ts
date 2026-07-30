@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Server as HttpServer } from 'node:http';
+import type { IncomingHttpHeaders, Server as HttpServer } from 'node:http';
 
 import cookieParser from 'cookie-parser';
 import type { RequestHandler } from 'express';
@@ -285,7 +285,13 @@ export interface RealtimeGateway {
 
 export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGateway {
   const { config, bus, logger } = deps;
-  const allowedOrigins = new Set(config.corsOrigins);
+  const corsOrigins = [
+    ...new Set(config.corsOrigins.map((configuredOrigin) => new URL(configuredOrigin).origin)),
+  ];
+  const allowedOrigins = new Set(corsOrigins);
+  const allowedAuthorities = new Set(
+    corsOrigins.map((configuredOrigin) => new URL(configuredOrigin).host.toLowerCase()),
+  );
   const admission =
     deps.realtimeAdmission ?? createRealtimeAdmission(deps.redis, deps.realtimeAdmissionOptions);
   const admissionLeaseTtlMs =
@@ -322,6 +328,24 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     if (typeof header !== 'string' || !header.startsWith(BEARER_PREFIX)) return null;
     const token = header.slice(BEARER_PREFIX.length).trim();
     return token.length > 0 ? token : null;
+  };
+
+  /**
+   * Same-origin browser polling starts with a GET that has no Origin header.
+   * Fetch Metadata plus the public Host proves that this is the configured web
+   * or admin origin, while keeping generic no-Origin requests bearer-only.
+   */
+  const isSameOriginBrowserHandshake = (
+    headers: IncomingHttpHeaders,
+    method: string | undefined,
+  ): boolean => {
+    const host = headers.host;
+    return (
+      method === 'GET' &&
+      headers['sec-fetch-site'] === 'same-origin' &&
+      typeof host === 'string' &&
+      allowedAuthorities.has(host.toLowerCase())
+    );
   };
 
   function eligibleUser(user: RealtimeResolvedUser): boolean {
@@ -391,8 +415,10 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   /**
    * The bearer token the mobile app presents (§6.13, §14). The socket.io auth
    * payload (`handshake.auth.token`) is preferred, falling back to an
-   * `Authorization: Bearer …` upgrade header — accept EITHER, mirroring how the
-   * client sends both best-effort. Null when neither carries a token.
+   * `Authorization: Bearer …` upgrade header. An allowed-Origin client may use
+   * either; a native client with no Origin must send the header because the
+   * Engine.IO admission hook runs before the auth payload exists. Null when
+   * neither carries a token.
    */
   function bearerTokenOf(socket: Socket): string | null {
     const auth = socket.handshake.auth as Record<string, unknown> | undefined;
@@ -414,15 +440,19 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    * cookie (web SPA) first, then a bearer token (mobile). The two are mutually
    * exclusive in practice (the SPA holds only a cookie, the app only a token);
    * trying the cookie first keeps the web path byte-identical and never touches
-   * the bearer services for a cookie request. The no-Origin exception below is
-   * deliberately bearer-only.
+   * the bearer services for a cookie request. Generic no-Origin requests remain
+   * deliberately bearer-only; a Fetch-Metadata-verified same-origin browser
+   * polling handshake is the sole cookie exception.
    */
   async function authenticate(socket: Socket): Promise<RealtimePrincipal | null> {
-    // Engine.IO requires a bearer header before a no-Origin request reaches
-    // this point. Resolve only that credential family here: otherwise a caller
-    // could add a dummy bearer header and smuggle a valid session cookie through
-    // the native-client exception.
-    if (socket.handshake.headers.origin === undefined) {
+    // Engine.IO requires either same-origin browser proof or a bearer header
+    // before a no-Origin request reaches this point. Keep the generic path on
+    // the bearer credential family so a dummy header cannot smuggle a valid
+    // session cookie through the native-client exception.
+    if (
+      socket.handshake.headers.origin === undefined &&
+      !isSameOriginBrowserHandshake(socket.handshake.headers, socket.request.method)
+    ) {
       return resolveBearerPrincipal(socket);
     }
     return (await resolveCookiePrincipal(socket)) ?? (await resolveBearerPrincipal(socket));
@@ -1554,20 +1584,25 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         transports: ['polling', 'websocket'],
         // Engine.IO handles its own CORS (the Express middleware never sees
         // /ws): same credentialed allowlist as the API (§4.6, §10).
-        cors: { origin: config.corsOrigins, credentials: true },
+        cors: { origin: corsOrigins, credentials: true },
         // CORS response headers do not protect a direct websocket handshake.
         // Check the raw request before Engine.IO creates a client or any
-        // session/bearer resolver runs. Browser Origins are exact opaque
-        // allowlist entries (scheme + host + port); native/no-Origin clients
-        // must instead present a bearer header and are kept bearer-only by the
-        // namespace authentication gate above.
+        // session/bearer resolver runs. Browser Origins use the normalized
+        // credentialed allowlist. A same-origin browser polling GET has no
+        // Origin, so admit it only when Fetch Metadata says same-origin and its
+        // Host is a configured web/admin authority. Other no-Origin clients
+        // must present a bearer header and remain bearer-only in authenticate().
         allowRequest: (request, allow) => {
           const origin = request.headers.origin;
           if (origin !== undefined) {
             allow(null, typeof origin === 'string' && allowedOrigins.has(origin));
             return;
           }
-          allow(null, bearerTokenFromHeader(request.headers.authorization) !== null);
+          allow(
+            null,
+            isSameOriginBrowserHandshake(request.headers, request.method) ||
+              bearerTokenFromHeader(request.headers.authorization) !== null,
+          );
         },
       });
       await subscribeLiveChannels(io);
