@@ -725,11 +725,16 @@ const FORK_REHYDRATION_ID = '018f0000-1000-7000-8000-0000000000a1';
 const FABRICATED_BUY_LEG_ID = '018f0000-1000-7000-8000-0000000000a2';
 const FABRICATED_PROCEEDS_LEG_ID = '018f0000-1000-7000-8000-0000000000a3';
 const UNKNOWN_CHAIN_ID = '018f0000-1000-7000-8000-0000000000a4';
+const UNKNOWN_MEMBERSHIP_ID = '018f0000-1000-7000-8000-0000000000a6';
+const MANUAL_WITHDRAWAL_ID = '018f0000-1000-7000-8000-0000000000a7';
+const SECOND_FORK_REHYDRATION_ID = '018f0000-1000-7000-8000-0000000000a8';
 
 interface SeveredForkFixture {
   harness: TestHarness;
   memberId: string;
   chainId: string;
+  /** The ENDED membership tombstone every retained row is proved against. */
+  membershipId: string;
   forkPortfolioId: string;
   ownerPortfolioId: string;
   ownerId: string;
@@ -741,6 +746,10 @@ interface SeveredForkFixture {
   uncashedBuyLocalId: string;
   /** A chain sell the origin never paid into cash. */
   uncashedSellLocalId: string;
+  /** The chain deposit of EUR 200 — a direct, op-bound external cash movement. */
+  depositLocalId: string;
+  /** The replicated dividend, taxed under the member's own regime. */
+  dividendLocalId: string;
   forkBalanceEur: number;
 }
 
@@ -923,11 +932,27 @@ async function severedOverdrawnFork(): Promise<SeveredForkFixture> {
     return entry.localId;
   };
 
+  const membershipIds = [...new Set(provenance.map((entry) => entry.membershipId))];
+  if (membershipIds.length !== 1) {
+    throw new Error(`expected one ended membership, got ${membershipIds.length}`);
+  }
+  const depositMovement = forkMovements.movements.find(
+    (movement) => movement.kind === 'deposit' && movement.amountEur === 200,
+  );
+  const [forkDividend] = await harness.db
+    .select()
+    .from(dividends)
+    .where(eq(dividends.portfolioId, forkPortfolioId));
+  if (!depositMovement || !forkDividend) {
+    throw new Error('expected the replicated deposit and dividend on the fork');
+  }
+
   return {
     harness,
     memberId: member.id,
     ownerId: owner.id,
     chainId: chain.id,
+    membershipId: membershipIds[0]!,
     forkPortfolioId,
     ownerPortfolioId,
     provenance: [...provenance],
@@ -935,6 +960,8 @@ async function severedOverdrawnFork(): Promise<SeveredForkFixture> {
     correctedLocalId: correctedEntry.localId,
     uncashedBuyLocalId: localForOwnerTx(uncashedBuy.id),
     uncashedSellLocalId: localForOwnerTx(uncashedSell.id),
+    depositLocalId: depositMovement.id,
+    dividendLocalId: forkDividend.id,
     forkBalanceEur: forkMovements.balanceEur,
   };
 }
@@ -1103,6 +1130,275 @@ describe('paranoid rehydration severed-fork provenance', () => {
     }
   });
 
+  /**
+   * The waiver follows the authenticated MOVEMENTS, not their source: replica
+   * apply force-applied exactly the chain's own writes, so a later manual outflow
+   * on the same source is still gated by the normal `withdrawCash` rule — even
+   * though a genuine chain movement already pushed that source negative.
+   */
+  it('rejects a manual outflow that rides on an authenticated chain overdraw', async () => {
+    const fixture = await severedOverdrawnFork();
+    const { harness, memberId, forkPortfolioId } = fixture;
+    const document = await captureAccountDocument(harness, memberId, fixture.provenance);
+    const sourceId = document.entities.find(
+      (entity): entity is Extract<StrictEntity, { kind: 'cashSource' }> =>
+        entity.kind === 'cashSource' &&
+        entity.data.isMain &&
+        entity.data.portfolioId === forkPortfolioId,
+    )?.id;
+    if (!sourceId) throw new Error('expected the fork Main cash source');
+
+    const manualWithdrawal = entity(MANUAL_WITHDRAWAL_ID, 'cashMovement', {
+      portfolioId: forkPortfolioId,
+      sourceId,
+      kind: 'withdrawal',
+      amountEur: '-1.000000',
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId: null,
+      taxYear: null,
+      // After every chain row, on the source the chain already overdrew.
+      executedAt: '2026-07-27T10:00:00.000Z',
+      note: null,
+      source: 'manual',
+      dedupHash: null,
+      originalCurrency: null,
+      createdAt: '2026-07-27T10:00:00.000Z',
+    });
+
+    await replaceNormalRowsWithServerVault(harness, memberId);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(memberId, {
+        rehydrationId: FORK_REHYDRATION_ID,
+        document: { ...document, entities: [...document.entities, manualWithdrawal] },
+      }),
+    ).rejects.toThrow(
+      `cashMovement[${MANUAL_WITHDRAWAL_ID}].amountEur="-1.000000" would overdraw its cash source`,
+    );
+    expect(mutationTransaction).not.toHaveBeenCalled();
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.userId, memberId)),
+    ).toEqual([]);
+  });
+
+  /**
+   * Full-state binding (mirrorchain design §3: the highest-seq op ≤ the watermark
+   * IS the entity's state). Provenance may only authenticate the row its operation
+   * actually produced — otherwise a genuine op would launder a different amount.
+   */
+  it('rejects a restored row that contradicts its authoritative operation', async () => {
+    const fixture = await severedOverdrawnFork();
+    const { harness, memberId } = fixture;
+    const document = await captureAccountDocument(harness, memberId, fixture.provenance);
+
+    const patch = (
+      id: string,
+      kind: StrictEntity['kind'],
+      data: Record<string, unknown>,
+    ): ParanoidDisableRehydrationRequest['document'] => ({
+      ...document,
+      entities: document.entities.map((row) =>
+        row.id === id && row.kind === kind
+          ? ({ ...row, data: { ...row.data, ...data } } as StrictEntity)
+          : row,
+      ),
+    });
+
+    const dividendRow = document.entities.find(
+      (row): row is StrictDividendEntity =>
+        row.kind === 'dividend' && row.id === fixture.dividendLocalId,
+    );
+    const dividendLeg = document.entities.find(
+      (row): row is StrictCashMovementEntity =>
+        row.kind === 'cashMovement' &&
+        row.data.dividendId === fixture.dividendLocalId &&
+        row.data.kind === 'dividend',
+    );
+    if (!dividendRow || !dividendLeg) throw new Error('expected the replicated dividend and leg');
+
+    const forgeries: readonly {
+      name: string;
+      document: ParanoidDisableRehydrationRequest['document'];
+      message: RegExp;
+    }[] = [
+      {
+        // The reviewed case: a real `cash.withdraw`/`cash.deposit` op must not
+        // authenticate a larger movement and hand it the overdraw waiver.
+        name: 'an inflated external cash amount',
+        document: patch(fixture.depositLocalId, 'cashMovement', { amountEur: '900.000000' }),
+        message: new RegExp(
+          `cashMovement\\[${fixture.depositLocalId}\\]\\.amountEur="900.000000" contradicts its ` +
+            `authoritative cash\\.deposit operation at seq \\d+ \\(amountEur="200.000000"\\)`,
+        ),
+      },
+      {
+        name: 'a moved external cash timestamp',
+        document: patch(fixture.depositLocalId, 'cashMovement', {
+          executedAt: '2026-07-27T09:00:00.000Z',
+        }),
+        message: new RegExp(
+          `cashMovement\\[${fixture.depositLocalId}\\]\\.executedAt="2026-07-27T09:00:00.000Z" ` +
+            `contradicts its authoritative cash\\.deposit operation at seq \\d+`,
+        ),
+      },
+      {
+        // The corrected buy carries a cash leg, so its financial state is the op's:
+        // a quantity a member never reviewed cannot ride the same provenance.
+        name: 'a re-priced cash-linked transaction',
+        document: patch(fixture.correctedLocalId, 'transaction', { quantity: '9.00000000' }),
+        message: new RegExp(
+          `transaction\\[${fixture.correctedLocalId}\\]\\.quantity="9.00000000" contradicts its ` +
+            `authoritative tx\\.(create|update) operation at seq \\d+ \\(quantity="2.90000000"\\)`,
+        ),
+      },
+      {
+        // Raised consistently on the dividend AND its gross leg, so the graph rules
+        // pass and only the op binding can catch it.
+        name: 'a raised dividend gross amount',
+        document: {
+          ...patch(fixture.dividendLocalId, 'dividend', { grossAmountEur: '150.000000' }),
+          entities: patch(fixture.dividendLocalId, 'dividend', {
+            grossAmountEur: '150.000000',
+          }).entities.map((row) =>
+            row.id === dividendLeg.id
+              ? ({ ...row, data: { ...row.data, amountEur: '150.000000' } } as StrictEntity)
+              : row,
+          ),
+        },
+        message: new RegExp(
+          `dividend\\[${fixture.dividendLocalId}\\]\\.grossAmountEur="150.000000" contradicts its ` +
+            `authoritative dividend\\.record operation at seq \\d+ \\(grossAmountEur="100.000000"\\)`,
+        ),
+      },
+    ];
+
+    await replaceNormalRowsWithServerVault(harness, memberId);
+    for (const forgery of forgeries) {
+      const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+      await expect(
+        createParanoidRehydrationService({ db: harness.db }).rehydrate(memberId, {
+          rehydrationId: FORK_REHYDRATION_ID,
+          document: forgery.document,
+        }),
+        forgery.name,
+      ).rejects.toThrow(forgery.message);
+      expect(mutationTransaction, forgery.name).not.toHaveBeenCalled();
+      expect(
+        await harness.db.select().from(portfolios).where(eq(portfolios.userId, memberId)),
+        forgery.name,
+      ).toEqual([]);
+      mutationTransaction.mockRestore();
+    }
+  });
+
+  /**
+   * Re-joining is a normal flow: the account ends up with TWO ended memberships in
+   * one chain, two retained forks, and two watermarks. The older fork must be
+   * proved against ITS tombstone — a later copy's higher watermark can neither
+   * authorize the ops the older fork never received, nor may the pair be collapsed
+   * into a "duplicate logical identity" that strands the account at capture.
+   */
+  it('proves each retained fork of a re-joined chain against its own watermark', async () => {
+    const fixture = await severedOverdrawnFork();
+    const { harness, memberId, chainId, ownerId, ownerPortfolioId } = fixture;
+
+    const { portfolioId: secondForkId } = await harness.ctx.mirror.attachMemberCopy(
+      chainId,
+      memberId,
+    );
+    await harness.ctx.mirror.replicateChain(chainId);
+    const [afterRejoin] = await harness.ctx.mirror.submitTransactionsCreate(
+      ownerId,
+      ownerPortfolioId,
+      [
+        {
+          assetId: FORK_FLAT_ASSET_ID,
+          side: 'buy',
+          quantity: 1,
+          price: 2,
+          fee: 0,
+          executedAt: '2026-07-27T10:00:00.000Z',
+        },
+      ],
+    );
+    if (!afterRejoin) throw new Error('expected the post-rejoin chain op');
+    await harness.ctx.mirror.replicateChain(chainId);
+    await harness.ctx.mirror.leaveChain(memberId, chainId);
+
+    const { provenance } = await harness.ctx.paranoidTransitions.forkProvenance(memberId);
+    const memberships = await harness.db
+      .select()
+      .from(mirrorChainMembers)
+      .where(eq(mirrorChainMembers.userId, memberId));
+    expect(memberships).toHaveLength(2);
+    // Two forks, two tombstones, two watermarks — and the SAME logical entity is
+    // carried twice, once per copy, under different local ids.
+    const byMembership = new Set(provenance.map((entry) => entry.membershipId));
+    expect(byMembership.size).toBe(2);
+    const correctedEntries = provenance.filter(
+      (entry) => entry.mirrorId === fixture.correctedMirrorId,
+    );
+    expect(correctedEntries).toHaveLength(2);
+    expect(new Set(correctedEntries.map((entry) => entry.localId)).size).toBe(2);
+    const olderEntry = correctedEntries.find(
+      (entry) => entry.portfolioId === fixture.forkPortfolioId,
+    );
+    const newerEntry = correctedEntries.find((entry) => entry.portfolioId === secondForkId);
+    if (!olderEntry || !newerEntry) throw new Error('expected one entry per retained fork');
+    const olderWatermark = memberships.find(
+      (membership) => membership.id === olderEntry.membershipId,
+    )?.appliedSeq;
+    const newerWatermark = memberships.find(
+      (membership) => membership.id === newerEntry.membershipId,
+    )?.appliedSeq;
+    expect(olderWatermark).toBeLessThan(newerWatermark!);
+
+    const document = await captureAccountDocument(harness, memberId, provenance);
+    await replaceNormalRowsWithServerVault(harness, memberId);
+
+    // The forgery: the OLDER fork claiming an op only the newer copy received. It
+    // sits below the chain's highest watermark, so collapsing per chain would have
+    // authorized it.
+    const forged = provenance.map((entry) =>
+      entry === olderEntry ? { ...entry, mirrorId: afterRejoin.id } : entry,
+    );
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(memberId, {
+        rehydrationId: FORK_REHYDRATION_ID,
+        document: { ...document, mirrorProvenance: forged },
+      }),
+    ).rejects.toThrow(
+      new RegExp(
+        `mirrorProvenance\\[transaction:${afterRejoin.id}\\]\\.mirrorId="${afterRejoin.id}" has no chain ` +
+          `operation at or below the ended membership watermark ${olderWatermark}`,
+      ),
+    );
+    expect(mutationTransaction).not.toHaveBeenCalled();
+    mutationTransaction.mockRestore();
+
+    // ...while the honest two-fork document restores both copies in full.
+    await createParanoidRehydrationService({
+      db: harness.db,
+      now: () => new Date(FORK_TAX_NOW),
+    }).rehydrate(memberId, { rehydrationId: SECOND_FORK_REHYDRATION_ID, document });
+    const restored = await harness.db
+      .select()
+      .from(portfolios)
+      .where(eq(portfolios.userId, memberId));
+    expect(restored.map((row) => row.id)).toEqual(
+      expect.arrayContaining([fixture.forkPortfolioId, secondForkId]),
+    );
+    // Both copies' replacement transactions are back, each proved against its own
+    // membership: the same logical entity, restored twice under two local ids.
+    const restoredTransactions = await harness.db.select().from(transactions);
+    expect(restoredTransactions.map((row) => row.id)).toEqual(
+      expect.arrayContaining([olderEntry.localId, newerEntry.localId]),
+    );
+  });
+
   it('rejects forged provenance before the first write and restores zero rows', async () => {
     const fixture = await severedOverdrawnFork();
     const { harness, memberId } = fixture;
@@ -1139,18 +1435,29 @@ describe('paranoid rehydration severed-fork provenance', () => {
       message: RegExp;
     }[] = [
       {
-        name: 'an unknown chain',
-        provenance: [...without(corrected), { ...corrected, chainId: UNKNOWN_CHAIN_ID }],
+        name: 'a membership the account never held',
+        provenance: fixture.provenance.map((entry) => ({
+          ...entry,
+          membershipId: UNKNOWN_MEMBERSHIP_ID,
+        })),
         message: new RegExp(
-          `chainId="${UNKNOWN_CHAIN_ID}" has no ended MIRRORCHAIN membership for the rehydrated account`,
+          `membershipId="${UNKNOWN_MEMBERSHIP_ID}" is not an ended MIRRORCHAIN membership of the rehydrated account`,
         ),
       },
       {
-        name: "another account's chain",
-        provenance: [...without(corrected), { ...corrected, chainId: foreignChain.chainId }],
+        name: "another account's chain under a real membership",
+        provenance: fixture.provenance.map((entry) => ({
+          ...entry,
+          chainId: foreignChain.chainId,
+        })),
         message: new RegExp(
-          `chainId="${foreignChain.chainId}" has no ended MIRRORCHAIN membership for the rehydrated account`,
+          `chainId="${foreignChain.chainId}" is not the chain of ended membership ${fixture.membershipId}`,
         ),
+      },
+      {
+        name: 'a second membership claiming one copy',
+        provenance: [...without(corrected), { ...corrected, membershipId: UNKNOWN_MEMBERSHIP_ID }],
+        message: /claims a copy another membership already owns/,
       },
       {
         name: 'a row kind its operation cannot produce',

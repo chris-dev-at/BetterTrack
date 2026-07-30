@@ -440,8 +440,14 @@ export function createParanoidRehydrationSourceRepository(
  * document is refused before any mutation transaction opens.
  */
 
-/** One ENDED membership: the chain plus the watermark its copy stopped at. */
+/**
+ * One ENDED membership tombstone: its own identity, the chain, and the watermark
+ * its copy stopped at. `id` is what the encrypted provenance names — a re-joined
+ * account holds several tombstones per chain, each with its own copy and its own
+ * (higher) watermark, and an older retained fork must be proved against ITS row.
+ */
 export interface ParanoidForkMembership {
+  id: string;
   chainId: string;
   status: MirrorMemberStatus;
   appliedSeq: number;
@@ -480,6 +486,7 @@ export function createParanoidForkProvenanceRepository(
     async listEndedMemberships(userId) {
       return db
         .select({
+          id: mirrorChainMembers.id,
           chainId: mirrorChainMembers.chainId,
           status: mirrorChainMembers.status,
           appliedSeq: mirrorChainMembers.appliedSeq,
@@ -521,39 +528,36 @@ export function createParanoidForkProvenanceRepository(
       return found;
     },
 
+    /**
+     * The membership join is what makes the record self-selecting later: each
+     * retained row is attributed to the ENDED tombstone that owns its copy —
+     * `(chain_id, portfolio_id)` identifies exactly one membership per account,
+     * because re-joining mints a fresh copy rather than reviving the fork's one.
+     * A still-ACTIVE membership never matches, so a live chain's rows (and any
+     * co-member's row) stay out of the response by construction.
+     */
     async listRetainedForkProvenance(userId) {
-      const memberships = await db
+      return db
         .select({
-          chainId: mirrorChainMembers.chainId,
-          status: mirrorChainMembers.status,
+          chainId: mirrorRows.chainId,
+          membershipId: mirrorChainMembers.id,
+          kind: mirrorRows.kind,
+          mirrorId: mirrorRows.mirrorId,
+          portfolioId: mirrorRows.portfolioId,
+          localId: mirrorRows.localId,
         })
-        .from(mirrorChainMembers)
-        .where(eq(mirrorChainMembers.userId, userId));
-      const active = new Set(
-        memberships.filter((row) => row.status === 'active').map((row) => row.chainId),
-      );
-      const endedChainIds = [
-        ...new Set(memberships.filter((row) => !active.has(row.chainId)).map((row) => row.chainId)),
-      ];
-      if (!endedChainIds.length) return [];
-
-      const provenance: VaultMirrorProvenance[] = [];
-      await forEachChunk(endedChainIds, async (chunk) => {
-        provenance.push(
-          ...(await db
-            .select({
-              chainId: mirrorRows.chainId,
-              kind: mirrorRows.kind,
-              mirrorId: mirrorRows.mirrorId,
-              portfolioId: mirrorRows.portfolioId,
-              localId: mirrorRows.localId,
-            })
-            .from(mirrorRows)
-            .innerJoin(portfolios, eq(portfolios.id, mirrorRows.portfolioId))
-            .where(and(eq(portfolios.userId, userId), inArray(mirrorRows.chainId, [...chunk])))),
-        );
-      });
-      return provenance;
+        .from(mirrorRows)
+        .innerJoin(portfolios, eq(portfolios.id, mirrorRows.portfolioId))
+        .innerJoin(
+          mirrorChainMembers,
+          and(
+            eq(mirrorChainMembers.chainId, mirrorRows.chainId),
+            eq(mirrorChainMembers.portfolioId, mirrorRows.portfolioId),
+            eq(mirrorChainMembers.userId, userId),
+            ne(mirrorChainMembers.status, 'active'),
+          ),
+        )
+        .where(eq(portfolios.userId, userId));
     },
   };
 }

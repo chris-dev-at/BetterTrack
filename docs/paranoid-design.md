@@ -401,9 +401,16 @@ after that the equality is false, and inferring the association from row values 
 ambiguous. So the map itself must be captured while it still exists.
 
 **Representation.** `vaultMirrorProvenanceSchema` (`packages/contracts/src/vault.ts`):
-`{ chainId, kind, mirrorId, portfolioId, localId }`, carried as the additive
-`mirrorProvenance` array on vault document v1/v2 and on the strict restore
-document. It is `.default([])`, so a document written before this section parses
+`{ chainId, membershipId, kind, mirrorId, portfolioId, localId }`, carried as the
+additive `mirrorProvenance` array on vault document v1/v2 and on the strict restore
+document. `membershipId` is the caller's OWN ended `mirror_chain_members` row:
+**re-joining is a normal flow**, so one chain can hold two retained forks, each
+with its own copy of the same logical entity and its own (higher) watermark. The
+tombstone identity is the minimum needed to prove an older fork against the
+membership that actually kept it — and to keep the two copies' entries from
+colliding as a "duplicate logical identity". It is not a `mirror_rows` column, so
+it is declared in `VAULT_MIRROR_PROVENANCE_PROOF_FIELDS` and the completeness gate
+subtracts it before comparing columns. It is `.default([])`, so a document written before this section parses
 unchanged and means "no severed fork" — no already-written `schemaVersion` is
 reinterpreted, and an unsupported (higher) version still fails closed. The two
 `mirror_rows` attribution columns are deliberately dropped
@@ -413,18 +420,45 @@ why `mirror_rows` is NOT vault-classified and is never re-inserted on disable �
 restoring it would require exactly the identity we refuse to carry, and the fork
 is un-synced by definition.
 
-**Capture** — `GET /account/paranoid/fork-provenance`, run by the enable wizard
-(§7 step 2) BEFORE the purge: the caller's own `mirror_rows` for portfolios they
-still own whose membership has ENDED. Active memberships are excluded (they block
-enable anyway, and would be live chain data), and no other user's row is
-reachable, because the read is scoped by portfolio ownership.
+**Capture** — `GET /account/paranoid/fork-provenance`: the caller's own
+`mirror_rows`, joined to the ENDED membership that owns each copy
+(`(chain_id, portfolio_id)` selects exactly one membership per account, because a
+re-join mints a fresh copy rather than reviving the fork's). Active memberships
+never match — they block enable anyway and would be live chain data — and no other
+user's row is reachable, because the read is scoped by portfolio ownership.
+
+The client calls it from `captureForkProvenanceIntoVault`
+(`apps/web/src/user/vault/mirrorProvenance.ts`), and **every unlocked session runs
+that fold** (`media/runtime.ts`, beside the retirement-proof material). That is
+what guarantees the map is inside the ciphertext BEFORE `enable()` purges
+`mirror_rows`, without the wizard having to remember a step: the fold is a
+union-and-prune, so it is idempotent and a second session cannot duplicate or drop
+an identity. Once paranoid mode is on, the read is empty and the fold no-ops (no
+vault version is spent). A capture read that cannot be REACHED is skipped and
+retried on the next unlock — an unreachable API must not block unlocking an
+already-encrypted vault (Drive-only can be readable while the API is not) — but a
+read that succeeded and produced new provenance must land durably, or unlock
+fails: a fork whose identities never reached the ciphertext could not be restored.
 
 **Merge / migration.** Provenance is content-addressed, not entity-atomic: the
-CAS merge takes the deterministic UNION keyed by `(kind, chainId, mirrorId)`, and
-dominance requires the winner to already contain every entry of the loser, so a
+CAS merge takes the deterministic UNION keyed by `(kind, membershipId, mirrorId)`,
+and dominance requires the winner to already contain every entry of the loser, so a
 merge can never silently drop it. Two entries claiming one logical identity with
 different `localId`s, or one `localId` under two logical identities, are a
 malformed document (fail closed) rather than a resolvable conflict.
+
+**Pruning is part of the document lifecycle, not a one-off step.** An entry may
+only name a row the document still keeps live; the server rejects one that names no
+restored row, which would otherwise leave the account unable to disable paranoid
+mode at all. So `pruneForkProvenance` runs in three places: inside the CAS merge
+(against the MERGED entities, so a row one side deleted takes its provenance with
+it instead of the union resurrecting it), in `encryptCandidate` — the single funnel
+every committed or published document passes through, so a plain local deletion
+prunes on the very next write — and in the disable carriage. Dominance prunes BOTH
+sides before comparing, so a stale entry the loser still carries cannot force a
+divergent merge on every reconcile. An ABSENT `mirrorProvenance` key stays absent
+throughout (absent and `[]` mean the same thing), so re-encrypting a fork-free
+vault keeps emitting byte-identical plaintext.
 
 **Purge.** Enable purges the copy; `mirror_rows` cascades with the portfolio and
 the account keeps ZERO cleartext alias rows — including Drive-only, which gains no
@@ -438,28 +472,61 @@ proof surface; the user's own map is the encrypted half.
 1. Each entry resolves to a live document entity of the mapped kind and to that
    entity's portfolio, and the entries are unique by logical identity AND by local
    id — a duplicate is rejected, never merged.
-2. The caller must hold an ENDED membership in `chainId`; an unknown chain, another
-   user's chain, or a still-active membership is rejected.
-3. The entity's authoritative op is the highest-seq op ≤ that membership's
-   `applied_seq`. Absent (no op for the logical id), beyond-watermark, wrong-kind
-   (an op class that cannot produce that row kind) and stale (the authoritative op
-   is a delete) are all rejected. A `cash.transfer` op speaks for BOTH minted leg
-   ids, one of which is not its own `mirror_id` column.
-4. **Cash intent is bound to the op, never to a client tag.** A `buy` leg requires
+2. Entries are grouped by `membershipId`, and that membership must be one the
+   caller provably holds and that has ENDED — an unknown membership, another
+   account's, or a still-active one is rejected — and its `chain_id` must equal the
+   entry's. One membership names exactly one copy: a second `portfolioId` under one
+   membership, or two memberships claiming one copy, is rejected.
+3. The entity's authoritative op is the highest-seq op ≤ **that membership's**
+   `applied_seq` (never a later copy's). Absent (no op for the logical id),
+   beyond-watermark, wrong-kind (an op class that cannot produce that row kind) and
+   stale (the authoritative op is a delete) are all rejected. A `cash.transfer` op
+   speaks for BOTH minted leg ids, one of which is not its own `mirror_id` column.
+4. **The restored row must be the full-state result of that op** (mirrorchain §3:
+   the highest-seq op ≤ the watermark IS the entity's state), compared at the
+   persisted column's own scale so `2.9` and `2.90000000` agree:
+   - an external cash movement — append-only on every copy, so its state is the
+     op's for good — binds `kind`, source, **`amountEur` through the write path's
+     own `floorCents`**, `executedAt`, the transfer counterpart source, and the
+     absence of a transaction/dividend/tax link. A genuine withdrawal therefore
+     cannot authenticate a larger one;
+   - a dividend (no in-place update surface exists) binds asset, gross amount,
+     `executedAt` and cash source;
+   - a transaction that carries a linked movement binds side, quantity, price, fee,
+     `executedAt`, the uncovered pair and (from its create op) the asset. That is
+     sound precisely because such a row refuses an in-place financial edit
+     (`TRANSACTION_CASH_LINKED` / `TRANSACTION_TAXED`) and the sanctioned correction
+     re-creates it under a NEW local id — so a row whose financials diverged can no
+     longer be the row the entry names. A chain transaction with NO linked movement
+     needs no waiver and stays locally editable, so nothing is bound and nothing is
+     authenticated for it. Notes stay unbound (editable, and they cannot change a
+     ledger outcome), as do a `cash_source`'s own columns (rename/archive/restore
+     remain available locally after the fork).
+   - **Derived legs keep the frozen-amount rule.** A buy/sell cash leg's amount and
+     a tax movement's amount are copy-derived, not op fields: the leg is the write
+     path's `floorCents` of the (now op-bound) cost/proceeds through that moment's
+     FX, and a tax movement is this copy's own regime output. Re-deriving them would
+     require an FX history the server no longer has, so `validateGraph` binds each to
+     the row it belongs to (frozen tax amount, dividend gross, transfer pairing)
+     exactly as it does outside a fork.
+5. **Cash intent is bound to the op, never to a client tag.** A `buy` leg requires
    a buy op with `payFromCash: true`; a `sell_proceeds` leg requires a sell op with
    `addProceedsToCash: true`; the movement's source must equal the local source the
-   op's `cashSourceMirrorId` resolves to (a `cash_source` entry of the same chain,
-   or the copy's Main when null); and the row's write-path tag must be
+   op's `cashSourceMirrorId` resolves to (a `cash_source` entry of the SAME copy, or
+   the copy's Main when null); and the row's write-path tag must be
    `sync:mirrorchain` or the entity's create-op `originSource` (a correction keeps
    the corrected row's tag). Errors name the exact field and value.
-5. Only then is the solvency waiver granted, and only to a cash source that
-   carries an authenticated chain movement — its own `cash_movement` entry, or a
-   buy/sell leg whose transaction entry passed (4) — and only from that movement
-   onward in persisted `(executed_at, id)` order. Before the first authenticated
-   chain movement the source's ledger was purely local, where no overdraw is
-   reachable, so a negative prefix there still fails closed. The former
-   `source === 'sync:mirrorchain'` test is gone: it was a client-authored string
-   that waived overdraw for a whole source on request.
+6. Only then is the solvency waiver granted, and it follows the authenticated
+   MOVEMENTS — never their source. Replica apply force-applied exactly the chain's
+   own writes, so an OUTFLOW may leave its source negative only when it is one of
+   them: its own proven `cash_movement`, or a leg of a proven transaction/dividend.
+   An inflow is never gated by any write path, so it may leave an already-negative
+   source negative — that is the reachable recovery prefix — while every
+   unauthenticated outflow stays exact, including one that follows a genuine chain
+   movement on the same source (the normal `withdrawCash` rule refuses it whatever
+   the prefix already is). The former `source === 'sync:mirrorchain'` test is gone:
+   it was a client-authored string that waived overdraw for a whole source on
+   request.
 
 Reading the chain tables outside the restore transaction is sound: the oplog is
 append-only, ops ≤ the watermark are immutable, and an ended membership cannot
@@ -467,11 +534,12 @@ reactivate without leaving paranoid mode first (re-joining is a normal-mode writ
 
 **Successful rehydration and cleanup.** The provenance is proof material only: no
 row is derived from it, `mirror_rows` is not re-created, and the restored fork
-stays un-synced exactly as it was before enable. The client prunes entries whose
-local row it deleted locally (so a stale alias can never accumulate), and the
-whole document — provenance included — is discarded with the vault once disable
-commits; the decrypted disable request lives only for the already-approved request
-lifetime.
+stays un-synced exactly as it was before enable. The document — provenance
+included — is discarded with the vault once disable commits; the decrypted disable
+request lives only for the already-approved request lifetime. The strict payload it
+travels in is produced by `strictVaultDocumentForDisable`
+(`apps/web/src/user/vault/paranoidDisable.ts`), which is also where the last prune
+runs.
 
 ## 8. The feature-kill list (exact, binding)
 

@@ -12,6 +12,7 @@ export * from './merge';
 export * from './media';
 export * from './migration';
 export * from './mirrorProvenance';
+export * from './paranoidDisable';
 export * from './quarantine';
 export * from './recovery';
 export * from './rekey';

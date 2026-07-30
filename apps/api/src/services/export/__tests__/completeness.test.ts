@@ -7,6 +7,7 @@ import {
   VAULT_ENTITY_ROW_SCHEMAS,
   VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS,
   VAULT_MIRROR_PROVENANCE_ENTITY_KINDS,
+  VAULT_MIRROR_PROVENANCE_PROOF_FIELDS,
   VAULT_TABLE_ENTITY_KINDS,
   vaultMirrorProvenanceSchema,
   type VaultEntityKind,
@@ -186,7 +187,10 @@ describe('strict vault-payload completeness', () => {
  * vault nor silently escape restore-time validation.
  */
 describe('severed-fork provenance enrollment', () => {
-  const carried = Object.keys(vaultMirrorProvenanceSchema.shape).sort();
+  const proof = Object.keys(VAULT_MIRROR_PROVENANCE_PROOF_FIELDS).sort();
+  const carried = Object.keys(vaultMirrorProvenanceSchema.shape)
+    .filter((field) => !proof.includes(field))
+    .sort();
   const dropped = Object.keys(VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS).sort();
   const columns = Object.keys(getTableColumns(schema.mirrorRows)).sort();
 
@@ -195,8 +199,26 @@ describe('severed-fork provenance enrollment', () => {
     expect(carried.filter((field) => dropped.includes(field))).toEqual([]);
   });
 
-  it('states a non-empty reason for every dropped column', () => {
-    for (const [column, reason] of Object.entries(VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS)) {
+  /**
+   * A proof field is carried on purpose and is NOT a `mirror_rows` column, so it
+   * must be declared as one — otherwise the column gate above would either fail
+   * or, worse, be relaxed into accepting an undeclared extra field.
+   */
+  it('declares every carried field that is not a mirror_rows column', () => {
+    expect(proof.filter((field) => columns.includes(field))).toEqual([]);
+    expect(
+      Object.keys(vaultMirrorProvenanceSchema.shape)
+        .filter((field) => !columns.includes(field))
+        .sort(),
+    ).toEqual(proof);
+    expect(proof).toContain('membershipId');
+  });
+
+  it('states a non-empty reason for every dropped column and proof field', () => {
+    for (const [column, reason] of Object.entries({
+      ...VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS,
+      ...VAULT_MIRROR_PROVENANCE_PROOF_FIELDS,
+    })) {
       expect(reason.trim().length, `${column} needs a reason`).toBeGreaterThan(0);
     }
   });

@@ -44,6 +44,7 @@ import {
   type LocalDataHomeStorage,
   type LocalVaultRecord,
 } from './localDataHome';
+import { strictVaultDocumentForDisable } from './paranoidDisable';
 import { createMemoryVaultQuarantineStore } from './quarantine';
 import { createVaultSyncEngine, type VaultSyncEngine, type VaultSyncState } from './sync';
 import {
@@ -2160,16 +2161,13 @@ function initialDocument(): VaultDocument {
   };
 }
 
+/**
+ * The PRODUCTION disable carriage, not a test-local re-implementation: the same
+ * function the disable request is built from, so this round trip fails if the
+ * conversion (including §7.1 provenance carriage) ever drifts.
+ */
 function strictDocumentFrom(document: VaultDocument) {
-  return vaultStrictDocumentV1Schema.parse({
-    schemaVersion: document.schemaVersion,
-    entities: Object.entries(document.entities).flatMap(([kind, entities]) =>
-      entities.map((entity) => ({ ...entity, kind })),
-    ),
-    mergeLog: document.mergeLog,
-    // §7.1: the disable payload carries the severed-fork identity map verbatim.
-    mirrorProvenance: document.mirrorProvenance,
-  });
+  return strictVaultDocumentForDisable(document);
 }
 
 function documentFromStrictDocument(

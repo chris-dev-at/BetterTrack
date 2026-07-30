@@ -1149,6 +1149,15 @@ export const vaultMirrorProvenanceSchema = z
   .object({
     /** The chain whose append-only oplog authenticates this identity. */
     chainId: uuidSchema,
+    /**
+     * The caller's OWN ended `mirror_chain_members` row for this copy — the
+     * tombstone whose `applied_seq` bounds which ops may authenticate the row.
+     * Re-joining a chain is a normal flow and mints a SECOND membership with its
+     * own copy and its own (higher) watermark, so a chain id alone cannot select
+     * the right one: an earlier retained fork must be proved against ITS
+     * membership. It is the user's own membership row, never a co-member's.
+     */
+    membershipId: uuidSchema,
     /** `mirror_rows.kind` — which local table the logical entity landed in. */
     kind: mirrorRowKindSchema,
     /** The chain-wide logical entity id (stable across every copy). */
@@ -1164,14 +1173,25 @@ export type VaultMirrorProvenance = z.infer<typeof vaultMirrorProvenanceSchema>;
 /**
  * The `mirror_rows` columns the provenance record deliberately drops, with the
  * binding reason. The API's completeness gate compares
- * `columns(mirror_rows) === keys(vaultMirrorProvenanceSchema) ∪ keys(this)`, so a
- * future column cannot silently enter or escape the encrypted carriage.
+ * `columns(mirror_rows) === (keys(vaultMirrorProvenanceSchema) ∖
+ * keys(VAULT_MIRROR_PROVENANCE_PROOF_FIELDS)) ∪ keys(this)`, so a future column
+ * cannot silently enter or escape the encrypted carriage.
  */
 export const VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS = {
   createdBy:
     'another member’s user id — restore-time validation never needs it and the vault must not carry a co-member identity',
   createdByUsername:
     'another member’s denormalized display name — attribution is chain-side rendering, not fork provenance',
+} as const;
+
+/**
+ * Carried fields that are NOT `mirror_rows` columns, with the binding reason.
+ * They exist so restore-time validation can select the exact membership the row
+ * belongs to; the completeness gate subtracts them before comparing columns.
+ */
+export const VAULT_MIRROR_PROVENANCE_PROOF_FIELDS = {
+  membershipId:
+    'the caller’s own ended membership row — a re-joined chain has several, each with its own copy and watermark, so the tombstone identity is the minimum needed to pick the right one',
 } as const;
 
 /** Vault entity kind each `mirror_rows.kind` resolves to inside the document. */

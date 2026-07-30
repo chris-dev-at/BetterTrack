@@ -1,6 +1,6 @@
 import { join as joinPath } from 'node:path';
 
-import { eq, or } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -818,16 +818,26 @@ describe('severed-fork provenance capture read', () => {
     });
 
     await harness.ctx.mirror.removeMember(owner.id, chain.id, member.id);
+    const [membership] = await harness.db
+      .select()
+      .from(mirrorChainMembers)
+      .where(
+        and(eq(mirrorChainMembers.chainId, chain.id), eq(mirrorChainMembers.userId, member.id)),
+      );
     const captured = await harness.ctx.paranoidTransitions.forkProvenance(member.id);
     expect(captured.provenance.length).toBeGreaterThan(0);
     for (const entry of captured.provenance) {
       expect(entry.chainId).toBe(chain.id);
       expect(entry.portfolioId).toBe(forkPortfolioId);
-      // Only the five contract fields — no `createdBy`/`createdByUsername`.
+      // The ENDED tombstone that owns this copy — the row restore-time validation
+      // takes its watermark from, and the caller's own membership only.
+      expect(entry.membershipId).toBe(membership!.id);
+      // Only the six contract fields — no `createdBy`/`createdByUsername`.
       expect(Object.keys(entry).sort()).toEqual([
         'chainId',
         'kind',
         'localId',
+        'membershipId',
         'mirrorId',
         'portfolioId',
       ]);

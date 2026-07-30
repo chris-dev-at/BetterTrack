@@ -16,7 +16,7 @@ import {
   updateTaxSettingsRequestSchema,
   VAULT_MIRROR_PROVENANCE_ENTITY_KINDS,
 } from '@bettertrack/contracts';
-import { CASH_MOVEMENT_SIGN } from '@bettertrack/domain/cashLedger';
+import { CASH_MOVEMENT_SIGN, floorCents } from '@bettertrack/domain/cashLedger';
 import { viennaYearOf } from '@bettertrack/domain/tax';
 
 import type { Database } from '../../data/db';
@@ -1380,9 +1380,13 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
  * paths could not have produced.
  *
  * `authenticatedChainMovementIds` are the movements the §7.1 provenance proof
- * bound to a real chain operation: replica apply waives the solvency gate
- * (`force: true`) because copy-local tax movements skew a source, so from such a
- * movement onward its source may run negative. Every other movement stays exact.
+ * bound to a real chain operation. Replica apply waives the solvency gate for
+ * exactly those writes (`force: true`, because copy-local tax movements skew a
+ * source), so the waiver follows the movements themselves: an OUTFLOW may leave
+ * its source negative only when it is one of them. An inflow is never gated by
+ * any write path, so it may leave an already-negative source negative — that is
+ * the reachable recovery prefix — while every unauthenticated outflow stays
+ * exact, including one that follows a genuine chain movement on the same source.
  */
 function validateLedgerSolvency(
   entities: readonly Entity[],
@@ -1397,10 +1401,6 @@ function validateLedgerSolvency(
   const orderedMovements = orderedForPersistedReplay(movements);
   const transactionRows = rows(entities, 'transaction');
   const orderedTransactions = orderedForPersistedReplay(transactionRows);
-  // Grows as the replay reaches each authenticated chain movement. Before the
-  // first one a source's ledger was purely local, where the normal write path
-  // admits no overdraw, so a negative prefix there is still a genuine overdraw.
-  const chainWaivedSourceIds = new Set<string>();
 
   let cashMovementReplayVisits = 0;
   let transactionReplayVisits = 0;
@@ -1421,11 +1421,12 @@ function validateLedgerSolvency(
       if (amount === 0n || (requiredSign === 1 ? amount < 0n : amount > 0n)) {
         throw solvencyError(movement, 'amountEur', movement.data.amountEur, 'has the wrong sign');
       }
-      if (authenticatedChainMovementIds.has(movement.id)) {
-        chainWaivedSourceIds.add(movement.data.sourceId);
-      }
       const balance = (balancesBySource.get(movement.data.sourceId) ?? 0n) + amount;
-      if (balance < 0n && !chainWaivedSourceIds.has(movement.data.sourceId)) {
+      // Only an OUTFLOW can overdraw. The normal write path refuses one that
+      // lands the source below zero — whatever the prefix already is — so an
+      // unauthenticated outflow into a negative balance is unreachable even
+      // when an earlier authenticated chain movement made the source negative.
+      if (balance < 0n && amount < 0n && !authenticatedChainMovementIds.has(movement.id)) {
         throw solvencyError(
           movement,
           'amountEur',
@@ -1579,6 +1580,59 @@ function forkOpSourceMirrorId(payload: MirrorOpPayload, mirrorId: string): strin
   }
 }
 
+/**
+ * The chain-scoped source the OTHER leg of a transfer lands in — the transfer
+ * identity a copy persists as `counterpart_source_id`. Null for every non-transfer
+ * op, whose movements carry no counterpart.
+ */
+function forkOpCounterpartSourceMirrorId(
+  payload: MirrorOpPayload,
+  mirrorId: string,
+): string | null {
+  if (payload.kind !== 'cash.transfer') return null;
+  return mirrorId === payload.outMirrorId ? payload.toSourceMirrorId : payload.fromSourceMirrorId;
+}
+
+/**
+ * The signed EUR amount an external cash op books on one of its legs, quantized
+ * exactly as the write path does. `floorCents` is the domain function every cash
+ * writer runs before storage, so calling it here compares the persisted row with
+ * the value the op could actually have produced — not a re-derivation of it.
+ */
+/** The instant an external cash op books on every copy. */
+function forkOpExecutedAt(payload: MirrorOpPayload): string | null {
+  switch (payload.kind) {
+    case 'cash.deposit':
+    case 'cash.withdraw':
+    case 'cash.setBalance':
+    case 'cash.transfer':
+      return payload.executedAt;
+    default:
+      return null;
+  }
+}
+
+function forkOpSignedAmountEur(payload: MirrorOpPayload, mirrorId: string): number | null {
+  switch (payload.kind) {
+    case 'cash.deposit':
+      return floorCents(payload.amountEur);
+    case 'cash.withdraw':
+      return -floorCents(payload.amountEur);
+    case 'cash.setBalance':
+      // Replicated as the origin-computed signed delta: `|delta|` is deposited or
+      // withdrawn, so the persisted magnitude is floored, then signed.
+      return payload.deltaEur > 0
+        ? floorCents(Math.abs(payload.deltaEur))
+        : -floorCents(Math.abs(payload.deltaEur));
+    case 'cash.transfer':
+      return mirrorId === payload.outMirrorId
+        ? -floorCents(payload.amountEur)
+        : floorCents(payload.amountEur);
+    default:
+      return null;
+  }
+}
+
 /** Every logical identity one persisted op speaks for (a transfer mints two). */
 function forkOpLogicalIds(mirrorId: string | null, payload: MirrorOpPayload): string[] {
   if (payload.kind === 'cash.transfer') return [payload.outMirrorId, payload.inMirrorId];
@@ -1590,6 +1644,20 @@ interface ProvenAuthoritativeOp {
   payload: MirrorOpPayload;
 }
 
+/**
+ * One retained fork, keyed by the ended membership that produced it. Everything
+ * the proof resolves — the watermark, the ops, and the logical→local cash-source
+ * map — is scoped to this copy, because a re-joined account holds several.
+ */
+interface ForkMembershipGroup {
+  chainId: string;
+  portfolioId: string;
+  logicalIds: Set<string>;
+  entries: VaultMirrorProvenance[];
+  /** Logical cash-source id → the local source id inside THIS copy. */
+  localSourceByLogical: Map<string, string>;
+}
+
 function provenanceError(
   label: string,
   field: string,
@@ -1599,6 +1667,103 @@ function provenanceError(
   return new ParanoidRehydrationError(
     'INVALID_REFERENCE',
     `${label}.${field}=${JSON.stringify(value ?? null)} ${reason}`,
+  );
+}
+
+/**
+ * One full-state field comparison between a restored row and its authoritative
+ * op. The op is full state by construction (mirrorchain design §3: the
+ * highest-seq op ≤ the watermark IS the entity's state), so anything the op
+ * carries must match the row it claims to have produced — otherwise a genuine op
+ * would authenticate a different row of the same shape.
+ */
+function requireOpField(
+  label: string,
+  field: string,
+  persisted: string | number | boolean | null,
+  expected: string | number | boolean | null,
+  op: ProvenAuthoritativeOp,
+): void {
+  if (persisted === expected) return;
+  throw provenanceError(
+    label,
+    field,
+    persisted,
+    `contradicts its authoritative ${op.payload.kind} operation at seq ${op.seq} ` +
+      `(${field}=${JSON.stringify(expected)})`,
+  );
+}
+
+/**
+ * The same comparison for a persisted numeric column. Both sides are normalized
+ * to the column's own integer scale first — the row went through PostgreSQL's
+ * coercion, the op carries the public number that was coerced — so `2.90000000`
+ * and `2.9` compare equal while a genuinely different amount does not.
+ */
+function requireOpNumeric(
+  label: string,
+  field: string,
+  persisted: string,
+  expected: number,
+  precision: number,
+  scale: number,
+  op: ProvenAuthoritativeOp,
+): void {
+  const stored = persistedNumeric(persisted, precision, scale, `${label}.${field}`);
+  const fromOp = publicNumberAtScale(expected, scale, `${label}.${field} operation value`);
+  if (stored === fromOp) return;
+  throw provenanceError(
+    label,
+    field,
+    persisted,
+    `contradicts its authoritative ${op.payload.kind} operation at seq ${op.seq} ` +
+      `(${field}=${JSON.stringify(fixedScaleDecimal(fromOp, scale))})`,
+  );
+}
+
+/**
+ * The quantity counterpart. A vault row may retain the user's raw decimal, which
+ * the restore repository rounds to `numeric(20,8)` on insert, so the comparison
+ * runs on the same quantized value the position replay uses — never on a raw
+ * decimal the column could not hold.
+ */
+function requireOpQuantity(
+  label: string,
+  persisted: string,
+  expected: number,
+  op: ProvenAuthoritativeOp,
+): void {
+  const stored = quantizedTransactionQuantity(persisted);
+  const fromOp = publicNumberAtScale(
+    expected,
+    TRANSACTION_QUANTITY_STORAGE_SCALE,
+    `${label}.quantity operation value`,
+  );
+  if (stored === fromOp) return;
+  throw provenanceError(
+    label,
+    'quantity',
+    persisted,
+    `contradicts its authoritative ${op.payload.kind} operation at seq ${op.seq} ` +
+      `(quantity=${JSON.stringify(fixedScaleDecimal(fromOp, TRANSACTION_QUANTITY_STORAGE_SCALE))})`,
+  );
+}
+
+/** Timestamp equality at instant precision (the persisted column's semantics). */
+function requireOpTimestamp(
+  label: string,
+  field: string,
+  persisted: string,
+  expected: string,
+  op: ProvenAuthoritativeOp,
+): void {
+  if (Date.parse(persisted) === Date.parse(expected)) return;
+  throw provenanceError(
+    label,
+    field,
+    persisted,
+    `contradicts its authoritative ${op.payload.kind} operation at seq ${op.seq} ` +
+      `(${field}=${JSON.stringify(expected)})`,
   );
 }
 
@@ -1621,7 +1786,7 @@ async function proveForkProvenance(
   const provenance = document.mirrorProvenance;
   if (provenance.length === 0) return new Set<string>();
 
-  const entityKey = (kind: Entity['kind'], id: string) => `${kind} ${id}`;
+  const entityKey = (kind: Entity['kind'], id: string) => `${kind}\u0000${id}`;
   const liveById = new Map<string, Entity>(
     entities.map((entity) => [entityKey(entity.kind, entity.id), entity]),
   );
@@ -1641,14 +1806,18 @@ async function proveForkProvenance(
 
   const logicalKeys = new Set<string>();
   const localKeys = new Set<string>();
-  const localSourceByLogical = new Map<string, string>();
-  const chains = new Map<string, { portfolioId: string; logicalIds: Set<string> }>();
+  const groups = new Map<string, ForkMembershipGroup>();
+  const membershipByPortfolio = new Map<string, string>();
   const labelOf = (entry: VaultMirrorProvenance) =>
     `mirrorProvenance[${entry.kind}:${entry.mirrorId}]`;
 
   for (const entry of provenance) {
     const label = labelOf(entry);
-    const logicalKey = `${entry.kind} ${entry.chainId} ${entry.mirrorId}`;
+    // Keyed by MEMBERSHIP, not by chain. Re-joining is a normal flow that mints a
+    // second membership with a second copy, so one chain can legitimately hold two
+    // retained forks carrying the SAME logical entity; keying by chain would call
+    // that reachable account a fatal duplicate and strand it at capture.
+    const logicalKey = `${entry.kind}\u0000${entry.membershipId}\u0000${entry.mirrorId}`;
     if (logicalKeys.has(logicalKey)) {
       throw provenanceError(
         label,
@@ -1658,7 +1827,7 @@ async function proveForkProvenance(
       );
     }
     logicalKeys.add(logicalKey);
-    const localKey = `${entry.kind} ${entry.localId}`;
+    const localKey = `${entry.kind}\u0000${entry.localId}`;
     if (localKeys.has(localKey)) {
       throw provenanceError(
         label,
@@ -1683,66 +1852,97 @@ async function proveForkProvenance(
         `does not own the restored ${entityKind}`,
       );
     }
-    const chain = chains.get(entry.chainId) ?? {
+    const group = groups.get(entry.membershipId) ?? {
+      chainId: entry.chainId,
       portfolioId: entry.portfolioId,
       logicalIds: new Set<string>(),
+      entries: [],
+      localSourceByLogical: new Map<string, string>(),
     };
-    if (chain.portfolioId !== entry.portfolioId) {
+    if (group.chainId !== entry.chainId) {
+      throw provenanceError(
+        label,
+        'chainId',
+        entry.chainId,
+        'names a second chain for one membership — a membership belongs to exactly one chain',
+      );
+    }
+    if (group.portfolioId !== entry.portfolioId) {
       throw provenanceError(
         label,
         'portfolioId',
         entry.portfolioId,
-        'spans a second portfolio in one chain — a fork is exactly one copy',
+        'spans a second portfolio in one membership — a fork is exactly one copy',
       );
     }
-    chain.logicalIds.add(entry.mirrorId);
-    chains.set(entry.chainId, chain);
-    if (entry.kind === 'cash_source') {
-      localSourceByLogical.set(`${entry.chainId} ${entry.mirrorId}`, entry.localId);
+    const owningMembership = membershipByPortfolio.get(entry.portfolioId);
+    if (owningMembership !== undefined && owningMembership !== entry.membershipId) {
+      throw provenanceError(
+        label,
+        'membershipId',
+        entry.membershipId,
+        'claims a copy another membership already owns',
+      );
     }
+    membershipByPortfolio.set(entry.portfolioId, entry.membershipId);
+    group.logicalIds.add(entry.mirrorId);
+    group.entries.push(entry);
+    // Source resolution is per COPY: the same logical source has a different
+    // local id in every copy, so the map is scoped to this membership's fork.
+    if (entry.kind === 'cash_source') {
+      group.localSourceByLogical.set(entry.mirrorId, entry.localId);
+    }
+    groups.set(entry.membershipId, group);
   }
 
-  // One ended membership per chain is the norm; a re-joined-then-left account can
-  // hold several, and the highest watermark is the only one that bounds every
-  // copy it ever kept. It is still a chain this account provably belonged to.
-  const watermarks = new Map<string, number>();
-  for (const membership of await repo.listEndedMemberships(userId)) {
-    watermarks.set(
-      membership.chainId,
-      Math.max(watermarks.get(membership.chainId) ?? 0, membership.appliedSeq),
-    );
-  }
+  // Exactly the tombstones this account provably holds, each with its OWN
+  // watermark. A later re-join's higher watermark must never authorize ops the
+  // earlier fork never received, so nothing is collapsed per chain here.
+  const memberships = new Map(
+    (await repo.listEndedMemberships(userId)).map((membership) => [membership.id, membership]),
+  );
 
   const authenticatedMovementIds = new Set<string>();
-  for (const [chainId, chain] of chains) {
-    const watermark = watermarks.get(chainId);
-    if (watermark === undefined) {
+  for (const [membershipId, group] of groups) {
+    const membershipLabel = `mirrorProvenance[membership:${membershipId}]`;
+    const membership = memberships.get(membershipId);
+    if (!membership) {
       throw provenanceError(
-        `mirrorProvenance[${chainId}]`,
-        'chainId',
-        chainId,
-        'has no ended MIRRORCHAIN membership for the rehydrated account',
+        membershipLabel,
+        'membershipId',
+        membershipId,
+        'is not an ended MIRRORCHAIN membership of the rehydrated account',
       );
     }
+    if (membership.chainId !== group.chainId) {
+      throw provenanceError(
+        membershipLabel,
+        'chainId',
+        group.chainId,
+        `is not the chain of ended membership ${membershipId}`,
+      );
+    }
+    const chainId = membership.chainId;
+    const watermark = membership.appliedSeq;
 
     const authoritative = new Map<string, ProvenAuthoritativeOp>();
     const created = new Map<string, ProvenAuthoritativeOp>();
     for (const op of await repo.listChainOpsForLogicalIds(
       chainId,
-      [...chain.logicalIds],
+      [...group.logicalIds],
       watermark,
     )) {
       const parsed = mirrorOpPayloadSchema.safeParse(op.payload);
       if (!parsed.success) {
         throw provenanceError(
-          `mirrorProvenance[${chainId}]`,
+          membershipLabel,
           'chainId',
           chainId,
           `has an unreadable chain operation at seq ${op.seq}`,
         );
       }
       for (const logicalId of forkOpLogicalIds(op.mirrorId, parsed.data)) {
-        if (!chain.logicalIds.has(logicalId)) continue;
+        if (!group.logicalIds.has(logicalId)) continue;
         const record: ProvenAuthoritativeOp = { seq: op.seq, payload: parsed.data };
         const highest = authoritative.get(logicalId);
         if (!highest || op.seq > highest.seq) authoritative.set(logicalId, record);
@@ -1751,8 +1951,7 @@ async function proveForkProvenance(
       }
     }
 
-    for (const entry of provenance) {
-      if (entry.chainId !== chainId) continue;
+    for (const entry of group.entries) {
       const label = labelOf(entry);
       const op = authoritative.get(entry.mirrorId);
       if (!op) {
@@ -1816,13 +2015,13 @@ async function proveForkProvenance(
           }
           return main;
         }
-        const local = localSourceByLogical.get(`${chainId} ${sourceMirrorId}`);
+        const local = group.localSourceByLogical.get(sourceMirrorId);
         if (!local) {
           throw provenanceError(
             label,
             field,
             sourceMirrorId,
-            'has no restored cash-source provenance in this chain',
+            'has no restored cash-source provenance in this fork',
           );
         }
         return local;
@@ -1832,15 +2031,74 @@ async function proveForkProvenance(
         case 'transaction': {
           if (op.payload.kind !== 'tx.create' && op.payload.kind !== 'tx.update') break;
           const payload = op.payload;
-          if (payload.side !== target.data.side) {
-            throw provenanceError(
-              `transaction[${target.id}]`,
-              'side',
-              target.data.side,
-              `contradicts its authoritative ${payload.kind} operation at seq ${op.seq} (side=${JSON.stringify(payload.side)})`,
+          const linked = linkedMovements.get(target.id) ?? [];
+          // A chain transaction with no linked movement needs no waiver, and it
+          // stays locally editable after the fork (a plain untaxed row accepts an
+          // in-place financial edit), so binding its full state would reject a
+          // reachable row. Nothing is authenticated for it either.
+          if (linked.length === 0) break;
+          // With a linked movement the row's financial state IS the op's: a
+          // cash-linked or taxed row refuses an in-place financial edit
+          // (TRANSACTION_CASH_LINKED / TRANSACTION_TAXED / TRANSACTION_AFFECTS_TAXED)
+          // and the sanctioned correction re-creates it under a NEW local id, so a
+          // row whose financials diverged can no longer be the row this entry
+          // names. The note stays unbound — it is editable in place and cannot
+          // change a ledger or position outcome.
+          const txLabel = `transaction[${target.id}]`;
+          requireOpField(txLabel, 'side', target.data.side, payload.side, op);
+          requireOpQuantity(txLabel, target.data.quantity, payload.quantity, op);
+          requireOpNumeric(
+            txLabel,
+            'price',
+            target.data.price,
+            payload.price,
+            CASH_AMOUNT_STORAGE_PRECISION,
+            CASH_AMOUNT_STORAGE_SCALE,
+            op,
+          );
+          requireOpNumeric(
+            txLabel,
+            'fee',
+            target.data.fee,
+            payload.fee,
+            CASH_AMOUNT_STORAGE_PRECISION,
+            CASH_AMOUNT_STORAGE_SCALE,
+            op,
+          );
+          requireOpTimestamp(txLabel, 'executedAt', target.data.executedAt, payload.executedAt, op);
+          // The uncovered fields only reach the write path on a sell, and the entry
+          // price only together with the acknowledgement, so that is the state a
+          // copy persists for any op.
+          const uncovered = payload.side === 'sell' && payload.allowUncovered;
+          requireOpField(txLabel, 'allowUncovered', target.data.allowUncovered, uncovered, op);
+          const entryPrice = uncovered ? payload.uncoveredEntryPrice : null;
+          if (entryPrice === null || target.data.uncoveredEntryPrice === null) {
+            requireOpField(
+              txLabel,
+              'uncoveredEntryPrice',
+              target.data.uncoveredEntryPrice,
+              entryPrice === null ? null : String(entryPrice),
+              op,
+            );
+          } else {
+            requireOpNumeric(
+              txLabel,
+              'uncoveredEntryPrice',
+              target.data.uncoveredEntryPrice,
+              entryPrice,
+              CASH_AMOUNT_STORAGE_PRECISION,
+              CASH_AMOUNT_STORAGE_SCALE,
+              op,
             );
           }
-          for (const movement of linkedMovements.get(target.id) ?? []) {
+          // `tx.update` carries no asset (it cannot move a row to another asset);
+          // the entity's create op is where that half of the full state lives.
+          const createPayload = created.get(entry.mirrorId)?.payload;
+          if (createPayload?.kind === 'tx.create') {
+            requireOpField(txLabel, 'assetId', target.data.assetId, createPayload.assetId, op);
+          }
+
+          for (const movement of linked) {
             const movementLabel = `cashMovement[${movement.id}]`;
             const intent =
               movement.data.kind === 'buy'
@@ -1872,6 +2130,13 @@ async function proveForkProvenance(
                 );
               }
             }
+            // Every leg of a proven chain transaction was force-applied together
+            // with it. Their amounts are COPY-DERIVED, not op fields: the gross leg
+            // is the write path's own `floorCents` of the (now op-bound) cost or
+            // proceeds through that moment's FX, and a tax leg is this copy's own
+            // regime output. `validateGraph` binds each of them to the row they
+            // belong to (frozen tax amount, dividend gross, transfer pairing)
+            // instead of re-deriving a rate history the server no longer has.
             authenticatedMovementIds.add(movement.id);
           }
           break;
@@ -1879,18 +2144,30 @@ async function proveForkProvenance(
         case 'dividend': {
           if (op.payload.kind !== 'dividend.record') break;
           const payload = op.payload;
-          if (payload.assetId !== target.data.assetId) {
-            throw provenanceError(
-              `dividend[${target.id}]`,
-              'assetId',
-              target.data.assetId,
-              `contradicts its authoritative dividend.record operation at seq ${op.seq}`,
-            );
-          }
+          // A dividend has no in-place update surface at all (record/delete only),
+          // so its full state stays the op's for the copy's whole life.
+          const dividendLabel = `dividend[${target.id}]`;
+          requireOpField(dividendLabel, 'assetId', target.data.assetId, payload.assetId, op);
+          requireOpNumeric(
+            dividendLabel,
+            'grossAmountEur',
+            target.data.grossAmountEur,
+            floorCents(payload.grossAmountEur),
+            CASH_AMOUNT_STORAGE_PRECISION,
+            CASH_AMOUNT_STORAGE_SCALE,
+            op,
+          );
+          requireOpTimestamp(
+            dividendLabel,
+            'executedAt',
+            target.data.executedAt,
+            payload.executedAt,
+            op,
+          );
           const expected = resolveOpSource(payload.cashSourceMirrorId, 'cashSourceMirrorId');
           if (target.data.cashSourceId !== expected) {
             throw provenanceError(
-              `dividend[${target.id}]`,
+              dividendLabel,
               'cashSourceId',
               target.data.cashSourceId,
               `is not the cash source its chain operation resolves to (${JSON.stringify(expected)})`,
@@ -1902,10 +2179,11 @@ async function proveForkProvenance(
           break;
         }
         case 'cashMovement': {
+          const movementLabel = `cashMovement[${target.id}]`;
           const expectedKind = forkOpMovementKind(op.payload, entry.mirrorId);
           if (expectedKind !== target.data.kind) {
             throw provenanceError(
-              `cashMovement[${target.id}]`,
+              movementLabel,
               'kind',
               target.data.kind,
               `is not the ${JSON.stringify(expectedKind)} movement its ${op.payload.kind} operation at seq ${op.seq} applies`,
@@ -1917,16 +2195,60 @@ async function proveForkProvenance(
           );
           if (target.data.sourceId !== expected) {
             throw provenanceError(
-              `cashMovement[${target.id}]`,
+              movementLabel,
               'sourceId',
               target.data.sourceId,
               `is not the cash source its chain operation resolves to (${JSON.stringify(expected)})`,
             );
           }
+          // An external cash movement is append-only on every copy — no edit or
+          // delete surface exists — so its full persisted state is the op's for
+          // good, and the waiver may be granted only for exactly that amount.
+          const signedAmount = forkOpSignedAmountEur(op.payload, entry.mirrorId);
+          const opExecutedAt = forkOpExecutedAt(op.payload);
+          if (signedAmount === null || opExecutedAt === null) {
+            throw provenanceError(
+              movementLabel,
+              'kind',
+              target.data.kind,
+              `has no external cash amount in its ${op.payload.kind} operation at seq ${op.seq}`,
+            );
+          }
+          requireOpNumeric(
+            movementLabel,
+            'amountEur',
+            target.data.amountEur,
+            signedAmount,
+            CASH_AMOUNT_STORAGE_PRECISION,
+            CASH_AMOUNT_STORAGE_SCALE,
+            op,
+          );
+          requireOpTimestamp(movementLabel, 'executedAt', target.data.executedAt, opExecutedAt, op);
+          // Transfer identity: the counterpart source is the OTHER leg's source as
+          // the op names it, resolved in this same copy. `validateGraph` already
+          // proves the two legs form a mirrored pair, so binding the counterpart
+          // binds the transfer as one operation rather than two loose movements.
+          const counterpart = forkOpCounterpartSourceMirrorId(op.payload, entry.mirrorId);
+          requireOpField(
+            movementLabel,
+            'counterpartSourceId',
+            target.data.counterpartSourceId,
+            counterpart === null ? null : resolveOpSource(counterpart, 'counterpartSourceMirrorId'),
+            op,
+          );
+          // A chain cash op never produces a transaction/dividend leg or a taxed
+          // movement: those are copy-derived rows with their own provenance path.
+          requireOpField(movementLabel, 'transactionId', target.data.transactionId, null, op);
+          requireOpField(movementLabel, 'dividendId', target.data.dividendId, null, op);
+          requireOpField(movementLabel, 'taxYear', target.data.taxYear, null, op);
           authenticatedMovementIds.add(target.id);
           break;
         }
         default:
+          // `cash_source` provenance exists to resolve an op's logical source to
+          // this copy's local id. Its own columns stay UNBOUND on purpose: rename,
+          // archive and restore remain available locally after the fork, and none
+          // of them can change a ledger outcome.
           break;
       }
     }
