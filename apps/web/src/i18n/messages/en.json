@@ -2090,6 +2090,7 @@
       "uploadCta": "Create preview",
       "uploading": "Uploading…",
       "uploadFailed": "Upload failed.",
+      "tooManyInstruments": "This file contains more than {{max}} distinct instruments — split it into files with at most {{max}} instruments each.",
       "previewTitle": "Preview: {{filename}}",
       "previewEmptyTitle": "No rows to import",
       "previewEmptyBody": "This file didn't contain any recognizable rows — the header may not match a supported broker export.",

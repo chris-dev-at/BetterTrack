@@ -124,7 +124,7 @@ async function connectSeededUser(user: { email: string; password: string }): Pro
     path: REALTIME_PATH,
     transports: ['websocket'],
     reconnection: false,
-    extraHeaders: { cookie },
+    extraHeaders: { Origin: harness.ctx.config.topology.webOrigin, cookie },
   });
   openSockets.push(socket);
   await new Promise<void>((resolve, reject) => {

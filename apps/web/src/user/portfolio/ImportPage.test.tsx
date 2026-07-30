@@ -5,6 +5,9 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { ApplyImportResponse, ImportPreviewResponse, ImportRow } from '@bettertrack/contracts';
+import { IMPORT_MAX_DISTINCT_INSTRUMENTS } from '@bettertrack/contracts';
+
+import { I18nProvider } from '../../i18n';
 
 vi.mock('../../lib/importsApi');
 vi.mock('../../lib/portfolioApi');
@@ -143,22 +146,26 @@ const APPLY_RESULT: ApplyImportResponse = {
   ],
 };
 
-function renderPage() {
+function renderPage(locale?: 'en' | 'de') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const page = (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={['/portfolio/import']}>
         <ImportPage />
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  // No provider ⇒ the graceful EN default context, as the other cases expect.
+  return render(locale ? <I18nProvider initialLocale={locale}>{page}</I18nProvider> : page);
 }
 
-async function uploadFixtureFile() {
+async function uploadFixtureFile(
+  labels: { file: string; cta: string } = { file: 'CSV export', cta: 'Create preview' },
+) {
   const user = userEvent.setup();
   const file = new File(['Datum;Typ'], 'export.csv', { type: 'text/csv' });
-  await user.upload(screen.getByLabelText('CSV export'), file);
-  await user.click(screen.getByRole('button', { name: 'Create preview' }));
+  await user.upload(screen.getByLabelText(labels.file), file);
+  await user.click(screen.getByRole('button', { name: labels.cta }));
   return user;
 }
 
@@ -262,6 +269,39 @@ describe('ImportPage', () => {
       'This file does not match any supported broker export — pick the broker manually.',
     );
     expect(screen.queryByText('Preview: export.csv')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The distinct-instrument cap (#950) is the one import rejection this surface
+   * owns a translated string for, so it must never echo the server's English
+   * message — the binding V5 EN/DE rule.
+   */
+  const capRejection = () =>
+    new ApiError(
+      400,
+      'IMPORT_TOO_MANY_INSTRUMENTS',
+      `The file contains more than ${IMPORT_MAX_DISTINCT_INSTRUMENTS} distinct instruments — split it into files with at most ${IMPORT_MAX_DISTINCT_INSTRUMENTS} instruments each.`,
+    );
+
+  test('localizes the distinct-instrument cap rejection in EN', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockRejectedValue(capRejection());
+    renderPage('en');
+    await screen.findByRole('option', { name: 'Trade Republic' });
+    await uploadFixtureFile();
+    await screen.findByText(
+      `This file contains more than ${IMPORT_MAX_DISTINCT_INSTRUMENTS} distinct instruments — split it into files with at most ${IMPORT_MAX_DISTINCT_INSTRUMENTS} instruments each.`,
+    );
+  });
+
+  test('localizes the distinct-instrument cap rejection in DE', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockRejectedValue(capRejection());
+    renderPage('de');
+    await screen.findByRole('option', { name: 'Trade Republic' });
+    await uploadFixtureFile({ file: 'CSV-Export', cta: 'Vorschau erstellen' });
+    await screen.findByText(
+      new RegExp(`Diese Datei enthält mehr als ${IMPORT_MAX_DISTINCT_INSTRUMENTS} verschiedene`),
+    );
+    expect(screen.queryByText(/^The file contains more than/)).not.toBeInTheDocument();
   });
 
   test('renders a designed empty state when the preview has no importable rows', async () => {
