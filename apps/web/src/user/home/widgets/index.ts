@@ -104,10 +104,10 @@ export const WIDGET_REGISTRY = {
     descriptionKey: 'home.widgets.portfolioCards.description',
     group: 'overview',
     allowedSizes: WIDGET_SIZE_RULES['portfolio-cards'].allowed,
-    defaultSettings: {},
-    // The widget IS the all-portfolios overview; scoping it to one would be a
-    // worse version of the net-worth widget.
-    supportsScope: false,
+    defaultSettings: { scope: 'all' },
+    // Scoping this to ONE portfolio would be a worse net-worth widget, but scoping
+    // it to a chosen SET is the whole point — "show me only these three".
+    supportsScope: true,
     variants: variantsOf('portfolio-cards'),
     Component: PortfolioCardsWidget,
   },
@@ -132,10 +132,12 @@ export const WIDGET_REGISTRY = {
     allowedSizes: WIDGET_SIZE_RULES['net-worth-history'].allowed,
     // 6M by default: long enough that the summed curve has a shape, short enough
     // that a young account is not mostly flat zero at the left edge.
-    defaultSettings: { range: '6M' },
-    // The widget IS the all-portfolios curve — scoping it to one would just be
-    // `performance-chart` with a worse name.
-    supportsScope: false,
+    defaultSettings: { scope: 'all', range: '6M' },
+    // Combines whatever it is scoped to: every portfolio by default, or the chosen
+    // set — "only show the graph for these portfolios". The aggregation is the same
+    // either way (each series forward-fills and contributes 0 before its own first
+    // point), so a subset needs no special case.
+    supportsScope: true,
     rangeOptions: PERFORMANCE_RANGE_OPTIONS,
     Component: NetWorthHistoryWidget,
   },

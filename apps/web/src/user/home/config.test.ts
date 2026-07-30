@@ -11,6 +11,8 @@ import {
   moveWidgetToSlot,
   parseHomeConfig,
   placementSlots,
+  SCOPE_IDS_MAX,
+  SCOPE_SELECTED,
   readHomeConfig,
   removeWidget,
   setWidgetSettings,
@@ -678,5 +680,115 @@ describe('addWidget at a slot', () => {
       settings: { scope: 'all', variant: 'bar' },
     });
     expect(board.widgets).toHaveLength(3);
+  });
+});
+
+// ─── Multi-portfolio scope ───────────────────────────────────────────────────
+
+/**
+ * `scopeIds` is a *set of ids*, so parsing has to clean it without pretending to
+ * know which ids are still alive — that is resolution's job (see homeData.test.ts).
+ * What matters here is that the stored shape can never hand a widget something it
+ * would misread: a non-array, a list of junk, duplicates, or an unbounded list.
+ */
+describe('scopeIds parsing', () => {
+  function scopeOf(settings: unknown) {
+    return parseHomeConfig(
+      JSON.stringify({
+        version: 1,
+        widgets: [{ id: 'a', type: 'net-worth', size: 'l', settings }],
+      }),
+    ).widgets[0]?.settings;
+  }
+
+  test('round-trips a chosen set alongside its mode', () => {
+    expect(scopeOf({ scope: SCOPE_SELECTED, scopeIds: ['p1', 'p2', 'p3'] })).toEqual({
+      scope: SCOPE_SELECTED,
+      scopeIds: ['p1', 'p2', 'p3'],
+    });
+  });
+
+  test('de-duplicates, since a set counted twice would double a portfolio', () => {
+    expect(scopeOf({ scope: SCOPE_SELECTED, scopeIds: ['p1', 'p2', 'p1'] })?.scopeIds).toEqual([
+      'p1',
+      'p2',
+    ]);
+  });
+
+  test('drops non-string and empty entries but keeps the usable ones', () => {
+    expect(
+      scopeOf({ scope: SCOPE_SELECTED, scopeIds: ['p1', '', 7, null, { id: 'p9' }, 'p2'] })
+        ?.scopeIds,
+    ).toEqual(['p1', 'p2']);
+  });
+
+  test.each([
+    ['not an array', 'p1'],
+    ['an object', { 0: 'p1' }],
+    ['null', null],
+    ['only junk', [1, 2, '']],
+  ])('an unusable list (%s) drops the key entirely', (_label, scopeIds) => {
+    expect(scopeOf({ scope: SCOPE_SELECTED, scopeIds })?.scopeIds).toBeUndefined();
+  });
+
+  test('an empty list is dropped rather than stored — it would resolve as "all" anyway', () => {
+    expect(scopeOf({ scope: SCOPE_SELECTED, scopeIds: [] })?.scopeIds).toBeUndefined();
+  });
+
+  test(`caps the list at ${SCOPE_IDS_MAX}, so a corrupt payload cannot fan out`, () => {
+    const many = Array.from({ length: SCOPE_IDS_MAX + 15 }, (_, i) => `p${i}`);
+    const parsed = scopeOf({ scope: SCOPE_SELECTED, scopeIds: many })?.scopeIds;
+    expect(parsed).toHaveLength(SCOPE_IDS_MAX);
+    // Kept from the front, so the cap truncates rather than reshuffles.
+    expect(parsed?.[0]).toBe('p0');
+    expect(parsed?.at(-1)).toBe(`p${SCOPE_IDS_MAX - 1}`);
+  });
+
+  test('a set stored without the "selected" mode still parses — resolution ignores it', () => {
+    // Forward-safety: a build that only ever writes the pair must not choke on a
+    // payload where the two drifted apart.
+    expect(scopeOf({ scope: 'all', scopeIds: ['p1'] })).toEqual({
+      scope: 'all',
+      scopeIds: ['p1'],
+    });
+  });
+
+  test('a payload from the build before this one keeps its exact meaning', () => {
+    expect(scopeOf({ scope: 'p-main' })).toEqual({ scope: 'p-main' });
+    expect(scopeOf({ scope: 'all' })).toEqual({ scope: 'all' });
+  });
+
+  test('parsing a set never writes', () => {
+    const raw = JSON.stringify({
+      version: 1,
+      widgets: [
+        {
+          id: 'a',
+          type: 'net-worth',
+          size: 'l',
+          settings: { scope: SCOPE_SELECTED, scopeIds: ['p1', 'p1', 'p2'] },
+        },
+      ],
+    });
+    localStorage.setItem(HOME_CONFIG_STORAGE_KEY, raw);
+    readHomeConfig();
+    // The duplicate survives on disk: cleaning happens on read, not in storage.
+    expect(localStorage.getItem(HOME_CONFIG_STORAGE_KEY)).toBe(raw);
+  });
+
+  test('setWidgetSettings can clear a set by patching it undefined', () => {
+    const board: HomeConfig = {
+      version: 1,
+      widgets: [
+        {
+          id: 'a',
+          type: 'net-worth',
+          size: 'l',
+          settings: { scope: SCOPE_SELECTED, scopeIds: ['p1'] },
+        },
+      ],
+    };
+    const next = setWidgetSettings(board, 'a', { scope: 'all', scopeIds: undefined });
+    expect(next.widgets[0]?.settings).toEqual({ scope: 'all' });
   });
 });

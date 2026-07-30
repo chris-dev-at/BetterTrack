@@ -13,8 +13,16 @@ import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
-import { Badge, Button, Field, Icon, Select, Seg } from '../../ui/origin';
-import { widgetVariant, type WidgetConfig, type WidgetSettings, type WidgetSize } from './config';
+import { Badge, Button, Field, Icon, Input, Select, Seg } from '../../ui/origin';
+import {
+  SCOPE_ALL,
+  SCOPE_IDS_MAX,
+  SCOPE_SELECTED,
+  widgetVariant,
+  type WidgetConfig,
+  type WidgetSettings,
+  type WidgetSize,
+} from './config';
 import type { WidgetDefinition } from './widgets';
 
 /**
@@ -26,6 +34,16 @@ import type { WidgetDefinition } from './widgets';
  * accent bar on the active/armed item: state reads through background and ink
  * only.
  */
+
+/**
+ * What a widget's header states about its scope: a short label plus, for a chosen
+ * set, the member names for the tooltip and accessible name. Never a label that
+ * implies "all" while a subset is on screen.
+ */
+export interface ScopeTag {
+  label: string;
+  detail: string | null;
+}
 
 /** Which grid boundary a slot divides, and therefore how its line is drawn. */
 export type PlacementAxis = 'h' | 'v';
@@ -56,8 +74,8 @@ export interface WidgetFrameProps {
   index: number;
   count: number;
   editing: boolean;
-  /** The scoped portfolio's name, or null when the widget spans everything. */
-  scopeLabel: string | null;
+  /** What the header says about scope, or null when the widget spans everything. */
+  scopeTag: ScopeTag | null;
   portfolios: readonly PortfolioSummary[];
   /** This widget is the one picked up and waiting to be placed. */
   armed: boolean;
@@ -85,7 +103,7 @@ export function WidgetFrame({
   index,
   count,
   editing,
-  scopeLabel,
+  scopeTag,
   portfolios,
   armed,
   placeBefore,
@@ -129,7 +147,16 @@ export function WidgetFrame({
       {placeAfter !== null ? <PlacementSlot target={placeAfter} where="after" /> : null}
       <div className="bt-home-w__head">
         <span className="bt-label bt-home-w__title">{title}</span>
-        {scopeLabel !== null ? <Badge>{scopeLabel}</Badge> : null}
+        {scopeTag !== null ? (
+          <Badge
+            aria-label={
+              scopeTag.detail === null ? undefined : `${scopeTag.label} — ${scopeTag.detail}`
+            }
+            title={scopeTag.detail ?? undefined}
+          >
+            {scopeTag.label}
+          </Badge>
+        ) : null}
         {editing ? (
           <span className="bt-home-w__chrome">
             <button
@@ -236,6 +263,103 @@ function PlacementSlot({ target, where }: { target: PlacementTarget; where: 'bef
 }
 
 /**
+ * Switching scope mode from the Select.
+ *
+ * Choosing "Selected portfolios…" seeds the set with whatever the widget was
+ * already showing — the single portfolio it was pinned to, else the first one —
+ * so the picker never opens on an empty set that would silently resolve back to
+ * "all" and make the choice look like it did nothing. Leaving the mode clears
+ * `scopeIds`, so a stale set cannot linger invisibly behind an `all` widget and
+ * reappear later.
+ */
+function scopePatch(next: string, portfolios: readonly PortfolioSummary[]): WidgetSettings {
+  if (next !== SCOPE_SELECTED) return { scope: next, scopeIds: undefined };
+  const seed = portfolios[0]?.id;
+  return { scope: SCOPE_SELECTED, scopeIds: seed === undefined ? undefined : [seed] };
+}
+
+/** Past this many portfolios the picker grows a filter box rather than a long scroll. */
+const SCOPE_FILTER_THRESHOLD = 8;
+
+/**
+ * The checkbox list behind "Selected portfolios…".
+ *
+ * Compact by construction — it lives inside a 236px popover, so the list scrolls
+ * rather than growing, and a filter box appears only once there are enough
+ * portfolios for scrolling alone to be annoying.
+ *
+ * Unchecking the last one is refused rather than allowed: an empty set resolves to
+ * "all portfolios", so permitting it would turn a deliberate narrowing into a
+ * silent widening, with the checkbox left looking as if it had been honoured.
+ */
+function ScopePicker({
+  portfolios,
+  scopeIds,
+  onSettingsChange,
+}: {
+  portfolios: readonly PortfolioSummary[];
+  scopeIds: readonly string[] | undefined;
+  onSettingsChange: (patch: WidgetSettings) => void;
+}) {
+  const t = useT();
+  const [filter, setFilter] = useState('');
+  const chosen = scopeIds ?? [];
+  const needle = filter.trim().toLowerCase();
+  const shown =
+    needle === ''
+      ? portfolios
+      : portfolios.filter((portfolio) => portfolio.name.toLowerCase().includes(needle));
+
+  function toggle(id: string, checked: boolean) {
+    const next = checked
+      ? [...chosen, id].slice(0, SCOPE_IDS_MAX)
+      : chosen.filter((entry) => entry !== id);
+    if (next.length === 0) return;
+    onSettingsChange({ scopeIds: next });
+  }
+
+  if (portfolios.length === 0) {
+    return <p className="bt-meta">{t('home.builder.scopeNone')}</p>;
+  }
+
+  return (
+    <div className="bt-home-scope">
+      {portfolios.length > SCOPE_FILTER_THRESHOLD ? (
+        <Input
+          aria-label={t('home.builder.scopeFilter')}
+          className="bt-home-scope__filter"
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder={t('home.builder.scopeFilter')}
+          type="search"
+          value={filter}
+        />
+      ) : null}
+      <ul className="bt-home-scope__list">
+        {shown.map((portfolio) => {
+          const checked = chosen.includes(portfolio.id);
+          return (
+            <li key={portfolio.id}>
+              <label className="bt-home-scope__item">
+                <input
+                  checked={checked}
+                  className="bt-home-scope__box"
+                  // The last remaining choice cannot be cleared — see the note above.
+                  disabled={checked && chosen.length === 1}
+                  onChange={(event) => toggle(portfolio.id, event.target.checked)}
+                  type="checkbox"
+                />
+                <span className="bt-home-scope__name">{portfolio.name}</span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      {shown.length === 0 ? <p className="bt-meta">{t('home.builder.scopeNoMatch')}</p> : null}
+    </div>
+  );
+}
+
+/**
  * The pick-up grip. Drawn here rather than added to the shared icon set: the icon
  * module is owned by the design-system workstream, and this is the only surface
  * that needs a two-row grip.
@@ -313,20 +437,38 @@ function SettingsPopover({
           aria-label={t('home.builder.settings', { title })}
         >
           {definition.supportsScope ? (
-            <Field htmlFor={scopeId} label={t('home.builder.scopeLabel')}>
-              <Select
-                id={scopeId}
-                onChange={(event) => onSettingsChange({ scope: event.target.value })}
-                value={settings.scope ?? (allowsAll ? 'all' : (portfolios[0]?.id ?? 'all'))}
-              >
-                {allowsAll ? <option value="all">{t('home.builder.scopeAll')}</option> : null}
-                {portfolios.map((portfolio) => (
-                  <option key={portfolio.id} value={portfolio.id}>
-                    {portfolio.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+            <>
+              <Field htmlFor={scopeId} label={t('home.builder.scopeLabel')}>
+                <Select
+                  id={scopeId}
+                  onChange={(event) => onSettingsChange(scopePatch(event.target.value, portfolios))}
+                  value={
+                    settings.scope ?? (allowsAll ? SCOPE_ALL : (portfolios[0]?.id ?? SCOPE_ALL))
+                  }
+                >
+                  {allowsAll ? (
+                    <option value={SCOPE_ALL}>{t('home.builder.scopeAll')}</option>
+                  ) : null}
+                  {/* Only offered where a set is meaningful: a type that cannot
+                      aggregate would silently collapse it to one portfolio. */}
+                  {allowsAll ? (
+                    <option value={SCOPE_SELECTED}>{t('home.builder.scopeSelected')}</option>
+                  ) : null}
+                  {portfolios.map((portfolio) => (
+                    <option key={portfolio.id} value={portfolio.id}>
+                      {portfolio.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              {allowsAll && settings.scope === SCOPE_SELECTED ? (
+                <ScopePicker
+                  onSettingsChange={onSettingsChange}
+                  portfolios={portfolios}
+                  scopeIds={settings.scopeIds}
+                />
+              ) : null}
+            </>
           ) : null}
           {definition.rangeOptions ? (
             <Field htmlFor={rangeId} label={t('home.builder.rangeLabel')}>

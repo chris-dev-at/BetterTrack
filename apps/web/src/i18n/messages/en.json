@@ -4018,7 +4018,12 @@
           "ring": "Ring",
           "bar": "Bar"
         }
-      }
+      },
+      "scopeSelected": "Selected portfolios…",
+      "scopeCount": "{{count}} portfolios",
+      "scopeFilter": "Filter portfolios",
+      "scopeNoMatch": "No portfolio matches.",
+      "scopeNone": "No portfolios yet."
     },
     "widgets": {
       "range": {

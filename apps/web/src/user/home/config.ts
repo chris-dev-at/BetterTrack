@@ -67,8 +67,34 @@ export type WidgetType = (typeof WIDGET_TYPES)[number];
 export const WIDGET_SIZES = ['s', 'm', 'l'] as const;
 export type WidgetSize = (typeof WIDGET_SIZES)[number];
 
-/** `'all'` (every active portfolio, rolled up) or one portfolio's id. */
-export type WidgetScope = 'all' | string;
+/** Every active portfolio, rolled up — and the default for every scoped type. */
+export const SCOPE_ALL = 'all';
+
+/**
+ * A hand-picked set of portfolios, listed in {@link WidgetSettings.scopeIds}.
+ *
+ * A sentinel rather than "scope holds an array" so the setting stays one
+ * discriminant plus one payload: `scope` alone always says which *mode* the widget
+ * is in, and there is no way to express a contradiction (an id *and* a list). It
+ * also means a payload written by the build before this one — where `scope` was
+ * only ever `'all'` or a single id — parses unchanged and keeps its meaning.
+ */
+export const SCOPE_SELECTED = 'selected';
+
+/**
+ * `'all'`, `'selected'` (see {@link WidgetSettings.scopeIds}), or one portfolio's
+ * id. An id is compared against the live portfolio list at render time, never
+ * trusted on its own.
+ */
+export type WidgetScope = typeof SCOPE_ALL | typeof SCOPE_SELECTED | string;
+
+/**
+ * Portfolio ids one widget may pin itself to. Well past any plausible number of
+ * portfolios, because this bound exists to keep a hand-edited or corrupted payload
+ * from becoming an unbounded fan-out — not to tell the user how to work. The
+ * per-widget request caps (12 series on the value charts, say) still apply on top.
+ */
+export const SCOPE_IDS_MAX = 24;
 
 /** Ranking metric for the top-movers widget — today's move or lifetime P/L. */
 export type MoverMetric = 'day' | 'total';
@@ -76,6 +102,14 @@ export type MoverMetric = 'day' | 'total';
 export interface WidgetSettings {
   /** Which portfolios feed the widget. Ignored by unscoped widget types. */
   scope?: WidgetScope;
+  /**
+   * The chosen portfolios, read **only** when {@link scope} is
+   * {@link SCOPE_SELECTED}. Ids that no longer name a live portfolio are dropped at
+   * render time and the rest are kept; if none survive the widget falls back to all,
+   * exactly as a dead single scope already does. Never rewritten on read, so
+   * restoring an archived portfolio restores its place in the set.
+   */
+  scopeIds?: string[];
   /** Time window token. Each type declares its own vocabulary (see the registry). */
   range?: string;
   /** Top-movers ranking metric. */
@@ -266,6 +300,27 @@ export function clampVariant(type: WidgetType, variant: unknown): string | undef
   return typeof variant === 'string' && rules.allowed.includes(variant) ? variant : rules.default;
 }
 
+/**
+ * A stored `scopeIds` list, cleaned: strings only, no blanks, de-duplicated, and
+ * capped at {@link SCOPE_IDS_MAX}. Returns undefined when there is nothing usable,
+ * so the key is dropped rather than stored as `[]` — an empty list and an absent
+ * one would resolve identically, and one of them is a lie about what the user did.
+ *
+ * Order is preserved here but is *not* meaningful: widgets render the chosen
+ * portfolios in the app's own portfolio order, so a set stays a set.
+ */
+function parseScopeIds(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const ids: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.length === 0) continue;
+    if (ids.includes(entry)) continue;
+    ids.push(entry);
+    if (ids.length === SCOPE_IDS_MAX) break;
+  }
+  return ids.length > 0 ? ids : undefined;
+}
+
 /** The variant a widget instance renders in — its stored one, or its type's default. */
 export function widgetVariant(type: WidgetType, settings: WidgetSettings): string | undefined {
   return settings.variant ?? WIDGET_VARIANT_RULES[type]?.default;
@@ -286,6 +341,8 @@ function parseSettings(raw: unknown, type: WidgetType): WidgetSettings {
   if (!isRecord(raw)) return {};
   const settings: WidgetSettings = {};
   if (typeof raw.scope === 'string' && raw.scope.length > 0) settings.scope = raw.scope;
+  const scopeIds = parseScopeIds(raw.scopeIds);
+  if (scopeIds !== undefined) settings.scopeIds = scopeIds;
   if (typeof raw.range === 'string' && raw.range.length > 0) settings.range = raw.range;
   if (raw.metric === 'day' || raw.metric === 'total') settings.metric = raw.metric;
   if (

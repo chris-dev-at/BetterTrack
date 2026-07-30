@@ -18,13 +18,19 @@ import type { WidgetProps } from './types';
  * `['portfolio', id, 'history', '1M']`), so a user who also keeps a performance
  * widget on 1M pays for the series once.
  *
+ * **Scope.** Shows every active portfolio by default, or exactly the ones the user
+ * picked — "only these three" is the case this widget exists to serve, so it reads
+ * `scopedPortfolios` rather than the full list.
+ *
  * **Two forms.** `cards` (default) gives each portfolio a tile with its value,
  * today's move and a month-shaped sparkline — browsable, and it survives a narrow
  * column. `table` drops the sparklines for aligned columns plus each portfolio's
  * **share of the total**, which is the comparison a card grid cannot make: figures
  * in separate tiles are read one at a time, figures in a column are read against
- * each other. The share is computed here rather than fetched — it is simply each
- * portfolio's total over the sum of the totals already on screen.
+ * each other. That share is deliberately share-of-what-is-shown: over a chosen set
+ * it answers "how do these three divide up between them?", which is the question a
+ * set implies, and the header tag states that a set is in play so the 100 % can
+ * never be misread as the whole account.
  */
 
 /** The sparkline window. Matches the portfolio page's default range. */
@@ -76,7 +82,13 @@ function MiniSpark({ values, label }: { values: readonly number[]; label: string
   );
 }
 
-export function PortfolioCardsWidget({ settings, portfolios, portfoliosLoading }: WidgetProps) {
+export function PortfolioCardsWidget({
+  settings,
+  // Aliased: everything below reads "the portfolios this widget shows", which is
+  // now the *scoped* set — all of them, or the ones the user picked.
+  scopedPortfolios: portfolios,
+  portfoliosLoading,
+}: WidgetProps) {
   const t = useT();
   const summaries = usePortfolioSummaries(portfolios);
   const histories = useQueries({
