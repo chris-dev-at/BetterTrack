@@ -180,13 +180,10 @@ a {
   justify-content: center;
   flex-wrap: wrap;
 }
-.invite-note {
+.registration-note {
   margin-top: 18px;
   font-size: 13.5px;
   color: var(--faint);
-}
-.invite-note strong {
-  color: var(--muted);
 }
 
 /* ── Hero screenshot ───────────────────────────────────────────────────── */
@@ -323,5 +320,33 @@ a {
   }
   .hero {
     padding: 56px 0 24px;
+  }
+}
+
+@media (max-width: 480px) {
+  .wrap {
+    padding: 0 16px;
+  }
+  .site-header .wrap {
+    height: auto;
+    min-height: 56px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .header-actions {
+    width: 100%;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .header-actions .btn {
+    flex: 1;
+    justify-content: center;
+    min-width: 0;
+    padding: 8px 10px;
+    font-size: 13px;
+    white-space: nowrap;
   }
 }
