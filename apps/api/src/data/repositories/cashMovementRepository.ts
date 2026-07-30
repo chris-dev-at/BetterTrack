@@ -3,6 +3,7 @@ import { and, asc, eq, sql } from 'drizzle-orm';
 import type { Database } from '../db';
 import { portfolioCashMovements } from '../schema';
 import type { CashMovementRow } from '../schema';
+import { stampSystemTags } from './cashSystemTagStamp';
 
 /**
  * Per-portfolio cash-ledger persistence (PROJECTPLAN.md §14, #220/#278; cash
@@ -46,6 +47,13 @@ export interface CashMovementRecord {
   note: string | null;
   /** Source tag (V5-P0c): how this movement entered the ledger; `manual` for hand entry. */
   source: string;
+  /**
+   * Provenance for a row that entered from a NON-EUR feed (V5 cash fusion).
+   * `amountEur` stays the single authoritative figure and the ledger never reads
+   * this; NULL means the amount is genuinely EUR. Surfaced so the ledger can mark
+   * a magnitude that was carried over 1:1 and still needs an FX pass.
+   */
+  originalCurrency: string | null;
   createdAt: Date;
 }
 
@@ -80,6 +88,7 @@ function toRecord(row: CashMovementRow): CashMovementRecord {
     executedAt: row.executedAt,
     note: row.note ?? null,
     source: row.source,
+    originalCurrency: row.originalCurrency ?? null,
     createdAt: row.createdAt,
   };
 }
@@ -127,6 +136,9 @@ export async function insertReconciledCashMovementsInTransaction(
     .insert(portfolioCashMovements)
     .values(movements.map((movement) => toInsertValues(portfolioId, movement)))
     .returning();
+  // Auto-tagging rides inside the caller's transaction, so a rolled-back
+  // reconciliation takes its labels with it (V5 cash fusion).
+  await stampSystemTags(tx, portfolioId, rows);
   return rows.map(toRecord);
 }
 
@@ -139,6 +151,7 @@ export function createCashMovementRepository(db: Database) {
         .values(toInsertValues(portfolioId, movement))
         .returning();
       if (!row) throw new Error('Cash movement insert returned no row');
+      await stampSystemTags(db, portfolioId, [row]);
       return toRecord(row);
     },
 
@@ -180,6 +193,9 @@ export function createCashMovementRepository(db: Database) {
       if (rows.length !== 2 || !outgoing || !incoming) {
         throw new Error('Transfer insert did not return exactly one leg per direction');
       }
+      // Both legs carry the `transfer` tag; they cancel, so splitting them into
+      // two tags would double-count an internal move (V5 cash fusion).
+      await stampSystemTags(db, portfolioId, rows);
       return [toRecord(outgoing), toRecord(incoming)];
     },
 

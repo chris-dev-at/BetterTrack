@@ -42,6 +42,7 @@ import type {
   CashSourceRecord,
   CashSourceRepository,
 } from '../../data/repositories/cashSourceRepository';
+import type { CashTagRepository } from '../../data/repositories/cashTagRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
@@ -130,6 +131,12 @@ export interface PortfolioServiceDeps {
   transactionRepo: TransactionRepository;
   cashMovementRepo: CashMovementRepository;
   cashSourceRepo: CashSourceRepository;
+  /**
+   * Cash-flow tags (V5 cash fusion) — read-only here, purely so the ledger DTO
+   * can carry each movement's tag set. Narrowed to the one method so this service
+   * cannot start writing classification as a side effect of moving money.
+   */
+  cashTagRepo: Pick<CashTagRepository, 'tagIdsForMovements'>;
   marketData: MarketDataService;
   currencyService: CurrencyService;
   referenceBackfill: ReferenceBackfill;
@@ -463,6 +470,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     transactionRepo,
     cashMovementRepo,
     cashSourceRepo,
+    cashTagRepo,
     marketData,
     currencyService,
     referenceBackfill,
@@ -710,7 +718,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     };
   }
 
-  function movementToDto(r: CashMovementRecord): CashMovementDto {
+  function movementToDto(r: CashMovementRecord, tags?: readonly string[]): CashMovementDto {
     return {
       id: r.id,
       kind: r.kind,
@@ -725,6 +733,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       note: r.note,
       source: r.source,
       createdAt: r.createdAt.toISOString(),
+      // Cash-flow overlay (V5 cash fusion). Both fields are OPTIONAL in the
+      // contract, so a caller that does not resolve tags simply omits them and
+      // every pre-fusion fixture still parses; `[]` genuinely means untagged.
+      ...(tags !== undefined ? { tags: [...tags] } : {}),
+      ...(r.originalCurrency !== null ? { originalCurrency: r.originalCurrency } : {}),
     };
   }
 
@@ -1826,9 +1839,16 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // requested tag, but balances still roll up the FULL ledger — a filter is
       // a view, never a re-computation of net worth.
       const visible = opts?.source ? records.filter((r) => r.source === opts.source) : records;
+      // One extra query for the whole page's labels (V5 cash fusion) — the
+      // tagged ledger is what the Cash flow tab renders, so resolving them per
+      // movement would be N+1 on the busiest read in the area.
+      const tagsByMovement = await cashTagRepo.tagIdsForMovements(
+        portfolioId,
+        visible.map((r) => r.id),
+      );
       return {
         balanceEur: totalEur,
-        movements: visible.map(movementToDto),
+        movements: visible.map((r) => movementToDto(r, tagsByMovement.get(r.id) ?? [])),
         sources: sources.map((s) => sourceToDto(s, balanceBySource.get(s.id) ?? 0)),
       };
     },

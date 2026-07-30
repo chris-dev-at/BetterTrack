@@ -502,26 +502,22 @@ export const PARANOID_REHYDRATION_POLICY: Record<string, ParanoidRehydrationPoli
   portfolio_daily_snapshots: purgeOnly(),
   portfolio_snapshot_state: purgeOnly(),
   expense_budget_fires: purgeOnly(),
-  // V5 cash fusion (migration 0075) — PURGE-ONLY *for now*, and that is a
-  // deliberate, bounded statement of today's truth rather than a preference:
-  // phase 1 ships only the schema + the backfill, so no service writes these
-  // tables and the client's vault document emits none of these entity kinds. A
-  // `restore` policy would claim coverage the client cannot deliver — exactly
-  // what this file's header forbids ("a classification can never claim coverage
-  // the collector doesn't deliver") — and would ship six dead insertion branches.
-  //
-  // THE PHASE THAT GIVES THESE TABLES A WRITER MUST FLIP THEM TO `restore`,
-  // otherwise disabling paranoid mode silently drops a user's tags, budgets and
-  // rules. The strict payload schemas already exist (`VAULT_ENTITY_ROW_SCHEMAS`),
-  // so the flip is policy + handler + insert branch. `paranoidClassification`'s
-  // "cash-flow tables" test fails the moment a cash repository appears, so the
-  // requirement cannot be forgotten rather than merely being written down here.
-  cash_tags: purgeOnly(),
-  cash_movement_tags: purgeOnly(),
-  cash_budgets: purgeOnly(),
+  // V5 cash fusion — FLIPPED TO `restore` in phase 2, which is the phase that
+  // gave these tables their writers (`/api/v1/cash`, `cashTagRepository`,
+  // `cashBudgetRepository`, `cashRuleRepository`, and the auto-tagging stamp on
+  // every movement INSERT). Phase 1 left them `purge-only` because nothing wrote
+  // them; leaving them so now would mean a paranoid user disabling the mode
+  // silently loses every tag, budget and rule they have.
+  cash_tags: restore('cashTag'),
+  cash_movement_tags: restore('cashMovementTag'),
+  cash_budgets: restore('cashBudget'),
+  cash_rules: restore('cashRule'),
+  cash_rule_tags: restore('cashRuleTag'),
+  // The per-period fired marker stays derived: it is exactly-once ALERT
+  // bookkeeping, not user data. Restoring it from a client-held document would
+  // let an edited vault suppress a real alert forever, and rebuilding it costs
+  // at most one re-alert of a month that is genuinely over budget.
   cash_budget_fires: purgeOnly(),
-  cash_rules: purgeOnly(),
-  cash_rule_tags: purgeOnly(),
 };
 
 /**
@@ -545,6 +541,11 @@ export const PARANOID_REHYDRATION_HANDLERS = [
   'expenseTransaction',
   'expenseRule',
   'expenseBudget',
+  'cashTag',
+  'cashMovementTag',
+  'cashBudget',
+  'cashRule',
+  'cashRuleTag',
 ] as const satisfies readonly VaultEntityKind[];
 
 /** The `vault`-classified table names (purge/probe/rehydration iterate these). */

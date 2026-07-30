@@ -23,16 +23,22 @@ import type {
 // reach is mocked here. Automock keeps the mock in step with the real export
 // list — a new export never silently becomes `undefined`.
 //
-// Modules exporting a **query-key constant** are the exception: automocking
-// empties arrays, so `['alerts']` would arrive as `[]` and every widget keyed
-// that way would collapse onto one shared cache entry and read each other's
-// responses. Those spread the real module and stub only the fetchers, keeping
-// the keys intact.
+// Modules exporting a **query-key constant (or a function building one)** are
+// the exception: automocking empties arrays and turns every function
+// (including a query-key builder) into a `vi.fn()` returning `undefined`, so
+// `['alerts']` would arrive as `[]` and `cashTrendsQueryKey(id, months)` would
+// arrive as `undefined` — either poisons `useQuery`'s cache identity, and
+// every widget keyed that way would collapse onto one shared cache entry (or
+// crash outright) and read each other's responses. Those spread the real
+// module and stub only the fetchers, keeping the keys intact.
 vi.mock('../../lib/portfolioApi');
 vi.mock('../../lib/notificationsApi');
 vi.mock('../../lib/standingOrdersApi');
-vi.mock('../../lib/expensesApi');
 vi.mock('../../lib/assetApi');
+vi.mock('../../lib/cashApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/cashApi')>()),
+  getCashTrends: vi.fn(),
+}));
 vi.mock('../../lib/marketIntelApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/marketIntelApi')>()),
   getNewsDigest: vi.fn(),
@@ -79,7 +85,7 @@ vi.mock('lightweight-charts', () => ({
 import { I18nProvider } from '../../i18n';
 import { listAlerts } from '../../lib/alertsApi';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
-import { getExpenseTrends } from '../../lib/expensesApi';
+import { getCashTrends } from '../../lib/cashApi';
 import { getNewsDigest, getPortfolioDividendCalendar } from '../../lib/marketIntelApi';
 import { listNotifications } from '../../lib/notificationsApi';
 import {
@@ -309,7 +315,7 @@ beforeEach(() => {
   vi.mocked(listNotifications).mockResolvedValue({ items: [], unreadCount: 0, nextCursor: null });
   vi.mocked(listStandingOrders).mockResolvedValue({ orders: [] });
   vi.mocked(getNewsDigest).mockResolvedValue({ available: true, groups: [] });
-  vi.mocked(getExpenseTrends).mockResolvedValue({ points: [] });
+  vi.mocked(getCashTrends).mockImplementation(async (portfolioId) => ({ portfolioId, points: [] }));
   vi.mocked(listTransactions).mockImplementation(async (portfolioId: string) => ({
     items: portfolioId === MAIN.id ? [BUY] : [SELL],
     nextCursor: null,
@@ -623,18 +629,18 @@ test('a scope naming a portfolio that no longer exists degrades to all portfolio
   expect(persisted().widgets[0]?.settings.scope).toBe('p-deleted');
 });
 
-test('a widget whose data has no portfolio dimension offers no scope picker', async () => {
+test('the cash-flow widget offers a portfolio scope, like every other summed chart', async () => {
   const user = editMode();
   storeBoard('cashflow-chart');
   renderHome();
   await screen.findByRole('region', { name: 'Cash flow' });
   await user.click(screen.getByRole('button', { name: 'Customize' }));
 
-  // The expense ledger is user-level: there is no per-portfolio cash-flow series,
-  // so the widget offers range and display but deliberately no scope. It still has
-  // a settings button — the absence to assert is the scope field itself.
+  // V5 cash fusion: cash now lives IN a portfolio, so this widget fans out and
+  // sums like net-worth-history / performance-chart — scope, range AND display
+  // are all offered.
   await user.click(screen.getByRole('button', { name: 'Cash flow settings' }));
-  expect(screen.queryByLabelText('Portfolio')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Portfolio')).toBeInTheDocument();
   expect(screen.getByRole('group', { name: 'Cash flow display form' })).toBeInTheDocument();
 });
 
@@ -1371,12 +1377,18 @@ function withHoldings(...holdings: Holding[]) {
 }
 
 test('the cash-flow widget’s in/out columns state both gross figures per month', async () => {
-  vi.mocked(getExpenseTrends).mockResolvedValue({
-    points: [
-      { month: '2026-06', income: 4_000, expense: 3_600 },
-      { month: '2026-07', income: 4_200, expense: 1_000 },
-    ],
-  });
+  // Savings contributes nothing (default beforeEach mock) — Main alone drives
+  // the asserted totals, unchanged from before the widget fanned out.
+  vi.mocked(getCashTrends).mockImplementation(async (portfolioId) => ({
+    portfolioId,
+    points:
+      portfolioId === MAIN.id
+        ? [
+            { month: '2026-06', inflow: 4_000, outflow: 3_600 },
+            { month: '2026-07', inflow: 4_200, outflow: 1_000 },
+          ]
+        : [],
+  }));
   storeBoard(['cashflow-chart', { variant: 'columns' }]);
 
   renderHome();
@@ -1395,9 +1407,10 @@ test('the cash-flow widget’s in/out columns state both gross figures per month
 });
 
 test('the cash-flow widget defaults to the net form', async () => {
-  vi.mocked(getExpenseTrends).mockResolvedValue({
-    points: [{ month: '2026-07', income: 4_200, expense: 1_000 }],
-  });
+  vi.mocked(getCashTrends).mockImplementation(async (portfolioId) => ({
+    portfolioId,
+    points: portfolioId === MAIN.id ? [{ month: '2026-07', inflow: 4_200, outflow: 1_000 }] : [],
+  }));
   storeBoard('cashflow-chart');
 
   renderHome();
@@ -1407,6 +1420,27 @@ test('the cash-flow widget defaults to the net form', async () => {
   expect(
     within(widget).queryByRole('img', { name: 'Money in and money out per month' }),
   ).not.toBeInTheDocument();
+});
+
+test('the cash-flow widget fans out over every scoped portfolio and sums them', async () => {
+  vi.mocked(getCashTrends).mockImplementation(async (portfolioId) => ({
+    portfolioId,
+    points:
+      portfolioId === MAIN.id
+        ? [{ month: '2026-07', inflow: 4_000, outflow: 1_000 }]
+        : [{ month: '2026-07', inflow: 500, outflow: 200 }],
+  }));
+  storeBoard('cashflow-chart');
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Cash flow' });
+
+  // 4 500 in (4 000 + 500) and 1 200 out (1 000 + 200) — summed across BOTH
+  // scoped portfolios under the default "all portfolios" scope, not just Main's.
+  expect(await within(widget).findByText('4,500.00 €')).toBeInTheDocument();
+  expect(within(widget).getByText('1,200.00 €')).toBeInTheDocument();
+  expect(getCashTrends).toHaveBeenCalledWith(MAIN.id, 6, expect.anything());
+  expect(getCashTrends).toHaveBeenCalledWith(SAVINGS.id, 6, expect.anything());
 });
 
 test('allocation as ranked bars prints the share and amount a donut only implies', async () => {

@@ -39,6 +39,14 @@ export const PARKED_PAGES = {
   },
   portfolioEvents: { key: 'portfolioEvents', pointCount: 3 },
   portfolioStructure: { key: 'portfolioStructure', pointCount: 3 },
+  cashImport: {
+    key: 'cashImport',
+    pointCount: 3,
+    links: [
+      { to: '/portfolio/cash-flow/movements', labelKey: 'parked.links.cashMovements' },
+      { to: '/portfolio/cash-flow/rules', labelKey: 'parked.links.cashRules' },
+    ],
+  },
   dataHealth: { key: 'dataHealth', pointCount: 4 },
   privateMarkets: { key: 'privateMarkets', pointCount: 3 },
   rebalance: {

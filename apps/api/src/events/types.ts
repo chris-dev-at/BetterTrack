@@ -331,8 +331,21 @@ export interface BudgetExceededEvent {
   /** Recipient — the budget's owner. */
   userId: string;
   budgetId: string;
+  /**
+   * V5 cash fusion: budgets now target a flat TAG inside a portfolio rather than
+   * an expense category. The user-facing question is unchanged ("a budget was
+   * blown"), so the event type is too and these two fields carry the tag's id and
+   * name — the dispatcher renders and deep-links off them exactly as before.
+   */
   categoryId: string;
   categoryName: string;
+  /**
+   * The ledger the budget measures (V5 cash fusion). OPTIONAL so every event
+   * emitted before the fusion — and any queued one mid-deploy — still parses; the
+   * dispatcher does not read it yet, but a deep link needs it now that the same
+   * tag can be budgeted in more than one portfolio.
+   */
+  portfolioId?: string;
   /** The month whose spend blew the budget (`YYYY-MM`) — the dedupe period. */
   period: string;
   /** The monthly target that was exceeded. */

@@ -149,9 +149,10 @@ export const WIDGET_REGISTRY = {
     descriptionKey: 'home.widgets.cashflowChart.description',
     group: 'charts',
     allowedSizes: WIDGET_SIZE_RULES['cashflow-chart'].allowed,
-    defaultSettings: { range: '6M' },
-    // The expense ledger has no portfolio dimension — see CashflowChartWidget.
-    supportsScope: false,
+    defaultSettings: { scope: 'all', range: '6M' },
+    // V5 cash fusion: cash now lives IN a portfolio, so this fans out and sums
+    // over its scope exactly like net-worth-history / performance-chart.
+    supportsScope: true,
     rangeOptions: Object.keys(CASHFLOW_MONTHS).map((range) => ({
       value: range,
       labelKey: `home.widgets.range.${range}`,

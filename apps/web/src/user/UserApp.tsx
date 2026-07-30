@@ -22,12 +22,11 @@ import { PinGate } from './auth/PinGate';
 import { VaultRuntimeProvider } from './vault/VaultRuntimeProvider';
 import { VaultMoneyEngineProvider } from './vault/engine/VaultMoneyEngineProvider';
 import { ForecastPage } from './forecast/ForecastPage';
-import { DashboardPage as ExpenseDashboardPage } from './expenses/DashboardPage';
-import { TransactionsPage as ExpenseTransactionsPage } from './expenses/TransactionsPage';
-import { BudgetsPage as ExpenseBudgetsPage } from './expenses/BudgetsPage';
-import { CategoriesPage as ExpenseCategoriesPage } from './expenses/CategoriesPage';
-import { RulesPage as ExpenseRulesPage } from './expenses/RulesPage';
-import { ImportPage as ExpenseImportPage } from './expenses/ImportPage';
+import { CashOverviewPage } from './portfolio/cashflow/CashOverviewPage';
+import { CashMovementsPage } from './portfolio/cashflow/CashMovementsPage';
+import { CashBudgetsPage } from './portfolio/cashflow/CashBudgetsPage';
+import { CashTagsPage } from './portfolio/cashflow/CashTagsPage';
+import { CashRulesPage } from './portfolio/cashflow/CashRulesPage';
 import { PortfolioPage } from './portfolio/PortfolioPage';
 import { PortfolioSettingsPage } from './portfolio/PortfolioSettingsPage';
 import { AnalyticsPage } from './portfolio/analytics/AnalyticsPage';
@@ -256,13 +255,25 @@ function UserRoutes({ location }: { location: Location }) {
                   portfolio's own list, so they live under Assets now. */}
               <Route path="custom-assets" element={<LegacyRedirect to="/assets/custom-assets" />} />
               <Route path="cash-flow" element={<CashFlowLayout />}>
-                <Route index element={<ExpenseDashboardPage />} />
-                <Route path="transactions" element={<ExpenseTransactionsPage />} />
-                <Route path="budgets" element={<ExpenseBudgetsPage />} />
-                <Route path="categories" element={<ExpenseCategoriesPage />} />
-                <Route path="rules" element={<ExpenseRulesPage />} />
-                <Route path="import" element={<ExpenseImportPage />} />
+                <Route index element={<CashOverviewPage />} />
+                <Route path="movements" element={<CashMovementsPage />} />
+                <Route path="budgets" element={<CashBudgetsPage />} />
+                <Route path="tags" element={<CashTagsPage />} />
+                <Route path="rules" element={<CashRulesPage />} />
+                {/* Bank-statement import is parked: it posted to the retired
+                    `/expenses/import/*` endpoints and is being rebuilt on the
+                    portfolio cash ledger (V5 cash fusion phase 2). */}
+                <Route path="import" element={<ParkedPage page="cashImport" />} />
                 <Route path="accounts" element={<CashSourcesPage />} />
+                {/* Pre-fusion sub-tab names, kept resolvable (search preserved). */}
+                <Route
+                  path="transactions"
+                  element={<LegacyRedirect to="/portfolio/cash-flow/movements" />}
+                />
+                <Route
+                  path="categories"
+                  element={<LegacyRedirect to="/portfolio/cash-flow/tags" />}
+                />
               </Route>
               <Route path="analysis" element={<AnalyticsPage />} />
               <Route path="tax" element={<TaxReportPage />} />

@@ -105,6 +105,10 @@ export type ParanoidRehydrationStage =
   | 'expenseTransactions'
   | 'expenseRules'
   | 'expenseBudgets'
+  | 'cashTags'
+  | 'cashRules'
+  | 'cashBudgets'
+  | 'cashMovementTags'
   | 'normalMode'
   | 'ciphertextDeleted'
   | 'finish';
@@ -459,6 +463,11 @@ const RESTORED_ID_KINDS = [
   'expenseTransaction',
   'expenseRule',
   'expenseBudget',
+  'cashTag',
+  'cashMovementTag',
+  'cashBudget',
+  'cashRule',
+  'cashRuleTag',
 ] as const satisfies readonly Entity['kind'][];
 
 function validateUniqueRestoredIds(entities: readonly Entity[]): void {
@@ -544,6 +553,11 @@ function validateOwnedRows(userId: string, entities: readonly Entity[]): void {
     'expenseTransaction',
     'expenseRule',
     'expenseBudget',
+    // The two user-scoped cash-fusion kinds. The rest reach the owner through a
+    // portfolio (budgets) or through one of these (rule links, movement links),
+    // and `validateGraph` proves those edges.
+    'cashTag',
+    'cashRule',
   ] as const) {
     for (const entity of rows(entities, kind)) {
       if (entity.data.userId !== userId) {
@@ -757,6 +771,17 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
     requirePositive(
       persistedNumeric(budget.data.amount, 20, 2, 'expense budget amount'),
       'expense budget amount',
+    );
+  }
+  // V5 cash fusion: same money and integer guards the DB CHECKs enforce, applied
+  // before the first insert so a malformed vault fails as one clean report.
+  for (const rule of rows(entities, 'cashRule')) {
+    requirePostgresInteger(rule.data.priority, 'cash-rule priority');
+  }
+  for (const budget of rows(entities, 'cashBudget')) {
+    requirePositive(
+      persistedNumeric(budget.data.amount, 20, 2, 'cash budget amount'),
+      'cash budget amount',
     );
   }
 }
@@ -985,6 +1010,47 @@ function validateGraph(
     rows(entities, 'expenseBudget').map((entity) => entity.data.categoryId),
     categoryIds,
     'expense budget',
+  );
+
+  // V5 cash fusion. THE INVARIANT NO FOREIGN KEY CAN EXPRESS applies here too: a
+  // movement link is only legal when the tag's owner and the movement's
+  // portfolio owner are the same account. Restore reaches it structurally —
+  // every `cashTag` in this document has already been proved to belong to this
+  // user, and every referenced movement is one of this document's own, which
+  // belong to this user's portfolios — so a link can only ever join two rows
+  // that are both already this account's.
+  const cashTagIds = ids(entities, 'cashTag');
+  const cashRuleIds = ids(entities, 'cashRule');
+  const cashMovementIds = ids(entities, 'cashMovement');
+  requireSubset(
+    rows(entities, 'cashRuleTag').map((entity) => entity.data.tagId),
+    cashTagIds,
+    'cash rule tag',
+  );
+  requireSubset(
+    rows(entities, 'cashRuleTag').map((entity) => entity.data.ruleId),
+    cashRuleIds,
+    'cash rule tag rule',
+  );
+  requireSubset(
+    rows(entities, 'cashBudget').map((entity) => entity.data.tagId),
+    cashTagIds,
+    'cash budget',
+  );
+  requireSubset(
+    rows(entities, 'cashBudget').map((entity) => entity.data.portfolioId),
+    portfolioIds,
+    'cash budget portfolio',
+  );
+  requireSubset(
+    rows(entities, 'cashMovementTag').map((entity) => entity.data.tagId),
+    cashTagIds,
+    'cash movement tag',
+  );
+  requireSubset(
+    rows(entities, 'cashMovementTag').map((entity) => entity.data.movementId),
+    cashMovementIds,
+    'cash movement tag movement',
   );
 
   const sourcesByPortfolio = new Map<string, EntityOf<'cashSource'>[]>();
@@ -1725,6 +1791,27 @@ export function createParanoidRehydrationService(
             expenseBudgetService.reconcileRestore(ownerId, periods).then(() => undefined),
         });
         await stage('expenseTransactions');
+
+        // V5 cash fusion. Order is the referential graph, not preference: tags
+        // first, then everything that points at one. The movement links come
+        // last because they also point at `portfolio_cash_movements`, restored
+        // several stages above. `cash_budget_fires` is deliberately NOT restored
+        // — it is exactly-once alert bookkeeping, so it is rebuilt from the live
+        // ledger rather than trusted from a client-held document (a tampered
+        // vault could otherwise suppress a real alert forever); the cost is at
+        // most one re-alert of a month that is genuinely over budget.
+        await sourceRows.restoreCashTags(rows(entities, 'cashTag'));
+        await stage('cashTags');
+
+        await sourceRows.restoreCashRules(rows(entities, 'cashRule'));
+        await sourceRows.restoreCashRuleTags(rows(entities, 'cashRuleTag'));
+        await stage('cashRules');
+
+        await sourceRows.restoreCashBudgets(rows(entities, 'cashBudget'));
+        await stage('cashBudgets');
+
+        await sourceRows.restoreCashMovementTags(rows(entities, 'cashMovementTag'));
+        await stage('cashMovementTags');
 
         const completedAt = now();
         await transition.setNormalAndClearMedia(userId);
