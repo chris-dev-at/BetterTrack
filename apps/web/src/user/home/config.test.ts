@@ -1,11 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { describe, expect, test } from 'vitest';
 
 import {
   addWidget,
-  clearHomeConfig,
   COUNT_LIMITS,
   DEFAULT_LAYOUT,
-  HOME_CONFIG_STORAGE_KEY,
   clampVariant,
   moveWidget,
   moveWidgetToSlot,
@@ -13,7 +11,6 @@ import {
   placementSlots,
   SCOPE_IDS_MAX,
   SCOPE_SELECTED,
-  readHomeConfig,
   removeWidget,
   setWidgetSettings,
   setWidgetSize,
@@ -21,34 +18,27 @@ import {
   WIDGET_TYPES,
   WIDGET_VARIANT_RULES,
   widgetVariant,
-  writeHomeConfig,
   type HomeConfig,
   type WidgetType,
 } from './config';
 
 /**
- * The Home board's storage contract. The persisted key outlives deploys and
- * rollbacks, so the parser has to survive payloads this build did not write:
- * a newer schema version, widget types it has never heard of, hand-edited
- * junk. None of those may throw, and none may destroy what is stored.
+ * The Home board's parsing contract. A stored board outlives deploys and
+ * rollbacks and now travels between devices on different builds, so the parser
+ * has to survive payloads this build did not write: a newer schema version,
+ * widget types it has never heard of, hand-edited junk. None of those may
+ * throw, and none may destroy what is stored — where the board is *kept* is
+ * `homeSync.test.ts`.
  */
 
-function stored(): unknown {
-  const raw = localStorage.getItem(HOME_CONFIG_STORAGE_KEY);
-  return raw === null ? null : JSON.parse(raw);
+/** A board as it sits in storage or comes back from the API — a raw document. */
+function payload(config: HomeConfig): string {
+  return JSON.stringify(config);
 }
 
 function types(config: HomeConfig): string[] {
   return config.widgets.map((widget) => widget.type);
 }
-
-beforeEach(() => {
-  localStorage.clear();
-});
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
 
 describe('parseHomeConfig — unreadable payloads fall back to the defaults', () => {
   test.each([
@@ -192,49 +182,29 @@ describe('parseHomeConfig — readable payloads keep what this build understands
   });
 });
 
-describe('storage', () => {
-  test('parsing never writes — a rollback cannot destroy a newer board', () => {
-    const future = JSON.stringify({
+describe('round trips', () => {
+  test('parsing never mutates its input — a rollback cannot destroy a newer board', () => {
+    const future = {
       version: 1,
-      widgets: [{ id: 'a', type: 'from-the-future', size: 'l', settings: {} }],
-    });
-    localStorage.setItem(HOME_CONFIG_STORAGE_KEY, future);
+      widgets: [{ id: 'a', type: 'from-the-future', size: 'l', settings: { warp: 9 } }],
+    };
+    const document = JSON.stringify(future);
 
-    const parsed = readHomeConfig();
+    const parsed = parseHomeConfig(document);
 
     expect(parsed.widgets).toEqual([]);
-    // Still byte-identical on disk: rolling forward again restores the widget.
-    expect(localStorage.getItem(HOME_CONFIG_STORAGE_KEY)).toBe(future);
+    // The document is untouched: whoever holds it — this device's cache, the
+    // account copy on the server — still has the widget when the build rolls
+    // forward again.
+    expect(JSON.parse(document)).toEqual(future);
   });
 
-  test('round-trips a board through storage', () => {
+  test('a board survives serialise → parse unchanged', () => {
     const board: HomeConfig = {
       version: 1,
       widgets: [{ id: 'a', type: 'allocation', size: 's', settings: { scope: 'p1' } }],
     };
-    writeHomeConfig(board);
-    expect(stored()).toEqual(board);
-    expect(readHomeConfig()).toEqual(board);
-  });
-
-  test('clearing returns the next read to the defaults', () => {
-    writeHomeConfig({ version: 1, widgets: [] });
-    clearHomeConfig();
-    expect(readHomeConfig()).toEqual(DEFAULT_LAYOUT);
-  });
-
-  test('a storage failure degrades to the defaults instead of blanking the page', () => {
-    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
-      throw new Error('SecurityError: storage disabled');
-    });
-    expect(readHomeConfig()).toEqual(DEFAULT_LAYOUT);
-  });
-
-  test('a failing write is swallowed — the session keeps its layout', () => {
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-      throw new Error('QuotaExceededError');
-    });
-    expect(() => writeHomeConfig(DEFAULT_LAYOUT)).not.toThrow();
+    expect(parseHomeConfig(payload(board))).toEqual(board);
   });
 });
 
@@ -324,13 +294,12 @@ describe('expanded widget catalog', () => {
     'alerts',
   ];
 
-  test.each(ADDED)('%s survives a round-trip through storage', (type) => {
+  test.each(ADDED)('%s survives a serialise → parse round-trip', (type) => {
     const board: HomeConfig = {
       version: 1,
       widgets: [{ id: `w-${type}`, type, size: WIDGET_SIZE_RULES[type].default, settings: {} }],
     };
-    writeHomeConfig(board);
-    expect(readHomeConfig()).toEqual(board);
+    expect(parseHomeConfig(payload(board))).toEqual(board);
   });
 
   test('every declared type is registered in WIDGET_SIZE_RULES', () => {
@@ -639,14 +608,16 @@ describe('variant parsing', () => {
     expect(variantOf('performance-chart', { variant: 'return' })).toBe('return');
   });
 
-  test('parsing still never writes', () => {
+  test('clamping a variant on read leaves the stored document alone', () => {
     const raw = JSON.stringify({
       version: 1,
       widgets: [{ id: 'a', type: 'allocation', size: 'm', settings: { variant: 'sunburst' } }],
     });
-    localStorage.setItem(HOME_CONFIG_STORAGE_KEY, raw);
-    readHomeConfig();
-    expect(localStorage.getItem(HOME_CONFIG_STORAGE_KEY)).toBe(raw);
+
+    expect(parseHomeConfig(raw).widgets[0]?.settings.variant).toBe('donut');
+    // The unknown variant survives in the document, so a build that ships
+    // `sunburst` renders it again.
+    expect(JSON.parse(raw).widgets[0].settings.variant).toBe('sunburst');
   });
 });
 
@@ -782,7 +753,7 @@ describe('scopeIds parsing', () => {
     expect(scopeOf({ scope: 'all' })).toEqual({ scope: 'all' });
   });
 
-  test('parsing a set never writes', () => {
+  test('cleaning a set on read leaves the stored document alone', () => {
     const raw = JSON.stringify({
       version: 1,
       widgets: [
@@ -794,10 +765,11 @@ describe('scopeIds parsing', () => {
         },
       ],
     });
-    localStorage.setItem(HOME_CONFIG_STORAGE_KEY, raw);
-    readHomeConfig();
-    // The duplicate survives on disk: cleaning happens on read, not in storage.
-    expect(localStorage.getItem(HOME_CONFIG_STORAGE_KEY)).toBe(raw);
+
+    expect(parseHomeConfig(raw).widgets[0]?.settings.scopeIds).toEqual(['p1', 'p2']);
+    // The duplicate survives in the document: cleaning happens on read, not in
+    // what is stored.
+    expect(JSON.parse(raw).widgets[0].settings.scopeIds).toEqual(['p1', 'p1', 'p2']);
   });
 
   test('setWidgetSettings can clear a set by patching it undefined', () => {

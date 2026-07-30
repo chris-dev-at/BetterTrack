@@ -547,6 +547,13 @@
       "when": 1785974400000,
       "tag": "0077_cash_fee_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1785974500000,
+      "tag": "0078_home_layout",
+      "breakpoints": true
     }
   ]
 }

@@ -80,6 +80,10 @@ import {
   createAccountSettingsService,
   type AccountSettingsService,
 } from '../services/account/accountSettingsService';
+import {
+  createHomeLayoutService,
+  type HomeLayoutService,
+} from '../services/account/homeLayoutService';
 import { createExportService, type ExportService } from '../services/export';
 import { createExportRepository } from '../data/repositories/exportRepository';
 import { createAlertService, type AlertService } from '../services/alerts/alertService';
@@ -383,6 +387,8 @@ export interface AppContext {
   discordSetup: DiscordSetupService;
   /** Per-user account defaults — Settings → Account default portfolio visibility (§6.9, V2-P9). */
   accountSettings: AccountSettingsService;
+  /** The per-account Home widget board (R2 home-widgets) — stored verbatim. */
+  homeLayout: HomeLayoutService;
   /** Self-service account deletion — re-auth-gated hard delete (§13.4 V4-P2c, #362). */
   accountDeletion: AccountDeletionService;
   /**
@@ -1525,6 +1531,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // visibility, applied by the portfolio service at create time.
   const accountSettings = createAccountSettingsService({ userRepo });
 
+  // The Home widget board (R2 home-widgets): per account, so the layout follows
+  // the user to every browser they sign in from.
+  const homeLayout = createHomeLayoutService({ userRepo });
+
   // Self-service account deletion (§13.4 V4-P2c, #362): re-auth + typed
   // confirmation, then a hard delete the FK graph fans out — with the chat
   // anonymize-and-purge exception handled through the chat repository.
@@ -1795,6 +1805,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     telegramSetup,
     discordSetup,
     accountSettings,
+    homeLayout,
     accountDeletion,
     dataExport,
     alerts,

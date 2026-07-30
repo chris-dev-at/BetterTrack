@@ -53,7 +53,14 @@ vi.mock('../../lib/alertsApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/alertsApi')>()),
   listAlerts: vi.fn(),
 }));
-vi.mock('../AuthContext', () => ({ useAuth: () => ({ user: { username: 'jane' } }) }));
+const ACCOUNT = 'acc-jane';
+vi.mock('../AuthContext', () => ({
+  useAuth: () => ({ user: { id: 'acc-jane', username: 'jane' } }),
+}));
+
+// The board now lives on the account (`homeSync.ts`); these tests are about the
+// builder, so the transport is stubbed and the assertions stay on the cache.
+vi.mock('../../lib/settingsApi');
 
 // Canvas-backed chart lib — jsdom cannot draw it (mirrors the portfolio/asset
 // page tests). `setData` is captured so the summed net-worth curve can be
@@ -95,16 +102,17 @@ import {
   listPortfolios,
   listTransactions,
 } from '../../lib/portfolioApi';
+import { getHomeLayout, putHomeLayout } from '../../lib/settingsApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
 import { listWatchlists, listWorkboard } from '../../lib/workboardApi';
 import {
   DEFAULT_LAYOUT,
-  HOME_CONFIG_STORAGE_KEY,
   WIDGET_SIZE_RULES,
   type HomeConfig,
   type WidgetSettings,
   type WidgetType,
 } from './config';
+import { homeCacheKey } from './homeSync';
 import { HomePage } from './HomePage';
 
 /**
@@ -335,7 +343,28 @@ beforeEach(() => {
   vi.mocked(listAlerts).mockResolvedValue({ items: [ARMED_ALERT, FIRED_ALERT] });
   vi.mocked(getAssetQuote).mockResolvedValue(QUOTE);
   vi.mocked(getAssetHistory).mockResolvedValue(ASSET_HISTORY);
+  // No board on the account by default; `seedBoard` overrides this.
+  vi.mocked(getHomeLayout).mockResolvedValue({ layout: null, updatedAt: null });
+  vi.mocked(putHomeLayout).mockImplementation(async (layout) => ({
+    layout,
+    updatedAt: '2026-07-30T10:00:00.000Z',
+  }));
 });
+
+/** The revision a seeded board carries — the cache and the account agree on it. */
+const SYNCED_AT = '2026-07-29T09:00:00.000Z';
+
+/**
+ * Give the signed-in account this board, already in step with the account copy,
+ * so the mount reconcile leaves it alone and the test sees what it asked for.
+ */
+function seedBoard(layout: unknown): void {
+  localStorage.setItem(
+    homeCacheKey(ACCOUNT),
+    JSON.stringify({ account: ACCOUNT, layout, syncedAt: SYNCED_AT, dirty: false }),
+  );
+  vi.mocked(getHomeLayout).mockResolvedValue({ layout, updatedAt: SYNCED_AT });
+}
 
 /**
  * Put exactly the given widgets on the board, at each type's default size. Used
@@ -343,16 +372,13 @@ beforeEach(() => {
  * another sharing the board.
  */
 function storeBoard(...widgets: (WidgetType | [WidgetType, WidgetSettings])[]): void {
-  localStorage.setItem(
-    HOME_CONFIG_STORAGE_KEY,
-    JSON.stringify({
-      version: 1,
-      widgets: widgets.map((entry, index) => {
-        const [type, settings] = Array.isArray(entry) ? entry : [entry, {}];
-        return { id: `w-${index}`, type, size: WIDGET_SIZE_RULES[type].default, settings };
-      }),
+  seedBoard({
+    version: 1,
+    widgets: widgets.map((entry, index) => {
+      const [type, settings] = Array.isArray(entry) ? entry : [entry, {}];
+      return { id: `w-${index}`, type, size: WIDGET_SIZE_RULES[type].default, settings };
     }),
-  );
+  });
 }
 
 /**
@@ -379,10 +405,11 @@ function boardOrder(): string[] {
     .filter((label) => label !== '');
 }
 
+/** The board as the account's local cache now holds it. */
 function persisted(): HomeConfig {
-  const raw = localStorage.getItem(HOME_CONFIG_STORAGE_KEY);
+  const raw = localStorage.getItem(homeCacheKey(ACCOUNT));
   expect(raw, 'expected the board to have been persisted').not.toBeNull();
-  return JSON.parse(raw!) as HomeConfig;
+  return (JSON.parse(raw!) as { layout: HomeConfig }).layout;
 }
 
 const editMode = () => userEvent.setup();
@@ -404,7 +431,7 @@ test('with nothing stored, the default board renders every widget it declares', 
   ]);
   expect(boardOrder()).toHaveLength(DEFAULT_LAYOUT.widgets.length);
   // Nothing was written: an untouched board must not create a storage entry.
-  expect(localStorage.getItem(HOME_CONFIG_STORAGE_KEY)).toBeNull();
+  expect(localStorage.getItem(homeCacheKey(ACCOUNT))).toBeNull();
 });
 
 test('the hero rolls every portfolio up and tags the change as money | percent', async () => {
@@ -430,16 +457,13 @@ test('the portfolio cards widget lists every portfolio and links to it', async (
 });
 
 test('a stored board with an unknown widget type still renders the widgets it knows', async () => {
-  localStorage.setItem(
-    HOME_CONFIG_STORAGE_KEY,
-    JSON.stringify({
-      version: 1,
-      widgets: [
-        { id: 'x', type: 'holo-deck', size: 'l', settings: {} },
-        { id: 'y', type: 'news', size: 'm', settings: {} },
-      ],
-    }),
-  );
+  seedBoard({
+    version: 1,
+    widgets: [
+      { id: 'x', type: 'holo-deck', size: 'l', settings: {} },
+      { id: 'y', type: 'news', size: 'm', settings: {} },
+    ],
+  });
 
   renderHome();
 
@@ -612,13 +636,10 @@ test('scoping a widget to one portfolio persists it, tags it, and narrows its da
 });
 
 test('a scope naming a portfolio that no longer exists degrades to all portfolios', async () => {
-  localStorage.setItem(
-    HOME_CONFIG_STORAGE_KEY,
-    JSON.stringify({
-      version: 1,
-      widgets: [{ id: 'a', type: 'net-worth', size: 'l', settings: { scope: 'p-deleted' } }],
-    }),
-  );
+  seedBoard({
+    version: 1,
+    widgets: [{ id: 'a', type: 'net-worth', size: 'l', settings: { scope: 'p-deleted' } }],
+  });
 
   renderHome();
 
@@ -1212,7 +1233,7 @@ test('Escape cancels placement and leaves the board untouched', async () => {
     'Jump in',
   ]);
   // Cancelling is not an edit, so nothing was written.
-  expect(localStorage.getItem(HOME_CONFIG_STORAGE_KEY)).toBeNull();
+  expect(localStorage.getItem(homeCacheKey(ACCOUNT))).toBeNull();
 });
 
 test('clicking the grip again puts the widget back down', async () => {

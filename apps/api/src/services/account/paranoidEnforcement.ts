@@ -302,6 +302,12 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'getYearReport',
   ]),
   serviceBinding('portfolioServer', 'tax', 'userIdField', ['planTransactionTaxes']),
+  // The Home board is UI configuration, but its widget settings carry portfolio
+  // ids, asset ids and the captured asset LABEL (a ticker). Storing that on the
+  // server for an account whose portfolio exists only in the client-encrypted
+  // vault is exactly the leak this mode exists to prevent, so a paranoid account
+  // keeps its board on the device instead of on the account.
+  serviceBinding('portfolioServer', 'homeLayout', 'userIdFirst', ['*']),
   serviceBinding('portfolioServer', 'expenses', 'userIdFirst', ['*']),
   serviceBinding('portfolioServer', 'expenseBudgets', 'userIdFirst', ['*']),
   // V5 cash fusion: classification ON the portfolio cash ledger, so it dies with
@@ -975,6 +981,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
       { exact: '/assets/portfolio/news-digest' },
       { method: 'POST', exact: '/ai/insights' },
       { exact: '/settings/taxes' },
+      { exact: '/settings/home' },
     ],
     services: servicesFor('portfolioServer'),
     scopes: [],
