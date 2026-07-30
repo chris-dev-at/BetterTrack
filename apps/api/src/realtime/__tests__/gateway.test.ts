@@ -743,6 +743,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
       watcherCount: vi.fn(() => 0),
       pollIntervalMs: vi.fn(() => null),
       reconcile: vi.fn(),
+      retireAssets: vi.fn(async () => undefined),
       close: vi.fn(),
     };
     const controlled = await listenControlledGateway({
@@ -815,6 +816,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
       watcherCount: vi.fn(() => 0),
       pollIntervalMs: vi.fn(() => null),
       reconcile: vi.fn(),
+      retireAssets: vi.fn(async () => undefined),
       close: vi.fn(),
     };
     const controlled = await listenControlledGateway({
@@ -909,6 +911,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
       watcherCount: vi.fn(() => 0),
       pollIntervalMs: vi.fn(() => null),
       reconcile: vi.fn(),
+      retireAssets: vi.fn(async () => undefined),
       close: vi.fn(),
     };
     const controlled = await listenControlledGateway({

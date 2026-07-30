@@ -630,6 +630,12 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'The opaque ciphertext vault is the deliberate paranoid-mode data home.',
   ),
   serviceExemption(
+    'paranoidTransitions',
+    ['*'],
+    'kept',
+    'The transition orchestrator owns the exclusive account lock and is the only path that changes privacy mode; enable, disable, and safe metadata reads must remain reachable for idempotent retries.',
+  ),
+  serviceExemption(
     'paranoidGuard',
     ['*'],
     'kept',
@@ -1138,6 +1144,12 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
         normalizedPath: '/',
         handler: '<anonymous>',
         occurrence: 3,
+      }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: '<anonymous>',
+        occurrence: 4,
       }),
     ],
   ),

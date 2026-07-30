@@ -13,6 +13,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
+import { withExclusiveParanoidTransitionTestLock } from './paranoidEnforcementRepository';
 import {
   paranoidRehydrationReceipts,
   paranoidVaultHistory,
@@ -104,9 +105,12 @@ export function createParanoidRehydrationTransactionRepository(
  */
 export async function withParanoidRehydrationTransaction<T>(
   db: Database,
+  userId: string,
   run: (tx: Database) => Promise<T>,
 ): Promise<T> {
-  return db.transaction((tx) => run(tx as unknown as Database));
+  return withExclusiveParanoidTransitionTestLock(db, userId, () =>
+    db.transaction((tx) => run(tx as unknown as Database)),
+  );
 }
 
 /** Opaque active/candidate blob fields; no caller may inspect the payload. */

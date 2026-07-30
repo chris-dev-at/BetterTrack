@@ -16,6 +16,14 @@ const config = loadConfig();
 const logger = createLogger(config);
 
 const { db, client } = createDatabase(config.databaseUrl);
+// Dedicated privacy-lock pool (§13.5 V5-P13): every `withLockedPrivacyModes` /
+// `withFreshLockedPrivacyModes` transaction reserves a connection HERE, never on
+// the request pool above, so a lock held across a read can never wait on a
+// connection its own callback needs. Its size (`createDatabase`, `max: 10`) is the
+// concurrency budget for privacy-guarded work, and the longest holder is an
+// account export download — it streams inside the lock for up to
+// `EXPORT_DOWNLOAD_STALL_TIMEOUT_MS`. So ~10 concurrent downloads is the ceiling
+// before other privacy-guarded reads queue; raise the pool, not the stall bound.
 const { db: lockDb, client: lockClient } = createDatabase(config.databaseUrl);
 const redis = createRedis(config.redisUrl);
 
