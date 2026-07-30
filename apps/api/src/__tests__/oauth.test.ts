@@ -893,6 +893,96 @@ describe('refresh-token rotation', () => {
     expect(replay.status).toBe(400);
     expect(await auditActions()).toContain('oauth.token_refreshed');
   });
+
+  it('revokes the winner token pair when the same refresh token is exchanged concurrently', async () => {
+    const { agent, clientId, clientSecret } = await registerClient({
+      scopes: ['portfolio:read'],
+    });
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+    });
+    const first = oauthTokenResponseSchema.parse(
+      (
+        await tokenRequest({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: HTTPS_REDIRECT,
+          client_id: clientId,
+          client_secret: clientSecret,
+        })
+      ).body,
+    );
+
+    // Make both service calls read the same unconsumed row before either enters
+    // the real repository transaction. They still race against the same DB;
+    // this barrier makes the atomic-consume loser deterministic under PGlite.
+    const bothLookupsDone = deferred();
+    let lookupCount = 0;
+    const baseRepo = createOAuthRepository(harness.db);
+    const repo: OAuthRepository = {
+      ...baseRepo,
+      async findRefreshTokenByHash(tokenHash: string) {
+        const found = await baseRepo.findRefreshTokenByHash(tokenHash);
+        lookupCount += 1;
+        if (lookupCount === 2) bothLookupsDone.resolve();
+        await bothLookupsDone.promise;
+        return found;
+      },
+    };
+    const exchangeService = createOAuthService({
+      repo,
+      audit: createAuditService(createAuditRepository(harness.db)),
+      redis: harness.ctx.redis,
+    });
+    const refresh = () =>
+      exchangeService.exchangeToken({
+        body: {
+          grant_type: 'refresh_token',
+          refresh_token: first.refresh_token,
+          client_id: clientId,
+          client_secret: clientSecret!,
+        },
+      });
+
+    const outcomes = await Promise.allSettled([refresh(), refresh()]);
+    const winner = outcomes.find((outcome) => outcome.status === 'fulfilled');
+    const loser = outcomes.find((outcome) => outcome.status === 'rejected');
+    expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(loser).toBeDefined();
+    if (!winner || winner.status !== 'fulfilled' || !loser || loser.status !== 'rejected') {
+      throw new Error('Expected exactly one refresh exchange to win the atomic rotation');
+    }
+    expect(loser.reason).toMatchObject({ statusCode: 400, code: 'INVALID_GRANT' });
+
+    const [originalToken] = await harness.db
+      .select()
+      .from(schema.oauthRefreshTokens)
+      .where(eq(schema.oauthRefreshTokens.tokenHash, hashToken(first.refresh_token)));
+    const [grant] = await harness.db
+      .select()
+      .from(schema.oauthGrants)
+      .where(eq(schema.oauthGrants.id, originalToken!.grantId));
+    expect(grant?.revokedAt).toBeInstanceOf(Date);
+
+    // The successful response may already have reached its caller, but replay
+    // compromise revokes the family: neither credential in that pair works.
+    expect(await exchangeService.authenticateToken(winner.value.access_token)).toBeNull();
+    await expect(
+      exchangeService.exchangeToken({
+        body: {
+          grant_type: 'refresh_token',
+          refresh_token: winner.value.refresh_token,
+          client_id: clientId,
+          client_secret: clientSecret!,
+        },
+      }),
+    ).rejects.toMatchObject({ statusCode: 400, code: 'INVALID_GRANT' });
+    expect(
+      (await auditActions()).filter((action) => action === 'oauth.token_refreshed'),
+    ).toHaveLength(1);
+  });
 });
 
 describe('OAuth request validation', () => {
