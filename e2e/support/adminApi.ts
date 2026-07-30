@@ -92,15 +92,12 @@ function generateTotpCode(secret: string, nowMs: number = Date.now()): string {
 }
 
 /**
- * Logs the given request context in as the seeded admin, transparently
- * handling the mandatory admin-2FA gate (§6.12, #400) so callers only see
- * "authenticated as admin". On a fresh admin the setup-gate-exempt
- * `/admin/security/2fa/totp/*` endpoints enroll a TOTP method and cache the
- * secret; on subsequent logins in the same process the cached secret completes
- * the login 2FA challenge. Test setup only — the happy path itself never
- * touches the admin app.
+ * One sign-in attempt. Resolves to `'assured'` when the context now holds a
+ * fully assured admin session, or `'enrolled'` when this attempt had to perform
+ * the first-boot TOTP enrollment — which deliberately ends the session it ran
+ * on, so the caller must attempt again. See {@link loginAsAdmin}.
  */
-export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
+async function signInAsAdminOnce(request: APIRequestContext): Promise<'assured' | 'enrolled'> {
   const loginRes = await request.post(`${API_BASE_URL}/api/v1/auth/login`, {
     headers: CSRF_HEADERS,
     data: { identifier: ADMIN_EMAIL, password: ADMIN_PASSWORD },
@@ -133,7 +130,7 @@ export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
     if (!verifyRes.ok()) {
       throw new Error(`Admin 2FA verify failed: ${verifyRes.status()} ${await verifyRes.text()}`);
     }
-    return;
+    return 'assured';
   }
 
   // Password login succeeded → the session lives in the setup-required state,
@@ -169,6 +166,38 @@ export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
   if (!confirmRes.ok()) {
     throw new Error(`Admin TOTP confirm failed: ${confirmRes.status()} ${await confirmRes.text()}`);
   }
+  return 'enrolled';
+}
+
+/**
+ * Logs the given request context in as the seeded admin, transparently
+ * handling the mandatory admin-2FA gate (§6.12, #400) so callers only see
+ * "authenticated as admin". On a fresh admin the setup-gate-exempt
+ * `/admin/security/2fa/totp/*` endpoints enroll a TOTP method and cache the
+ * secret; on subsequent logins in the same process the cached secret completes
+ * the login 2FA challenge. Test setup only — the happy path itself never
+ * touches the admin app.
+ *
+ * Two attempts, because confirming the FIRST admin factor is a security
+ * transition: the API bumps the admin's durable security generation and clears
+ * the session cookie on the confirm response (#891), so the password-only
+ * session that ran the enrollment is dead by the time it returns. A single
+ * attempt therefore handed callers a signed-OUT context, and the next admin
+ * call hit `requireAdmin`'s deliberate 404 (`NOT_FOUND`) — which is what broke
+ * every spec that provisions accounts via {@link createInvite}. The second
+ * attempt signs in again through the now-armed TOTP challenge and comes back
+ * assured.
+ */
+export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
+  if ((await signInAsAdminOnce(request)) === 'assured') return;
+  if ((await signInAsAdminOnce(request)) === 'assured') return;
+  // The second attempt can only report 'enrolled' if the admin's confirmed
+  // factor vanished between the two — never in a healthy stack. Fail loudly
+  // rather than return an unauthenticated context that 404s later.
+  throw new Error(
+    'Admin 2FA enrollment repeated on the second sign-in — the confirmed factor did not ' +
+      `stick. Reset via \`pnpm --filter @bettertrack/api admin:break-glass ${ADMIN_EMAIL}\`.`,
+  );
 }
 
 /**

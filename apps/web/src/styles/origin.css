@@ -397,6 +397,31 @@
   flex: 1 1 auto;
 }
 
+/* Compact account trigger. Stands in for the rail's account row once the rail
+   is hidden (≤760px), so the account menu — My profile, Settings, Discreet
+   mode, Logout — stays a persistent utility on a phone. 44px keeps it a full
+   touch target (docs/redesign/REAL_APP_REDESIGN_PROMPT.md). */
+.bt-topbar__account {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--bt-t-fast);
+}
+
+.bt-topbar__account:hover {
+  background: var(--bt-surface-soft);
+}
+
 /* Main working canvas */
 .bt-main {
   min-width: 0;
@@ -1575,6 +1600,34 @@
 
   .bt-bottombar {
     display: grid;
+  }
+
+  /* The topbar is the phone's ONLY home for the search, Create, Notifications
+     and account-menu utilities, so the two space hogs have to yield to them.
+     At 412px the full wordmark (140px) plus the switcher's 200px floor left no
+     room, and the utilities pushed the topbar to a 559px scroll width — which
+     scrolled the whole document sideways and, because a portalled dialog's
+     `position: fixed` overlay sizes to that widened containing block, centred
+     every dialog half outside the visible viewport. */
+  .bt-topbar {
+    gap: 8px;
+  }
+
+  .bt-topbar .bt-rail__brand-full {
+    display: none;
+  }
+
+  .bt-topbar .bt-rail__brand-mini {
+    display: inline-flex;
+  }
+
+  .bt-topbar .bt-rail__brand {
+    padding: 0;
+  }
+
+  .bt-topbar .bt-portfolio-trigger {
+    min-width: 0;
+    max-width: 42vw;
   }
 
   .bt-canvas {

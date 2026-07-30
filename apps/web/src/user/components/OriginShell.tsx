@@ -16,6 +16,7 @@ import { Button, Icon, type IconName } from '../../ui/origin';
 import { cx } from '../../lib/cx';
 import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
+import { useCompactShell } from '../hooks/useCompactShell';
 import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { Avatar } from './Avatar';
 import {
@@ -303,7 +304,24 @@ function RailBrand() {
   );
 }
 
-function AccountMenu({ collapsed }: { collapsed: boolean }) {
+/**
+ * The account / organization switcher — a PERSISTENT utility (see
+ * docs/redesign/PRODUCT_BLUEPRINT.md §4), i.e. reachable at every width like
+ * Create and Notifications. It renders at the foot of the rail on desktop
+ * (`placement="rail"`, the documented lower-left position) and, once the rail is
+ * hidden, as a compact avatar trigger in the topbar (`placement="topbar"`).
+ * Exactly ONE instance is ever mounted — the shell picks the placement from
+ * {@link useCompactShell} rather than rendering both and hiding one in CSS, so
+ * "Account menu" stays a single, unambiguous accessible control.
+ */
+function AccountMenu({
+  collapsed,
+  placement = 'rail',
+}: {
+  collapsed: boolean;
+  placement?: 'rail' | 'topbar';
+}) {
+  const inTopbar = placement === 'topbar';
   const { t } = useI18n();
   const { user, logout, toggleDiscreetMode } = useAuth();
   const [open, setOpen] = useState(false);
@@ -334,7 +352,7 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={t('nav.accountMenu')}
-        className="bt-rail__account"
+        className={inTopbar ? 'bt-topbar__account' : 'bt-rail__account'}
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
@@ -342,8 +360,14 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
             the same curated avatar every social surface shows, so the rail and
             the profile can never disagree. */}
         <Avatar iconId={user?.profileIcon} name={name} size="sm" />
-        <span className="bt-rail__account-name">{name}</span>
-        <Icon className="bt-rail__account-more" name="more" size={15} />
+        {/* The topbar trigger is the avatar alone — a phone topbar has no room
+            for the name, and the menu itself repeats it in the header row. */}
+        {inTopbar ? null : (
+          <>
+            <span className="bt-rail__account-name">{name}</span>
+            <Icon className="bt-rail__account-more" name="more" size={15} />
+          </>
+        )}
       </button>
 
       {open ? (
@@ -351,7 +375,13 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
           aria-label={t('nav.account')}
           className="bt-popover"
           role="menu"
-          style={{ bottom: 'calc(100% + 6px)', left: 0, right: collapsed ? 'auto' : 0 }}
+          // The rail sits at the foot of the viewport, so its menu rises; the
+          // topbar's hangs down from the trigger and is right-anchored.
+          style={
+            inTopbar
+              ? { top: 'calc(100% + 6px)', right: 0 }
+              : { bottom: 'calc(100% + 6px)', left: 0, right: collapsed ? 'auto' : 0 }
+          }
         >
           {user ? (
             <div style={{ padding: '7px 9px 9px' }}>
@@ -502,6 +532,9 @@ export function OriginShell() {
   const location = useLocation();
   const { pathname } = location;
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // The rail is display:none at this width, so anything that lives only inside
+  // it has to be rendered elsewhere (see the topbar's AccountMenu).
+  const compactShell = useCompactShell();
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(RAIL_STORAGE_KEY) === 'collapsed';
@@ -623,8 +656,13 @@ export function OriginShell() {
           >
             <Icon name="collapse" size={17} />
           </button>
-          <div className="bt-rail__rule" />
-          <AccountMenu collapsed={collapsed} />
+          {/* Rail-hidden widths render this in the topbar instead — see below. */}
+          {compactShell ? null : (
+            <>
+              <div className="bt-rail__rule" />
+              <AccountMenu collapsed={collapsed} />
+            </>
+          )}
         </aside>
 
         <div className="bt-main">
@@ -659,6 +697,11 @@ export function OriginShell() {
             />
             <CreateMenu />
             <NotificationBell />
+            {/* Below the rail's breakpoint the rail — and with it My profile,
+                Settings, Discreet mode and Logout — is display:none, which left
+                a phone with no way to reach any of them, not even to sign out.
+                The account menu moves here instead so it stays persistent. */}
+            {compactShell ? <AccountMenu collapsed={false} placement="topbar" /> : null}
           </header>
 
           <main className="bt-canvas">

@@ -21,7 +21,11 @@ import { provisionUser } from './support/users';
 async function enableAustriaTaxMode(page: Page): Promise<void> {
   await page.goto('/settings/taxes');
   const austria = page.getByRole('radio', { name: /Austria \(KESt\)/i });
-  await austria.check();
+  // `click()`, not `check()`: the mode radio is CONTROLLED by server state and
+  // only flips once the settings PATCH returns, which `check()`'s same-tick
+  // verification can never observe (it re-clicks instead). `toBeChecked()` below
+  // is the auto-retrying wait — the assertion is unchanged.
+  await austria.click();
   await expect(austria).toBeChecked();
   // The per-year report signpost only renders once a mode is active — a live proof
   // that the choice was saved before we start recording taxable trades.

@@ -4,14 +4,17 @@ import {
   ADMIN_EMAIL,
   ADMIN_PASSWORD,
   API_BASE_URL,
+  API_PORT,
   DATABASE_URL,
   FAKE_GOOGLE_PORT,
   FAKE_GOOGLE_URL,
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
+  METRICS_PORT,
   REDIS_URL,
   SESSION_SECRET,
   WEB_BASE_URL,
+  WEB_PORT,
   WORKER_HEALTH_PORT,
   WORKER_HEALTH_URL,
 } from './e2e/support/config';
@@ -30,6 +33,11 @@ const apiEnv = {
   // roll-up on every auth landing (Origin redesign), so the human-scale burst
   // window needs e2e headroom; the steady-state limit stays enforced.
   RATE_LIMIT_BURST_LIMIT: '240',
+  // Make the API listen where the specs look (see config.ts API_PORT) instead of
+  // inheriting `PORT`'s 3000 default, and pin the Prometheus port so a dev
+  // stack's API on the same host cannot cause an EADDRINUSE crash at boot.
+  PORT: API_PORT,
+  BT_METRICS_PORT: METRICS_PORT,
   DATABASE_URL,
   REDIS_URL,
   SESSION_SECRET,
@@ -94,8 +102,13 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      command: 'pnpm --filter @bettertrack/web dev',
+      command: `pnpm --filter @bettertrack/web dev --port ${WEB_PORT} --strictPort`,
       url: WEB_BASE_URL,
+      // Vite's dev proxy target must follow the API's port, or a moved API base
+      // URL would leave `/api` pointing at whatever owns 3000 (§4.6 same-origin
+      // dev topology). `--strictPort` makes a busy port a loud failure instead
+      // of Vite silently serving the suite from the next free one.
+      env: { ...process.env, BT_WEB_DEV_PROXY_TARGET: API_BASE_URL },
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
     },
