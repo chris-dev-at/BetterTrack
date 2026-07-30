@@ -9,7 +9,11 @@ import { badRequest, tooManyRequests, unauthorized } from '../../errors';
 import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
-import { ACCOUNT_DELETE_NAMESPACE, removeRememberedDeviceBindings } from '../auth/loginThrottle';
+import {
+  ACCOUNT_DELETE_NAMESPACE,
+  removeIndexedRememberedDeviceBindings,
+  removeRememberedDeviceBindings,
+} from '../auth/loginThrottle';
 import type { TwoFactorService } from '../auth/twoFactorService';
 import type { MirrorService } from '../mirror/mirrorService';
 import type { PasswordHasher } from '../password/passwordHasher';
@@ -185,6 +189,12 @@ export function createAccountDeletionService(
       // every other member's copy + the chain stay intact (V5-P7 M4).
       await mirror.handleAccountDeletion(userId);
       await userRepo.remove(userId);
+      // Fence a request that resolved this active user before the first Redis
+      // sweep and wrote a binding while deletion was in flight. Remembered-
+      // device writers re-read the durable user row after their write, so either
+      // this post-delete sweep sees the write or the writer sees the missing row
+      // and removes it itself.
+      await removeIndexedRememberedDeviceBindings(redis, userId);
       // The row cascade has now revoked every credential family. Disconnect any
       // socket that authenticated before deletion rather than waiting for its
       // bounded revalidation sweep.

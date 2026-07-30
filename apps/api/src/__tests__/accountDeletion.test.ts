@@ -109,6 +109,14 @@ function deleteAccount(agent: Agent, body: Record<string, unknown>): request.Tes
     .send(body);
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 /**
  * Every FK column in the schema that references `users(id)`, discovered from
  * the live catalog — so a future table joins the sweep automatically and the
@@ -330,6 +338,49 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
     expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(second.deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(legacyDeviceId))).toBeNull();
     expect(await harness.ctx.redis.exists(rememberedDevicesForUserKey(user.id))).toBe(0);
+  });
+
+  it('removes a remembered-device binding created after the pre-delete sweep', async () => {
+    const user = await seedPerson('racing_remembered_device');
+    await harness.ctx.auth.setPin(user.id, '4242');
+    const indexKey = rememberedDevicesForUserKey(user.id);
+    const firstSweepFinished = deferred();
+    const releaseDeletion = deferred();
+    const originalDel = harness.ctx.redis.del.bind(harness.ctx.redis);
+    let indexDeleteCount = 0;
+
+    harness.ctx.redis.del = (async (...keys: string[]) => {
+      const deleted = await originalDel(...keys);
+      if (keys.includes(indexKey) && indexDeleteCount++ === 0) {
+        firstSweepFinished.resolve();
+        await releaseDeletion.promise;
+      }
+      return deleted;
+    }) as typeof harness.ctx.redis.del;
+
+    let deletion: Promise<request.Response> | undefined;
+    try {
+      deletion = deleteAccount(user.agent, {
+        confirmUsername: user.username,
+        password: user.password,
+      }).then((response) => response);
+      await firstSweepFinished.promise;
+
+      // This request already resolved an active user and lands in the exact
+      // window the old single sweep missed.
+      const raced = await harness.ctx.auth.rememberDevice(user.id);
+      expect(await harness.ctx.redis.get(rememberedDeviceKey(raced.deviceId))).toBe(user.id);
+
+      releaseDeletion.resolve();
+      const response = await deletion;
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(await harness.ctx.redis.get(rememberedDeviceKey(raced.deviceId))).toBeNull();
+      expect(await harness.ctx.redis.exists(indexKey)).toBe(0);
+    } finally {
+      releaseDeletion.resolve();
+      await deletion?.catch(() => undefined);
+      harness.ctx.redis.del = originalDel as typeof harness.ctx.redis.del;
+    }
   });
 
   it('cascades the current encrypted vault and every historical generation', async () => {

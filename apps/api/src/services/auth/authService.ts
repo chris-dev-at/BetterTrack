@@ -136,6 +136,21 @@ export type LoginResult =
  */
 export type RegisterResult = ({ status: 'authenticated' } & SessionResult) | { status: 'pending' };
 
+type RememberableUser = UserRow & {
+  status: 'active';
+  pinEnabled: true;
+  pinHash: string;
+};
+
+function isRememberableUser(user: UserRow | undefined): user is RememberableUser {
+  return Boolean(
+    user &&
+    user.status === 'active' &&
+    user.pinEnabled === true &&
+    typeof user.pinHash === 'string',
+  );
+}
+
 export interface VerifyTwoFactorInput {
   pendingToken: string;
   /** A 6-digit TOTP or emailed login code. Mutually exclusive with `recoveryCode`. */
@@ -445,6 +460,37 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     PIN_TOKEN_ACCOUNT_NAMESPACE,
     config.rateLimits.loginAccount,
   );
+
+  async function clearRememberedDeviceState(userId: string, deviceId: string): Promise<void> {
+    await redis
+      .multi()
+      .del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId))
+      .srem(rememberedDevicesForUserKey(userId), deviceId)
+      .exec();
+  }
+
+  /**
+   * Fence a remembered-device Redis write against account deletion.
+   *
+   * Deletion sweeps once before and once after the durable user-row removal.
+   * Re-reading after this write closes the remaining race: either the
+   * post-delete sweep runs after the write, or this read observes the missing /
+   * inactive account and removes the write itself.
+   */
+  async function revalidateRememberedDeviceUser(
+    userId: string,
+    deviceId: string,
+  ): Promise<RememberableUser | undefined> {
+    try {
+      const user = await userRepo.findById(userId);
+      if (isRememberableUser(user)) return user;
+    } catch (err) {
+      await clearRememberedDeviceState(userId, deviceId);
+      throw err;
+    }
+    await clearRememberedDeviceState(userId, deviceId);
+    return undefined;
+  }
 
   async function publishSessionInvalidation(
     event: Omit<RealtimePrincipalInvalidatedEvent, 'type' | 'kind' | 'occurredAt'>,
@@ -1503,14 +1549,11 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const boundUserId = await redis.get(rememberedDeviceKey(deviceId));
       if (!boundUserId) throw unknownDevice();
 
-      const user = await userRepo.findById(boundUserId);
+      const boundUser = await userRepo.findById(boundUserId);
       // The bound account vanished, was suspended, or dropped its PIN — the
       // memory is dead: clear the binding + window and fall back to full login.
-      if (!user || user.status !== 'active' || !user.pinEnabled || !user.pinHash) {
-        await redis.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
-        if (boundUserId) {
-          await redis.srem(rememberedDevicesForUserKey(boundUserId), deviceId);
-        }
+      if (!isRememberableUser(boundUser)) {
+        await clearRememberedDeviceState(boundUserId, deviceId);
         throw unknownDevice();
       }
 
@@ -1519,10 +1562,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // successful quick re-auth.
       await redis
         .multi()
-        .sadd(rememberedDevicesForUserKey(user.id), deviceId)
-        .expire(rememberedDevicesForUserKey(user.id), REMEMBERED_DEVICE_TTL_SECONDS)
+        .sadd(rememberedDevicesForUserKey(boundUser.id), deviceId)
+        .expire(rememberedDevicesForUserKey(boundUser.id), REMEMBERED_DEVICE_TTL_SECONDS)
         .expire(rememberedDeviceKey(deviceId), REMEMBERED_DEVICE_TTL_SECONDS)
         .exec();
+      const user = await revalidateRememberedDeviceUser(boundUser.id, deviceId);
+      if (!user) throw unknownDevice();
 
       // Probe (no PIN entered): auto-pass ONLY while the quick-auth window from a
       // recent PIN entry is still open (owner: "tapping your name while the PIN
@@ -1574,9 +1619,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     },
 
     async rememberDevice(userId, ip) {
-      const user = await userRepo.findById(userId);
-      if (!user || user.status !== 'active') throw unauthorized();
-      if (!user.pinEnabled || !user.pinHash) {
+      const initialUser = await userRepo.findById(userId);
+      if (!initialUser || initialUser.status !== 'active') throw unauthorized();
+      if (!initialUser.pinEnabled || !initialUser.pinHash) {
         // Only PIN users can be remembered (owner spec §B): a no-PIN account gets
         // no remember-me and a blank login every time. The SPA only offers the
         // prompt to PIN users; this is the authoritative server-side enforcement.
@@ -1589,10 +1634,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const deviceId = generateToken().token;
       await redis
         .multi()
-        .set(rememberedDeviceKey(deviceId), user.id, 'EX', REMEMBERED_DEVICE_TTL_SECONDS)
-        .sadd(rememberedDevicesForUserKey(user.id), deviceId)
-        .expire(rememberedDevicesForUserKey(user.id), REMEMBERED_DEVICE_TTL_SECONDS)
+        .set(rememberedDeviceKey(deviceId), initialUser.id, 'EX', REMEMBERED_DEVICE_TTL_SECONDS)
+        .sadd(rememberedDevicesForUserKey(initialUser.id), deviceId)
+        .expire(rememberedDevicesForUserKey(initialUser.id), REMEMBERED_DEVICE_TTL_SECONDS)
         .exec();
+      const user = await revalidateRememberedDeviceUser(initialUser.id, deviceId);
+      if (!user) throw unauthorized();
       await audit.record({
         actorId: user.id,
         action: AuditAction.RememberedDeviceCreated,
@@ -1611,9 +1658,8 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     async forgetDevice(deviceId, ip) {
       if (!deviceId) return;
       const boundUserId = await redis.get(rememberedDeviceKey(deviceId));
-      await redis.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
       if (boundUserId) {
-        await redis.srem(rememberedDevicesForUserKey(boundUserId), deviceId);
+        await clearRememberedDeviceState(boundUserId, deviceId);
         await audit.record({
           actorId: boundUserId,
           action: AuditAction.RememberedDeviceForgotten,
@@ -1621,6 +1667,8 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           targetId: boundUserId,
           ip,
         });
+      } else {
+        await redis.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
       }
     },
 

@@ -105,6 +105,42 @@ export const pinQuickAuthMarkerKey = (deviceId: string) => `pin_quick_ok:${devic
 const REMEMBERED_DEVICE_SCAN_COUNT = 100;
 const REMEMBERED_DEVICE_DELETE_BATCH_SIZE = 100;
 
+async function deleteRememberedDeviceIds(
+  redis: Redis,
+  indexKey: string,
+  deviceIds: ReadonlySet<string>,
+): Promise<void> {
+  const orderedDeviceIds = [...deviceIds];
+  for (
+    let start = 0;
+    start < orderedDeviceIds.length;
+    start += REMEMBERED_DEVICE_DELETE_BATCH_SIZE
+  ) {
+    const transaction = redis.multi();
+    for (const deviceId of orderedDeviceIds.slice(
+      start,
+      start + REMEMBERED_DEVICE_DELETE_BATCH_SIZE,
+    )) {
+      transaction.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+    }
+    await transaction.exec();
+  }
+  await redis.del(indexKey);
+}
+
+/**
+ * Remove current-format remembered-device bindings without the legacy keyspace
+ * scan. Used as the post-row-delete race fence: every current writer adds its
+ * binding to this reverse index in the same Redis transaction.
+ */
+export async function removeIndexedRememberedDeviceBindings(
+  redis: Redis,
+  userId: string,
+): Promise<void> {
+  const indexKey = rememberedDevicesForUserKey(userId);
+  await deleteRememberedDeviceIds(redis, indexKey, new Set(await redis.smembers(indexKey)));
+}
+
 /**
  * Remove every remembered-device binding owned by a deleted account.
  *
@@ -138,22 +174,7 @@ export async function removeRememberedDeviceBindings(redis: Redis, userId: strin
     cursor = nextCursor;
   } while (cursor !== '0');
 
-  const orderedDeviceIds = [...deviceIds];
-  for (
-    let start = 0;
-    start < orderedDeviceIds.length;
-    start += REMEMBERED_DEVICE_DELETE_BATCH_SIZE
-  ) {
-    const transaction = redis.multi();
-    for (const deviceId of orderedDeviceIds.slice(
-      start,
-      start + REMEMBERED_DEVICE_DELETE_BATCH_SIZE,
-    )) {
-      transaction.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
-    }
-    await transaction.exec();
-  }
-  await redis.del(indexKey);
+  await deleteRememberedDeviceIds(redis, indexKey, deviceIds);
 }
 
 /**
