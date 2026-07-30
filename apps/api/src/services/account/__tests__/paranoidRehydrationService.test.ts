@@ -1264,6 +1264,11 @@ describe('paranoid rehydration service', () => {
   it('negative control: tightening the quantized quantity rule rejects the raw sell before restore', async () => {
     const { harness, user, portfolioId, rawQuantities, input } =
       await storageRoundedQuantityFixture();
+    const sell = input.document.entities.find(
+      (entry): entry is StrictTransactionEntity =>
+        entry.kind === 'transaction' && entry.data.side === 'sell',
+    );
+    if (!sell) throw new Error('expected raw sell transaction');
     const stages: string[] = [];
 
     await expect(
@@ -1276,7 +1281,7 @@ describe('paranoid rehydration service', () => {
       }).rehydrate(user.id, input),
     ).rejects.toMatchObject({
       code: 'INVALID_CASH_LEDGER',
-      message: `transaction quantity ${JSON.stringify(rawQuantities.sell)} would oversell its position`,
+      message: `transaction[${sell.id}].quantity=${JSON.stringify(rawQuantities.sell)} would oversell its position`,
     });
     expect(stages).toEqual([]);
     expect(
@@ -1329,7 +1334,7 @@ describe('paranoid rehydration service', () => {
       }).rehydrate(user.id, input),
     ).rejects.toMatchObject({
       code: 'INVALID_CASH_LEDGER',
-      message: 'transaction quantity "1.00000003" would oversell its position',
+      message: `transaction[${sell.id}].quantity="1.00000003" would oversell its position`,
     });
     expect(stages).toEqual([]);
     expect(
