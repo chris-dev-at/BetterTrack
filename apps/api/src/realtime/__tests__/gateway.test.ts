@@ -127,13 +127,14 @@ function connect(cookie?: string, options: ConnectOptions = {}): Promise<ClientS
 /**
  * Open a socket with arbitrary transport and handshake auth — a bearer via the
  * socket.io auth payload (`auth.token`) and/or an `Authorization: Bearer …`
- * handshake header. Native/no-Origin cases must use the latter. Resolves on
- * connect, rejects with the connect_error message.
+ * handshake header. This helper models a no-Origin native client unless an
+ * Origin is supplied explicitly. Resolves on connect, rejects with the
+ * connect_error message.
  */
 function connectWith(opts: {
   auth?: Record<string, unknown>;
   extraHeaders?: Record<string, string>;
-  /** Undefined models a browser at the configured web Origin; null omits the header. */
+  /** Undefined/null models a native client without Origin; a string sets it exactly. */
   origin?: string | null;
   transport?: HandshakeTransport;
 }): Promise<ClientSocket> {
@@ -142,7 +143,7 @@ function connectWith(opts: {
     transports: [opts.transport ?? 'websocket'],
     reconnection: false,
     auth: opts.auth,
-    extraHeaders: handshakeHeaders(opts.origin, opts.extraHeaders),
+    extraHeaders: handshakeHeaders(opts.origin ?? null, opts.extraHeaders),
   });
   openSockets.push(socket);
   return new Promise<ClientSocket>((resolve, reject) => {
@@ -442,7 +443,7 @@ describe('realtime gateway — Origin admission', () => {
     },
   );
 
-  it('rejects forged same-origin metadata without Origin or bearer before auth', async () => {
+  it('does not let forged same-origin metadata authenticate a no-Origin cookie', async () => {
     await listenWithGateway();
     const user = await harness.seedUser();
     const { cookie } = await login(user.email, user.password);
@@ -450,21 +451,23 @@ describe('realtime gateway — Origin admission', () => {
     const bearerSpy = vi.spyOn(harness.ctx.apiKeys, 'authenticate');
 
     try {
-      const rejected = await request(server!)
-        .get(`${REALTIME_PATH}/`)
-        .query({ EIO: 4, transport: 'polling' })
-        .set({
-          Host: new URL(harness.ctx.config.topology.webOrigin).host,
-          cookie,
-          'Sec-Fetch-Site': 'same-origin',
-          'Sec-Fetch-Mode': 'cors',
-          'Sec-Fetch-Dest': 'empty',
-        });
+      await expect(
+        connectWith({
+          origin: null,
+          transport: 'polling',
+          extraHeaders: {
+            Host: new URL(harness.ctx.config.topology.webOrigin).host,
+            cookie,
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Dest': 'empty',
+          },
+        }),
+      ).rejects.toThrow(/UNAUTHORIZED/);
 
-      expect(rejected.status).toBe(403);
       expect(sessionSpy).not.toHaveBeenCalled();
       expect(bearerSpy).not.toHaveBeenCalled();
-      expect(harness.ctx.realtime.connectionCount()).toBe(0);
+      await vi.waitFor(() => expect(harness.ctx.realtime.connectionCount()).toBe(0));
     } finally {
       sessionSpy.mockRestore();
       bearerSpy.mockRestore();
@@ -505,7 +508,7 @@ describe('realtime gateway — Origin admission', () => {
   );
 
   it.each(['websocket', 'polling'] as const)(
-    'accepts a no-Origin native bearer over %s',
+    'accepts a no-Origin Authorization bearer over %s',
     async (transport) => {
       await listenWithGateway();
       const user = await harness.seedUser();
@@ -515,6 +518,24 @@ describe('realtime gateway — Origin admission', () => {
         origin: null,
         transport,
         extraHeaders: { Authorization: `Bearer ${token}` },
+      });
+
+      expect(socket.connected).toBe(true);
+      expect(socket.io.engine.transport.name).toBe(transport);
+    },
+  );
+
+  it.each(['websocket', 'polling'] as const)(
+    'accepts a no-Origin auth-payload bearer over %s',
+    async (transport) => {
+      await listenWithGateway();
+      const user = await harness.seedUser();
+      const token = await mintKey(user.id);
+
+      const socket = await connectWith({
+        origin: null,
+        transport,
+        auth: { token },
       });
 
       expect(socket.connected).toBe(true);

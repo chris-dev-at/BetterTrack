@@ -73,14 +73,15 @@ import {
  *   - a **bearer token** — the mobile app path (§6.13, §14). It holds no cookie,
  *     so it presents a personal API key (`btk_…`) or a delegated OAuth access
  *     token (`bto_…`) via the socket.io auth payload (`handshake.auth.token`)
- *     and/or an `Authorization: Bearer …` upgrade header. Native clients that
- *     send no Origin must use the header so Engine.IO can reject cookie-only
- *     handshakes before namespace authentication. The token is validated through
- *     the SAME service the HTTP bearer middleware uses (revocation, expiry and
- *     consent-scope clamping included), so socket auth can never drift from — or
- *     widen — the HTTP surface. Bearer sockets are admitted only to the scoped
- *     rooms and commands their effective scopes allow; lightweight invalidations
- *     and quote frames still reveal data-family activity.
+ *     and/or an `Authorization: Bearer …` upgrade header. Either form works for
+ *     no-Origin native clients: Engine.IO provisionally admits that transport
+ *     handshake, then the Socket.IO namespace accepts only a bearer and never
+ *     resolves its cookie. The token is validated through the SAME service the
+ *     HTTP bearer middleware uses (revocation, expiry and consent-scope clamping
+ *     included), so socket auth can never drift from — or widen — the HTTP
+ *     surface. Bearer sockets are admitted only to the scoped rooms and commands
+ *     their effective scopes allow; lightweight invalidations and quote frames
+ *     still reveal data-family activity.
  *
  * Both transports are supported: a client may open the websocket transport
  * directly (the mobile app and same-origin web SPA dial
@@ -395,10 +396,9 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   /**
    * The bearer token the mobile app presents (§6.13, §14). The socket.io auth
    * payload (`handshake.auth.token`) is preferred, falling back to an
-   * `Authorization: Bearer …` upgrade header. An allowed-Origin client may use
-   * either; a native client with no Origin must send the header because the
-   * Engine.IO admission hook runs before the auth payload exists. Null when
-   * neither carries a token.
+   * `Authorization: Bearer …` upgrade header. Either form is accepted for
+   * allowed-Origin and no-Origin clients; the latter remain bearer-only during
+   * namespace authentication. Null when neither carries a token.
    */
   function bearerTokenOf(socket: Socket): string | null {
     const auth = socket.handshake.auth as Record<string, unknown> | undefined;
@@ -424,10 +424,10 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
    * deliberately bearer-only.
    */
   async function authenticate(socket: Socket): Promise<RealtimePrincipal | null> {
-    // Engine.IO requires a bearer header before a no-Origin request reaches
-    // this point. Resolve only that credential family here: otherwise a caller
-    // could add a dummy bearer header and smuggle a valid session cookie through
-    // the native-client exception.
+    // Engine.IO cannot inspect handshake.auth because Socket.IO sends it in the
+    // later namespace CONNECT packet. Resolve only the bearer credential family
+    // for a no-Origin transport: otherwise a caller could omit Origin and smuggle
+    // a valid session cookie through the native-client exception.
     if (socket.handshake.headers.origin === undefined) {
       return resolveBearerPrincipal(socket);
     }
@@ -1564,16 +1564,16 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         // CORS response headers do not protect a direct websocket handshake.
         // Check the raw request before Engine.IO creates a client or any
         // session/bearer resolver runs. Browser Origins use the normalized
-        // credentialed allowlist. No-Origin clients must present a bearer
-        // header and remain bearer-only in authenticate(); same-origin browser
-        // clients start with websocket so the browser supplies Origin.
+        // credentialed allowlist. Engine.IO cannot see Socket.IO's auth payload,
+        // so a no-Origin transport handshake proceeds provisionally and the
+        // namespace middleware admits only a bearer, never a session cookie.
         allowRequest: (request, allow) => {
           const origin = request.headers.origin;
           if (origin !== undefined) {
             allow(null, typeof origin === 'string' && allowedOrigins.has(origin));
             return;
           }
-          allow(null, bearerTokenFromHeader(request.headers.authorization) !== null);
+          allow(null, true);
         },
       });
       await subscribeLiveChannels(io);
