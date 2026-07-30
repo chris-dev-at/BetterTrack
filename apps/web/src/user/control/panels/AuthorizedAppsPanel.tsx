@@ -8,8 +8,10 @@ import { useT } from '../../../i18n';
 import { formatDate } from '../../../lib/format';
 import { listOAuthGrants, revokeOAuthGrant } from '../../../lib/oauthApi';
 import { Skeleton } from '../../../ui';
+import { isParanoidBlockedScope } from '../../../ui/ScopePicker';
 import { Button } from '../../../ui/origin';
 import { Alert } from '../../components/ui';
+import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import { PanelGroup, PanelHead, PanelList, PanelListItem, PanelNote, Row } from './panelKit';
 
 const OAUTH_GRANTS_KEY = ['settings', 'oauth-grants'] as const;
@@ -17,6 +19,7 @@ const OAUTH_GRANTS_KEY = ['settings', 'oauth-grants'] as const;
 /** One authorized app (grant) with a two-step confirm before revoking access. */
 function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState(false);
@@ -68,11 +71,13 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
           {/* The plain-language scope descriptions, not the raw scope strings —
               this is a privacy control, so it reads in the user's words. */}
           <ul className="flex flex-col">
-            {grant.scopes.map((scope) => (
-              <li className="bt-cc-row__hint" key={scope}>
-                · {OAUTH_SCOPE_LABELS[scope]}
-              </li>
-            ))}
+            {grant.scopes
+              .filter((scope) => !paranoid || !isParanoidBlockedScope(scope))
+              .map((scope) => (
+                <li className="bt-cc-row__hint" key={scope}>
+                  · {OAUTH_SCOPE_LABELS[scope]}
+                </li>
+              ))}
           </ul>
           <span className="bt-cc-row__hint">
             {grant.lastUsedAt

@@ -5,7 +5,7 @@ import { cloneElement, isValidElement } from 'react';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type {
-  AnalyticsSeriesResponse,
+  PortfolioHistoryResponse,
   PortfolioResponse,
   PortfolioSummary,
   ProjectedDividendIncomeResponse,
@@ -28,18 +28,22 @@ vi.mock('recharts', async (importOriginal) => {
   };
 });
 
-vi.mock('../../lib/portfolioApi', () => ({ getPortfolio: vi.fn() }));
-vi.mock('../../lib/analyticsApi', () => ({ getAnalyticsSeries: vi.fn() }));
+vi.mock('../../lib/portfolioApi', () => ({
+  getPortfolio: vi.fn(),
+  getPortfolioHistory: vi.fn(),
+}));
 vi.mock('../../lib/standingOrdersApi', () => ({ listStandingOrders: vi.fn() }));
 vi.mock('../../lib/marketIntelApi', () => ({ getPortfolioDividendProjection: vi.fn() }));
 
-import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
-import { getPortfolio } from '../../lib/portfolioApi';
+import { getPortfolio, getPortfolioHistory } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
 import { ProjectionSection } from './ProjectionSection';
 
 const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
+const HISTORY_END = new Date();
+const HISTORY_START = new Date(HISTORY_END);
+HISTORY_START.setUTCFullYear(HISTORY_START.getUTCFullYear() - 5);
 
 const PORTFOLIOS: PortfolioSummary[] = [
   {
@@ -68,22 +72,14 @@ const PORTFOLIO: PortfolioResponse = {
   },
 };
 
-const ANALYTICS: AnalyticsSeriesResponse = {
-  portfolioId: PORTFOLIO_ID,
+const HISTORY: PortfolioHistoryResponse = {
+  range: '5Y',
   baseCurrency: 'EUR',
-  mode: 'value',
-  from: '2021-01-01',
-  to: '2026-01-01',
-  inflation: null,
-  inflationPresets: [],
-  primary: {
-    kind: 'portfolio',
-    label: 'Main',
-    points: [],
-    stats: { totalReturnPct: 30, cagrPct: 5, maxDrawdownPct: -8, bestDay: null, worstDay: null },
-  },
-  compare: null,
-  contributions: [],
+  points: [
+    { date: HISTORY_START.toISOString().slice(0, 10), valueEur: 100 },
+    { date: HISTORY_END.toISOString().slice(0, 10), valueEur: 127.628 },
+  ],
+  performance: [],
 };
 
 const DIVIDENDS_OFF: ProjectedDividendIncomeResponse = {
@@ -133,7 +129,7 @@ function renderSection(portfolios = PORTFOLIOS) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
-  vi.mocked(getAnalyticsSeries).mockResolvedValue(ANALYTICS);
+  vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
   vi.mocked(listStandingOrders).mockResolvedValue({ orders: [] } as StandingOrderListResponse);
   vi.mocked(getPortfolioDividendProjection).mockResolvedValue(DIVIDENDS_OFF);
 });

@@ -6,22 +6,15 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type {
-  ParanoidMediaStateResponse,
-  PortfolioAsset,
-  TaxYearReportResponse,
-  TaxYearSummary,
-} from '@bettertrack/contracts';
+import type { PortfolioAsset, TaxYearReportResponse, TaxYearSummary } from '@bettertrack/contracts';
 
 vi.mock('../../lib/portfolioApi');
-vi.mock('../../lib/userApi');
 vi.mock('../vault/export/deliver', () => ({
   deliverClientDownload: vi.fn(),
   printClientDocument: vi.fn(),
 }));
 
 import * as portfolioApi from '../../lib/portfolioApi';
-import * as userApi from '../../lib/userApi';
 import {
   createClientMoneyMarket,
   createMutableTestSync,
@@ -30,6 +23,7 @@ import {
 } from '../vault/engine/clientMoney.testSupport';
 import { VaultMoneyEngineProvider } from '../vault/engine/VaultMoneyEngineProvider';
 import { deliverClientDownload, printClientDocument } from '../vault/export/deliver';
+import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 import { TaxReportPage } from './TaxReportPage';
 
 // This portfolio's effective tax view (issue #636): the report reads the mode
@@ -76,32 +70,21 @@ const APPLE: PortfolioAsset = {
   isCustom: false,
 };
 
-function renderPage() {
+function renderPage(mode: 'normal' | 'paranoid' = 'normal') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <TaxReportPage />
+        <ResolvedPrivacyModeProvider mode={mode}>
+          <TaxReportPage />
+        </ResolvedPrivacyModeProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-const PARANOID_MEDIA: ParanoidMediaStateResponse = {
-  privacyMode: 'paranoid',
-  mediaState: {
-    mediaSet: ['server'],
-    driveAttestedVersion: null,
-    server: { disposition: 'active', candidate: null, retired: null },
-  },
-};
-
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(userApi.getParanoidMediaState).mockResolvedValue({
-    privacyMode: 'normal',
-    mediaState: null,
-  });
   vi.mocked(portfolioApi.listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue(AT_TAX_VIEW);
   vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({ years: [YEAR_2026] });
@@ -431,7 +414,6 @@ describe('TaxReportPage', () => {
 describe('TaxReportPage — paranoid mode (PD7)', () => {
   beforeEach(() => {
     Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
-    vi.mocked(userApi.getParanoidMediaState).mockResolvedValue(PARANOID_MEDIA);
   });
 
   async function renderParanoidUnlocked() {
@@ -442,11 +424,13 @@ describe('TaxReportPage — paranoid mode (PD7)', () => {
     render(
       <QueryClientProvider client={client}>
         <MemoryRouter>
-          <VaultMoneyEngineProvider
-            dependencies={{ sync, market: createClientMoneyMarket().market }}
-          >
-            <TaxReportPage />
-          </VaultMoneyEngineProvider>
+          <ResolvedPrivacyModeProvider mode="paranoid">
+            <VaultMoneyEngineProvider
+              dependencies={{ sync, market: createClientMoneyMarket().market }}
+            >
+              <TaxReportPage />
+            </VaultMoneyEngineProvider>
+          </ResolvedPrivacyModeProvider>
         </MemoryRouter>
       </QueryClientProvider>,
     );
@@ -517,7 +501,9 @@ describe('TaxReportPage — paranoid mode (PD7)', () => {
     render(
       <QueryClientProvider client={client}>
         <MemoryRouter>
-          <TaxReportPage />
+          <ResolvedPrivacyModeProvider mode="paranoid">
+            <TaxReportPage />
+          </ResolvedPrivacyModeProvider>
         </MemoryRouter>
       </QueryClientProvider>,
     );
@@ -529,32 +515,23 @@ describe('TaxReportPage — paranoid mode (PD7)', () => {
 
   // Regression: a cached ['portfolios'] entry (from an earlier normal-mode
   // session on this client) must not resolve an active id and start the tax
-  // settings/report reads while privacy is still pending or paranoid.
+  // settings/report reads after the account gate has resolved paranoid.
   test('pre-seeded portfolio and tax-settings caches never start server tax reads', async () => {
-    let resolvePrivacy!: (value: ParanoidMediaStateResponse) => void;
-    vi.mocked(userApi.getParanoidMediaState).mockImplementation(
-      () =>
-        new Promise<ParanoidMediaStateResponse>((resolve) => {
-          resolvePrivacy = resolve;
-        }),
-    );
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     client.setQueryData(['portfolios'], PORTFOLIO_LIST);
     client.setQueryData(['portfolio', 'taxSettings', 'p1'], AT_TAX_VIEW);
     render(
       <QueryClientProvider client={client}>
         <MemoryRouter>
-          <TaxReportPage />
+          <ResolvedPrivacyModeProvider mode="paranoid">
+            <TaxReportPage />
+          </ResolvedPrivacyModeProvider>
         </MemoryRouter>
       </QueryClientProvider>,
     );
 
-    // While privacy is unresolved, the seeded caches alone start nothing.
-    await waitFor(() => expect(userApi.getParanoidMediaState).toHaveBeenCalled());
     expect(portfolioApi.getPortfolioTaxSettings).not.toHaveBeenCalled();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
-
-    resolvePrivacy(PARANOID_MEDIA);
 
     expect(await screen.findByText('Unlock your vault')).toBeInTheDocument();
     expect(portfolioApi.listPortfolios).not.toHaveBeenCalled();

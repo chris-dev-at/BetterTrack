@@ -1,5 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Suspense, lazy, useEffect } from 'react';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 
@@ -20,7 +20,19 @@ import { RegisterPage } from './auth/RegisterPage';
 import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
 import { VaultRuntimeProvider } from './vault/VaultRuntimeProvider';
-import { VaultMoneyEngineProvider } from './vault/engine/VaultMoneyEngineProvider';
+import {
+  VaultMoneyEngineProvider,
+  useVaultMoneySession,
+} from './vault/engine/VaultMoneyEngineProvider';
+import {
+  PortfolioStoreProvider,
+  createParanoidAppPortfolioStore,
+} from './portfolio/PortfolioStoreProvider';
+import { apiPortfolioStore } from '../lib/portfolioStore';
+import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
+import { useVaultRuntime } from './vault/VaultRuntimeProvider';
+import { VaultUnlockGate } from './vault/ui/VaultUnlockGate';
+import { ParanoidNavigationGate } from './vault/ui/ParanoidSurfaceGate';
 import { ForecastPage } from './forecast/ForecastPage';
 import { DashboardPage as ExpenseDashboardPage } from './expenses/DashboardPage';
 import { TransactionsPage as ExpenseTransactionsPage } from './expenses/TransactionsPage';
@@ -397,6 +409,116 @@ function VaultRuntimeRoot({ children }: { children: ReactNode }) {
   );
 }
 
+const PLAINTEXT_QUERY_ROOTS = new Set([
+  'analytics',
+  'cash',
+  'custom-asset',
+  'custom-assets',
+  'expenses',
+  'forecast',
+  'portfolio',
+  'portfolios',
+  'standingOrders',
+  'tax',
+  'transactions',
+]);
+
+/**
+ * Resolve the account mode before any money route mounts. Normal accounts keep
+ * today's API adapter; paranoid accounts receive the decrypted PD5/PD7 seam
+ * only after unlock. A lock replaces this whole subtree in the same render.
+ */
+function AccountModeRoot({ children }: { children: ReactNode }) {
+  const t = useT();
+  const { status, user } = useAuth();
+  const privacy = usePrivacyMode(
+    status === 'authenticated',
+    status === 'authenticated' ? (user?.id ?? null) : null,
+  );
+  const runtime = useVaultRuntime();
+  const moneySession = useVaultMoneySession();
+  const cache = useQueryClient();
+  const paranoidStore = useMemo(
+    () => (moneySession == null ? null : createParanoidAppPortfolioStore(moneySession)),
+    [moneySession],
+  );
+
+  useLayoutEffect(() => {
+    if (runtime.phase !== 'locked') return;
+    cache.removeQueries({
+      predicate: (query) => {
+        const root = query.queryKey[0];
+        return (
+          (typeof root === 'string' && PLAINTEXT_QUERY_ROOTS.has(root)) ||
+          (root === 'settings' && query.queryKey[1] === 'taxes')
+        );
+      },
+    });
+  }, [cache, privacy.privacyMode, runtime.phase]);
+
+  useLayoutEffect(() => {
+    if (
+      status === 'authenticated' &&
+      privacy.privacyMode === 'normal' &&
+      runtime.phase !== 'locked'
+    ) {
+      // A disable completed in another tab/device. Revoke the old decrypted
+      // session before the normal API-backed subtree is allowed to continue.
+      void runtime.lock({ broadcast: false });
+    }
+  }, [privacy.privacyMode, runtime, status]);
+
+  if (status !== 'authenticated') {
+    return (
+      <ResolvedPrivacyModeProvider mode="normal">
+        <PortfolioStoreProvider store={apiPortfolioStore}>{children}</PortfolioStoreProvider>
+      </ResolvedPrivacyModeProvider>
+    );
+  }
+  if (privacy.isPending) return <Splash />;
+  if (privacy.isError || privacy.privacyMode == null) {
+    return (
+      <AuthCard subtitle={t('vault.gate.unavailableTitle')}>
+        <div className="flex flex-col gap-4">
+          <p className="bt-soft text-sm">{t('vault.gate.unavailableBody')}</p>
+          <Button onClick={() => void privacy.refetch()}>{t('common.retry')}</Button>
+        </div>
+      </AuthCard>
+    );
+  }
+  if (privacy.privacyMode === 'normal') {
+    // A mode change received from another device must destroy the decrypted
+    // runtime before any normal API-backed money screen can mount.
+    if (runtime.phase !== 'locked') return <Splash />;
+    return (
+      <ResolvedPrivacyModeProvider accountId={user?.id ?? null} mode="normal">
+        <PortfolioStoreProvider store={apiPortfolioStore}>{children}</PortfolioStoreProvider>
+      </ResolvedPrivacyModeProvider>
+    );
+  }
+  if (privacy.mediaState == null) {
+    return (
+      <AuthCard subtitle={t('vault.gate.unavailableTitle')}>
+        <p className="bt-soft text-sm">{t('vault.gate.invalidMedia')}</p>
+      </AuthCard>
+    );
+  }
+  if (runtime.phase !== 'unlocked' || paranoidStore == null) {
+    return <VaultUnlockGate mediaSet={privacy.mediaState.mediaSet} />;
+  }
+  return (
+    <ResolvedPrivacyModeProvider
+      accountId={user?.id ?? null}
+      mediaState={privacy.mediaState}
+      mode="paranoid"
+    >
+      <PortfolioStoreProvider store={paranoidStore}>
+        <ParanoidNavigationGate>{children}</ParanoidNavigationGate>
+      </PortfolioStoreProvider>
+    </ResolvedPrivacyModeProvider>
+  );
+}
+
 /** Renders the global 429 toast while it's active (§7.4). Fixed-position overlay — no layout impact. */
 function RateLimitToastPortal() {
   const { rateLimitBanner, clearRateLimitBanner } = useAuth();
@@ -436,10 +558,12 @@ export function UserApp() {
           <VaultRuntimeRoot>
             <LocaleSync />
             <RateLimitToastPortal />
-            <RealtimeRoot>
-              <AnnouncementBannerRoot />
-              <UserShell />
-            </RealtimeRoot>
+            <AccountModeRoot>
+              <RealtimeRoot>
+                <AnnouncementBannerRoot />
+                <UserShell />
+              </RealtimeRoot>
+            </AccountModeRoot>
           </VaultRuntimeRoot>
         </AuthProvider>
       </QueryClientProvider>

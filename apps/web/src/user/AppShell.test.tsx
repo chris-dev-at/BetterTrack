@@ -89,6 +89,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   vi.mocked(api.getMe).mockResolvedValue(member);
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
   vi.mocked(listNotifications).mockResolvedValue({ items: [], nextCursor: null, unreadCount: 0 });
@@ -678,7 +682,6 @@ test.each([
   ['/people/teams', 'Teams'],
   ['/people/approvals', 'Approvals'],
   ['/control/data', 'Data management'],
-  ['/control/privacy', 'Paranoid mode'],
   ['/developer/mcp', 'MCP'],
   ['/developer/logs', 'Request logs'],
   ['/review', 'Review inbox'],

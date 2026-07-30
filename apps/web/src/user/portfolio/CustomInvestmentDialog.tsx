@@ -7,10 +7,10 @@ import {
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
-import { createCustomAsset } from '../../lib/portfolioApi';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button } from '../components/ui';
 import { customCategoryLabels } from './customCategories';
+import { usePortfolioStore } from './PortfolioStoreProvider';
 
 export interface CustomInvestmentDialogProps {
   onClose: () => void;
@@ -32,6 +32,7 @@ function isoToday(today?: string): string {
  */
 export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInvestmentDialogProps) {
   const t = useT();
+  const store = usePortfolioStore();
   const headingId = useId();
   const [name, setName] = useState('');
   const [category, setCategory] = useState<CustomAssetCategory>('other');
@@ -102,7 +103,7 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
     setSubmitting(true);
     setError(null);
     try {
-      await createCustomAsset(body);
+      await store.createCustomAsset(body);
       onCreated();
       onClose();
     } catch {

@@ -6,8 +6,8 @@ import type { AnalyticsCompareKind } from '@bettertrack/contracts';
 import { useT } from '../../../i18n';
 import { cx } from '../../../lib/cx';
 import { listConglomerates } from '../../../lib/conglomerateApi';
-import { listPortfolios } from '../../../lib/portfolioApi';
 import { AssetSearchBox } from '../../components/AssetSearchBox';
+import { usePortfolioStore } from '../PortfolioStoreProvider';
 
 /** A committed compare target: the contract kind + its id, plus a display label. */
 export interface CompareTarget {
@@ -35,12 +35,13 @@ export function CompareControl({
   onChange: (next: CompareTarget | null) => void;
   currentPortfolioId: string;
 }) {
+  const store = usePortfolioStore();
   const t = useT();
   const [kind, setKind] = useState<PickerKind>(value?.kind ?? 'none');
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     enabled: kind === 'portfolio',
     staleTime: 60_000,
   });

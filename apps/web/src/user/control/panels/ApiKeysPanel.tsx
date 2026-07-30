@@ -14,9 +14,11 @@ import { useT } from '../../../i18n';
 import { createApiKey, listApiKeys, revokeApiKey } from '../../../lib/apiKeysApi';
 import { formatDate } from '../../../lib/format';
 import { ScopePicker, Skeleton } from '../../../ui';
+import { isParanoidBlockedScope } from '../../../ui/ScopePicker';
 import { Badge, Button, Field, Input } from '../../../ui/origin';
 import { Dialog } from '../../components/Dialog';
 import { Alert } from '../../components/ui';
+import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import {
   PanelForm,
   PanelGroup,
@@ -171,6 +173,7 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
 /** One key row with a two-step confirm before revoking. */
 function ApiKeyRow({ apiKey }: { apiKey: ApiKeySummary }) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState(false);
@@ -218,9 +221,11 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeySummary }) {
         <>
           <span className="bt-cc-row__label">{apiKey.name}</span>
           <span className="flex flex-wrap gap-1">
-            {apiKey.scopes.map((scope) => (
-              <ScopeChip key={scope} scope={scope} />
-            ))}
+            {apiKey.scopes
+              .filter((scope) => !paranoid || !isParanoidBlockedScope(scope))
+              .map((scope) => (
+                <ScopeChip key={scope} scope={scope} />
+              ))}
           </span>
           <span className="bt-cc-row__hint">
             {apiKey.lastUsedAt

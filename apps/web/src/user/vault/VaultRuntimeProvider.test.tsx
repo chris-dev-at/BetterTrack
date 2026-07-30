@@ -44,7 +44,7 @@ beforeEach(() => {
 });
 
 describe('VaultRuntimeProvider Drive bootstrap', () => {
-  it('authorizes and reads Drive before unlocking a fresh Drive-only device', async () => {
+  it('authorizes Drive-only before unlock and obeys a same-account second-tab lock', async () => {
     const events: string[] = [];
     let authorization: GoogleDriveTokenClient['state'] = 'consent-required';
     const tokens: GoogleDriveTokenClient = {
@@ -143,6 +143,15 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
     expect(events).toEqual(['authorize', 'drive-read', 'runtime']);
     expect(serverRead).not.toHaveBeenCalled();
     expect(createRuntime).toHaveBeenCalledTimes(1);
+
+    globalThis.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'bettertrack:vault-lock:018f0000-0000-7000-8000-000000000099',
+        newValue: 'remote-lock',
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('no connection')).toBeInTheDocument(), UNLOCK_WAIT);
+    expect(dispose).toHaveBeenCalledTimes(1);
 
     rendered.unmount();
     await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1), UNLOCK_WAIT);

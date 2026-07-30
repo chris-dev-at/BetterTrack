@@ -5,9 +5,9 @@ import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { ApiError } from '../../../lib/apiClient';
-import { createPortfolio } from '../../../lib/portfolioApi';
 import { Button, ODialog } from '../../../ui/origin';
 import { DEFAULT_PORTFOLIO_KIND, setPortfolioKind } from '../portfolioKinds';
+import { usePortfolioStore } from '../PortfolioStoreProvider';
 import { PORTFOLIO_WIZARD_STEPS } from './steps';
 import type { PortfolioDraft, PortfolioWizardStepReport } from './types';
 
@@ -37,10 +37,12 @@ import type { PortfolioDraft, PortfolioWizardStepReport } from './types';
  * dialogs, unchanged, through `onSharedBook` — see `PortfolioSwitcher`.
  */
 export function PortfolioWizard({
+  allowShared = true,
   onClose,
   onCreated,
   onSharedBook,
 }: {
+  allowShared?: boolean;
   onClose: () => void;
   /** A plain portfolio was created and the user is done: activate it. */
   onCreated: (portfolio: PortfolioSummary) => void;
@@ -51,6 +53,7 @@ export function PortfolioWizard({
   onSharedBook: (name: string) => void;
 }) {
   const t = useT();
+  const store = usePortfolioStore();
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState<PortfolioDraft>({
     name: '',
@@ -65,8 +68,11 @@ export function PortfolioWizard({
   /** Synchronous once-only latch for the POST — see the note above. */
   const creatingRef = useRef(false);
 
-  const step = PORTFOLIO_WIZARD_STEPS[index];
-  const total = PORTFOLIO_WIZARD_STEPS.length;
+  const steps = allowShared
+    ? PORTFOLIO_WIZARD_STEPS
+    : PORTFOLIO_WIZARD_STEPS.filter((entry) => entry.id !== 'book');
+  const step = steps[index];
+  const total = steps.length;
 
   // Stable identities: steps list both in effect deps (see types.ts).
   const patch = useCallback(
@@ -81,7 +87,7 @@ export function PortfolioWizard({
    */
   const commit = useMutation({
     mutationFn: async (): Promise<PortfolioSummary> => {
-      const portfolio = await createPortfolio(draft.name.trim());
+      const portfolio = await store.createPortfolio(draft.name.trim());
       setPortfolioKind(portfolio.id, draft.kind);
       return portfolio;
     },
@@ -122,6 +128,12 @@ export function PortfolioWizard({
         onSharedBook(draft.name.trim());
         return;
       }
+      if (creatingRef.current || created !== null) return;
+      creatingRef.current = true;
+      commit.mutate();
+      return;
+    }
+    if (!allowShared && step.id === 'icon') {
       if (creatingRef.current || created !== null) return;
       creatingRef.current = true;
       commit.mutate();
@@ -185,7 +197,7 @@ export function PortfolioWizard({
       >
         <div className="bt-pfw__stepper">
           <div aria-hidden="true" className="bt-pfw__dots">
-            {PORTFOLIO_WIZARD_STEPS.map((entry, position) => (
+            {steps.map((entry, position) => (
               <span
                 className="bt-pfw__dot"
                 data-state={position === index ? 'current' : position < index ? 'done' : 'upcoming'}

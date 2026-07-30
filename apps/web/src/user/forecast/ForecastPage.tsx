@@ -2,11 +2,10 @@ import { useMemo, useState, type ChangeEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { useT, type TranslateFn } from '../../i18n';
-import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
 import { formatMoney, formatPercent } from '../../lib/format';
-import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
 import type { PortfolioSummary } from '@bettertrack/contracts';
+import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
 import { StatCard } from '../../ui';
 import { Alert, Button, TextField } from '../components/ui';
 
@@ -22,6 +21,7 @@ import {
 } from './calc';
 import { ProjectionSection } from './ProjectionSection';
 import { StandingOrdersSection } from './StandingOrdersSection';
+import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 
 /**
  * Forecast tab (PROJECTPLAN.md §13.5 V5-P6b arc (c)). Two zones live in the
@@ -45,6 +45,10 @@ interface Prefill {
   averageReturnPctPerYear: number | null;
 }
 
+function round2(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
 /**
  * Resolve the active portfolio (default one, or first available), then fetch
  * its headline value + inception CAGR. The tab never blocks on this — cards
@@ -56,9 +60,10 @@ function usePortfolioPrefill(): {
   isLoading: boolean;
   portfolios: PortfolioSummary[];
 } {
+  const store = usePortfolioStore();
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
   const portfolios = portfoliosQuery.data?.portfolios ?? [];
@@ -68,24 +73,33 @@ function usePortfolioPrefill(): {
 
   const portfolioQuery = useQuery({
     queryKey: ['portfolio', portfolioId],
-    queryFn: ({ signal }) => getPortfolio(portfolioId!, signal),
+    queryFn: ({ signal }) => store.getPortfolio(portfolioId!, signal),
     enabled: portfolioId !== null,
     staleTime: 60_000,
   });
 
-  const analyticsQuery = useQuery({
-    queryKey: ['analytics', portfolioId, 'series', { mode: 'perf' }],
-    queryFn: ({ signal }) => getAnalyticsSeries(portfolioId!, { mode: 'perf' }, signal),
+  const historyQuery = useQuery({
+    queryKey: ['portfolio', portfolioId, 'history', 'MAX', false],
+    queryFn: ({ signal }) => store.getPortfolioHistory(portfolioId!, 'MAX', false, signal),
     enabled: portfolioId !== null,
     staleTime: 60_000,
   });
+  const historyCagr =
+    historyQuery.data == null
+      ? null
+      : computeSeriesStats(
+          historyQuery.data.points.map((point) => ({
+            date: point.date,
+            value: point.valueEur,
+          })),
+        ).cagrPct;
 
   return {
     prefill: {
       portfolioValueEur: portfolioQuery.data?.totals.totalValueEur ?? null,
-      averageReturnPctPerYear: analyticsQuery.data?.primary.stats.cagrPct ?? null,
+      averageReturnPctPerYear: historyCagr == null ? null : round2(historyCagr),
     },
-    isLoading: portfoliosQuery.isLoading || portfolioQuery.isLoading || analyticsQuery.isLoading,
+    isLoading: portfoliosQuery.isLoading || portfolioQuery.isLoading || historyQuery.isLoading,
     portfolios,
   };
 }

@@ -3,10 +3,32 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
+import type { ParanoidVaultMediaState, PrivacyMode } from '@bettertrack/contracts';
+
 const toggleDiscreetMode = vi.fn(async () => undefined);
 const auth = { user: { username: 'jane', discreetMode: false }, toggleDiscreetMode };
+const refetch = vi.fn(async () => undefined);
+const acceptEnabled = vi.fn();
+const acceptNormal = vi.fn();
+let privacyMode: PrivacyMode = 'normal';
+let mediaState: ParanoidVaultMediaState | null = null;
 
 vi.mock('../../AuthContext', () => ({ useAuth: () => auth }));
+vi.mock('../../vault/usePrivacyMode', () => ({
+  usePrivacyMode: () => ({
+    privacyMode,
+    mediaState,
+    isPending: false,
+    isError: false,
+    refetch,
+    acceptEnabled,
+    acceptNormal,
+  }),
+}));
+vi.mock('../../vault/VaultRuntimeProvider', () => ({ useVaultRuntime: () => ({}) }));
+vi.mock('../../vault/engine/VaultMoneyEngineProvider', () => ({
+  useVaultMoneySession: () => null,
+}));
 
 import { PrivacyPanel } from './PrivacyPanel';
 
@@ -20,6 +42,8 @@ function renderPanel() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  privacyMode = 'normal';
+  mediaState = null;
   auth.user = { username: 'jane', discreetMode: false };
   toggleDiscreetMode.mockImplementation(async () => undefined);
 });
@@ -57,14 +81,40 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     expect(screen.getByRole('switch', { name: 'Discreet mode' })).not.toBeChecked();
   });
 
-  test('the parked paranoid surface keeps the real client-side vault semantics', () => {
+  test('opens the live setup wizard with the compact killed-surface review', async () => {
+    const user = userEvent.setup();
     renderPanel();
 
     expect(screen.getByRole('heading', { name: /Paranoid mode/i })).toBeInTheDocument();
-    // The three load-bearing promises: server-blind ciphertext, a key that never
-    // leaves the device, and a lost key meaning lost data.
-    expect(screen.getByText(/the server can never read it/i)).toBeInTheDocument();
-    expect(screen.getByText(/key that never leaves your devices/i)).toBeInTheDocument();
-    expect(screen.getByText(/Lost key means lost data/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Set up' }));
+
+    expect(screen.getByRole('heading', { name: 'What changes' })).toBeInTheDocument();
+    expect(screen.getByText(/Sharing, shared items, comments/i)).toBeInTheDocument();
+    expect(screen.getByText(/Server portfolio analytics/i)).toBeInTheDocument();
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
+  });
+
+  test('keeps paranoid management compact while exposing storage, security, and destructive flows', () => {
+    privacyMode = 'paranoid';
+    mediaState = {
+      mediaSet: ['server', 'drive'],
+      driveAttestedVersion: 4,
+      server: { disposition: 'active', candidate: null, retired: null },
+    };
+
+    renderPanel();
+
+    expect(screen.getByText('BetterTrack + Google Drive')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Manage storage' })).toHaveAttribute(
+      'href',
+      '/control/connections',
+    );
+    expect(screen.getByText('What’s off in Paranoid mode')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+    expect(screen.getByText('Change vault passphrase')).toBeInTheDocument();
+    expect(screen.getByText('Rotate vault key')).toBeInTheDocument();
+    expect(screen.getByText('Start fresh')).toBeInTheDocument();
+    expect(screen.getByText('Disable Paranoid mode')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
   });
 });

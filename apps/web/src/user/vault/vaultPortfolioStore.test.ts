@@ -2113,6 +2113,118 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     });
     await expect(store.listPortfolios()).resolves.toEqual({ portfolios: [portfolio] });
   });
+
+  it('keeps portfolio settings, custom values, cash sources, and standing orders inside the vault', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal('fetch', fetch);
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    const secondary = await store.createPortfolio('Secondary');
+    await expect(store.archivePortfolio(secondary.id)).resolves.toMatchObject({
+      archivedAt: AT,
+    });
+    await expect(store.listPortfolios()).resolves.toEqual({ portfolios: [portfolio] });
+    await expect(store.restorePortfolio(secondary.id)).resolves.toMatchObject({
+      archivedAt: null,
+    });
+
+    await expect(
+      store.setPortfolioTaxOverride(PORTFOLIO_ID, {
+        mode: 'manual_per_trade',
+        manualDefaultRatePct: 27.5,
+      }),
+    ).resolves.toMatchObject({
+      effective: { mode: 'manual_per_trade', manualDefaultRatePct: 27.5 },
+      source: 'portfolio',
+    });
+    await expect(store.clearPortfolioTaxOverride(PORTFOLIO_ID)).resolves.toMatchObject({
+      effective: { mode: 'none', country: null },
+      override: null,
+      source: 'system',
+    });
+    await expect(
+      store.updateTaxSettings({
+        mode: 'country_specific',
+        country: 'DE',
+      }),
+    ).resolves.toEqual({
+      mode: 'country_specific',
+      country: 'DE',
+    });
+    await expect(store.getTaxSettings()).resolves.toEqual({
+      mode: 'country_specific',
+      country: 'DE',
+    });
+    await expect(store.getPortfolioTaxSettings(PORTFOLIO_ID)).resolves.toMatchObject({
+      effective: { mode: 'country_specific', country: 'DE' },
+      source: 'user',
+    });
+
+    const createdAsset = await store.createCustomAsset({
+      name: 'Private Holding',
+      category: 'other',
+      currency: 'EUR',
+      smoothing: true,
+    });
+    await expect(
+      store.putValuePoints(createdAsset.asset.id, [
+        { date: '2026-07-01', value: 1_000 },
+        { date: '2026-07-30', value: 1_100 },
+      ]),
+    ).resolves.toEqual({
+      points: [
+        { date: '2026-07-01', value: 1_000 },
+        { date: '2026-07-30', value: 1_100 },
+      ],
+    });
+    await expect(store.listCustomAssets()).resolves.toMatchObject({
+      assets: [
+        expect.objectContaining({
+          id: ASSET_ID,
+        }),
+        expect.objectContaining({
+          id: createdAsset.asset.id,
+          latestValue: { date: '2026-07-30', value: 1_100 },
+        }),
+      ],
+    });
+
+    const reserve = await store.createCashSource(PORTFOLIO_ID, {
+      name: 'Reserve',
+      type: 'bank',
+    });
+    await expect(store.archiveCashSource(PORTFOLIO_ID, reserve.id)).resolves.toMatchObject({
+      archivedAt: AT,
+    });
+    await expect(store.restoreCashSource(PORTFOLIO_ID, reserve.id)).resolves.toMatchObject({
+      archivedAt: null,
+    });
+
+    const order = await store.createStandingOrder({
+      portfolioId: PORTFOLIO_ID,
+      kind: 'cash-add',
+      amount: 500,
+      label: 'Salary',
+      cadence: 'monthly',
+      anchorDay: 25,
+      startDate: '2026-07-25',
+    });
+    await expect(store.pauseStandingOrder(order.id)).resolves.toMatchObject({
+      status: 'paused',
+    });
+    await expect(store.resumeStandingOrder(order.id)).resolves.toMatchObject({
+      status: 'active',
+    });
+    await store.deleteStandingOrder(order.id);
+    await expect(store.listStandingOrders(PORTFOLIO_ID)).resolves.toEqual({ orders: [] });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expectPortfolioApiUnused();
+  });
 });
 
 function initialDocument(): VaultDocument {

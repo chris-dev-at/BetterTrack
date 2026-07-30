@@ -39,6 +39,10 @@ function previousMonth(year: number, month: number): { year: number; month: numb
   return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
 }
 
+function nextMonth(year: number, month: number): { year: number; month: number } {
+  return month === 12 ? { year: year + 1, month: 1 } : { year, month: month + 1 };
+}
+
 function monthlyOccurrence(year: number, month: number, anchorDay: number): string {
   return formatDay(year, month, clampDay(year, month, anchorDay));
 }
@@ -67,6 +71,45 @@ export function dueStandingOrderOccurrence(
           return monthlyOccurrence(previous.year, previous.month, schedule.anchorDay!);
         })();
   return occurrence >= schedule.startDate ? occurrence : null;
+}
+
+/**
+ * The next unbooked occurrence shown by the vault-backed management UI. This
+ * mirrors the server scheduler: an overdue period wins; otherwise return the
+ * first schedule day strictly after today, capped by the order's end date.
+ */
+export function nextStandingOrderRunDate(
+  schedule: StandingOrderSchedule,
+  today: string,
+  lastPeriodKey: string | null,
+  active: boolean,
+): string | null {
+  if (!active) return null;
+  const due = dueStandingOrderOccurrence(schedule, today);
+  if (due !== null && (lastPeriodKey === null || lastPeriodKey < due)) return due;
+
+  let next: string;
+  if (schedule.cadence === 'daily') {
+    next = today < schedule.startDate ? schedule.startDate : nextCalendarDay(today);
+  } else {
+    const baseline = today < schedule.startDate ? schedule.startDate : today;
+    const { year, month } = parseDay(baseline);
+    const inMonth = monthlyOccurrence(year, month, schedule.anchorDay!);
+    if (inMonth > today && inMonth >= schedule.startDate) {
+      next = inMonth;
+    } else {
+      const following = nextMonth(year, month);
+      next = monthlyOccurrence(following.year, following.month, schedule.anchorDay!);
+    }
+  }
+  return schedule.endDate !== null && next > schedule.endDate ? null : next;
+}
+
+function nextCalendarDay(day: string): string {
+  const { year, month, day: date } = parseDay(day);
+  if (date < daysInMonth(year, month)) return formatDay(year, month, date + 1);
+  const following = nextMonth(year, month);
+  return formatDay(following.year, following.month, 1);
 }
 
 /**

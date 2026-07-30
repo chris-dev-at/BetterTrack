@@ -1,41 +1,94 @@
 import {
   cashEntryRequestSchema,
+  cashMovementsResponseSchema,
   cashMovementResponseSchema,
   cashMovementSchema,
+  cashPreviewRequestSchema,
+  cashPreviewResponseSchema,
+  cashSourceListResponseSchema,
+  cashSourceSchema,
+  cashTransferRequestSchema,
+  cashTransferResponseSchema,
+  createCustomAssetRequestSchema,
+  createCustomAssetResponseSchema,
+  createStandingOrderRequestSchema,
+  createCashSourceRequestSchema,
   createPortfolioRequestSchema,
   createTransactionsRequestSchema,
+  customAssetListResponseSchema,
+  customAssetSchema,
   portfolioAssetSchema,
   portfolioListResponseSchema,
   portfolioSummarySchema,
+  portfolioTaxSettingsResponseSchema,
+  setCashBalanceRequestSchema,
+  setCashBalanceResponseSchema,
   SOURCE_TAG_STANDING_ORDER,
+  standingOrderListResponseSchema,
+  standingOrderSchema,
+  taxSettingsResponseSchema,
   transactionInputSchema,
   transactionListQuerySchema,
   transactionListResponseSchema,
   transactionSchema,
+  updateCashSourceRequestSchema,
+  updateCustomAssetRequestSchema,
   updatePortfolioRequestSchema,
+  updateStandingOrderRequestSchema,
+  updateTaxSettingsRequestSchema,
   updateTransactionRequestSchema,
+  valuePointsResponseSchema,
   VAULT_ENTITY_ROW_SCHEMAS,
   type CashEntryRequest,
+  type CashMovementsResponse,
   type CashMovementResponse,
+  type CashPreviewRequest,
+  type CashPreviewResponse,
+  type CashSource,
+  type CashSourceListResponse,
+  type CashTransferRequest,
+  type CashTransferResponse,
+  type CreateStandingOrderRequest,
+  type CreateCashSourceRequest,
+  type CreateCustomAssetRequest,
+  type CreateCustomAssetResponse,
   type CreatePortfolioRequest,
+  type CustomAsset,
+  type CustomAssetListResponse,
   type PortfolioAsset,
   type PortfolioListResponse,
   type PortfolioResponse,
   type PortfolioSummary,
+  type PortfolioTaxSettingsResponse,
+  type SetCashBalanceRequest,
+  type SetCashBalanceResponse,
+  type StandingOrder,
+  type StandingOrderListResponse,
+  type TaxSettingsResponse,
   type Transaction,
   type TransactionInput,
   type TransactionListResponse,
+  type UpdateCashSourceRequest,
+  type UpdateCustomAssetRequest,
   type UpdatePortfolioRequest,
+  type UpdateStandingOrderRequest,
+  type UpdateTaxSettingsRequest,
   type UpdateTransactionRequest,
   type VaultDocument,
   type VaultEntity,
   type VaultEntityKind,
+  type ValuePoint,
+  type ValuePointsResponse,
 } from '@bettertrack/contracts';
 import {
+  cashBalance,
   cashBalancesBySource,
+  CASH_EPSILON,
+  CASH_MOVEMENT_SIGN,
   floorCents,
   InsufficientCashError,
   projectCashLedgerBySource,
+  spendableAsOf,
   type SourcedCashMovement,
 } from '@bettertrack/domain/cashLedger';
 import { OversellError, reducePosition } from '@bettertrack/domain/holdings';
@@ -44,7 +97,11 @@ import { uuidv7 } from 'uuidv7';
 
 import { VaultCryptoError } from './errors';
 import { standingOrderOccurrenceId } from './standingOrders/occurrenceId';
-import { calendarDayInTimezone, dueStandingOrderOccurrence } from './standingOrders/schedule';
+import {
+  calendarDayInTimezone,
+  dueStandingOrderOccurrence,
+  nextStandingOrderRunDate,
+} from './standingOrders/schedule';
 import type {
   VaultAtomicMutation,
   VaultDocumentReconcileContext,
@@ -128,7 +185,25 @@ export interface VaultPortfolioStore {
   createPortfolio(name: CreatePortfolioRequest['name']): Promise<PortfolioSummary>;
   getPortfolio(portfolioId: string, signal?: AbortSignal): Promise<PortfolioResponse>;
   updatePortfolio(portfolioId: string, patch: UpdatePortfolioRequest): Promise<PortfolioSummary>;
+  archivePortfolio(portfolioId: string): Promise<PortfolioSummary>;
+  restorePortfolio(portfolioId: string): Promise<PortfolioSummary>;
   deletePortfolio(portfolioId: string): Promise<void>;
+  getTaxSettings(signal?: AbortSignal): Promise<TaxSettingsResponse>;
+  updateTaxSettings(body: UpdateTaxSettingsRequest): Promise<TaxSettingsResponse>;
+  getPortfolioTaxSettings(
+    portfolioId: string,
+    signal?: AbortSignal,
+  ): Promise<PortfolioTaxSettingsResponse>;
+  setPortfolioTaxOverride(
+    portfolioId: string,
+    body: UpdateTaxSettingsRequest,
+  ): Promise<PortfolioTaxSettingsResponse>;
+  clearPortfolioTaxOverride(portfolioId: string): Promise<PortfolioTaxSettingsResponse>;
+  listCustomAssets(signal?: AbortSignal): Promise<CustomAssetListResponse>;
+  createCustomAsset(body: CreateCustomAssetRequest): Promise<CreateCustomAssetResponse>;
+  updateCustomAsset(id: string, patch: UpdateCustomAssetRequest): Promise<CustomAsset>;
+  getValuePoints(id: string, signal?: AbortSignal): Promise<ValuePointsResponse>;
+  putValuePoints(id: string, points: ValuePoint[]): Promise<ValuePointsResponse>;
   listTransactions(
     portfolioId: string,
     params?: { cursor?: string; limit?: number; source?: string },
@@ -145,8 +220,50 @@ export interface VaultPortfolioStore {
     transactionId: string,
     options?: { baseSeq?: number },
   ): Promise<void>;
+  listCashSources(
+    portfolioId: string,
+    includeArchived?: boolean,
+    signal?: AbortSignal,
+  ): Promise<CashSourceListResponse>;
+  createCashSource(portfolioId: string, body: CreateCashSourceRequest): Promise<CashSource>;
+  updateCashSource(
+    portfolioId: string,
+    sourceId: string,
+    patch: UpdateCashSourceRequest,
+  ): Promise<CashSource>;
+  archiveCashSource(
+    portfolioId: string,
+    sourceId: string,
+    options?: { baseSeq?: number },
+  ): Promise<CashSource>;
+  restoreCashSource(
+    portfolioId: string,
+    sourceId: string,
+    options?: { baseSeq?: number },
+  ): Promise<CashSource>;
+  getCashMovements(portfolioId: string, signal?: AbortSignal): Promise<CashMovementsResponse>;
+  previewCash(
+    portfolioId: string,
+    body: CashPreviewRequest,
+    signal?: AbortSignal,
+  ): Promise<CashPreviewResponse>;
   depositCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
   withdrawCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
+  transferCash(portfolioId: string, body: CashTransferRequest): Promise<CashTransferResponse>;
+  setCashBalance(
+    portfolioId: string,
+    sourceId: string,
+    body: SetCashBalanceRequest,
+  ): Promise<SetCashBalanceResponse>;
+  listStandingOrders(
+    portfolioId?: string,
+    signal?: AbortSignal,
+  ): Promise<StandingOrderListResponse>;
+  createStandingOrder(body: CreateStandingOrderRequest): Promise<StandingOrder>;
+  updateStandingOrder(id: string, patch: UpdateStandingOrderRequest): Promise<StandingOrder>;
+  pauseStandingOrder(id: string): Promise<StandingOrder>;
+  resumeStandingOrder(id: string): Promise<StandingOrder>;
+  deleteStandingOrder(id: string): Promise<void>;
   materializeStandingOrderOccurrence(
     input: VaultStandingOrderOccurrenceInput,
     signal?: AbortSignal,
@@ -238,8 +355,190 @@ export function createVaultPortfolioStore(
       return portfolioSummaryForId(requireDocument(engine), entity.id);
     },
 
+    async archivePortfolio(portfolioId) {
+      const current = requireDocument(engine);
+      const active = portfolioSummariesFromDocument(current).filter(
+        (portfolio) => portfolio.archivedAt === null,
+      );
+      if (active.length <= 1 && active[0]?.id === portfolioId) {
+        throw storeError(
+          'VAULT_OPERATION_UNAVAILABLE',
+          'The last active portfolio cannot be archived.',
+        );
+      }
+      const entity = await updateEntity(context, 'portfolio', portfolioId, (data) => ({
+        ...data,
+        archivedAt: context.now(),
+      }));
+      return portfolioSummaryForId(requireDocument(engine), entity.id);
+    },
+
+    async restorePortfolio(portfolioId) {
+      const entity = await updateEntity(context, 'portfolio', portfolioId, (data) => ({
+        ...data,
+        archivedAt: null,
+      }));
+      return portfolioSummaryForId(requireDocument(engine), entity.id);
+    },
+
     async deletePortfolio(portfolioId) {
       await deletePortfolioTree(context, portfolioId);
+    },
+
+    async getTaxSettings(signal) {
+      signal?.throwIfAborted();
+      return userTaxSettingsFromDocument(requireDocument(engine));
+    },
+
+    async updateTaxSettings(body) {
+      const parsed = updateTaxSettingsRequestSchema.parse(body);
+      const document = requireDocument(engine);
+      const existing = latestUserTaxSetting(document);
+      const value = taxSettingsValue(parsed);
+      const userId =
+        existing == null ? portfolioOwnerUserId(document) : stringField(existing.data, 'userId');
+      const row = (updatedAt: string) =>
+        strictTaxSettingData({
+          userId,
+          mode: value.mode,
+          country: value.country,
+          manualDefaultAmountEur:
+            value.manualDefaultAmountEur == null
+              ? null
+              : decimalStringFromNumber(value.manualDefaultAmountEur),
+          manualDefaultRatePct:
+            value.manualDefaultRatePct == null
+              ? null
+              : decimalStringFromNumber(value.manualDefaultRatePct),
+          customParams: value.custom ?? null,
+          updatedAt,
+        });
+      if (existing == null) {
+        await appendEntity(context, 'taxSetting', (_next, id, timestamp) =>
+          entityRecord(id, engine.deviceId, timestamp, row(timestamp)),
+        );
+      } else {
+        await updateEntity(context, 'taxSetting', existing.id, () => row(context.now()));
+      }
+      return userTaxSettingsFromDocument(requireDocument(engine));
+    },
+
+    async getPortfolioTaxSettings(portfolioId, signal) {
+      signal?.throwIfAborted();
+      return portfolioTaxSettingsFromDocument(requireDocument(engine), portfolioId);
+    },
+
+    async setPortfolioTaxOverride(portfolioId, body) {
+      const parsed = updateTaxSettingsRequestSchema.parse(body);
+      const document = requireDocument(engine);
+      requirePortfolio(document, portfolioId);
+      const existing = findPortfolioTaxSetting(document, portfolioId);
+      const value = taxSettingsValue(parsed);
+      if (existing == null) {
+        await appendEntity(context, 'portfolioSetting', (_next, id, timestamp) =>
+          entityRecord(
+            id,
+            engine.deviceId,
+            timestamp,
+            strictPortfolioSettingData({
+              portfolioId,
+              key: 'tax',
+              value,
+              updatedAt: timestamp,
+            }),
+          ),
+        );
+      } else {
+        await updateEntity(context, 'portfolioSetting', existing.id, (data) =>
+          strictPortfolioSettingData({
+            ...data,
+            value,
+            updatedAt: context.now(),
+          }),
+        );
+      }
+      return portfolioTaxSettingsFromDocument(requireDocument(engine), portfolioId);
+    },
+
+    async clearPortfolioTaxOverride(portfolioId) {
+      const document = requireDocument(engine);
+      requirePortfolio(document, portfolioId);
+      const existing = findPortfolioTaxSetting(document, portfolioId);
+      if (existing != null) {
+        await engine.mutate(({ document: next }) => {
+          const current = findLiveEntity(next, 'portfolioSetting', existing.id);
+          if (current == null) return next;
+          return replaceEntity(
+            next,
+            'portfolioSetting',
+            tombstoneEntity(current, engine.deviceId, context.now()),
+          );
+        });
+      }
+      return portfolioTaxSettingsFromDocument(requireDocument(engine), portfolioId);
+    },
+
+    async listCustomAssets(signal) {
+      signal?.throwIfAborted();
+      const document = requireDocument(engine);
+      const assets = liveEntities(document, 'customAsset')
+        .filter((entity) => nullableStringField(entity.data, 'ownerId') !== null)
+        .map((entity) => {
+          const asset = customAssetFromEntity(entity);
+          const latestValue =
+            valuePointsFromDocument(document, entity.id)
+              .sort((left, right) => left.date.localeCompare(right.date))
+              .at(-1) ?? null;
+          return { ...asset, latestValue };
+        });
+      return customAssetListResponseSchema.parse({ assets });
+    },
+
+    async createCustomAsset(body) {
+      return createCustomAsset(context, body);
+    },
+
+    async updateCustomAsset(id, patch) {
+      const parsed = updateCustomAssetRequestSchema.parse(patch);
+      const entity = await updateEntity(context, 'customAsset', id, (data) => {
+        if (nullableStringField(data, 'ownerId') === null) {
+          throw storeError('VAULT_OPERATION_UNAVAILABLE', 'Only custom assets can be edited.');
+        }
+        const meta = recordField(data, 'meta') ?? {};
+        return strictCustomAssetData({
+          ...data,
+          ...(parsed.name === undefined
+            ? {}
+            : { name: parsed.name, symbol: parsed.name, searchText: parsed.name }),
+          meta: {
+            ...meta,
+            ...(parsed.category === undefined ? {} : { category: parsed.category }),
+            ...(parsed.smoothing === undefined ? {} : { smoothing: parsed.smoothing }),
+          },
+        });
+      });
+      return customAssetFromEntity(entity);
+    },
+
+    async getValuePoints(id, signal) {
+      signal?.throwIfAborted();
+      const document = requireDocument(engine);
+      requireOwnedCustomAsset(document, id);
+      return valuePointsResponseSchema.parse({
+        points: valuePointsFromDocument(document, id).sort((left, right) =>
+          left.date.localeCompare(right.date),
+        ),
+      });
+    },
+
+    async putValuePoints(id, points) {
+      const parsed = valuePointsResponseSchema.parse({ points });
+      await replaceCustomAssetValuePoints(context, id, parsed.points);
+      return valuePointsResponseSchema.parse({
+        points: valuePointsFromDocument(requireDocument(engine), id).sort((left, right) =>
+          left.date.localeCompare(right.date),
+        ),
+      });
     },
 
     async listTransactions(portfolioId, params = {}, signal) {
@@ -410,12 +709,211 @@ export function createVaultPortfolioStore(
       await deleteTransactionTree(context, portfolioId, transactionId);
     },
 
+    async listCashSources(portfolioId, includeArchived = false, signal) {
+      signal?.throwIfAborted();
+      const document = requireDocument(engine);
+      requirePortfolio(document, portfolioId);
+      const balances = cashBalancesBySource(domainCashMovements(document, portfolioId));
+      const sources = liveEntities(document, 'cashSource')
+        .filter(
+          (entity) =>
+            stringField(entity.data, 'portfolioId') === portfolioId &&
+            (includeArchived || nullableStringField(entity.data, 'archivedAt') === null),
+        )
+        .map((entity) => cashSourceFromEntity(entity, balances.get(entity.id) ?? 0))
+        .sort(compareCashSources);
+      return cashSourceListResponseSchema.parse({ sources });
+    },
+
+    async createCashSource(portfolioId, body) {
+      const parsed = createCashSourceRequestSchema.parse(body);
+      const current = requireDocument(engine);
+      requirePortfolio(current, portfolioId);
+      assertUniqueCashSourceName(current, portfolioId, parsed.name);
+      const entity = await appendEntity(context, 'cashSource', (document, id, timestamp) => {
+        requirePortfolio(document, portfolioId);
+        assertUniqueCashSourceName(document, portfolioId, parsed.name);
+        return entityRecord(
+          id,
+          engine.deviceId,
+          timestamp,
+          strictCashSourceData({
+            portfolioId,
+            name: parsed.name,
+            type: parsed.type,
+            isMain: false,
+            archivedAt: null,
+            createdAt: timestamp,
+          }),
+        );
+      });
+      return cashSourceFromEntity(entity, 0);
+    },
+
+    async updateCashSource(portfolioId, sourceId, patch) {
+      const parsed = updateCashSourceRequestSchema.parse(patch);
+      const { baseSeq: _baseSeq, ...dataPatch } = parsed;
+      const entity = await updateEntity(
+        context,
+        'cashSource',
+        sourceId,
+        (data, document, existing) => {
+          requireOwnedEntity(document, 'cashSource', sourceId, portfolioId);
+          if (dataPatch.name !== undefined) {
+            assertUniqueCashSourceName(document, portfolioId, dataPatch.name, existing.id);
+          }
+          return strictCashSourceData({ ...data, ...definedFields(dataPatch) });
+        },
+      );
+      return currentCashSource(requireDocument(engine), entity);
+    },
+
+    async archiveCashSource(portfolioId, sourceId) {
+      const document = requireDocument(engine);
+      const source = requireOwnedEntity(document, 'cashSource', sourceId, portfolioId);
+      if (booleanField(source.data, 'isMain', false)) {
+        throw storeError('VAULT_OPERATION_UNAVAILABLE', 'The Main cash source cannot be archived.');
+      }
+      if (nullableStringField(source.data, 'archivedAt') !== null) {
+        throw storeError('VAULT_OPERATION_UNAVAILABLE', 'Cash source is already archived.');
+      }
+      const balance = cashBalancesBySource(domainCashMovements(document, portfolioId)).get(
+        sourceId,
+      );
+      if (floorCents(balance ?? 0) !== 0) {
+        throw storeError(
+          'VAULT_OPERATION_UNAVAILABLE',
+          'Only an empty cash source can be archived.',
+        );
+      }
+      const entity = await updateEntity(context, 'cashSource', sourceId, (data, nextDocument) => {
+        requireOwnedEntity(nextDocument, 'cashSource', sourceId, portfolioId);
+        return strictCashSourceData({ ...data, archivedAt: context.now() });
+      });
+      return currentCashSource(requireDocument(engine), entity);
+    },
+
+    async restoreCashSource(portfolioId, sourceId) {
+      const document = requireDocument(engine);
+      const source = requireOwnedEntity(document, 'cashSource', sourceId, portfolioId);
+      if (nullableStringField(source.data, 'archivedAt') === null) {
+        throw storeError('VAULT_OPERATION_UNAVAILABLE', 'Cash source is not archived.');
+      }
+      const entity = await updateEntity(context, 'cashSource', sourceId, (data, nextDocument) => {
+        requireOwnedEntity(nextDocument, 'cashSource', sourceId, portfolioId);
+        return strictCashSourceData({ ...data, archivedAt: null });
+      });
+      return currentCashSource(requireDocument(engine), entity);
+    },
+
+    async getCashMovements(portfolioId, signal) {
+      signal?.throwIfAborted();
+      const document = requireDocument(engine);
+      requirePortfolio(document, portfolioId);
+      const all = liveEntities(document, 'cashMovement')
+        .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
+        .map(cashMovementFromEntity)
+        .sort(
+          (left, right) =>
+            left.executedAt.localeCompare(right.executedAt) || left.id.localeCompare(right.id),
+        );
+      const balances = cashBalancesBySource(domainCashMovements(document, portfolioId));
+      const sources = liveEntities(document, 'cashSource')
+        .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
+        .map((entity) => cashSourceFromEntity(entity, balances.get(entity.id) ?? 0))
+        .sort(compareCashSources);
+      return cashMovementsResponseSchema.parse({
+        balanceEur: [...balances.values()].reduce((sum, value) => sum + value, 0),
+        movements: all,
+        sources,
+      });
+    },
+
+    async previewCash(portfolioId, body, signal) {
+      signal?.throwIfAborted();
+      const parsed = cashPreviewRequestSchema.parse(body);
+      const document = requireDocument(engine);
+      requirePortfolio(document, portfolioId);
+      const sourceId = resolveCashSourceId(document, portfolioId, parsed.sourceId);
+      const movements = domainCashMovements(document, portfolioId).filter(
+        (movement) => movement.sourceId === sourceId,
+      );
+      const availableEur = floorCents(cashBalance(movements));
+      const amountEur = floorCents(parsed.amountEur);
+      const afterEur = floorCents(availableEur + amountEur * CASH_MOVEMENT_SIGN[parsed.kind]);
+      const sufficient = afterEur >= -CASH_EPSILON;
+      const result: CashPreviewResponse = {
+        availableEur,
+        afterEur,
+        sufficient,
+        shortfallEur: sufficient ? 0 : -afterEur,
+      };
+      if (parsed.asOfDate !== undefined && parsed.kind === 'buy') {
+        const asOfAvailableEur = floorCents(
+          spendableAsOf(movements, `${parsed.asOfDate}T00:00:00.000Z`),
+        );
+        const asOfAfterEur = floorCents(asOfAvailableEur - amountEur);
+        Object.assign(result, {
+          asOfDate: parsed.asOfDate,
+          asOfAvailableEur,
+          asOfAfterEur,
+          asOfSufficient: asOfAfterEur >= -CASH_EPSILON,
+        });
+      }
+      return cashPreviewResponseSchema.parse(result);
+    },
+
     async depositCash(portfolioId, body) {
       return createCashMovement(context, portfolioId, body, 'deposit');
     },
 
     async withdrawCash(portfolioId, body) {
       return createCashMovement(context, portfolioId, body, 'withdrawal');
+    },
+
+    async transferCash(portfolioId, body) {
+      return transferCash(context, portfolioId, body);
+    },
+
+    async setCashBalance(portfolioId, sourceId, body) {
+      return setCashBalance(context, portfolioId, sourceId, body);
+    },
+
+    async listStandingOrders(portfolioId, signal) {
+      signal?.throwIfAborted();
+      const document = requireDocument(engine);
+      if (portfolioId !== undefined) requirePortfolio(document, portfolioId);
+      const orders = liveEntities(document, 'standingOrder')
+        .filter(
+          (entity) =>
+            portfolioId === undefined || stringField(entity.data, 'portfolioId') === portfolioId,
+        )
+        .map((entity) => standingOrderFromEntity(document, entity, context.now()))
+        .sort(
+          (left, right) =>
+            left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+        );
+      return standingOrderListResponseSchema.parse({ orders });
+    },
+
+    async createStandingOrder(body) {
+      return createStandingOrder(context, body);
+    },
+
+    async updateStandingOrder(id, patch) {
+      return updateStandingOrder(context, id, patch);
+    },
+
+    async pauseStandingOrder(id) {
+      return setStandingOrderStatus(context, id, 'paused');
+    },
+
+    async resumeStandingOrder(id) {
+      return setStandingOrderStatus(context, id, 'active');
+    },
+
+    async deleteStandingOrder(id) {
+      await deleteStandingOrder(context, id);
     },
 
     async materializeStandingOrderOccurrence(input, signal) {
@@ -734,6 +1232,353 @@ async function createCashMovement(
       }),
     'The committed cash movement does not match the cash response contract.',
   );
+}
+
+async function transferCash(
+  context: StoreContext,
+  portfolioId: string,
+  body: CashTransferRequest,
+): Promise<CashTransferResponse> {
+  requireDocument(context.engine);
+  const parsed = cashTransferRequestSchema.parse(body);
+  if (parsed.fromSourceId === parsed.toSourceId) {
+    throw storeError('VAULT_OPERATION_UNAVAILABLE', 'A transfer needs two different cash sources.');
+  }
+  const amountEur = floorCents(parsed.amountEur);
+  const transferId = safeNewId(context);
+  const outgoingId = safeNewId(context);
+  const incomingId = safeNewId(context);
+  let expectedOutgoing: VaultEntity | null = null;
+  let expectedIncoming: VaultEntity | null = null;
+
+  const mutationState = await context.engine.mutate(({ document }) => {
+    requirePortfolio(document, portfolioId);
+    requireActiveCashSource(document, portfolioId, parsed.fromSourceId);
+    requireActiveCashSource(document, portfolioId, parsed.toSourceId);
+    const timestamp = context.now();
+    const executedAt = parsed.executedAt ?? timestamp;
+    const common = {
+      portfolioId,
+      transactionId: null,
+      transferId,
+      dividendId: null,
+      taxYear: null,
+      executedAt,
+      note: parsed.note ?? null,
+      source: 'manual',
+      dedupHash: null,
+      originalCurrency: null,
+      createdAt: timestamp,
+    };
+    const outgoing = entityRecord(
+      outgoingId,
+      context.engine.deviceId,
+      timestamp,
+      strictCashMovementData({
+        ...common,
+        sourceId: parsed.fromSourceId,
+        kind: 'transfer_out',
+        amountEur: decimalStringFromNumber(-amountEur),
+        counterpartSourceId: parsed.toSourceId,
+      }),
+    );
+    const incoming = entityRecord(
+      incomingId,
+      context.engine.deviceId,
+      timestamp,
+      strictCashMovementData({
+        ...common,
+        sourceId: parsed.toSourceId,
+        kind: 'transfer_in',
+        amountEur: decimalStringFromNumber(amountEur),
+        counterpartSourceId: parsed.fromSourceId,
+      }),
+    );
+    const next = appendEntities(document, 'cashMovement', [outgoing, incoming]);
+    projectCashLedgerBySource(domainCashMovements(next, portfolioId));
+    expectedOutgoing = outgoing;
+    expectedIncoming = incoming;
+    return next;
+  });
+
+  const outgoing = requireCommittedMutationEntity(
+    mutationState,
+    'cashMovement',
+    outgoingId,
+    expectedOutgoing,
+  ).entity;
+  const incoming = requireCommittedMutationEntity(
+    mutationState,
+    'cashMovement',
+    incomingId,
+    expectedIncoming,
+  ).entity;
+  const document = requireDocument(context.engine);
+  const balances = cashBalancesBySource(domainCashMovements(document, portfolioId));
+  return cashTransferResponseSchema.parse({
+    outgoing: cashMovementFromEntity(outgoing),
+    incoming: cashMovementFromEntity(incoming),
+    fromBalanceEur: floorCents(balances.get(parsed.fromSourceId) ?? 0),
+    toBalanceEur: floorCents(balances.get(parsed.toSourceId) ?? 0),
+    balanceEur: floorCents([...balances.values()].reduce((sum, value) => sum + value, 0)),
+  });
+}
+
+async function setCashBalance(
+  context: StoreContext,
+  portfolioId: string,
+  sourceId: string,
+  body: SetCashBalanceRequest,
+): Promise<SetCashBalanceResponse> {
+  const parsed = setCashBalanceRequestSchema.parse(body);
+  const document = requireDocument(context.engine);
+  requireActiveCashSource(document, portfolioId, sourceId);
+  const movements = domainCashMovements(document, portfolioId);
+  const currentEur = floorCents(
+    cashBalance(movements.filter((movement) => movement.sourceId === sourceId)),
+  );
+  const deltaEur = floorCents(parsed.balanceEur) - currentEur;
+  if (Math.abs(deltaEur) < CASH_EPSILON) {
+    const balances = cashBalancesBySource(movements);
+    return setCashBalanceResponseSchema.parse({
+      movement: null,
+      deltaEur: 0,
+      sourceBalanceEur: currentEur,
+      balanceEur: floorCents([...balances.values()].reduce((sum, value) => sum + value, 0)),
+    });
+  }
+  const result = await createCashMovement(
+    context,
+    portfolioId,
+    {
+      amountEur: Math.abs(deltaEur),
+      sourceId,
+      note: parsed.note,
+    },
+    deltaEur > 0 ? 'deposit' : 'withdrawal',
+  );
+  return setCashBalanceResponseSchema.parse({
+    movement: result.movement,
+    deltaEur,
+    sourceBalanceEur: result.sourceBalanceEur,
+    balanceEur: result.balanceEur,
+  });
+}
+
+async function createStandingOrder(
+  context: StoreContext,
+  body: CreateStandingOrderRequest,
+): Promise<StandingOrder> {
+  const parsed = createStandingOrderRequestSchema.parse(body);
+  const current = requireDocument(context.engine);
+  requirePortfolio(current, parsed.portfolioId);
+  const timestamp = context.now();
+  const today = calendarDayInTimezone(new Date(timestamp), 'Europe/Vienna');
+  const startDate = parsed.startDate ?? today;
+  if (parsed.endDate !== undefined && parsed.endDate < startDate) {
+    throw storeError('VAULT_DATA_INVALID', 'Standing-order end date precedes its start date.');
+  }
+  const asset =
+    parsed.kind === 'buy-asset' ? resolveTransactionAsset(current, parsed.assetId!) : null;
+  const entity = await appendEntity(context, 'standingOrder', (document, id, createdAt) => {
+    requirePortfolio(document, parsed.portfolioId);
+    if (parsed.kind === 'buy-asset') resolveTransactionAsset(document, parsed.assetId!);
+    return entityRecord(
+      id,
+      context.engine.deviceId,
+      createdAt,
+      strictStandingOrderData({
+        userId: portfolioOwnerUserId(document),
+        portfolioId: parsed.portfolioId,
+        kind: parsed.kind,
+        assetId: parsed.assetId ?? null,
+        amount: decimalStringFromNumber(parsed.amount),
+        currency: asset?.currency ?? 'EUR',
+        label: parsed.label ?? null,
+        cadence: parsed.cadence,
+        anchorDay: parsed.anchorDay ?? null,
+        startDate,
+        endDate: parsed.endDate ?? null,
+        status: 'active',
+        lastRunAt: null,
+        lastPeriodKey: null,
+        createdAt,
+        updatedAt: createdAt,
+      }),
+    );
+  });
+  return standingOrderFromEntity(requireDocument(context.engine), entity, context.now());
+}
+
+async function createCustomAsset(
+  context: StoreContext,
+  body: CreateCustomAssetRequest,
+): Promise<CreateCustomAssetResponse> {
+  const parsed = createCustomAssetRequestSchema.parse(body);
+  const current = requireDocument(context.engine);
+  const ownerId = portfolioOwnerUserId(current);
+  const entity = await appendEntity(context, 'customAsset', (_document, id, timestamp) =>
+    entityRecord(
+      id,
+      context.engine.deviceId,
+      timestamp,
+      strictCustomAssetData({
+        providerId: 'manual',
+        providerRef: parsed.name,
+        ownerId,
+        type: 'custom',
+        symbol: parsed.name,
+        name: parsed.name,
+        exchange: null,
+        currency: parsed.currency,
+        meta: {
+          category: parsed.category,
+          smoothing: parsed.smoothing,
+        },
+        searchText: parsed.name,
+      }),
+    ),
+  );
+  let transactionId: string | null = null;
+  if (parsed.initialPurchase != null) {
+    const defaultPortfolio =
+      portfolioSummariesFromDocument(requireDocument(context.engine)).find(
+        (portfolio) => portfolio.isDefault,
+      ) ?? portfolioSummariesFromDocument(requireDocument(context.engine))[0];
+    if (defaultPortfolio == null) {
+      throw storeError(
+        'VAULT_OPERATION_UNAVAILABLE',
+        'A portfolio is required for an initial purchase.',
+      );
+    }
+    const [transaction] = await createVaultPortfolioStore(context.engine, {
+      now: context.now,
+      newId: context.newId,
+    }).createTransactions(defaultPortfolio.id, [
+      transactionInputSchema.parse({
+        assetId: entity.id,
+        side: 'buy',
+        quantity: parsed.initialPurchase.quantity,
+        price: parsed.initialPurchase.price,
+        fee: parsed.initialPurchase.fee,
+        executedAt: parsed.initialPurchase.executedAt,
+        note: parsed.initialPurchase.note ?? null,
+      }),
+    ]);
+    transactionId = transaction?.id ?? null;
+  }
+  return createCustomAssetResponseSchema.parse({
+    asset: customAssetFromEntity(entity),
+    transactionId,
+  });
+}
+
+async function replaceCustomAssetValuePoints(
+  context: StoreContext,
+  assetId: string,
+  points: ValuePoint[],
+): Promise<void> {
+  requireOwnedCustomAsset(requireDocument(context.engine), assetId);
+  await context.engine.mutate(({ document }) => {
+    requireOwnedCustomAsset(document, assetId);
+    const timestamp = context.now();
+    let next = document;
+    for (const existing of liveEntities(next, 'customAssetValue').filter(
+      (entity) => stringField(entity.data, 'assetId') === assetId,
+    )) {
+      next = replaceEntity(
+        next,
+        'customAssetValue',
+        tombstoneEntity(existing, context.engine.deviceId, timestamp),
+      );
+    }
+    const entities = points.map((point) =>
+      entityRecord(
+        safeNewId(context),
+        context.engine.deviceId,
+        timestamp,
+        strictCustomAssetValueData({
+          assetId,
+          date: point.date,
+          close: decimalStringFromNumber(point.value),
+        }),
+      ),
+    );
+    return appendEntities(next, 'customAssetValue', entities);
+  });
+}
+
+async function updateStandingOrder(
+  context: StoreContext,
+  id: string,
+  patch: UpdateStandingOrderRequest,
+): Promise<StandingOrder> {
+  const parsed = updateStandingOrderRequestSchema.parse(patch);
+  const entity = await updateEntity(context, 'standingOrder', id, (data) => {
+    const next = {
+      ...data,
+      ...definedFields({
+        amount: parsed.amount === undefined ? undefined : decimalStringFromNumber(parsed.amount),
+        label: parsed.label,
+        endDate: parsed.endDate,
+      }),
+      updatedAt: context.now(),
+    };
+    const startDate = stringField(next, 'startDate');
+    const endDate = nullableStringField(next, 'endDate');
+    if (endDate !== null && endDate < startDate) {
+      throw storeError('VAULT_DATA_INVALID', 'Standing-order end date precedes its start date.');
+    }
+    return strictStandingOrderData(next);
+  });
+  return standingOrderFromEntity(requireDocument(context.engine), entity, context.now());
+}
+
+async function setStandingOrderStatus(
+  context: StoreContext,
+  id: string,
+  status: 'active' | 'paused',
+): Promise<StandingOrder> {
+  const entity = await updateEntity(context, 'standingOrder', id, (data) =>
+    strictStandingOrderData({
+      ...data,
+      status,
+      updatedAt: context.now(),
+    }),
+  );
+  return standingOrderFromEntity(requireDocument(context.engine), entity, context.now());
+}
+
+async function deleteStandingOrder(context: StoreContext, id: string): Promise<void> {
+  requireDocument(context.engine);
+  await context.engine.mutate(({ document }) => {
+    const order = findLiveEntity(document, 'standingOrder', id);
+    if (order == null) {
+      throw storeError('VAULT_ENTITY_NOT_FOUND', 'Standing order not found in the active vault.');
+    }
+    const timestamp = context.now();
+    let next = replaceEntity(
+      document,
+      'standingOrder',
+      tombstoneEntity(order, context.engine.deviceId, timestamp),
+    );
+    for (const run of liveEntities(next, 'standingOrderRun').filter(
+      (entity) => stringField(entity.data, 'standingOrderId') === id,
+    )) {
+      next = replaceEntity(
+        next,
+        'standingOrderRun',
+        tombstoneEntity(run, context.engine.deviceId, timestamp),
+      );
+    }
+    return next;
+  });
+  if (findLiveEntity(requireDocument(context.engine), 'standingOrder', id) != null) {
+    throw storeError(
+      'VAULT_DATA_UNAVAILABLE',
+      'Standing-order deletion was not committed locally.',
+    );
+  }
 }
 
 async function materializeStandingOrderOccurrence(
@@ -1867,6 +2712,180 @@ function strictCashMovementData(data: Record<string, unknown>): Record<string, u
   );
 }
 
+function strictCashSourceData(data: Record<string, unknown>): Record<string, unknown> {
+  return parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.cashSource.parse(data),
+    'A vault cash source does not match the strict restore contract.',
+  );
+}
+
+function strictStandingOrderData(data: Record<string, unknown>): Record<string, unknown> {
+  return parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse(data),
+    'A vault standing order does not match the strict restore contract.',
+  );
+}
+
+function strictPortfolioSettingData(data: Record<string, unknown>): Record<string, unknown> {
+  return parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.portfolioSetting.parse(data),
+    'A vault portfolio setting does not match the strict restore contract.',
+  );
+}
+
+function strictTaxSettingData(data: Record<string, unknown>): Record<string, unknown> {
+  return parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.taxSetting.parse(data),
+    'A vault tax setting does not match the strict restore contract.',
+  );
+}
+
+function strictCustomAssetData(data: Record<string, unknown>): Record<string, unknown> {
+  return parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.customAsset.parse(data),
+    'A vault custom asset does not match the strict restore contract.',
+  );
+}
+
+function strictCustomAssetValueData(data: Record<string, unknown>): Record<string, unknown> {
+  return parseVaultData(
+    () => VAULT_ENTITY_ROW_SCHEMAS.customAssetValue.parse(data),
+    'A vault custom-asset value does not match the strict restore contract.',
+  );
+}
+
+function requireOwnedCustomAsset(document: VaultDocument, id: string): VaultEntity {
+  const entity = findLiveEntity(document, 'customAsset', id);
+  if (entity == null || nullableStringField(entity.data, 'ownerId') === null) {
+    throw storeError('VAULT_ENTITY_NOT_FOUND', 'Custom asset not found in the active vault.');
+  }
+  return entity;
+}
+
+function customAssetFromEntity(entity: VaultEntity): CustomAsset {
+  const meta = recordField(entity.data, 'meta') ?? {};
+  return customAssetSchema.parse({
+    id: entity.id,
+    symbol: stringField(entity.data, 'symbol'),
+    name: stringField(entity.data, 'name'),
+    category: stringField(meta, 'category', 'other'),
+    currency: stringField(entity.data, 'currency'),
+    type: stringField(entity.data, 'type'),
+    smoothing: booleanField(meta, 'smoothing', false),
+    needsRecategorization: booleanField(meta, 'recategorize', false),
+  });
+}
+
+function valuePointsFromDocument(document: VaultDocument, assetId: string): ValuePoint[] {
+  return liveEntities(document, 'customAssetValue')
+    .filter((entity) => stringField(entity.data, 'assetId') === assetId)
+    .map((entity) => ({
+      date: stringField(entity.data, 'date'),
+      value: numberField(entity.data, 'close'),
+    }));
+}
+
+function findPortfolioTaxSetting(document: VaultDocument, portfolioId: string): VaultEntity | null {
+  return (
+    liveEntities(document, 'portfolioSetting').find(
+      (entity) =>
+        stringField(entity.data, 'portfolioId') === portfolioId &&
+        stringField(entity.data, 'key') === 'tax',
+    ) ?? null
+  );
+}
+
+function portfolioTaxSettingsFromDocument(
+  document: VaultDocument,
+  portfolioId: string,
+): PortfolioTaxSettingsResponse {
+  const portfolio = requirePortfolio(document, portfolioId);
+  const overrideEntity = findPortfolioTaxSetting(document, portfolioId);
+  const override =
+    overrideEntity == null
+      ? null
+      : taxSettingsResponseFromData(recordField(overrideEntity.data, 'value'));
+  const userId = nullableStringField(portfolio.data, 'userId');
+  const userEntity = latestUserTaxSetting(document, userId);
+  const userDefault = userTaxSettingsFromDocument(document, userId);
+  return portfolioTaxSettingsResponseSchema.parse({
+    effective: override ?? userDefault,
+    override,
+    userDefault,
+    source: override != null ? 'portfolio' : userEntity == null ? 'system' : 'user',
+  });
+}
+
+function latestUserTaxSetting(
+  document: VaultDocument,
+  userId: string | null = null,
+): VaultEntity | null {
+  return (
+    liveEntities(document, 'taxSetting')
+      .filter(
+        (entity) =>
+          userId == null ||
+          nullableStringField(entity.data, 'userId') == null ||
+          nullableStringField(entity.data, 'userId') === userId,
+      )
+      .sort(
+        (left, right) =>
+          stringField(left.data, 'updatedAt', left.editedAt).localeCompare(
+            stringField(right.data, 'updatedAt', right.editedAt),
+          ) || left.id.localeCompare(right.id),
+      )
+      .at(-1) ?? null
+  );
+}
+
+function userTaxSettingsFromDocument(
+  document: VaultDocument,
+  userId: string | null = null,
+): TaxSettingsResponse {
+  const entity = latestUserTaxSetting(document, userId);
+  return entity == null
+    ? taxSettingsResponseSchema.parse({ mode: 'none', country: null })
+    : taxSettingsResponseFromData(entity.data);
+}
+
+function taxSettingsResponseFromData(data: Record<string, unknown> | null): TaxSettingsResponse {
+  if (data == null) {
+    throw storeError('VAULT_DATA_INVALID', 'A vault tax setting is malformed.');
+  }
+  const mode = taxModeField(data);
+  if (mode == null) {
+    throw storeError('VAULT_DATA_INVALID', 'A vault tax setting has no mode.');
+  }
+  const custom = recordField(data, 'custom') ?? recordField(data, 'customParams');
+  const manualDefaultAmountEur = nullableNumberField(data, 'manualDefaultAmountEur');
+  const manualDefaultRatePct = nullableNumberField(data, 'manualDefaultRatePct');
+  return taxSettingsResponseSchema.parse({
+    mode,
+    country: nullableStringField(data, 'country'),
+    ...(mode === 'custom' && custom != null ? { custom } : {}),
+    ...(mode === 'manual_per_trade' && manualDefaultAmountEur != null
+      ? { manualDefaultAmountEur }
+      : {}),
+    ...(mode === 'manual_per_trade' && manualDefaultRatePct != null
+      ? { manualDefaultRatePct }
+      : {}),
+  });
+}
+
+function taxSettingsValue(body: UpdateTaxSettingsRequest): TaxSettingsResponse {
+  return taxSettingsResponseSchema.parse({
+    mode: body.mode,
+    country: body.country ?? null,
+    ...(body.custom === undefined ? {} : { custom: body.custom }),
+    ...(body.manualDefaultAmountEur === undefined
+      ? {}
+      : { manualDefaultAmountEur: body.manualDefaultAmountEur }),
+    ...(body.manualDefaultRatePct === undefined
+      ? {}
+      : { manualDefaultRatePct: body.manualDefaultRatePct }),
+  });
+}
+
 function resolveTransactionAsset(document: VaultDocument, assetId: string): PortfolioAsset {
   const asset = findLiveEntity(document, 'customAsset', assetId);
   if (asset == null) {
@@ -2078,6 +3097,129 @@ function cashMovementFromEntity(entity: VaultEntity): CashMovementResponse['move
         createdAt: stringField(entity.data, 'createdAt', entity.editedAt),
       }),
     'A vault cash movement does not match the cash-movement contract.',
+  );
+}
+
+function cashSourceFromEntity(
+  entity: VaultEntity,
+  balanceEur: number,
+): CashSourceListResponse['sources'][number] {
+  return parseVaultData(
+    () =>
+      cashSourceSchema.parse({
+        id: entity.id,
+        name: stringField(entity.data, 'name'),
+        type: stringField(entity.data, 'type'),
+        isMain: booleanField(entity.data, 'isMain', false),
+        archivedAt: nullableStringField(entity.data, 'archivedAt'),
+        createdAt: stringField(entity.data, 'createdAt', entity.editedAt),
+        balanceEur,
+      }),
+    'A vault cash source does not match the cash-source contract.',
+  );
+}
+
+function currentCashSource(document: VaultDocument, entity: VaultEntity): CashSource {
+  const portfolioId = stringField(entity.data, 'portfolioId');
+  const balances = cashBalancesBySource(domainCashMovements(document, portfolioId));
+  return cashSourceFromEntity(entity, balances.get(entity.id) ?? 0);
+}
+
+function requireActiveCashSource(
+  document: VaultDocument,
+  portfolioId: string,
+  sourceId: string,
+): VaultEntity {
+  requirePortfolio(document, portfolioId);
+  const source = requireOwnedEntity(document, 'cashSource', sourceId, portfolioId);
+  if (nullableStringField(source.data, 'archivedAt') !== null) {
+    throw storeError(
+      'VAULT_OPERATION_UNAVAILABLE',
+      'Archived cash sources cannot receive entries.',
+    );
+  }
+  return source;
+}
+
+function assertUniqueCashSourceName(
+  document: VaultDocument,
+  portfolioId: string,
+  name: string,
+  excludedId?: string,
+): void {
+  const normalized = name.trim().toLocaleLowerCase();
+  const duplicate = liveEntities(document, 'cashSource').some(
+    (entity) =>
+      entity.id !== excludedId &&
+      stringField(entity.data, 'portfolioId') === portfolioId &&
+      stringField(entity.data, 'name').trim().toLocaleLowerCase() === normalized,
+  );
+  if (duplicate) {
+    throw storeError('VAULT_OPERATION_UNAVAILABLE', 'A cash source with that name already exists.');
+  }
+}
+
+function standingOrderFromEntity(
+  document: VaultDocument,
+  entity: VaultEntity,
+  now: string,
+): StandingOrder {
+  const kind = stringField(entity.data, 'kind');
+  const assetId = nullableStringField(entity.data, 'assetId');
+  const asset =
+    kind === 'buy-asset' && assetId !== null ? resolveTransactionAsset(document, assetId) : null;
+  const cadence = stringField(entity.data, 'cadence');
+  const anchorDay = nullableNumberField(entity.data, 'anchorDay');
+  const startDate = stringField(entity.data, 'startDate');
+  const endDate = nullableStringField(entity.data, 'endDate');
+  const status = stringField(entity.data, 'status');
+  const lastPeriodKey = nullableStringField(entity.data, 'lastPeriodKey');
+  const today = calendarDayInTimezone(new Date(now), 'Europe/Vienna');
+  return parseVaultData(
+    () =>
+      standingOrderSchema.parse({
+        id: entity.id,
+        portfolioId: stringField(entity.data, 'portfolioId'),
+        kind,
+        assetId,
+        assetSymbol: asset?.symbol ?? null,
+        assetName: asset?.name ?? null,
+        amount: numberField(entity.data, 'amount'),
+        currency: stringField(entity.data, 'currency'),
+        label: nullableStringField(entity.data, 'label'),
+        cadence,
+        anchorDay,
+        startDate,
+        endDate,
+        status,
+        lastRunAt: nullableStringField(entity.data, 'lastRunAt'),
+        lastPeriodKey,
+        nextRunDate: nextStandingOrderRunDate(
+          {
+            cadence: cadence === 'daily' ? 'daily' : 'monthly',
+            anchorDay,
+            startDate,
+            endDate,
+          },
+          today,
+          lastPeriodKey,
+          status === 'active',
+        ),
+        createdAt: stringField(entity.data, 'createdAt', entity.editedAt),
+        updatedAt: stringField(entity.data, 'updatedAt', entity.editedAt),
+      }),
+    'A vault standing order does not match the management contract.',
+  );
+}
+
+function compareCashSources(
+  left: CashSourceListResponse['sources'][number],
+  right: CashSourceListResponse['sources'][number],
+): number {
+  return (
+    Number(right.isMain) - Number(left.isMain) ||
+    left.createdAt.localeCompare(right.createdAt) ||
+    left.id.localeCompare(right.id)
   );
 }
 

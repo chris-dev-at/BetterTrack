@@ -23,6 +23,7 @@ import { Skeleton } from '../../../ui';
 import { Badge, Button, Field, Input, type BadgeTone } from '../../../ui/origin';
 import { Dialog } from '../../components/Dialog';
 import { Alert } from '../../components/ui';
+import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import {
   PanelForm,
   PanelGroup,
@@ -35,6 +36,25 @@ import {
 
 const WEBHOOKS_KEY = ['settings', 'webhooks'] as const;
 const deliveriesKey = (id: string) => ['settings', 'webhooks', id, 'deliveries'] as const;
+const PARANOID_PORTFOLIO_EVENTS = new Set<WebhookEventType>([
+  'portfolio.shared',
+  'watchlist.shared',
+  'conglomerate.shared',
+  'friend.activity',
+  'follow.published',
+  'follow.alert.created',
+  'follow.alert.fired',
+  'dividend.event',
+  'budget.exceeded',
+  'mirror.invite',
+  'mirror.member_joined',
+  'mirror.member_left',
+  'mirror.member_removed',
+  'mirror.removed',
+  'mirror.ownership_transferred',
+  'mirror.chain_dissolved',
+  'mirror.sync_stalled',
+]);
 
 /** Maps each catalog event type to its i18n label subkey (camelCase of the type). */
 const EVENT_LABEL_KEY: Record<WebhookEventType, string> = {
@@ -139,6 +159,7 @@ function CreateWebhookForm({
   onCreated: (result: CreateWebhookSubscriptionResponse) => void;
 }) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [url, setUrl] = useState('');
   const [description, setDescription] = useState('');
@@ -214,7 +235,9 @@ function CreateWebhookForm({
       <fieldset className="flex flex-col gap-1.5">
         <legend className="bt-label">{t('settings.api.webhooks.eventsLegend')}</legend>
         <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-2">
-          {WEBHOOK_EVENT_TYPES.map((type) => (
+          {WEBHOOK_EVENT_TYPES.filter(
+            (type) => !paranoid || !PARANOID_PORTFOLIO_EVENTS.has(type),
+          ).map((type) => (
             <label
               className="bt-soft flex cursor-pointer items-center gap-2 text-[12.5px]"
               key={type}

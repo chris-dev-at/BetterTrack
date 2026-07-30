@@ -7,7 +7,7 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import { cloneElement, isValidElement } from 'react';
 
 import type {
-  AnalyticsSeriesResponse,
+  PortfolioHistoryResponse,
   PortfolioListResponse,
   PortfolioResponse,
 } from '@bettertrack/contracts';
@@ -31,10 +31,7 @@ vi.mock('recharts', async (importOriginal) => {
 vi.mock('../../lib/portfolioApi', () => ({
   listPortfolios: vi.fn(),
   getPortfolio: vi.fn(),
-}));
-
-vi.mock('../../lib/analyticsApi', () => ({
-  getAnalyticsSeries: vi.fn(),
+  getPortfolioHistory: vi.fn(),
 }));
 
 // Preserve query keys + other exports the standing-orders surfaces import.
@@ -48,9 +45,8 @@ vi.mock('../../lib/marketIntelApi', async (importOriginal) => ({
   getPortfolioDividendProjection: vi.fn(),
 }));
 
-import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
-import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
+import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
 import { ForecastPage } from './ForecastPage';
 
@@ -85,28 +81,14 @@ const PORTFOLIO: PortfolioResponse = {
   },
 };
 
-const ANALYTICS: AnalyticsSeriesResponse = {
-  portfolioId: PORTFOLIO_ID,
+const HISTORY: PortfolioHistoryResponse = {
+  range: 'MAX',
   baseCurrency: 'EUR',
-  mode: 'perf',
-  from: '2020-01-01',
-  to: '2026-01-01',
-  inflation: null,
-  inflationPresets: [],
-  primary: {
-    kind: 'portfolio',
-    label: 'Main',
-    points: [],
-    stats: {
-      totalReturnPct: 40,
-      cagrPct: 7,
-      maxDrawdownPct: -10,
-      bestDay: null,
-      worstDay: null,
-    },
-  },
-  compare: null,
-  contributions: [],
+  points: [
+    { date: '2020-01-01', valueEur: 100 },
+    { date: '2026-01-01', valueEur: 150.073035 },
+  ],
+  performance: [],
 };
 
 function makeQueryClient() {
@@ -127,7 +109,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
-  vi.mocked(getAnalyticsSeries).mockResolvedValue(ANALYTICS);
+  vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
   vi.mocked(listStandingOrders).mockResolvedValue({ orders: [] });
   vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
     available: false,
@@ -188,11 +170,7 @@ test('prefill from portfolio fills current value + historical average return', a
   // Wait for the prefill fetches so the button is enabled (both queries settle).
   await waitFor(() => {
     expect(getPortfolio).toHaveBeenCalledWith(PORTFOLIO_ID, expect.anything());
-    expect(getAnalyticsSeries).toHaveBeenCalledWith(
-      PORTFOLIO_ID,
-      { mode: 'perf' },
-      expect.anything(),
-    );
+    expect(getPortfolioHistory).toHaveBeenCalledWith(PORTFOLIO_ID, 'MAX', false, expect.anything());
   });
 
   // Compound-interest card: prefill sets principal ← totalValueEur, rate ← cagrPct.
@@ -208,7 +186,7 @@ test('prefill from portfolio fills current value + historical average return', a
 test('when the portfolio prefill has no data available, cards fall back to standalone', async () => {
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
   vi.mocked(getPortfolio).mockRejectedValue(new Error('no portfolio'));
-  vi.mocked(getAnalyticsSeries).mockRejectedValue(new Error('no analytics'));
+  vi.mocked(getPortfolioHistory).mockRejectedValue(new Error('no history'));
 
   const user = userEvent.setup();
   renderForecast();

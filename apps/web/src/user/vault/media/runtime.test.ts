@@ -181,6 +181,27 @@ describe('unlocked Drive runtime', () => {
     expect(proof.ensure).toHaveBeenCalledTimes(1);
   });
 
+  it('opens a readable local vault offline while keeping storage changes sync-gated', async () => {
+    const sync = coordinator('pending-offline', 'pending-offline', securedDocument);
+    const runtime = createUnlockedVaultDriveRuntime(
+      new Uint8Array(32).fill(1),
+      fixture.initial.header.keyId,
+      dependencies(sync, proofManager()),
+    );
+
+    await expect(runtime.ready).resolves.toBeUndefined();
+    await expect(runtime.sync.mutate(({ document }) => document)).resolves.toMatchObject({
+      status: 'pending-offline',
+      active: {},
+      pending: {},
+    });
+    await expect(runtime.controller.useDriveOnly()).resolves.toMatchObject({
+      status: 'failed',
+      stage: 'preflight-sync',
+      synchronization: { status: 'pending', state: { status: 'pending-offline' } },
+    });
+  });
+
   it.each(['pending-offline', 'conflict'] as const)(
     'preserves a committed media result when resume resolves %s',
     async (status) => {
@@ -452,8 +473,9 @@ class RuntimeDrive extends RuntimeRemote implements DriveDataHome {
 function coordinator(
   reconnectStatus: VaultSyncState['status'],
   mutateStatus: VaultSyncState['status'] = 'synced',
+  initialDocument: VaultDocument = baseDocument,
 ): VaultDriveSyncCoordinator {
-  let state = syncState(reconnectStatus, baseDocument);
+  let state = syncState(reconnectStatus, initialDocument);
   const sync: VaultDriveSyncCoordinator = {
     deviceId: 'test-device',
     get state() {

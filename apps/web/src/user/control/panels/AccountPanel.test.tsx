@@ -15,11 +15,14 @@ vi.mock('../../../lib/userApi', () => ({
   requestDataExport: vi.fn(),
   getDataExportStatus: vi.fn(),
   downloadDataExport: vi.fn(),
-  getParanoidMediaState: vi.fn(),
 }));
 vi.mock('../../../lib/settingsApi', () => ({
   getAccountSettings: vi.fn(),
   updateAccountSettings: vi.fn(),
+}));
+vi.mock('../../../lib/socialApi', () => ({
+  getProfileSettings: vi.fn(),
+  updateProfileSettings: vi.fn(),
 }));
 vi.mock('../../vault/export/deliver', () => ({
   deliverClientDownload: vi.fn(),
@@ -31,11 +34,11 @@ import { webcrypto } from 'node:crypto';
 import { I18nProvider } from '../../../i18n';
 import { getMoneyCurrency, setMoneyCurrency } from '../../../lib/format';
 import { getAccountSettings, updateAccountSettings } from '../../../lib/settingsApi';
+import { getProfileSettings, updateProfileSettings } from '../../../lib/socialApi';
 import {
   downloadDataExport,
   getDataExportStatus,
   getMe,
-  getParanoidMediaState,
   requestDataExport,
 } from '../../../lib/userApi';
 import {
@@ -45,6 +48,7 @@ import {
 } from '../../vault/engine/clientMoney.testSupport';
 import { VaultMoneyEngineProvider } from '../../vault/engine/VaultMoneyEngineProvider';
 import { deliverClientDownload } from '../../vault/export/deliver';
+import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { AccountPanel } from './AccountPanel';
 
 const ME: MeResponse = {
@@ -84,13 +88,15 @@ const REQUEST_RESPONSE: ExportRequestResponse = {
   downloadToken: 'raw-download-token-1',
 };
 
-function renderPanel() {
+function renderPanel(mode: 'normal' | 'paranoid' = 'normal') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
     <MemoryRouter>
       <I18nProvider>
         <QueryClientProvider client={client}>
-          <AccountPanel />
+          <ResolvedPrivacyModeProvider mode={mode}>
+            <AccountPanel />
+          </ResolvedPrivacyModeProvider>
         </QueryClientProvider>
       </I18nProvider>
     </MemoryRouter>,
@@ -100,7 +106,6 @@ function renderPanel() {
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
-  vi.mocked(getParanoidMediaState).mockResolvedValue({ privacyMode: 'normal', mediaState: null });
   vi.mocked(getMe).mockResolvedValue(ME);
   vi.mocked(getDataExportStatus).mockResolvedValue(NO_EXPORT);
   vi.mocked(requestDataExport).mockResolvedValue(REQUEST_RESPONSE);
@@ -116,6 +121,20 @@ beforeEach(() => {
     locale: 'en',
     baseCurrency: 'EUR',
     discreetMode: false,
+  });
+  vi.mocked(getProfileSettings).mockResolvedValue({
+    username: 'ada',
+    isPublic: false,
+    bio: null,
+    publicItemCount: 0,
+    profileIcon: null,
+  });
+  vi.mocked(updateProfileSettings).mockResolvedValue({
+    username: 'ada',
+    isPublic: false,
+    bio: null,
+    publicItemCount: 0,
+    profileIcon: 'astronaut',
   });
 });
 
@@ -267,14 +286,23 @@ describe('AccountPanel', () => {
 });
 
 describe('AccountPanel — paranoid cleartext export (PD7)', () => {
-  const PARANOID = {
-    privacyMode: 'paranoid' as const,
-    mediaState: {
-      mediaSet: ['server' as const],
-      driveAttestedVersion: null,
-      server: { disposition: 'active' as const, candidate: null, retired: null },
-    },
-  };
+  test('keeps the curated profile-icon picker without exposing public-profile settings', async () => {
+    const user = userEvent.setup();
+    renderPanel('paranoid');
+
+    await user.click(await screen.findByRole('button', { name: /Profile icon/i }));
+    const choices = screen.getAllByRole('radio');
+    await user.click(choices[0]!);
+    await user.click(screen.getByRole('button', { name: 'Save profile' }));
+
+    await waitFor(() =>
+      expect(updateProfileSettings).toHaveBeenCalledWith({
+        isPublic: false,
+        profileIcon: expect.any(String),
+      }),
+    );
+    expect(screen.queryByRole('switch', { name: /public profile/i })).not.toBeInTheDocument();
+  });
 
   test('a normal account never shows the cleartext export block', async () => {
     renderPanel();
@@ -283,8 +311,7 @@ describe('AccountPanel — paranoid cleartext export (PD7)', () => {
   });
 
   test('a locked vault shows the unlock requirement while the server export row stays', async () => {
-    vi.mocked(getParanoidMediaState).mockResolvedValue(PARANOID);
-    renderPanel();
+    renderPanel('paranoid');
 
     expect(await screen.findByText('Cleartext export (this device)')).toBeInTheDocument();
     expect(screen.getByText(/Unlock your vault to build a cleartext export/i)).toBeInTheDocument();
@@ -296,7 +323,6 @@ describe('AccountPanel — paranoid cleartext export (PD7)', () => {
 
   test('an unlocked vault builds the zip in the browser and hands it to the download', async () => {
     Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
-    vi.mocked(getParanoidMediaState).mockResolvedValue(PARANOID);
     const fixture = await decryptClientMoneyFixture();
     const sync = createMutableTestSync(fixture.document, fixture.header, fixture.envelope);
     const client = new QueryClient({
@@ -306,11 +332,13 @@ describe('AccountPanel — paranoid cleartext export (PD7)', () => {
       <MemoryRouter>
         <I18nProvider>
           <QueryClientProvider client={client}>
-            <VaultMoneyEngineProvider
-              dependencies={{ sync, market: createClientMoneyMarket().market }}
-            >
-              <AccountPanel />
-            </VaultMoneyEngineProvider>
+            <ResolvedPrivacyModeProvider mode="paranoid">
+              <VaultMoneyEngineProvider
+                dependencies={{ sync, market: createClientMoneyMarket().market }}
+              >
+                <AccountPanel />
+              </VaultMoneyEngineProvider>
+            </ResolvedPrivacyModeProvider>
           </QueryClientProvider>
         </I18nProvider>
       </MemoryRouter>,
@@ -334,7 +362,6 @@ describe('AccountPanel — paranoid cleartext export (PD7)', () => {
   // cleartext bytes are handed over.
   test('locking mid-generation aborts the export — no cleartext leaves after lock', async () => {
     Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
-    vi.mocked(getParanoidMediaState).mockResolvedValue(PARANOID);
     const fixture = await decryptClientMoneyFixture();
     const sync = createMutableTestSync(fixture.document, fixture.header, fixture.envelope);
     const market = createClientMoneyMarket().market;
@@ -345,9 +372,11 @@ describe('AccountPanel — paranoid cleartext export (PD7)', () => {
       <MemoryRouter>
         <I18nProvider>
           <QueryClientProvider client={client}>
-            <VaultMoneyEngineProvider dependencies={{ sync: activeSync, market }}>
-              <AccountPanel />
-            </VaultMoneyEngineProvider>
+            <ResolvedPrivacyModeProvider mode="paranoid">
+              <VaultMoneyEngineProvider dependencies={{ sync: activeSync, market }}>
+                <AccountPanel />
+              </VaultMoneyEngineProvider>
+            </ResolvedPrivacyModeProvider>
           </QueryClientProvider>
         </I18nProvider>
       </MemoryRouter>

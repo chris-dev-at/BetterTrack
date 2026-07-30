@@ -9,6 +9,11 @@ import {
 
 import { cx } from '../lib/cx';
 import { useT } from '../i18n';
+import { useResolvedPrivacyMode } from '../user/vault/usePrivacyMode';
+
+export function isParanoidBlockedScope(scope: ApiKeyScope): boolean {
+  return scope === 'portfolio:read' || scope === 'portfolio:write';
+}
 
 /**
  * V5-P0b — the shared scope picker. Replaces the wall of per-scope rows with
@@ -233,11 +238,23 @@ export function ScopePicker({
   legend,
 }: ScopePickerProps) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
+  const modules = paranoid
+    ? SCOPE_MODULES.filter(
+        (module) =>
+          ![module.read, module.write, module.combined].some(
+            (scope) => scope != null && isParanoidBlockedScope(scope),
+          ),
+      )
+    : SCOPE_MODULES;
+  const visibleScopes = paranoid
+    ? new Set([...scopes].filter((scope) => !isParanoidBlockedScope(scope)))
+    : scopes;
 
   const rows = (
     <div className="flex flex-col gap-1.5">
-      {SCOPE_MODULES.map((module) => (
-        <ScopeRow key={module.key} module={module} scopes={scopes} onChange={onChange} />
+      {modules.map((module) => (
+        <ScopeRow key={module.key} module={module} scopes={visibleScopes} onChange={onChange} />
       ))}
     </div>
   );
@@ -246,7 +263,7 @@ export function ScopePicker({
     return rows;
   }
 
-  const count = scopes.size;
+  const count = visibleScopes.size;
   const summaryText =
     count === 0
       ? t('ui.scopePicker.selectedNone')
@@ -281,9 +298,13 @@ type ScopeGroup = { module: ScopeModule; claims: ScopeClaim[] };
 
 export function ScopeSummary({ items }: ScopeSummaryProps) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
+  const visibleItems = paranoid
+    ? items.filter((item) => !isParanoidBlockedScope(item.scope))
+    : items;
   const grouped: ScopeGroup[] = [];
   for (const module of SCOPE_MODULES) {
-    const claims = items.filter((item) => moduleForScope(item.scope)?.key === module.key);
+    const claims = visibleItems.filter((item) => moduleForScope(item.scope)?.key === module.key);
     if (claims.length > 0) grouped.push({ module, claims: [...claims] });
   }
 

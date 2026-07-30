@@ -62,6 +62,10 @@ beforeEach(() => {
   queryClient.clear();
 
   vi.mocked(api.getMe).mockResolvedValue(user);
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
   // Every step's read: a brand-new account, nothing configured yet.
   vi.mocked(api.getGoogleLinkStatus).mockResolvedValue({

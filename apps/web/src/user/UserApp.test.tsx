@@ -74,6 +74,10 @@ const anonymous = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   // WorkboardPage fetches the watchlist on mount; return an empty list so the
   // page renders without errors in tests that exercise the workboard route.
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });

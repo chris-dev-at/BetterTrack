@@ -15,9 +15,11 @@ import { useT } from '../../../i18n';
 import { formatDate } from '../../../lib/format';
 import { createOAuthClient, deleteOAuthClient, listOAuthClients } from '../../../lib/oauthApi';
 import { ScopePicker, Skeleton } from '../../../ui';
+import { isParanoidBlockedScope } from '../../../ui/ScopePicker';
 import { Badge, Button, Field, Input } from '../../../ui/origin';
 import { Dialog } from '../../components/Dialog';
 import { Alert } from '../../components/ui';
+import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import {
   PanelForm,
   PanelGroup,
@@ -292,6 +294,7 @@ function RegisterOAuthClientForm({
 /** One registered app with a two-step confirm before deletion (cascades its grants). */
 function OAuthClientRow({ client }: { client: OAuthClientSummary }) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState(false);
@@ -355,9 +358,11 @@ function OAuthClientRow({ client }: { client: OAuthClientSummary }) {
             {client.clientId}
           </code>
           <span className="flex flex-wrap gap-1">
-            {client.scopes.map((scope) => (
-              <ScopeChip key={scope} scope={scope} />
-            ))}
+            {client.scopes
+              .filter((scope) => !paranoid || !isParanoidBlockedScope(scope))
+              .map((scope) => (
+                <ScopeChip key={scope} scope={scope} />
+              ))}
           </span>
           {client.redirectUris.map((uri) => (
             <span className="bt-cc-mono" key={uri} style={{ color: 'var(--bt-muted)' }}>

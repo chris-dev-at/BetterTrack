@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vitest';
 
 import { API_KEY_SCOPES, type ApiKeyScope } from '@bettertrack/contracts';
 
+import { ResolvedPrivacyModeProvider } from '../user/vault/usePrivacyMode';
 import { ScopePicker, ScopeSummary } from './ScopePicker';
 
 /**
@@ -143,6 +144,18 @@ describe('ScopePicker', () => {
     expect(
       screen.getByRole('checkbox', { name: /account security · access/i }),
     ).toBeInTheDocument();
+  });
+
+  test('removes portfolio-scoped grants entirely for a paranoid account', () => {
+    render(
+      <ResolvedPrivacyModeProvider mode="paranoid">
+        <PickerHarness initial={['portfolio:read', 'portfolio:write', 'market:read']} />
+      </ResolvedPrivacyModeProvider>,
+    );
+
+    expect(screen.queryByText('Portfolio')).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /portfolio · read/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /market · read/i })).toBeInTheDocument();
   });
 
   test('info-point reveals the module description on demand — not by default', async () => {

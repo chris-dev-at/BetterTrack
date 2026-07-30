@@ -3,13 +3,19 @@ import type { FormEvent } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { BASE_CURRENCIES, type BaseCurrency } from '@bettertrack/contracts';
+import {
+  BASE_CURRENCIES,
+  PROFILE_ICON_IDS,
+  type BaseCurrency,
+  type ProfileIconId,
+} from '@bettertrack/contracts';
 
 import { SUPPORTED_LOCALES, useI18n, useT } from '../../../i18n';
 import type { TranslateFn } from '../../../i18n';
 import { ApiError } from '../../../lib/apiClient';
 import { formatDate, setMoneyCurrency } from '../../../lib/format';
 import { getAccountSettings, updateAccountSettings } from '../../../lib/settingsApi';
+import { getProfileSettings, updateProfileSettings } from '../../../lib/socialApi';
 import {
   downloadDataExport,
   getDataExportStatus,
@@ -17,19 +23,22 @@ import {
   requestDataExport,
 } from '../../../lib/userApi';
 import { Skeleton } from '../../../ui';
-import { Button, Field, Input, Select } from '../../../ui/origin';
+import { Button, Field, Icon, Input, Select } from '../../../ui/origin';
+import { Avatar } from '../../components/Avatar';
+import { ProfileIconSvg } from '../../components/profileIcons';
 import { Alert } from '../../components/ui';
 import { vaultMoneyErrorKey } from '../../vault/engine/errorCopy';
 import type { VaultMoneyFailure } from '../../vault/engine/errors';
 import { useVaultMoneySession } from '../../vault/engine/VaultMoneyEngineProvider';
 import { createClientCleartextExport } from '../../vault/export/cleartext';
 import { deliverClientDownload } from '../../vault/export/deliver';
-import { usePrivacyMode } from '../../vault/usePrivacyMode';
+import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import { PanelForm, PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
 
 const ME_KEY = ['auth', 'me'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
 const EXPORT_STATUS_KEY = ['settings', 'export'] as const;
+const PROFILE_KEY = ['social', 'profile'] as const;
 
 // #951 removes the old durable token cache. Clear it synchronously on mount so
 // upgrades cannot leave a previously persisted credential behind.
@@ -404,9 +413,143 @@ function CleartextExportRow() {
 
 /** Paranoid-only: normal accounts keep exactly the single server export row. */
 function CleartextExportGate() {
-  const privacy = usePrivacyMode();
-  if (privacy.privacyMode !== 'paranoid') return null;
+  const privacyMode = useResolvedPrivacyMode();
+  if (privacyMode !== 'paranoid') return null;
   return <CleartextExportRow />;
+}
+
+function ParanoidProfileIconRow() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<ProfileIconId | null | undefined>(undefined);
+  const [open, setOpen] = useState(false);
+  const query = useQuery({
+    queryKey: PROFILE_KEY,
+    queryFn: ({ signal }) => getProfileSettings(signal),
+  });
+  const mutation = useMutation({
+    mutationFn: (profileIcon: ProfileIconId | null) =>
+      updateProfileSettings({ isPublic: false, profileIcon }),
+    onSuccess: (result) => {
+      queryClient.setQueryData(PROFILE_KEY, result);
+      void queryClient.invalidateQueries({ queryKey: ME_KEY });
+      setDraft(undefined);
+    },
+  });
+
+  if (query.isPending) {
+    return (
+      <Row label={t('profile.icon.title')}>
+        <Skeleton height="h-7" width="w-32" />
+      </Row>
+    );
+  }
+  if (query.isError || query.data == null) {
+    return <Row>{<Alert tone="error">{t('profile.error')}</Alert>}</Row>;
+  }
+
+  const stored = query.data.profileIcon ?? null;
+  const current = draft === undefined ? stored : draft;
+  const dirty = draft !== undefined && draft !== stored;
+
+  return (
+    <>
+      <Row stack>
+        <button
+          aria-controls="paranoid-profile-icon-grid"
+          aria-expanded={open}
+          className="flex items-center gap-3 text-left"
+          onClick={() => setOpen((value) => !value)}
+          style={{
+            background: 'none',
+            border: 0,
+            color: 'inherit',
+            cursor: 'pointer',
+            font: 'inherit',
+            padding: 0,
+          }}
+          type="button"
+        >
+          <Avatar iconId={current} name={query.data.username} size="sm" />
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="bt-cc-row__label">{t('profile.icon.title')}</span>
+            <span className="bt-cc-row__hint">
+              {current
+                ? t('profile.icon.picked', { name: t(`profile.icon.name.${current}`) })
+                : t('profile.icon.defaultHint')}
+            </span>
+          </span>
+          <Icon
+            name="chevron-right"
+            size={15}
+            style={{
+              color: 'var(--bt-faint)',
+              flex: 'none',
+              transform: open ? 'rotate(90deg)' : undefined,
+              transition: 'transform var(--bt-t-fast)',
+            }}
+          />
+        </button>
+        {open ? (
+          <div
+            aria-label={t('profile.icon.title')}
+            id="paranoid-profile-icon-grid"
+            role="radiogroup"
+          >
+            <div className="grid grid-cols-8 gap-1.5 sm:grid-cols-10">
+              {PROFILE_ICON_IDS.map((id) => (
+                <button
+                  aria-checked={current === id}
+                  aria-label={t(`profile.icon.name.${id}`)}
+                  className="flex aspect-square items-center justify-center"
+                  data-icon-id={id}
+                  key={id}
+                  onClick={() => setDraft(id)}
+                  role="radio"
+                  style={{
+                    background: current === id ? 'var(--bt-gold-soft)' : 'none',
+                    border: `1px solid ${
+                      current === id ? 'var(--bt-gold)' : 'var(--bt-border-strong)'
+                    }`,
+                    borderRadius: 5,
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                  type="button"
+                >
+                  <ProfileIconSvg className="h-full w-full" id={id} />
+                </button>
+              ))}
+            </div>
+            {current !== null ? (
+              <button className="bt-link mt-2 text-xs" onClick={() => setDraft(null)} type="button">
+                {t('profile.icon.clear')}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </Row>
+      {dirty || mutation.isError ? (
+        <Row>
+          <Button
+            disabled={!dirty || mutation.isPending}
+            onClick={() => mutation.mutate(current)}
+            size="sm"
+          >
+            {mutation.isPending ? t('sharing.saving') : t('profile.save')}
+          </Button>
+          {mutation.isError ? (
+            <span className="bt-field__error">{t('profile.saveError')}</span>
+          ) : null}
+        </Row>
+      ) : null}
+    </>
+  );
+}
+
+function ParanoidProfileIconGate() {
+  const privacyMode = useResolvedPrivacyMode();
+  return privacyMode === 'paranoid' ? <ParanoidProfileIconRow /> : null;
 }
 
 /**
@@ -426,6 +569,7 @@ export function AccountPanel() {
 
       <PanelGroup label={t('settings.account.identity')}>
         <IdentityRows />
+        <ParanoidProfileIconGate />
       </PanelGroup>
 
       <PanelGroup label={t('settings.account.display')}>

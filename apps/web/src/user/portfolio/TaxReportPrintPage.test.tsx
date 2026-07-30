@@ -6,10 +6,9 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { TaxYearReportResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/portfolioApi');
-vi.mock('../../lib/userApi');
 import * as portfolioApi from '../../lib/portfolioApi';
-import * as userApi from '../../lib/userApi';
 
+import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 import { TaxReportPrintPage } from './TaxReportPrintPage';
 
 const PORTFOLIO_LIST = {
@@ -109,13 +108,15 @@ const DE_REPORT: TaxYearReportResponse = {
   ],
 };
 
-function renderPrint(path: string) {
+function renderPrint(path: string, mode: 'normal' | 'paranoid' = 'normal') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[path]}>
-        <TaxReportPrintPage />
-      </MemoryRouter>
+      <ResolvedPrivacyModeProvider mode={mode}>
+        <MemoryRouter initialEntries={[path]}>
+          <TaxReportPrintPage />
+        </MemoryRouter>
+      </ResolvedPrivacyModeProvider>
     </QueryClientProvider>,
   );
 }
@@ -123,10 +124,6 @@ function renderPrint(path: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   window.print = vi.fn();
-  vi.mocked(userApi.getParanoidMediaState).mockResolvedValue({
-    privacyMode: 'normal',
-    mediaState: null,
-  });
   vi.mocked(portfolioApi.listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(portfolioApi.getTaxYearReport).mockResolvedValue(AT_REPORT);
 });
@@ -188,15 +185,7 @@ describe('TaxReportPrintPage', () => {
   });
 
   test('a paranoid account renders the on-device hint and never fetches or auto-prints (PD7)', async () => {
-    vi.mocked(userApi.getParanoidMediaState).mockResolvedValue({
-      privacyMode: 'paranoid',
-      mediaState: {
-        mediaSet: ['server'],
-        driveAttestedVersion: null,
-        server: { disposition: 'active', candidate: null, retired: null },
-      },
-    });
-    renderPrint('/portfolio/tax/print?portfolio=p1&year=2026');
+    renderPrint('/portfolio/tax/print?portfolio=p1&year=2026', 'paranoid');
 
     expect(
       await screen.findByText(/computes tax reports on-device from the encrypted vault/i),

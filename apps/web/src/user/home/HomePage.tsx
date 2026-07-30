@@ -4,6 +4,8 @@ import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { Button, Empty, PageHead } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
+import { PortfolioPage } from '../portfolio/PortfolioPage';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { AddWidgetDrawer } from './AddWidgetDrawer';
 import {
   addWidget,
@@ -101,6 +103,12 @@ function sameAxes(a: readonly PlacementAxis[], b: readonly PlacementAxis[]): boo
 }
 
 export function HomePage() {
+  const privacyMode = useResolvedPrivacyMode();
+  if (privacyMode === 'paranoid') return <PortfolioPage />;
+  return <HomeBoard />;
+}
+
+function HomeBoard() {
   const t = useT();
   const { user } = useAuth();
 
