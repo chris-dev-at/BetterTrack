@@ -3,10 +3,11 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
+import { createRootErrorOptions } from '../rootErrorHandling';
 import { ErrorBoundary } from './ErrorBoundary';
 
-// React logs caught boundary errors via console.error; silence it so the test
-// output stays clean.
+// Silence React's default caught-error diagnostics in tests that do not supply
+// the application's explicit root handler.
 beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -26,10 +27,14 @@ describe('ErrorBoundary', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  test('catches a thrown child error and shows the default fallback', () => {
+  test('shows generic copy and a stable correlation id without rendering exception detail', async () => {
+    const user = userEvent.setup();
+    const secret = 'reset-token-super-secret-capability';
+    const error = new Error(secret);
+
     // `never` return: TS would otherwise infer `void`, an invalid JSX return.
     function Bomb(): never {
-      throw new Error('kaboom');
+      throw error;
     }
 
     render(
@@ -40,7 +45,63 @@ describe('ErrorBoundary', () => {
 
     expect(screen.getByRole('alert')).toBeInTheDocument();
     expect(screen.getByText('Something went wrong.')).toBeInTheDocument();
-    expect(screen.getByText('kaboom')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "We couldn't display this page. Try again. If the problem continues, share the reference below.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('alert')).not.toHaveTextContent(secret);
+
+    const firstReference = screen.getByText(/^Reference ID: /).textContent;
+    expect(firstReference).toMatch(/^Reference ID: \S+$/);
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(screen.getByText(/^Reference ID: /)).toHaveTextContent(firstReference ?? '');
+  });
+
+  test('suppresses raw caught-error detail with production root options', () => {
+    const secret = 'production-reset-token-super-secret-capability';
+    const error = new Error(secret);
+
+    function Bomb(): never {
+      throw error;
+    }
+
+    render(
+      <ErrorBoundary>
+        <Bomb />
+      </ErrorBoundary>,
+      createRootErrorOptions(false),
+    );
+
+    expect(screen.getByRole('alert')).not.toHaveTextContent(secret);
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  test('logs caught-error diagnostics exactly once with development root options', () => {
+    const error = new Error('development diagnostic');
+
+    function Bomb(): never {
+      throw error;
+    }
+
+    render(
+      <ErrorBoundary>
+        <Bomb />
+      </ErrorBoundary>,
+      createRootErrorOptions(true),
+    );
+
+    expect(console.error).toHaveBeenCalledOnce();
+    expect(console.error).toHaveBeenCalledWith('Caught render error', error, expect.any(Object));
+  });
+
+  test('creates a fallback state for primitive throwables', () => {
+    expect(ErrorBoundary.getDerivedStateFromError('primitive failure')).toEqual({
+      hasError: true,
+      correlationId: expect.any(String),
+    });
   });
 
   test('the default fallback offers a retry affordance', () => {
@@ -148,21 +209,5 @@ describe('ErrorBoundary', () => {
 
     expect(screen.getByText('Custom error view')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
-  });
-
-  test('omits the message paragraph when the error has no message', () => {
-    function Bomb(): never {
-      throw new Error('');
-    }
-
-    const { container } = render(
-      <ErrorBoundary>
-        <Bomb />
-      </ErrorBoundary>,
-    );
-
-    expect(screen.getByText('Something went wrong.')).toBeInTheDocument();
-    // The alert holds exactly one <p> — the heading, with no message line.
-    expect(container.querySelector('[role="alert"]')?.querySelectorAll('p')).toHaveLength(1);
   });
 });
