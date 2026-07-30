@@ -12,10 +12,6 @@ import {
 
 import { badRequest } from '../../errors';
 import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
-import {
-  MULTIPART_HEADER_PAIRS_LIMIT,
-  observeMultipartHeaderPairs,
-} from '../middleware/multipartHeaderPairs';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -46,8 +42,14 @@ export function createImportsRouter(ctx: AppContext): Router {
   // file, a parts-limit sentinel of four (Busboy emits at equality, so this
   // admits exactly the three allowed parts), a field-size sentinel of 1,000,001
   // (Busboy truncates at equality, so this admits 1,000,000 payload bytes), and
-  // 32 header pairs per part (well above browser form data's usual 1–2). Busboy
-  // 1.6 ignores `headerPairs`, so the raw-stream observer below enforces it.
+  // 32 header pairs per part (well above browser form data's usual 1–2).
+  //
+  // `headerPairs` is declarative: Busboy 1.6 ignores it and hard-codes
+  // MAX_HEADER_PAIRS = 2000 (lib/types/multipart.js:21). The bound that actually
+  // holds is its MAX_HEADER_SIZE = 16 KiB per part header block (:22), enforced
+  // by a hard `Malformed part header` error (:395-398) and reset per part, so
+  // header memory stays under 16 KiB x `parts`. That error is a plain Error, not
+  // a MulterError — hence the catch-all mapping in `uploadFile`.
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -56,32 +58,30 @@ export function createImportsRouter(ctx: AppContext): Router {
       fields: 2,
       parts: 4,
       fieldSize: 1_000_001,
-      headerPairs: MULTIPART_HEADER_PAIRS_LIMIT,
+      headerPairs: 32,
     },
   });
 
-  /** `upload.single('file')` with Multer's errors mapped onto the §8 envelope. */
+  /**
+   * `upload.single('file')` with every multipart failure mapped onto the §8
+   * envelope. Multer wraps only its own limit breaches as `MulterError`; Busboy's
+   * framing errors (an over-16 KiB part header block, `Unexpected end of form`,
+   * an unparseable content-type) surface as plain `Error`s and would otherwise
+   * reach the terminal handler as an opaque 500 — reporting hostile input as a
+   * server fault. Every one of them is a malformed upload, so every one of them
+   * is the same 400; only the file-size breach earns more specific guidance.
+   */
   const uploadFile: RequestHandler = (req, res, next) => {
-    const headerPairs = observeMultipartHeaderPairs(req);
     upload.single('file')(req, res, (err?: unknown) => {
-      const multipartGuardViolated = headerPairs.finish();
-      if (err instanceof MulterError) {
-        const message =
-          err.code === 'LIMIT_FILE_SIZE'
-            ? `The file exceeds the ${Math.round(IMPORT_MAX_FILE_BYTES / (1024 * 1024))} MB upload limit.`
-            : 'Invalid file upload.';
-        next(badRequest(message, 'IMPORT_FILE_INVALID'));
-        return;
-      }
-      if (multipartGuardViolated) {
-        next(badRequest('Invalid file upload.', 'IMPORT_FILE_INVALID'));
-        return;
-      }
       if (!err) {
         next();
         return;
       }
-      next(err);
+      const message =
+        err instanceof MulterError && err.code === 'LIMIT_FILE_SIZE'
+          ? `The file exceeds the ${Math.round(IMPORT_MAX_FILE_BYTES / (1024 * 1024))} MB upload limit.`
+          : 'Invalid file upload.';
+      next(badRequest(message, 'IMPORT_FILE_INVALID'));
     });
   };
 

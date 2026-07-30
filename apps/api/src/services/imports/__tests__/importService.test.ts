@@ -23,7 +23,6 @@ import { createCashSourceRepository } from '../../../data/repositories/cashSourc
 import { createImportRepository } from '../../../data/repositories/importRepository';
 import { createPortfolioRepository } from '../../../data/repositories/portfolioRepository';
 import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
-import { MULTIPART_HEADER_PAIRS_LIMIT } from '../../../http/middleware/multipartHeaderPairs';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import {
@@ -56,20 +55,21 @@ const IBKR_FIXTURE = readFixture('ibkr.csv');
 
 const HEADER = 'Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung';
 
+/**
+ * A multipart body built by hand so a test can control the exact framing —
+ * `boundary` may be a form Busboy accepts but supertest cannot express, and
+ * `field.extraHeaders` lets a part carry an oversized MIME header block.
+ */
 function rawMultipartUpload(
   boundary: string,
-  field: { name: string; value: string; headerPairs: number },
+  field: { name: string; value: string; extraHeaders?: string[] },
   csv: string,
 ): Buffer {
-  const extraHeaders = Array.from(
-    { length: field.headerPairs - 1 },
-    (_, index) => `X-BetterTrack-${index}: value`,
-  );
   return Buffer.from(
     [
       `--${boundary}`,
       `Content-Disposition: form-data; name="${field.name}"`,
-      ...extraHeaders,
+      ...(field.extraHeaders ?? []),
       '',
       field.value,
       `--${boundary}`,
@@ -287,9 +287,9 @@ describe('POST /imports — staged preview', () => {
     });
   });
 
-  it('enforces the per-part multipart header-pair limit ignored by Busboy', async () => {
+  it("rejects a part header block past Busboy's 16 KiB cap with the contract error", async () => {
     const { agent, pid } = await setup();
-    const boundary = 'bettertrack-import-header-pairs';
+    const boundary = 'bettertrack-import-header-block';
     const res = await agent
       .post('/api/v1/imports')
       .set(...XRW)
@@ -300,7 +300,11 @@ describe('POST /imports — staged preview', () => {
           {
             name: 'portfolioId',
             value: pid,
-            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT + 1,
+            // Busboy hard-fails a part whose header block passes MAX_HEADER_SIZE
+            // (16 KiB) with a plain `Malformed part header` Error. Not being a
+            // MulterError, it reached the terminal handler as an opaque 500
+            // before `uploadFile` grew its catch-all mapping.
+            extraHeaders: [`X-BetterTrack-Pad: ${'a'.repeat(17 * 1024)}`],
           },
           FIXTURE,
         ),
@@ -313,116 +317,49 @@ describe('POST /imports — staged preview', () => {
     });
   });
 
-  it('accepts a safe quoted boundary at the multipart header-pair limit', async () => {
-    const { agent, pid } = await setup();
-    const boundary = 'bettertrack-import-quoted-boundary';
-    const res = await agent
-      .post('/api/v1/imports')
-      .set(...XRW)
-      .set('Content-Type', `multipart/form-data; boundary="${boundary}"`)
-      .send(
-        rawMultipartUpload(
-          boundary,
-          {
-            name: 'portfolioId',
-            value: pid,
-            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT,
-          },
-          FIXTURE,
-        ),
-      );
-
-    expect(res.status).toBe(201);
-    expect(() => importPreviewResponseSchema.parse(res.body)).not.toThrow();
-  });
-
-  it('fails closed when a quoted boundary escape would diverge from Busboy', async () => {
-    const { agent, pid } = await setup();
-    const boundary = 'bettertrack-import\\q';
-    const res = await agent
-      .post('/api/v1/imports')
-      .set(...XRW)
-      .set('Content-Type', `multipart/form-data; boundary="${boundary}"`)
-      .send(
-        rawMultipartUpload(
-          boundary,
-          {
-            name: 'portfolioId',
-            value: pid,
-            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT + 1,
-          },
-          FIXTURE,
-        ),
-      );
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toEqual({
-      code: 'IMPORT_FILE_INVALID',
-      message: 'Invalid file upload.',
-    });
-  });
-
-  it('fails closed when a quoted non-ASCII boundary would diverge from Busboy', async () => {
-    const { agent, pid } = await setup();
-    const boundary = 'bettertrack-import-é';
-    const res = await agent
-      .post('/api/v1/imports')
-      .set(...XRW)
-      .set('Content-Type', `multipart/form-data; boundary="${boundary}"`)
-      .send(
-        rawMultipartUpload(
-          boundary,
-          {
-            name: 'portfolioId',
-            value: pid,
-            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT + 1,
-          },
-          FIXTURE,
-        ),
-      );
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toEqual({
-      code: 'IMPORT_FILE_INVALID',
-      message: 'Invalid file upload.',
-    });
-  });
-
-  it('rejects a pathological unterminated boundary without backtracking', async () => {
+  it('answers a pathological unterminated boundary promptly, never a 500', async () => {
     const { agent } = await setup();
+    // The retired guard parsed this header itself, with a regex whose quoted-value
+    // alternation backtracked exponentially over a run of unterminated
+    // backslashes — one such request pinned the event loop. No hand-rolled parser
+    // sees the header now: Multer's `type-is` declines to classify it, so the
+    // request is simply an upload with no parts and fails contract validation.
+    // The property under test is the security one — a prompt 4xx, not a 500.
     const startedAt = performance.now();
     const res = await agent
       .post('/api/v1/imports')
       .set(...XRW)
       .set('Content-Type', `multipart/form-data; boundary="${'\\'.repeat(64)}`)
-      .send(Buffer.alloc(0));
+      .send(Buffer.from('--pathological\r\n', 'utf8'));
 
     expect(performance.now() - startedAt).toBeLessThan(1_000);
     expect(res.status).toBe(400);
-    expect(res.body.error).toEqual({
-      code: 'IMPORT_FILE_INVALID',
-      message: 'Invalid file upload.',
-    });
   });
 
-  it('keeps the specific file-size message when the header guard also rejects', async () => {
+  it('accepts a quoted boundary containing a backslash, exactly as Busboy does', async () => {
     const { agent, pid } = await setup();
-    const boundary = 'bettertrack-import-file-size-priority';
+    // Busboy preserves the backslash before an ordinary quoted character, so
+    // this parses normally. The retired raw-stream guard 400ed it purely to stay
+    // byte-compatible with Busboy — a compatibility regression for non-browser
+    // clients that nothing may reintroduce.
+    const boundary = 'bettertrack-import\\q';
     const res = await agent
       .post('/api/v1/imports')
       .set(...XRW)
-      .set('Content-Type', `multipart/form-data; boundary=${boundary}`)
-      .send(
-        rawMultipartUpload(
-          boundary,
-          {
-            name: 'portfolioId',
-            value: pid,
-            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT + 1,
-          },
-          'x'.repeat(IMPORT_MAX_FILE_BYTES + 1),
-        ),
-      );
+      .set('Content-Type', `multipart/form-data; boundary="${boundary}"`)
+      .send(rawMultipartUpload(boundary, { name: 'portfolioId', value: pid }, FIXTURE));
+
+    expect(res.status).toBe(201);
+    expect(() => importPreviewResponseSchema.parse(res.body)).not.toThrow();
+  });
+
+  it('keeps the specific file-size guidance on an oversized upload', async () => {
+    const { agent, pid } = await setup();
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .field('portfolioId', pid)
+      .attach('file', Buffer.alloc(IMPORT_MAX_FILE_BYTES + 1, 0x78), 'export.csv');
 
     expect(res.status).toBe(400);
     expect(res.body.error).toEqual({

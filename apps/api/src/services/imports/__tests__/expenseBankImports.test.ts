@@ -16,7 +16,6 @@ import {
   type ExpenseTransaction,
 } from '@bettertrack/contracts';
 
-import { MULTIPART_HEADER_PAIRS_LIMIT } from '../../../http/middleware/multipartHeaderPairs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 
 /**
@@ -36,20 +35,17 @@ const ELBA = fixture('raiffeisen-elba.csv');
 const N26 = fixture('n26.csv');
 const REVOLUT = fixture('revolut.csv');
 
+/** A hand-built multipart body, so a part can carry an oversized header block. */
 function rawMultipartUpload(
   boundary: string,
-  field: { name: string; value: string; headerPairs: number },
+  field: { name: string; value: string; extraHeaders?: string[] },
   csv: string,
 ): Buffer {
-  const extraHeaders = Array.from(
-    { length: field.headerPairs - 1 },
-    (_, index) => `X-BetterTrack-${index}: value`,
-  );
   return Buffer.from(
     [
       `--${boundary}`,
       `Content-Disposition: form-data; name="${field.name}"`,
-      ...extraHeaders,
+      ...(field.extraHeaders ?? []),
       '',
       field.value,
       `--${boundary}`,
@@ -324,9 +320,9 @@ describe('import guards', () => {
     });
   });
 
-  it('enforces the per-part multipart header-pair limit ignored by Busboy', async () => {
+  it("rejects a part header block past Busboy's 16 KiB cap with the contract error", async () => {
     const { agent } = await setup();
-    const boundary = 'bettertrack-expense-header-pairs';
+    const boundary = 'bettertrack-expense-header-block';
     const res = await agent
       .post('/api/v1/expenses/import/preview')
       .set(...XRW)
@@ -337,7 +333,10 @@ describe('import guards', () => {
           {
             name: 'bankId',
             value: 'n26',
-            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT + 1,
+            // Past MAX_HEADER_SIZE Busboy raises a plain `Malformed part header`
+            // Error, which is not a MulterError — it became an opaque 500 before
+            // `uploadFile` mapped every parse failure onto the §8 envelope.
+            extraHeaders: [`X-BetterTrack-Pad: ${'a'.repeat(17 * 1024)}`],
           },
           N26,
         ),
