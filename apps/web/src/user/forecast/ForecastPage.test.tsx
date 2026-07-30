@@ -7,6 +7,7 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import { cloneElement, isValidElement } from 'react';
 
 import type {
+  AnalyticsSeriesResponse,
   PortfolioHistoryResponse,
   PortfolioListResponse,
   PortfolioResponse,
@@ -34,6 +35,10 @@ vi.mock('../../lib/portfolioApi', () => ({
   getPortfolioHistory: vi.fn(),
 }));
 
+vi.mock('../../lib/analyticsApi', () => ({
+  getAnalyticsSeries: vi.fn(),
+}));
+
 // Preserve query keys + other exports the standing-orders surfaces import.
 vi.mock('../../lib/standingOrdersApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/standingOrdersApi')>()),
@@ -45,9 +50,11 @@ vi.mock('../../lib/marketIntelApi', async (importOriginal) => ({
   getPortfolioDividendProjection: vi.fn(),
 }));
 
+import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
 import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
+import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 import { ForecastPage } from './ForecastPage';
 
 const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
@@ -81,6 +88,8 @@ const PORTFOLIO: PortfolioResponse = {
   },
 };
 
+// Net worth (holdings + cash): 100 → 150.073035 over six years is a 7,00 %/yr
+// CAGR. Only a paranoid account samples this curve.
 const HISTORY: PortfolioHistoryResponse = {
   range: 'MAX',
   baseCurrency: 'EUR',
@@ -91,15 +100,44 @@ const HISTORY: PortfolioHistoryResponse = {
   performance: [],
 };
 
+// The server's holdings-only analytics series — what a NORMAL account prefills.
+// Deliberately a different number from the net-worth CAGR above, so a surface
+// reading the wrong source is visible in the assertion.
+const ANALYTICS: AnalyticsSeriesResponse = {
+  portfolioId: PORTFOLIO_ID,
+  baseCurrency: 'EUR',
+  mode: 'perf',
+  from: '2020-01-01',
+  to: '2026-01-01',
+  inflation: null,
+  inflationPresets: [],
+  primary: {
+    kind: 'portfolio',
+    label: 'Main',
+    points: [],
+    stats: {
+      totalReturnPct: 60,
+      cagrPct: 9.5,
+      maxDrawdownPct: -10,
+      bestDay: null,
+      worstDay: null,
+    },
+  },
+  compare: null,
+  contributions: [],
+};
+
 function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
 }
 
-function renderForecast() {
+function renderForecast(mode: 'normal' | 'paranoid' = 'normal') {
   return render(
     <QueryClientProvider client={makeQueryClient()}>
       <MemoryRouter>
-        <ForecastPage />
+        <ResolvedPrivacyModeProvider mode={mode}>
+          <ForecastPage />
+        </ResolvedPrivacyModeProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -110,6 +148,7 @@ beforeEach(() => {
   vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
   vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
+  vi.mocked(getAnalyticsSeries).mockResolvedValue(ANALYTICS);
   vi.mocked(listStandingOrders).mockResolvedValue({ orders: [] });
   vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
     available: false,
@@ -170,7 +209,11 @@ test('prefill from portfolio fills current value + historical average return', a
   // Wait for the prefill fetches so the button is enabled (both queries settle).
   await waitFor(() => {
     expect(getPortfolio).toHaveBeenCalledWith(PORTFOLIO_ID, expect.anything());
-    expect(getPortfolioHistory).toHaveBeenCalledWith(PORTFOLIO_ID, 'MAX', false, expect.anything());
+    expect(getAnalyticsSeries).toHaveBeenCalledWith(
+      PORTFOLIO_ID,
+      { mode: 'perf' },
+      expect.anything(),
+    );
   });
 
   // Compound-interest card: prefill sets principal ← totalValueEur, rate ← cagrPct.
@@ -180,6 +223,37 @@ test('prefill from portfolio fills current value + historical average return', a
   expect(principal.value).not.toBe('50000');
   await user.click(screen.getAllByRole('button', { name: 'Prefill from my portfolio' })[0]!);
   expect(principal.value).toBe('50000');
+  // The server's holdings-only CAGR, NOT the net-worth curve's 7 %.
+  expect(rate.value).toBe('9.5');
+});
+
+test('a normal account never samples the net-worth history for its return prefill', async () => {
+  renderForecast();
+
+  await waitFor(() => expect(getAnalyticsSeries).toHaveBeenCalled());
+  // `getPortfolioHistory` is the holdings+cash series; sampling it here would
+  // silently dilute every existing account's prefilled return with idle cash.
+  expect(getPortfolioHistory).not.toHaveBeenCalledWith(
+    PORTFOLIO_ID,
+    'MAX',
+    false,
+    expect.anything(),
+  );
+});
+
+test('a paranoid account prefills from its own decrypted net-worth curve', async () => {
+  const user = userEvent.setup();
+  renderForecast('paranoid');
+
+  await waitFor(() =>
+    expect(getPortfolioHistory).toHaveBeenCalledWith(PORTFOLIO_ID, 'MAX', false, expect.anything()),
+  );
+  // The analytics endpoint does not exist for an encrypted account.
+  expect(getAnalyticsSeries).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: /Compound interest/i }));
+  const rate = screen.getByLabelText('Annual return (%)') as HTMLInputElement;
+  await user.click(screen.getAllByRole('button', { name: 'Prefill from my portfolio' })[0]!);
   expect(rate.value).toBe('7');
 });
 
@@ -187,6 +261,7 @@ test('when the portfolio prefill has no data available, cards fall back to stand
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
   vi.mocked(getPortfolio).mockRejectedValue(new Error('no portfolio'));
   vi.mocked(getPortfolioHistory).mockRejectedValue(new Error('no history'));
+  vi.mocked(getAnalyticsSeries).mockRejectedValue(new Error('no analytics'));
 
   const user = userEvent.setup();
   renderForecast();

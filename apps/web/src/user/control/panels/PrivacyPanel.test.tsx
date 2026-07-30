@@ -28,18 +28,22 @@ vi.mock('../../vault/usePrivacyMode', () => ({
 }));
 vi.mock('../../vault/VaultRuntimeProvider', () => ({ useVaultRuntime: () => ({}) }));
 let syncStatus: string | null = null;
+const syncMutate = vi.fn(async () => undefined);
+const discardAllData = vi.fn(async () => undefined);
 vi.mock('../../vault/engine/VaultMoneyEngineProvider', () => ({
   useVaultMoneySession: () =>
     syncStatus === null
       ? null
       : {
           sync: {
+            mutate: syncMutate,
             state: {
               status: syncStatus,
               active: { document: { schemaVersion: 1, entities: {}, mergeLog: [] } },
               pending: null,
             },
           },
+          store: { discardAllData },
         },
 }));
 
@@ -147,6 +151,27 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
 
     expect(screen.getByText(/unsynced changes on more than one device/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Restore normal mode' })).toBeDisabled();
+  });
+
+  test('start fresh deletes through the store, never by rewriting the document', async () => {
+    privacyMode = 'paranoid';
+    mediaState = {
+      mediaSet: ['server'],
+      driveAttestedVersion: null,
+      server: { disposition: 'active', candidate: null, retired: null },
+    };
+    syncStatus = 'synced';
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('checkbox', { name: /permanently replaced/i }));
+    await user.click(screen.getByRole('button', { name: 'Replace with empty vault' }));
+
+    // The store tombstones every entity; a raw `sync.mutate` wipe would leave a
+    // second device free to union its copy back in on the next unlock.
+    await waitFor(() => expect(discardAllData).toHaveBeenCalledTimes(1));
+    expect(syncMutate).not.toHaveBeenCalled();
+    expect(await screen.findByText('The encrypted vault is now empty.')).toBeInTheDocument();
   });
 
   test('disable is available once the vault has a single acknowledged branch', async () => {

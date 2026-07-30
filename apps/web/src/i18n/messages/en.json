@@ -3630,6 +3630,11 @@
         "keptHint": "Starting fresh discards the encrypted vault and returns this account to a normal, empty one. Everything that was never in the vault — your sign-in, friends, chats, price alerts, watchlists and settings — stays exactly as it is.",
         "driveLeftover": "The encrypted copy in your Google Drive is left where it is. It can no longer be opened by anyone, including you — remove the bettertrack-vault file from Drive yourself if you want it gone.",
         "confirmLabel": "Type your username ({{username}}) to confirm",
+        "passwordLabel": "Current account password",
+        "codeLabel": "Authenticator code",
+        "useCode": "Use an authenticator code instead",
+        "usePassword": "Use your password instead",
+        "credentialHint": "Your account password (the one you sign in with) — not the vault passphrase. BetterTrack verifies it before anything is discarded.",
         "action": "Discard the vault and start fresh",
         "working": "Discarding…",
         "error": "The vault could not be discarded. Nothing changed — try again when the connection is available."
@@ -4616,7 +4621,6 @@
       "search": "Open search",
       "friends": "Open People",
       "importsExports": "Imports & exports",
-      "security": "Security settings",
       "aiInsights": "AI insights in Analysis",
       "nlBuilder": "Blueprint builder",
       "standingOrders": "Standing orders in Forecasts",
@@ -4748,14 +4752,6 @@
       "p1": "Checkpoints you can verify and restore from",
       "p2": "Portable exports in an open manifest format",
       "p3": "Retention rules you control"
-    },
-    "paranoid": {
-      "title": "Paranoid mode",
-      "body": "Your data stays with just you: the portfolio lives in a client-encrypted vault — on BetterTrack, your Google Drive, both or Drive-only — and the server can never read it. The client foundations are already merged; the enable flow lands here.",
-      "p1": "Client-side encryption with a key that never leaves your devices",
-      "p2": "Storage media you choose: server, Drive, both or Drive-only",
-      "p3": "Money math computed on your device with the same audited engine",
-      "p4": "Lost key means lost data — by design, with a forced recovery kit"
     },
     "mcp": {
       "title": "MCP",

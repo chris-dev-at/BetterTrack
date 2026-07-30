@@ -185,6 +185,55 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     ]);
   });
 
+  it('floors every cash balance it reports back, not just the write responses', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    // 0.1 + 0.2 = 0.30000000000000004 in binary floating point. The server
+    // floors both the per-source and the total roll-up at its service boundary
+    // (`loadCashState`), so every read path here has to as well.
+    await store.depositCash(PORTFOLIO_ID, { amountEur: 0.1, sourceId: CASH_SOURCE_ID });
+    await store.depositCash(PORTFOLIO_ID, { amountEur: 0.2, sourceId: CASH_SOURCE_ID });
+
+    const movements = await store.getCashMovements(PORTFOLIO_ID);
+    expect(movements.balanceEur).toBe(0.3);
+    expect(movements.sources.map((source) => source.balanceEur)).toEqual([0.3]);
+    const sources = await store.listCashSources(PORTFOLIO_ID);
+    expect(sources.sources.map((source) => source.balanceEur)).toEqual([0.3]);
+  });
+
+  it('empties the vault by tombstoning every entity and keeps the merge log', async () => {
+    const document = initialDocument();
+    document.mergeLog = [
+      { mergedAt: AT, parents: [1, 2], into: 3, deviceId: REMOTE_DEVICE_ID },
+    ] as VaultDocument['mergeLog'];
+    const engine = createMutableEngine(document);
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+    await store.depositCash(PORTFOLIO_ID, { amountEur: 100, sourceId: CASH_SOURCE_ID });
+
+    await store.discardAllData();
+
+    const wiped = engine.state.active!.document;
+    // Every bucket survives with its rows TOMBSTONED — an absent row carries no
+    // delete signal through the entity-union merge, so a second device holding
+    // the pre-wipe document would union its copy straight back in.
+    for (const [kind, rows] of Object.entries(wiped.entities)) {
+      expect(rows.length, `${kind} rows must be kept as tombstones`).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(row.deletedAt, `${kind}/${row.id} must be tombstoned`).toBe(AT);
+        expect(row.rev).toBeGreaterThan(0);
+      }
+    }
+    expect(wiped.mergeLog).toHaveLength(1);
+    await expect(store.listPortfolios()).resolves.toEqual({ portfolios: [] });
+  });
+
   it('provisions the Main cash source on first implicit cash touch like the server', async () => {
     const document = initialDocument();
     document.entities.cashSource = [];

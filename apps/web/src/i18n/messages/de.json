@@ -3630,6 +3630,11 @@
         "keptHint": "Ein Neustart verwirft den verschlüsselten Tresor und führt dieses Konto in ein normales, leeres Konto zurück. Alles, was nie im Tresor lag — Anmeldung, Freundschaften, Chats, Kursalarme, Merklisten und Einstellungen —, bleibt unverändert erhalten.",
         "driveLeftover": "Die verschlüsselte Kopie in deinem Google Drive bleibt liegen. Sie lässt sich von niemandem mehr öffnen, auch nicht von dir — entferne die bettertrack-vault-Datei bei Bedarf selbst aus Drive.",
         "confirmLabel": "Tippe deinen Benutzernamen ({{username}}) zur Bestätigung",
+        "passwordLabel": "Aktuelles Kontopasswort",
+        "codeLabel": "Authenticator-Code",
+        "useCode": "Stattdessen einen Authenticator-Code verwenden",
+        "usePassword": "Stattdessen dein Passwort verwenden",
+        "credentialHint": "Dein Kontopasswort (das für die Anmeldung) — nicht die Tresor-Passphrase. BetterTrack prüft es, bevor etwas verworfen wird.",
         "action": "Tresor verwerfen und neu beginnen",
         "working": "Wird verworfen…",
         "error": "Der Tresor konnte nicht verworfen werden. Es wurde nichts geändert — versuche es erneut, sobald die Verbindung verfügbar ist."
@@ -4616,7 +4621,6 @@
       "search": "Suche öffnen",
       "friends": "Personen öffnen",
       "importsExports": "Import & Export",
-      "security": "Sicherheitseinstellungen",
       "aiInsights": "KI-Insights in der Analyse",
       "nlBuilder": "Blueprint-Builder",
       "standingOrders": "Sparpläne in Prognosen",
@@ -4748,14 +4752,6 @@
       "p1": "Checkpoints, die du prüfen und wiederherstellen kannst",
       "p2": "Portable Exporte in einem offenen Manifest-Format",
       "p3": "Aufbewahrungsregeln unter deiner Kontrolle"
-    },
-    "paranoid": {
-      "title": "Paranoid-Modus",
-      "body": "Deine Daten bleiben nur bei dir: Das Portfolio liegt in einem client-verschlüsselten Tresor — auf BetterTrack, deinem Google Drive, beidem oder nur Drive — und der Server kann es nie lesen. Die Client-Grundlagen sind bereits gemerged; der Aktivierungs-Flow landet hier.",
-      "p1": "Client-seitige Verschlüsselung — der Schlüssel verlässt deine Geräte nie",
-      "p2": "Speichermedien nach Wahl: Server, Drive, beides oder nur Drive",
-      "p3": "Geldberechnung auf deinem Gerät mit derselben geprüften Engine",
-      "p4": "Schlüssel verloren heißt Daten verloren — bewusst so, mit Pflicht-Recovery-Kit"
     },
     "mcp": {
       "title": "MCP",

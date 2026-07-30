@@ -60,6 +60,16 @@ export const ACCOUNT_EXPORT_NAMESPACE = 'account_export_account';
 export const ACCOUNT_PASSKEY_NAMESPACE = 'account_passkey_account';
 
 /**
+ * Per-account brute-force throttle for the paranoid `discard` re-auth (§13.5
+ * V5-P13, docs/paranoid-design.md §3). Destroying an undecryptable vault
+ * re-verifies a credential exactly like account deletion; wrong attempts accrue
+ * here — independent of the login/2FA counters, of deletion/export/passkey, and
+ * of the per-IP limiter — so this exit is never a lighter-weight oracle than
+ * login. Reuses the `loginAccount` schedule like every sibling re-auth.
+ */
+export const ACCOUNT_PARANOID_DISCARD_NAMESPACE = 'account_paranoid_discard_account';
+
+/**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
  * login throttle above: five wrong PINs in a row drop the user back to full login
  * (the session is destroyed), so the gate can never be a lighter-weight bypass of

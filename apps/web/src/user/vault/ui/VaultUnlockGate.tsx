@@ -1,13 +1,22 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import type { VaultMediaSet } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
+import { getTwoFactorStatus } from '../../../lib/twoFactorApi';
 import { Button as OriginButton } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
 import { Alert, AuthCard, Button, CHECKBOX_STYLE, TextField } from '../../components/ui';
 import { VaultCryptoError } from '../errors';
 import { useVaultRuntime } from '../VaultRuntimeProvider';
+
+/** What the §3 destruction exit re-authenticates with — one credential, like `DELETE /account`. */
+export interface VaultDiscardCredential {
+  confirmUsername: string;
+  password?: string;
+  code?: string;
+}
 
 /**
  * The locked-vault gate. It replaces the whole authenticated subtree, so — like
@@ -24,9 +33,11 @@ export function VaultUnlockGate({
   /**
    * Discards the unrecoverable vault and returns the account to an empty normal
    * one (docs/paranoid-design.md §3). Omitted ⇒ the entry point is not offered,
-   * so an isolated caller cannot destroy data it never wired up.
+   * so an isolated caller cannot destroy data it never wired up. The credential
+   * it collects is verified by the SERVER; this form is the affordance, not the
+   * gate.
    */
-  onStartFresh?: () => Promise<void>;
+  onStartFresh?: (credential: VaultDiscardCredential) => Promise<void>;
 }) {
   const t = useT();
   const runtime = useVaultRuntime();
@@ -152,9 +163,10 @@ export function VaultUnlockGate({
 /**
  * The §3 recovery story, folded away (anti-bloat) until a stuck user opens it:
  * BetterTrack holds no escrow, so the only exit that does not need the key is
- * destruction. Friction matches the account-deletion rung — the username has to
- * be typed — because this is irreversible and one rung below deleting the
- * account outright.
+ * destruction. Friction is the account-deletion rung, in full: the username has
+ * to be typed AND a credential re-verified — both server-side (see
+ * `paranoidDiscardReauth`). This form only collects them; a caller POSTing the
+ * endpoint from a live session faces exactly the same two gates.
  */
 function StuckFold({
   driveSelected,
@@ -162,22 +174,40 @@ function StuckFold({
   username,
 }: {
   driveSelected: boolean;
-  onStartFresh: () => Promise<void>;
+  onStartFresh: (credential: VaultDiscardCredential) => Promise<void>;
   username: string | null;
 }) {
   const t = useT();
   const [typed, setTyped] = useState('');
+  const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [useCode, setUseCode] = useState(false);
   const [working, setWorking] = useState(false);
   const [failed, setFailed] = useState(false);
   const confirmed =
     username != null && typed.trim().toLowerCase() === username.trim().toLowerCase();
 
+  // Only a TOTP-enrolled account can re-auth with a code instead of a password
+  // — the same read the deletion page makes. A failed/absent status simply
+  // leaves the password field, which every account has.
+  const twoFactor = useQuery({
+    queryKey: ['auth', '2fa', 'status'],
+    queryFn: ({ signal }) => getTwoFactorStatus(signal),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const codeAvailable = twoFactor.data?.totpEnabled === true;
+  const credentialEntered = useCode && codeAvailable ? code.trim().length > 0 : password.length > 0;
+
   async function startFresh() {
-    if (!confirmed || working) return;
+    if (!confirmed || !credentialEntered || working) return;
     setWorking(true);
     setFailed(false);
     try {
-      await onStartFresh();
+      await onStartFresh({
+        confirmUsername: typed.trim(),
+        ...(useCode && codeAvailable ? { code: code.trim() } : { password }),
+      });
     } catch {
       setFailed(true);
       setWorking(false);
@@ -204,9 +234,43 @@ function StuckFold({
           onChange={(event) => setTyped(event.target.value)}
           value={typed}
         />
+        {useCode && codeAvailable ? (
+          <TextField
+            autoComplete="one-time-code"
+            disabled={working}
+            id="vault-start-fresh-code"
+            inputMode="numeric"
+            label={t('vault.unlock.stuck.codeLabel')}
+            onChange={(event) => setCode(event.target.value)}
+            value={code}
+          />
+        ) : (
+          <TextField
+            autoComplete="current-password"
+            disabled={working}
+            id="vault-start-fresh-password"
+            label={t('vault.unlock.stuck.passwordLabel')}
+            onChange={(event) => setPassword(event.target.value)}
+            type="password"
+            value={password}
+          />
+        )}
+        {/* The account password, NOT the vault passphrase — a stuck user has by
+            definition lost the latter. */}
+        <p className="bt-muted text-xs">{t('vault.unlock.stuck.credentialHint')}</p>
+        {codeAvailable ? (
+          <button
+            className="bt-link self-start text-xs"
+            disabled={working}
+            onClick={() => setUseCode((previous) => !previous)}
+            type="button"
+          >
+            {t(useCode ? 'vault.unlock.stuck.usePassword' : 'vault.unlock.stuck.useCode')}
+          </button>
+        ) : null}
         {failed ? <Alert tone="error">{t('vault.unlock.stuck.error')}</Alert> : null}
         <OriginButton
-          disabled={!confirmed || working}
+          disabled={!confirmed || !credentialEntered || working}
           onClick={() => void startFresh()}
           size="sm"
           type="button"

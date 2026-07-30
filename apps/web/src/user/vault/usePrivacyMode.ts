@@ -88,7 +88,12 @@ export function usePrivacyMode(enabled = true, accountId: string | null = null):
       return result;
     },
     initialData: () => readCachedParanoidMode(accountId),
-    retry: false,
+    // This read gates the WHOLE authenticated app (`AccountModeRoot`), so a
+    // single transient failure must not replace every page with a retry card
+    // where the individual page queries used to retry themselves. Bounded, not
+    // unlimited: the gate still fails closed — while these attempts run the
+    // query is pending (a splash), and it never resolves to 'normal' on error.
+    retry: 2,
     staleTime: 15_000,
     // Only a paranoid account polls. It is the one that must notice a disable
     // performed on another device *while a decrypted session is open*; a normal

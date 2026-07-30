@@ -566,4 +566,29 @@ describe('AnalyticsPage — paranoid account', () => {
       expect(points[1]!.value).toBeCloseTo(20, 6);
     });
   });
+
+  test('a leading zero point is trimmed like the server, not used as the base', async () => {
+    // A window that opens before the first held day: the server trims the 0
+    // edge, so the curve anchors at 1000 and rebases to +20 %. Keeping the zero
+    // would zero every stat and flatten the whole perf curve.
+    vi.mocked(getPortfolioHistory).mockResolvedValue({
+      ...PARANOID_HISTORY,
+      points: [{ date: localDay(45), valueEur: 0 }, ...PARANOID_HISTORY.points],
+    } as unknown as Awaited<ReturnType<typeof getPortfolioHistory>>);
+
+    const user = userEvent.setup();
+    renderPage('paranoid');
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Performance %' }));
+
+    await waitFor(() => {
+      const points = chartMocks.setData.mock.calls.at(-1)?.[0] as Array<{
+        time: string;
+        value: number;
+      }>;
+      expect(points.map((point) => point.time)).toEqual([WINDOW_START, WINDOW_END]);
+      expect(points[1]!.value).toBeCloseTo(20, 6);
+    });
+  });
 });

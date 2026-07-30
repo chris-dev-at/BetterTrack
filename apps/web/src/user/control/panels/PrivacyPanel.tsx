@@ -107,13 +107,13 @@ export function PrivacyPanel() {
               void privacy.refetch();
             }}
             onNotice={setNotice}
+            // Through the store's delete idiom, never a raw document rewrite:
+            // an entity-union merge reads tombstones, not absence, so a
+            // second device would otherwise resurrect the whole vault on its
+            // next unlock (see `VaultPortfolioStore.discardAllData`).
             onStartFresh={async () => {
               if (money == null) throw new Error('locked');
-              await money.sync.mutate(({ document }) => ({
-                ...document,
-                entities: {},
-                mergeLog: [],
-              }));
+              await money.store.discardAllData();
             }}
           />
         </>

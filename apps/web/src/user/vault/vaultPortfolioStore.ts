@@ -38,6 +38,7 @@ import {
   updateTaxSettingsRequestSchema,
   updateTransactionRequestSchema,
   valuePointsResponseSchema,
+  VAULT_ENTITY_KINDS,
   VAULT_ENTITY_ROW_SCHEMAS,
   type CashEntryRequest,
   type CashMovementsResponse,
@@ -268,6 +269,21 @@ export interface VaultPortfolioStore {
     input: VaultStandingOrderOccurrenceInput,
     signal?: AbortSignal,
   ): Promise<VaultStandingOrderOccurrenceResult>;
+  /**
+   * "Start fresh" (docs/paranoid-design.md §3): empty the vault while KEEPING
+   * it, for a user who wants their encrypted account to begin again.
+   *
+   * It tombstones every live entity rather than dropping the buckets, because
+   * the vault merge is an entity-atomic UNION: absence carries no delete
+   * signal, and an empty document does not dominate a populated one
+   * (`mergeVaultDocuments`), so a second device still holding the pre-wipe
+   * document would union its rows straight back on its next unlock. A
+   * tombstone wins by revision on every device instead — the same idiom
+   * `deletePortfolioTree` / `deleteTransaction` / `deleteStandingOrder` use.
+   * `mergeLog` is preserved for the same reason: it is the bounded convergence
+   * history the merge path reads, not user data.
+   */
+  discardAllData(): Promise<void>;
 }
 
 interface StoreContext {
@@ -823,7 +839,10 @@ export function createVaultPortfolioStore(
         .map((entity) => cashSourceFromEntity(entity, balances.get(entity.id) ?? 0))
         .sort(compareCashSources);
       return cashMovementsResponseSchema.parse({
-        balanceEur: [...balances.values()].reduce((sum, value) => sum + value, 0),
+        // Floored like every other cash roll-up the store answers with
+        // (`transferCash`, `setCashBalance`, `previewCash`) and like the
+        // server's `loadCashState().totalEur`.
+        balanceEur: floorCents([...balances.values()].reduce((sum, value) => sum + value, 0)),
         movements: all,
         sources,
       });
@@ -918,6 +937,10 @@ export function createVaultPortfolioStore(
 
     async materializeStandingOrderOccurrence(input, signal) {
       return materializeStandingOrderOccurrence(context, input, signal);
+    },
+
+    async discardAllData() {
+      await discardAllData(context);
     },
   };
 }
@@ -1085,6 +1108,38 @@ async function deletePortfolioTree(context: StoreContext, portfolioId: string): 
       'The portfolio deletion left an invalid descendant reference.',
       cause,
     );
+  }
+}
+
+/**
+ * Tombstone every live entity in one atomic mutation — the "start fresh" write
+ * behind {@link VaultPortfolioStore.discardAllData}. Deliberately NOT a
+ * `entities: {}` rewrite: see the interface note for why absence is not a
+ * delete signal in an entity-union merge. The bucket keys and `mergeLog` are
+ * left exactly as they were.
+ */
+async function discardAllData(context: StoreContext): Promise<void> {
+  requireDocument(context.engine);
+  const mutationState = await context.engine.mutate(({ document }) => {
+    const timestamp = context.now();
+    let next = document;
+    for (const kind of VAULT_ENTITY_KINDS) {
+      for (const entity of liveEntities(next, kind)) {
+        next = replaceEntity(
+          next,
+          kind,
+          tombstoneEntity(entity, context.engine.deviceId, timestamp),
+        );
+      }
+    }
+    return next;
+  });
+  const committed = mutationState.active?.document;
+  if (
+    committed == null ||
+    VAULT_ENTITY_KINDS.some((kind) => liveEntities(committed, kind).length > 0)
+  ) {
+    throw storeError('VAULT_DATA_UNAVAILABLE', 'The vault wipe was not committed locally.');
   }
 }
 
@@ -3100,6 +3155,15 @@ function cashMovementFromEntity(entity: VaultEntity): CashMovementResponse['move
   );
 }
 
+/**
+ * The single boundary where a raw ledger roll-up becomes a cash-source DTO, so
+ * the cent quantization happens here once — exactly like the server, which
+ * floors every balance in `loadCashState` before `sourceToDto` ever sees it
+ * (§5.4: the domain replay stays unrounded, the service boundary floors).
+ * Every read path (`listCashSources`, `getCashMovements`, the source returned
+ * by a create/update/archive/restore) goes through this function, so none of
+ * them can hand a surface a sub-cent balance the write paths would never store.
+ */
 function cashSourceFromEntity(
   entity: VaultEntity,
   balanceEur: number,
@@ -3113,7 +3177,7 @@ function cashSourceFromEntity(
         isMain: booleanField(entity.data, 'isMain', false),
         archivedAt: nullableStringField(entity.data, 'archivedAt'),
         createdAt: stringField(entity.data, 'createdAt', entity.editedAt),
-        balanceEur,
+        balanceEur: floorCents(balanceEur),
       }),
     'A vault cash source does not match the cash-source contract.',
   );

@@ -85,17 +85,43 @@ function analyticsHistoryRange(preset: RangePreset): PortfolioHistoryRange {
 }
 
 /**
+ * Trim leading/trailing non-positive points, exactly like the server's
+ * `trimZeroValueEdges`. Without it a window that opens before the first held
+ * day starts at 0, and every downstream number collapses: `computeSeriesStats`
+ * cannot state a CAGR from a zero base and the perf rebase flattens the whole
+ * curve to 0 %.
+ */
+function trimZeroValueEdges<T extends { valueEur: number }>(points: readonly T[]): T[] {
+  let lo = 0;
+  let hi = points.length - 1;
+  while (lo <= hi && (points[lo]?.valueEur ?? 0) <= 0) lo += 1;
+  while (hi >= lo && (points[hi]?.valueEur ?? 0) <= 0) hi -= 1;
+  return points.slice(lo, hi + 1);
+}
+
+/**
  * The paranoid substitute for the `analytics/.../series` endpoint, built from
- * the two client-derived reads a decrypted vault can produce. It answers with
- * the SAME quantities the server would or with nothing — never with a different
- * metric under the server's label:
+ * the two client-derived reads a decrypted vault can produce. Where the server's
+ * quantity is reproducible it is reproduced exactly; where it is not, the field
+ * is dropped rather than relabelled:
  *
+ * - The primary curve is the vault's own NET-WORTH series (holdings + cash) —
+ *   the only value curve the client engine derives. The server's `primary` is
+ *   `getAssetValueSeries` summed over the VISIBLE assets (holdings only), which
+ *   needs per-asset history the engine has no equivalent of. The difference is
+ *   not observable as a filter here: the per-asset/group visibility controls are
+ *   not offered in paranoid mode (see `VisibilityFilters` below), so `hide` /
+ *   `hideGroups` are always empty and the curve is the whole portfolio either
+ *   way. It is a genuinely different series from the normal-account one, and it
+ *   is stated in docs/paranoid-design.md §8 alongside the dropped column.
+ * - Zero edges are trimmed first, like the server, so the window's `from`/`to`,
+ *   stats and perf rebase all anchor to the first day the portfolio held value.
  * - `perf` mode rebases the window's values exactly like the server's
  *   `toPerformanceSeries` (value-normalized), NOT the TWR curve the history
  *   response also carries; those are two different curves.
  * - `contributionPct` is `null`: measuring an asset's share of the window's
- *   change needs per-asset history, which the client engine does not derive.
- *   The table drops the column instead (§16 2026-07-30).
+ *   change needs the same per-asset history. The table drops the column
+ *   instead (§16 2026-07-30).
  */
 function clientAnalyticsResponse(
   portfolioId: string,
@@ -104,10 +130,12 @@ function clientAnalyticsResponse(
   history: PortfolioHistoryResponse,
   params: AnalyticsSeriesParams,
 ): AnalyticsSeriesResponse {
-  const inWindow = history.points.filter(
-    (point) =>
-      (params.from == null || point.date >= params.from) &&
-      (params.to == null || point.date <= params.to),
+  const inWindow = trimZeroValueEdges(
+    history.points.filter(
+      (point) =>
+        (params.from == null || point.date >= params.from) &&
+        (params.to == null || point.date <= params.to),
+    ),
   );
   const first = inWindow[0]?.valueEur ?? 0;
   const visible = portfolio.holdings.filter(

@@ -61,14 +61,15 @@ export function dueStandingOrderOccurrence(
   if (schedule.cadence === 'daily') return horizon;
 
   if (schedule.anchorDay === null) return null;
+  const anchorDay = schedule.anchorDay;
   const { year, month } = parseDay(horizon);
-  const current = monthlyOccurrence(year, month, schedule.anchorDay);
+  const current = monthlyOccurrence(year, month, anchorDay);
   const occurrence =
     current <= horizon
       ? current
       : (() => {
           const previous = previousMonth(year, month);
-          return monthlyOccurrence(previous.year, previous.month, schedule.anchorDay!);
+          return monthlyOccurrence(previous.year, previous.month, anchorDay);
         })();
   return occurrence >= schedule.startDate ? occurrence : null;
 }
@@ -92,14 +93,21 @@ export function nextStandingOrderRunDate(
   if (schedule.cadence === 'daily') {
     next = today < schedule.startDate ? schedule.startDate : nextCalendarDay(today);
   } else {
+    // Same guard as `dueStandingOrderOccurrence`: a monthly schedule without an
+    // anchor has no occurrence to point at. Unreachable while the contract
+    // requires `anchorDay` for monthly — but reading it as `31 - undefined`
+    // would render `YYYY-MM-00`, and a date that does not exist is worse than
+    // an honest "nothing scheduled".
+    if (schedule.anchorDay === null) return null;
+    const anchorDay = schedule.anchorDay;
     const baseline = today < schedule.startDate ? schedule.startDate : today;
     const { year, month } = parseDay(baseline);
-    const inMonth = monthlyOccurrence(year, month, schedule.anchorDay!);
+    const inMonth = monthlyOccurrence(year, month, anchorDay);
     if (inMonth > today && inMonth >= schedule.startDate) {
       next = inMonth;
     } else {
       const following = nextMonth(year, month);
-      next = monthlyOccurrence(following.year, following.month, schedule.anchorDay!);
+      next = monthlyOccurrence(following.year, following.month, anchorDay);
     }
   }
   return schedule.endDate !== null && next > schedule.endDate ? null : next;

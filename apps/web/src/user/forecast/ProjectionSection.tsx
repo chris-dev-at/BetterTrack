@@ -14,6 +14,7 @@ import type { PortfolioHistoryRange, PortfolioSummary } from '@bettertrack/contr
 import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
 
 import { useT } from '../../i18n';
+import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
 import { DISCREET_MASK, formatMoney, isDiscreetMode } from '../../lib/format';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
@@ -82,6 +83,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   const nextPlanId = useRef(1);
 
   const asOf = todayIso();
+  const windowFrom = windowStartIso(asOf, returnWindow);
 
   // ── Read-only data sources (all degrade to an empty/off factor on error) ────
   const portfolioQuery = useQuery({
@@ -91,11 +93,26 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     staleTime: 60_000,
   });
 
+  // The sampled return has one source per account mode, and they are different
+  // series — see `usePortfolioPrefill` in ForecastPage.tsx for the full note.
+  // Normal accounts keep the server's holdings-only analytics window verbatim
+  // (same endpoint, same params, same query key as before the store seam).
+  const analyticsQuery = useQuery({
+    queryKey: ['analytics', portfolioId, 'series', { mode: 'value', window: returnWindow }],
+    queryFn: ({ signal }) =>
+      getAnalyticsSeries(portfolioId!, { mode: 'value', from: windowFrom }, signal),
+    enabled: portfolioId !== null && privacyMode === 'normal',
+    staleTime: 60_000,
+  });
+
+  // Paranoid accounts have no analytics endpoint: the decrypted vault's own
+  // net-worth curve is the only value series it can state. The 3Y control reads
+  // the 5Y envelope and trims to the exact boundary locally.
   const historyQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'history', returnHistoryRange(returnWindow), false],
     queryFn: ({ signal }) =>
       store.getPortfolioHistory(portfolioId!, returnHistoryRange(returnWindow), false, signal),
-    enabled: portfolioId !== null,
+    enabled: portfolioId !== null && privacyMode === 'paranoid',
     staleTime: 60_000,
   });
 
@@ -115,18 +132,19 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
 
   // The sampled historical return over the selected window (null when the series
   // is too short to state a CAGR); it drives the return field until edited.
-  const windowFrom = windowStartIso(asOf, returnWindow);
   const sampledReturnPct =
-    historyQuery.data == null
-      ? null
-      : computeSeriesStats(
-          historyQuery.data.points
-            .filter((point) => windowFrom === undefined || point.date >= windowFrom)
-            .map((point) => ({
-              date: point.date,
-              value: point.valueEur,
-            })),
-        ).cagrPct;
+    privacyMode === 'paranoid'
+      ? historyQuery.data == null
+        ? null
+        : computeSeriesStats(
+            historyQuery.data.points
+              .filter((point) => windowFrom === undefined || point.date >= windowFrom)
+              .map((point) => ({
+                date: point.date,
+                value: point.valueEur,
+              })),
+          ).cagrPct
+      : (analyticsQuery.data?.primary.stats.cagrPct ?? null);
   useEffect(() => {
     setReturnPct(sampledReturnPct === null ? '' : String(round2(sampledReturnPct)));
   }, [sampledReturnPct]);

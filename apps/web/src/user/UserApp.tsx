@@ -528,8 +528,8 @@ function AccountModeRoot({ children }: { children: ReactNode }) {
         onStartFresh={
           user?.id == null
             ? undefined
-            : async () => {
-                await discardLockedVault(user.id);
+            : async (credential) => {
+                await discardLockedVault(user.id, credential);
                 await runtime.cleanupAfterDisable();
                 privacy.acceptNormal();
                 void privacy.refetch();

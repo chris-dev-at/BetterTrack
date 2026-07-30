@@ -108,16 +108,18 @@ export function ParanoidEnableWizard({
     }
     setStep(4);
     setErrorKey(null);
-    const controller = new AbortController();
     let result: Awaited<ReturnType<typeof enablePreparedVault>>;
     try {
       // GIS must start synchronously from this final wizard gesture.
       const drive = mediaSet.includes('drive') ? await runtime.authorizeDriveStorage() : undefined;
+      // No `signal`: this transition has no cancel affordance by design — once
+      // the migration is handed over, the server commit decides the outcome and
+      // the wizard reports it. An AbortController nobody can trigger only reads
+      // like cancellation exists.
       result = await enablePreparedVault(
         {
           mediaSet,
           material,
-          signal: controller.signal,
           onStage: setStage,
         },
         {
@@ -196,9 +198,15 @@ export function ParanoidEnableWizard({
               <span>{t('vault.enable.media.driveCopy')}</span>
             </label>
           ) : null}
+          {/* The Drive-only radio lives inside this fold. Collapsing it while
+              Drive-only is the selection would leave the step with NO visible
+              checked radio (the server radio renders `checked={!driveOnly}`),
+              so the fold stays open until another medium is chosen. */}
           <details
-            onToggle={(event) => setAdvanced((event.currentTarget as HTMLDetailsElement).open)}
-            open={advanced}
+            onToggle={(event) =>
+              setAdvanced((event.currentTarget as HTMLDetailsElement).open || driveOnly)
+            }
+            open={advanced || driveOnly}
           >
             <summary className="bt-link cursor-pointer text-sm">
               {t('vault.enable.media.advanced')}

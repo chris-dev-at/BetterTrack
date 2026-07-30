@@ -42,6 +42,12 @@ export function createParanoidAppPortfolioStore(session: VaultMoneySession): Por
       const derived = await requireDerivation(session.engine, portfolioId, '1D', signal);
       return portfolioResponse(derived, session);
     },
+    // `overlay` (the per-asset series the analytics chart can lay over the
+    // primary) is not answerable here: the client engine derives one
+    // portfolio-level curve, not one per asset. Its single caller —
+    // AnalyticsPage's overlay toggle — is normal-mode only, and the control
+    // that turns it on is not rendered for a paranoid account, so this never
+    // silently drops a requested overlay (docs/paranoid-design.md §8 item 12).
     async getPortfolioHistory(portfolioId, range, _overlay, signal) {
       const derived = await requireDerivation(session.engine, portfolioId, range, signal);
       return portfolioHistoryResponse(derived);

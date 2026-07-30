@@ -35,7 +35,19 @@ export async function disableUnlockedVault(
   document: VaultDocument,
   accountId: string,
 ): Promise<ParanoidDisableResponse> {
-  return rehydrateAndDisable(accountId, toStrictRestoreDocument(document), false);
+  return rehydrateAndDisable(accountId, toStrictRestoreDocument(document), null);
+}
+
+/**
+ * Re-auth for the destruction exit: the typed username plus ONE credential
+ * (account password, or a fresh TOTP code on a 2FA account). The server
+ * verifies both — this type only carries them there.
+ */
+export interface ParanoidDiscardCredential {
+  confirmUsername: string;
+  password?: string;
+  code?: string;
+  recoveryCode?: string;
 }
 
 /**
@@ -56,20 +68,27 @@ export async function disableUnlockedVault(
  * It shares {@link disableUnlockedVault}'s rehydration id on purpose: if an
  * interrupted real rehydration already committed, the server answers that
  * receipt idempotently instead of wiping what it just restored.
+ *
+ * Unlike the restoring disable it is IRREVERSIBLE, so it carries the
+ * account-deletion rung: the typed username and a re-verified credential, both
+ * checked on the server (`paranoidDiscardReauth`).
  */
-export async function discardLockedVault(accountId: string): Promise<ParanoidDisableResponse> {
+export async function discardLockedVault(
+  accountId: string,
+  credential: ParanoidDiscardCredential,
+): Promise<ParanoidDisableResponse> {
   const document = vaultStrictDocumentV1Schema.parse({
     schemaVersion: VAULT_DOCUMENT_V1_VERSION,
     entities: [],
     mergeLog: [],
   });
-  return rehydrateAndDisable(accountId, document, true);
+  return rehydrateAndDisable(accountId, document, credential);
 }
 
 async function rehydrateAndDisable(
   accountId: string,
   document: VaultStrictDocumentV1,
-  discard: boolean,
+  credential: ParanoidDiscardCredential | null,
 ): Promise<ParanoidDisableResponse> {
   const storageKey = `${REHYDRATION_ID_PREFIX}${accountId}`;
   const rehydrationId = storedRehydrationId(storageKey) ?? globalThis.crypto.randomUUID();
@@ -78,7 +97,7 @@ async function rehydrateAndDisable(
     rehydrationId,
     document,
     confirm: true,
-    ...(discard ? { discard: true } : {}),
+    ...(credential === null ? {} : { discard: true, ...credential }),
   });
   forgetRehydrationId(storageKey);
   return result;

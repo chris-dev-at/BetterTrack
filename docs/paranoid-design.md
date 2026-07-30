@@ -445,6 +445,24 @@ Killed for paranoid accounts:
     is the client-side re-derivation of those five pages against the vault
     store; it is v6 follow-up work and is logged in PROJECTPLAN §16
     (2026-07-30) alongside the home board and the contribution column.
+12. **Series that need per-asset history — answered with the portfolio's own
+    NET-WORTH curve, and labelled as such.** The client engine derives one
+    value series per portfolio (holdings + cash, `netWorthSeries`); it has no
+    equivalent of the server's `getAssetValueSeries`, which is what the
+    analytics endpoint sums over the _visible_ assets (holdings only). Two
+    surfaces read that quantity, and each answers with the client curve rather
+    than with a relabelled approximation of the server's:
+    - **Analytics** — the primary curve and its stats are the net-worth series.
+      The per-asset/group visibility filters are NOT offered here, so the
+      difference cannot show up as a filter that silently does nothing; the
+      period-contribution column is dropped for the same reason (item 11's
+      §16 row).
+    - **Forecast** — the prefilled "historical average return" samples the same
+      curve, so idle cash damps it relative to a normal account's figure. It is
+      an editable starting point, and the projection's starting value is a
+      net-worth figure too, so the two agree with each other.
+      Normal accounts are untouched by both: they keep reading
+      `analytics/…/series`, unchanged.
 
 Kept, unchanged (the "fully functional" half): the full auth stack (password,
 2FA, passkeys, PIN, sessions, admin-independent), friendships + chat +
