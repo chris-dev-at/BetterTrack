@@ -1,4 +1,4 @@
-FROM node:22-alpine AS builder
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS builder
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
@@ -27,7 +27,7 @@ ENV VITE_BUILD_SHA=$GIT_SHA \
 RUN pnpm --filter @bettertrack/web build
 
 # ── runner: nginx front proxy — fronts web/admin/api origins, both modes ─────
-FROM nginx:alpine AS runner
+FROM nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752 AS runner
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
 # Drop the stock catch-all server; our entrypoint renders the real config from
 # the selected mode template into conf.d/default.conf at start.
