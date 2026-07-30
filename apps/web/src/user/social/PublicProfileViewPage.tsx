@@ -155,6 +155,7 @@ function ProfileItemCard({
                       }))}
                       mode="area"
                       showRangeToggle={false}
+                      valueCurrency={detail.data.portfolio.baseCurrency}
                       height={240}
                       ariaLabel={t('publicShare.valueOverTime')}
                     />

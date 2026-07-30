@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
-import { setFormatLocale } from '../../lib/format';
+import { DISCREET_MASK, setDiscreetMode, setFormatLocale } from '../../lib/format';
 
 // Mock the canvas-backed charting lib: jsdom can't draw, and the wrapper's
 // contract is *how* it drives the lib (series type, setData, disposal).
@@ -70,6 +70,7 @@ import { sampleBenchmarkSeries, sampleOverlaySeries, samplePriceSeries } from '.
 
 beforeEach(() => {
   vi.clearAllMocks();
+  setDiscreetMode(false);
   setFormatLocale('de-AT');
 });
 
@@ -190,7 +191,7 @@ describe('PriceChart', () => {
     const user = userEvent.setup();
     render(
       <I18nProvider initialLocale="en">
-        <PriceChart series={samplePriceSeries} />
+        <PriceChart series={samplePriceSeries} valueCurrency="USD" />
       </I18nProvider>,
     );
 
@@ -198,12 +199,14 @@ describe('PriceChart', () => {
     const summaryId = chart.getAttribute('aria-describedby');
     expect(summaryId).toBeTruthy();
     const expectedSummary =
-      'Period: 2 Jan 2026 to 15 Jan 2026. Start: 102.40 €. End: 110.80 €. Change: +8.40 € (+8.20%). Minimum: 101.70 € on 6 Jan 2026. Maximum: 110.80 € on 15 Jan 2026.';
+      'Period: 2 Jan 2026 to 15 Jan 2026. Start: 102.40 US$. End: 110.80 US$. Change: +8.40 US$ (+8.20%). Minimum: 101.70 US$ on 6 Jan 2026. Maximum: 110.80 US$ on 15 Jan 2026.';
     expect(document.getElementById(summaryId!)).toHaveTextContent(expectedSummary);
     expect(chart).toHaveAccessibleDescription(expectedSummary);
 
     const disclosure = screen.getByRole('button', { name: 'Show chart data' });
     expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    const tableRegionId = disclosure.getAttribute('aria-controls');
+    expect(tableRegionId).toBeTruthy();
     expect(screen.queryByRole('table', { name: 'Chart data' })).not.toBeInTheDocument();
 
     disclosure.focus();
@@ -215,7 +218,44 @@ describe('PriceChart', () => {
     expect(screen.getByRole('columnheader', { name: 'Date' })).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'Value' })).toBeInTheDocument();
     expect(table).toHaveTextContent('2 Jan 2026');
-    expect(table).toHaveTextContent('110.80 €');
+    expect(table).toHaveTextContent('110.80 US$');
+    expect(document.getElementById(tableRegionId!)).toContainElement(table);
+  });
+
+  test('keeps unlabelled base-100 indices unitless and visible in discreet mode', () => {
+    setDiscreetMode(true);
+    render(
+      <I18nProvider initialLocale="en">
+        <PriceChart series={samplePriceSeries} />
+      </I18nProvider>,
+    );
+
+    const chart = screen.getByRole('img', { name: 'Price chart' });
+    const summary = document.getElementById(chart.getAttribute('aria-describedby')!);
+    expect(summary).toHaveTextContent(
+      'Period: 2 Jan 2026 to 15 Jan 2026. Start: 102.4. End: 110.8. Change: +8.4 (+8.20%). Minimum: 101.7 on 6 Jan 2026. Maximum: 110.8 on 15 Jan 2026.',
+    );
+    expect(summary).not.toHaveTextContent(DISCREET_MASK);
+  });
+
+  test('formats already-percent series as percentages, not money or indices', () => {
+    render(
+      <I18nProvider initialLocale="en">
+        <PriceChart
+          percentValues
+          series={[
+            { time: '2026-01-02', value: 2.5 },
+            { time: '2026-01-03', value: 4 },
+          ]}
+        />
+      </I18nProvider>,
+    );
+
+    const chart = screen.getByRole('img', { name: 'Price chart' });
+    const summary = document.getElementById(chart.getAttribute('aria-describedby')!);
+    expect(summary).toHaveTextContent(
+      'Period: 2 Jan 2026 to 3 Jan 2026. Start: 2.50%. End: 4.00%. Change: +1.50% (+60.00%). Minimum: 2.50% on 2 Jan 2026. Maximum: 4.00% on 3 Jan 2026.',
+    );
   });
 
   test('bounds a long chart-data table and discloses deterministic sampling', async () => {
@@ -235,6 +275,41 @@ describe('PriceChart', () => {
     const table = screen.getByRole('table', { name: 'Chart data' });
     expect(table.querySelectorAll('tbody tr')).toHaveLength(120);
     expect(screen.getByText('Showing 120 of 121 plotted points.')).toBeInTheDocument();
+  });
+
+  test('uses date-only labels for daily epoch timestamps and seconds for dense live points', () => {
+    const { rerender } = render(
+      <I18nProvider initialLocale="en">
+        <PriceChart
+          series={[
+            { time: 1_704_067_200 as never, value: 100 },
+            { time: 1_704_153_600 as never, value: 110 },
+          ]}
+        />
+      </I18nProvider>,
+    );
+
+    let chart = screen.getByRole('img', { name: 'Price chart' });
+    let summary = document.getElementById(chart.getAttribute('aria-describedby')!);
+    expect(summary).toHaveTextContent('Period: 1 Jan 2024 to 2 Jan 2024.');
+    expect(summary?.textContent).not.toMatch(/\d{2}:\d{2}/);
+
+    rerender(
+      <I18nProvider initialLocale="en">
+        <PriceChart
+          live
+          series={[
+            { time: 1_704_067_200 as never, value: 100 },
+            { time: 1_704_067_201 as never, value: 110 },
+          ]}
+        />
+      </I18nProvider>,
+    );
+
+    chart = screen.getByRole('img', { name: 'Price chart' });
+    summary = document.getElementById(chart.getAttribute('aria-describedby')!);
+    expect(summary?.textContent).toMatch(/01:00:00/);
+    expect(summary?.textContent).toMatch(/01:00:01/);
   });
 
   test('keeps the existing fallback when data is empty and omits the alternative for one point', () => {

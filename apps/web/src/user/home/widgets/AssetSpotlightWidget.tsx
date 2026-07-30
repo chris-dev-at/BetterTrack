@@ -127,6 +127,7 @@ export function AssetSpotlightWidget({ settings, onSettingsChange, size }: Widge
           range={range}
           ranges={SPOTLIGHT_RANGES}
           series={series}
+          valueCurrency={quote?.currency}
         />
       </div>
     </div>

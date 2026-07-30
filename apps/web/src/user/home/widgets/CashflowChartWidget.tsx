@@ -93,6 +93,7 @@ export function CashflowChartWidget({ settings, size }: WidgetProps) {
             mode="baseline"
             series={series}
             showRangeToggle={false}
+            valueCurrency="EUR"
           />
         </div>
       )}

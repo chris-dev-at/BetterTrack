@@ -1345,6 +1345,7 @@ export function PortfolioPage() {
                 series={chartPoints}
                 mode={perfMode ? 'baseline' : 'area'}
                 percentValues={perfMode}
+                valueCurrency={historyQuery.data?.baseCurrency ?? portfolioQuery.data?.baseCurrency}
                 range={range}
                 ranges={PORTFOLIO_RANGES}
                 onRangeChange={setRange}

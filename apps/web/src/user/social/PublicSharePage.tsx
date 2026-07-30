@@ -110,6 +110,7 @@ export function PublicSharePage() {
                   }))}
                   mode="area"
                   showRangeToggle={false}
+                  valueCurrency={p.baseCurrency}
                   ariaLabel={t('publicShare.valueOverTime')}
                 />
               </div>
