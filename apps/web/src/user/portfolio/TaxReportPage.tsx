@@ -1,8 +1,10 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import type {
+  PortfolioSummary,
+  TaxMode,
   TaxYearDeSummary,
   TaxYearPosition,
   TaxYearSell,
@@ -22,6 +24,18 @@ import {
 import { Disclaimer, EmptyState, MoneyText } from '../../ui';
 import { Badge, Icon, PageHead, Panel, SkeletonBlock } from '../../ui/origin';
 import { Alert } from '../components/ui';
+import { vaultMoneyErrorKey } from '../vault/engine/errorCopy';
+import { asMoneyFailure, type VaultMoneyFailure } from '../vault/engine/errors';
+import { clientTaxYears } from '../vault/engine/taxEngine';
+import type { ClientTaxReport } from '../vault/engine/types';
+import {
+  useVaultMoneySession,
+  type VaultMoneySession,
+} from '../vault/engine/VaultMoneyEngineProvider';
+import { deliverClientDownload, printClientDocument } from '../vault/export/deliver';
+import { createClientTaxCsv } from '../vault/export/taxCsv';
+import { createPrintableTaxReport } from '../vault/export/taxPrint';
+import { usePrivacyMode } from '../vault/usePrivacyMode';
 import { portfolioTaxSettingsKey, taxModeLabelKey } from './portfolioTax';
 import {
   ACTIVE_PORTFOLIO_PARAM,
@@ -252,15 +266,16 @@ function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }
 
 /** One year's summary row with an expand toggle to its drill-down. */
 function YearRow({
-  portfolioId,
   summary,
   expanded,
   onToggle,
+  detail,
 }: {
-  portfolioId: string;
   summary: TaxYearSummary;
   expanded: boolean;
   onToggle: () => void;
+  /** The drill-down content rendered while expanded (server-fetched or client-derived). */
+  detail: ReactNode;
 }) {
   const t = useT();
   return (
@@ -325,7 +340,7 @@ function YearRow({
       {expanded ? (
         <tr style={{ background: 'var(--bt-bg-raised)' }}>
           <td colSpan={6} style={{ padding: 0 }}>
-            <YearDetail portfolioId={portfolioId} year={summary.year} />
+            {detail}
           </td>
         </tr>
       ) : null}
@@ -354,20 +369,29 @@ export function TaxReportPage() {
   const [searchParams] = useSearchParams();
   const [expandedYear, setExpandedYear] = useState<number | null>(null);
 
+  // Paranoid accounts never fetch server tax data (PD7): every server query
+  // below stays disabled until the account resolves to 'normal'. Pre-populated
+  // caches must not leak through either — a cached ['portfolios'] entry would
+  // otherwise resolve an active id and start the settings/report reads while
+  // privacy is still pending or already paranoid.
+  const privacy = usePrivacyMode();
+  const serverReadsEnabled = privacy.privacyMode === 'normal';
+
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
     queryFn: ({ signal }) => listPortfolios(signal),
     staleTime: 60_000,
+    enabled: serverReadsEnabled,
   });
 
-  const portfolios = portfoliosQuery.data?.portfolios ?? [];
+  const portfolios = serverReadsEnabled ? (portfoliosQuery.data?.portfolios ?? []) : [];
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
   const active = resolveActivePortfolio(portfolios, param);
 
   const settingsQuery = useQuery({
     queryKey: active ? portfolioTaxSettingsKey(active.id) : ['portfolio', 'taxSettings', 'none'],
     queryFn: ({ signal }) => getPortfolioTaxSettings(active!.id, signal),
-    enabled: Boolean(active),
+    enabled: serverReadsEnabled && Boolean(active),
     staleTime: 30_000,
   });
   const mode = settingsQuery.data?.effective.mode ?? 'none';
@@ -376,7 +400,7 @@ export function TaxReportPage() {
   const reportQuery = useQuery({
     queryKey: ['portfolio', 'taxYears', active?.id],
     queryFn: ({ signal }) => getTaxYearReports(active!.id, signal),
-    enabled: Boolean(active) && taxActive,
+    enabled: serverReadsEnabled && Boolean(active) && taxActive,
     staleTime: 30_000,
   });
 
@@ -386,6 +410,31 @@ export function TaxReportPage() {
       <Disclaimer>{t('settings.taxes.disclaimer')}</Disclaimer>
     </PageHead>
   );
+
+  if (privacy.isPending) {
+    return (
+      <div>
+        {header}
+        <SkeletonBlock height={96} />
+      </div>
+    );
+  }
+
+  if (privacy.isError) {
+    return (
+      <div>
+        {header}
+        <EmptyState
+          description={t('settings.retryHint')}
+          title={t('portfolio.taxReport.loadError.title')}
+        />
+      </div>
+    );
+  }
+
+  if (privacy.privacyMode === 'paranoid') {
+    return <ParanoidTaxReport header={header} />;
+  }
 
   // Loading / error gate on the portfolio list — it resolves the active id that
   // drives everything below (the per-portfolio tax settings + the report).
@@ -509,12 +558,12 @@ export function TaxReportPage() {
                 {years.map((summary) => (
                   <YearRow
                     key={summary.year}
-                    portfolioId={active!.id}
                     summary={summary}
                     expanded={expandedYear === summary.year}
                     onToggle={() =>
                       setExpandedYear((cur) => (cur === summary.year ? null : summary.year))
                     }
+                    detail={<YearDetail portfolioId={active.id} year={summary.year} />}
                   />
                 ))}
               </tbody>
@@ -522,6 +571,361 @@ export function TaxReportPage() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The paranoid tax surface (PD7): every number derives client-side from the
+ * decrypted vault through the shared audited domain — no server tax endpoint
+ * is ever consulted. Requires an unlocked vault money session; while locked it
+ * renders the unlock prompt instead of any figure.
+ */
+function ParanoidTaxReport({ header }: { header: ReactNode }) {
+  const t = useT();
+  const [searchParams] = useSearchParams();
+  const session = useVaultMoneySession();
+  const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
+  const [portfolios, setPortfolios] = useState<
+    | { status: 'pending' }
+    | { status: 'error'; failure: VaultMoneyFailure }
+    | { status: 'ready'; list: PortfolioSummary[] }
+  >({ status: 'pending' });
+
+  useEffect(() => {
+    if (session === null) return;
+    const controller = new AbortController();
+    setPortfolios({ status: 'pending' });
+    session.store.listPortfolios(controller.signal).then(
+      (result) => {
+        if (!controller.signal.aborted) {
+          setPortfolios({ status: 'ready', list: result.portfolios });
+        }
+      },
+      (cause: unknown) => {
+        if (!controller.signal.aborted) {
+          setPortfolios({ status: 'error', failure: asMoneyFailure(cause) });
+        }
+      },
+    );
+    return () => controller.abort();
+  }, [session]);
+
+  if (session === null) {
+    return (
+      <div>
+        {header}
+        <EmptyState
+          description={t('portfolio.taxReport.paranoid.locked.description')}
+          icon="🔒"
+          title={t('portfolio.taxReport.paranoid.locked.title')}
+        />
+      </div>
+    );
+  }
+
+  if (portfolios.status === 'pending') {
+    return (
+      <div>
+        {header}
+        <SkeletonBlock height={96} />
+      </div>
+    );
+  }
+
+  if (portfolios.status === 'error') {
+    return (
+      <div>
+        {header}
+        <EmptyState
+          description={t(vaultMoneyErrorKey(portfolios.failure))}
+          title={t('portfolio.taxReport.loadError.title')}
+        />
+      </div>
+    );
+  }
+
+  const active = resolveActivePortfolio(portfolios.list, param);
+  if (!active) {
+    return (
+      <div>
+        {header}
+        <EmptyState
+          description={t('portfolio.taxReport.empty.description')}
+          icon="🧾"
+          title={t('portfolio.taxReport.empty.title')}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {header}
+      <div className="bt-section">
+        <ParanoidYearTable session={session} portfolio={active} />
+      </div>
+    </div>
+  );
+}
+
+type ParanoidDerivation =
+  | { status: 'pending' }
+  | { status: 'error'; failure: VaultMoneyFailure }
+  | { status: 'ready'; mode: TaxMode; reports: ClientTaxReport[] };
+
+/**
+ * Client-side year index + per-year reports for one portfolio. One derivation
+ * per activity year through the engine; the drill-down and both exports reuse
+ * the identical in-memory report object, so screen, CSV, and print never
+ * disagree. Typed failures render as-is — never a partial table.
+ */
+function ParanoidYearTable({
+  session,
+  portfolio,
+}: {
+  session: VaultMoneySession;
+  portfolio: PortfolioSummary;
+}) {
+  const t = useT();
+  const [expandedYear, setExpandedYear] = useState<number | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [derived, setDerived] = useState<ParanoidDerivation>({ status: 'pending' });
+
+  // Re-runs the whole derivation: the retry after a retryable failure, and the
+  // way out of a stale table — a vault write synced in from another device
+  // invalidates the derived reports, which the exports detect (scope assertion)
+  // but the rendered table cannot see on its own.
+  const rederive = () => setAttempt((current) => current + 1);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setDerived({ status: 'pending' });
+    void (async () => {
+      const overview = clientTaxYears(session.sync, portfolio.id);
+      if (!overview.ok) {
+        if (!controller.signal.aborted) setDerived({ status: 'error', failure: overview.error });
+        return;
+      }
+      const reports: ClientTaxReport[] = [];
+      if (overview.value.mode !== 'none') {
+        for (const year of overview.value.years) {
+          const report = await session.engine.deriveTaxReport(
+            portfolio.id,
+            year,
+            controller.signal,
+          );
+          if (!report.ok) {
+            if (!controller.signal.aborted) setDerived({ status: 'error', failure: report.error });
+            return;
+          }
+          reports.push(report.value);
+        }
+      }
+      if (!controller.signal.aborted) {
+        setDerived({ status: 'ready', mode: overview.value.mode, reports });
+      }
+    })();
+    return () => controller.abort();
+  }, [attempt, portfolio.id, session]);
+
+  if (derived.status === 'pending') {
+    return <SkeletonBlock height={96} />;
+  }
+
+  if (derived.status === 'error') {
+    return (
+      <EmptyState
+        cta={
+          derived.failure.retryable ? (
+            <button className="bt-btn bt-btn--quiet bt-btn--sm" onClick={rederive} type="button">
+              {t('portfolio.taxReport.paranoid.retry')}
+            </button>
+          ) : undefined
+        }
+        description={t(vaultMoneyErrorKey(derived.failure))}
+        title={t('portfolio.taxReport.loadError.title')}
+      />
+    );
+  }
+
+  if (derived.mode === 'none') {
+    return (
+      <EmptyState
+        description={t('portfolio.taxReport.paranoid.disabledDescription')}
+        icon="🧾"
+        title={t('portfolio.taxReport.disabled.title')}
+      />
+    );
+  }
+
+  if (derived.reports.length === 0) {
+    return (
+      <EmptyState
+        description={t('portfolio.taxReport.empty.description')}
+        icon="🧾"
+        title={t('portfolio.taxReport.empty.title')}
+      />
+    );
+  }
+
+  return (
+    <div className="bt-table-wrap bt-table-wrap--panel">
+      <table className="bt-table">
+        <thead>
+          <tr>
+            <th scope="col">{t('portfolio.taxReport.column.year')}</th>
+            <th className="is-num" scope="col">
+              {t('portfolio.taxReport.column.realized')}
+            </th>
+            <th className="is-num" scope="col">
+              {t('portfolio.taxReport.column.dividends')}
+            </th>
+            <th className="is-num" scope="col">
+              {t('portfolio.taxReport.column.withheld')}
+            </th>
+            <th className="is-num" scope="col">
+              {t('portfolio.taxReport.column.refund')}
+            </th>
+            <th className="is-num" scope="col">
+              {t('portfolio.taxReport.column.net')}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {derived.reports.map((tax) => (
+            <YearRow
+              key={tax.report.year}
+              summary={tax.report.summary}
+              expanded={expandedYear === tax.report.year}
+              onToggle={() =>
+                setExpandedYear((cur) => (cur === tax.report.year ? null : tax.report.year))
+              }
+              detail={
+                <ParanoidYearDetail
+                  onStale={rederive}
+                  portfolio={portfolio}
+                  session={session}
+                  tax={tax}
+                />
+              }
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** The client-derived drill-down — same blocks as the server detail, no fetch. */
+function ParanoidYearDetail({
+  session,
+  portfolio,
+  tax,
+  onStale,
+}: {
+  session: VaultMoneySession;
+  portfolio: PortfolioSummary;
+  tax: ClientTaxReport;
+  /** Re-derives the table when an export refuses this now-stale report. */
+  onStale: () => void;
+}) {
+  const t = useT();
+  const positions = tax.report.positions;
+  return (
+    <div className="flex flex-col gap-3 p-3">
+      <ParanoidYearActions onStale={onStale} portfolio={portfolio} session={session} tax={tax} />
+      {tax.report.summary.de ? <DeYearBlock de={tax.report.summary.de} t={t} /> : null}
+      {positions.length === 0 ? (
+        <p className="bt-meta" style={{ padding: '8px 0' }}>
+          {t('portfolio.taxReport.detailEmpty')}
+        </p>
+      ) : (
+        positions.map((position) => (
+          <PositionBlock key={position.asset.id} position={position} t={t} />
+        ))
+      )}
+      {/* Owner-mandated liability framing (#635): repeated under each year block. */}
+      <Disclaimer>{t('settings.taxes.disclaimer')}</Disclaimer>
+    </div>
+  );
+}
+
+/**
+ * Per-year export actions in paranoid mode: the CSV and the printable document
+ * are generated in the browser from the SAME in-memory report the table shows
+ * — no server round trip, no persistence beyond the transient download.
+ */
+function ParanoidYearActions({
+  session,
+  portfolio,
+  tax,
+  onStale,
+}: {
+  session: VaultMoneySession;
+  portfolio: PortfolioSummary;
+  tax: ClientTaxReport;
+  /** Re-derives the table after a retryable refusal (typically a stale report). */
+  onStale: () => void;
+}) {
+  const t = useT();
+  const { locale } = useI18n();
+  const [failure, setFailure] = useState<VaultMoneyFailure | null>(null);
+  const exportLocale = locale === 'de' ? 'de' : 'en';
+
+  function onCsv() {
+    const csv = createClientTaxCsv(session.sync, portfolio.id, tax, exportLocale);
+    if (!csv.ok) {
+      setFailure(csv.error);
+      return;
+    }
+    setFailure(null);
+    deliverClientDownload(csv.value.text, csv.value.mediaType, csv.value.filename);
+  }
+
+  function onPrint() {
+    const doc = createPrintableTaxReport(
+      session.sync,
+      portfolio.id,
+      tax,
+      exportLocale,
+      portfolio.name,
+    );
+    if (!doc.ok) {
+      setFailure(doc.error);
+      return;
+    }
+    setFailure(null);
+    printClientDocument(doc.value.html);
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-2">
+      <div className="flex items-center justify-end gap-2">
+        <button className="bt-btn bt-btn--quiet bt-btn--sm" onClick={onCsv} type="button">
+          <Icon name="download" size={15} />
+          {t('portfolio.taxReport.export.csv')}
+        </button>
+        <button className="bt-btn bt-btn--quiet bt-btn--sm" onClick={onPrint} type="button">
+          <Icon name="printer" size={15} />
+          {t('portfolio.taxReport.export.print')}
+        </button>
+      </div>
+      {failure ? (
+        <Alert tone="error">
+          <span className="flex flex-wrap items-center gap-2">
+            {t(vaultMoneyErrorKey(failure))}
+            {/* A refused export usually means the vault moved under the rendered
+                report (another device synced a write) — re-deriving is the way
+                out, so the alert carries the same retry the table error has. */}
+            {failure.retryable ? (
+              <button className="bt-link" onClick={onStale} type="button">
+                {t('portfolio.taxReport.paranoid.retry')}
+              </button>
+            ) : null}
+          </span>
+        </Alert>
+      ) : null}
     </div>
   );
 }

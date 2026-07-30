@@ -1,7 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { pushSubscriptions } from '../schema';
+import { pushSubscriptions, users } from '../schema';
 
 /**
  * Web-push (VAPID) subscription persistence (#368/#350). One row per
@@ -21,18 +21,52 @@ export interface PushSubscriptionRecord {
 
 export function createPushSubscriptionRepository(db: Database) {
   return {
-    /** Store (or refresh) a subscription for `userId`, keyed by endpoint. */
-    async upsert(
+    /**
+     * Store a subscription while enforcing a strict per-user fan-out bound.
+     *
+     * Locking the user row serializes concurrent registrations for the same
+     * account. Refreshing an endpoint the user already owns remains idempotent
+     * at the limit; adding or re-binding another endpoint does not.
+     */
+    async upsertWithinLimit(
       userId: string,
       sub: { endpoint: string; p256dh: string; auth: string },
-    ): Promise<void> {
-      await db
-        .insert(pushSubscriptions)
-        .values({ userId, endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth })
-        .onConflictDoUpdate({
-          target: pushSubscriptions.endpoint,
-          set: { userId, p256dh: sub.p256dh, auth: sub.auth, lastSeenAt: new Date() },
-        });
+      maxSubscriptions: number,
+    ): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        const executor = tx as unknown as Database;
+        const [user] = await executor
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1)
+          .for('update');
+        if (!user) throw new Error('Cannot register a Web Push subscription for a missing user.');
+
+        const [existingEndpoint] = await executor
+          .select({ userId: pushSubscriptions.userId })
+          .from(pushSubscriptions)
+          .where(eq(pushSubscriptions.endpoint, sub.endpoint))
+          .limit(1);
+
+        if (existingEndpoint?.userId !== userId) {
+          const existingForUser = await executor
+            .select({ id: pushSubscriptions.id })
+            .from(pushSubscriptions)
+            .where(eq(pushSubscriptions.userId, userId))
+            .limit(maxSubscriptions);
+          if (existingForUser.length >= maxSubscriptions) return false;
+        }
+
+        await executor
+          .insert(pushSubscriptions)
+          .values({ userId, endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth })
+          .onConflictDoUpdate({
+            target: pushSubscriptions.endpoint,
+            set: { userId, p256dh: sub.p256dh, auth: sub.auth, lastSeenAt: new Date() },
+          });
+        return true;
+      });
     },
 
     /** Remove one of the CALLER's subscriptions (idempotent, never another user's). */

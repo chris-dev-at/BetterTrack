@@ -1,12 +1,13 @@
 import { tmpdir } from 'node:os';
-import { join as joinPath } from 'node:path';
+import { dirname, join as joinPath } from 'node:path';
 import { existsSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 
 import { unzipSync, strFromU8 } from 'fflate';
 import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { exportRequestResponseSchema, exportStatusResponseSchema } from '@bettertrack/contracts';
 
@@ -78,6 +79,12 @@ describe('account data export', () => {
     expect(row!.status).toBe('ready');
     expect(row!.filePath).toBeTruthy();
     expect(row!.expiresAt).toBeTruthy();
+    const [directoryStat, fileStat] = await Promise.all([
+      stat(dirname(row!.filePath!)),
+      stat(row!.filePath!),
+    ]);
+    expect(directoryStat.mode & 0o777).toBe(0o700);
+    expect(fileStat.mode & 0o777).toBe(0o600);
 
     // The completion notification landed in the inbox (deep-links to Settings).
     const notes = await harness.db
@@ -98,12 +105,23 @@ describe('account data export', () => {
     expect(status.jobId).toBe(jobId);
     expect(status.sizeBytes).toBeGreaterThan(0);
 
-    // Download with the held token: a valid zip with JSON per entity + CSVs.
+    // The legacy query-string route is gone: a token in a URL never downloads.
+    const legacyQuery = await agent.get(
+      `/api/v1/account/export/download?token=${encodeURIComponent(downloadToken)}`,
+    );
+    expect(legacyQuery.status).toBe(404);
+
+    // Exchange the held token in a POST body: a valid no-store zip with JSON
+    // per entity + CSVs.
     const dl = await agent
-      .get(`/api/v1/account/export/download?token=${encodeURIComponent(downloadToken)}`)
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken })
       .responseType('blob');
     expect(dl.status).toBe(200);
     expect(dl.headers['content-disposition']).toContain('attachment');
+    expect(dl.headers['cache-control']).toBe('no-store');
+    expect(dl.headers['referrer-policy']).toBe('no-referrer');
     const files = unzipText(dl.body as Buffer);
 
     expect(files['manifest.json']).toBeTruthy();
@@ -119,6 +137,20 @@ describe('account data export', () => {
     // The user's own portfolio is present.
     const portfolios = JSON.parse(files['data/portfolios.json']!) as { id: string }[];
     expect(portfolios.map((p) => p.id)).toContain(portfolioId);
+
+    // The conditional claim clears the hash. Replaying the exact same exchange
+    // fails closed without streaming the file again.
+    const [consumed] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(consumed!.downloadTokenHash).toBeNull();
+    const replay = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken });
+    expect(replay.status).toBe(404);
+    expect(replay.body.error.code).toBe('EXPORT_NOT_FOUND');
   });
 
   it('exports only the requesting user’s rows', async () => {
@@ -134,7 +166,9 @@ describe('account data export', () => {
       .send({ password: alice.password });
     const { downloadToken } = exportRequestResponseSchema.parse(reqRes.body);
     const dl = await agent
-      .get(`/api/v1/account/export/download?token=${encodeURIComponent(downloadToken)}`)
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken })
       .responseType('blob');
     const files = unzipText(dl.body as Buffer);
     const ids = (JSON.parse(files['data/portfolios.json']!) as { id: string }[]).map((p) => p.id);
@@ -144,6 +178,18 @@ describe('account data export', () => {
 
   it('the collector produces exactly the classified entity set', async () => {
     const user = await harness.seedUser();
+    await harness.db.insert(schema.oauthClients).values({
+      userId: user.id,
+      clientId: 'btc_export_client',
+      name: 'Export client',
+      clientSecretHash: 'secret-hash',
+      redirectUris: ['https://client.example/callback'],
+      scopes: ['portfolio:read'],
+      isPublic: false,
+      logoUrl: 'https://client.example/logo.png',
+      logoBytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      logoContentType: 'image/png',
+    });
     const collected = await collectUserExport(harness.db, user.id);
     expect(Object.keys(collected.entities).sort()).toEqual([...EXPORTED_ENTITY_NAMES]);
     // The account entity always carries the user's own sanitized row, with no
@@ -152,6 +198,16 @@ describe('account data export', () => {
     expect(account.length).toBe(1);
     expect(account[0]).not.toHaveProperty('passwordHash');
     expect(account[0]).not.toHaveProperty('securityGeneration');
+    // Cached raster bytes have no account-export value and can expand into a
+    // multi-megabyte JSON byte array. Keep the source metadata, not the blob.
+    const oauthClients = collected.entities.oauthClients as Record<string, unknown>[];
+    expect(oauthClients).toHaveLength(1);
+    expect(oauthClients[0]).not.toHaveProperty('clientSecretHash');
+    expect(oauthClients[0]).not.toHaveProperty('logoBytes');
+    expect(oauthClients[0]).toMatchObject({
+      logoUrl: 'https://client.example/logo.png',
+      logoContentType: 'image/png',
+    });
   });
 
   it('rejects a wrong re-auth without creating a job', async () => {
@@ -182,6 +238,39 @@ describe('account data export', () => {
     expect(second.body.error.code).toBe('EXPORT_RATE_LIMITED');
   });
 
+  it('atomically admits exactly one concurrent request and enqueue', async () => {
+    const enqueueBuild = vi.fn(async (_jobId: string) => undefined);
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      exportEnqueue: enqueueBuild,
+    });
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const responses = await Promise.all([
+      agent
+        .post('/api/v1/account/export')
+        .set(...XRW)
+        .send({ password: user.password }),
+      agent
+        .post('/api/v1/account/export')
+        .set(...XRW)
+        .send({ password: user.password }),
+    ]);
+
+    expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 429]);
+    expect(responses.find((response) => response.status === 429)?.body.error.code).toBe(
+      'EXPORT_RATE_LIMITED',
+    );
+    const jobs = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.userId, user.id));
+    expect(jobs).toHaveLength(1);
+    expect(enqueueBuild).toHaveBeenCalledTimes(1);
+    expect(enqueueBuild).toHaveBeenCalledWith(jobs[0]!.id);
+  });
+
   it('fails a download closed for a foreign or expired token', async () => {
     const alice = await harness.seedUser({ email: 'a2@bettertrack.test', username: 'a2' });
     const bob = await harness.seedUser({ email: 'b2@bettertrack.test', username: 'b2' });
@@ -196,8 +285,9 @@ describe('account data export', () => {
 
     // Bob presents Alice's token → 404 (foreign).
     const foreign = await bobAgent
-      .get(`/api/v1/account/export/download?token=${encodeURIComponent(downloadToken)}`)
-      .responseType('blob');
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken });
     expect(foreign.status).toBe(404);
 
     // Expire Alice's window → her own valid token now 404s.
@@ -206,9 +296,11 @@ describe('account data export', () => {
       .set({ expiresAt: new Date(Date.now() - 1000) })
       .where(eq(schema.exportJobs.id, jobId));
     const expired = await aliceAgent
-      .get(`/api/v1/account/export/download?token=${encodeURIComponent(downloadToken)}`)
-      .responseType('blob');
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken });
     expect(expired.status).toBe(404);
+    expect(expired.body.error.code).toBe('EXPORT_NOT_FOUND');
   });
 
   it('cleanup deletes expired export files and rows', async () => {

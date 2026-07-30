@@ -6,9 +6,10 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 
 import { Wordmark } from '../../components/Wordmark';
 import { useT } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
+import { ApiError, apiAssetUrl } from '../../lib/apiClient';
 import {
   approveAuthorization,
+  denyAuthorization,
   getAuthorizationDetails,
   type OAuthAuthorizeParams,
 } from '../../lib/oauthApi';
@@ -41,8 +42,8 @@ import { Alert, Button, Spinner } from '../components/ui';
  * Security posture (§10): we NEVER navigate to `redirect_uri` on our own. An
  * invalid/unknown client or a bad redirect URI is a 400 from the details
  * endpoint and is rendered as an inline error — the browser only ever reaches
- * the redirect URI via the service-signed `redirectTo` returned by an explicit
- * Approve.
+ * the redirect URI via the service-validated `redirectTo` returned by an
+ * explicit approval or denial.
  */
 
 /** Pull the OAuth authorize params off the URL, or null if a required one is absent. */
@@ -89,18 +90,20 @@ function ConsentShell({ children }: { children: ReactNode }) {
 /**
  * The requesting app's identity on the consent screen: a first-party (official)
  * app shows the BetterTrack mark + an "Official app" badge; a third-party app
- * shows its own logo (when set) or a lettered placeholder.
+ * shows its server-cached logo (when set) or a lettered placeholder.
  */
 function AppIdentity({
   name,
-  logoUrl,
+  logoPath,
   firstParty,
 }: {
   name: string;
-  logoUrl: string | null;
+  logoPath: string | null;
   firstParty: boolean;
 }) {
   const t = useT();
+  const [logoFailed, setLogoFailed] = useState(false);
+  const logoUrl = logoPath && !logoFailed ? apiAssetUrl(logoPath) : null;
   return (
     <div className="flex items-center gap-3">
       {firstParty ? (
@@ -120,6 +123,7 @@ function AppIdentity({
           alt=""
           className="h-12 w-12 shrink-0 rounded-lg object-cover"
           style={{ border: '1px solid var(--bt-border-strong)' }}
+          onError={() => setLogoFailed(true)}
         />
       ) : (
         <div
@@ -150,7 +154,7 @@ export function ConsentPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
-  const [cancelled, setCancelled] = useState(false);
+  const [denialFailed, setDenialFailed] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
 
@@ -162,7 +166,7 @@ export function ConsentPage() {
   const query = useQuery({
     queryKey: ['oauth', 'authorization-details', search],
     queryFn: ({ signal }) => getAuthorizationDetails(params as OAuthAuthorizeParams, signal),
-    enabled: params != null && !cancelled,
+    enabled: params != null && !denialFailed,
     retry: false,
   });
 
@@ -174,6 +178,16 @@ export function ConsentPage() {
       window.location.href = result.redirectTo;
     },
     onError: () => setApproveError(t('auth.oauthConsent.approveError')),
+  });
+
+  const deny = useMutation({
+    mutationFn: () => denyAuthorization(params as OAuthAuthorizeParams),
+    onSuccess: (result) => {
+      // As with approval, only the API-validated destination is trusted. The
+      // raw redirect_uri from the browser query is never used for navigation.
+      window.location.href = result.redirectTo;
+    },
+    onError: () => setDenialFailed(true),
   });
 
   // "Use another account" — end this session, then land on /login carrying the
@@ -203,11 +217,13 @@ export function ConsentPage() {
     );
   }
 
-  // ── User declined: no code is issued; we do NOT touch redirect_uri. ──
-  if (cancelled) {
+  // ── Denial could not produce a validated callback: stay local and make it
+  // clear that no access was granted. Never fall back to the raw redirect URI. ──
+  if (denialFailed) {
     return (
       <ConsentShell>
         <div className="flex flex-col gap-4">
+          <Alert tone="error">{t('auth.oauthConsent.denyError')}</Alert>
           <h1 className="bt-h2">{t('auth.oauthConsent.cancelledTitle')}</h1>
           <p className="bt-muted text-sm">{t('auth.oauthConsent.cancelledBody')}</p>
           <Button onClick={() => navigate('/', { replace: true })}>
@@ -258,7 +274,7 @@ export function ConsentPage() {
       <ConsentShell>
         <div className="flex flex-col gap-5">
           {approveError ? <Alert tone="error">{approveError}</Alert> : null}
-          <AppIdentity name={details.client.name} logoUrl={null} firstParty />
+          <AppIdentity name={details.client.name} logoPath={null} firstParty />
           <p className="bt-muted text-sm">{signedInAs}</p>
           <div className="flex flex-col gap-2 sm:flex-row-reverse">
             <Button
@@ -296,7 +312,7 @@ export function ConsentPage() {
         {approveError ? <Alert tone="error">{approveError}</Alert> : null}
         <AppIdentity
           name={details.client.name}
-          logoUrl={details.client.logoUrl}
+          logoPath={details.client.logoPath}
           firstParty={false}
         />
         <p className="bt-muted text-sm">{signedInAs}</p>
@@ -318,7 +334,7 @@ export function ConsentPage() {
         <div className="flex flex-col gap-2 sm:flex-row-reverse">
           <Button
             className="sm:flex-1"
-            disabled={approve.isPending || switching}
+            disabled={approve.isPending || deny.isPending || switching}
             onClick={() => {
               setApproveError(null);
               approve.mutate();
@@ -331,8 +347,11 @@ export function ConsentPage() {
           <Button
             variant="secondary"
             className="sm:flex-1"
-            disabled={approve.isPending || switching}
-            onClick={() => setCancelled(true)}
+            disabled={approve.isPending || deny.isPending || switching}
+            onClick={() => {
+              setApproveError(null);
+              deny.mutate();
+            }}
           >
             {t('common.cancel')}
           </Button>
@@ -340,7 +359,7 @@ export function ConsentPage() {
         <button
           type="button"
           className="bt-btn bt-btn--quiet"
-          disabled={approve.isPending || switching}
+          disabled={approve.isPending || deny.isPending || switching}
           onClick={() => void handleUseAnotherAccount()}
         >
           {t('auth.oauthConsent.useAnotherAccount')}

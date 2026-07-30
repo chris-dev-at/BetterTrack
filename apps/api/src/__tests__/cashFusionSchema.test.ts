@@ -7,7 +7,7 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
 /**
  * Constraint coverage for the V5 cash-fusion tables (migration 0075), driven
  * through the DRIZZLE definitions against the MIGRATED database — so it also
- * proves `data/schema.ts` and the hand-written `0075_cash_fusion.sql` agree: a
+ * proves `data/schema.ts` and the hand-written `0076_cash_fusion.sql` agree: a
  * column or index that exists in only one of them fails here.
  *
  * `cashFusionMigration.test.ts` covers the data conversion; this file covers the

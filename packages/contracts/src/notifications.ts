@@ -308,6 +308,10 @@ export type DeleteDeviceRequest = z.infer<typeof deleteDeviceRequestSchema>;
 
 // ── Web-push subscriptions (browser push, #368/#350) ─────────────────────────
 
+export const WEB_PUSH_MAX_SUBSCRIPTIONS = 10;
+export const WEB_PUSH_ENDPOINT_UNSAFE = 'WEB_PUSH_ENDPOINT_UNSAFE';
+export const WEB_PUSH_SUBSCRIPTION_LIMIT_REACHED = 'WEB_PUSH_SUBSCRIPTION_LIMIT_REACHED';
+
 /**
  * `POST /notifications/web-push` body — a standard PushSubscription's transport
  * triple, upserted by `endpoint` (re-subscribing refreshes/re-binds like device
@@ -316,7 +320,20 @@ export type DeleteDeviceRequest = z.infer<typeof deleteDeviceRequestSchema>;
  */
 export const webPushSubscribeRequestSchema = z
   .object({
-    endpoint: z.string().url().max(2048),
+    endpoint: z
+      .string()
+      .url()
+      .max(2048)
+      .refine(
+        (value) => {
+          try {
+            return new URL(value).protocol === 'https:';
+          } catch {
+            return false;
+          }
+        },
+        { message: 'Web Push endpoints must use HTTPS.' },
+      ),
     keys: z
       .object({ p256dh: z.string().min(1).max(512), auth: z.string().min(1).max(512) })
       .strict(),

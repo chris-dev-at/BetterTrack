@@ -8,7 +8,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { base64ToBytes } from './bytes';
 import type { DataHomeReadResult } from './dataHome';
 import type { DriveAccessTokenResult, DriveDataHome, GoogleDriveTokenClient } from './drive';
-import type { DriveConnectionController, UnlockedVaultDriveRuntime } from './media';
+import type {
+  DriveConnectionController,
+  UnlockedVaultDriveRuntime,
+  VaultDriveSyncCoordinator,
+} from './media';
 import {
   useVaultRuntime,
   VaultRuntimeProvider,
@@ -17,6 +21,23 @@ import {
 import fixture from './vectors.fixture.json';
 
 const envelope = base64ToBytes(fixture.initial.envelopeBase64, 'envelope-invalid');
+
+// Every unlock below derives the real production Argon2id profile (64 MiB,
+// t=3) and then unwraps through WebCrypto, which costs seconds of wall clock on
+// a CI runner shared with the rest of the suite. The 1s testing-library default
+// expires mid-unlock and reports the still-locked DOM as a provider defect
+// (#930), so each wait behind an unlock gets a KDF-sized budget instead. The
+// per-test ceiling backing it lives in vite.config.ts.
+const UNLOCK_WAIT = { timeout: 15_000 } as const;
+
+function testSyncCoordinator(): VaultDriveSyncCoordinator {
+  return {
+    deviceId: 'test-device',
+    state: { status: 'synced', active: null, pending: null },
+    reconnect: async () => ({ status: 'synced' as const, active: null, pending: null }),
+    mutate: async () => ({ status: 'synced' as const, active: null, pending: null }),
+  };
+}
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
@@ -87,6 +108,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
         expect(keyId).toBe(fixture.initial.header.keyId);
         return {
           controller,
+          sync: testSyncCoordinator(),
           ready: Promise.resolve(),
           syncState: { status: 'synced', active: null, pending: null },
           reconnect: vi.fn(async () => ({
@@ -116,14 +138,14 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
     );
 
     await userEvent.setup().click(screen.getByRole('button', { name: 'unlock' }));
-    expect(await screen.findByText('unlocked')).toBeInTheDocument();
+    expect(await screen.findByText('unlocked', undefined, UNLOCK_WAIT)).toBeInTheDocument();
 
     expect(events).toEqual(['authorize', 'drive-read', 'runtime']);
     expect(serverRead).not.toHaveBeenCalled();
     expect(createRuntime).toHaveBeenCalledTimes(1);
 
     rendered.unmount();
-    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1), UNLOCK_WAIT);
     expect(tokens.clear).toHaveBeenCalled();
   });
 
@@ -150,6 +172,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
         runtimeOwners.push(options.userId);
         return {
           controller: connection(),
+          sync: testSyncCoordinator(),
           ready: Promise.resolve(),
           syncState: { status: 'synced', active: null, pending: null },
           reconnect: vi.fn(async () => ({
@@ -176,16 +199,16 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
     );
 
     await userEvent.setup().click(screen.getByRole('button', { name: 'unlock' }));
-    await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(1), UNLOCK_WAIT);
 
     rendered.rerender(
       <VaultRuntimeProvider authenticated userId={secondUser} dependencies={dependencies}>
         <UnlockHarness driveOnly={false} />
       </VaultRuntimeProvider>,
     );
-    await waitFor(() => expect(screen.getByText('no connection')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('no connection')).toBeInTheDocument(), UNLOCK_WAIT);
     await userEvent.setup().click(screen.getByRole('button', { name: 'unlocked' }));
-    await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(2), UNLOCK_WAIT);
 
     expect(runtimeOwners).toEqual([firstUser, secondUser]);
     expect(driveHomes).toHaveLength(2);
@@ -220,6 +243,7 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
       const createRuntime: NonNullable<VaultRuntimeProviderDependencies['createRuntime']> = vi.fn(
         (): UnlockedVaultDriveRuntime => ({
           controller: connection(),
+          sync: testSyncCoordinator(),
           ready: stage === 'runtime readiness' ? runtimeReady.promise : Promise.resolve(),
           syncState: { status: 'synced', active: null, pending: null },
           reconnect: vi.fn(async () => ({
@@ -245,11 +269,11 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
 
       await userEvent.setup().click(screen.getByRole('button', { name: 'unlock' }));
       if (stage === 'authorization') {
-        await waitFor(() => expect(tokens.authorize).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(tokens.authorize).toHaveBeenCalledTimes(1), UNLOCK_WAIT);
       } else if (stage === 'envelope read') {
-        await waitFor(() => expect(readEnvelope).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(readEnvelope).toHaveBeenCalledTimes(1), UNLOCK_WAIT);
       } else {
-        await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(createRuntime).toHaveBeenCalledTimes(1), UNLOCK_WAIT);
       }
 
       rendered.rerender(
@@ -257,13 +281,15 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
           <UnlockHarness driveOnly={false} />
         </VaultRuntimeProvider>,
       );
-      await waitFor(() => expect(tokens.clear).toHaveBeenCalled());
+      await waitFor(() => expect(tokens.clear).toHaveBeenCalled(), UNLOCK_WAIT);
 
       if (stage === 'authorization') authorization.resolve(okToken);
       else if (stage === 'envelope read') envelopeRead.resolve(envelope);
       else runtimeReady.resolve();
 
-      expect(await screen.findByRole('button', { name: 'rejected' })).toBeInTheDocument();
+      expect(
+        await screen.findByRole('button', { name: 'rejected' }, UNLOCK_WAIT),
+      ).toBeInTheDocument();
       expect(screen.getByText('no connection')).toBeInTheDocument();
       if (stage === 'authorization') expect(readEnvelope).not.toHaveBeenCalled();
       if (stage !== 'runtime readiness') expect(createRuntime).not.toHaveBeenCalled();

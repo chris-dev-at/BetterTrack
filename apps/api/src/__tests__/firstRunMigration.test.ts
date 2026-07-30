@@ -52,12 +52,12 @@ async function applyMigration(client: PGlite, tag: string): Promise<void> {
 const U1 = '019756a0-0000-7000-8000-0000000f0001';
 const U2 = '019756a0-0000-7000-8000-0000000f0002';
 
-describe('migration 0074_first_run_completion — established accounts are not re-onboarded', () => {
+describe('migration 0075_first_run_completion — established accounts are not re-onboarded', () => {
   it('backfills every pre-existing account from its created_at, leaving no nulls', async () => {
     const client = new PGlite({ extensions: { pg_trgm } });
     try {
       const tags = migrationTags();
-      const target = '0074_first_run_completion';
+      const target = '0075_first_run_completion';
       expect(tags).toContain(target);
 
       for (const tag of tags) {

@@ -21,6 +21,7 @@ import type {
   DriveConnectionController,
   VaultRetiredPurgeResult,
 } from '../../vault/media';
+import { VAULT_MEDIA_QUERY_KEY } from '../../vault/usePrivacyMode';
 import {
   useOptionalVaultRuntime,
   type VaultDriveUnlockOptions,
@@ -37,7 +38,9 @@ import {
 } from './panelKit';
 
 const GOOGLE_KEY = ['auth', 'google', 'link-status'] as const;
-const VAULT_MEDIA_KEY = ['vault', 'media'] as const;
+// One shared key so this page's fetch also serves `usePrivacyMode` (and vice
+// versa) — kept as a single definition so the two can never drift apart.
+const VAULT_MEDIA_KEY = VAULT_MEDIA_QUERY_KEY;
 
 /**
  * Map a Settings-connect failure the callback bounced back as `?error=google_*`
