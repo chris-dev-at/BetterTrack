@@ -723,8 +723,16 @@ const cashMovementRowSchema = z
     // V5 cash fusion: the statement-import idempotency key and the non-EUR
     // provenance marker. Both must round-trip — dropping `dedupHash` on restore
     // would let a re-imported statement duplicate every row.
-    dedupHash: z.string().nullable(),
-    originalCurrency: currencyCodeSchema.nullable(),
+    //
+    // `.default(null)` rather than a bare `.nullable()`: a vault document
+    // written BEFORE cash fusion has neither key, and on a `.strict()` schema a
+    // required-but-nullable field would fail it as VAULT_CORRUPT — a user's own
+    // older vault or backup would stop opening. Defaulting keeps the parsed type
+    // `string | null` (no `undefined` leaking into writers) while accepting the
+    // older shape, which is exactly what the absent keys mean: no import hash,
+    // amount genuinely in EUR.
+    dedupHash: z.string().nullable().default(null),
+    originalCurrency: currencyCodeSchema.nullable().default(null),
     createdAt: timestampSchema,
   })
   .strict();

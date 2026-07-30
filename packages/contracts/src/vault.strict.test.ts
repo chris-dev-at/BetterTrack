@@ -524,3 +524,37 @@ describe('vault media state', () => {
     ).toBe(true);
   });
 });
+
+it('accepts a cash movement written before V5 cash fusion', () => {
+  // Regression: dedupHash/originalCurrency were required-but-nullable on a
+  // .strict() schema, so every vault document written BEFORE cash fusion —
+  // including a user's own older backup — failed to read as VAULT_CORRUPT.
+  // Absent keys mean exactly what null means: no import hash, amount in EUR.
+  const preFusion = {
+    ...meta(uuid(120)),
+    kind: 'cashMovement',
+    data: {
+      portfolioId: PORTFOLIO_ID,
+      sourceId: CASH_SOURCE_ID,
+      kind: 'deposit',
+      amountEur: '100.000000',
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId: null,
+      taxYear: null,
+      executedAt: AT,
+      note: null,
+      source: 'manual',
+      createdAt: AT,
+    },
+  };
+
+  const parsed = vaultStrictEntitySchema.parse(preFusion) as Extract<
+    VaultStrictEntity,
+    { kind: 'cashMovement' }
+  >;
+
+  expect(parsed.data.dedupHash).toBeNull();
+  expect(parsed.data.originalCurrency).toBeNull();
+});
