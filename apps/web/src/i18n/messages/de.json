@@ -4002,6 +4002,10 @@
           "net": "Netto",
           "columns": "Ein / aus"
         },
+        "performance-chart": {
+          "value": "Wert €",
+          "return": "Rendite %"
+        },
         "allocation": {
           "donut": "Ring",
           "bars": "Balken"
@@ -4054,7 +4058,10 @@
         "title": "Performance",
         "description": "Der Wertverlauf eines Portfolios",
         "empty": "Noch kein Portfolio zum Anzeigen.",
-        "ariaLabel": "Wertverlauf von {{name}}"
+        "ariaLabel": "Wertverlauf von {{name}}",
+        "ariaLabelReturn": "Zeitgewichtete Rendite von {{name}} im Zeitverlauf",
+        "returnHint": "Zeitgewichtete Rendite — Ein- und Auszahlungen werden neutralisiert, die Kurve bewegt sich nur, wenn sich deine Bestände bewegen.",
+        "returnNeedsOne": "Die Rendite in % ist nur für ein einzelnes Portfolio aussagekräftig, deshalb siehst du hier den Wert. Beschränke das Widget auf ein Portfolio, um die Rendite zu sehen."
       },
       "cashflowChart": {
         "title": "Cashflow",

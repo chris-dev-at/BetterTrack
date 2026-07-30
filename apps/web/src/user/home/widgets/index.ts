@@ -121,6 +121,7 @@ export const WIDGET_REGISTRY = {
     defaultSettings: { scope: 'all', range: '1M' },
     supportsScope: true,
     rangeOptions: PERFORMANCE_RANGE_OPTIONS,
+    variants: variantsOf('performance-chart'),
     Component: PerformanceChartWidget,
   },
   'net-worth-history': {
