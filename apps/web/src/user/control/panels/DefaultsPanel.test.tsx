@@ -31,9 +31,10 @@ beforeEach(() => {
 describe('DefaultsPanel (issue #636)', () => {
   test('frames the tax control as the default for new portfolios', async () => {
     renderPanel();
-    // The hint only renders once the default has loaded — telling the user each
-    // portfolio can override it.
-    expect(await screen.findByText(/override or reset it per portfolio/i)).toBeInTheDocument();
+    // The hint only renders once the default has loaded — telling the user a
+    // single portfolio can override it (in its own settings, since R2 moved the
+    // per-portfolio override off the tax report).
+    expect(await screen.findByText(/can override it in its own settings/i)).toBeInTheDocument();
     // The popup head names the panel (the old page title stack is gone).
     expect(screen.getByRole('heading', { name: 'Portfolio defaults' })).toBeInTheDocument();
     // Owner-mandated liability framing (#635) on the tax settings surface.

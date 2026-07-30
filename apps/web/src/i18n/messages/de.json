@@ -1266,7 +1266,7 @@
     "newPortfolioDefaults": {
       "navLabel": "Standardwerte für neue Portfolios",
       "tax": {
-        "hint": "Gilt für neue Portfolios und für jedes Portfolio ohne eigene Einstellung. Pro Portfolio kannst du sie im Steuerbericht des Portfolios überschreiben oder zurücksetzen."
+        "hint": "Gilt für neue Portfolios und für jedes Portfolio ohne eigene Einstellung. Ein einzelnes Portfolio kann sie in seinen eigenen Einstellungen überschreiben."
       }
     },
     "taxes": {

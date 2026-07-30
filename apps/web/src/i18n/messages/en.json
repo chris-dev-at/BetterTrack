@@ -1266,7 +1266,7 @@
     "newPortfolioDefaults": {
       "navLabel": "New portfolio defaults",
       "tax": {
-        "hint": "Applied to new portfolios and to any portfolio that hasn’t set its own. Override or reset it per portfolio on that portfolio’s tax report."
+        "hint": "Applied to new portfolios and to any portfolio that hasn’t set its own. A single portfolio can override it in its own settings."
       }
     },
     "taxes": {
