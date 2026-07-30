@@ -3378,6 +3378,88 @@
   }
 }
 
+/* ── Dense mode list (tax treatment) ──────────────────────────────────────────
+ *
+ * A one-of-N choice as hairline-ruled rows instead of a card per option. Each
+ * row is a two-column grid — mode name, then ONE qualifying line — so the whole
+ * option set is scannable in the popup rather than one option filling it. The
+ * selected row is marked by background and ink only; there is no edge marker.
+ */
+
+/* No top rule of its own: the list always follows either the group's opening
+   rule or a row's bottom rule, and two hairlines read as one 2px seam. */
+.bt-cc-modes {
+  border-top: 0;
+}
+
+.bt-cc-mode {
+  display: grid;
+  grid-template-columns: auto minmax(150px, 200px) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 9px 8px;
+  border-bottom: 1px solid var(--bt-border);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-cc-mode:hover {
+  background: var(--bt-surface-soft);
+}
+
+.bt-cc-mode.is-selected {
+  background: var(--bt-surface-strong);
+}
+
+.bt-cc-mode.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.bt-cc-mode__radio {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--bt-gold);
+  align-self: center;
+}
+
+.bt-cc-mode__name {
+  color: var(--bt-text-soft);
+  font-size: 13px;
+  font-weight: 570;
+}
+
+.bt-cc-mode.is-selected .bt-cc-mode__name {
+  color: var(--bt-text);
+}
+
+.bt-cc-mode__hint {
+  color: var(--bt-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Narrow popup / mobile: the qualifier drops under the name rather than
+   squeezing both columns to unreadable widths. */
+@media (max-width: 620px) {
+  .bt-cc-mode {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .bt-cc-mode__hint {
+    grid-column: 2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-cc-mode {
+    transition: none;
+  }
+}
+
 /* ===== R2: portfolio ===== */
 
 /*

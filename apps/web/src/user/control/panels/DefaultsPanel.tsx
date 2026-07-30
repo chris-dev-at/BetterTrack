@@ -9,8 +9,8 @@ import { useT } from '../../../i18n';
 import { getTaxSettings, updateTaxSettings } from '../../../lib/settingsApi';
 import { Disclaimer, Skeleton } from '../../../ui';
 import { Alert } from '../../components/ui';
-import { TaxModePicker } from '../../settings/taxModePicker';
 import { PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
+import { TaxModeList } from './taxModeList';
 
 const TAX_SETTINGS_KEY = ['settings', 'taxes'] as const;
 
@@ -24,9 +24,10 @@ const TAX_SETTINGS_KEY = ['settings', 'taxes'] as const;
  * own override — each portfolio overrides/resets on its own tax surface.
  *
  * Currently one scopeable default (tax treatment); the panel is structured so
- * future defaults (base currency, DRIP, …) drop in as sibling groups. The
- * picker itself is the shared `TaxModePicker` — the same control the portfolio
- * override surface and the first-run step mount, so the three never drift.
+ * future defaults (base currency, DRIP, …) drop in as sibling groups. The modes
+ * render through `./taxModeList` — the popup-scale presentation of the shared
+ * picker's option set, importing its option list, selection test and request
+ * shaping so the contract cannot drift from the page-scale control.
  */
 export function DefaultsPanel() {
   const t = useT();
@@ -71,15 +72,14 @@ export function DefaultsPanel() {
           <PanelGroup label={t('settings.taxes.title')}>
             {/* Owner-mandated (#636): the inheritance semantics stay spelled out —
                 effective = portfolio override ?? user default ?? system default. */}
-            <Row hint={t('settings.newPortfolioDefaults.tax.hint')} stack>
-              <TaxModePicker
-                ariaLabel={t('settings.taxes.groupAria')}
-                busy={mutation.isPending}
-                name="new-portfolio-tax-default"
-                onSelect={(body) => mutation.mutate(body)}
-                value={query.data}
-              />
-            </Row>
+            <Row hint={t('settings.newPortfolioDefaults.tax.hint')} stack />
+            <TaxModeList
+              ariaLabel={t('settings.taxes.groupAria')}
+              busy={mutation.isPending}
+              name="new-portfolio-tax-default"
+              onSelect={(body) => mutation.mutate(body)}
+              value={query.data}
+            />
             {error ? (
               <Row stack>
                 <Alert tone="error">{t('settings.taxes.saveError')}</Alert>
