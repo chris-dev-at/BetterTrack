@@ -20,5 +20,22 @@
       0, -0.16638935108153063, 1.4975041597337757, 3.161397670549082, 5.623483533808016,
       8.08556939706695, 10.547655260325882, 12.024906778281231, 13.009741123584796
     ]
+  },
+  "internalCashFeeDrag": {
+    "description": "V5 §16 2026-07-30 — the `fee` kind is INTERNAL for TWR, so a standing custody fee drags the curve instead of being divided back out of it like a withdrawal. Same deposit + buy as splitDateCashBuy, plus a 100 EUR fee on day -5. The client engine must reproduce this vector exactly; if it classified a fee as an external flow (or ignored it) the curves would diverge from the fee day on.",
+    "closes": [100, 105, 110, 115, 120, 125, 128],
+    "quoteToday": 130,
+    "buy": { "quantity": 10, "price": 100, "fee": 5, "dayOffset": -7 },
+    "depositEur": 2000,
+    "depositDayOffset": -8,
+    "cashFee": { "amountEur": 100, "dayOffset": -5 },
+    "twrPctWithoutTheFee": [
+      0, -0.16638935108153063, 1.4975041597337757, 3.161397670549082, 4.825291181364388,
+      6.489184692179695, 8.153078202995001, 9.151414309484185, 9.816971713810307
+    ],
+    "twrPct": [
+      0, -0.16638935108153063, 1.4975041597337757, -0.16638935108153063, 1.4975041597337757,
+      3.161397670549082, 4.825291181364388, 5.823627287853572, 6.489184692179695
+    ]
   }
 }

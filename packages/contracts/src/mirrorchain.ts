@@ -102,8 +102,14 @@ export type MirrorRowKind = z.infer<typeof mirrorRowKindSchema>;
 /**
  * Ledger ops (design §2) — applied per copy through the copy's own services, so
  * every copy derives its own side effects (cash legs, tax movements) locally.
- * External cash movements are append-only (no movement edit/delete surface), so
- * the only cash "corrections" are new deposits/withdrawals.
+ * Hand-entered cash movements are append-only (no movement edit/delete surface),
+ * so the only cash "corrections" are new deposits/withdrawals/fees.
+ *
+ * `cash.fee` (V5, §16 2026-07-30) replicates exactly like `cash.withdraw`: a
+ * member TYPED it, so it is origin data, not a per-copy derivation. Note that
+ * "replicated" and `domain/cashLedger`'s "external flow" are different
+ * predicates — a `fee` is replicated but TWR-internal — so this list must not be
+ * derived from `EXTERNAL_CASH_MOVEMENT_KINDS`.
  */
 export const MIRROR_LEDGER_OP_KINDS = [
   'tx.create',
@@ -113,6 +119,7 @@ export const MIRROR_LEDGER_OP_KINDS = [
   'dividend.delete',
   'cash.deposit',
   'cash.withdraw',
+  'cash.fee',
   'cash.transfer',
   'cash.setBalance',
   'source.create',
@@ -301,6 +308,18 @@ const cashWithdrawPayload = z
   .object({ ...cashMovementPayloadBase, kind: z.literal('cash.withdraw') })
   .strict();
 
+/**
+ * A standing custody / account / platform fee (V5, §16 2026-07-30). Same shape as
+ * a withdrawal — a positive magnitude the applying copy signs negative — but a
+ * distinct kind, because the two mean opposite things to the return: every copy
+ * must book it as a `fee` so the fee DRAGS its curve rather than being divided
+ * back out of it. Replicating it as `cash.withdraw` would have silently restored
+ * the exact misreport the kind exists to fix, on every copy but the origin.
+ */
+const cashFeePayload = z
+  .object({ ...cashMovementPayloadBase, kind: z.literal('cash.fee') })
+  .strict();
+
 const cashTransferPayload = z
   .object({
     opVersion: mirrorOpVersionSchema,
@@ -478,6 +497,7 @@ export const mirrorOpPayloadSchema = z.discriminatedUnion('kind', [
   dividendDeletePayload,
   cashDepositPayload,
   cashWithdrawPayload,
+  cashFeePayload,
   cashTransferPayload,
   cashSetBalancePayload,
   sourceCreatePayload,

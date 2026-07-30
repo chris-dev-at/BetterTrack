@@ -874,6 +874,81 @@ describe('paranoid client money engine', () => {
     });
   });
 
+  it('matches the audited internal-fee drag — a `fee` is NOT an external flow', async () => {
+    /*
+     * The client/server classification anchor for the `fee` kind (V5, §16
+     * 2026-07-30). A standing custody fee is a cost of HOLDING, so it is internal
+     * for TWR and drags the curve; a withdrawal of the same amount on the same day
+     * would be divided back out of it and leave the curve untouched.
+     *
+     * This engine and the server share `externalCashFlowsForTwr`, so the two
+     * cannot classify differently by construction — but they CAN drift if either
+     * side ever grows a local copy of the predicate (which is exactly the bug the
+     * return-series audit found). Pinning the client against the server-generated
+     * vector makes that drift a CI failure on whichever side moves.
+     */
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    const transaction = document.entities.transaction![0]!;
+    document.entities.transaction = [transaction];
+    document.entities.dividend = [];
+    const deposit = structuredClone(document.entities.cashMovement![0]!);
+    deposit.data.amountEur = '2000';
+    const fee = structuredClone(deposit);
+    fee.id = '018f0000-0000-7000-8000-00000000011a';
+    fee.data.kind = 'fee';
+    fee.data.amountEur = '-100';
+    fee.data.transactionId = null;
+    fee.data.executedAt = '2026-07-22T09:00:00.000Z';
+    fee.data.createdAt = '2026-07-22T09:00:00.000Z';
+    fee.editedAt = '2026-07-22T09:00:00.000Z';
+    document.entities.cashMovement = [deposit, fee];
+
+    const result = await createVaultMoneyEngine(
+      createMutableTestSync(document, fixture.header),
+      createClientMoneyMarket().market,
+      { now: () => NOW },
+    ).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The client inputs mirror the server scenario one-for-one (2026-07-19 is
+    // dayOffset −8 on the fixture's clock, 2026-07-22 is −5).
+    expect(serverTwrParity.internalCashFeeDrag).toMatchObject({
+      depositEur: 2000,
+      depositDayOffset: -8,
+      buy: { quantity: 10, price: 100, fee: 5, dayOffset: -7 },
+      cashFee: { amountEur: 100, dayOffset: -5 },
+    });
+    const auditedServerVector = serverTwrParity.internalCashFeeDrag.twrPct;
+    expect(result.value.series.map((point) => point.date)).toEqual([
+      '2026-07-19',
+      '2026-07-20',
+      '2026-07-21',
+      '2026-07-22',
+      '2026-07-23',
+      '2026-07-24',
+      '2026-07-25',
+      '2026-07-26',
+      '2026-07-27',
+    ]);
+    result.value.series.forEach((point, index) => {
+      expect(point.twrPct).toBeCloseTo(auditedServerVector[index]!, 12);
+    });
+
+    // The drag, stated directly: the same ledger without the fee ends higher, and
+    // the two curves are identical until the fee lands on 2026-07-22 (index 3).
+    const withoutFee = serverTwrParity.internalCashFeeDrag.twrPctWithoutTheFee;
+    expect(auditedServerVector.at(-1)!).toBeLessThan(withoutFee.at(-1)!);
+    for (let i = 0; i < 3; i += 1) expect(auditedServerVector[i]).toBeCloseTo(withoutFee[i]!, 12);
+    for (let i = 3; i < auditedServerVector.length; i += 1) {
+      expect(auditedServerVector[i]!).toBeLessThan(withoutFee[i]!);
+    }
+
+    // …and the fee really left the account: net worth carries the €100 out.
+    expect(result.value.cashBalanceEur).toBeCloseTo(1900, 6);
+  });
+
   it('matches audited manual smoothing and never fabricates a custom-asset day change', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = structuredClone(fixture.document);

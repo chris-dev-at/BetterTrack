@@ -28,11 +28,18 @@ describe('mirrorchain — reserved source tag', () => {
 });
 
 describe('mirrorchain — op kind coverage', () => {
-  it('unions the 13 ledger + 9 chain/membership kinds with no overlap', () => {
-    expect(MIRROR_LEDGER_OP_KINDS).toHaveLength(13);
+  it('unions the 14 ledger + 9 chain/membership kinds with no overlap', () => {
+    expect(MIRROR_LEDGER_OP_KINDS).toHaveLength(14);
     expect(MIRROR_CHAIN_OP_KINDS).toHaveLength(9);
-    expect(MIRROR_OP_KINDS).toHaveLength(22);
-    expect(new Set(MIRROR_OP_KINDS).size).toBe(22);
+    expect(MIRROR_OP_KINDS).toHaveLength(23);
+    expect(new Set(MIRROR_OP_KINDS).size).toBe(23);
+  });
+
+  it('replicates a hand-entered `fee` as its own ledger op (§16 2026-07-30)', () => {
+    // A fee is TWR-internal but origin-entered, so it MUST replicate — and it
+    // must replicate as a fee, not a withdrawal, or every non-origin copy would
+    // divide it back out of its own performance curve.
+    expect(MIRROR_LEDGER_OP_KINDS).toContain('cash.fee');
   });
 });
 

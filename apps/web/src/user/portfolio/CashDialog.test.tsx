@@ -28,7 +28,7 @@ const MAIN = cashSource({ id: 'src-main', name: 'Main', isMain: true, balanceEur
 const BANK = cashSource({ id: 'src-bank', name: 'Bank', type: 'bank', balanceEur: 500 });
 
 function renderDialog(
-  initialKind: 'deposit' | 'withdrawal' = 'deposit',
+  initialKind: 'deposit' | 'withdrawal' | 'fee' = 'deposit',
   extra: Partial<React.ComponentProps<typeof CashDialog>> = {},
 ) {
   const onClose = vi.fn();
@@ -161,6 +161,91 @@ describe('CashDialog', () => {
         'p1',
         expect.objectContaining({ amountEur: 500, sourceId: 'src-bank' }),
       ),
+    );
+  });
+
+  test('records a fee through the fee endpoint, not the withdrawal one (§16 2026-07-30)', async () => {
+    // The endpoint IS the classification: a fee posted to /cash/withdraw would be
+    // stored as an external flow and divided back out of the performance curve.
+    vi.mocked(portfolioApi.chargeCashFee).mockResolvedValue({
+      movement: {
+        id: 'm-fee',
+        kind: 'fee',
+        amountEur: -12.5,
+        sourceId: 'src-main',
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-02T00:00:00.000Z',
+        note: null,
+        source: 'manual',
+        createdAt: '2026-07-02T00:00:00.000Z',
+      },
+      sourceBalanceEur: 987.5,
+      balanceEur: 987.5,
+    });
+    const user = userEvent.setup();
+    const { onClose, onSubmitted } = renderDialog('fee');
+
+    const dialog = screen.getByRole('dialog', { name: 'Cash balance' });
+    expect(within(dialog).getByRole('button', { name: 'Fee' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    // The hint explains WHY a fee is not a withdrawal — the whole user-facing point.
+    expect(within(dialog).getByText(/lowers your performance/i)).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Amount'), '12.5');
+    await waitFor(() => expect(screen.getByText(/Available/)).toBeInTheDocument());
+    // The preview is scoped to the fee kind, so the "after" figure is honest.
+    expect(portfolioApi.previewCash).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ kind: 'fee', amountEur: 12.5 }),
+      expect.anything(),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Record fee' }));
+    await waitFor(() =>
+      expect(portfolioApi.chargeCashFee).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({ amountEur: 12.5, executedAt: '2026-07-02T00:00:00.000Z' }),
+      ),
+    );
+    expect(portfolioApi.withdrawCash).not.toHaveBeenCalled();
+    expect(portfolioApi.depositCash).not.toHaveBeenCalled();
+    expect(onSubmitted).toHaveBeenCalledOnce();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  test('blocks a fee that would overdraw, exactly like a withdrawal', async () => {
+    vi.mocked(portfolioApi.previewCash).mockResolvedValue({
+      availableEur: 5,
+      afterEur: -5,
+      sufficient: false,
+      shortfallEur: 5,
+    });
+    const user = userEvent.setup();
+    renderDialog('fee');
+
+    await user.type(screen.getByLabelText('Amount'), '10');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Record fee' })).toBeDisabled());
+    expect(screen.getByText(/short/i)).toBeInTheDocument();
+    expect(portfolioApi.chargeCashFee).not.toHaveBeenCalled();
+  });
+
+  test('a user who opened Deposit can switch to Fee without reopening the dialog', async () => {
+    const user = userEvent.setup();
+    renderDialog('deposit');
+    const dialog = screen.getByRole('dialog', { name: 'Cash balance' });
+    expect(within(dialog).getByRole('button', { name: 'Deposit cash' })).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Fee' }));
+    expect(within(dialog).getByRole('button', { name: 'Record fee' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Fee' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
     );
   });
 

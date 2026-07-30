@@ -45,11 +45,18 @@ export type CashRuleMatchType = z.infer<typeof cashRuleMatchTypeSchema>;
  *
  * They cover the cash-movement kinds the ledger can post — `investment` (a
  * `buy`), `sale_proceeds` (a `sell_proceeds`), `dividend`, `tax` (both
- * `tax_withholding` and `tax_refund`), `transfer` (both legs, which cancel), and
- * plain `deposit` / `withdrawal` for external flows — plus two that no kind
- * produces yet but every bank statement does: `interest` and `fees`. Those two
- * are seeded so an imported bank-interest or account-fee row has a home from day
- * one instead of being back-filled into history later.
+ * `tax_withholding` and `tax_refund`), `transfer` (both legs, which cancel),
+ * `fees` (a `fee`, V5 §16 2026-07-30 — the kind that made this key a real
+ * mapping rather than a placeholder), and plain `deposit` / `withdrawal` for
+ * external flows — plus `interest`, which no kind produces yet but every bank
+ * statement does. It stays seeded so an imported bank-interest row has a home
+ * from day one instead of being back-filled into history later; owner decision
+ * 2026-07-30 deliberately DEFERRED reclassifying interest into its own kind.
+ *
+ * TODO(v5/cash-phase-2): nothing assigns these keys yet — the kind → system-tag
+ * auto-tagging engine (and the movement-tag write path) is phase 2. A booked
+ * `fee` should carry the `fees` tag automatically once that engine exists; the
+ * mapping above is the contract it must implement.
  */
 export const CASH_SYSTEM_TAG_KEYS = [
   'investment',

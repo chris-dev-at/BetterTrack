@@ -4,19 +4,27 @@ import type { CashMovementKind, CashPreviewResponse, CashSource } from '@bettert
 
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
-import { depositCash, previewCash, withdrawCash } from '../../lib/portfolioApi';
+import { chargeCashFee, depositCash, previewCash, withdrawCash } from '../../lib/portfolioApi';
 import { useDebounce } from '../hooks/useDebounce';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 import { MoneyText } from '../../ui';
 import { pickDefaultSourceId, sortSourcesMainFirst } from './cashSourceUtils';
 
+/**
+ * The three hand-entered cash actions this dialog can record. `fee` (V5, §16
+ * 2026-07-30) is a standing custody / account / platform fee: mechanically an
+ * outflow like a withdrawal, but a cost of HOLDING, so it drags the performance
+ * curve instead of being divided back out of it.
+ */
+type CashDialogKind = 'deposit' | 'withdrawal' | 'fee';
+
 export interface CashDialogProps {
   portfolioId: string;
   /** Which action the dialog opens on; the user can still switch it (§14). */
-  initialKind: 'deposit' | 'withdrawal';
+  initialKind: CashDialogKind;
   onClose: () => void;
-  /** Called after a successful deposit/withdraw so the page can refetch. */
+  /** Called after a successful deposit/withdraw/fee so the page can refetch. */
   onSubmitted: () => void;
   /**
    * The portfolio's active cash sources (V3-P3). When more than one exists a
@@ -37,10 +45,10 @@ function isoToday(today?: string): string {
 }
 
 /**
- * Deposit / withdraw dialog for the portfolio cash balance ("Bargeld", §14,
- * #220). Cash is EUR-only, so the entered amount is the `amountEur` the
+ * Deposit / withdraw / fee dialog for the portfolio cash balance ("Bargeld",
+ * §14, #220). Cash is EUR-only, so the entered amount is the `amountEur` the
  * preview and the write endpoints both speak — no currency conversion needed.
- * The live "available → after" preview blocks a withdrawal that would overdraw
+ * The live "available → after" preview blocks any outflow that would overdraw
  * before it is ever submitted; the server's `INSUFFICIENT_CASH` error is still
  * surfaced verbatim if a race lets one through.
  */
@@ -55,7 +63,7 @@ export function CashDialog({
 }: CashDialogProps) {
   const t = useT();
   const headingId = useId();
-  const [kind, setKind] = useState<'deposit' | 'withdrawal'>(initialKind);
+  const [kind, setKind] = useState<CashDialogKind>(initialKind);
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(isoToday(today));
   const [note, setNote] = useState('');
@@ -108,7 +116,9 @@ export function CashDialog({
     return () => controller.abort();
   }, [portfolioId, kind, debouncedAmount, scopedSourceId]);
 
-  const blockedByPreview = kind === 'withdrawal' && preview !== null && !preview.sufficient;
+  // Every outflow is gated, not just a withdrawal: a fee that would overdraw the
+  // source is rejected by the same server-side solvency replay.
+  const blockedByPreview = kind !== 'deposit' && preview !== null && !preview.sufficient;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -135,6 +145,7 @@ export function CashDialog({
         note: note.trim() === '' ? null : note.trim(),
       };
       if (kind === 'deposit') await depositCash(portfolioId, body);
+      else if (kind === 'fee') await chargeCashFee(portfolioId, body);
       else await withdrawCash(portfolioId, body);
       onSubmitted();
       onClose();
@@ -172,7 +183,17 @@ export function CashDialog({
           >
             {t('portfolio.cash.withdrawTab')}
           </button>
+          <button
+            type="button"
+            onClick={() => setKind('fee')}
+            aria-pressed={kind === 'fee'}
+            className={cx('flex-1', kind === 'fee' && 'is-active')}
+          >
+            {t('portfolio.cash.feeTab')}
+          </button>
         </div>
+
+        {kind === 'fee' ? <p className="text-xs bt-muted">{t('portfolio.cash.feeHint')}</p> : null}
 
         {showPicker ? (
           <div className="bt-field">
@@ -266,7 +287,9 @@ export function CashDialog({
               ? t('common.saving')
               : kind === 'deposit'
                 ? t('portfolio.cash.depositSubmit')
-                : t('portfolio.cash.withdrawSubmit')}
+                : kind === 'fee'
+                  ? t('portfolio.cash.feeSubmit')
+                  : t('portfolio.cash.withdrawSubmit')}
           </Button>
         </div>
       </form>

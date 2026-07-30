@@ -1995,6 +1995,17 @@ const endpoints: EndpointDef[] = [
   },
   {
     method: 'post',
+    path: '/portfolios/{portfolioId}/cash/fee',
+    tag: 'Portfolios',
+    summary: 'Record a standing custody/account fee (rejects an overdraw).',
+    params: contracts.portfolioIdParamSchema,
+    body: R.CashEntryRequest,
+    status: 201,
+    response: R.CashMovementResponse,
+    idempotent: true,
+  },
+  {
+    method: 'post',
     path: '/portfolios/{portfolioId}/cash/preview',
     tag: 'Portfolios',
     summary: 'Preview the balance after a proposed cash movement.',
