@@ -75,7 +75,7 @@ export interface ParanoidRehydrationServiceDeps {
   toCashEur?: (amount: number, currency: string, day: string) => Promise<number>;
   /** Test-only stage hook proving each transaction-stage rolls back completely. */
   afterStage?: (stage: ParanoidRehydrationStage) => void | Promise<void>;
-  /** Test-only seam for proving the numeric(20,8) quantity-rounding boundary. */
+  /** Test-only per-row quantum override proving the numeric(20,8) rounding envelope. */
   testOnlyTransactionQuantityRoundingTolerance?: bigint;
 }
 
@@ -119,8 +119,13 @@ const TRANSACTION_QUANTITY_STORAGE_PRECISION = 20;
 const TRANSACTION_QUANTITY_STORAGE_SCALE = 8;
 /**
  * Normal batch validation runs against the unrounded client quantities with a
- * 1e-9 epsilon, then PostgreSQL rounds each row independently to scale 8. Two
- * epsilon-valid inputs can therefore persist one scale-8 quantum apart.
+ * 1e-9 epsilon, then PostgreSQL rounds each row independently to scale 8, so
+ * every persisted row can sit up to one scale-8 quantum away from the value
+ * that was validated. The position preflight below therefore allows a sell
+ * shortfall of one quantum PER contributing stored row (#917) — multi-row
+ * drift (e.g. four buys of `0.1000000049` plus their exact-sum sell) quantizes
+ * to a multi-quantum shortfall no single fixed tolerance covers. A shortfall
+ * beyond the per-row envelope still fails closed as a genuine oversell.
  */
 const PERSISTED_QUANTITY_ROUNDING_TOLERANCE = 1n;
 
@@ -615,16 +620,11 @@ function validatePersistedNumerics(entities: readonly Entity[]): void {
  * Database checks remain defense in depth; this reports malformed decrypted vaults
  * as one clean failure and makes the no-write guarantee directly testable.
  */
-interface ValidatedGraph {
-  /** Sells whose apparent oversell is exactly one scale-8 storage quantum. */
-  storageRoundingSellIds: ReadonlySet<string>;
-}
-
 function validateGraph(
   userId: string,
   entities: readonly Entity[],
   transactionQuantityRoundingTolerance: bigint,
-): ValidatedGraph {
+): void {
   validateUniqueRestoredIds(entities);
   validateOwnedRows(userId, entities);
   validatePersistedDates(entities);
@@ -1236,7 +1236,6 @@ function validateGraph(
       .filter((movement) => movement.data.source === SOURCE_TAG_SYNC_MIRRORCHAIN)
       .map((movement) => movement.data.sourceId),
   );
-  const storageRoundingSellIds = new Set<string>();
 
   try {
     const balancesBySource = new Map<string, bigint>();
@@ -1265,21 +1264,19 @@ function validateGraph(
           Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
       );
       let held = 0n;
+      // Rounding-drift envelope (#917): each stored row of the open position —
+      // the sell being checked included — may carry one scale-8 quantum of
+      // numeric(20,8) rounding; a shortfall beyond rows × quantum is genuine.
+      let driftRows = 0n;
       for (const transaction of orderedTransactions) {
         const quantity = quantizedTransactionQuantity(transaction.data.quantity);
+        driftRows += 1n;
         if (transaction.data.side === 'buy') {
           held += quantity;
         } else {
           const shortfall = quantity - held;
           if (
-            shortfall > 0n &&
-            shortfall <= transactionQuantityRoundingTolerance &&
-            !transaction.data.allowUncovered
-          ) {
-            storageRoundingSellIds.add(transaction.id);
-          }
-          if (
-            shortfall > transactionQuantityRoundingTolerance &&
+            shortfall > driftRows * transactionQuantityRoundingTolerance &&
             !transaction.data.allowUncovered
           ) {
             throw new Error(
@@ -1287,6 +1284,8 @@ function validateGraph(
             );
           }
           held = shortfall > 0n ? 0n : held - quantity;
+          // A cleanly closed position must not widen the next round trip's envelope.
+          if (held === 0n) driftRows = 0n;
         }
       }
     }
@@ -1297,7 +1296,6 @@ function validateGraph(
       error instanceof Error ? error.message : 'cash ledger is invalid',
     );
   }
-  return { storageRoundingSellIds };
 }
 
 interface ReferencedAsset {
@@ -1400,7 +1398,7 @@ export function createParanoidRehydrationService(
       // Tombstones exist for client-side merge convergence only. Construct and
       // validate the restore graph from live facts before any database mutation.
       const entities = liveEntities(normalizedRequest.document);
-      const validatedGraph = validateGraph(userId, entities, transactionQuantityRoundingTolerance);
+      validateGraph(userId, entities, transactionQuantityRoundingTolerance);
 
       return withParanoidRehydrationTransaction(deps.db, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);
@@ -1473,7 +1471,6 @@ export function createParanoidRehydrationService(
           portfolioIds: rows(entities, 'portfolio').map((portfolio) => portfolio.id),
           now: now(),
           toEur: toCashEur,
-          storageRoundingSellIds: validatedGraph.storageRoundingSellIds,
         });
         await stage('taxReplay');
 
