@@ -115,22 +115,36 @@ const CONTROL_COLD_BACKGROUND: Location = {
 };
 
 /**
- * Legacy paths whose entire job is to redirect INTO the Control Center popup.
- * They are never remembered as the page behind it: the popup would then sit on
- * top of the redirect that opened it, and the redirect would fire again on the
- * next render — a loop, not a background. Keep in sync with the
- * `LegacyRedirect to="/control/…"` routes below.
+ * Paths that must never be remembered as the page behind the popup, because
+ * they do not STAY — each one navigates away as soon as it renders, and a
+ * background that navigates takes the popup's own URL with it.
+ *
+ * Two families:
+ *
+ *  - the legacy paths whose entire job is to redirect INTO the popup. Used as a
+ *    background, the redirect that opened the popup sits underneath it and
+ *    fires again on the next render — a loop, not a background. Keep in sync
+ *    with the `LegacyRedirect to="/control/…"` routes below.
+ *  - the public gates. `/login` renders while a session is being established
+ *    and then leaves; if it were the background, signing in from a legacy
+ *    `/settings/*` link would open the popup over a login screen that
+ *    immediately redirects, replacing `/control/…` in the URL and closing the
+ *    popup that just opened.
  */
-const REDIRECTS_INTO_CONTROL: readonly RegExp[] = [
+const NEVER_A_BACKGROUND: readonly RegExp[] = [
   /^\/settings(?:\/|$)/,
   /^\/people\/profile\/?$/,
   /^\/developer\/webhooks\/?$/,
   // Two hops: `/social/profile` → `/people/profile` → `/control/profile`.
   /^\/social\/profile\/?$/,
+  /^\/(?:login|register|forgot-password|welcome)\/?$/,
+  /^\/(?:reset|invite)\//,
+  /^\/oauth\/authorize\/?$/,
+  /^\/account\/delete\/?$/,
 ];
 
-function isTransientControlEntry(pathname: string): boolean {
-  return REDIRECTS_INTO_CONTROL.some((pattern) => pattern.test(pathname));
+function isTransientLocation(pathname: string): boolean {
+  return NEVER_A_BACKGROUND.some((pattern) => pattern.test(pathname));
 }
 
 function href(location: Location): string {
@@ -174,7 +188,10 @@ function UserShell() {
    */
   const control = matchControlPanel(location.pathname);
   const background = useRef<Location>(CONTROL_COLD_BACKGROUND);
-  if (control === null && !isTransientControlEntry(location.pathname)) {
+  // Only a page an authenticated session is actually looking at can be the page
+  // behind the popup: anything rendered while the session is still resolving is
+  // a gate on its way somewhere else.
+  if (status === 'authenticated' && control === null && !isTransientLocation(location.pathname)) {
     background.current = location;
   }
   const pageLocation = control === null ? location : background.current;
