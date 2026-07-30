@@ -34,6 +34,25 @@ beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
+test('the admin shell starts with a hidden skip link that focuses main content', async () => {
+  const user = userEvent.setup();
+  const { container } = renderAdmin('/admin/invites');
+
+  const skipLink = screen.getByRole('link', { name: 'Skip to main content' });
+  const main = screen.getByRole('main');
+  const firstFocusable = container.querySelector<HTMLElement>(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
+  );
+
+  expect(skipLink).toHaveAttribute('href', '#main-content');
+  expect(skipLink).toHaveClass('sr-only');
+  expect(main).toHaveAttribute('id', 'main-content');
+  expect(firstFocusable).toBe(skipLink);
+
+  await user.click(skipLink);
+  expect(main).toHaveFocus();
+});
+
 test('a page that throws renders the error boundary fallback while the admin chrome survives', () => {
   renderAdmin('/admin/users');
 

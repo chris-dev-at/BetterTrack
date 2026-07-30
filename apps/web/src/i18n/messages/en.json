@@ -1,4 +1,7 @@
 {
+  "accessibility": {
+    "skipToContent": "Skip to main content"
+  },
   "auth": {
     "common": {
       "checkingSession": "Checking session…",
@@ -9,6 +12,9 @@
       "waitSecondsOne": " Please wait {{count}} second and try again.",
       "waitSecondsOther": " Please wait {{count}} seconds and try again.",
       "waitMoment": " Please wait a moment and try again."
+    },
+    "adminLogin": {
+      "heading": "Admin sign in"
     },
     "login": {
       "subtitle": "Sign in to your account",

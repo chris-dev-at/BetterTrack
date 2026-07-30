@@ -201,6 +201,13 @@ export function AdminLayout() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 md:flex">
+      <a
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-sky-500 focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-white focus:outline-none focus:ring-2 focus:ring-white"
+        href="#main-content"
+        onClick={() => document.getElementById('main-content')?.focus()}
+      >
+        {t('accessibility.skipToContent')}
+      </a>
       {/* Mobile-only top bar: burger + wordmark. Hidden at md+ where the sidebar
           is persistent. */}
       <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-neutral-800 bg-neutral-900 px-4 py-3 md:hidden">
@@ -257,7 +264,7 @@ export function AdminLayout() {
         </div>
       ) : null}
 
-      <main className="min-w-0 flex-1">
+      <main id="main-content" className="min-w-0 flex-1" tabIndex={-1}>
         <div className="mx-auto max-w-5xl px-4 py-8">
           {/* Keyed on the route so navigating away from a failed page always
               resets the boundary (§7.1) rather than leaving it stuck. */}

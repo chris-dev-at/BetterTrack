@@ -564,6 +564,13 @@ export function OriginShell() {
 
   return (
     <div className="bt-app">
+      <a
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-[var(--bt-surface)] focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-[var(--bt-text)] focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-[var(--bt-gold)]"
+        href="#main-content"
+        onClick={() => document.getElementById('main-content')?.focus()}
+      >
+        {t('accessibility.skipToContent')}
+      </a>
       <div className="bt-shell" data-rail={collapsed ? 'collapsed' : 'expanded'}>
         <aside className="bt-rail">
           <RailBrand />
@@ -661,7 +668,7 @@ export function OriginShell() {
             <NotificationBell />
           </header>
 
-          <main className="bt-canvas">
+          <main id="main-content" className="bt-canvas" tabIndex={-1}>
             {/* resetKey, not key: keying by pathname remounted the whole page
                 tree on every navigation — replaying overlay entrance animations
                 and resetting page state. The boundary only needs navigation to
