@@ -25,10 +25,14 @@ describe('ErrorBoundary', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  test('catches a thrown child error and shows the default fallback', () => {
+  test('shows generic copy and a stable correlation id without rendering exception detail', async () => {
+    const user = userEvent.setup();
+    const secret = 'reset-token-super-secret-capability';
+    const error = new Error(secret);
+
     // `never` return: TS would otherwise infer `void`, an invalid JSX return.
     function Bomb(): never {
-      throw new Error('kaboom');
+      throw error;
     }
 
     render(
@@ -39,7 +43,19 @@ describe('ErrorBoundary', () => {
 
     expect(screen.getByRole('alert')).toBeInTheDocument();
     expect(screen.getByText('Something went wrong.')).toBeInTheDocument();
-    expect(screen.getByText('kaboom')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "We couldn't display this page. Try again. If the problem continues, share the reference below.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('alert')).not.toHaveTextContent(secret);
+
+    const firstReference = screen.getByText(/^Reference ID: /).textContent;
+    expect(firstReference).toMatch(/^Reference ID: \S+$/);
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(screen.getByText(/^Reference ID: /)).toHaveTextContent(firstReference ?? '');
   });
 
   test('the default fallback offers a retry affordance', () => {
@@ -92,21 +108,5 @@ describe('ErrorBoundary', () => {
 
     expect(screen.getByText('Custom error view')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
-  });
-
-  test('omits the message paragraph when the error has no message', () => {
-    function Bomb(): never {
-      throw new Error('');
-    }
-
-    const { container } = render(
-      <ErrorBoundary>
-        <Bomb />
-      </ErrorBoundary>,
-    );
-
-    expect(screen.getByText('Something went wrong.')).toBeInTheDocument();
-    // The alert holds exactly one <p> — the heading, with no message line.
-    expect(container.querySelector('[role="alert"]')?.querySelectorAll('p')).toHaveLength(1);
   });
 });

@@ -1534,7 +1534,7 @@ function UncoveredCard({
               aria-pressed={uncovered.mode === 'entry'}
               className={cx('flex-1', uncovered.mode === 'entry' && 'is-active')}
             >
-              {t('portfolio.transaction.uncoveredBasisEntry')}
+              {t('portfolio.transaction.uncoveredBasisInput')}
             </button>
           </div>
 

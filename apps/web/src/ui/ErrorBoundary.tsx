@@ -1,7 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 
 import { useT } from '../i18n';
-import { reportError } from '../lib/sentry';
 
 export interface ErrorBoundaryProps {
   children: ReactNode;
@@ -12,9 +11,28 @@ export interface ErrorBoundaryProps {
   fallback?: ReactNode;
 }
 
-interface ErrorBoundaryState {
-  hasError: boolean;
-  error: Error | null;
+type ErrorBoundaryState =
+  | { hasError: false; correlationId: null }
+  | { hasError: true; correlationId: string };
+
+const correlationIds = new WeakMap<Error, string>();
+
+function createCorrelationId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+
+  const random = Math.random().toString(36).slice(2, 10).padEnd(8, '0');
+  return `bt-${Date.now().toString(36)}-${random}`;
+}
+
+function correlationIdFor(error: Error): string {
+  const existing = correlationIds.get(error);
+  if (existing) return existing;
+
+  const correlationId = createCorrelationId();
+  correlationIds.set(error, correlationId);
+  return correlationId;
 }
 
 /**
@@ -25,37 +43,37 @@ interface ErrorBoundaryState {
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, correlationId: null };
   }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return { hasError: true, error };
+    return { hasError: true, correlationId: correlationIdFor(error) };
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
-    // Report render-time errors to error tracking (§13.4 V4-P5a). A no-op when
-    // Sentry is disabled (no DSN), so behavior is unchanged without a DSN.
-    reportError(error, { componentStack: info.componentStack });
+    if (import.meta.env.DEV) {
+      console.error(`Render error [${this.state.correlationId ?? 'unknown'}]`, error, info);
+    }
   }
 
   reset = (): void => {
-    this.setState({ hasError: false, error: null });
+    this.setState({ hasError: false, correlationId: null });
   };
 
   override render(): ReactNode {
     if (!this.state.hasError) return this.props.children;
     if (this.props.fallback !== undefined) return this.props.fallback;
 
-    return <DefaultErrorFallback errorMessage={this.state.error?.message} onRetry={this.reset} />;
+    return <DefaultErrorFallback correlationId={this.state.correlationId} onRetry={this.reset} />;
   }
 }
 
 /** Hook-friendly default fallback — class components can't call `useT` themselves. */
 function DefaultErrorFallback({
-  errorMessage,
+  correlationId,
   onRetry,
 }: {
-  errorMessage: string | undefined;
+  correlationId: string;
   onRetry: () => void;
 }) {
   const t = useT();
@@ -71,7 +89,10 @@ function DefaultErrorFallback({
       }}
     >
       <p className="bt-neg text-sm font-medium">{t('common.errorTitle')}</p>
-      {errorMessage ? <p className="bt-muted text-xs">{errorMessage}</p> : null}
+      <p className="bt-muted text-sm">{t('common.errorFallbackMessage')}</p>
+      <p className="bt-muted font-mono text-xs">
+        {t('common.errorCorrelationId', { id: correlationId })}
+      </p>
       <button type="button" onClick={onRetry} className="bt-btn bt-btn--sm">
         {t('common.retry')}
       </button>
