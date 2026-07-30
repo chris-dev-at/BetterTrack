@@ -606,6 +606,32 @@ test('the Sign-up entry is hidden when the instance keeps registration closed', 
   expect(screen.queryByRole('link', { name: 'Sign up' })).not.toBeInTheDocument();
 });
 
+test.each([0, 500])(
+  'a status %i registration-discovery failure is visible and retry reveals the active mode',
+  async (status) => {
+    vi.mocked(api.getRegistrationInfo)
+      .mockRejectedValueOnce(
+        new ApiError(status, status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN', 'unavailable'),
+      )
+      .mockResolvedValueOnce({ mode: 'open', googleEnabled: false });
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(
+      await screen.findByText(/registration status is temporarily unavailable/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Sign up' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('link', { name: 'Sign up' })).toHaveAttribute(
+      'href',
+      '/register',
+    );
+    expect(api.getRegistrationInfo).toHaveBeenCalledTimes(2);
+  },
+);
+
 // ── Login surface layout, final (V5-P0 arc (a), owner 2026-07-17) ────────────
 
 test('the login surface orders Google, then the password form, then OR, then the Sign-up box', async () => {

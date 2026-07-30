@@ -2,6 +2,8 @@
   "auth": {
     "common": {
       "checkingSession": "Sitzung wird überprüft…",
+      "sessionUnavailableTitle": "Deine Sitzung kann gerade nicht überprüft werden",
+      "sessionUnavailableBody": "BetterTrack kann den Server derzeit nicht erreichen. Du wurdest nicht abgemeldet; versuche es erneut, sobald die Verbindung verfügbar ist.",
       "minPasswordHint": "Mindestens {{count}} Zeichen.",
       "signOut": "Abmelden",
       "waitSecondsOne": " Bitte warte {{count}} Sekunde und versuche es erneut.",
@@ -24,7 +26,8 @@
       "passkeyButton": "Mit Passkey anmelden",
       "passkeySigningIn": "Warte auf deinen Passkey …",
       "passkeyError": "Die Passkey-Anmeldung hat nicht funktioniert. Bitte versuche es erneut oder verwende dein Passwort.",
-      "passkeyRateLimited": "Zu viele Versuche. Bitte warte und versuche es erneut."
+      "passkeyRateLimited": "Zu viele Versuche. Bitte warte und versuche es erneut.",
+      "registrationUnavailable": "Der Registrierungsstatus ist vorübergehend nicht verfügbar."
     },
     "oauthStay": {
       "subtitle": "Anmeldung",
@@ -105,7 +108,9 @@
       "usernameTaken": "Dieser Benutzername ist bereits vergeben — wähle einen anderen.",
       "emailTaken": "Für diese E-Mail-Adresse existiert bereits ein Konto.",
       "invalidInvite": "Dieser Einladungslink ist nicht mehr gültig. Bitte deinen Administrator um eine neue Einladung.",
-      "acceptFailed": "Konto konnte nicht erstellt werden. Bitte versuche es erneut."
+      "acceptFailed": "Konto konnte nicht erstellt werden. Bitte versuche es erneut.",
+      "unavailableSubtitle": "Einladung überprüfen",
+      "unavailableMessage": "Diese Einladung kann gerade nicht überprüft werden. Sie wurde nicht als ungültig eingestuft; bitte versuche es erneut."
     },
     "forcedPasswordChange": {
       "subtitle": "Wähle ein neues Passwort",
@@ -159,7 +164,8 @@
         "connecting": "Verbinde mit Google…",
         "connectedAs": "Mit Google verbunden als {{email}}. Vervollständige unten dein Konto.",
         "emailLockedHint": "Von Google festgelegt und nicht änderbar.",
-        "ticketExpired": "Deine Google-Verbindung ist abgelaufen. Bitte melde dich erneut mit Google an."
+        "ticketExpired": "Deine Google-Verbindung ist abgelaufen. Bitte melde dich erneut mit Google an.",
+        "ticketUnavailable": "Deine Google-Verbindung kann gerade nicht überprüft werden. Sie wurde nicht als abgelaufen eingestuft; bitte versuche es erneut."
       }
     },
     "oauthConsent": {
@@ -3011,6 +3017,7 @@
   "publicShare": {
     "loading": "Geteilte Ansicht wird geladen…",
     "notFound": "Dieser geteilte Link ist nicht mehr verfügbar.",
+    "unavailable": "Diese geteilte Ansicht ist vorübergehend nicht verfügbar. Der Link kann weiterhin gültig sein.",
     "ownerLabel": "Geteilt von {{username}}",
     "readOnly": "Schreibgeschützte geteilte Ansicht",
     "netWorth": "Nettovermögen",
@@ -3319,6 +3326,8 @@
     "saved": "Profil gespeichert.",
     "publicBadge": "Öffentliches Profil",
     "notAvailable": "Dieses Profil ist nicht verfügbar.",
+    "temporarilyUnavailable": "Dieses Profil ist vorübergehend nicht verfügbar. Es kann weiterhin öffentlich sein.",
+    "itemTemporarilyUnavailable": "Dieses Element ist vorübergehend nicht verfügbar. Es kann weiterhin geteilt sein.",
     "emptyPublic": "Dieses Profil hat noch keine öffentlichen Elemente.",
     "icon": {
       "title": "Profilbild",

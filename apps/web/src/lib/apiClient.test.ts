@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-import { ApiError, apiRequest, setAuthResponsePolicy } from './apiClient';
+import {
+  ApiError,
+  apiRequest,
+  classifyApiError,
+  isApiOutage,
+  isConfirmedApiOutcome,
+  isConfirmedUnauthorized,
+  setAuthResponsePolicy,
+} from './apiClient';
 
 function jsonResponse(
   status: number,
@@ -30,6 +38,41 @@ beforeEach(() => {
 afterEach(() => {
   dispose();
   vi.unstubAllGlobals();
+});
+
+test.each([0, 500, 503])('classifies status %i as a retryable outage', (status) => {
+  const error = new ApiError(status, status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN', 'failed');
+
+  expect(classifyApiError(error)).toBe('outage');
+  expect(isApiOutage(error)).toBe(true);
+  expect(isConfirmedApiOutcome(error)).toBe(false);
+});
+
+test.each([401, 403, 404])('classifies status %i as a confirmed domain outcome', (status) => {
+  const error = new ApiError(status, 'UNKNOWN', 'failed');
+
+  expect(classifyApiError(error)).toBe('confirmed-domain-outcome');
+  expect(isConfirmedApiOutcome(error)).toBe(true);
+  expect(isApiOutage(error)).toBe(false);
+});
+
+test('classifies an explicitly known non-terminal-status code as a confirmed outcome', () => {
+  const error = new ApiError(400, 'INVALID_INVITE', 'invalid');
+
+  expect(classifyApiError(error, ['INVALID_INVITE'])).toBe('confirmed-domain-outcome');
+  expect(isConfirmedApiOutcome(error, ['INVALID_INVITE'])).toBe(true);
+  expect(classifyApiError(error)).toBe('unknown');
+});
+
+test('leaves untyped and unrecognized failures unknown', () => {
+  expect(classifyApiError(new Error('boom'))).toBe('unknown');
+  expect(classifyApiError(new ApiError(400, 'UNKNOWN', 'failed'))).toBe('unknown');
+});
+
+test('only a 401 is confirmed unauthorized', () => {
+  expect(isConfirmedUnauthorized(new ApiError(401, 'UNAUTHENTICATED', 'signed out'))).toBe(true);
+  expect(isConfirmedUnauthorized(new ApiError(404, 'NOT_FOUND', 'missing'))).toBe(false);
+  expect(isConfirmedUnauthorized(new ApiError(500, 'UNKNOWN', 'failed'))).toBe(false);
 });
 
 test('a 401 invokes the unauthorized handler and still throws ApiError', async () => {
