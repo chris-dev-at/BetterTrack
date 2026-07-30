@@ -161,43 +161,6 @@
       </div>
     </footer>
 
-    <script>
-      // Verweist jeden „Web-App öffnen"-Link auf das konfigurierte Web-Origin
-      // (window.__BT_LANDING__.webOrigin, beim Container-Start via env.js gesetzt).
-      (function () {
-        var origin = (window.__BT_LANDING__ && window.__BT_LANDING__.webOrigin) || '';
-        if (!origin) return;
-        var links = document.querySelectorAll('.js-web-link');
-        for (var i = 0; i < links.length; i++) {
-          links[i].setAttribute('href', origin);
-        }
-      })();
-
-      // Spiegelt den aktiven Registrierungsmodus wider (§13.4 V4-P4a): Erlaubt die
-      // Instanz Selbstregistrierung, wird der „Konto erstellen"-Button gezeigt und
-      // der Einladungs-Hinweis entfernt. Best-Effort — bei Fehlern bleibt der
-      // geschlossene Standard unverändert.
-      (function () {
-        var cfg = window.__BT_LANDING__ || {};
-        var apiOrigin = cfg.apiOrigin || '';
-        var webOrigin = cfg.webOrigin || '';
-        if (!apiOrigin) return;
-        fetch(apiOrigin + '/api/v1/auth/registration-info')
-          .then(function (r) {
-            return r.ok ? r.json() : null;
-          })
-          .then(function (info) {
-            if (!info || !info.mode || info.mode === 'closed') return;
-            var cta = document.querySelector('.js-register-cta');
-            if (cta) {
-              if (webOrigin) cta.setAttribute('href', webOrigin + '/register');
-              cta.hidden = false;
-            }
-            var note = document.querySelector('.invite-note');
-            if (note) note.hidden = true;
-          })
-          .catch(function () {});
-      })();
-    </script>
+    <script src="/landing.js"></script>
   </body>
 </html>
