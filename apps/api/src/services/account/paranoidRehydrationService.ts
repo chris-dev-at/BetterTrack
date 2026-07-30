@@ -143,23 +143,20 @@ function exactDecimal(value: string, label: string): ExactDecimal {
 }
 
 /**
- * Convert one persisted PostgreSQL numeric to a fixed-scale integer without
- * crossing IEEE-754. Values that PostgreSQL would round or overflow are
- * rejected before the restore transaction instead of being silently changed.
+ * Mirror PostgreSQL numeric coercion as a fixed-scale integer without crossing
+ * IEEE-754. A strict vault may retain the raw number accepted by a normal write,
+ * so sub-quantum digits must be rounded before validation and comparison. A
+ * value that rounds beyond the column precision still fails before restore.
  */
 function persistedNumeric(value: string, precision: number, scale: number, label: string): bigint {
-  const decimal = exactDecimal(value, label);
-  if (decimal.scale > scale) {
-    throw new ParanoidRehydrationError('INVALID_REFERENCE', `${label} exceeds its persisted scale`);
-  }
-  const integerDigits = value.replace(/^-/, '').split('.')[0]!.replace(/^0+/, '');
-  if (integerDigits.length > precision - scale) {
+  const quantized = roundToScale(exactDecimal(value, label), scale);
+  if (absolute(quantized) >= pow10(precision)) {
     throw new ParanoidRehydrationError(
       'INVALID_REFERENCE',
       `${label} exceeds its persisted precision`,
     );
   }
-  return decimal.coefficient * pow10(scale - decimal.scale);
+  return quantized;
 }
 
 function absolute(value: bigint): bigint {
