@@ -52,6 +52,59 @@ BT_MODE=ports docker compose --env-file infra/.env.production.example \
   -f infra/docker-compose.ports.yml config -q
 ```
 
+## Deployment-host log and image retention
+
+Every repository Compose service uses Docker's `local` log driver with an
+explicit `max-size: 10m` and `max-file: 3`. Docker therefore retains at most
+three 10 MiB log files per container instead of the unbounded default:
+
+| Compose file                    | Services                                                                                                                                      | Retention per container |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `docker-compose.yml`            | `web`, `landing`, `api`, `worker`, `db`, `redis`, `prometheus`, `grafana`, `node-exporter`, `cadvisor`, `postgres-exporter`, `redis-exporter` | 3 × 10 MiB              |
+| `docker-compose.ports.yml`      | `web` overlay                                                                                                                                 | 3 × 10 MiB              |
+| `docker-compose.subdomains.yml` | `web` overlay                                                                                                                                 | 3 × 10 MiB              |
+| `docker-compose.offsite.yml`    | `backup-offsite`                                                                                                                              | 3 × 10 MiB              |
+| `docker-compose.dev.yml`        | `db`, `redis`                                                                                                                                 | 3 × 10 MiB              |
+
+The live updater's separate host file,
+`$CONTROL/logs/updater.log`, rotates when it reaches 10 MiB. It keeps three
+archives (`updater.log.1` through `.3`), so a long-running updater cannot append
+to one file forever. Deploy-lifecycle notifications still go directly to the
+updater container's stdout and remain visible through `docker logs`.
+
+After each deploy tick, the updater checks
+`$CONTROL/logs/last-docker-reclaim`. At most once every 24 hours it asks Docker
+to remove only:
+
+- unused build cache older than seven days; and
+- dangling images older than seven days.
+
+The reclaim deliberately uses `docker builder prune` and `docker image prune`
+without `-a`. It never runs `docker system prune`, `docker volume prune`,
+container prune, or any command with `--volumes`. Docker excludes images
+referenced by a container, including the updater's own active image. Reclaim
+failure is logged as non-fatal and the deploy loop continues.
+
+The named data volumes are never cleanup targets:
+`pgdata`, `redisdata`, `exportdata`, `pgbackups`, `promdata`, and
+`grafanadata`. Do not replace the updater's narrow commands with a broader
+prune.
+
+Inspect current usage and the last reclaim attempt from the deploy host:
+
+```sh
+CONTROL=/absolute/path/to/live-control
+docker system df
+docker builder du
+ls -lh "$CONTROL"/logs/updater.log*
+cat "$CONTROL/logs/last-docker-reclaim" # UTC epoch seconds
+```
+
+To disable automatic reclaim, set `DOCKER_RECLAIM_ENABLED=0` on the `updater`
+service in the control directory's machine-local `compose.override.yml`, then
+recreate only that service with the same Compose file and env arguments used by
+the live stack. The log rotation remains active.
+
 ## Backup architecture
 
 Two independent layers, both env-gated. The offsite layer is OPTIONAL — the
