@@ -340,22 +340,21 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
     expect(await harness.ctx.redis.exists(rememberedDevicesForUserKey(user.id))).toBe(0);
   });
 
-  it('removes a remembered-device binding created after the pre-delete sweep', async () => {
+  it('removes a remembered-device binding created before the pre-delete index reset', async () => {
     const user = await seedPerson('racing_remembered_device');
     await harness.ctx.auth.setPin(user.id, '4242');
     const indexKey = rememberedDevicesForUserKey(user.id);
-    const firstSweepFinished = deferred();
+    const firstIndexResetStarted = deferred();
     const releaseDeletion = deferred();
     const originalDel = harness.ctx.redis.del.bind(harness.ctx.redis);
     let indexDeleteCount = 0;
 
     harness.ctx.redis.del = (async (...keys: string[]) => {
-      const deleted = await originalDel(...keys);
       if (keys.includes(indexKey) && indexDeleteCount++ === 0) {
-        firstSweepFinished.resolve();
+        firstIndexResetStarted.resolve();
         await releaseDeletion.promise;
       }
-      return deleted;
+      return originalDel(...keys);
     }) as typeof harness.ctx.redis.del;
 
     let deletion: Promise<request.Response> | undefined;
@@ -364,12 +363,14 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
         confirmUsername: user.username,
         password: user.password,
       }).then((response) => response);
-      await firstSweepFinished.promise;
+      await firstIndexResetStarted.promise;
 
-      // This request already resolved an active user and lands in the exact
-      // window the old single sweep missed.
+      // The first sweep already took both snapshots but has not reset the
+      // reverse index. This writer can still revalidate against the active row;
+      // the pending DEL then erases only its index membership.
       const raced = await harness.ctx.auth.rememberDevice(user.id);
       expect(await harness.ctx.redis.get(rememberedDeviceKey(raced.deviceId))).toBe(user.id);
+      expect(await harness.ctx.redis.smembers(indexKey)).toContain(raced.deviceId);
 
       releaseDeletion.resolve();
       const response = await deletion;

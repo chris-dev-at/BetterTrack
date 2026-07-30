@@ -37,11 +37,7 @@ import type {
   AppSettingsService,
 } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
-import {
-  clearLoginThrottle,
-  removeIndexedRememberedDeviceBindings,
-  removeRememberedDeviceBindings,
-} from '../auth/loginThrottle';
+import { clearLoginThrottle, removeRememberedDeviceBindings } from '../auth/loginThrottle';
 import { generateToken } from '../crypto/tokens';
 import type { EmailSendResult, EmailService } from '../email/emailService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -585,10 +581,10 @@ export function createAdminService(deps: AdminServiceDeps) {
         await ensureActiveAdminRemains(repo, reserved, false);
         await repo.remove(reserved.id);
       });
-      // Pair the pre-delete sweep with the remembered-device writer's durable
-      // user recheck. This catches a binding written by a request that had
-      // already observed the target as active before the admin reserved it.
-      await removeIndexedRememberedDeviceBindings(redis, target.id);
+      // Pair the pre-delete sweep with a full scan after durable deletion. This
+      // also catches a writer whose new reverse-index membership was erased by
+      // the first sweep's final index reset.
+      await removeRememberedDeviceBindings(redis, target.id);
       await audit.record({
         actorId: actor.id,
         action: AuditAction.UserDeleted,

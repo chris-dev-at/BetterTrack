@@ -129,19 +129,6 @@ async function deleteRememberedDeviceIds(
 }
 
 /**
- * Remove current-format remembered-device bindings without the legacy keyspace
- * scan. Used as the post-row-delete race fence: every current writer adds its
- * binding to this reverse index in the same Redis transaction.
- */
-export async function removeIndexedRememberedDeviceBindings(
-  redis: Redis,
-  userId: string,
-): Promise<void> {
-  const indexKey = rememberedDevicesForUserKey(userId);
-  await deleteRememberedDeviceIds(redis, indexKey, new Set(await redis.smembers(indexKey)));
-}
-
-/**
  * Remove every remembered-device binding owned by a deleted account.
  *
  * Current bindings are enumerable through the reverse index. Bindings created
