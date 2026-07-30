@@ -2,10 +2,11 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
+import { createRootErrorOptions } from '../rootErrorHandling';
 import { ErrorBoundary } from './ErrorBoundary';
 
-// React logs caught boundary errors via console.error; silence it so the test
-// output stays clean.
+// Silence React's default caught-error diagnostics in tests that do not supply
+// the application's explicit root handler.
 beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -56,6 +57,50 @@ describe('ErrorBoundary', () => {
     await user.click(screen.getByRole('button', { name: 'Try again' }));
 
     expect(screen.getByText(/^Reference ID: /)).toHaveTextContent(firstReference ?? '');
+  });
+
+  test('suppresses raw caught-error detail with production root options', () => {
+    const secret = 'production-reset-token-super-secret-capability';
+    const error = new Error(secret);
+
+    function Bomb(): never {
+      throw error;
+    }
+
+    render(
+      <ErrorBoundary>
+        <Bomb />
+      </ErrorBoundary>,
+      createRootErrorOptions(false),
+    );
+
+    expect(screen.getByRole('alert')).not.toHaveTextContent(secret);
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  test('logs caught-error diagnostics exactly once with development root options', () => {
+    const error = new Error('development diagnostic');
+
+    function Bomb(): never {
+      throw error;
+    }
+
+    render(
+      <ErrorBoundary>
+        <Bomb />
+      </ErrorBoundary>,
+      createRootErrorOptions(true),
+    );
+
+    expect(console.error).toHaveBeenCalledOnce();
+    expect(console.error).toHaveBeenCalledWith('Caught render error', error, expect.any(Object));
+  });
+
+  test('creates a fallback state for primitive throwables', () => {
+    expect(ErrorBoundary.getDerivedStateFromError('primitive failure')).toEqual({
+      hasError: true,
+      correlationId: expect.any(String),
+    });
   });
 
   test('the default fallback offers a retry affordance', () => {

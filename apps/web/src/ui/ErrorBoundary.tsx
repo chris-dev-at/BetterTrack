@@ -1,4 +1,4 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Component, type ReactNode } from 'react';
 
 import { useT } from '../i18n';
 
@@ -15,7 +15,7 @@ type ErrorBoundaryState =
   | { hasError: false; correlationId: null }
   | { hasError: true; correlationId: string };
 
-const correlationIds = new WeakMap<Error, string>();
+const correlationIds = new WeakMap<object, string>();
 
 function createCorrelationId(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
@@ -26,7 +26,11 @@ function createCorrelationId(): string {
   return `bt-${Date.now().toString(36)}-${random}`;
 }
 
-function correlationIdFor(error: Error): string {
+function correlationIdFor(error: unknown): string {
+  if (typeof error !== 'object' || error === null) {
+    return createCorrelationId();
+  }
+
   const existing = correlationIds.get(error);
   if (existing) return existing;
 
@@ -46,14 +50,8 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     this.state = { hasError: false, correlationId: null };
   }
 
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+  static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
     return { hasError: true, correlationId: correlationIdFor(error) };
-  }
-
-  override componentDidCatch(error: Error, info: ErrorInfo): void {
-    if (import.meta.env.DEV) {
-      console.error(`Render error [${this.state.correlationId ?? 'unknown'}]`, error, info);
-    }
   }
 
   reset = (): void => {
