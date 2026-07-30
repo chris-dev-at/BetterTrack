@@ -162,6 +162,20 @@ type OAuthTokenStore = Pick<
   'createAccessToken' | 'createRefreshToken'
 >;
 
+interface PreparedTokenPair {
+  issuedAt: Date;
+  accessToken: {
+    tokenHash: string;
+    scopes: ApiKeyScope[];
+    expiresAt: Date;
+  };
+  refreshToken: {
+    tokenHash: string;
+    expiresAt: Date;
+  };
+  response: OAuthTokenResponse;
+}
+
 function mint(prefix: string): { token: string; tokenHash: string } {
   const token = `${prefix}${randomBytes(32).toString('base64url')}`;
   return { token, tokenHash: hashToken(token) };
@@ -333,35 +347,49 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     return { client, scopes };
   }
 
-  function issueTokenPair(
-    store: OAuthTokenStore,
-    grantId: string,
-    scopes: ApiKeyScope[],
-  ): Promise<OAuthTokenResponse> {
+  function prepareTokenPair(scopes: ApiKeyScope[]): PreparedTokenPair {
     const issued = now();
     const access = mint(OAUTH_ACCESS_TOKEN_PREFIX);
     const refresh = mint(OAUTH_REFRESH_TOKEN_PREFIX);
     const accessExpires = new Date(issued.getTime() + OAUTH_ACCESS_TOKEN_TTL_SECONDS * 1000);
     const refreshExpires = new Date(issued.getTime() + OAUTH_REFRESH_TOKEN_TTL_SECONDS * 1000);
-    return Promise.all([
-      store.createAccessToken({
-        grantId,
+    return {
+      issuedAt: issued,
+      accessToken: {
         tokenHash: access.tokenHash,
         scopes,
         expiresAt: accessExpires,
+      },
+      refreshToken: {
+        tokenHash: refresh.tokenHash,
+        expiresAt: refreshExpires,
+      },
+      response: {
+        access_token: access.token,
+        token_type: 'Bearer',
+        expires_in: OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+        refresh_token: refresh.token,
+        scope: scopes.join(' '),
+      },
+    };
+  }
+
+  function issueTokenPair(
+    store: OAuthTokenStore,
+    grantId: string,
+    scopes: ApiKeyScope[],
+  ): Promise<OAuthTokenResponse> {
+    const pair = prepareTokenPair(scopes);
+    return Promise.all([
+      store.createAccessToken({
+        grantId,
+        ...pair.accessToken,
       }),
       store.createRefreshToken({
         grantId,
-        tokenHash: refresh.tokenHash,
-        expiresAt: refreshExpires,
+        ...pair.refreshToken,
       }),
-    ]).then(() => ({
-      access_token: access.token,
-      token_type: 'Bearer' as const,
-      expires_in: OAUTH_ACCESS_TOKEN_TTL_SECONDS,
-      refresh_token: refresh.token,
-      scope: scopes.join(' '),
-    }));
+    ]).then(() => pair.response);
   }
 
   /** Resolve + authenticate the client on the token endpoint (confidential vs public). */
@@ -877,16 +905,27 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     if (found.token.expiresAt.getTime() <= now().getTime()) {
       throw badRequest('Refresh token has expired.', 'INVALID_GRANT');
     }
-    const consumed = await repo.consumeRefreshToken(found.token.id);
-    if (!consumed) {
-      throw badRequest('Refresh token has already been used.', 'INVALID_GRANT');
-    }
     // Clamp to the app's current allowed scopes so a refresh never re-broadens a
     // grant past a scope the admin has since removed, and the advertised `scope`
     // matches what the freshly-issued token can actually use.
     const scopes = clampToAllowed(found.grant.scopes as ApiKeyScope[], client.scopes);
-    const tokens = await issueTokenPair(repo, found.grant.id, scopes);
-    await repo.touchGrantLastUsed(found.grant.id, now());
+    const pair = prepareTokenPair(scopes);
+    const rotation = await repo.rotateRefreshToken({
+      tokenId: found.token.id,
+      grantId: found.grant.id,
+      rotatedAt: pair.issuedAt,
+      accessToken: pair.accessToken,
+      refreshToken: pair.refreshToken,
+    });
+    if (rotation === 'replayed') {
+      await publishInvalidation({
+        userId: found.grant.userId,
+        kind: 'oauth',
+        credentialId: found.grant.id,
+        exceptCredentialId: null,
+      });
+      throw badRequest('Refresh token has already been used.', 'INVALID_GRANT');
+    }
     await audit.record({
       actorId: found.grant.userId,
       action: AuditAction.OAuthTokenRefreshed,
@@ -895,6 +934,6 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       ip,
       meta: { clientId: client.clientId },
     });
-    return tokens;
+    return pair.response;
   }
 }
