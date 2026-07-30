@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, ne } from 'drizzle-orm';
 
 import type { AlertKind, AlertStatus } from '@bettertrack/contracts';
 
@@ -315,6 +315,31 @@ export function createAlertRepository(db: Database) {
         .innerJoin(assets, eq(alerts.assetId, assets.id))
         .where(and(eq(alerts.status, 'active'), eq(assets.ownerId, alerts.userId)));
       return rows.map((r) => r.userId);
+    },
+
+    /**
+     * The third rail, made explicit: `active` alerts whose asset is a CUSTOM
+     * asset owned by someone OTHER than the alert's owner. Neither evaluator
+     * rail can serve these — the global rail excludes owned assets and the
+     * per-owner rail only locks the alert's own account, which is not the
+     * account whose content the asset is. Unreachable today (alert creation is
+     * owner-scoped and chain assets are `MIRROR_ASSET_NOT_SYNCABLE`), so the
+     * fail-closed drop stands; counting it means the gap is logged rather than
+     * living implicitly between two `where` clauses.
+     */
+    async countActiveForeignCustomAssetAlerts(): Promise<number> {
+      const rows = await db
+        .select({ id: alerts.id })
+        .from(alerts)
+        .innerJoin(assets, eq(alerts.assetId, assets.id))
+        .where(
+          and(
+            eq(alerts.status, 'active'),
+            isNotNull(assets.ownerId),
+            ne(assets.ownerId, alerts.userId),
+          ),
+        );
+      return rows.length;
     },
 
     /**

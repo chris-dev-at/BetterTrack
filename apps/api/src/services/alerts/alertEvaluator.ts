@@ -141,6 +141,12 @@ function errorMessage(err: unknown): string {
  * identity-only metadata, and each owner's alerts are loaded, quoted, emitted
  * and flipped inside that account's transition lock — so an enable that wins
  * the race means the custom-asset query never runs and no side effect lands.
+ *
+ * An alert on a custom asset owned by a THIRD account fits neither rail: the
+ * global rail excludes owned assets, and locking the alert's owner would not
+ * lock the account whose content the asset actually is. Such a row is dropped
+ * fail-closed — but it is counted and logged rather than vanishing silently
+ * between the two `where` clauses.
  */
 export async function runAlertsEvaluation(
   deps: AlertsEvaluatorDeps,
@@ -165,6 +171,14 @@ export async function runAlertsEvaluation(
       if (err instanceof ParanoidModeError) continue;
       throw err;
     }
+  }
+
+  const unreachable = await alertRepo.countActiveForeignCustomAssetAlerts();
+  if (unreachable > 0) {
+    logger.warn(
+      { unreachable },
+      'alerts.evaluate: active alerts on a foreign account-owned asset are served by neither rail and were not evaluated',
+    );
   }
 
   return { evaluated, fired };

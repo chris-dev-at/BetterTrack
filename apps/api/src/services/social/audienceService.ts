@@ -76,7 +76,10 @@ export interface AudienceServiceDeps {
   /** The central notification pipeline (#368) — `*.shared` + `follow.published` enter here. */
   notify?: NotificationCenter;
   logger?: Logger;
-  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed' | 'isParanoid' | 'runAllowedMany'>;
+  paranoid?: Pick<
+    ParanoidModeGuard,
+    'assertAllowed' | 'isParanoid' | 'runAllowedMany' | 'runAllowedWithOptional'
+  >;
 }
 
 export interface AudienceService {
@@ -162,7 +165,10 @@ export interface AudienceService {
    * Hold owner + prospective-recipient transition locks around a legacy mixed
    * mutation. The callback receives the exact recipient snapshot protected by
    * those locks so its paired persistence writes and fan-out never rediscover a
-   * different friend set halfway through the operation.
+   * different friend set halfway through the operation. Recipients that are in
+   * paranoid mode are omitted from that snapshot rather than failing the write —
+   * a blanket `friends` visibility write names nobody, so one paranoid friend
+   * must not remove friend-sharing from a normal owner's own account.
    */
   withVisibilityMutation<T>(
     ownerId: string,
@@ -252,13 +258,39 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     return friendship ? (await friendship.listFriends(ownerId)).map((friend) => friend.id) : [];
   }
 
+  /**
+   * Hold the owner's transition lock plus every prospective recipient's across a
+   * complete audience/visibility write, and hand the action the recipients that
+   * are still allowed under those held locks.
+   *
+   * The two recipient kinds are treated differently on purpose:
+   *
+   * - `named` — ids the REQUEST itself enumerates (`specific_friends`). The
+   *   caller asked for that account by name, so a paranoid one fails the call
+   *   closed, exactly like `followUser`/`addGroupMember`.
+   * - `derived` — ids discovered only as incidental fan-out targets: the owner's
+   *   whole live friend set behind `all_friends`, or a group's current roster.
+   *   A paranoid member here is filtered out of the fan-out instead of failing
+   *   the write. Failing would let one paranoid friend permanently remove
+   *   friend-sharing from a NORMAL owner's own account, which breaks AC #7 and
+   *   buys no privacy: the recipient's whole `sharing` capability is already
+   *   killed at their route and service, so the audience row is unreachable for
+   *   them — only the fan-out matters, and that is what the allowed set gates.
+   *
+   * The action MUST fan out to the list it is given rather than re-reading the
+   * friend set, or a recipient could reappear after filtering.
+   */
   async function withNormalRecipients<T>(
     ownerId: string,
-    recipientIds: readonly string[],
-    action: () => Promise<T>,
+    recipients: { named?: readonly string[]; derived?: readonly string[] },
+    action: (allowedRecipientIds: readonly string[]) => Promise<T>,
   ): Promise<T> {
-    if (!paranoid) return action();
-    return paranoid.runAllowedMany([ownerId, ...recipientIds], 'sharing', action);
+    const named = recipients.named ?? [];
+    const derived = recipients.derived ?? [];
+    if (!paranoid) return action([...named, ...derived]);
+    return paranoid.runAllowedWithOptional([ownerId, ...named], derived, 'sharing', (allowed) =>
+      action([...named, ...derived.filter((recipientId) => allowed.has(recipientId))]),
+    );
   }
 
   /**
@@ -300,13 +332,18 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
    * dispatcher's eventKey dedupes repeat transitions, so widening back and forth
    * never re-notifies. Emits ride the durable center and are best-effort for the
    * mutation.
+   *
+   * `recipientIds` is authoritative: it is the set {@link withNormalRecipients}
+   * resolved and still holds transition locks for. Re-deriving an all-friends
+   * roster here would reintroduce the recipients that filtering just removed, so
+   * this function deliberately never reads the friend list itself.
    */
   async function emitShared(
     ownerId: string,
     kind: ShareKind,
     subjectId: string,
     audienceValue: ShareAudience,
-    memberIds: readonly string[],
+    recipientIds: readonly string[],
   ): Promise<void> {
     if (!notify || !friendship) return;
     if (
@@ -316,10 +353,7 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     )
       return;
     try {
-      const recipients =
-        audienceValue === 'all_friends'
-          ? (await friendship.listFriends(ownerId)).map((f) => f.id)
-          : [...memberIds];
+      const recipients = [...recipientIds];
       if (recipients.length === 0) return;
       const actorUsername = (await friendship.getUsername(ownerId)) ?? '';
       const occurredAt = new Date().toISOString();
@@ -592,66 +626,73 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
         input.audience === 'specific_friends'
           ? await repo.friendIdsOf(ownerId, input.friendIds ?? [])
           : [];
-      const prospectiveRecipients =
+      // `specific_friends` names its recipients, so they are required principals;
+      // an all-friends set or a group roster is incidental fan-out and is
+      // filtered instead (see {@link withNormalRecipients}).
+      const derivedRecipients =
         input.audience === 'all_friends' && friendship
           ? await allFriendRecipients(ownerId)
           : input.audience === 'group' && groupId && groups
             ? await groups.listMemberIds(groupId)
-            : memberIds;
-      return withNormalRecipients(ownerId, prospectiveRecipients, async () => {
-        const audienceId = await repo.setAudience(
-          ownerId,
-          kind,
-          subjectId,
-          input.audience,
-          memberIds,
-          groupId,
-        );
+            : [];
+      return withNormalRecipients(
+        ownerId,
+        { named: memberIds, derived: derivedRecipients },
+        async (allowedRecipientIds) => {
+          const audienceId = await repo.setAudience(
+            ownerId,
+            kind,
+            subjectId,
+            input.audience,
+            memberIds,
+            groupId,
+          );
 
-        // The recipients to notify (#368): the validated friend set for
-        // specific-friends, or the group's live roster for a group share.
-        const directRecipientIds =
-          input.audience === 'group' && groupId && groups
-            ? await groups.listMemberIds(groupId)
-            : memberIds;
+          let link: ShareLinkSecret | undefined;
+          if (input.audience === 'public_link' && !(await repo.hasActiveLink(audienceId))) {
+            // ≥128-bit CSPRNG token (256-bit here); only its hash is persisted (§14).
+            const minted = generateToken();
+            await repo.insertLink(audienceId, minted.tokenHash);
+            link = { token: minted.token, url: linkPath(minted.token) };
+          }
 
-        let link: ShareLinkSecret | undefined;
-        if (input.audience === 'public_link' && !(await repo.hasActiveLink(audienceId))) {
-          // ≥128-bit CSPRNG token (256-bit here); only its hash is persisted (§14).
-          const minted = generateToken();
-          await repo.insertLink(audienceId, minted.tokenHash);
-          link = { token: minted.token, url: linkPath(minted.token) };
-        }
+          // Notify the newly admitted friends (#368) — after the audience
+          // committed, so a recipient acting on the bell is already authorized.
+          // The list is the locked/allowed snapshot, so a paranoid friend inside
+          // an all-friends or group roster receives no `*.shared` row.
+          await emitShared(ownerId, kind, subjectId, input.audience, allowedRecipientIds);
+          // Notify the owner's followers if the item just became public (#438).
+          await emitFollowPublished(
+            ownerId,
+            kind,
+            subjectId,
+            { audience: prior.audience, memberIds: prior.friendIds, groupId: prior.groupId },
+            input.audience,
+          );
 
-        // Notify the newly admitted friends (#368) — after the audience committed,
-        // so a recipient acting on the bell is already authorized.
-        await emitShared(ownerId, kind, subjectId, input.audience, directRecipientIds);
-        // Notify the owner's followers if the item just became public (#438).
-        await emitFollowPublished(
-          ownerId,
-          kind,
-          subjectId,
-          { audience: prior.audience, memberIds: prior.friendIds, groupId: prior.groupId },
-          input.audience,
-        );
-
-        const owned = await repo.getOwnedState(kind, subjectId);
-        return { state: toState(kind, subjectId, owned), link };
-      });
+          const owned = await repo.getOwnedState(kind, subjectId);
+          return { state: toState(kind, subjectId, owned), link };
+        },
+      );
     },
 
     async applyVisibility(ownerId, kind, subjectId, visibility, lockedRecipientIds) {
       const audience: ShareAudience = visibility === 'friends' ? 'all_friends' : 'private';
       const recipients =
         lockedRecipientIds ?? (visibility === 'friends' ? await allFriendRecipients(ownerId) : []);
-      await withNormalRecipients(ownerId, recipients, async () => {
+      await withNormalRecipients(ownerId, { derived: recipients }, async () => {
         await repo.setAudience(ownerId, kind, subjectId, audience, []);
       });
     },
 
     async withVisibilityMutation(ownerId, visibility, action) {
       const recipients = visibility === 'friends' ? await allFriendRecipients(ownerId) : [];
-      return withNormalRecipients(ownerId, recipients, () => action(recipients));
+      // The callback receives only the recipients still normal under the held
+      // locks, so its paired persistence + `*.shared` fan-out skip a paranoid
+      // friend while the owner's own visibility write commits.
+      return withNormalRecipients(ownerId, { derived: recipients }, (allowedRecipientIds) =>
+        action(allowedRecipientIds),
+      );
     },
 
     audiencesForSubjects: (kind, subjectIds) => repo.audiencesForSubjects(kind, subjectIds),

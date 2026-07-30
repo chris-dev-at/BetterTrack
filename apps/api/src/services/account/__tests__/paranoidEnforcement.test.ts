@@ -713,7 +713,7 @@ describe('paranoid kill registry', () => {
     }
   });
 
-  it('denies stale subject ids and targeted sharing without partial writes', async () => {
+  it('denies stale subject ids and named paranoid targets without partial writes', async () => {
     const { user: paranoid } = await paranoidAccount();
     const subjects = createParanoidEnforcementRepository(harness.db);
     expect(
@@ -746,48 +746,85 @@ describe('paranoid kill registry', () => {
         .where(eq(friendGroupMembers.groupId, group!.id)),
     ).toEqual([]);
 
-    const [conglomerate] = await harness.db
+    // `specific_friends` NAMES its recipients, so a paranoid one fails the write
+    // closed exactly like addGroupMember above — and leaves no audience row.
+    const [namedConglomerate] = await harness.db
       .insert(conglomerates)
-      .values({ ownerId: normal.id, name: 'Normal basket', status: 'draft' })
+      .values({ ownerId: normal.id, name: 'Named recipients', status: 'draft' })
       .returning();
     await expect(
-      harness.ctx.conglomerate.updateWithVisibility(normal.id, conglomerate!.id, {
-        visibility: 'friends',
+      harness.ctx.social.setAudience(normal.id, 'conglomerate', namedConglomerate!.id, {
+        audience: 'specific_friends',
+        friendIds: [paranoid.id],
       }),
     ).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+    expect(
+      await harness.db
+        .select()
+        .from(shareAudiences)
+        .where(eq(shareAudiences.subjectId, namedConglomerate!.id)),
+    ).toEqual([]);
+    expect(await harness.db.select().from(notifications)).toEqual([]);
+  });
+
+  it('commits a normal owner blanket share while suppressing the paranoid friend fan-out', async () => {
+    // A blanket audience names nobody: its recipients are the owner's live friend
+    // set. One paranoid friend must therefore be filtered out of the fan-out, not
+    // remove friend-sharing from the normal owner's own account (AC #7).
+    const { user: paranoid } = await paranoidAccount();
+    const normal = await harness.seedUser({
+      email: 'blanket-owner@bettertrack.test',
+      username: 'blanket_owner',
+    });
+    const normalFriend = await harness.seedUser({
+      email: 'blanket-friend@bettertrack.test',
+      username: 'blanket_friend',
+    });
+    const befriend = async (a: string, b: string) => {
+      const [userA, userB] = [a, b].sort();
+      await harness.db.insert(friendships).values({ userA: userA!, userB: userB! });
+    };
+    await befriend(normal.id, paranoid.id);
+    await befriend(normal.id, normalFriend.id);
+
+    const conglomerate = await harness.ctx.conglomerate.create(normal.id, {
+      name: 'Blanket basket',
+    });
+    await harness.ctx.conglomerate.updateWithVisibility(normal.id, conglomerate.id, {
+      visibility: 'friends',
+    });
     expect(
       (
         await harness.db
           .select({ visibility: conglomerates.visibility })
           .from(conglomerates)
-          .where(eq(conglomerates.id, conglomerate!.id))
+          .where(eq(conglomerates.id, conglomerate.id))
       )[0]?.visibility,
-    ).toBe('private');
+    ).toBe('friends');
     expect(
-      await harness.db
-        .select()
-        .from(shareAudiences)
-        .where(eq(shareAudiences.subjectId, conglomerate!.id)),
-    ).toEqual([]);
+      (
+        await harness.db
+          .select({ audience: shareAudiences.audience })
+          .from(shareAudiences)
+          .where(eq(shareAudiences.subjectId, conglomerate.id))
+      )[0]?.audience,
+    ).toBe('all_friends');
 
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(normal.id);
+    // The legacy single-model write is still refused: visibility has to travel
+    // through the guarded pair so both models move under one held snapshot.
     await expect(
       harness.ctx.portfolio.updatePortfolio(normal.id, portfolioId, {
         visibility: 'friends',
       } as never),
     ).rejects.toMatchObject({ code: 'PORTFOLIO_VISIBILITY_GUARD_REQUIRED' });
-    await expect(
-      harness.ctx.portfolio.updatePortfolioWithVisibility(normal.id, portfolioId, {
-        visibility: 'friends',
-      }),
-    ).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
+
     const ownerAgent = await loginAgent(harness.app, normal.email, normal.password);
     const routeUpdate = await ownerAgent
       .patch(`/api/v1/portfolios/${portfolioId}`)
       .set(...XRW)
       .send({ visibility: 'friends' });
-    expect(routeUpdate.status).toBe(403);
-    expect(routeUpdate.body.error.code).toBe(PARANOID_MODE_ERROR_CODE);
+    expect(routeUpdate.status).toBe(200);
     expect(
       (
         await harness.db
@@ -795,14 +832,42 @@ describe('paranoid kill registry', () => {
           .from(portfolios)
           .where(eq(portfolios.id, portfolioId))
       )[0]?.visibility,
-    ).toBe('private');
+    ).toBe('friends');
     expect(
-      await harness.db
-        .select()
-        .from(shareAudiences)
-        .where(eq(shareAudiences.subjectId, portfolioId)),
-    ).toEqual([]);
-    expect(await harness.db.select().from(notifications)).toEqual([]);
+      (
+        await harness.db
+          .select({ audience: shareAudiences.audience })
+          .from(shareAudiences)
+          .where(eq(shareAudiences.subjectId, portfolioId))
+      )[0]?.audience,
+    ).toBe('all_friends');
+
+    // The audience route takes the same blanket path and is what actually runs
+    // `emitShared` over the filtered recipient snapshot.
+    const routeAudience = await ownerAgent
+      .put(`/api/v1/social/audience/conglomerate/${conglomerate.id}`)
+      .set(...XRW)
+      .send({ audience: 'all_friends' });
+    expect(routeAudience.status).toBe(200);
+
+    // The fan-out is the only thing the paranoid friend must not receive; the
+    // normal friend still gets every share notice.
+    const paranoidNotifications = await harness.db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, paranoid.id));
+    expect(paranoidNotifications).toEqual([]);
+    const friendShares = (
+      await harness.db.select().from(notifications).where(eq(notifications.userId, normalFriend.id))
+    ).map((row) => row.type);
+    expect(friendShares).toContain('portfolio.shared');
+    expect(friendShares).toContain('conglomerate.shared');
+
+    // And the audience row stays unreachable for the paranoid friend anyway:
+    // their whole sharing capability is killed at the service.
+    await expect(
+      harness.ctx.social.getSharedPortfolio(paranoid.id, portfolioId),
+    ).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
   });
 
   it('uses one locked friend snapshot for portfolio and conglomerate visibility writes', async () => {
@@ -813,33 +878,54 @@ describe('paranoid kill registry', () => {
       mutate: () => Promise<T>;
     }): Promise<T> {
       const guard = harness.ctx.paranoidGuard;
-      const original = guard.runAllowedMany;
+      const originalMany = guard.runAllowedMany;
+      const originalWithOptional = guard.runAllowedWithOptional;
       let sharingCalls = 0;
       let injected = false;
+      // Both multi-principal primitives count: the registry proxy holds the
+      // owner through `runAllowedMany`, while the audience service takes its
+      // recipient snapshot through the filtering `runAllowedWithOptional`.
+      const onSharingGuard = async (capability: string, userIds: readonly string[]) => {
+        if (capability !== 'sharing' || !userIds.includes(input.ownerId)) return;
+        sharingCalls += 1;
+        if (sharingCalls !== input.sharingCall) return;
+        const [userA, userB] =
+          input.ownerId < input.racedFriendId
+            ? [input.ownerId, input.racedFriendId]
+            : [input.racedFriendId, input.ownerId];
+        await harness.db.insert(friendships).values({ userA, userB });
+        injected = true;
+      };
       guard.runAllowedMany = async <TResult>(
         userIds: readonly string[],
-        capability: Parameters<typeof original>[1],
+        capability: Parameters<typeof originalMany>[1],
         action: () => Promise<TResult>,
       ): Promise<TResult> => {
-        if (capability === 'sharing' && userIds.includes(input.ownerId)) {
-          sharingCalls += 1;
-          if (sharingCalls === input.sharingCall) {
-            const [userA, userB] =
-              input.ownerId < input.racedFriendId
-                ? [input.ownerId, input.racedFriendId]
-                : [input.racedFriendId, input.ownerId];
-            await harness.db.insert(friendships).values({ userA, userB });
-            injected = true;
-          }
-        }
-        return original.call(guard, userIds, capability, action) as Promise<TResult>;
+        await onSharingGuard(capability, userIds);
+        return originalMany.call(guard, userIds, capability, action) as Promise<TResult>;
+      };
+      guard.runAllowedWithOptional = async <TResult>(
+        requiredUserIds: readonly string[],
+        optionalUserIds: readonly string[],
+        capability: Parameters<typeof originalWithOptional>[2],
+        action: (allowedOptionalUserIds: ReadonlySet<string>) => Promise<TResult>,
+      ): Promise<TResult> => {
+        await onSharingGuard(capability, requiredUserIds);
+        return originalWithOptional.call(
+          guard,
+          requiredUserIds,
+          optionalUserIds,
+          capability,
+          action,
+        ) as Promise<TResult>;
       };
       try {
         const result = await input.mutate();
         expect(injected).toBe(true);
         return result;
       } finally {
-        guard.runAllowedMany = original;
+        guard.runAllowedMany = originalMany;
+        guard.runAllowedWithOptional = originalWithOptional;
       }
     }
 

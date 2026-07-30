@@ -116,6 +116,17 @@ export function withExclusiveParanoidTransitionTestLock<T>(
  *     rule, but it means one idle-in-transaction connection is held for the
  *     duration of upstream latency — bounded by the provider timeouts in
  *     `providers/resilience.ts`.
+ *  3. Ids are sorted WITHIN one call, which establishes a global lock order
+ *     only for non-nested acquisitions. A guarded action that needs a lock for
+ *     an id the outer scope did not take (for example `setAudience` holding
+ *     owner + friends, then `emitFollowPublished` guarding a non-friend
+ *     follower) opens a SECOND transaction on the lock pool while the first is
+ *     still open. `heldPrivacyModes` keeps that re-entrant for ids already
+ *     held, so nesting is bounded to at most one extra transaction per request
+ *     on the paths that exist today; the quiet failure mode is pool pressure
+ *     under N concurrent nested guards, not a deadlock (Postgres would detect a
+ *     true cross-transaction cycle). Adding a nested guard on a hot path means
+ *     re-checking the dedicated lock pool's size in `server.ts`/`worker.ts`.
  */
 export async function withLockedPrivacyModes<T>(
   db: Database,
