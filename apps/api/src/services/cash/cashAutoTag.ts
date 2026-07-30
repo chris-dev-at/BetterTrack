@@ -59,4 +59,7 @@ export const SYSTEM_TAG_FOR_KIND: Readonly<Record<CashMovementKind, CashSystemTa
   dividend: 'dividend',
   tax_withholding: 'tax',
   tax_refund: 'tax',
+  // The `fee` kind (0077) is the reason the `fees` system tag was seeded in the
+  // first place; this is the line the two branches were built to meet at.
+  fee: 'fees',
 };

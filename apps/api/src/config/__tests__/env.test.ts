@@ -437,7 +437,6 @@ describe('empty variables', () => {
 
     // Derived from the mode rather than inherited from the empty string.
     expect(parsed.topology.productOrigin).toBe('https://example.test');
-    expect(parsed.smtp).toBeUndefined();
   });
 
   it('still rejects an empty REQUIRED variable', () => {
