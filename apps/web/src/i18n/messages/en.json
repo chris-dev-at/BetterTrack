@@ -1282,27 +1282,33 @@
       "mode": {
         "none": {
           "label": "No tax tracking",
-          "description": "Record sells and dividends without any tax. This is the default."
+          "description": "Record sells and dividends without any tax. This is the default.",
+          "compact": "Sells and dividends record untaxed."
         },
         "manual_per_trade": {
           "label": "Manual — enter tax per trade",
-          "description": "You enter the tax yourself on each sell — an amount, or a percentage of the gain. Nothing is calculated for you."
+          "description": "You enter the tax yourself on each sell — an amount, or a percentage of the gain. Nothing is calculated for you.",
+          "compact": "You type the tax on each sell — nothing is calculated."
         },
         "country_specific": {
           "label": "Austria (KESt)",
-          "description": "27.5 % KESt on realized gains and dividends, with a moving-average cost basis. A loss in the same calendar year offsets earlier gains and refunds the tax already withheld. Everything resets on 1 January — no losses carry into the next year."
+          "description": "27.5 % KESt on realized gains and dividends, with a moving-average cost basis. A loss in the same calendar year offsets earlier gains and refunds the tax already withheld. Everything resets on 1 January — no losses carry into the next year.",
+          "compact": "27.5 % KESt · moving average · resets 1 January"
         },
         "country_specific_de": {
           "label": "Germany (Abgeltungsteuer)",
-          "description": "25 % flat tax plus a 5.5 % solidarity surcharge on the tax, with FIFO cost basis per lot. A €1,000 saver's allowance (Sparer-Pauschbetrag) comes off each year first. Losses from selling shares only offset share gains, other losses offset all capital income — and unused losses carry forward into later years."
+          "description": "25 % flat tax plus a 5.5 % solidarity surcharge on the tax, with FIFO cost basis per lot. A €1,000 saver's allowance (Sparer-Pauschbetrag) comes off each year first. Losses from selling shares only offset share gains, other losses offset all capital income — and unused losses carry forward into later years.",
+          "compact": "25 % + 5.5 % soli · FIFO · €1,000 allowance · losses carry forward"
         },
         "country_specific_fi": {
           "label": "Finland (capital income tax)",
-          "description": "30 % capital-income tax on gains and dividends up to €30,000 per year, 34 % above, with FIFO cost basis. A loss in the same calendar year offsets gains and refunds tax already withheld — nothing carries into the next year. The €30,000 bracket applies per portfolio, not across all your accounts combined."
+          "description": "30 % capital-income tax on gains and dividends up to €30,000 per year, 34 % above, with FIFO cost basis. A loss in the same calendar year offsets gains and refunds tax already withheld — nothing carries into the next year. The €30,000 bracket applies per portfolio, not across all your accounts combined.",
+          "compact": "30 % to €30,000, then 34 % · FIFO · no carry-forward"
         },
         "custom": {
           "label": "Custom rules",
-          "description": "Build your own tax system: a flat rate plus switches for loss offset, refunds, the year reset, loss carry-forward, and the cost basis."
+          "description": "Build your own tax system: a flat rate plus switches for loss offset, refunds, the year reset, loss carry-forward, and the cost basis.",
+          "compact": "Your own rate, cost basis and switches."
         }
       },
       "custom": {

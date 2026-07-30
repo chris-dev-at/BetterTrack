@@ -11,6 +11,11 @@ vi.mock('../../../lib/userApi', () => ({
   listPasskeys: vi.fn(),
   renamePasskey: vi.fn(),
   deletePasskey: vi.fn(),
+  // The PIN app lock moved here from Sessions (owner order).
+  getMe: vi.fn(),
+  setPin: vi.fn(),
+  disablePin: vi.fn(),
+  setPinLockIdleMinutes: vi.fn(),
 }));
 
 vi.mock('../../../lib/passkeys', () => ({
@@ -42,7 +47,16 @@ import {
   getTwoFactorStatus,
   regenerateRecoveryCodes,
 } from '../../../lib/twoFactorApi';
-import { changePassword, deletePasskey, listPasskeys, renamePasskey } from '../../../lib/userApi';
+import {
+  changePassword,
+  deletePasskey,
+  disablePin,
+  getMe,
+  listPasskeys,
+  renamePasskey,
+  setPin,
+  setPinLockIdleMinutes,
+} from '../../../lib/userApi';
 import { SignInPanel } from './SignInPanel';
 
 const ME: MeResponse = {
@@ -59,6 +73,11 @@ const ME: MeResponse = {
   lastLoginAt: '2026-07-01T10:00:00.000Z',
   createdAt: '2026-01-15T09:00:00.000Z',
 };
+
+/** `ME` with the PIN on/off — the flag that drives the PIN group's shape. */
+function makeMe(pinEnabled: boolean): MeResponse {
+  return { ...ME, pinEnabled };
+}
 
 function makeTwoFactorStatus(
   overrides: Partial<TwoFactorStatusResponse> = {},
@@ -113,20 +132,30 @@ beforeEach(() => {
   vi.mocked(enrollEmailTwoFactor).mockResolvedValue(undefined);
   vi.mocked(disableEmailTwoFactor).mockResolvedValue(undefined);
   vi.mocked(listPasskeys).mockResolvedValue([]);
+  vi.mocked(getMe).mockResolvedValue(makeMe(false));
+  vi.mocked(setPin).mockResolvedValue(makeMe(true));
+  vi.mocked(disablePin).mockResolvedValue(makeMe(false));
+  vi.mocked(setPinLockIdleMinutes).mockResolvedValue(makeMe(true));
 });
 
 describe('SignInPanel — password', () => {
-  // Popup-native: ONE compact head naming the panel; the three credential
+  // Popup-native: ONE compact head naming the panel; the four credential
   // groups keep real headings so the outline survives the compaction.
-  test('carries one panel head and its three credential groups', async () => {
+  test('carries one panel head and its four credential groups', async () => {
     renderPanel();
 
-    const heads = await screen.findAllByRole('heading', { level: 2 });
+    // The PIN group waits on `getMe`, so anchor on it before counting.
+    await screen.findByRole('heading', { level: 3, name: 'PIN' });
+
+    const heads = screen.getAllByRole('heading', { level: 2 });
     expect(heads).toHaveLength(1);
     expect(heads[0]).toHaveTextContent('Sign-in');
-    for (const name of ['Change password', 'Two-factor authentication', 'Passkeys']) {
-      expect(screen.getByRole('heading', { level: 3, name })).toBeInTheDocument();
-    }
+    // The PIN is the fourth, and it comes LAST so it never reads as a third
+    // factor beside the real ones.
+    const groups = ['Change password', 'Two-factor authentication', 'Passkeys', 'PIN'];
+    expect(screen.getAllByRole('heading', { level: 3 }).map((node) => node.textContent)).toEqual(
+      groups,
+    );
     expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
   });
 
@@ -413,5 +442,94 @@ describe('SignInPanel — passkeys (§13.4 V4-P4)', () => {
 
     expect(await screen.findByText(/doesn't support passkeys/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add a passkey' })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The PIN app lock (§6.1, §13.2 V2-P2, #288/#304) — moved here from the Sessions
+ * panel on owner order. Endpoints, confirmations and copy are unchanged; only its
+ * home is. Its labels are "PIN" / "Confirm PIN" / "Unlock window", so none of
+ * them collides with this panel's two "Current password" fields.
+ */
+describe('SignInPanel — the PIN app lock', () => {
+  test('enables a PIN when none is set', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.type(await screen.findByLabelText('PIN'), '1234');
+    await user.type(screen.getByLabelText('Confirm PIN'), '1234');
+    await user.click(screen.getByRole('button', { name: 'Enable PIN' }));
+
+    await waitFor(() => expect(setPin).toHaveBeenCalledWith({ pin: '1234' }));
+  });
+
+  test('rejects a mismatched PIN confirmation', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.type(await screen.findByLabelText('PIN'), '1234');
+    await user.type(screen.getByLabelText('Confirm PIN'), '5678');
+    await user.click(screen.getByRole('button', { name: 'Enable PIN' }));
+
+    expect(await screen.findByText(/do not match/i)).toBeInTheDocument();
+    expect(setPin).not.toHaveBeenCalled();
+  });
+
+  test('changes and disables an existing PIN', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(true));
+    const user = userEvent.setup();
+    renderPanel();
+
+    // Change flow reveals the PIN form and submits via setPin.
+    await user.click(await screen.findByRole('button', { name: 'Change PIN' }));
+    await user.type(screen.getByLabelText('PIN'), '9999');
+    await user.type(screen.getByLabelText('Confirm PIN'), '9999');
+    await user.click(screen.getByRole('button', { name: 'Save new PIN' }));
+
+    await waitFor(() => expect(setPin).toHaveBeenCalledWith({ pin: '9999' }));
+
+    // Disable calls disablePin.
+    await user.click(await screen.findByRole('button', { name: 'Disable PIN' }));
+    await waitFor(() => expect(disablePin).toHaveBeenCalled());
+  });
+
+  test('the unlock-window control only shows once a PIN is enabled (#288)', async () => {
+    renderPanel();
+
+    // With no PIN, the enable form is up but no window picker.
+    expect(await screen.findByRole('button', { name: 'Enable PIN' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Unlock window')).not.toBeInTheDocument();
+  });
+
+  test('the unlock window defaults to 10 minutes when unset (#288)', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(true)); // pinLockIdleMinutes: null → default
+    renderPanel();
+
+    const select = (await screen.findByLabelText('Unlock window')) as HTMLSelectElement;
+    expect(select.value).toBe('10');
+  });
+
+  test('changing the unlock window persists the new value (#288)', async () => {
+    vi.mocked(getMe).mockResolvedValue({ ...makeMe(true), pinLockIdleMinutes: 5 });
+    vi.mocked(setPinLockIdleMinutes).mockResolvedValue({
+      ...makeMe(true),
+      pinLockIdleMinutes: 30,
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    const select = (await screen.findByLabelText('Unlock window')) as HTMLSelectElement;
+    expect(select.value).toBe('5');
+    await user.selectOptions(select, '30');
+
+    await waitFor(() => expect(setPinLockIdleMinutes).toHaveBeenCalledWith({ idleMinutes: 30 }));
+  });
+
+  // The PIN is a privacy curtain over an existing session, not a second factor —
+  // the copy that says so is load-bearing and must survive the move.
+  test('keeps the "not a second factor" framing', async () => {
+    renderPanel();
+
+    expect(await screen.findByText(/not a second factor/i)).toBeInTheDocument();
   });
 });

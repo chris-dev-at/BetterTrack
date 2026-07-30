@@ -1282,27 +1282,33 @@
       "mode": {
         "none": {
           "label": "Keine Steuererfassung",
-          "description": "Verkäufe und Dividenden werden ohne Steuer erfasst. Das ist die Standardeinstellung."
+          "description": "Verkäufe und Dividenden werden ohne Steuer erfasst. Das ist die Standardeinstellung.",
+          "compact": "Verkäufe und Dividenden werden ohne Steuer erfasst."
         },
         "manual_per_trade": {
           "label": "Manuell — Steuer pro Verkauf eingeben",
-          "description": "Du gibst die Steuer bei jedem Verkauf selbst ein — als Betrag oder als Prozentsatz des Gewinns. Es wird nichts für dich berechnet."
+          "description": "Du gibst die Steuer bei jedem Verkauf selbst ein — als Betrag oder als Prozentsatz des Gewinns. Es wird nichts für dich berechnet.",
+          "compact": "Du trägst die Steuer pro Verkauf ein — es wird nichts berechnet."
         },
         "country_specific": {
           "label": "Österreich (KESt)",
-          "description": "27,5 % KESt auf realisierte Gewinne und Dividenden, mit gleitendem Durchschnittseinstand. Ein Verlust im selben Kalenderjahr verrechnet frühere Gewinne und erstattet die bereits einbehaltene Steuer. Alles wird am 1. Jänner zurückgesetzt — Verluste werden nicht ins nächste Jahr übertragen."
+          "description": "27,5 % KESt auf realisierte Gewinne und Dividenden, mit gleitendem Durchschnittseinstand. Ein Verlust im selben Kalenderjahr verrechnet frühere Gewinne und erstattet die bereits einbehaltene Steuer. Alles wird am 1. Jänner zurückgesetzt — Verluste werden nicht ins nächste Jahr übertragen.",
+          "compact": "27,5 % KESt · gleitender Durchschnitt · Reset am 1. Jänner"
         },
         "country_specific_de": {
           "label": "Deutschland (Abgeltungsteuer)",
-          "description": "25 % Abgeltungsteuer plus 5,5 % Solidaritätszuschlag auf die Steuer, mit FIFO-Anschaffungskosten je Tranche. Der Sparer-Pauschbetrag von 1.000 € wird jedes Jahr zuerst angerechnet. Verluste aus Aktienverkäufen verrechnen sich nur mit Aktiengewinnen, sonstige Verluste mit allen Kapitalerträgen — nicht genutzte Verluste werden ins Folgejahr vorgetragen."
+          "description": "25 % Abgeltungsteuer plus 5,5 % Solidaritätszuschlag auf die Steuer, mit FIFO-Anschaffungskosten je Tranche. Der Sparer-Pauschbetrag von 1.000 € wird jedes Jahr zuerst angerechnet. Verluste aus Aktienverkäufen verrechnen sich nur mit Aktiengewinnen, sonstige Verluste mit allen Kapitalerträgen — nicht genutzte Verluste werden ins Folgejahr vorgetragen.",
+          "compact": "25 % + 5,5 % Soli · FIFO · 1.000 € Freibetrag · Verlustvortrag"
         },
         "country_specific_fi": {
           "label": "Finnland (Kapitalertragsteuer)",
-          "description": "30 % Kapitalertragsteuer auf Gewinne und Dividenden bis 30.000 € pro Jahr, 34 % darüber, mit FIFO-Kostenbasis. Ein Verlust im selben Kalenderjahr gleicht Gewinne aus und erstattet bereits einbehaltene Steuer — nichts wird ins Folgejahr übertragen. Die 30.000-€-Grenze gilt pro Portfolio, nicht über alle Konten hinweg."
+          "description": "30 % Kapitalertragsteuer auf Gewinne und Dividenden bis 30.000 € pro Jahr, 34 % darüber, mit FIFO-Kostenbasis. Ein Verlust im selben Kalenderjahr gleicht Gewinne aus und erstattet bereits einbehaltene Steuer — nichts wird ins Folgejahr übertragen. Die 30.000-€-Grenze gilt pro Portfolio, nicht über alle Konten hinweg.",
+          "compact": "30 % bis 30.000 €, darüber 34 % · FIFO · kein Vortrag"
         },
         "custom": {
           "label": "Eigene Regeln",
-          "description": "Bau dein eigenes Steuersystem: ein fester Satz plus Schalter für Verlustverrechnung, Erstattung, Jahresreset, Verlustvortrag und die Einstandsmethode."
+          "description": "Bau dein eigenes Steuersystem: ein fester Satz plus Schalter für Verlustverrechnung, Erstattung, Jahresreset, Verlustvortrag und die Einstandsmethode.",
+          "compact": "Dein eigener Satz, Kostenbasis und Schalter."
         }
       },
       "custom": {

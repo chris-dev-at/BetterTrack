@@ -5,11 +5,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { QRCodeSVG } from 'qrcode.react';
 
 import {
+  DEFAULT_PIN_WINDOW_MINUTES,
   MIN_PASSWORD_LENGTH,
   PASSKEY_NAME_MAX,
+  PIN_LENGTH,
   TOTP_CODE_LENGTH,
   type ChangePasswordRequest,
   type Passkey,
+  type SetPinRequest,
   type TwoFactorStatusResponse,
 } from '@bettertrack/contracts';
 
@@ -32,9 +35,18 @@ import {
   getTwoFactorStatus,
   regenerateRecoveryCodes,
 } from '../../../lib/twoFactorApi';
-import { changePassword, deletePasskey, listPasskeys, renamePasskey } from '../../../lib/userApi';
+import {
+  changePassword,
+  deletePasskey,
+  disablePin,
+  getMe,
+  listPasskeys,
+  renamePasskey,
+  setPin,
+  setPinLockIdleMinutes,
+} from '../../../lib/userApi';
 import { Skeleton } from '../../../ui';
-import { Button, Field, Input } from '../../../ui/origin';
+import { Button, Field, Input, Select } from '../../../ui/origin';
 import { PinInput } from '../../components/PinInput';
 import { Alert } from '../../components/ui';
 import {
@@ -999,22 +1011,275 @@ function PasskeysGroup() {
   );
 }
 
+function pinErrorMessage(t: TranslateFn, err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'WEAK_PASSWORD' || err.code === 'VALIDATION_ERROR') return err.message;
+    if (err.status >= 500) return t('common.genericError');
+  }
+  return t('settings.security.pin.genericError');
+}
+
+/** Set/change form used both to enable a PIN and to change an existing one. */
+function PinForm({
+  submitLabel,
+  onDone,
+}: {
+  submitLabel: string;
+  onDone: (message: string) => void;
+}) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [pin, setPinValue] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: (body: SetPinRequest) => setPin(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ME_KEY });
+      setPinValue('');
+      setConfirm('');
+      onDone(t('settings.security.pin.savedNotice'));
+    },
+    onError: (err) => setError(pinErrorMessage(t, err)),
+  });
+
+  function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (pin !== confirm) {
+      setError(t('settings.security.pin.mismatch'));
+      return;
+    }
+    mutation.mutate({ pin });
+  }
+
+  const tooShort = pin.length !== PIN_LENGTH || confirm.length !== PIN_LENGTH;
+
+  return (
+    <form className="flex flex-col gap-3" onSubmit={onSubmit}>
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      {/* Labels are "PIN" / "Confirm PIN" — deliberately NOT password-shaped, so
+          they never collide with this panel's two "Current password" fields. */}
+      <PinInput
+        hint={t('settings.security.pin.exactDigitsHint', { length: PIN_LENGTH })}
+        label={t('settings.security.pin.pinLabel')}
+        length={PIN_LENGTH}
+        onChange={setPinValue}
+        value={pin}
+      />
+      <PinInput
+        label={t('settings.security.pin.confirmLabel')}
+        length={PIN_LENGTH}
+        onChange={setConfirm}
+        value={confirm}
+      />
+      <Button
+        className="self-start"
+        disabled={mutation.isPending || tooShort}
+        size="sm"
+        type="submit"
+      >
+        {mutation.isPending ? t('common.saving') : submitLabel}
+      </Button>
+    </form>
+  );
+}
+
+/** Preset unlock-window lengths (minutes) offered for the PIN. */
+const WINDOW_MINUTE_OPTIONS = [1, 5, 10, 15, 30, 60] as const;
+
+function windowOptionLabel(t: TranslateFn, minutes: number): string {
+  if (minutes === 60) return t('settings.security.pin.windowHour');
+  return t(
+    minutes === 1
+      ? 'settings.security.pin.windowMinuteOne'
+      : 'settings.security.pin.windowMinuteOther',
+    { count: minutes },
+  );
+}
+
+/**
+ * PIN idle-lock row (§6.1, §13.2 V2-P2; owner directive #304). Picks how long
+ * the app may sit idle before the PIN is asked again. Active use never locks;
+ * only inactivity does. `null` means the default
+ * ({@link DEFAULT_PIN_WINDOW_MINUTES}). Only rendered while the PIN is on.
+ */
+function PinWindowRow({ windowMinutes }: { windowMinutes: number | null }) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: (minutes: number) => setPinLockIdleMinutes({ idleMinutes: minutes }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(ME_KEY, data);
+      setError(null);
+    },
+    onError: () => setError(t('settings.security.pin.windowError')),
+  });
+
+  const selected = windowMinutes ?? DEFAULT_PIN_WINDOW_MINUTES;
+
+  return (
+    <Row
+      hint={t('settings.security.pin.lockDescription')}
+      label={t('settings.security.pin.lockAfterInactivity')}
+    >
+      <Select
+        aria-label={t('settings.security.pin.unlockWindowAriaLabel')}
+        disabled={mutation.isPending}
+        onChange={(e) => mutation.mutate(Number(e.target.value))}
+        style={{ width: 'auto' }}
+        value={selected}
+      >
+        {(WINDOW_MINUTE_OPTIONS as readonly number[]).includes(selected) ? null : (
+          <option value={selected}>{windowOptionLabel(t, selected)}</option>
+        )}
+        {WINDOW_MINUTE_OPTIONS.map((m) => (
+          <option key={m} value={m}>
+            {windowOptionLabel(t, m)}
+          </option>
+        ))}
+      </Select>
+      {error ? (
+        <span className="bt-field__error">{t('settings.security.pin.windowError')}</span>
+      ) : null}
+    </Row>
+  );
+}
+
+/** PIN enable / change / disable group, driven by `getMe`. */
+function PinGroup({
+  pinEnabled,
+  idleMinutes,
+}: {
+  pinEnabled: boolean;
+  idleMinutes: number | null;
+}) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [changing, setChanging] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const disable = useMutation({
+    mutationFn: () => disablePin(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ME_KEY });
+      setChanging(false);
+      setError(null);
+      setNotice(t('settings.security.pin.disabledNotice'));
+    },
+    onError: (err) => setError(pinErrorMessage(t, err)),
+  });
+
+  return (
+    <PanelGroup label={t('settings.security.pin.title')}>
+      <Row stack>
+        {/* The real constraint: a PIN is a privacy curtain, not a second factor. */}
+        <PanelNote>{t('settings.security.pin.description')}</PanelNote>
+        {notice ? <Alert tone="success">{notice}</Alert> : null}
+        {!pinEnabled ? (
+          <PinForm
+            onDone={(message) => {
+              setNotice(message);
+            }}
+            submitLabel={t('settings.security.pin.enable')}
+          />
+        ) : changing ? (
+          <div className="flex flex-col gap-3">
+            <PinForm
+              onDone={(message) => {
+                setChanging(false);
+                setNotice(message);
+              }}
+              submitLabel={t('settings.security.pin.saveNew')}
+            />
+            <Button
+              className="self-start"
+              onClick={() => setChanging(false)}
+              size="sm"
+              type="button"
+              variant="quiet"
+            >
+              {t('common.cancel')}
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-col items-start gap-2">
+            {/* Element kept a <p> on purpose: security copy keeps its semantics. */}
+            <p className="bt-pos" style={{ fontSize: 12.5 }}>
+              {t('settings.security.pin.isOn')}
+            </p>
+            {error ? <Alert tone="error">{error}</Alert> : null}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                onClick={() => {
+                  setNotice(null);
+                  setChanging(true);
+                }}
+                size="sm"
+                type="button"
+              >
+                {t('settings.security.pin.change')}
+              </Button>
+              <Button
+                disabled={disable.isPending}
+                onClick={() => {
+                  setNotice(null);
+                  disable.mutate();
+                }}
+                size="sm"
+                type="button"
+                variant="danger"
+              >
+                {disable.isPending
+                  ? t('settings.security.pin.disabling')
+                  : t('settings.security.pin.disable')}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Row>
+      {pinEnabled ? <PinWindowRow windowMinutes={idleMinutes} /> : null}
+    </PanelGroup>
+  );
+}
+
 /**
  * Control Center → Sign-in (PROJECTPLAN.md §6.1, §6.11). Answers one question:
  * HOW do I prove it's me? The password, the two independently-toggleable
- * two-factor methods with their shared recovery codes, and the passkeys.
+ * two-factor methods with their shared recovery codes, the passkeys, and the PIN
+ * app lock.
  *
- * Where the account is currently signed in — and the PIN app lock — is the
- * Sessions panel's job.
+ * The PIN sits LAST and keeps its "privacy curtain, not a second factor" line:
+ * it moved here from Sessions on owner order (a PIN is a credential, not a
+ * device listing), and the ordering keeps it from reading as a third factor
+ * alongside the real ones. Where the account is signed in stays with Sessions.
  */
 export function SignInPanel() {
   const t = useT();
+  const me = useQuery({
+    queryKey: ME_KEY,
+    queryFn: ({ signal }) => getMe(signal),
+    staleTime: 30_000,
+  });
+
   return (
     <div className="bt-cc-panel">
       <PanelHead title={t('control.signIn')} />
       <ChangePasswordGroup />
       <TwoFactorGroup />
       <PasskeysGroup />
+
+      {me.isPending ? (
+        <Skeleton height="h-16" />
+      ) : me.isError ? (
+        <PanelNote>{t('settings.security.loadError.title')}</PanelNote>
+      ) : (
+        <PinGroup idleMinutes={me.data.pinLockIdleMinutes} pinEnabled={me.data.pinEnabled} />
+      )}
     </div>
   );
 }

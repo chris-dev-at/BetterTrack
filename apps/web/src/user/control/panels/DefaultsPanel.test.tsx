@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -48,6 +48,38 @@ describe('DefaultsPanel (issue #636)', () => {
     expect(austria).toHaveAccessibleName(/27\.5 % KESt/);
   });
 
+  // The owner's complaint: at popup scale ONE mode filled the screen, because the
+  // page picker gives every option a 2–4 sentence description. The dense list
+  // keeps the same six choices but replaces each description with one qualifying
+  // line — so the whole set is on screen at once.
+  test('renders every mode as a dense row, without the page picker prose', async () => {
+    renderPanel();
+
+    await screen.findByRole('radio', { name: /No tax tracking/i });
+    const group = screen.getByRole('radiogroup', { name: 'Tax mode' });
+    expect(within(group).getAllByRole('radio')).toHaveLength(6);
+
+    // The long descriptions are gone — these sentences belong to the full-page
+    // picker (portfolio tax surface + first-run step), which still shows them.
+    expect(screen.queryByText(/Everything resets on 1 January — no losses carry/i)).toBeNull();
+    expect(screen.queryByText(/A €1,000 saver's allowance/i)).toBeNull();
+    expect(screen.queryByText(/The €30,000 bracket applies per portfolio/i)).toBeNull();
+    expect(screen.queryByText(/Build your own tax system/i)).toBeNull();
+
+    // No card per option: the rows are hairline-ruled, and selection is carried
+    // by background/ink — never an edge marker.
+    for (const radio of within(group).getAllByRole('radio')) {
+      const row = radio.closest('label');
+      expect(row).toHaveClass('bt-cc-mode');
+      expect(row?.className).not.toMatch(/bt-panel/);
+    }
+    expect(
+      within(group)
+        .getByRole('radio', { name: /No tax tracking/i })
+        .closest('label'),
+    ).toHaveClass('is-selected');
+  });
+
   test('choosing Austria persists country_specific/AT and reveals the report link', async () => {
     vi.mocked(updateTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'AT' });
     const user = userEvent.setup();
@@ -82,7 +114,11 @@ describe('DefaultsPanel (issue #636)', () => {
     renderPanel();
 
     const germany = await screen.findByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i });
-    expect(germany).toHaveAccessibleName(/Sparer-Pauschbetrag/i);
+    // The qualifier still rides in the accessible name — compacted from the
+    // page picker's four sentences to the numbers that actually distinguish DE.
+    expect(germany).toHaveAccessibleName(/25 %/);
+    expect(germany).toHaveAccessibleName(/FIFO/);
+    expect(germany).toHaveAccessibleName(/carry forward/i);
     await user.click(germany);
     await waitFor(() =>
       expect(updateTaxSettings).toHaveBeenCalledWith({ mode: 'country_specific', country: 'DE' }),
