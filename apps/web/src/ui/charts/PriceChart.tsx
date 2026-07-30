@@ -606,8 +606,7 @@ export function PriceChart({
     ) : null;
   // `justify-between` with a placeholder for whichever end is empty: the toggle
   // sits at its declared end whether or not there is a legend to face it.
-  const [leading, trailing] =
-    rangeAlign === 'end' ? [legend, toggle] : ([toggle, legend] as const);
+  const [leading, trailing] = rangeAlign === 'end' ? [legend, toggle] : ([toggle, legend] as const);
 
   return (
     <div className={cx('flex flex-col gap-3', className)}>

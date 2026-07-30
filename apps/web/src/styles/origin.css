@@ -3193,7 +3193,8 @@
 
   .bt-fr__main {
     width: min(560px, 100%);
-    padding: clamp(40px, calc(8 * var(--bt-vh)), 88px) clamp(28px, calc(4 * var(--bt-vw)), 56px) 48px;
+    padding: clamp(40px, calc(8 * var(--bt-vh)), 88px) clamp(28px, calc(4 * var(--bt-vw)), 56px)
+      48px;
   }
 
   /* The rail owns position at this width. */
