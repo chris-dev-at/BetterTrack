@@ -1,13 +1,24 @@
 /**
- * Declarative paranoid-mode enforcement inventory.
+ * Declarative paranoid-mode enforcement inventory AND its executable
+ * composition (#907 built the inventory, #884 wired the guards onto it).
  *
- * This module deliberately has no Express, service, job, or repository imports:
- * it is a data-and-accessor foundation only. The enforcement composition belongs
- * to #884; keeping this inventory inert lets the completeness harness prove that
- * every account-facing surface has an explicit policy before any guard is wired.
+ * The inventory half is still the single source of truth: the completeness
+ * harness proves every mounted route, callable context method and registered
+ * job carries exactly one policy, and the composition half below consumes those
+ * same arrays — there is no second hand-maintained kill list. Imports stay
+ * limited to the error helpers, the Express handler type and the domain-event
+ * type so the data remains readable without dragging in a service graph.
  */
 
-/** Stable capability names shared by the later #884 enforcement composition. */
+import type { RequestHandler } from 'express';
+
+import type { DomainEvent } from '../../events';
+import { ApiError, forbidden, notFound } from '../../errors';
+
+/** Stable error code for every server-side surface killed in paranoid mode. */
+export const PARANOID_MODE_ERROR_CODE = 'PARANOID_MODE' as const;
+
+/** Stable capability names shared by the #884 enforcement composition. */
 export type ParanoidKilledCapability =
   | 'publicProfile'
   | 'sharing'
@@ -117,7 +128,7 @@ export type ParanoidSemanticCoverage =
   | 'ownedAssetProvenance'
   | 'queuedPrincipals';
 
-/** A future #884 proxy binding. This issue only records it; it mounts nothing. */
+/** One executable proxy binding, applied by {@link guardRegisteredServices}. */
 export interface ParanoidServiceBinding {
   readonly capability: ParanoidKilledCapability;
   readonly service: string;
@@ -212,8 +223,10 @@ const serviceExemption = (
 });
 
 /**
- * Future executable bindings for account-context services. They are inventory
- * only here: no route, service, or job imports this module until #884.
+ * Executable below-HTTP bindings. The context composition root consumes this
+ * array directly; there is no second hand-maintained method list. Exact/prefix
+ * patterns are resolved against each real service object at startup, and a
+ * dangling method aborts composition.
  */
 export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
   serviceBinding('publicProfile', 'social', 'intrinsic', [
@@ -221,6 +234,7 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'getPublicProfileItem',
   ]),
   serviceBinding('sharing', 'workboard', 'userIdFirst', ['getSharing', 'setSharing']),
+  serviceBinding('sharing', 'conglomerate', 'userIdFirst', ['updateWithVisibility']),
   serviceBinding('sharing', 'ideas', 'userIdFirst', ['clone']),
   serviceBinding('sharing', 'backtest', 'userIdFirst', ['runSharedSandboxPreview']),
   serviceBinding('sharing', 'comments', 'userIdFirst', ['*']),
@@ -348,9 +362,16 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
 export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = [
   serviceExemption(
     'conglomerate',
-    ['*'],
+    ['create', 'remove'],
     'kept',
-    'Conglomerate definitions are account-local configuration; their sharing surfaces are classified separately.',
+    'A fresh basket has no constituents and delete surfaces no asset row, so neither can carry the owner custom-asset provenance.',
+  ),
+  serviceExemption(
+    'conglomerate',
+    ['list', 'get', 'update', 'replacePositions', 'activate', 'resolved', 'allocate'],
+    'internallyFiltered',
+    'Private baskets stay usable, but a CONSTITUENT may be the account own custom asset; every branch that would surface, embed or price one is scoped to global market assets under the caller transition lock.',
+    ['accountMode', 'ownedAssetProvenance'],
   ),
   serviceExemption(
     'workboard',
@@ -385,6 +406,11 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     'Draft backtests resolve only allowed assets and never require a server portfolio read.',
     ['accountMode', 'ownedAssetProvenance'],
   ),
+  // The social service is deliberately split three ways rather than carrying one
+  // blanket `internallyFiltered` claim: friendship and the caller's own profile
+  // read are plain repository passthroughs that filter nothing, and declaring a
+  // `dynamicPrincipals` coverage for them would be a label without an
+  // implementation — the same hole the `ownedAssetProvenance` probe set closes.
   serviceExemption(
     'social',
     [
@@ -395,6 +421,14 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
       'cancel',
       'listFriends',
       'removeFriend',
+      'getProfileSettings',
+    ],
+    'kept',
+    'Friendship lifecycle and the caller own profile settings are kept surfaces holding no server-side portfolio content; they perform no filtering and claim none.',
+  ),
+  serviceExemption(
+    'social',
+    [
       'followItem',
       'listFollowing',
       'listFollowers',
@@ -403,12 +437,17 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
       'getSharedPortfolio',
       'getSharedConglomerate',
       'getSharedWatchlist',
-      'getProfileSettings',
-      'updateProfileSettings',
     ],
     'internallyFiltered',
-    'Social reads resolve the affected principals and preserve no-leak behavior for unavailable content.',
+    'These reads and item follows resolve the affected owner/counterpart principals under their locks and preserve no-leak behavior for unavailable content.',
     ['dynamicPrincipals'],
+  ),
+  serviceExemption(
+    'social',
+    ['updateProfileSettings'],
+    'internallyFiltered',
+    'A public opt-in holds the caller own account transition lock through the final write, so an update started before enable cannot republish after it commits.',
+    ['accountMode'],
   ),
   serviceExemption(
     'mirror',
@@ -434,7 +473,7 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
   ),
   serviceExemption(
     'search',
-    ['search', 'catalogFreshness'],
+    ['search', 'searchWithFreshness', 'catalogFreshness'],
     'internallyFiltered',
     'Search and freshness reads filter custom-asset provenance before returning a result.',
     ['accountMode', 'ownedAssetProvenance'],
@@ -591,6 +630,18 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'The opaque ciphertext vault is the deliberate paranoid-mode data home.',
   ),
   serviceExemption(
+    'paranoidTransitions',
+    ['*'],
+    'kept',
+    'The transition orchestrator owns the exclusive account lock and is the only path that changes privacy mode; enable, disable, and safe metadata reads must remain reachable for idempotent retries.',
+  ),
+  serviceExemption(
+    'paranoidGuard',
+    ['*'],
+    'kept',
+    'The transition guard IS the enforcement primitive every killed surface routes through; guarding it with itself would be circular.',
+  ),
+  serviceExemption(
     'webhooks',
     ['*'],
     'kept',
@@ -743,8 +794,6 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
   ),
 ] as const;
 
-const ALERTS_CUSTOM_ASSET_GAP_ID = 'alerts-evaluate-custom-asset-enumeration';
-
 const jobPolicy = (
   file: string,
   symbol: string,
@@ -794,8 +843,7 @@ export const PARANOID_JOB_POLICIES: readonly ParanoidJobPolicyEntry[] = [
     capability: null,
     mode: 'internallyFiltered',
     reason:
-      'Known gap #884: alerts.evaluate must exclude custom-asset alerts owned by paranoid accounts.',
-    knownGapId: ALERTS_CUSTOM_ASSET_GAP_ID,
+      'The queue survives paranoid mode: the handler splits itself into an unguarded global-asset rail and a per-owner custom-asset rail that runs inside the owning account transition lock. The binding is the executable proof that filtering exists.',
   }),
   jobPolicy('notificationsJob.ts', 'createNotificationsDispatchJob', 'notifications.dispatch', {
     capability: null,
@@ -1097,12 +1145,23 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
         handler: '<anonymous>',
         occurrence: 3,
       }),
+      productionOpaqueRoute({
+        mountedPath: '/',
+        normalizedPath: '/',
+        handler: '<anonymous>',
+        occurrence: 4,
+      }),
     ],
   ),
   ...keptRoutes(
-    'These API-root opaque mounts are the known authentication, audit, rate-limit, and request-policy middleware; concrete operations are classified separately.',
+    'These API-root opaque mounts are the known authentication, audit, rate-limit, request-policy and paranoid-capability middleware; concrete operations are classified separately.',
     [
-      ...Array.from({ length: 8 }, (_, index) =>
+      // Nine now: #884 adds the registry-driven paranoid route guard
+      // ({@link createParanoidRouteGuard}) after the request-policy middleware.
+      // It is the enforcement point for the killed route families below, so it
+      // is itself kept — a guard that killed its own mount would 403 every
+      // request a paranoid account makes.
+      ...Array.from({ length: 9 }, (_, index) =>
         productionOpaqueRoute({
           mountedPath: '/api/v1',
           normalizedPath: '/',
@@ -1265,19 +1324,6 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
   ),
 ];
 
-const knownGap = (
-  id: string,
-  label: string,
-  surface: ParanoidSurface,
-  reason: string,
-): ParanoidKnownGap => ({
-  id,
-  issue: 884,
-  label,
-  surface,
-  classification: { disposition: 'exempt', reason, knownGapIssue: 884, knownGapId: id },
-});
-
 export interface ParanoidKnownGap {
   readonly id: string;
   readonly issue: 884;
@@ -1287,68 +1333,26 @@ export interface ParanoidKnownGap {
 }
 
 /**
- * Explicit review findings that #884 must close. They remain classified so the
- * inventory is complete, but cannot be mistaken for intentional permanent
- * exemptions: each one names #884 and carries an individual reason.
+ * Review findings that were classified as temporary exemptions until #884 could
+ * close them. All four are now closed by the enforcement composition in this
+ * module and its call sites, so the list is empty — the type and the accessor
+ * stay so a future finding can be tracked the same way rather than becoming an
+ * implicit permanent exemption.
+ *
+ * Closed by #884:
+ *  - `market-intel-watch-only-queries` — the watch-only market-intelligence
+ *    reads now carry `isNull(assets.ownerId)` and pick account-owned rows up per
+ *    user inside that account's transition lock.
+ *  - `alerts-evaluate-custom-asset-enumeration` — `alerts.evaluate` runs a
+ *    global rail plus an owner-guarded custom rail discovered from identity-only
+ *    metadata, and its definition carries the `internallyFiltered` binding.
+ *  - `mirror-member-copy-owner-anchor` — the join anchor is chosen from the
+ *    guarded principal set, current owner first.
+ *  - `portfolio-room-authorization-window` — `handleRoomJoin` holds the viewer's
+ *    account lock across `canViewPortfolio`, `socket.join` and the ack, and
+ *    `portfolio.changed` reauthorizes every established viewer.
  */
-export const PARANOID_KNOWN_GAPS: readonly ParanoidKnownGap[] = [
-  // Known gap #884: the held-or-watched aggregation currently reaches watch-only
-  // assets without the paranoid account filter required by the enforcement plan.
-  knownGap(
-    'market-intel-watch-only-queries',
-    'marketIntelRepository watch-only queries',
-    {
-      kind: 'internal',
-      source: {
-        file: 'apps/api/src/data/repositories/marketIntelRepository.ts',
-        symbol: 'MarketIntelRepository.listUserWatchAndHoldAssets',
-      },
-    },
-    'Known gap #884: watch-only market-intelligence queries need paranoid-account filtering.',
-  ),
-  // Known gap #884: the registered evaluator still enumerates custom-asset alerts.
-  knownGap(
-    ALERTS_CUSTOM_ASSET_GAP_ID,
-    'alerts.evaluate custom-asset enumeration',
-    {
-      kind: 'job',
-      source: {
-        file: 'apps/api/src/jobs/definitions/alertsJob.ts',
-        symbol: 'createAlertsEvaluateJob',
-      },
-      name: 'alerts.evaluate',
-    },
-    'Known gap #884: alerts.evaluate must exclude custom-asset alerts owned by paranoid accounts.',
-  ),
-  // Known gap #884: member-copy attachment derives Main from a former owner
-  // without holding the owner-mode decision through the complete operation.
-  knownGap(
-    'mirror-member-copy-owner-anchor',
-    'attachMemberCopyUnderLock owner anchor',
-    {
-      kind: 'internal',
-      source: {
-        file: 'apps/api/src/services/mirror/mirrorService.ts',
-        symbol: 'attachMemberCopyUnderLock',
-      },
-    },
-    'Known gap #884: attachMemberCopyUnderLock must hold the former-owner paranoid decision through its Main anchor.',
-  ),
-  // Known gap #884: portfolio-room authorization currently releases its owner
-  // guard before `socket.join`, leaving a transition window in the gateway.
-  knownGap(
-    'portfolio-room-authorization-window',
-    'portfolio-room authorization window',
-    {
-      kind: 'internal',
-      source: {
-        file: 'apps/api/src/realtime/gateway.ts',
-        symbol: 'handleRoomJoin',
-      },
-    },
-    'Known gap #884: portfolio-room authorization must keep its owner guard through socket.join.',
-  ),
-] as const;
+export const PARANOID_KNOWN_GAPS: readonly ParanoidKnownGap[] = [] as const;
 
 /** True only when a mounted route surface meets one complete declarative rule. */
 export function routeMatches(rule: ParanoidRouteRule, surface: ParanoidRouteSurface): boolean {
@@ -1488,4 +1492,494 @@ export function paranoidSurfaceClassification(
 /** Convenience predicate for future composition and the completeness harness. */
 export function isParanoidSurfaceClassified(surface: ParanoidSurface): boolean {
   return paranoidSurfaceClassification(surface) !== undefined;
+}
+
+const KILLED_SCOPES = new Set(PARANOID_KILL_REGISTRY.flatMap((entry) => entry.scopes));
+const PARANOID_WEBHOOK_EVENTS = new Set(
+  PARANOID_KILL_REGISTRY.flatMap((entry) => entry.webhookEventTypes),
+);
+
+/**
+ * Event-specific account ownership for every killed webhook type. This stays
+ * separate from the registry union so its completeness test catches a new event
+ * that was kill-listed without deciding whether its actor also owns content.
+ */
+export const PARANOID_WEBHOOK_SUBJECT_POLICIES = {
+  'portfolio.shared': 'recipientAndActor',
+  'watchlist.shared': 'recipientAndActor',
+  'conglomerate.shared': 'recipientAndActor',
+  'friend.activity': 'recipientAndActor',
+  'follow.published': 'recipientAndActor',
+  'follow.alert.created': 'recipientAndActor',
+  'follow.alert.fired': 'recipientAndActor',
+  'mirror.invite': 'mirrorPrincipals',
+  'mirror.member_joined': 'mirrorPrincipals',
+  'mirror.member_left': 'mirrorPrincipals',
+  'mirror.member_removed': 'mirrorPrincipals',
+  'mirror.removed': 'mirrorPrincipals',
+  'mirror.ownership_transferred': 'mirrorPrincipals',
+  'mirror.chain_dissolved': 'mirrorPrincipals',
+  'mirror.sync_stalled': 'mirrorPrincipals',
+  'portfolio.changed': 'recipient',
+  'dividend.event': 'recipient',
+  'budget.exceeded': 'recipient',
+} as const satisfies Partial<
+  Record<DomainEvent['type'], 'recipient' | 'recipientAndActor' | 'mirrorPrincipals'>
+>;
+
+/**
+ * The live request's (method, path) as a route surface. The runtime guard has
+ * no source identity to offer, so a rule that pins one (the opaque middleware
+ * mounts) can never match a real API request — exactly right, since those are
+ * `app.use` leaves rather than endpoints.
+ */
+const requestSurface = (method: string, path: string): ParanoidRouteSurface => ({
+  kind: 'route',
+  source: PARANOID_ROUTE_TABLE_SOURCE,
+  method,
+  path,
+});
+
+export function paranoidCapabilityForRoute(
+  method: string,
+  path: string,
+): ParanoidKilledCapability | null {
+  const surface = requestSurface(method, path);
+  for (const entry of PARANOID_KILL_REGISTRY) {
+    if (entry.routes.some((rule) => routeMatches(rule, surface))) return entry.capability;
+  }
+  return null;
+}
+
+export type ParanoidRouteClassification = ParanoidKilledCapability | 'kept';
+
+/** All classifications for completeness/overlap tests (exactly one is valid). */
+export function paranoidClassificationsForRoute(
+  method: string,
+  path: string,
+): ParanoidRouteClassification[] {
+  const surface = requestSurface(method, path);
+  const matches: ParanoidRouteClassification[] = [];
+  for (const entry of PARANOID_KILL_REGISTRY) {
+    if (entry.routes.some((rule) => routeMatches(rule, surface))) {
+      matches.push(entry.capability);
+    }
+  }
+  if (PARANOID_KEPT_ROUTE_RULES.some((rule) => routeMatches(rule, surface))) {
+    matches.push('kept');
+  }
+  return matches;
+}
+
+export function isParanoidKilledScope(scope: string): boolean {
+  return KILLED_SCOPES.has(scope);
+}
+
+export function isParanoidKilledWebhookEvent(event: DomainEvent): boolean {
+  return PARANOID_WEBHOOK_EVENTS.has(event.type);
+}
+
+/**
+ * Every account whose privacy mode can make a subscribable event unsafe.
+ * `userId` is the subscription owner/recipient. Sharing events additionally
+ * carry `actorId`, the shared item's owner. MIRRORCHAIN events carry the action
+ * actor, chain owner, and every other affected principal. A stale queued event
+ * must be dropped if any relevant account entered paranoid mode.
+ */
+export function paranoidWebhookSubjectIds(event: DomainEvent): string[] {
+  if (!isParanoidKilledWebhookEvent(event)) return [];
+  const policy =
+    PARANOID_WEBHOOK_SUBJECT_POLICIES[event.type as keyof typeof PARANOID_WEBHOOK_SUBJECT_POLICIES];
+  if (!policy) throw new Error(`missing paranoid webhook subject policy for ${event.type}`);
+  if (!('userId' in event) || typeof event.userId !== 'string') {
+    throw new Error(`missing paranoid webhook recipient for ${event.type}`);
+  }
+  const ids = [event.userId];
+  if (policy === 'recipientAndActor') {
+    if (!('actorId' in event) || typeof event.actorId !== 'string') {
+      throw new Error(`missing paranoid webhook owner for ${event.type}`);
+    }
+    ids.push(event.actorId);
+  } else if (policy === 'mirrorPrincipals') {
+    if (
+      !('actorId' in event) ||
+      (event.actorId !== null && typeof event.actorId !== 'string') ||
+      !('ownerId' in event) ||
+      (event.ownerId !== null && typeof event.ownerId !== 'string') ||
+      !('subjectUserIds' in event) ||
+      !Array.isArray(event.subjectUserIds) ||
+      event.subjectUserIds.some((userId) => typeof userId !== 'string')
+    ) {
+      throw new Error(`missing paranoid webhook mirror principals for ${event.type}`);
+    }
+    if (event.actorId) ids.push(event.actorId);
+    if (event.ownerId) ids.push(event.ownerId);
+    ids.push(...event.subjectUserIds);
+  }
+  return [...new Set(ids)];
+}
+
+export class ParanoidModeError extends ApiError {
+  constructor(readonly capability: ParanoidKilledCapability) {
+    super(
+      403,
+      PARANOID_MODE_ERROR_CODE,
+      'This server-side feature is unavailable while paranoid mode is active.',
+    );
+    this.name = 'ParanoidModeError';
+  }
+}
+
+export interface ParanoidModeGuard {
+  isParanoid(userId: string): Promise<boolean>;
+  assertAllowed(userId: string, capability: ParanoidKilledCapability): Promise<void>;
+  runAllowed<T>(
+    userId: string,
+    capability: ParanoidKilledCapability,
+    action: () => Promise<T>,
+  ): Promise<T>;
+  runAllowedMany<T>(
+    userIds: readonly string[],
+    capability: ParanoidKilledCapability,
+    action: () => Promise<T>,
+  ): Promise<T>;
+  /**
+   * Hold every required and optional account lock together, rejecting when a
+   * required account is not normal while handing the action only the optional
+   * accounts that are normal. This is the list-read primitive: a paranoid
+   * counterpart is filtered without making the caller's whole list fail, and
+   * no counterpart can change mode between filtering and response construction.
+   */
+  runAllowedWithOptional<T>(
+    requiredUserIds: readonly string[],
+    optionalUserIds: readonly string[],
+    capability: ParanoidKilledCapability,
+    action: (allowedOptionalUserIds: ReadonlySet<string>) => Promise<T>,
+  ): Promise<T>;
+}
+
+export function createParanoidModeGuard(input: {
+  privacyModeFor(userId: string): Promise<'normal' | 'paranoid' | null>;
+  withLockedPrivacyModes<T>(
+    userIds: readonly string[],
+    run: (modes: ReadonlyMap<string, 'normal' | 'paranoid' | null>) => Promise<T>,
+  ): Promise<T>;
+}): ParanoidModeGuard {
+  return {
+    async isParanoid(userId) {
+      return (await input.privacyModeFor(userId)) === 'paranoid';
+    },
+    async assertAllowed(userId, capability) {
+      if (await this.isParanoid(userId)) throw new ParanoidModeError(capability);
+    },
+    async runAllowed(userId, capability, action) {
+      return this.runAllowedMany([userId], capability, action);
+    },
+    async runAllowedMany(userIds, capability, action) {
+      return input.withLockedPrivacyModes(userIds, async (modes) => {
+        for (const userId of userIds) {
+          if (modes.get(userId) !== 'normal') throw new ParanoidModeError(capability);
+        }
+        return action();
+      });
+    },
+    async runAllowedWithOptional(requiredUserIds, optionalUserIds, capability, action) {
+      const allUserIds = [...new Set([...requiredUserIds, ...optionalUserIds])];
+      return input.withLockedPrivacyModes(allUserIds, async (modes) => {
+        for (const userId of requiredUserIds) {
+          if (modes.get(userId) !== 'normal') throw new ParanoidModeError(capability);
+        }
+        return action(new Set(optionalUserIds.filter((userId) => modes.get(userId) === 'normal')));
+      });
+    },
+  };
+}
+
+/**
+ * Guard selected async service methods whose first argument is the acting user
+ * id. Kept as a small standalone primitive; AppContext uses the registry-driven
+ * multi-service composer below.
+ */
+export function guardUserService<T extends object>(
+  service: T,
+  guard: ParanoidModeGuard,
+  capability: ParanoidKilledCapability,
+  methods: readonly (keyof T & string)[],
+): T {
+  const guarded = new Set<string>(methods);
+  return new Proxy(service, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof property !== 'string' || !guarded.has(property) || typeof value !== 'function') {
+        return value;
+      }
+      return async (...args: unknown[]) => {
+        const userId = args[0];
+        if (typeof userId !== 'string') {
+          throw new Error(`paranoid guard ${String(property)} requires a user id`);
+        }
+        return guard.runAllowed(userId, capability, () => Reflect.apply(value, target, args));
+      };
+    },
+  });
+}
+
+export function serviceMethodNames(service: object): string[] {
+  return Object.keys(service).filter(
+    (name) => typeof (service as Record<string, unknown>)[name] === 'function',
+  );
+}
+
+/** Resolve a binding against a concrete service, throwing on every dangling glob. */
+export function registeredServiceMethods(
+  service: object,
+  binding: Pick<ParanoidServiceBinding, 'service' | 'methods'>,
+): string[] {
+  const available = serviceMethodNames(service);
+  const resolved = new Set<string>();
+  for (const pattern of binding.methods) {
+    const matches =
+      pattern === '*'
+        ? available
+        : pattern.endsWith('*')
+          ? available.filter((name) => name.startsWith(pattern.slice(0, -1)))
+          : available.filter((name) => name === pattern);
+    if (matches.length === 0) {
+      throw new Error(`paranoid service registry dangling entry: ${binding.service}.${pattern}`);
+    }
+    for (const match of matches) resolved.add(match);
+  }
+  return [...resolved].sort();
+}
+
+export interface ParanoidServiceGuardResolvers {
+  portfolioOwner(portfolioId: string): Promise<{ exists: boolean; userId: string | null }>;
+  assetOwner(assetId: string): Promise<{ exists: boolean; userId: string | null }>;
+}
+
+export async function isParanoidOwnedSubjectBlocked(
+  subject: { exists: boolean; userId: string | null },
+  guard: Pick<ParanoidModeGuard, 'isParanoid'>,
+): Promise<boolean> {
+  return !subject.exists || (subject.userId !== null && (await guard.isParanoid(subject.userId)));
+}
+
+/** Transition-serialized action for a portfolio/asset-owned subject. */
+export async function runIfParanoidOwnedSubjectAllowed(
+  subject: { exists: boolean; userId: string | null },
+  guard: Pick<ParanoidModeGuard, 'runAllowed'>,
+  capability: ParanoidKilledCapability,
+  action: () => Promise<void>,
+): Promise<boolean> {
+  if (!subject.exists) return false;
+  if (subject.userId === null) {
+    await action();
+    return true;
+  }
+  try {
+    await guard.runAllowed(subject.userId, capability, action);
+    return true;
+  } catch (error) {
+    if (error instanceof ParanoidModeError) return false;
+    throw error;
+  }
+}
+
+async function invokeServiceSubject<T>(
+  binding: ParanoidServiceBinding,
+  args: readonly unknown[],
+  guard: ParanoidModeGuard,
+  resolvers: ParanoidServiceGuardResolvers,
+  invoke: () => Promise<T>,
+): Promise<T | undefined> {
+  if (binding.subject === 'intrinsic' || binding.subject === 'dynamicPrincipals') return invoke();
+
+  if (binding.subject === 'paranoidWebhookSubjects') {
+    const event = args[0];
+    if (
+      !event ||
+      typeof event !== 'object' ||
+      !('type' in event) ||
+      !isParanoidKilledWebhookEvent(event as DomainEvent)
+    ) {
+      return invoke();
+    }
+    const subjectIds = paranoidWebhookSubjectIds(event as DomainEvent);
+    if (subjectIds.length === 0) return invoke();
+    try {
+      return await guard.runAllowedMany(subjectIds, binding.capability, invoke);
+    } catch (error) {
+      if (binding.action === 'skip' && error instanceof ParanoidModeError) return undefined;
+      throw error;
+    }
+  }
+
+  if (binding.subject === 'userIdField') {
+    const input = args[0];
+    const userId =
+      input && typeof input === 'object' && 'userId' in input && typeof input.userId === 'string'
+        ? input.userId
+        : null;
+    if (!userId) throw new Error(`paranoid guard ${binding.service} requires input.userId`);
+    return guard.runAllowed(userId, binding.capability, invoke);
+  }
+
+  const subjectId = args[0];
+  if (typeof subjectId !== 'string') {
+    throw new Error(`paranoid guard ${binding.service} requires a string subject id`);
+  }
+  if (binding.subject === 'userIdFirst' || binding.subject === 'userIdFirstAndDynamicPrincipals') {
+    return guard.runAllowed(subjectId, binding.capability, invoke);
+  }
+
+  const owner =
+    binding.subject === 'portfolioIdFirst' || binding.subject === 'portfolioIdFirstAllowMissing'
+      ? await resolvers.portfolioOwner(subjectId)
+      : await resolvers.assetOwner(subjectId);
+  // A stale queued/deferred id is deliberately denied: after enable the source
+  // portfolio is gone, so absence must not turn into "normal account".
+  if (!owner.exists) {
+    if (binding.subject === 'portfolioIdFirstAllowMissing') return invoke();
+    throw new ParanoidModeError(binding.capability);
+  }
+  // Global market assets have no owner and are valid for asset-level kept paths.
+  if (owner.userId === null) return invoke();
+  return guard.runAllowed(owner.userId, binding.capability, invoke);
+}
+
+/**
+ * Apply every executable service binding to the real context services. Registry
+ * service names and method patterns are validated here at startup, so omitted
+ * composition or dangling names cannot survive until a test happens to call it.
+ */
+export function guardRegisteredServices<T extends Record<string, object>>(
+  services: T,
+  guard: ParanoidModeGuard,
+  resolvers: ParanoidServiceGuardResolvers,
+): T {
+  const byService = new Map<string, Map<string, ParanoidServiceBinding>>();
+  const classified = new Map<string, Set<string>>();
+  for (const binding of PARANOID_SERVICE_BINDINGS) {
+    const service = services[binding.service];
+    if (!service) {
+      throw new Error(`paranoid service registry missing executable service: ${binding.service}`);
+    }
+    const methods = registeredServiceMethods(service, binding);
+    const map = byService.get(binding.service) ?? new Map<string, ParanoidServiceBinding>();
+    for (const method of methods) {
+      if (map.has(method)) {
+        throw new Error(`paranoid service registry overlaps at ${binding.service}.${method}`);
+      }
+      map.set(method, binding);
+      const classifiedMethods = classified.get(binding.service) ?? new Set<string>();
+      classifiedMethods.add(method);
+      classified.set(binding.service, classifiedMethods);
+    }
+    byService.set(binding.service, map);
+  }
+
+  for (const exemption of PARANOID_SERVICE_EXEMPTIONS) {
+    const service = services[exemption.service];
+    if (!service) {
+      throw new Error(`paranoid service registry missing exempt service: ${exemption.service}`);
+    }
+    const classifiedMethods = classified.get(exemption.service) ?? new Set<string>();
+    for (const method of registeredServiceMethods(service, exemption)) {
+      if (classifiedMethods.has(method)) {
+        throw new Error(`paranoid service registry overlaps at ${exemption.service}.${method}`);
+      }
+      classifiedMethods.add(method);
+    }
+    classified.set(exemption.service, classifiedMethods);
+  }
+
+  for (const [serviceName, service] of Object.entries(services)) {
+    const classifiedMethods = classified.get(serviceName) ?? new Set<string>();
+    const omitted = serviceMethodNames(service).filter((method) => !classifiedMethods.has(method));
+    if (omitted.length > 0) {
+      throw new Error(
+        `paranoid service registry omitted ${serviceName}.${omitted.join(`, ${serviceName}.`)}`,
+      );
+    }
+  }
+
+  const guarded = { ...services } as T;
+  for (const [serviceName, methods] of byService) {
+    const raw = services[serviceName]!;
+    guarded[serviceName as keyof T] = new Proxy(raw, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        const binding = typeof property === 'string' ? methods.get(property) : undefined;
+        if (!binding || typeof value !== 'function') return value;
+        return async (...args: unknown[]) => {
+          return invokeServiceSubject(binding, args, guard, resolvers, async () =>
+            Reflect.apply(value, target, args),
+          );
+        };
+      },
+    }) as T[keyof T];
+  }
+  return guarded;
+}
+
+/**
+ * Queue-name index over the source-keyed policy array. Each production queue is
+ * classified exactly once, so the runtime lookups (`bindParanoidJob`, the
+ * per-user filter) can stay keyed by name while the completeness harness keeps
+ * matching on the concrete definition source as well.
+ */
+const JOB_POLICY_BY_NAME: ReadonlyMap<string, ParanoidJobPolicy> = (() => {
+  const byName = new Map<string, ParanoidJobPolicy>();
+  for (const entry of PARANOID_JOB_POLICIES) {
+    if (byName.has(entry.surface.name)) {
+      throw new Error(`paranoid job registry classifies ${entry.surface.name} twice`);
+    }
+    byName.set(entry.surface.name, entry.policy);
+  }
+  return byName;
+})();
+
+/** Every classified queue name, for the registry-vs-queue-catalog drift check. */
+export function paranoidJobPolicyNames(): string[] {
+  return [...JOB_POLICY_BY_NAME.keys()];
+}
+
+export function hasParanoidJobPolicy(name: string): boolean {
+  return JOB_POLICY_BY_NAME.has(name);
+}
+
+export function paranoidJobPolicy(name: string): ParanoidJobPolicy {
+  const policy = JOB_POLICY_BY_NAME.get(name);
+  if (!policy) throw new Error(`paranoid job registry omitted ${name}`);
+  return policy;
+}
+
+/** Global authenticated route guard driven exclusively by the registry above. */
+export function createParanoidRouteGuard(): RequestHandler {
+  return (req, _res, next) => {
+    if (req.authUser?.privacyMode !== 'paranoid') {
+      next();
+      return;
+    }
+    const capability = paranoidCapabilityForRoute(req.method, req.path);
+    if (!capability) {
+      next();
+      return;
+    }
+    // Public profiles deliberately preserve the same opaque 404 for a
+    // paranoid authenticated caller as they do for a missing/private target.
+    // Returning the generic PARANOID_MODE 403 here would turn this otherwise
+    // public lookup into an account-mode oracle before its intrinsic service
+    // authorization has a chance to run.
+    if (capability === 'publicProfile') {
+      next(notFound('This profile is not available.', 'PROFILE_NOT_FOUND'));
+      return;
+    }
+    next(
+      forbidden(
+        'This server-side feature is unavailable while paranoid mode is active.',
+        PARANOID_MODE_ERROR_CODE,
+      ),
+    );
+  };
 }

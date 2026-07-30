@@ -8,13 +8,6 @@ interface ImportMetaEnv {
    */
   readonly VITE_BUILD_SHA?: string;
   /**
-   * Sentry DSN for the SPA (§13.4 V4-P5a). Unset ⇒ the Sentry SDK never
-   * initializes and the app boots exactly as before.
-   */
-  readonly VITE_SENTRY_DSN?: string;
-  /** 0..1 fraction of transactions traced; defaults to 0 when unset. */
-  readonly VITE_SENTRY_TRACES_SAMPLE_RATE?: string;
-  /**
    * Public SPA OAuth client id for the browser-only Drive appdata token flow.
    * No Drive secret or access token is configured on the API.
    */
@@ -26,8 +19,8 @@ interface ImportMeta {
 }
 
 /**
- * Release tag injected at build time by `vite.config.ts` (§13.4 V4-P5a) — the
- * `name@version` the SPA stamps on every Sentry event.
+ * Release tag injected at build time by `vite.config.ts` as a `name@version`
+ * identifier.
  */
 declare const __APP_RELEASE__: string;
 

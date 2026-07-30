@@ -14,6 +14,7 @@ import {
   type ProfileIconId,
   type RegistrationRequest,
   type RegistrationToken,
+  type VaultMediaSet,
   type WorkboardItem,
 } from '@bettertrack/contracts';
 
@@ -69,6 +70,7 @@ export function toAuthUser(row: UserRow): AuthUser {
     discreetMode: row.discreetMode,
     privacyMode: row.privacyMode,
     lastLoginAt: row.lastLoginAt,
+    firstRunCompletedAt: row.firstRunCompletedAt,
     createdAt: row.createdAt,
   };
 }
@@ -88,14 +90,26 @@ export function toMeResponse(user: AuthUser): MeResponse {
     profileIcon: user.profileIcon,
     discreetMode: user.discreetMode,
     lastLoginAt: toIso(user.lastLoginAt),
+    firstRunCompletedAt: toIso(user.firstRunCompletedAt),
     createdAt: toIsoRequired(user.createdAt),
   };
 }
 
 export const toMeResponseFromRow = (row: UserRow): MeResponse => toMeResponse(toAuthUser(row));
 
-export function toAdminUser(row: UserRow): AdminUser {
-  return {
+export function toAdminUser(
+  row: UserRow,
+  paranoidMetadata: {
+    privacyMode: 'normal' | 'paranoid';
+    mediaSet: VaultMediaSet | null;
+    vault: { version: number; sizeBytes: number; updatedAt: Date } | null;
+    historyCount: number;
+  },
+): AdminUser {
+  if (paranoidMetadata.privacyMode === 'paranoid' && paranoidMetadata.mediaSet === null) {
+    throw new Error('Paranoid account is missing its media set.');
+  }
+  const serialized: AdminUser = {
     id: row.id,
     email: row.email,
     username: row.username,
@@ -105,6 +119,21 @@ export function toAdminUser(row: UserRow): AdminUser {
     chatBanned: row.chatBanned,
     lastLoginAt: toIso(row.lastLoginAt),
     createdAt: toIsoRequired(row.createdAt),
+  };
+  if (paranoidMetadata.privacyMode === 'normal') return serialized;
+  return {
+    ...serialized,
+    privacyMode: 'paranoid',
+    paranoid: {
+      mediaSet: paranoidMetadata.mediaSet!,
+      vault: paranoidMetadata.vault
+        ? {
+            ...paranoidMetadata.vault,
+            updatedAt: toIsoRequired(paranoidMetadata.vault.updatedAt),
+          }
+        : null,
+      historyCount: paranoidMetadata.historyCount,
+    },
   };
 }
 

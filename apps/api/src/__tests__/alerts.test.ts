@@ -121,6 +121,7 @@ function evaluator(h: TestHarness, market: StubMarketData, nowMs: number): Evalu
         marketData: market,
         redis: h.ctx.redis,
         notify: bus,
+        paranoid: h.ctx.paranoidGuard,
         logger: silentLogger,
         now: () => at,
       }),

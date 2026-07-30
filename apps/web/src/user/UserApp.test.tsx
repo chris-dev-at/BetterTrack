@@ -8,10 +8,13 @@ import type { MeResponse } from '@bettertrack/contracts';
 vi.mock('../lib/userApi');
 vi.mock('../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
+  WATCHLIST_SHARING_QUERY_KEY: ['workboard', 'sharing'],
   listWorkboard: vi.fn(),
   addToWorkboard: vi.fn(),
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
+  getWatchlistSharing: vi.fn(async () => ({ visibility: 'private' })),
+  updateWatchlistSharing: vi.fn(),
 }));
 // `/` now redirects to `/portfolio` (§7.2), so a couple of auth-flow tests land
 // on the Portfolio page. Auto-mock its data module so it settles without a real
@@ -194,6 +197,29 @@ test('a 429 on the bootstrap /auth/me holds the splash and retries — never mis
   await waitFor(() => expect(api.getMe).toHaveBeenCalledTimes(2));
 });
 
+test.each([0, 500])(
+  'a status %i bootstrap outage offers retry without prompting for credentials',
+  async (status) => {
+    vi.mocked(api.getMe)
+      .mockRejectedValueOnce(
+        new ApiError(status, status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN', 'unavailable'),
+      )
+      .mockResolvedValueOnce(member);
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+    const user = userEvent.setup();
+
+    renderAt('/portfolio');
+
+    expect(await screen.findByText(/can’t verify your session right now/i)).toBeInTheDocument();
+    expect(screen.queryByText('Sign in to your account')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+    expect(api.getMe).toHaveBeenCalledTimes(2);
+  },
+);
+
 test('a must-change session is trapped, then released by a successful change', async () => {
   // A fresh load of a forced-change account: /auth/me responds 403.
   vi.mocked(api.getMe).mockRejectedValue(
@@ -250,6 +276,9 @@ test('invite accept: a valid token shows the fixed email and creates the account
     id: 'user-2',
     email: 'newbie@bettertrack.test',
     username: 'newbie',
+    // Brand-new account: FirstRunGate diverts it to setup. Set here rather than
+    // on `member`, which stands for an established user in every other test.
+    firstRunCompletedAt: null,
   });
 
   const user = userEvent.setup();
@@ -262,6 +291,11 @@ test('invite accept: a valid token shows the fixed email and creates the account
   await user.type(screen.getByLabelText('Username'), 'newbie');
   await user.type(screen.getByLabelText('Password'), 'a-brand-new-secret');
   await user.click(screen.getByRole('button', { name: 'Create account' }));
+
+  // Accepting an invite creates an account, so it lands on first-run setup —
+  // not on Home. Dismissing it opens the app exactly as before.
+  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Do this later' }));
 
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(api.acceptInvite).toHaveBeenCalledWith({

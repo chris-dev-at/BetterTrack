@@ -11,6 +11,7 @@
     "start:worker": "node dist/scripts/worker.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "check:production-compose": "tsx src/scripts/checkProductionCompose.ts",
     "check:openapi-coverage": "tsx src/scripts/checkOpenapiCoverage.ts",
     "check:migrations-immutable": "tsx src/scripts/checkMigrationsImmutable.ts",
     "test:integration": "vitest run --config vitest.config.integration.ts",
@@ -18,7 +19,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/scripts/migrate.ts",
     "db:seed": "tsx src/scripts/seed.ts",
-    "admin:break-glass": "tsx src/scripts/adminTwoFactorBreakGlass.ts"
+    "admin:break-glass": "tsx src/scripts/adminTwoFactorBreakGlass.ts",
+    "repair:taxed-sell-snapshots": "tsx src/scripts/repairTaxedSellSnapshots.ts"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^7.3.0",

@@ -30,6 +30,10 @@ const optionalNonEmpty = z.preprocess(
   (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
   z.string().optional(),
 );
+const optionalPositiveInt = z.preprocess(
+  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+  z.coerce.number().int().positive().optional(),
+);
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -65,15 +69,15 @@ const envSchema = z.object({
   BT_PORT_MOBILE: z.coerce.number().int().positive().default(8083),
   // Explicit origin overrides (win over derivation). Useful for split hosting or
   // a legacy single-origin setup. APP_ORIGIN is a legacy alias for BT_WEB_ORIGIN.
-  BT_API_ORIGIN: z.string().url().optional(),
-  BT_WEB_ORIGIN: z.string().url().optional(),
-  BT_ADMIN_ORIGIN: z.string().url().optional(),
-  BT_PRODUCT_ORIGIN: z.string().url().optional(),
-  BT_MOBILE_ORIGIN: z.string().url().optional(),
-  APP_ORIGIN: z.string().url().optional(),
+  BT_API_ORIGIN: optionalUrl,
+  BT_WEB_ORIGIN: optionalUrl,
+  BT_ADMIN_ORIGIN: optionalUrl,
+  BT_PRODUCT_ORIGIN: optionalUrl,
+  BT_MOBILE_ORIGIN: optionalUrl,
+  APP_ORIGIN: optionalUrl,
 
   SMTP_HOST: z.string().optional(),
-  SMTP_PORT: z.coerce.number().int().positive().optional(),
+  SMTP_PORT: optionalPositiveInt,
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   SMTP_FROM: z.string().optional(),
@@ -269,6 +273,60 @@ const envSchema = z.object({
   BT_VAULT_RATE_WINDOW_SEC: z.coerce.number().int().positive().default(60),
   BT_VAULT_RATE_LIMIT: z.coerce.number().int().positive().default(60),
 });
+
+export type EnvSchemaKey = keyof z.infer<typeof envSchema>;
+
+/**
+ * Machine-readable production environment contract.
+ *
+ * New schema keys enter the supported set automatically, which makes the
+ * deployment-contract test fail until Compose and the production example carry
+ * them. The small exclusion map is deliberately explicit: each entry is either
+ * a test-only input or a retired compatibility input that the shipped
+ * production topology must not expose.
+ */
+export const ENV_SCHEMA_KEYS = Object.freeze(Object.keys(envSchema.shape) as EnvSchemaKey[]);
+
+export const INTENTIONALLY_NOT_PROPAGATED_ENV_KEYS = Object.freeze({
+  APP_ORIGIN:
+    'Legacy alias superseded by BT_WEB_ORIGIN; the production topology exposes one canonical web-origin override.',
+  TOTP_ENCRYPTION_KEY:
+    'Deprecated pre-keyring compatibility input; production uses the required BT_DATA_ENCRYPTION_* keyring.',
+  BT_GOOGLE_AUTHORIZE_ENDPOINT:
+    'End-to-end-test fake identity-provider override; production uses the built-in Google endpoint.',
+  BT_GOOGLE_TOKEN_ENDPOINT:
+    'End-to-end-test fake identity-provider override; production uses the built-in Google endpoint.',
+  BT_GOOGLE_JWKS_URI:
+    'End-to-end-test fake identity-provider override; production uses the built-in Google endpoint.',
+  BT_SENTRY_DSN:
+    'External Sentry is retired for the shipped stack; the zero-setup admin Problems system is the production error surface.',
+  BT_SENTRY_ERROR_SAMPLE_RATE:
+    'Only configures the retired external Sentry integration and has no shipped production consumer.',
+  BT_SENTRY_TRACES_SAMPLE_RATE:
+    'Only configures the retired external Sentry integration and has no shipped production consumer.',
+  BT_SENTRY_ENVIRONMENT:
+    'Only configures the retired external Sentry integration and has no shipped production consumer.',
+} satisfies Partial<Record<EnvSchemaKey, string>>);
+
+const intentionallyNotPropagated = new Set<EnvSchemaKey>(
+  Object.keys(INTENTIONALLY_NOT_PROPAGATED_ENV_KEYS) as EnvSchemaKey[],
+);
+
+export const PRODUCTION_SUPPORTED_ENV_KEYS = Object.freeze(
+  ENV_SCHEMA_KEYS.filter((key) => !intentionallyNotPropagated.has(key)),
+);
+
+/**
+ * Supported keys whose in-container values are deployment invariants rather
+ * than host knobs. They still live in the one API/worker environment anchor and
+ * are documented in the production example.
+ */
+export const COMPOSE_MANAGED_ENV_KEYS = Object.freeze({
+  NODE_ENV: 'The production stack always boots the API image in production mode.',
+  PORT: 'The internal API port is coupled to the proxy upstream and healthcheck.',
+  BT_EXPORT_DIR:
+    'The durable export path is coupled to the shared named-volume mount in both containers.',
+} satisfies Partial<Record<EnvSchemaKey, string>>);
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 // Ephemeral session bounds (V4-P2b, owner spec #399 §A). An "unticked stay

@@ -1625,7 +1625,7 @@ export function createParanoidRehydrationService(
         deps.testOnlyObserveSolvencyReplay,
       );
 
-      return withParanoidRehydrationTransaction(deps.db, async (tx) => {
+      return withParanoidRehydrationTransaction(deps.db, userId, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);
         const state = await transition.getState(userId);
         if (!state)

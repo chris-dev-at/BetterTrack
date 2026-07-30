@@ -349,6 +349,7 @@ export function AnalyticsPage() {
           series={primaryPoints}
           mode={isPerf ? 'baseline' : 'area'}
           percentValues={isPerf}
+          valueCurrency={data?.baseCurrency}
           overlays={overlays}
           showRangeToggle={false}
           loading={chartLoading}
@@ -551,7 +552,7 @@ function RangeControl({
     custom: t('portfolio.analytics.range.custom'),
   };
   return (
-    <div className="flex flex-col gap-2">
+    <section aria-label={t('portfolio.analytics.range.heading')} className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <div
           aria-label={t('portfolio.analytics.range.heading')}
@@ -596,7 +597,7 @@ function RangeControl({
           />
         </div>
       ) : null}
-    </div>
+    </section>
   );
 }
 

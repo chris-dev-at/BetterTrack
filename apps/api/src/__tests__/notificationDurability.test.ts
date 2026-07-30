@@ -98,6 +98,7 @@ describe('durable notification delivery across a dispatcher outage (#368/#367)',
       marketData: createStubMarketData({ quote: () => quoteResult(150) }),
       redis: harness.ctx.redis,
       notify: harness.ctx.notify,
+      paranoid: harness.ctx.paranoidGuard,
       logger: harness.ctx.logger,
       now: () => Date.parse('2026-07-10T12:00:00.000Z'),
     });
@@ -142,6 +143,7 @@ describe('durable notification delivery across a dispatcher outage (#368/#367)',
       alertRepo,
       marketData: createStubMarketData({ quote: () => quoteResult(150) }),
       redis: harness.ctx.redis,
+      paranoid: harness.ctx.paranoidGuard,
       notify: {
         emit: async () => {
           const [row] = await harness.db
@@ -179,6 +181,7 @@ describe('durable notification delivery across a dispatcher outage (#368/#367)',
       alertRepo,
       marketData: createStubMarketData({ quote: () => quoteResult(150) }),
       redis: harness.ctx.redis,
+      paranoid: harness.ctx.paranoidGuard,
       notify: createNotificationCenter({
         enqueue: async () => {
           throw new Error('redis gone mid-fire');

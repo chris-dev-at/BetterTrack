@@ -1,7 +1,9 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 
-import { OPENAPI_ENDPOINT_COUNT } from '../http/openapi';
+import * as contracts from '@bettertrack/contracts';
+
+import { buildOpenApiDocument, OPENAPI_ENDPOINT_COUNT } from '../http/openapi';
 import { createTestApp } from '../testing/createTestApp';
 
 /**
@@ -138,6 +140,19 @@ describe('OpenAPI document', () => {
     const notifications = (paths['/notifications'] as JsonObject).get as JsonObject;
     expect(notifications.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
 
+    // Paranoid transitions (§13.5 V5-P13) are session-only in the middleware, so
+    // the derived spec must NOT advertise a bearer for either direction — a
+    // client-generated SDK that offered it would only ever get 403s, and the
+    // sibling `/account/*` routes stay bearer-callable, so this cannot be assumed.
+    for (const path of ['/account/paranoid/enable', '/account/paranoid/disable']) {
+      const operation = (paths[path] as JsonObject).post as JsonObject;
+      expect(operation.security, `security for POST ${path}`).toEqual([{ sessionCookie: [] }]);
+    }
+    expect(
+      ((paths['/account'] as JsonObject).delete as JsonObject).security,
+      'the coarse account-security surface is unchanged',
+    ).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+
     // The bearer security scheme itself is documented.
     const schemesForBearer = (doc.components as JsonObject).securitySchemes as JsonObject;
     expect((schemesForBearer.apiKeyBearer as JsonObject).scheme).toBe('bearer');
@@ -145,6 +160,27 @@ describe('OpenAPI document', () => {
     // The security scheme itself is the session cookie.
     const securitySchemes = (doc.components as JsonObject).securitySchemes as JsonObject;
     expect((securitySchemes.sessionCookie as JsonObject).in).toBe('cookie');
+  });
+
+  it('documents the recursive vault JSON columns without mutating the contracts module', () => {
+    // The hint that lets the generator past ZodLazy is installed for the duration
+    // of one generateDocument() call and removed again, so importing the OpenAPI
+    // router can never change how `@bettertrack/contracts` documents itself for
+    // any other consumer (and a second build is still correct, not a one-shot).
+    const shared = contracts.vaultJsonSchema as unknown as { _def: { openapi?: unknown } };
+    const before = shared._def.openapi;
+
+    const first = buildOpenApiDocument() as unknown as JsonObject;
+    expect(shared._def.openapi).toBe(before);
+    const second = buildOpenApiDocument() as unknown as JsonObject;
+    expect(shared._def.openapi).toBe(before);
+
+    // Both builds carry the same documented JSON column, and its description says
+    // the column is not really object-only (OpenAPI 3.0 has no recursive union).
+    const disable = ((first.components as JsonObject).schemas as JsonObject)
+      .ParanoidDisableRequest as JsonObject;
+    expect(JSON.stringify(disable)).toContain('any JSON value');
+    expect(JSON.stringify(second)).toBe(JSON.stringify(first));
   });
 
   it('serves the interactive /docs page publicly', async () => {

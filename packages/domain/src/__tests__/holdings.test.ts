@@ -1301,6 +1301,78 @@ describe('timeWeightedReturn', () => {
     expect(perf[0]?.pct).toBeCloseTo((1000 / 1010 - 1) * 100, 10);
   });
 
+  it('a PARTIAL withdrawal does not move the line either', () => {
+    // Taking money out is not a loss: 1 000 invested, no market move, 400
+    // withdrawn. The value curve drops 1 000 → 600 while the return stays flat;
+    // the +10 % that follows is measured on what is still invested.
+    const values = [
+      { date: '2026-01-01', valueEur: 1000 },
+      { date: '2026-01-02', valueEur: 600 },
+      { date: '2026-01-03', valueEur: 660 },
+    ];
+    const flows = [
+      { date: '2026-01-01', flowEur: 1000 },
+      { date: '2026-01-02', flowEur: -400 },
+    ];
+    const perf = timeWeightedReturn(values, flows);
+    expect(perf[1]?.pct).toBeCloseTo(0, 10);
+    expect(perf[2]?.pct).toBeCloseTo(10, 10);
+  });
+
+  it('two portfolios on the same market path return the same % whatever they deposited', () => {
+    // The invariance that makes this number comparable at all: only the
+    // holdings' moves count, never how much money was added or when. Market
+    // path in both: +10 % on the 2nd, flat on the 3rd, +10 % on the 4th.
+    const lean = timeWeightedReturn(
+      [
+        { date: '2026-01-01', valueEur: 1000 },
+        { date: '2026-01-02', valueEur: 1100 },
+        { date: '2026-01-03', valueEur: 1100 },
+        { date: '2026-01-04', valueEur: 1210 },
+      ],
+      [{ date: '2026-01-01', flowEur: 1000 }],
+    );
+    // Identical market, but 5 000 more went in on the flat day — 6× the money
+    // at work for the final leg, and the same reported return.
+    const toppedUp = timeWeightedReturn(
+      [
+        { date: '2026-01-01', valueEur: 1000 },
+        { date: '2026-01-02', valueEur: 1100 },
+        { date: '2026-01-03', valueEur: 6100 },
+        { date: '2026-01-04', valueEur: 6710 },
+      ],
+      [
+        { date: '2026-01-01', flowEur: 1000 },
+        { date: '2026-01-03', flowEur: 5000 },
+      ],
+    );
+    expect(lean.at(-1)!.pct).toBeCloseTo(21, 10);
+    expect(toppedUp.at(-1)!.pct).toBeCloseTo(lean.at(-1)!.pct, 10);
+  });
+
+  it('treats a same-day inflow as invested from the open — the daily-TWR flow-timing limit', () => {
+    // Snapshots are daily, so the domain cannot know WHEN in a day money
+    // arrived. The hybrid convention places inflows at the open, so a top-up on
+    // a day the market also moved shares that day's move: 1 000 grows 10 % to
+    // 1 100 while 5 000 arrives, closing at 6 100, and the day books
+    // 6 100 / 6 000 = +1.67 % rather than the holdings' +10 %. This is the one
+    // genuine approximation in the chain — the alternative (flows at the close)
+    // would instead credit new money with a move it never saw, and would break
+    // the far more common full-liquidation day. Deposits on flat days, and all
+    // deposits from the *next* day on, are exactly neutral.
+    const perf = timeWeightedReturn(
+      [
+        { date: '2026-01-01', valueEur: 1000 },
+        { date: '2026-01-02', valueEur: 6100 },
+      ],
+      [
+        { date: '2026-01-01', flowEur: 1000 },
+        { date: '2026-01-02', flowEur: 5000 },
+      ],
+    );
+    expect(perf[1]?.pct).toBeCloseTo((6100 / 6000 - 1) * 100, 10);
+  });
+
   it('a zero-value day from missing price data links flat and recovers — never −100 %', () => {
     // Buy day has no known close yet (value 0); the next day data appears.
     const values = [

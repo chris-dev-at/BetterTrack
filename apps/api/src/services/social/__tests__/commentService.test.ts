@@ -44,6 +44,9 @@ function makeHarness() {
   };
   const audience = {
     ownsSubject: vi.fn<AudienceService['ownsSubject']>().mockResolvedValue(false),
+    // Identity-only owner discovery: moderation resolves the item owner before
+    // it can lock both principals, so it never reads the audience matrix.
+    subjectOwner: vi.fn<AudienceService['subjectOwner']>().mockResolvedValue(OWNER),
     authorizePortfolioRead: vi
       .fn<AudienceService['authorizePortfolioRead']>()
       .mockResolvedValue(undefined),

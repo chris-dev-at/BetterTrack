@@ -1,4 +1,4 @@
-import type { AssetRef } from '@bettertrack/contracts';
+import type { AssetRef, DividendEvents } from '@bettertrack/contracts';
 
 import type { MarketIntelRepository } from '../../data/repositories/marketIntelRepository';
 import type { NotificationRepository } from '../../data/repositories/notificationRepository';
@@ -37,11 +37,13 @@ export const DIVIDEND_EVENT_HORIZON_DAYS = 7;
 export type DividendNotifyGate = (userId: string) => Promise<boolean>;
 
 export interface DividendEventsScanDeps {
-  repo: Pick<MarketIntelRepository, 'listHeldAssetHoldersAllUsers'>;
+  repo: Pick<MarketIntelRepository, 'listNormalUserIds' | 'listHeldAssetHoldersForUser'>;
   marketData: Pick<MarketDataService, 'intelCapabilities' | 'getDividendEvents'>;
   notify: NotificationCenter;
   /** Per-user opt-in gate (skip a holder who never enabled the type). */
   isEnabled: DividendNotifyGate;
+  /** Lock before holding aggregation and hold through provider work + emit. */
+  runIfAllowed: (userId: string, action: () => Promise<void>) => Promise<boolean>;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ the scan is a no-op. */
   enabled: boolean;
   horizonDays?: number;
@@ -77,13 +79,6 @@ export function dividendNotifyGate(
   };
 }
 
-/** One held (user, asset) group: the asset ref/identity + its holder ids. */
-interface AssetGroup {
-  ref: AssetRef;
-  symbol: string;
-  userIds: string[];
-}
-
 /**
  * The pure scan core (mirrors `runAlertsEvaluation`): testable in isolation with
  * a mocked clock, a stub provider and a recording notification center.
@@ -100,67 +95,69 @@ export async function runDividendEventsScan(
   const todayStart = new Date(nowMs).toISOString().slice(0, 10);
   const horizonEnd = new Date(nowMs + horizonDays * 86_400_000).toISOString().slice(0, 10);
 
-  // Group holders by asset so each asset's events are fetched exactly once.
-  const groups = new Map<string, AssetGroup>();
-  for (const row of await repo.listHeldAssetHoldersAllUsers()) {
-    let group = groups.get(row.assetId);
-    if (!group) {
-      group = {
-        ref: { providerId: row.providerId, providerRef: row.providerRef },
-        symbol: row.symbol,
-        userIds: [],
-      };
-      groups.set(row.assetId, group);
-    }
-    group.userIds.push(row.userId);
-  }
-
-  let assetsScanned = 0;
+  const eventsByAsset = new Map<string, DividendEvents | null>();
+  const scannedAssetIds = new Set<string>();
   let emitted = 0;
   const occurredAt = new Date(nowMs).toISOString();
 
-  for (const [assetId, group] of groups) {
-    if (!marketData.intelCapabilities(group.ref).dividends) continue;
-    let events;
-    try {
-      events = (await marketData.getDividendEvents(group.ref)).value;
-    } catch (err) {
-      logger?.warn({ err, assetId }, 'dividend scan: provider fetch failed; skipping asset');
-      continue;
-    }
-    assetsScanned += 1;
-
-    // Upcoming events whose ex-date is inside the reminder horizon.
-    const dueEvents = events.upcoming.filter((event) => {
-      if (!event.exDate) return false;
-      const day = event.exDate.slice(0, 10);
-      return day >= todayStart && day <= horizonEnd;
-    });
-    if (dueEvents.length === 0) continue;
-
-    for (const userId of group.userIds) {
+  // Candidate discovery reads only account metadata. For each account, the
+  // registry guard wins/loses against paranoid enable before ANY holding
+  // aggregation, and stays held through provider fetches and notifications.
+  for (const userId of await repo.listNormalUserIds()) {
+    await deps.runIfAllowed(userId, async () => {
       // Opt-in gate: skip a holder who never enabled the type — the dispatcher
       // would otherwise write a hidden dedupe marker that later masks an enable.
-      if (!(await isEnabled(userId))) continue;
-      for (const event of dueEvents) {
-        const notice: DividendEventNotice = {
-          type: 'dividend.event',
-          userId,
-          assetId,
-          symbol: group.symbol,
-          exDate: event.exDate!,
-          payDate: event.payDate,
-          amount: event.amount,
-          currency: event.currency ?? events.currency,
-          occurredAt,
-        };
-        await notify.emit(notice);
-        emitted += 1;
+      if (!(await isEnabled(userId))) return;
+      const holdings = await repo.listHeldAssetHoldersForUser(userId);
+      for (const row of holdings) {
+        let events = eventsByAsset.get(row.assetId);
+        if (events === undefined) {
+          const ref: AssetRef = { providerId: row.providerId, providerRef: row.providerRef };
+          if (!marketData.intelCapabilities(ref).dividends) {
+            eventsByAsset.set(row.assetId, null);
+            continue;
+          }
+          try {
+            events = (await marketData.getDividendEvents(ref)).value;
+            eventsByAsset.set(row.assetId, events);
+            scannedAssetIds.add(row.assetId);
+          } catch (err) {
+            logger?.warn(
+              { err, assetId: row.assetId },
+              'dividend scan: provider fetch failed; skipping asset',
+            );
+            eventsByAsset.set(row.assetId, null);
+            continue;
+          }
+        }
+        if (!events) continue;
+
+        // Upcoming events whose ex-date is inside the reminder horizon.
+        const dueEvents = events.upcoming.filter((event) => {
+          if (!event.exDate) return false;
+          const day = event.exDate.slice(0, 10);
+          return day >= todayStart && day <= horizonEnd;
+        });
+        for (const event of dueEvents) {
+          const notice: DividendEventNotice = {
+            type: 'dividend.event',
+            userId,
+            assetId: row.assetId,
+            symbol: row.symbol,
+            exDate: event.exDate!,
+            payDate: event.payDate,
+            amount: event.amount,
+            currency: event.currency ?? events.currency,
+            occurredAt,
+          };
+          await notify.emit(notice);
+          emitted += 1;
+        }
       }
-    }
+    });
   }
 
-  return { assetsScanned, emitted };
+  return { assetsScanned: scannedAssetIds.size, emitted };
 }
 
 export type DividendEventsJobDeps = Omit<DividendEventsScanDeps, 'now' | 'logger'>;

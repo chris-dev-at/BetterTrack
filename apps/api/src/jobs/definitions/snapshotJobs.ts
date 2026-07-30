@@ -40,6 +40,8 @@ export const SNAPSHOT_HEAL_WINDOW_DAYS = 35;
 
 export interface SnapshotJobDeps {
   snapshots: PortfolioSnapshotService;
+  /** Defense in depth for stale/replayed jobs after a mode transition. */
+  isParanoidPortfolio?: (portfolioId: string) => Promise<boolean>;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
 }
@@ -61,6 +63,10 @@ export function createSnapshotsRecomputeJob(
     name: QUEUE_NAMES.snapshotsRecompute,
     async handler(job, ctx) {
       const { portfolioId } = job.data;
+      if (await deps.isParanoidPortfolio?.(portfolioId)) {
+        ctx.logger.info({ portfolioId }, 'snapshots.recompute skipped for paranoid account');
+        return;
+      }
       await deps.snapshots.recompute(portfolioId);
       ctx.logger.info({ portfolioId }, 'snapshots.recompute complete');
     },

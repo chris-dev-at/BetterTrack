@@ -10,6 +10,98 @@ name: bettertrack
 #   docker compose run --rm api node dist/scripts/seed.js
 #   docker compose up -d
 
+# The API and BullMQ worker load the same envSchema and may both execute feature
+# code. Keep their complete production environment in this ONE anchor so a new
+# key cannot reach one process while silently disappearing from the other.
+x-api-worker-environment: &api-worker-environment
+  # Process invariants. These stay fixed because the proxy, healthcheck, and
+  # durable export-volume target depend on the exact in-container values.
+  NODE_ENV: production
+  PORT: '3000'
+  BT_EXPORT_DIR: '/var/lib/bettertrack/exports'
+
+  # Required data stores and cookie signing.
+  DATABASE_URL: '${DATABASE_URL}'
+  REDIS_URL: '${REDIS_URL}'
+  SESSION_SECRET: '${SESSION_SECRET}'
+
+  # Long-lived stored-record encryption (#879). Compose refuses production
+  # startup when the active id/key are missing; transition keys remain optional.
+  BT_DATA_ENCRYPTION_KEY_ID: '${BT_DATA_ENCRYPTION_KEY_ID:?set BT_DATA_ENCRYPTION_KEY_ID}'
+  BT_DATA_ENCRYPTION_KEY: '${BT_DATA_ENCRYPTION_KEY:?set BT_DATA_ENCRYPTION_KEY}'
+  BT_DATA_ENCRYPTION_DECRYPT_KEYS: '${BT_DATA_ENCRYPTION_DECRYPT_KEYS:-}'
+  TOTP_ISSUER: '${TOTP_ISSUER:-BetterTrack}'
+
+  # Deployment topology (§11). Both processes derive identical origins for
+  # CORS, cookies, generated links, and notification delivery.
+  BT_MODE: '${BT_MODE:-subdomains}'
+  BT_DOMAIN: '${BT_DOMAIN:-localhost}'
+  BT_TLS: '${BT_TLS:-}'
+  BT_SUB_API: '${BT_SUB_API:-api}'
+  BT_SUB_WEB: '${BT_SUB_WEB:-web}'
+  BT_SUB_ADMIN: '${BT_SUB_ADMIN:-admin}'
+  BT_SUB_MOBILE: '${BT_SUB_MOBILE:-mobile}'
+  BT_PORT_API: '${BT_PORT_API:-3000}'
+  BT_PORT_WEB: '${BT_PORT_WEB:-8080}'
+  BT_PORT_ADMIN: '${BT_PORT_ADMIN:-8081}'
+  BT_PORT_PRODUCT: '${BT_PORT_PRODUCT:-8082}'
+  BT_PORT_MOBILE: '${BT_PORT_MOBILE:-8083}'
+  BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
+  BT_WEB_ORIGIN: '${BT_WEB_ORIGIN:-}'
+  BT_ADMIN_ORIGIN: '${BT_ADMIN_ORIGIN:-}'
+  BT_PRODUCT_ORIGIN: '${BT_PRODUCT_ORIGIN:-}'
+  BT_MOBILE_ORIGIN: '${BT_MOBILE_ORIGIN:-}'
+
+  # Email and first-admin seed inputs.
+  SMTP_HOST: '${SMTP_HOST:-}'
+  SMTP_PORT: '${SMTP_PORT:-}'
+  SMTP_USER: '${SMTP_USER:-}'
+  SMTP_PASS: '${SMTP_PASS:-}'
+  SMTP_FROM: '${SMTP_FROM:-}'
+  ADMIN_EMAIL: '${ADMIN_EMAIL:-}'
+  ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
+  ADMIN_SESSION_LIFETIME_HOURS: '${ADMIN_SESSION_LIFETIME_HOURS:-12}'
+
+  # Provider, request-budget, and feature rollout controls.
+  PROVIDER_MAX_CONCURRENCY: '${PROVIDER_MAX_CONCURRENCY:-4}'
+  PROVIDER_MIN_SPACING_MS: '${PROVIDER_MIN_SPACING_MS:-250}'
+  MARKET_FAILOVER_ENABLED: '${MARKET_FAILOVER_ENABLED:-false}'
+  MARKET_INTEL_ENABLED: '${MARKET_INTEL_ENABLED:-}'
+  REALTIME_ENABLED: '${REALTIME_ENABLED:-}'
+  RATE_LIMIT_BURST_WINDOW_SEC: '${RATE_LIMIT_BURST_WINDOW_SEC:-10}'
+  RATE_LIMIT_BURST_LIMIT: '${RATE_LIMIT_BURST_LIMIT:-60}'
+
+  # Optional authentication, notification, and push integrations.
+  BT_GOOGLE_CLIENT_ID: '${BT_GOOGLE_CLIENT_ID:-}'
+  BT_GOOGLE_CLIENT_SECRET: '${BT_GOOGLE_CLIENT_SECRET:-}'
+  BT_TELEGRAM_BOT_TOKEN: '${BT_TELEGRAM_BOT_TOKEN:-}'
+  BT_TELEGRAM_DISCORD_ENABLED: '${BT_TELEGRAM_DISCORD_ENABLED:-}'
+  BT_FCM_SERVICE_ACCOUNT_FILE: '${BT_FCM_SERVICE_ACCOUNT_FILE:-}'
+  BT_VAPID_PUBLIC_KEY: '${BT_VAPID_PUBLIC_KEY:-}'
+  BT_VAPID_PRIVATE_KEY: '${BT_VAPID_PRIVATE_KEY:-}'
+  BT_VAPID_SUBJECT: '${BT_VAPID_SUBJECT:-}'
+
+  # Prometheus listener plus admin-only Grafana/Prometheus management.
+  BT_METRICS_ENABLED: '${BT_METRICS_ENABLED:-true}'
+  BT_METRICS_HOST: '${BT_METRICS_HOST:-0.0.0.0}'
+  BT_METRICS_PORT: '${BT_METRICS_PORT:-9464}'
+  BT_OBS_EXTERNAL_ACCESS: '${BT_OBS_EXTERNAL_ACCESS:-}'
+  BT_GRAFANA_ADMIN_PASSWORD: '${BT_GRAFANA_ADMIN_PASSWORD:-}'
+  BT_GRAFANA_INTERNAL_URL: '${BT_GRAFANA_INTERNAL_URL:-http://grafana:3000}'
+  BT_PROMETHEUS_INTERNAL_URL: '${BT_PROMETHEUS_INTERNAL_URL:-http://prometheus:9090}'
+  BT_GRAFANA_PUBLIC_URL: '${BT_GRAFANA_PUBLIC_URL:-}'
+
+  # Optional local AI plus bounded MIRRORCHAIN/paranoid-vault operations.
+  BT_OLLAMA_ENDPOINT: '${BT_OLLAMA_ENDPOINT:-}'
+  BT_OLLAMA_MODEL: '${BT_OLLAMA_MODEL:-}'
+  BT_AI_DAILY_CAP: '${BT_AI_DAILY_CAP:-20}'
+  MIRROR_MAX_MEMBERS: '${MIRROR_MAX_MEMBERS:-16}'
+  BT_VAULT_MAX_BYTES: '${BT_VAULT_MAX_BYTES:-16777216}'
+  BT_VAULT_HISTORY_MAX_VERSIONS: '${BT_VAULT_HISTORY_MAX_VERSIONS:-10}'
+  BT_VAULT_HISTORY_MAX_AGE_DAYS: '${BT_VAULT_HISTORY_MAX_AGE_DAYS:-30}'
+  BT_VAULT_RATE_WINDOW_SEC: '${BT_VAULT_RATE_WINDOW_SEC:-60}'
+  BT_VAULT_RATE_LIMIT: '${BT_VAULT_RATE_LIMIT:-60}'
+
 services:
   # Front proxy: serves the user + admin SPAs and reverse-proxies the api origin.
   # One image, both topologies — BT_MODE selects the nginx layout at start (§4.6).
@@ -98,76 +190,8 @@ services:
         GIT_BUILD_TIME: '${GIT_BUILD_TIME:-unknown}'
     restart: unless-stopped
     environment:
-      NODE_ENV: production
-      PORT: '3000'
-      DATABASE_URL: '${DATABASE_URL}'
-      REDIS_URL: '${REDIS_URL}'
-      SESSION_SECRET: '${SESSION_SECRET}'
-      # Long-lived stored-record encryption (#879). These exact values are also
-      # passed to the worker below; Compose refuses production startup when the
-      # active id/key are missing.
-      BT_DATA_ENCRYPTION_KEY_ID: '${BT_DATA_ENCRYPTION_KEY_ID:?set BT_DATA_ENCRYPTION_KEY_ID}'
-      BT_DATA_ENCRYPTION_KEY: '${BT_DATA_ENCRYPTION_KEY:?set BT_DATA_ENCRYPTION_KEY}'
-      BT_DATA_ENCRYPTION_DECRYPT_KEYS: '${BT_DATA_ENCRYPTION_DECRYPT_KEYS:-}'
-      # Shared with the worker below: ready export rows store this exact path,
-      # so both containers must resolve it through the same named volume.
-      BT_EXPORT_DIR: '/var/lib/bettertrack/exports'
-      # Topology (§11): the api derives api/web/admin origins → CORS + cookies.
-      BT_MODE: '${BT_MODE:-subdomains}'
-      BT_DOMAIN: '${BT_DOMAIN:-localhost}'
-      BT_TLS: '${BT_TLS:-}'
-      BT_SUB_API: '${BT_SUB_API:-api}'
-      BT_SUB_WEB: '${BT_SUB_WEB:-web}'
-      BT_SUB_ADMIN: '${BT_SUB_ADMIN:-admin}'
-      BT_SUB_MOBILE: '${BT_SUB_MOBILE:-mobile}'
-      BT_PORT_API: '${BT_PORT_API:-3000}'
-      BT_PORT_WEB: '${BT_PORT_WEB:-8080}'
-      BT_PORT_ADMIN: '${BT_PORT_ADMIN:-8081}'
-      BT_PORT_PRODUCT: '${BT_PORT_PRODUCT:-8082}'
-      BT_PORT_MOBILE: '${BT_PORT_MOBILE:-8083}'
-      BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
-      BT_WEB_ORIGIN: '${BT_WEB_ORIGIN:-}'
-      BT_ADMIN_ORIGIN: '${BT_ADMIN_ORIGIN:-}'
-      BT_PRODUCT_ORIGIN: '${BT_PRODUCT_ORIGIN:-}'
-      BT_MOBILE_ORIGIN: '${BT_MOBILE_ORIGIN:-}'
-      SMTP_HOST: '${SMTP_HOST:-}'
-      SMTP_PORT: '${SMTP_PORT:-}'
-      SMTP_USER: '${SMTP_USER:-}'
-      SMTP_PASS: '${SMTP_PASS:-}'
-      SMTP_FROM: '${SMTP_FROM:-}'
-      ADMIN_EMAIL: '${ADMIN_EMAIL:-}'
-      ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
-      RATE_LIMIT_BURST_WINDOW_SEC: '${RATE_LIMIT_BURST_WINDOW_SEC:-10}'
-      RATE_LIMIT_BURST_LIMIT: '${RATE_LIMIT_BURST_LIMIT:-60}'
-      # Opt-in Yahoo → Stooq failover for supported equities/ETFs (§13.5 V5-P1c).
-      MARKET_FAILOVER_ENABLED: '${MARKET_FAILOVER_ENABLED:-false}'
-      # Push channels (#368) — both optional, SMTP-style gating: unset ⇒ the
-      # channel is disabled with one boot warn, nothing crashes. The FCM path
-      # points at a MOUNTED service-account JSON (compose.override.yml adds the
-      # volume; see the #421 go-live runbook) — the key never enters an image.
-      BT_FCM_SERVICE_ACCOUNT_FILE: '${BT_FCM_SERVICE_ACCOUNT_FILE:-}'
-      BT_VAPID_PUBLIC_KEY: '${BT_VAPID_PUBLIC_KEY:-}'
-      BT_VAPID_PRIVATE_KEY: '${BT_VAPID_PRIVATE_KEY:-}'
-      BT_VAPID_SUBJECT: '${BT_VAPID_SUBJECT:-}'
-      # Prometheus metrics listener (#564, §13.5 V5-P2). Bound to 0.0.0.0
-      # INSIDE the container so the `prometheus` sidecar can scrape it over the
-      # internal docker network — this port is NEVER published to a host port,
-      # so it stays unreachable from any public origin (the localhost/LAN-only
-      # mandate, §16 2026-07-17). Set BT_METRICS_ENABLED=false to bind no port.
-      BT_METRICS_ENABLED: '${BT_METRICS_ENABLED:-true}'
-      BT_METRICS_HOST: '${BT_METRICS_HOST:-0.0.0.0}'
-      BT_METRICS_PORT: '${BT_METRICS_PORT:-9464}'
-      # Admin monitoring / Diagnostics + external access (§13.5 V5-P2 arc (a),
-      # owner 2026-07-19). The api reaches Grafana/Prometheus over the internal
-      # network for the reachability probe + the admin-proxied Grafana reverse
-      # proxy. External access is OFF by default (localhost/LAN-only); the api
-      # reads BT_GRAFANA_ADMIN_PASSWORD ONLY to gate exposure — it never logs it
-      # or sends it to a client, and never puts admin/admin on a public door.
-      BT_OBS_EXTERNAL_ACCESS: '${BT_OBS_EXTERNAL_ACCESS:-}'
-      BT_GRAFANA_ADMIN_PASSWORD: '${BT_GRAFANA_ADMIN_PASSWORD:-}'
-      BT_GRAFANA_INTERNAL_URL: '${BT_GRAFANA_INTERNAL_URL:-http://grafana:3000}'
-      BT_PROMETHEUS_INTERNAL_URL: '${BT_PROMETHEUS_INTERNAL_URL:-http://prometheus:9090}'
-      BT_GRAFANA_PUBLIC_URL: '${BT_GRAFANA_PUBLIC_URL:-}'
+      # No API-only keys: both processes consume the complete shared contract.
+      <<: *api-worker-environment
     volumes:
       - exportdata:/var/lib/bettertrack/exports
     depends_on:
@@ -193,63 +217,8 @@ services:
     command: ['node', 'dist/scripts/worker.js']
     restart: unless-stopped
     environment:
-      NODE_ENV: production
-      PORT: '3000'
-      DATABASE_URL: '${DATABASE_URL}'
-      REDIS_URL: '${REDIS_URL}'
-      SESSION_SECRET: '${SESSION_SECRET}'
-      # Must match the api service exactly so every process reads the same
-      # active/transition envelopes.
-      BT_DATA_ENCRYPTION_KEY_ID: '${BT_DATA_ENCRYPTION_KEY_ID:?set BT_DATA_ENCRYPTION_KEY_ID}'
-      BT_DATA_ENCRYPTION_KEY: '${BT_DATA_ENCRYPTION_KEY:?set BT_DATA_ENCRYPTION_KEY}'
-      BT_DATA_ENCRYPTION_DECRYPT_KEYS: '${BT_DATA_ENCRYPTION_DECRYPT_KEYS:-}'
-      BT_EXPORT_DIR: '/var/lib/bettertrack/exports'
-      # Topology (§11): the worker generates the same origins/links as the api
-      # (share links, email URLs) so they must match.
-      BT_MODE: '${BT_MODE:-subdomains}'
-      BT_DOMAIN: '${BT_DOMAIN:-localhost}'
-      BT_TLS: '${BT_TLS:-}'
-      BT_SUB_API: '${BT_SUB_API:-api}'
-      BT_SUB_WEB: '${BT_SUB_WEB:-web}'
-      BT_SUB_ADMIN: '${BT_SUB_ADMIN:-admin}'
-      BT_SUB_MOBILE: '${BT_SUB_MOBILE:-mobile}'
-      BT_PORT_API: '${BT_PORT_API:-3000}'
-      BT_PORT_WEB: '${BT_PORT_WEB:-8080}'
-      BT_PORT_ADMIN: '${BT_PORT_ADMIN:-8081}'
-      BT_PORT_PRODUCT: '${BT_PORT_PRODUCT:-8082}'
-      BT_PORT_MOBILE: '${BT_PORT_MOBILE:-8083}'
-      BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
-      BT_WEB_ORIGIN: '${BT_WEB_ORIGIN:-}'
-      BT_ADMIN_ORIGIN: '${BT_ADMIN_ORIGIN:-}'
-      BT_PRODUCT_ORIGIN: '${BT_PRODUCT_ORIGIN:-}'
-      BT_MOBILE_ORIGIN: '${BT_MOBILE_ORIGIN:-}'
-      SMTP_HOST: '${SMTP_HOST:-}'
-      SMTP_PORT: '${SMTP_PORT:-}'
-      SMTP_USER: '${SMTP_USER:-}'
-      SMTP_PASS: '${SMTP_PASS:-}'
-      SMTP_FROM: '${SMTP_FROM:-}'
-      ADMIN_EMAIL: '${ADMIN_EMAIL:-}'
-      ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
-      RATE_LIMIT_BURST_WINDOW_SEC: '${RATE_LIMIT_BURST_WINDOW_SEC:-10}'
-      RATE_LIMIT_BURST_LIMIT: '${RATE_LIMIT_BURST_LIMIT:-60}'
-      # Keep worker market-data jobs on the same provider chain as the api.
-      MARKET_FAILOVER_ENABLED: '${MARKET_FAILOVER_ENABLED:-false}'
-      # Push channels (#368) — both optional, SMTP-style gating: unset ⇒ the
-      # channel is disabled with one boot warn, nothing crashes. The FCM path
-      # points at a MOUNTED service-account JSON (compose.override.yml adds the
-      # volume; see the #421 go-live runbook) — the key never enters an image.
-      BT_FCM_SERVICE_ACCOUNT_FILE: '${BT_FCM_SERVICE_ACCOUNT_FILE:-}'
-      BT_VAPID_PUBLIC_KEY: '${BT_VAPID_PUBLIC_KEY:-}'
-      BT_VAPID_PRIVATE_KEY: '${BT_VAPID_PRIVATE_KEY:-}'
-      BT_VAPID_SUBJECT: '${BT_VAPID_SUBJECT:-}'
-      # Prometheus metrics listener (#632). The worker owns the ONLY process that
-      # emits bettertrack_job_outcomes_total, so it binds its own scrape endpoint
-      # (localhost/LAN-only mandate — bound to 0.0.0.0 inside the container for the
-      # prometheus sidecar, never published to a host port). Prometheus adds a
-      # `worker:9464` target alongside `api:9464`.
-      BT_METRICS_ENABLED: '${BT_METRICS_ENABLED:-true}'
-      BT_METRICS_HOST: '${BT_METRICS_HOST:-0.0.0.0}'
-      BT_METRICS_PORT: '${BT_METRICS_PORT:-9464}'
+      # No worker-only keys: both processes consume the complete shared contract.
+      <<: *api-worker-environment
     volumes:
       - exportdata:/var/lib/bettertrack/exports
     depends_on:

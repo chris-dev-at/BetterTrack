@@ -29,6 +29,7 @@ import {
   type RealtimeBearerCapability,
   type RealtimeChatMessage,
   type RealtimeConnectionError,
+  type RealtimeLiveFrame,
   type RealtimeLiveWatchAck,
   type RealtimeNotificationNew,
   type RealtimePortfolioChanged,
@@ -98,6 +99,12 @@ import {
 export const userRoom = (userId: string): string => `user:${userId}`;
 export const assetRoom = (assetId: string): string => `asset:${assetId}`;
 export const portfolioRoom = (portfolioId: string): string => `portfolio:${portfolioId}`;
+
+export interface WatchableAsset {
+  ref: AssetRef;
+  /** Null for global market assets; set for account-owned custom assets. */
+  ownerId: string | null;
+}
 
 /** Bounded fail-closed backstop when a lifecycle pub/sub signal is missed. */
 export const REALTIME_PRINCIPAL_REVALIDATION_INTERVAL_MS = 30_000;
@@ -257,7 +264,9 @@ export interface RealtimeGatewayDeps {
    * §10) to its provider ref for the poll loop; null when missing/foreign —
    * indistinguishable, exactly like the HTTP 404 (§10 no-leak rule).
    */
-  resolveWatchableAsset(userId: string, assetId: string): Promise<AssetRef | null>;
+  resolveWatchableAsset(userId: string, assetId: string): Promise<WatchableAsset | null>;
+  /** Hold the account privacy lock across live-watch authorization and ring reads. */
+  withAccountPrivacyLock?<T>(userId: string, action: () => Promise<T>): Promise<T>;
   /**
    * Active-view presence store (#368): `presence.enter`/`presence.leave` write
    * here, the notification dispatcher reads it (cross-process, via Redis) to
@@ -281,12 +290,17 @@ export interface RealtimeGateway {
    * connected Engine.IO clients, or 0 when the gateway is disabled/unattached.
    */
   connectionCount(): number;
+  /** Drop this user's retained refs to account-owned assets before mode enable. */
+  invalidateOwnedLiveMode(userId: string): Promise<void>;
   /** Disconnect all clients, drop bus subscriptions, close the socket server. */
   close(): Promise<void>;
 }
 
 export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGateway {
   const { config, bus, logger } = deps;
+  const withAccountPrivacyLock =
+    deps.withAccountPrivacyLock ??
+    (<T>(_userId: string, action: () => Promise<T>): Promise<T> => action());
   const corsOrigins = [
     ...new Set(config.corsOrigins.map((configuredOrigin) => new URL(configuredOrigin).origin)),
   ];
@@ -607,12 +621,18 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         return;
       }
       // Owner-or-shared, recomputed at join time — revoking a share stops new
-      // joins immediately (§6.9). Errors fail closed.
-      const allowed = await deps.canViewPortfolio(principal.userId, room.id).catch(() => false);
-      if (!allowed) {
-        respond({ ok: false, error: 'FORBIDDEN' });
-        return;
-      }
+      // joins immediately (§6.9). Errors fail closed. The viewer's account lock
+      // is held across the check, the join AND the ack (same shape as
+      // `forwardLiveFrame`): otherwise a transition committing in that gap
+      // would leave the socket admitted on an authorization taken before it.
+      const admitted = await withAccountPrivacyLock(principal.userId, async () => {
+        const allowed = await deps.canViewPortfolio(principal.userId, room.id).catch(() => false);
+        if (!allowed) return false;
+        await socket.join(roomName(room));
+        return true;
+      });
+      respond(admitted ? { ok: true } : { ok: false, error: 'FORBIDDEN' });
+      return;
     }
     await socket.join(roomName(room));
     respond({ ok: true });
@@ -633,13 +653,15 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
 
   /**
    * The assets this socket holds a live watch on (one registration each,
-   * §6.3): the resolved provider ref (re-watches and stitched backfills reuse
-   * it without re-resolving) and the rate registered with the shared loop —
-   * an unwatch must release exactly the rate it registered (#372).
+   * §6.3) and the rate registered with the shared loop. Provider refs are
+   * deliberately never retained here: every watch/backfill re-resolves under
+   * the account transition lock. An unwatch must release exactly the rate it
+   * registered (#372).
    */
   type LiveWatchEntry = {
-    ref: AssetRef;
     rateMs: number | undefined;
+    /** Null for global market assets; set for account-owned custom assets. */
+    ownerId: string | null;
     leaseId: string;
     userId: string;
     expiresAtMs: number;
@@ -1072,120 +1094,135 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       respond({ ok: false, error: 'UNAVAILABLE' });
       return;
     }
-    const { assetId, window } = parsed.data;
-    // Wire-compatible 1 s / 2 s values are clamped to the documented 5 s
-    // provider floor. Omitted rates still use the service's configured default
-    // (10 s in production; deliberately tiny in integration tests).
-    const rateMs =
-      parsed.data.rate === undefined
-        ? undefined
-        : Math.max(LIVE_RATE_MS[parsed.data.rate], LIVE_MIN_POLL_INTERVAL_MS);
-    const watched = liveAssetsOf(socket);
-    let entry = watched.get(assetId);
-    let startedHere = false;
-    if (!entry) {
-      if (watched.size >= REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET) {
-        respond({ ok: false, error: 'SOCKET_WATCH_LIMIT' });
-        return;
-      }
-      const ref = await deps.resolveWatchableAsset(principal.userId, assetId).catch(() => null);
-      if (!ref) {
+    // Every watch — first watch, re-watch and rate/window switch alike —
+    // re-resolves the asset under the caller's account transition lock. A
+    // paranoid enable detaches an owned custom asset while an existing socket
+    // may still hold its old provider ref, so the ref is resolved here and
+    // deliberately never retained on the entry: a stale ref can reach neither
+    // the shared loop nor the backfill.
+    await withAccountPrivacyLock(principal.userId, async () => {
+      const { assetId, window } = parsed.data;
+      const resolved = await deps
+        .resolveWatchableAsset(principal.userId, assetId)
+        .catch(() => null);
+      if (!resolved) {
         // Missing and someone-else's-custom look identical (§10). Fails closed.
         respond({ ok: false, error: 'NOT_FOUND' });
         return;
       }
-      const leaseId = randomUUID();
-      const leaseExpiresAtMs = admissionNow() + admissionLeaseTtlMs;
-      let admitted;
-      try {
-        admitted = await admission.acquireWatch({
-          leaseId,
-          userId: principal.userId,
-          assetId,
-        });
-      } catch (err) {
-        logger.warn({ err, userId: principal.userId, assetId }, 'live watch admission failed');
-        respond({ ok: false, error: 'UNAVAILABLE' });
-        return;
-      }
-      if (!admitted.ok) {
-        respond({ ok: false, error: admitted.error });
-        return;
-      }
-      if (admissionNow() >= leaseExpiresAtMs - admissionDeadlineSlackMs) {
-        await admission
-          .releaseWatch({ leaseId, userId: principal.userId, assetId })
-          .catch(() => undefined);
-        respond({ ok: false, error: 'UNAVAILABLE' });
-        return;
-      }
-      if (socket.disconnected) {
-        await admission
-          .releaseWatch({ leaseId, userId: principal.userId, assetId })
-          .catch(() => undefined);
-        respond({ ok: false, error: 'GONE' });
-        return;
-      }
-      try {
-        if (!liveMode.watch(assetId, ref, rateMs, admitted.sharedGlobalAsset)) {
+      // Wire-compatible 1 s / 2 s values are clamped to the documented 5 s
+      // provider floor. Omitted rates still use the service's configured default
+      // (10 s in production; deliberately tiny in integration tests).
+      const rateMs =
+        parsed.data.rate === undefined
+          ? undefined
+          : Math.max(LIVE_RATE_MS[parsed.data.rate], LIVE_MIN_POLL_INTERVAL_MS);
+      const watched = liveAssetsOf(socket);
+      let entry = watched.get(assetId);
+      let startedHere = false;
+      if (!entry) {
+        if (watched.size >= REALTIME_MAX_WATCHED_ASSETS_PER_SOCKET) {
+          respond({ ok: false, error: 'SOCKET_WATCH_LIMIT' });
+          return;
+        }
+        const leaseId = randomUUID();
+        const leaseExpiresAtMs = admissionNow() + admissionLeaseTtlMs;
+        let admitted;
+        try {
+          admitted = await admission.acquireWatch({
+            leaseId,
+            userId: principal.userId,
+            assetId,
+          });
+        } catch (err) {
+          logger.warn({ err, userId: principal.userId, assetId }, 'live watch admission failed');
+          respond({ ok: false, error: 'UNAVAILABLE' });
+          return;
+        }
+        if (!admitted.ok) {
+          respond({ ok: false, error: admitted.error });
+          return;
+        }
+        if (admissionNow() >= leaseExpiresAtMs - admissionDeadlineSlackMs) {
           await admission
             .releaseWatch({ leaseId, userId: principal.userId, assetId })
             .catch(() => undefined);
+          respond({ ok: false, error: 'UNAVAILABLE' });
+          return;
+        }
+        if (socket.disconnected) {
+          await admission
+            .releaseWatch({ leaseId, userId: principal.userId, assetId })
+            .catch(() => undefined);
+          respond({ ok: false, error: 'GONE' });
+          return;
+        }
+        try {
+          if (!liveMode.watch(assetId, resolved.ref, rateMs, admitted.sharedGlobalAsset)) {
+            await admission
+              .releaseWatch({ leaseId, userId: principal.userId, assetId })
+              .catch(() => undefined);
+            respond({ ok: false, error: 'LIVE_START_FAILED' });
+            return;
+          }
+        } catch (err) {
+          await admission
+            .releaseWatch({ leaseId, userId: principal.userId, assetId })
+            .catch(() => undefined);
+          logger.warn({ err, userId: principal.userId, assetId }, 'live loop start failed');
           respond({ ok: false, error: 'LIVE_START_FAILED' });
           return;
         }
-      } catch (err) {
-        await admission
-          .releaseWatch({ leaseId, userId: principal.userId, assetId })
-          .catch(() => undefined);
-        logger.warn({ err, userId: principal.userId, assetId }, 'live loop start failed');
-        respond({ ok: false, error: 'LIVE_START_FAILED' });
-        return;
+        entry = {
+          rateMs,
+          ownerId: resolved.ownerId,
+          leaseId,
+          userId: principal.userId,
+          expiresAtMs: leaseExpiresAtMs,
+        };
+        watched.set(assetId, entry);
+        startedHere = true;
+        try {
+          await socket.join(assetRoom(assetId));
+        } catch (err) {
+          await releaseLiveWatch(socket, assetId, entry, false);
+          logger.warn({ err, userId: principal.userId, assetId }, 'live room join failed');
+          respond({ ok: false, error: 'LIVE_START_FAILED' });
+          return;
+        }
+      } else {
+        if (entry.rateMs !== rateMs) {
+          if (!liveMode.watch(assetId, resolved.ref, rateMs)) {
+            respond({ ok: false, error: 'LIVE_START_FAILED' });
+            return;
+          }
+          liveMode.unwatch(assetId, entry.rateMs);
+          entry.rateMs = rateMs;
+        }
+        // Provenance can only have narrowed under this lock; record what the
+        // fresh resolve says so the per-frame recheck compares like for like.
+        entry.ownerId = resolved.ownerId;
       }
-      entry = {
-        ref,
-        rateMs,
-        leaseId,
-        userId: principal.userId,
-        expiresAtMs: leaseExpiresAtMs,
-      };
-      watched.set(assetId, entry);
-      startedHere = true;
+      let frames: Awaited<ReturnType<LiveModeService['backfill']>>;
       try {
-        await socket.join(assetRoom(assetId));
+        frames = await liveMode.backfill(assetId, resolved.ref, window);
       } catch (err) {
-        await releaseLiveWatch(socket, assetId, entry, false);
-        logger.warn({ err, userId: principal.userId, assetId }, 'live room join failed');
+        // A first watch is transactional through backfill: it cannot leave a
+        // provider loop or Redis capacity behind when startup fails.
+        if (startedHere && watched.get(assetId) === entry) {
+          await releaseLiveWatch(socket, assetId, entry, true);
+        }
+        logger.warn({ err, userId: principal.userId, assetId }, 'live backfill failed');
         respond({ ok: false, error: 'LIVE_START_FAILED' });
         return;
       }
-    } else if (entry.rateMs !== rateMs) {
-      if (!liveMode.watch(assetId, entry.ref, rateMs)) {
-        respond({ ok: false, error: 'LIVE_START_FAILED' });
-        return;
-      }
-      liveMode.unwatch(assetId, entry.rateMs);
-      entry.rateMs = rateMs;
-    }
-    let frames: Awaited<ReturnType<LiveModeService['backfill']>>;
-    try {
-      frames = await liveMode.backfill(assetId, entry.ref, window);
-    } catch (err) {
-      // A first watch is transactional through backfill: it cannot leave a
-      // provider loop or Redis capacity behind when startup fails.
-      if (startedHere && watched.get(assetId) === entry) {
-        await releaseLiveWatch(socket, assetId, entry, true);
-      }
-      logger.warn({ err, userId: principal.userId, assetId }, 'live backfill failed');
-      respond({ ok: false, error: 'LIVE_START_FAILED' });
-      return;
-    }
-    // The oldest frame is the earliest instant the backfill honestly covers
-    // (§13.5 V5-P1 §5): when the seed reaches the window start it is ~now−window,
-    // when history is genuinely short (new listing, market just opened) it is
-    // later, and the client renders from here instead of padding an empty edge.
-    const coverageFrom = frames[0]?.at;
-    respond({ ok: true, frames, coverageFrom });
+      // The oldest frame is the earliest instant the backfill honestly covers
+      // (§13.5 V5-P1 §5): when the seed reaches the window start it is ~now−window,
+      // when history is genuinely short (new listing, market just opened) it is
+      // later, and the client renders from here instead of padding an empty edge.
+      const coverageFrom = frames[0]?.at;
+      respond({ ok: true, frames, coverageFrom });
+    });
   }
 
   /**
@@ -1249,6 +1286,114 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       return;
     }
     respond({ ok: true });
+  }
+
+  /**
+   * Reauthorize every established private watch before its next frame. The
+   * account lock linearizes this with paranoid enable: a frame lock that wins
+   * emits before the transition, while a transition that wins makes the
+   * resolver fail closed, evicts the socket, and releases both its shared-loop
+   * ref and its admission lease without emitting. Global market assets remain
+   * available in paranoid mode and need no per-frame account lookup.
+   */
+  async function forwardLiveFrame(server: SocketIOServer, frame: RealtimeLiveFrame): Promise<void> {
+    const sockets = [...server.sockets.sockets.values()].filter((socket) =>
+      liveAssetsOf(socket).has(frame.assetId),
+    );
+    await Promise.allSettled(
+      sockets.map((socket) =>
+        enqueueLiveOp(socket, async () => {
+          const entry = liveAssetsOf(socket).get(frame.assetId);
+          if (!entry) return;
+          const emit = () => {
+            if (!socket.disconnected) {
+              socket.emit(REALTIME_SERVER_EVENTS.liveFrame, frame);
+            }
+          };
+          if (entry.ownerId === null) {
+            emit();
+            return;
+          }
+
+          const userId = entry.userId;
+          await withAccountPrivacyLock(userId, async () => {
+            const current = liveAssetsOf(socket).get(frame.assetId);
+            if (!current) return;
+            const resolved = await deps
+              .resolveWatchableAsset(userId, frame.assetId)
+              .catch(() => null);
+            if (!resolved || resolved.ownerId !== current.ownerId) {
+              await releaseLiveWatch(socket, frame.assetId, current, true);
+              return;
+            }
+            emit();
+          });
+        }).catch((err) => {
+          logger.warn({ err, assetId: frame.assetId }, 'live frame authorization failed');
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Reauthorize every established shared viewer before each `portfolio.changed`
+   * frame — the room-join sibling of {@link forwardLiveFrame}. Admission was
+   * decided against the owner's audience at join time, and a share revocation
+   * or a paranoid transition on either side must stop delivery immediately, not
+   * at the socket's next reconnect. Each viewer's account lock is held across
+   * the recheck and the emit, so a transition either wins (viewer evicted, no
+   * frame) or loses (frame precedes the transition). The owner's own tabs and
+   * scoped bearer seats are addressed through their user rooms and need no
+   * audience recheck.
+   */
+  async function forwardPortfolioChanged(
+    server: SocketIOServer,
+    portfolioId: string,
+    ownerId: string,
+    occurredAt: string,
+  ): Promise<void> {
+    const payload: RealtimePortfolioChanged = { portfolioId, occurredAt };
+    emitUserCapability(
+      server,
+      ownerId,
+      'portfolioChanged',
+      REALTIME_SERVER_EVENTS.portfolioChanged,
+      payload,
+    );
+
+    const room = portfolioRoom(portfolioId);
+    // Per-socket iteration instead of one room broadcast: reauthorization needs
+    // each viewer's own account lock. Two consequences worth knowing before this
+    // is scaled (V5-P1 topology work): the cost is one locked `canViewPortfolio`
+    // transaction per admitted viewer per frame, and `sockets.sockets` is the
+    // LOCAL socket map — correct today because the tree ships no Socket.IO
+    // adapter (every socket is on this node), but a Redis adapter would make
+    // this node-local and the recheck would have to move to a per-node handler.
+    const viewers = [...server.sockets.sockets.values()].filter(
+      // The owner is already served by their user rooms above; `.to().to()`
+      // used to dedupe that overlap, so skipping them keeps it single-emit.
+      (socket) => socket.rooms.has(room) && principalOf(socket)?.userId !== ownerId,
+    );
+    await Promise.allSettled(
+      viewers.map(async (socket) => {
+        const userId = principalOf(socket)?.userId;
+        if (!userId) return;
+        try {
+          await withAccountPrivacyLock(userId, async () => {
+            const allowed = await deps.canViewPortfolio(userId, portfolioId).catch(() => false);
+            if (!allowed) {
+              await socket.leave(room);
+              return;
+            }
+            if (!socket.disconnected) {
+              socket.emit(REALTIME_SERVER_EVENTS.portfolioChanged, payload);
+            }
+          });
+        } catch (err) {
+          logger.warn({ err, userId, portfolioId }, 'portfolio room authorization failed');
+        }
+      }),
+    );
   }
 
   const USER_EVENT_CAPABILITIES = [
@@ -1457,17 +1602,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     );
     unsubscribers.push(
       await bus.subscribe('portfolio.changed', (event) => {
-        const payload: RealtimePortfolioChanged = {
-          portfolioId: event.portfolioId,
-          occurredAt: event.occurredAt,
-        };
-        // Owner's cookie tabs + scoped portfolio bearers + any admitted shared
-        // viewers. `.to().to()` targets the union and Socket.IO dedupes seats.
-        server
-          .to(userRoom(event.userId))
-          .to(scopedUserRoom(event.userId, 'portfolioChanged'))
-          .to(portfolioRoom(event.portfolioId))
-          .emit(REALTIME_SERVER_EVENTS.portfolioChanged, payload);
+        void forwardPortfolioChanged(server, event.portfolioId, event.userId, event.occurredAt);
       }),
     );
     unsubscribers.push(
@@ -1521,7 +1656,9 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         if (envelope.sourceId === gatewayInstanceId) return;
         const frame = realtimeLiveFrameSchema.safeParse(envelope.frame);
         if (!frame.success) return;
-        server.to(assetRoom(frame.data.assetId)).emit(REALTIME_SERVER_EVENTS.liveFrame, frame.data);
+        // Remote frames take the same per-socket authorization as local ones —
+        // a room broadcast here would bypass the paranoid recheck.
+        void forwardLiveFrame(server, frame.data);
         return;
       }
       if (channel === LIVE_LOOP_COORDINATION_CHANNEL) {
@@ -1801,7 +1938,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       if (deps.liveMode) {
         const server = io;
         const offFrames = deps.liveMode.onFrame((frame) => {
-          server.to(assetRoom(frame.assetId)).emit(REALTIME_SERVER_EVENTS.liveFrame, frame);
+          void forwardLiveFrame(server, frame);
           void deps.redis
             .publish(
               REALTIME_LIVE_FANOUT_CHANNEL,
@@ -1825,6 +1962,21 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
 
     connectionCount(): number {
       return io?.engine?.clientsCount ?? 0;
+    },
+
+    async invalidateOwnedLiveMode(userId): Promise<void> {
+      if (!io) return;
+      const sockets = [...io.sockets.sockets.values()].filter(
+        (socket) => principalOf(socket)?.userId === userId,
+      );
+      for (const socket of sockets) {
+        const ownedEntries = [...liveAssetsOf(socket)].filter(
+          ([, entry]) => entry.ownerId === userId,
+        );
+        for (const [assetId, entry] of ownedEntries) {
+          await releaseLiveWatch(socket, assetId, entry, true);
+        }
+      }
     },
 
     async close(): Promise<void> {

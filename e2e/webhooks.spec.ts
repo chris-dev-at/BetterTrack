@@ -53,16 +53,17 @@ const DELIVERY_HEADER = WEBHOOK_DELIVERY_HEADER.toLowerCase();
 test.use({ trace: 'off' });
 
 /**
- * Drive the real Settings → API Access UI to create ONE webhook subscribed to
- * "Price alert triggered", pointed at the local receiver. Dismisses the one-time
- * secret modal WITHOUT reading its plaintext (the harness decrypts the stored
- * secret instead).
+ * Drive the real Control Center → Webhooks panel to create ONE webhook
+ * subscribed to "Price alert triggered", pointed at the local receiver.
+ * Dismisses the one-time secret modal WITHOUT reading its plaintext (the
+ * harness decrypts the stored secret instead).
  */
 async function createWebhookViaSettings(page: Page, receiver: CaptureReceiver): Promise<void> {
-  await page.goto('/settings/api');
-  const toggle = page.locator('button[aria-expanded]').filter({ hasText: 'Webhooks' });
-  await expect(toggle).toBeVisible({ timeout: 15_000 });
-  await toggle.click();
+  await page.goto('/control/webhooks');
+  // Webhooks is its own Control Center panel now, so the form is open on
+  // arrival — the outer collapse only made sense while it was nested inside
+  // the API-access page.
+  await expect(page.getByLabel('Payload URL')).toBeVisible({ timeout: 15_000 });
 
   await page.getByLabel('Payload URL').fill(`${receiver.url}/hook`);
   await page.getByLabel('Label (optional)').fill('E3 receiver');
@@ -70,7 +71,9 @@ async function createWebhookViaSettings(page: Page, receiver: CaptureReceiver): 
   await page.getByRole('button', { name: 'Add webhook' }).click();
 
   // The one-time secret modal — acknowledge and dismiss without scraping it.
-  const dialog = page.getByRole('dialog');
+  // Named: the Control Center popup is itself `role="dialog" aria-modal`, so a
+  // bare dialog locator matches two elements.
+  const dialog = page.getByRole('dialog', { name: 'Your webhook signing secret' });
   await expect(dialog).toBeVisible({ timeout: 15_000 });
   await dialog.getByRole('button', { name: 'Done' }).click();
   await expect(dialog).toBeHidden();
@@ -121,11 +124,9 @@ test('webhooks: a Settings-created webhook delivers a verifiable signed payload'
     expect(payload.id).toBe(deliveryId);
     expect(payload.type).toBe('alert.triggered');
 
-    // The delivery-log surfaces the success in the Settings UI.
+    // The delivery-log surfaces the success in the Control Center.
     const page = owner.page;
-    await page.goto('/settings/api');
-    const toggle = page.locator('button[aria-expanded]').filter({ hasText: 'Webhooks' });
-    await toggle.click();
+    await page.goto('/control/webhooks');
     const row = page.getByRole('listitem').filter({ hasText: receiver.url });
     await expect(row).toBeVisible({ timeout: 15_000 });
     await row.getByRole('button', { name: 'Deliveries' }).click();
@@ -187,11 +188,9 @@ test('webhooks: a dead receiver retries, auto-disables, and re-enables from Sett
     expect(disabled.disabledReason).toBe('auto');
     expect(disabled.consecutiveFailures).toBe(WEBHOOK_AUTO_DISABLE_THRESHOLD);
 
-    // The Settings UI shows the auto-disabled state; the user re-enables it there.
+    // The Control Center shows the auto-disabled state; the user re-enables it there.
     const page = owner.page;
-    await page.goto('/settings/api');
-    const toggle = page.locator('button[aria-expanded]').filter({ hasText: 'Webhooks' });
-    await toggle.click();
+    await page.goto('/control/webhooks');
     const row = page.getByRole('listitem').filter({ hasText: receiver.url });
     await expect(row).toBeVisible({ timeout: 15_000 });
     await expect(row.getByText('Auto-disabled')).toBeVisible();

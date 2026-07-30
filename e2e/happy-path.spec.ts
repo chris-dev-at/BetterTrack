@@ -117,17 +117,30 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   // V2-P11: create and switch to a second portfolio — scoped views (holdings)
   // follow the active portfolio, then switch back to the default.
   const switcher = owner.getByRole('button', { name: 'Switch portfolio' });
+  // A filterable picker, so a labelled disclosure group rather than an ARIA
+  // menu (#977): its rows and actions are ordinary buttons and links.
+  const switcherPopover = owner.getByRole('group', { name: 'Portfolios' });
   await switcher.click();
-  await owner.getByRole('menuitem', { name: '+ New portfolio' }).click();
-  const newPortfolioDialog = owner.getByRole('dialog', { name: 'New portfolio' });
-  await newPortfolioDialog.getByLabel('Portfolio name').fill('Growth');
-  await newPortfolioDialog.getByRole('button', { name: 'Create' }).click();
-  await expect(newPortfolioDialog).toBeHidden();
+  // The switcher's single create entry point is the add-portfolio wizard:
+  // name → icon → book → done, one gold primary per step.
+  await switcherPopover.getByRole('button', { name: 'Add portfolio' }).click();
+  const wizard = owner.getByRole('dialog', { name: 'Add portfolio' });
+  await wizard.getByLabel('Portfolio name').fill('Growth');
+  await wizard.getByRole('button', { name: 'Continue' }).click();
+  await wizard.getByRole('radio', { name: 'Savings' }).click();
+  await wizard.getByRole('button', { name: 'Continue' }).click();
+  await wizard.getByRole('radio', { name: /Just me/ }).click();
+  await wizard.getByRole('button', { name: 'Continue' }).click();
+  // Created: the summary reads it back, and the primary activates it.
+  await wizard.getByRole('button', { name: 'Open portfolio' }).click();
+  await expect(wizard).toBeHidden();
   await expect(switcher).toContainText('Growth');
+  // The icon picked in the wizard is the one the trigger now carries.
+  await expect(switcher.locator('svg[data-icon="piggy-bank"]')).toBeVisible();
   await expect(owner.getByText('Your portfolio is empty')).toBeVisible({ timeout: 15_000 });
 
   await switcher.click();
-  await owner.getByRole('menuitemradio', { name: 'Main' }).click();
+  await switcherPopover.getByRole('button', { name: 'Main' }).click();
   await expect(switcher).toContainText('Main');
   await expect(ownerHoldings.getByRole('link', { name: 'AAPL' })).toBeVisible({
     timeout: 15_000,

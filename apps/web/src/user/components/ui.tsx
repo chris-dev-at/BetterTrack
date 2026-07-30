@@ -2,6 +2,8 @@ import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, ReactNod
 
 import { useT } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
+import { TAGLINE } from '../../ui/Disclaimer';
+import { AuthFigures } from './AuthFigures';
 
 /*
  * Legacy shared primitives, reskinned onto the Origin design system
@@ -39,6 +41,7 @@ export function Button({ variant = 'primary', className, type, ...rest }: Button
 interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   label: string;
   hint?: string;
+  error?: string;
 }
 
 /**
@@ -50,13 +53,39 @@ interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
  * it. Sizing the field is what every caller actually wants — `sm:w-40` on the
  * wrapper produces exactly the width the input then fills.
  */
-export function TextField({ label, hint, id, className, ...rest }: TextFieldProps) {
+export function TextField({ label, hint, error, id, className, ...rest }: TextFieldProps) {
   const inputId = id ?? rest.name ?? label.toLowerCase().replace(/\s+/g, '-');
+  const hintId = `${inputId}-hint`;
+  const errorId = `${inputId}-error`;
+  const hasError = error !== undefined;
+  const describedBy = [
+    rest['aria-describedby'],
+    hint ? hintId : undefined,
+    hasError ? errorId : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' ');
+
   return (
     <div className={cx('bt-field', className)}>
       <label htmlFor={inputId}>{label}</label>
-      <input id={inputId} className="bt-input" {...rest} />
-      {hint ? <p className="bt-field__hint">{hint}</p> : null}
+      <input
+        id={inputId}
+        className="bt-input"
+        {...rest}
+        aria-describedby={describedBy || undefined}
+        aria-invalid={hasError || undefined}
+      />
+      {hint ? (
+        <p id={hintId} className="bt-field__hint">
+          {hint}
+        </p>
+      ) : null}
+      {hasError ? (
+        <p id={errorId} className="bt-field__error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -176,17 +205,37 @@ export function Toast({ children, onDismiss }: { children: ReactNode; onDismiss:
  * Composed as the Origin gate (`bt-gate` / `bt-gate__card`): ONE card holds the
  * wordmark, the subtitle and the screen's content — no card inside a card. It
  * carries `bt-app` itself because auth screens render outside the app shell.
+ *
+ * **Split gate (R2).** From 900px up the same markup becomes two columns: a
+ * graphite brand panel holding the wordmark and the single {@link TAGLINE} line
+ * over a slow ambient tint, and a working column carrying this card's content
+ * straight on the canvas (the card chrome drops away — see origin.css). Every
+ * child screen keeps its markup, so field labels, names and roles are untouched.
+ * Below 900px the brand panel is `display: none` and the card renders exactly
+ * the centered single-column gate it always did — which is also what jsdom sees,
+ * so unit tests keep asserting against one wordmark and one subtitle.
  */
 export function AuthCard({ subtitle, children }: { subtitle: string; children: ReactNode }) {
   return (
-    <div className="bt-app bt-gate">
-      <div className="bt-gate__card">
-        <div className="bt-gate__brand text-center">
-          <Wordmark edition="Web" />
-          <p className="bt-meta mt-1 font-normal">{subtitle}</p>
+    <div className="bt-app bt-gate bt-gate--split">
+      {/* Brand panel — decorative twin of the card's own wordmark, so it is
+          hidden from assistive tech: the card below always announces the mark. */}
+      <aside className="bt-gate__brandpanel" aria-hidden="true">
+        <AuthFigures />
+        <Wordmark edition="Web" className="bt-gate__mark" />
+        <p className="bt-gate__tagline">{TAGLINE}</p>
+      </aside>
+      <main className="bt-gate__column">
+        <div className="bt-gate__card">
+          <div className="bt-gate__brand text-center">
+            <span className="bt-gate__brand-mark">
+              <Wordmark edition="Web" />
+            </span>
+            <h1 className="bt-meta mt-1 font-normal">{subtitle}</h1>
+          </div>
+          {children}
         </div>
-        {children}
-      </div>
+      </main>
     </div>
   );
 }

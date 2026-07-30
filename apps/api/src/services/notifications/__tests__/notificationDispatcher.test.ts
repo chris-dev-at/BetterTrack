@@ -268,7 +268,9 @@ describe('producers → center → dispatcher (one pipeline, #368)', () => {
     await makeFriends(owner.id, f2.id);
 
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
-    await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { visibility: 'friends' });
+    await harness.ctx.portfolio.updatePortfolioWithVisibility(owner.id, portfolioId, {
+      visibility: 'friends',
+    });
 
     expect(await visibleRowsFor(f1.id, 'portfolio.shared')).toHaveLength(1);
     expect(await visibleRowsFor(f2.id, 'portfolio.shared')).toHaveLength(1);
@@ -284,16 +286,24 @@ describe('producers → center → dispatcher (one pipeline, #368)', () => {
 
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
     // Share once → one notification.
-    await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { visibility: 'friends' });
+    await harness.ctx.portfolio.updatePortfolioWithVisibility(owner.id, portfolioId, {
+      visibility: 'friends',
+    });
     expect(await visibleRowsFor(friend.id, 'portfolio.shared')).toHaveLength(1);
 
     // A rename (visibility untouched) and a re-set to friends must not re-notify.
     await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { name: 'Renamed' });
-    await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { visibility: 'friends' });
+    await harness.ctx.portfolio.updatePortfolioWithVisibility(owner.id, portfolioId, {
+      visibility: 'friends',
+    });
     // Turning it off then on again is a fresh transition, but the event key is the
     // same (portfolio + owner), so dedupe keeps it at one row.
-    await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { visibility: 'private' });
-    await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { visibility: 'friends' });
+    await harness.ctx.portfolio.updatePortfolioWithVisibility(owner.id, portfolioId, {
+      visibility: 'private',
+    });
+    await harness.ctx.portfolio.updatePortfolioWithVisibility(owner.id, portfolioId, {
+      visibility: 'friends',
+    });
 
     expect(await allRowsFor(friend.id, 'portfolio.shared')).toHaveLength(1);
   });

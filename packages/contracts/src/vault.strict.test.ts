@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  paranoidDisableRequestSchema,
   paranoidDisableRehydrationRequestSchema,
   paranoidDisableRehydrationResultSchema,
+  paranoidDisableResponseSchema,
+  paranoidEnableRequestSchema,
+  paranoidEnableResponseSchema,
   VAULT_DOCUMENT_V1_VERSION,
   VAULT_ENTITY_KINDS,
   type VaultStrictEntity,
@@ -20,7 +24,100 @@ const CASH_SOURCE_ID = uuid(4);
 const CATEGORY_ID = uuid(5);
 const ORDER_ID = uuid(6);
 const BUDGET_ID = uuid(7);
+const CASH_TAG_ID = uuid(30);
+const CASH_BUDGET_ID = uuid(32);
+const CASH_RULE_ID = uuid(34);
 const ORIGINAL_EXPENSE_HASH = 'a'.repeat(64);
+
+describe('public paranoid transitions', () => {
+  const emptyDocument = {
+    schemaVersion: VAULT_DOCUMENT_V1_VERSION,
+    entities: [],
+    mergeLog: [],
+  };
+
+  it('ties selected media evidence to one exact supported vault version', () => {
+    expect(
+      paranoidEnableRequestSchema.parse({
+        mediaSet: ['server'],
+        vaultVersion: 1,
+      }),
+    ).toEqual({ mediaSet: ['server'], vaultVersion: 1, driveAttestation: null });
+    expect(
+      paranoidEnableRequestSchema.parse({
+        mediaSet: ['drive'],
+        vaultVersion: 7,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
+      }),
+    ).toEqual({
+      mediaSet: ['drive'],
+      vaultVersion: 7,
+      driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
+    });
+
+    for (const invalid of [
+      { mediaSet: ['drive'], vaultVersion: 7 },
+      {
+        mediaSet: ['drive'],
+        vaultVersion: 7,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 6 },
+      },
+      {
+        mediaSet: ['server'],
+        vaultVersion: 7,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
+      },
+      { mediaSet: ['server'], vaultVersion: 0 },
+      { mediaSet: ['server'], vaultVersion: 1, plaintextHash: 'forbidden' },
+    ]) {
+      expect(paranoidEnableRequestSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
+  it('requires explicit disable confirmation and preserves the PD3a idempotency key', () => {
+    const request = {
+      confirm: true,
+      rehydrationId: uuid(90),
+      document: emptyDocument,
+    };
+    expect(paranoidDisableRequestSchema.parse(request)).toEqual(request);
+    expect(paranoidDisableRequestSchema.safeParse({ ...request, confirm: false }).success).toBe(
+      false,
+    );
+    expect(
+      paranoidDisableRequestSchema.safeParse({
+        ...request,
+        document: { ...emptyDocument, schemaVersion: 2 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps public receipts portfolio-free and strict', () => {
+    const enabled = {
+      mode: 'paranoid',
+      mediaSet: ['server'],
+      vaultVersion: 3,
+      completedAt: AT,
+      idempotent: false,
+    };
+    expect(paranoidEnableResponseSchema.parse(enabled)).toEqual(enabled);
+    expect(paranoidEnableResponseSchema.safeParse({ ...enabled, portfolioCount: 2 }).success).toBe(
+      false,
+    );
+
+    const disabled = {
+      mode: 'normal',
+      rehydrationId: uuid(90),
+      completedAt: AT,
+      idempotent: true,
+      postCommit: { invalidate: ['account'] },
+    };
+    expect(paranoidDisableResponseSchema.parse(disabled)).toEqual(disabled);
+    expect(
+      paranoidDisableResponseSchema.safeParse({ ...disabled, documentHash: 'no' }).success,
+    ).toBe(false);
+  });
+});
 
 const meta = (id: string) => ({
   id,
@@ -122,6 +219,8 @@ const fixtures: VaultStrictEntity[] = [
       executedAt: AT,
       note: 'settlement',
       source: 'manual',
+      dedupHash: null,
+      originalCurrency: null,
       createdAt: '2026-07-22T08:00:00.000Z',
     },
   },
@@ -338,6 +437,73 @@ const fixtures: VaultStrictEntity[] = [
       firedAt: AT,
     },
   },
+  // ── V5 cash fusion ──
+  {
+    ...meta(CASH_TAG_ID),
+    kind: 'cashTag',
+    data: {
+      userId: USER_ID,
+      name: 'Tax',
+      color: '#ef4444',
+      system: true,
+      systemKey: 'tax',
+      createdAt: AT,
+      updatedAt: AT,
+    },
+  },
+  {
+    ...meta(uuid(31)),
+    kind: 'cashMovementTag',
+    data: {
+      movementId: uuid(12),
+      tagId: CASH_TAG_ID,
+      createdAt: AT,
+    },
+  },
+  {
+    ...meta(CASH_BUDGET_ID),
+    kind: 'cashBudget',
+    data: {
+      portfolioId: PORTFOLIO_ID,
+      tagId: CASH_TAG_ID,
+      periodKey: '2026-07',
+      amount: '300.00',
+      currency: 'EUR',
+      createdAt: AT,
+      updatedAt: AT,
+    },
+  },
+  {
+    ...meta(uuid(33)),
+    kind: 'cashBudgetFire',
+    data: {
+      budgetId: CASH_BUDGET_ID,
+      periodKey: '2026-07',
+      firedAt: AT,
+    },
+  },
+  {
+    ...meta(CASH_RULE_ID),
+    kind: 'cashRule',
+    data: {
+      userId: USER_ID,
+      matchType: 'starts_with',
+      pattern: 'REWE',
+      priority: 5,
+      enabled: true,
+      createdAt: AT,
+      updatedAt: AT,
+    },
+  },
+  {
+    ...meta(uuid(35)),
+    kind: 'cashRuleTag',
+    data: {
+      ruleId: CASH_RULE_ID,
+      tagId: CASH_TAG_ID,
+      createdAt: AT,
+    },
+  },
 ];
 
 describe('strict vault document v1', () => {
@@ -451,4 +617,38 @@ describe('vault media state', () => {
       }).success,
     ).toBe(true);
   });
+});
+
+it('accepts a cash movement written before V5 cash fusion', () => {
+  // Regression: dedupHash/originalCurrency were required-but-nullable on a
+  // .strict() schema, so every vault document written BEFORE cash fusion —
+  // including a user's own older backup — failed to read as VAULT_CORRUPT.
+  // Absent keys mean exactly what null means: no import hash, amount in EUR.
+  const preFusion = {
+    ...meta(uuid(120)),
+    kind: 'cashMovement',
+    data: {
+      portfolioId: PORTFOLIO_ID,
+      sourceId: CASH_SOURCE_ID,
+      kind: 'deposit',
+      amountEur: '100.000000',
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId: null,
+      taxYear: null,
+      executedAt: AT,
+      note: null,
+      source: 'manual',
+      createdAt: AT,
+    },
+  };
+
+  const parsed = vaultStrictEntitySchema.parse(preFusion) as Extract<
+    VaultStrictEntity,
+    { kind: 'cashMovement' }
+  >;
+
+  expect(parsed.data.dedupHash).toBeNull();
+  expect(parsed.data.originalCurrency).toBeNull();
 });

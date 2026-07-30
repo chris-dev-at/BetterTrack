@@ -215,6 +215,8 @@ export interface CreateTestAppOptions {
   notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
   /** Recording data-export build transport for atomic request-gate tests. */
   exportEnqueue?: (jobId: string) => Promise<void>;
+  /** Pause an export after collection while its account transition lock is held. */
+  exportAfterCollect?: (userId: string) => void | Promise<void>;
   /**
    * Controlled clock for the notification service (#437) — makes the
    * auto-archive sweep threshold provable deterministically.
@@ -294,6 +296,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     realtimeCommandNow: options.realtimeCommandNow,
     notificationEnqueue: options.notificationEnqueue,
     exportEnqueue: options.exportEnqueue,
+    exportAfterCollect: options.exportAfterCollect,
     notificationNow: options.notificationNow,
     taxNow: options.taxNow,
     budgetNow: options.budgetNow,

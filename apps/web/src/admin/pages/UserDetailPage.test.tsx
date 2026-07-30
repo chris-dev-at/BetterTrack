@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -159,7 +159,7 @@ test('editing the email persists via updateUser', async () => {
   );
 });
 
-test('reset-password action surfaces the new temp password once', async () => {
+test('keeps a reset temporary password open until it is acknowledged', async () => {
   vi.mocked(api.resetPassword).mockResolvedValue({ user: jane, tempPassword: 'Reset-Pass-4242' });
 
   const user = userEvent.setup();
@@ -169,8 +169,18 @@ test('reset-password action surfaces the new temp password once', async () => {
   const dialog = await screen.findByRole('dialog');
   await user.click(within(dialog).getByRole('button', { name: 'Reset password' }));
 
-  expect(await screen.findByText('Reset-Pass-4242')).toBeInTheDocument();
+  const resultDialog = await screen.findByRole('dialog', { name: 'Password reset' });
+  expect(within(resultDialog).getByText('Reset-Pass-4242')).toBeInTheDocument();
   expect(api.resetPassword).toHaveBeenCalledWith('user-1');
+
+  await user.keyboard('{Escape}');
+  fireEvent.mouseDown(resultDialog.parentElement!);
+  expect(screen.getByText('Reset-Pass-4242')).toBeInTheDocument();
+
+  await user.click(within(resultDialog).getByRole('button', { name: 'Copy' }));
+  expect(await within(resultDialog).findByRole('button', { name: 'Copied' })).toBeInTheDocument();
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(screen.queryByText('Reset-Pass-4242')).not.toBeInTheDocument());
 });
 
 test('delete is gated behind type-username confirmation', async () => {

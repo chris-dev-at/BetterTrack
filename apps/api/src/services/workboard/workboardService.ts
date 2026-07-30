@@ -1,5 +1,6 @@
 import type { WatchlistSharingResponse, WatchlistSummary } from '@bettertrack/contracts';
 
+import type { AssetRepository } from '../../data/repositories/assetRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type {
@@ -8,12 +9,15 @@ import type {
 } from '../../data/repositories/workboardRepository';
 import { badRequest, conflict, notFound } from '../../errors';
 import type { Logger } from '../../logger';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
 
 export interface WorkboardServiceDeps {
   repo: WorkboardRepository;
+  /** Provenance-scoped lookup used before an item insert or any backfill/fan-out work. */
+  assetRepo: Pick<AssetRepository, 'findByIdForUser'>;
   referenceBackfill: ReferenceBackfill;
   /** The single sharing-enforcement layer — per-list audiences run through it (§13.3 V3-P5). */
   audience: AudienceService;
@@ -24,6 +28,8 @@ export interface WorkboardServiceDeps {
   /** The central notification pipeline (#368) — watchlist-add activity events. */
   notify: NotificationCenter;
   logger?: Logger;
+  /** Resolve and hold a shared watchlist owner's transition boundary through the read. */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany' | 'runAllowedWithOptional'>;
 }
 
 export interface WorkboardService {
@@ -31,7 +37,7 @@ export interface WorkboardService {
   list(userId: string): Promise<WorkboardItemWithAsset[]>;
   /** Items in one of the caller's lists (404 when the list isn't theirs). */
   listInWatchlist(userId: string, watchlistId: string): Promise<WorkboardItemWithAsset[]>;
-  /** Items in one list by id — for the authorized shared read (authorization is upstream). */
+  /** Items in one list by id — owner mode is resolved and locked here too. */
   itemsForSharedView(watchlistId: string): Promise<WorkboardItemWithAsset[]>;
   /** Add an asset to `watchlistId` (or the default General list when omitted). */
   addItem(userId: string, assetId: string, watchlistId?: string): Promise<WorkboardItemWithAsset>;
@@ -50,6 +56,22 @@ export interface WorkboardService {
 
 export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardService {
   const { repo, referenceBackfill, audience, profile, friendship, notify, logger } = deps;
+
+  /**
+   * Workboard rows remain usable in paranoid mode, but only for global market
+   * assets. Resolve that branch while holding the caller's transition lock so
+   * no custom metadata, insert, backfill, or social fan-out can start from a
+   * stale normal-mode decision.
+   */
+  async function withVisibleAssetScope<T>(
+    userId: string,
+    read: (includeCustomAssets: boolean) => Promise<T>,
+  ): Promise<T> {
+    if (!deps.paranoid) return read(true);
+    return deps.paranoid.runAllowedWithOptional([], [userId], 'portfolioServer', (normalUserIds) =>
+      read(normalUserIds.has(userId)),
+    );
+  }
 
   /** Resolve + assert ownership of the target list, defaulting to General. */
   async function resolveTargetList(userId: string, watchlistId?: string): Promise<string> {
@@ -76,22 +98,22 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
       const actorUsername = (await friendship.getUsername(ownerId)) ?? '';
       const occurredAt = new Date().toISOString();
       for (const viewerId of optedIn) {
-        const authorized = await audience
-          .authorizeWatchlistRead(viewerId, watchlistId)
+        await audience
+          .withAuthorizedWatchlistRead(viewerId, watchlistId, async () => {
+            await notify.emit({
+              type: 'friend.activity',
+              userId: viewerId,
+              actorId: ownerId,
+              actorUsername,
+              itemKind: 'watchlist',
+              itemId: watchlistId,
+              activity: 'watchlist_add',
+              assetSymbol: item.asset.symbol,
+              refId: `wl:${item.id}`,
+              occurredAt,
+            });
+          })
           .catch(() => undefined);
-        if (!authorized) continue;
-        await notify.emit({
-          type: 'friend.activity',
-          userId: viewerId,
-          actorId: ownerId,
-          actorUsername,
-          itemKind: 'watchlist',
-          itemId: watchlistId,
-          activity: 'watchlist_add',
-          assetSymbol: item.asset.symbol,
-          refId: `wl:${item.id}`,
-          occurredAt,
-        });
       }
     } catch (err) {
       logger?.error({ err, watchlistId }, 'friend.activity emit failed');
@@ -100,38 +122,56 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
 
   return {
     async list(userId) {
-      await repo.ensureDefaultWatchlist(userId);
-      return repo.list(userId);
+      return withVisibleAssetScope(userId, async (includeCustomAssets) => {
+        await repo.ensureDefaultWatchlist(userId);
+        return repo.list(userId, { includeCustomAssets });
+      });
     },
 
     async listInWatchlist(userId, watchlistId) {
-      const found = await repo.findWatchlist(userId, watchlistId);
-      if (!found) throw notFound('Watchlist not found.', 'WATCHLIST_NOT_FOUND');
-      return repo.listByWatchlistForUser(userId, watchlistId);
+      return withVisibleAssetScope(userId, async (includeCustomAssets) => {
+        const found = await repo.findWatchlist(userId, watchlistId);
+        if (!found) throw notFound('Watchlist not found.', 'WATCHLIST_NOT_FOUND');
+        return repo.listByWatchlistForUser(userId, watchlistId, { includeCustomAssets });
+      });
     },
 
-    itemsForSharedView(watchlistId) {
-      return repo.listByWatchlist(watchlistId);
+    async itemsForSharedView(watchlistId) {
+      const ownerId = await repo.watchlistOwner(watchlistId);
+      if (!ownerId) throw notFound('Watchlist not found.', 'WATCHLIST_NOT_FOUND');
+      const read = async () => {
+        // Re-check ownership after taking the account boundary and keep the SQL
+        // owner-scoped, so this helper is never an unscoped below-HTTP read.
+        if (!(await repo.findWatchlist(ownerId, watchlistId))) {
+          throw notFound('Watchlist not found.', 'WATCHLIST_NOT_FOUND');
+        }
+        return repo.listByWatchlistForUser(ownerId, watchlistId);
+      };
+      return deps.paranoid ? deps.paranoid.runAllowedMany([ownerId], 'sharing', read) : read();
     },
 
     async addItem(userId, assetId, watchlistId) {
-      const targetList = await resolveTargetList(userId, watchlistId);
-      const exists = await repo.assetExists(assetId);
-      if (!exists) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
+      return withVisibleAssetScope(userId, async (includeCustomAssets) => {
+        const targetList = await resolveTargetList(userId, watchlistId);
+        const asset = await deps.assetRepo.findByIdForUser(assetId, userId, {
+          includeCustomAssets,
+        });
+        if (!asset) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
 
-      const row = await repo.add(userId, targetList, assetId);
-      if (!row) throw conflict('Asset is already on this watchlist.', 'ALREADY_WATCHING');
+        const row = await repo.add(userId, targetList, assetId);
+        if (!row) throw conflict('Asset is already on this watchlist.', 'ALREADY_WATCHING');
 
-      // First reference (§6.2/§9): warm the asset's daily history. Best-effort.
-      await referenceBackfill.ensureHistory(assetId);
+        // First reference (§6.2/§9): warm the asset's daily history. Best-effort.
+        await referenceBackfill.ensureHistory(assetId);
 
-      const item = await repo.findOneWithAsset(userId, row.id);
-      if (!item) throw new Error('Workboard item vanished after insert');
+        const item = await repo.findOneWithAsset(userId, row.id, { includeCustomAssets });
+        if (!item) throw new Error('Workboard item vanished after insert');
 
-      // Friend-activity (#368): opted-in viewers of this shared list hear about
-      // the add. Best-effort, post-commit.
-      await emitWatchlistActivity(userId, targetList, item);
-      return item;
+        // Friend-activity (#368): opted-in viewers of this shared list hear about
+        // the add. Best-effort, post-commit.
+        if (includeCustomAssets) await emitWatchlistActivity(userId, targetList, item);
+        return item;
+      });
     },
 
     async removeItem(userId, itemId) {
@@ -144,19 +184,23 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
     },
 
     async listWatchlists(userId) {
-      await repo.ensureDefaultWatchlist(userId);
-      const lists = await repo.listWatchlists(userId);
-      const audiences = await audience.audiencesForSubjects(
-        'watchlist',
-        lists.map((l) => l.id),
-      );
-      return lists.map((l) => ({
-        id: l.id,
-        name: l.name,
-        isDefault: l.isDefault,
-        itemCount: l.itemCount,
-        audience: audiences.get(l.id) ?? 'private',
-      }));
+      return withVisibleAssetScope(userId, async (includeCustomAssets) => {
+        await repo.ensureDefaultWatchlist(userId);
+        const lists = await repo.listWatchlists(userId, { includeCustomAssets });
+        const audiences = includeCustomAssets
+          ? await audience.audiencesForSubjects(
+              'watchlist',
+              lists.map((l) => l.id),
+            )
+          : new Map<string, 'private'>();
+        return lists.map((l) => ({
+          id: l.id,
+          name: l.name,
+          isDefault: l.isDefault,
+          itemCount: l.itemCount,
+          audience: audiences.get(l.id) ?? 'private',
+        }));
+      });
     },
 
     async createWatchlist(userId, name) {
@@ -169,25 +213,34 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
     },
 
     async renameWatchlist(userId, watchlistId, name) {
-      const found = await repo.findWatchlist(userId, watchlistId);
-      if (!found) throw notFound('Watchlist not found.', 'WATCHLIST_NOT_FOUND');
-      if (found.isDefault) {
-        throw badRequest('The default watchlist cannot be renamed.', 'WATCHLIST_DEFAULT_LOCKED');
-      }
-      const trimmed = name.trim();
-      if (await repo.watchlistNameTaken(userId, trimmed, watchlistId)) {
-        throw conflict('A watchlist with this name already exists.', 'WATCHLIST_NAME_TAKEN');
-      }
-      await repo.renameWatchlist(userId, watchlistId, trimmed);
-      const audienceState = await audience.getAudience(userId, 'watchlist', watchlistId);
-      const items = await repo.listByWatchlistForUser(userId, watchlistId);
-      return {
-        id: watchlistId,
-        name: trimmed,
-        isDefault: false,
-        itemCount: items.length,
-        audience: audienceState?.audience ?? 'private',
-      };
+      return withVisibleAssetScope(userId, async (includeCustomAssets) => {
+        const found = await repo.findWatchlist(userId, watchlistId);
+        if (!found) throw notFound('Watchlist not found.', 'WATCHLIST_NOT_FOUND');
+        if (found.isDefault) {
+          throw badRequest('The default watchlist cannot be renamed.', 'WATCHLIST_DEFAULT_LOCKED');
+        }
+        const trimmed = name.trim();
+        if (await repo.watchlistNameTaken(userId, trimmed, watchlistId)) {
+          throw conflict('A watchlist with this name already exists.', 'WATCHLIST_NAME_TAKEN');
+        }
+        await repo.renameWatchlist(userId, watchlistId, trimmed);
+        // Keep private watchlist management usable in paranoid mode without
+        // crossing the disabled sharing rail. The enable transition removes every
+        // audience row, so an absent entry is authoritatively private.
+        const audiences = includeCustomAssets
+          ? await audience.audiencesForSubjects('watchlist', [watchlistId])
+          : new Map<string, 'private'>();
+        const items = await repo.listByWatchlistForUser(userId, watchlistId, {
+          includeCustomAssets,
+        });
+        return {
+          id: watchlistId,
+          name: trimmed,
+          isDefault: false,
+          itemCount: items.length,
+          audience: audiences.get(watchlistId) ?? 'private',
+        };
+      });
     },
 
     async deleteWatchlist(userId, watchlistId) {

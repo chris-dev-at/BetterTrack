@@ -4,10 +4,11 @@ import type { Time } from 'lightweight-charts';
 
 import { resolveShareLink } from '../../lib/socialApi';
 import { formatMoney, formatPercent } from '../../lib/format';
+import { classifyApiError } from '../../lib/apiClient';
 import { useT } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { PriceChart } from '../../ui/charts';
-import { Splash } from '../components/ui';
+import { Button, Splash } from '../components/ui';
 
 /**
  * The UNAUTHENTICATED public-link view (§14, §13.3 V3-P5): a logged-out visitor
@@ -49,7 +50,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 export function PublicSharePage() {
   const t = useT();
   const { token = '' } = useParams<{ token: string }>();
-  const { data, isLoading, isError } = useQuery({
+  const { data, error, isLoading, isError, isFetching, refetch } = useQuery({
     queryKey: ['public-share', token],
     queryFn: ({ signal }) => resolveShareLink(token, signal),
     retry: false,
@@ -59,6 +60,18 @@ export function PublicSharePage() {
   if (isLoading) return <Splash label={t('publicShare.loading')} />;
 
   if (isError || !data) {
+    if (classifyApiError(error, ['LINK_NOT_FOUND']) !== 'confirmed-domain-outcome') {
+      return (
+        <Shell>
+          <div className="flex flex-col items-start gap-4">
+            <p className="bt-soft">{t('publicShare.unavailable')}</p>
+            <Button disabled={isFetching} onClick={() => void refetch()}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        </Shell>
+      );
+    }
     return (
       <Shell>
         <p className="bt-soft">{t('publicShare.notFound')}</p>
@@ -97,6 +110,7 @@ export function PublicSharePage() {
                   }))}
                   mode="area"
                   showRangeToggle={false}
+                  valueCurrency={p.baseCurrency}
                   ariaLabel={t('publicShare.valueOverTime')}
                 />
               </div>

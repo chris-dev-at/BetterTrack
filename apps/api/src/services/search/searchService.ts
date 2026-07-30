@@ -1,6 +1,7 @@
 import type { SearchResponse, SearchResultItem } from '@bettertrack/contracts';
 
 import type { AssetRepository, CatalogSearchMatch } from '../../data/repositories/assetRepository';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { CatalogEnrichment } from './catalogEnrichment';
 
 /**
@@ -14,6 +15,14 @@ import type { CatalogEnrichment } from './catalogEnrichment';
  */
 export interface SearchService {
   search(userId: string, rawQuery: string, options?: SearchOptions): Promise<SearchResponse>;
+  /**
+   * Route-level search + conditional-read watermark under one privacy lock, so
+   * a mode transition cannot land between body and freshness construction.
+   */
+  searchWithFreshness(
+    userId: string,
+    rawQuery: string,
+  ): Promise<SearchResponse & { freshness: Date | null }>;
   /**
    * Freshness watermark for the conditional catalog-search read (issue #555):
    * the creation time of the newest asset in the caller's visible catalog
@@ -53,6 +62,8 @@ export function normalizeQuery(raw: string): string {
 export interface SearchServiceDeps {
   assetRepo: AssetRepository;
   enrichment: CatalogEnrichment;
+  /** Mixed global/custom catalog filtering under the account transition lock. */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowedWithOptional'>;
 }
 
 const toResultItem = (match: CatalogSearchMatch): SearchResultItem => ({
@@ -73,27 +84,59 @@ const toResultItem = (match: CatalogSearchMatch): SearchResultItem => ({
 });
 
 export function createSearchService(deps: SearchServiceDeps): SearchService {
-  const { assetRepo, enrichment } = deps;
+  const { assetRepo, enrichment, paranoid } = deps;
+
+  async function withCatalogVisibility<T>(
+    userId: string,
+    read: (includeCustomAssets: boolean) => Promise<T>,
+  ): Promise<T> {
+    if (!paranoid) return read(true);
+    return paranoid.runAllowedWithOptional([], [userId], 'portfolioServer', (normalUserIds) =>
+      read(normalUserIds.has(userId)),
+    );
+  }
+
+  async function searchCatalog(
+    userId: string,
+    rawQuery: string,
+    includeCustomAssets: boolean,
+    options?: SearchOptions,
+  ): Promise<SearchResponse> {
+    const query = normalizeQuery(rawQuery);
+    const matches = await assetRepo.searchCatalog(userId, query, SEARCH_RESULT_LIMIT, {
+      includeCustomAssets,
+    });
+    const results = matches.map(toResultItem);
+
+    const marketMatches = matches.filter((m) => m.ownerId === null).length;
+    const enriching =
+      options?.allowEnrichment !== false && marketMatches < CATALOG_MISS_THRESHOLD
+        ? // Fire-and-forget: resolves after the coalescing decision, never
+          // waits on a provider (§6.2). False when it ran recently, so a
+          // refetching client doesn't spin forever.
+          await enrichment.request(query)
+        : false;
+
+    return { results, enriching };
+  }
 
   return {
-    async search(userId, rawQuery, options) {
-      const query = normalizeQuery(rawQuery);
-      const matches = await assetRepo.searchCatalog(userId, query, SEARCH_RESULT_LIMIT);
-      const results = matches.map(toResultItem);
+    search: (userId, rawQuery, options) =>
+      withCatalogVisibility(userId, (includeCustomAssets) =>
+        searchCatalog(userId, rawQuery, includeCustomAssets, options),
+      ),
 
-      const marketMatches = matches.filter((m) => m.ownerId === null).length;
-      const enriching =
-        options?.allowEnrichment !== false && marketMatches < CATALOG_MISS_THRESHOLD
-          ? // Fire-and-forget: resolves after the coalescing decision, never
-            // waits on a provider (§6.2). False when it ran recently, so a
-            // refetching client doesn't spin forever.
-            await enrichment.request(query)
-          : false;
+    searchWithFreshness: (userId, rawQuery) =>
+      withCatalogVisibility(userId, async (includeCustomAssets) => {
+        const result = await searchCatalog(userId, rawQuery, includeCustomAssets);
+        const freshness = await assetRepo.catalogWatermark(userId, { includeCustomAssets });
+        return { ...result, freshness };
+      }),
 
-      return { results, enriching };
-    },
-
-    catalogFreshness: (userId) => assetRepo.catalogWatermark(userId),
+    catalogFreshness: (userId) =>
+      withCatalogVisibility(userId, (includeCustomAssets) =>
+        assetRepo.catalogWatermark(userId, { includeCustomAssets }),
+      ),
 
     enrichmentSettled: () => enrichment.settled(),
   };

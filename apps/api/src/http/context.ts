@@ -70,7 +70,7 @@ import { createRealtimeGateway, type RealtimeGateway } from '../realtime';
 import { createHealthService, type HealthService } from '../services/health/healthService';
 import { createReadinessService, type ReadinessService } from '../services/health/readinessService';
 import { initObservability, type Observability } from '../services/observability/sentry';
-import { createMarketData } from '../providers';
+import { createMarketData, purgeManualAssetCaches } from '../providers';
 import type { MarketDataService } from '../providers';
 import {
   createAccountDeletionService,
@@ -116,7 +116,11 @@ import {
   type MarketIntelService,
   type PortfolioMarketIntelService,
 } from '../services/marketIntel';
-import { createBacktestService, type BacktestService } from '../services/backtest/backtestService';
+import {
+  createBacktestService,
+  purgeBacktestCaches,
+  type BacktestService,
+} from '../services/backtest/backtestService';
 import {
   createAnalyticsService,
   type AnalyticsService,
@@ -179,9 +183,26 @@ import {
 } from '../services/webhooks';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
 import {
+  createParanoidEnforcementRepository,
+  withFreshLockedPrivacyModes,
+  withLockedPrivacyModes,
+} from '../data/repositories/paranoidEnforcementRepository';
+import {
   createParanoidVaultService,
   type ParanoidVaultService,
 } from '../services/account/paranoidVaultService';
+import { createParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
+import {
+  createParanoidTransitionService,
+  type ParanoidTransitionService,
+} from '../services/account/paranoidTransitionService';
+import {
+  createParanoidModeGuard,
+  guardRegisteredServices,
+  isParanoidOwnedSubjectBlocked,
+  runIfParanoidOwnedSubjectAllowed,
+  type ParanoidModeGuard,
+} from '../services/account/paranoidEnforcement';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
 import {
@@ -343,6 +364,10 @@ export interface AppContext {
    * a size cap and bounded ciphertext history. Never reads the payload.
    */
   paranoidVault: ParanoidVaultService;
+  /** Public account-locked paranoid enable/disable orchestrator (§7). */
+  paranoidTransitions: ParanoidTransitionService;
+  /** Registry-backed account guard shared by HTTP, services, jobs, and webhooks. */
+  paranoidGuard: ParanoidModeGuard;
   /** Outbound webhook subscriptions — CRUD + one-time signing secret + delivery log (§13.5 V5-P10). */
   webhooks: WebhookService;
   /**
@@ -503,6 +528,12 @@ export interface AppContext {
 export interface BuildContextDeps {
   config: AppConfig;
   db: Database;
+  /**
+   * Dedicated pool for account privacy locks. Production supplies a separate
+   * pool so a guarded action cannot exhaust the pool it uses to hold its lock;
+   * single-connection tests use the in-process equivalent on `db`.
+   */
+  lockDb?: Database;
   redis: Redis;
   logger: Logger;
   /** Test seam: inject a fake transport instead of a real SMTP connection. */
@@ -542,6 +573,8 @@ export interface BuildContextDeps {
    * synchronous build under test (BullMQ can't run on ioredis-mock).
    */
   exportEnqueue?: (jobId: string) => Promise<void>;
+  /** Test seam: pause an export build after collection under the transition lock. */
+  exportAfterCollect?: (userId: string) => void | Promise<void>;
   /**
    * Test seam (#437): the notification service's clock, so the auto-archive
    * sweep threshold is provable under a controlled clock. Defaults to the
@@ -594,6 +627,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const observability = initObservability(config, logger, { serverName: 'api' });
 
   const userRepo = createUserRepository(db);
+  const privacyLockDb = deps.lockDb ?? db;
+  const paranoidGuard = createParanoidModeGuard({
+    privacyModeFor: async (userId) => (await userRepo.findById(userId))?.privacyMode ?? null,
+    withLockedPrivacyModes: (userIds, run) => withLockedPrivacyModes(privacyLockDb, userIds, run),
+  });
+  const paranoidSubjects = createParanoidEnforcementRepository(db);
   const inviteRepo = createInviteRepository(db);
   const registrationTokenRepo = createRegistrationTokenRepository(db);
   const registrationRequestRepo = createRegistrationRequestRepository(db);
@@ -908,6 +947,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     subscriptions: webhookSubscriptionRepo,
     enqueue: webhookDeliveryEnqueue,
     logger,
+    paranoid: paranoidGuard,
   });
 
   // The ONE sharing-enforcement layer (§13.3 V3-P5, §6.9): the audience model +
@@ -925,6 +965,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     profile: profileRepo,
     notify,
     logger,
+    paranoid: paranoidGuard,
   });
 
   // TOTP two-factor (§6.1, §13.2 V2-P5): enroll/confirm/disable + recovery codes,
@@ -1095,12 +1136,18 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Single conversion keystone (§5.4): spot FX sourced from cached Yahoo quotes.
   const currencySource = createMarketDataFxSource(marketData);
   const currency = createCurrencyService({ source: currencySource });
+  const paranoidRehydration = createParanoidRehydrationService({
+    db,
+    toCashEur: (amount, sourceCurrency, day) =>
+      currency.convert(amount, sourceCurrency, 'EUR', { date: day }),
+  });
 
   const assetRepo = createAssetRepository(db);
   const assets = createAssetService({
     marketData,
     assetRepo,
     currencyService: currency,
+    paranoid: paranoidGuard,
   });
 
   // Per-asset market intelligence (§13.5 V5-P5): a thin read layer over the
@@ -1111,6 +1158,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     assetRepo,
     intelRepo: createMarketIntelRepository(db),
     enabled: config.marketIntel.enabled,
+    paranoid: paranoidGuard,
   });
 
   // Portfolio-level dividend intelligence (§13.5 V5-P5, arc a): calendar +
@@ -1132,18 +1180,20 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const workboardRepo = createWorkboardRepository(db);
   const workboard = createWorkboardService({
     repo: workboardRepo,
+    assetRepo,
     referenceBackfill,
     audience,
     profile: profileRepo,
     friendship: friendshipRepo,
     notify,
     logger,
+    paranoid: paranoidGuard,
   });
 
   // Local-first search (§6.2): answers from the Postgres catalog; a thin result
   // set triggers a background, coalesced provider search that enriches it.
   const enrichment = createCatalogEnrichment({ marketData, assetRepo, backfill, redis, logger });
-  const search = createSearchService({ assetRepo, enrichment });
+  const search = createSearchService({ assetRepo, enrichment, paranoid: paranoidGuard });
 
   // Portfolio + custom investments (§6.9). The custom-asset service records its
   // optional initial purchase through the portfolio service and shares its
@@ -1164,6 +1214,18 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashMovementRepo,
     marketData,
     currencyService: currency,
+    isParanoidPortfolio: async (portfolioId) =>
+      isParanoidOwnedSubjectBlocked(
+        await paranoidSubjects.portfolioOwner(portfolioId),
+        paranoidGuard,
+      ),
+    runIfAllowedPortfolio: async (portfolioId, action) =>
+      runIfParanoidOwnedSubjectAllowed(
+        await paranoidSubjects.portfolioOwner(portfolioId),
+        paranoidGuard,
+        'portfolioJobs',
+        action,
+      ),
     ...(queues
       ? {
           requestRecompute: async (portfolioId: string) => {
@@ -1187,6 +1249,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     snapshots,
     logger,
     now: deps.taxNow,
+    paranoid: paranoidGuard,
   });
   // A read-only view onto the Live-Mode per-asset ring buffer (§6.3): the same
   // `live:ring:*` Redis keys the poll loop writes. The intraday 1D/1W series
@@ -1244,6 +1307,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     events,
     redis,
+    paranoid: paranoidGuard,
     ...(queues
       ? {
           enqueueReplicate: async (chainId: string) => {
@@ -1265,6 +1329,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
     currencyService: currency,
     audience,
+    paranoid: paranoidGuard,
   });
 
   // Backtest preview (§6.5/§6.6): reuses the market-data history + currency
@@ -1284,6 +1349,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       const owner = await audience.authorizeConglomerateRead(viewerId, conglomerateId);
       return owner ? { ownerId: owner.ownerId } : undefined;
     },
+    paranoid: paranoidGuard,
   });
 
   // Analytics deep-dive (§13.3 V3-P9): assembles the configurable graph +
@@ -1303,7 +1369,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // through the local search catalog. Built here (after portfolio/analytics/search)
   // atop the guarded `ai` completion path, so availability + cap enforcement are
   // shared with 1/2 and nothing extra needs configuring.
-  const aiFeatures = createAiFeaturesService({ ai, portfolio, analytics, search, logger });
+  const aiFeatures = createAiFeaturesService({
+    ai,
+    portfolio,
+    analytics,
+    search,
+    logger,
+    paranoid: paranoidGuard,
+  });
 
   // Ideas (§13.4 V4-P9): saved & shareable Workboard analyses. CRUD is
   // owner-scoped; a referenced conglomerate is ownership-validated on write; the
@@ -1330,6 +1403,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     tax,
     mappers: ALL_MAPPERS,
     logger,
+    paranoid: paranoidGuard,
   });
 
   // Standing orders (§13.5 V5-P6b arc a, #593): scheduled recurring buys / cash
@@ -1347,6 +1421,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
     snapshots,
     logger,
+    paranoid: paranoidGuard,
   });
 
   // Expense tracking (§13.5 V5-P9): a NEW top-level area, strictly separate from
@@ -1385,6 +1460,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     rules: expenseRuleRepo,
     mappers: ALL_BANK_MAPPERS,
     onApply: (userId) => expenseBudgets.evaluate(userId),
+    paranoid: paranoidGuard,
   });
 
   // Friend requests + friendships (§6.9): no-enumeration request creation,
@@ -1404,6 +1480,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     ideas,
     notify,
     logger,
+    paranoid: paranoidGuard,
   });
 
   // Comments + reactions on shared items (§13.5 V5-P8): audience-scoped threads
@@ -1415,6 +1492,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     reactions: itemReactionRepo,
     audience,
     userRepo,
+    paranoid: paranoidGuard,
   });
 
   // Friend chat (§13.3 V3-P8): 1:1 DMs, unread, share-in-chat. Chip resolution
@@ -1529,6 +1607,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     notify,
     enqueueBuild: exportEnqueue,
+    withAccountTransitionLock: (userId, run) =>
+      withFreshLockedPrivacyModes(privacyLockDb, [userId], () => run()),
+    afterCollect: deps.exportAfterCollect,
     logger,
   });
   exportHolder.service = dataExport;
@@ -1559,6 +1640,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     notify,
     marketData,
     logger,
+    paranoid: paranoidGuard,
   });
 
   // Idempotency-key store (§13.4 V4-P2a, #417): the durable claim/replay backing
@@ -1694,11 +1776,60 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     // the shared loop; anything else is a NOT_FOUND-indistinguishable null.
     resolveWatchableAsset: async (userId, assetId) => {
       const row = await assetRepo.findByIdForUser(assetId, userId);
-      return row ? { providerId: row.providerId, providerRef: row.providerRef } : null;
+      if (!row) return null;
+      let watchable: {
+        ref: { providerId: string; providerRef: string };
+        ownerId: string | null;
+      } | null = null;
+      const allowed = await runIfParanoidOwnedSubjectAllowed(
+        { exists: true, userId: row.ownerId },
+        paranoidGuard,
+        'portfolioServer',
+        async () => {
+          watchable = {
+            ref: { providerId: row.providerId, providerRef: row.providerRef },
+            ownerId: row.ownerId,
+          };
+        },
+      );
+      return allowed ? watchable : null;
     },
+    withAccountPrivacyLock: (userId, action) =>
+      withFreshLockedPrivacyModes(privacyLockDb, [userId], () => action()),
     // Active-view presence (#368): enter/leave/heartbeat land here; the
     // dispatcher (any process) reads the same keys through Redis.
     presence,
+  });
+
+  const paranoidTransitions = createParanoidTransitionService({
+    db,
+    // Admin metadata locks on the dedicated pool and reads on the main one, the
+    // same split every other privacy-lock call site uses.
+    lockDb: privacyLockDb,
+    rehydration: paranoidRehydration,
+    audit,
+    logger,
+    beforeEnableCommit: async (userId, plan) => {
+      // This runs while enable still owns the exclusive account lock. Any
+      // owner-scoped read that started first has completed; later work re-reads
+      // the committed paranoid mode and fails closed.
+      await realtime.invalidateOwnedLiveMode(userId);
+      await liveMode.retireAssets(plan.customAssetIds);
+      await marketData.settled();
+      await Promise.all([
+        purgeManualAssetCaches(redis, plan.customAssetIds),
+        purgeBacktestCaches(redis, userId),
+      ]);
+    },
+    runPostCommit: async (userId, plan) => {
+      if (!plan.invalidate.includes('portfolio')) return;
+      const restoredPortfolios = await portfolioRepo.listForUser(userId, {
+        includeArchived: true,
+      });
+      for (const restoredPortfolio of restoredPortfolios) {
+        await snapshots.recompute(restoredPortfolio.id);
+      }
+    },
   });
 
   // Admin health snapshot (§13.4 V4-P5a): live DB/Redis/provider/queue/gateway
@@ -1713,6 +1844,40 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   });
   const readiness = createReadinessService({ db, redis });
 
+  // Defense below HTTP: expose every killed/mixed service only through the
+  // executable registry. Raw instances remain private composition dependencies.
+  const guarded = guardRegisteredServices(
+    {
+      workboard,
+      conglomerate,
+      ideas,
+      backtest: backtestPreview,
+      comments,
+      social,
+      chat,
+      mirror,
+      assets,
+      search,
+      portfolio,
+      customAssets,
+      analytics,
+      portfolioMarketIntel,
+      marketIntel,
+      tax,
+      expenses,
+      expenseBudgets,
+      aiFeatures,
+      snapshots,
+      imports,
+      expenseImports,
+      standingOrders,
+      webhookBridge,
+      alerts,
+    },
+    paranoidGuard,
+    paranoidSubjects,
+  );
+
   return {
     config,
     redis,
@@ -1725,32 +1890,34 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     admin,
     apiKeys,
     oauth,
-    workboard,
+    workboard: guarded.workboard,
     marketData,
-    assets,
-    marketIntel,
-    portfolioMarketIntel,
-    search,
-    portfolio,
-    snapshots,
-    tax,
-    mirror,
-    customAssets,
-    conglomerate,
-    backtest: backtestPreview,
-    ideas,
-    imports,
-    standingOrders,
-    expenses,
-    expenseImports,
-    expenseBudgets,
+    assets: guarded.assets,
+    marketIntel: guarded.marketIntel,
+    portfolioMarketIntel: guarded.portfolioMarketIntel,
+    search: guarded.search,
+    portfolio: guarded.portfolio,
+    snapshots: guarded.snapshots,
+    tax: guarded.tax,
+    mirror: guarded.mirror,
+    customAssets: guarded.customAssets,
+    conglomerate: guarded.conglomerate,
+    backtest: guarded.backtest,
+    ideas: guarded.ideas,
+    imports: guarded.imports,
+    standingOrders: guarded.standingOrders,
+    expenses: guarded.expenses,
+    expenseImports: guarded.expenseImports,
+    expenseBudgets: guarded.expenseBudgets,
     paranoidVault,
+    paranoidTransitions,
+    paranoidGuard,
     webhooks,
-    webhookBridge,
-    analytics,
-    social,
-    comments,
-    chat,
+    webhookBridge: guarded.webhookBridge,
+    analytics: guarded.analytics,
+    social: guarded.social,
+    comments: guarded.comments,
+    chat: guarded.chat,
     notifications,
     notificationSettings,
     telegramSetup,
@@ -1758,7 +1925,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     accountSettings,
     accountDeletion,
     dataExport,
-    alerts,
+    alerts: guarded.alerts,
     announcements,
     notificationDispatcher,
     digestService,
@@ -1777,6 +1944,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     usageAnalytics,
     featureFlags,
     ai,
-    aiFeatures,
+    aiFeatures: guarded.aiFeatures,
   };
 }

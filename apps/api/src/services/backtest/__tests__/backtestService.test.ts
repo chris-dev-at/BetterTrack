@@ -53,6 +53,12 @@ describe('backtestPreviewCacheKey — V4-P7 rebalance-frequency separation', () 
     ]);
     expect(keys.size).toBe(4);
   });
+
+  it('normal and paranoid global-only previews never share a cached result', () => {
+    expect(backtestPreviewCacheKey('u1', input, 'EUR')).not.toBe(
+      backtestPreviewCacheKey('u1', input, 'EUR', { globalOnly: true }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -637,6 +643,9 @@ describe('backtestService.runComparison — N-way conglomerate comparison (V5-P6
     // Id ORDER is part of the key — the first id defines the window.
     expect(backtestComparisonCacheKey('u1', base, 'EUR')).not.toBe(
       backtestComparisonCacheKey('u1', { conglomerateIds: [CB, CA], range: '1Y' }, 'EUR'),
+    );
+    expect(backtestComparisonCacheKey('u1', base, 'EUR')).not.toBe(
+      backtestComparisonCacheKey('u1', base, 'EUR', { globalOnly: true }),
     );
   });
 });

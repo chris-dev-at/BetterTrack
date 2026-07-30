@@ -16,9 +16,18 @@ const config = loadConfig();
 const logger = createLogger(config);
 
 const { db, client } = createDatabase(config.databaseUrl);
+// Dedicated privacy-lock pool (§13.5 V5-P13): every `withLockedPrivacyModes` /
+// `withFreshLockedPrivacyModes` transaction reserves a connection HERE, never on
+// the request pool above, so a lock held across a read can never wait on a
+// connection its own callback needs. Its size (`createDatabase`, `max: 10`) is the
+// concurrency budget for privacy-guarded work, and the longest holder is an
+// account export download — it streams inside the lock for up to
+// `EXPORT_DOWNLOAD_STALL_TIMEOUT_MS`. So ~10 concurrent downloads is the ceiling
+// before other privacy-guarded reads queue; raise the pool, not the stall bound.
+const { db: lockDb, client: lockClient } = createDatabase(config.databaseUrl);
 const redis = createRedis(config.redisUrl);
 
-const ctx = buildContext({ config, db, redis, logger });
+const ctx = buildContext({ config, db, lockDb, redis, logger });
 const app = createApp(ctx);
 
 // Notification delivery is owned by the WORKER's durable `notifications.dispatch`
@@ -79,6 +88,7 @@ async function shutdown(signal: string): Promise<void> {
     await ctx.marketData.settled();
     await ctx.events.close();
     await redis.quit();
+    await lockClient.end();
     await client.end();
     // Flush any buffered Sentry events before the process exits (§13.4 V4-P5a).
     await ctx.observability.close();

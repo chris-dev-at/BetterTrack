@@ -1,9 +1,18 @@
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 import { getTableColumns } from 'drizzle-orm';
 
 import { assetIdentities } from '../../../data/schema';
 import {
+  PARANOID_PROBE_HANDLER_NAMES,
+  PARANOID_PURGE_HANDLER_NAMES,
+} from '../../../data/repositories/paranoidTransitionRepository';
+import {
   EXPORT_TABLE_CLASSIFICATION,
+  PARANOID_REHYDRATION_POLICY,
   PARANOID_TABLE_CLASSIFICATION,
   PARANOID_VAULT_TABLE_NAMES,
   schemaTableNames,
@@ -80,6 +89,53 @@ describe('paranoid table classification completeness', () => {
     expect(Object.keys(getTableColumns(assetIdentities))).toEqual(['id', 'ownerId']);
   });
 
+  /**
+   * V5 cash fusion: the cash-flow tables are vault-classified from birth, but
+   * their rehydration policy is `purge-only` only for as long as NOTHING writes
+   * them (phase 1 ships the schema + backfill; the client vault emits none of
+   * these entity kinds yet). The moment a repository exists, purge-only means a
+   * paranoid disable silently drops the user's tags, budgets and rules — so this
+   * test flips to demanding `restore` as soon as the first writer appears, and
+   * the phase that adds it cannot ship without noticing.
+   */
+  describe('cash-flow tables (V5 cash fusion)', () => {
+    const apiSrc = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+    const CASH_TABLES = {
+      cash_tags: 'cashTag',
+      cash_movement_tags: 'cashMovementTag',
+      cash_budgets: 'cashBudget',
+      cash_rules: 'cashRule',
+      cash_rule_tags: 'cashRuleTag',
+    } as const;
+    /** Any of these existing means a service can now write the cash-flow tables. */
+    const WRITERS = [
+      'data/repositories/cashTagRepository.ts',
+      'data/repositories/cashFlowRepository.ts',
+      'services/cash/cashTagService.ts',
+    ];
+    const hasWriter = WRITERS.some((rel) => existsSync(join(apiSrc, rel)));
+
+    it('are all vault-classified', () => {
+      for (const table of [...Object.keys(CASH_TABLES), 'cash_budget_fires']) {
+        expect(PARANOID_TABLE_CLASSIFICATION[table], `${table} should be vault`).toBe('vault');
+      }
+    });
+
+    it('restore what a writer can create; the per-period fired marker stays derived', () => {
+      for (const [table, entity] of Object.entries(CASH_TABLES)) {
+        expect(
+          PARANOID_REHYDRATION_POLICY[table],
+          hasWriter
+            ? `${table} now has a writer — its rehydration policy MUST be restore('${entity}'), ` +
+                'or disabling paranoid mode silently drops it'
+            : `${table} has no writer yet — purge-only is the accurate policy`,
+        ).toEqual(hasWriter ? { kind: 'restore', entity } : { kind: 'purge-only' });
+      }
+      // The fired marker is exactly-once alert bookkeeping: rebuilt, never trusted.
+      expect(PARANOID_REHYDRATION_POLICY['cash_budget_fires']).toEqual({ kind: 'purge-only' });
+    });
+  });
+
   it('derives the vault table-name list from the classification', () => {
     const fromMap = Object.entries(PARANOID_TABLE_CLASSIFICATION)
       .filter(([, c]) => c === 'vault')
@@ -89,5 +145,10 @@ describe('paranoid table classification completeness', () => {
     // The vault set is a strict, non-empty subset (the server keeps identity etc).
     expect(PARANOID_VAULT_TABLE_NAMES.length).toBeGreaterThan(0);
     expect(PARANOID_VAULT_TABLE_NAMES.length).toBeLessThan(tables.length);
+  });
+
+  it('drives both destructive handlers and zero-cleartext probes from the full vault set', () => {
+    expect(PARANOID_PURGE_HANDLER_NAMES).toEqual([...PARANOID_VAULT_TABLE_NAMES]);
+    expect(PARANOID_PROBE_HANDLER_NAMES).toEqual([...PARANOID_VAULT_TABLE_NAMES]);
   });
 });

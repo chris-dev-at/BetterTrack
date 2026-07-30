@@ -1,0 +1,136 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+
+import type {
+  CreateWebhookSubscriptionResponse,
+  WebhookSubscriptionListResponse,
+} from '@bettertrack/contracts';
+
+vi.mock('../../../lib/webhooksApi', () => ({
+  listWebhooks: vi.fn(),
+  createWebhook: vi.fn(),
+  updateWebhook: vi.fn(),
+  deleteWebhook: vi.fn(),
+  listWebhookDeliveries: vi.fn(),
+}));
+
+import { createWebhook, listWebhooks } from '../../../lib/webhooksApi';
+import { WebhooksPanel } from './WebhooksPanel';
+
+const EMPTY: WebhookSubscriptionListResponse = { subscriptions: [] };
+
+const ONE: WebhookSubscriptionListResponse = {
+  subscriptions: [
+    {
+      id: '00000000-0000-0000-0000-0000000000aa',
+      url: 'https://receiver.test/hook',
+      description: null,
+      eventTypes: ['alert.triggered'],
+      enabled: true,
+      disabledReason: null,
+      disabledAt: null,
+      consecutiveFailures: 0,
+      lastDeliveryAt: null,
+      lastSuccessAt: null,
+      createdAt: '2026-07-01T08:00:00.000Z',
+    },
+  ],
+};
+
+const CREATED: CreateWebhookSubscriptionResponse = {
+  subscription: {
+    id: '00000000-0000-0000-0000-0000000000bb',
+    url: 'https://example.com/webhooks',
+    description: null,
+    eventTypes: ['alert.triggered'],
+    enabled: true,
+    disabledReason: null,
+    disabledAt: null,
+    consecutiveFailures: 0,
+    lastDeliveryAt: null,
+    lastSuccessAt: null,
+    createdAt: '2026-07-05T08:00:00.000Z',
+  },
+  secret: 'whsec_shown_once_secret',
+};
+
+function renderPanel() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <WebhooksPanel />
+    </QueryClientProvider>,
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(listWebhooks).mockResolvedValue(EMPTY);
+});
+
+describe('WebhooksPanel', () => {
+  // R2: the outer collapse is retired (the section IS the panel now), so the
+  // create form renders immediately and the list query is unconditional. What
+  // this case still asserts — the empty state, the form, exactly one fetch — is
+  // unchanged; only the "collapsed until clicked" assertions are gone.
+  test('renders expanded and loads the list on mount', async () => {
+    renderPanel();
+
+    expect(await screen.findByText(/no webhooks yet/i)).toBeInTheDocument();
+    expect(screen.getByLabelText('Payload URL')).toBeInTheDocument();
+    expect(listWebhooks).toHaveBeenCalledTimes(1);
+  });
+
+  test('creates a webhook and shows the signing secret exactly once', async () => {
+    vi.mocked(createWebhook).mockResolvedValue(CREATED);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.type(await screen.findByLabelText('Payload URL'), 'https://example.com/webhooks');
+    await user.click(screen.getByRole('checkbox', { name: /price alert triggered/i }));
+    await user.click(screen.getByRole('button', { name: 'Add webhook' }));
+
+    await waitFor(() =>
+      expect(createWebhook).toHaveBeenCalledWith({
+        url: 'https://example.com/webhooks',
+        description: undefined,
+        eventTypes: ['alert.triggered'],
+      }),
+    );
+
+    // The one-time secret is revealed with a "won't be shown again" notice.
+    const dialog = await screen.findByRole('dialog', { name: 'Your webhook signing secret' });
+    expect(within(dialog).getByText(CREATED.secret)).toBeInTheDocument();
+    expect(screen.getByText(/won't be shown again/i)).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    fireEvent.mouseDown(dialog.parentElement!);
+    expect(screen.getByText(CREATED.secret)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Copy' }));
+    expect(await within(dialog).findByRole('button', { name: 'Copied' })).toBeInTheDocument();
+    fireEvent.mouseDown(dialog.parentElement!);
+    await waitFor(() => expect(screen.queryByText(CREATED.secret)).not.toBeInTheDocument());
+  });
+
+  test('blocks creation with no event selected', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.type(await screen.findByLabelText('Payload URL'), 'https://example.com/webhooks');
+    await user.click(screen.getByRole('button', { name: 'Add webhook' }));
+
+    expect(await screen.findByText(/select at least one event/i)).toBeInTheDocument();
+    expect(createWebhook).not.toHaveBeenCalled();
+  });
+
+  test('lists an existing subscription with its active status', async () => {
+    vi.mocked(listWebhooks).mockResolvedValue(ONE);
+    renderPanel();
+
+    expect(await screen.findByText('https://receiver.test/hook')).toBeInTheDocument();
+    expect(screen.getByText('Active')).toBeInTheDocument();
+  });
+});

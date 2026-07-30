@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
@@ -36,6 +37,7 @@ vi.mock('lightweight-charts', () => ({
 }));
 
 import { resolveShareLink } from '../../lib/socialApi';
+import { ApiError } from '../../lib/apiClient';
 import { PublicSharePage } from './PublicSharePage';
 
 const PID = '00000000-0000-0000-0000-000000000001';
@@ -132,10 +134,32 @@ describe('PublicSharePage (/s/:token)', () => {
   });
 
   test('shows the not-available copy and no chart when the link is revoked/unknown', async () => {
-    vi.mocked(resolveShareLink).mockRejectedValue(new Error('not found'));
+    vi.mocked(resolveShareLink).mockRejectedValue(new ApiError(404, 'LINK_NOT_FOUND', 'not found'));
     renderPage();
 
     await waitFor(() => expect(screen.getByText(/no longer available/i)).toBeInTheDocument());
     expect(screen.queryByRole('img', { name: /value over time/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
   });
+
+  test.each([0, 500])(
+    'shows a retryable unavailable state for status %i without declaring the link dead',
+    async (status) => {
+      vi.mocked(resolveShareLink)
+        .mockRejectedValueOnce(
+          new ApiError(status, status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN', 'unavailable'),
+        )
+        .mockResolvedValueOnce(portfolioLink);
+      const user = userEvent.setup();
+      renderPage();
+
+      expect(await screen.findByText(/temporarily unavailable/i)).toBeInTheDocument();
+      expect(screen.queryByText(/no longer available/i)).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /try again/i }));
+
+      expect(await screen.findByText("Jane's Main")).toBeInTheDocument();
+      expect(resolveShareLink).toHaveBeenCalledTimes(2);
+    },
+  );
 });

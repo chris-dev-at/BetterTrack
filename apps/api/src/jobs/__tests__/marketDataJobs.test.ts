@@ -31,6 +31,7 @@ import type {
   Unsubscribe,
 } from '../../events';
 import type { Logger } from '../../logger';
+import type { ParanoidModeGuard } from '../../services/account/paranoidEnforcement';
 import {
   createManualAssetSource,
   createManualProvider,
@@ -577,6 +578,23 @@ describe('fx.refreshSpot', () => {
 
 // Inert notification center — the registration tests never dispatch (#368).
 const inertNotify = { emit: async () => true };
+const inertParanoid = {
+  async runAllowed<T>(
+    _userId: string,
+    _capability: Parameters<ParanoidModeGuard['runAllowed']>[1],
+    action: () => Promise<T>,
+  ): Promise<T> {
+    return action();
+  },
+  async runAllowedWithOptional<T>(
+    _requiredUserIds: readonly string[],
+    optionalUserIds: readonly string[],
+    _capability: Parameters<ParanoidModeGuard['runAllowedWithOptional']>[2],
+    action: (allowedOptionalUserIds: ReadonlySet<string>) => Promise<T>,
+  ): Promise<T> {
+    return action(new Set(optionalUserIds));
+  },
+} satisfies Pick<ParanoidModeGuard, 'runAllowed' | 'runAllowedWithOptional'>;
 
 describe('createJobDefinitions registration', () => {
   it('builds the heartbeat + market-data jobs + the alerts evaluator', async () => {
@@ -585,6 +603,7 @@ describe('createJobDefinitions registration', () => {
       db,
       marketData: createStubMarketData(),
       notify: inertNotify,
+      paranoid: inertParanoid,
     });
     expect(defs.map((d) => d.name)).toEqual([
       'system.heartbeat',
@@ -601,6 +620,7 @@ describe('createJobDefinitions registration', () => {
       db,
       marketData: createStubMarketData(),
       notify: inertNotify,
+      paranoid: inertParanoid,
     });
 
     const calls: { id: string; opts: unknown }[] = [];

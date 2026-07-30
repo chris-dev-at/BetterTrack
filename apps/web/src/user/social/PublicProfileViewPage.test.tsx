@@ -38,6 +38,7 @@ vi.mock('lightweight-charts', () => ({
 }));
 
 import { getPublicProfile, getPublicProfileItem } from '../../lib/socialApi';
+import { ApiError } from '../../lib/apiClient';
 import { PublicProfileViewPage } from './PublicProfileViewPage';
 
 const PID = '00000000-0000-0000-0000-000000000001';
@@ -164,5 +165,67 @@ describe('PublicProfileViewPage (/u/:username)', () => {
     // (the `social.follow.loginToFollow` string), not an empty/dead render.
     const loginLink = screen.getByRole('link', { name: /log in to follow/i });
     expect(loginLink).toHaveAttribute('href', '/login');
+  });
+
+  test.each([0, 500])(
+    'shows a retryable profile outage for status %i without declaring it unavailable',
+    async (status) => {
+      vi.mocked(getPublicProfile)
+        .mockRejectedValueOnce(
+          new ApiError(status, status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN', 'unavailable'),
+        )
+        .mockResolvedValueOnce(profile);
+      const user = userEvent.setup();
+      renderPage();
+
+      expect(await screen.findByText(/temporarily unavailable/i)).toBeInTheDocument();
+      expect(screen.queryByText("This profile isn't available.")).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /try again/i }));
+
+      expect(await screen.findByText('@alice')).toBeInTheDocument();
+      expect(getPublicProfile).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  test('keeps the terminal profile state for a confirmed 404', async () => {
+    vi.mocked(getPublicProfile).mockRejectedValue(
+      new ApiError(404, 'PROFILE_NOT_FOUND', 'not found'),
+    );
+    renderPage();
+
+    expect(await screen.findByText("This profile isn't available.")).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+  });
+
+  test('lets a visitor retry a temporarily unavailable profile item', async () => {
+    vi.mocked(getPublicProfile).mockResolvedValue(profile);
+    vi.mocked(getPublicProfileItem)
+      .mockRejectedValueOnce(new ApiError(500, 'UNKNOWN', 'unavailable'))
+      .mockResolvedValueOnce(portfolioItem);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /Main/i }));
+    expect(await screen.findByText(/item is temporarily unavailable/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /try again/i }));
+
+    expect(await screen.findByText('BAYN.DE')).toBeInTheDocument();
+    expect(getPublicProfileItem).toHaveBeenCalledTimes(2);
+  });
+
+  test('keeps the terminal item state for a confirmed 404', async () => {
+    vi.mocked(getPublicProfile).mockResolvedValue(profile);
+    vi.mocked(getPublicProfileItem).mockRejectedValue(
+      new ApiError(404, 'PROFILE_NOT_FOUND', 'not found'),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /Main/i }));
+
+    expect(await screen.findByText(/shared link is no longer available/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
   });
 });

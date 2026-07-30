@@ -86,6 +86,7 @@ function renderAtWithLocation(path: string) {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.mocked(api.getStats).mockResolvedValue(stats);
   vi.mocked(api.listUsers).mockResolvedValue({ users: [jane] });
   // Bootstrap/login now consult the 2FA setup gate — default to an enrolled admin.
@@ -112,6 +113,28 @@ test('authenticated admins reach the guarded users page', async () => {
 
   expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
 });
+
+test.each([0, 500])(
+  'a status %i bootstrap outage offers retry without prompting for admin credentials',
+  async (status) => {
+    vi.mocked(api.getMe)
+      .mockRejectedValueOnce(
+        new ApiError(status, status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN', 'unavailable'),
+      )
+      .mockResolvedValueOnce(admin);
+    const user = userEvent.setup();
+
+    renderAt('/admin/users');
+
+    expect(await screen.findByText(/can’t verify your session right now/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+    expect(api.getMe).toHaveBeenCalledTimes(2);
+  },
+);
 
 test('a reset admin is trapped into the forced change, then recovers into the console (#248 item 6)', async () => {
   // A reset admin session: /auth/me responds 403 (the forced-change guard blocks

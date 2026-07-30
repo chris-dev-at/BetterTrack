@@ -6,12 +6,16 @@ import { MIN_PASSWORD_LENGTH } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
+import { ApiError, classifyApiError, isApiOutage } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { useAuth } from '../AuthContext';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
 
-type InviteState = { phase: 'loading' } | { phase: 'invalid' } | { phase: 'valid'; email: string };
+type InviteState =
+  | { phase: 'loading' }
+  | { phase: 'unavailable' }
+  | { phase: 'invalid' }
+  | { phase: 'valid'; email: string };
 
 /** Friendly message for the failure codes `POST /auth/accept-invite` can return. */
 function acceptErrorMessage(t: TranslateFn, err: unknown): string {
@@ -26,7 +30,7 @@ function acceptErrorMessage(t: TranslateFn, err: unknown): string {
       case 'INVALID_INVITE':
         return t('auth.invite.invalidInvite');
       default:
-        if (err.status >= 500) return t('common.genericError');
+        if (isApiOutage(err)) return t('common.genericError');
     }
   }
   return t('auth.invite.acceptFailed');
@@ -44,6 +48,7 @@ export function InvitePage() {
   const { acceptInvite } = useAuth();
 
   const [invite, setInvite] = useState<InviteState>({ phase: 'loading' });
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -59,11 +64,21 @@ export function InvitePage() {
         );
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        setInvite({ phase: 'invalid' });
+        setInvite({
+          phase:
+            classifyApiError(err, ['INVALID_INVITE']) === 'confirmed-domain-outcome'
+              ? 'invalid'
+              : 'unavailable',
+        });
       }
     })();
     return () => controller.abort();
-  }, [token]);
+  }, [token, loadAttempt]);
+
+  const retryInvite = () => {
+    setInvite({ phase: 'loading' });
+    setLoadAttempt((attempt) => attempt + 1);
+  };
 
   if (invite.phase === 'loading') {
     return (
@@ -86,12 +101,25 @@ export function InvitePage() {
     );
   }
 
+  if (invite.phase === 'unavailable') {
+    return (
+      <AuthCard subtitle={t('auth.invite.unavailableSubtitle')}>
+        <div className="flex flex-col gap-4">
+          <Alert tone="info">{t('auth.invite.unavailableMessage')}</Alert>
+          <Button onClick={retryInvite}>{t('common.retry')}</Button>
+        </div>
+      </AuthCard>
+    );
+  }
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
       await acceptInvite({ token, username, password });
+      // Land the app; `FirstRunGate` diverts a never-set-up account to /welcome
+      // (one trigger for every §6.12 mode — see RegisterPage).
       navigate('/', { replace: true });
     } catch (err) {
       setError(acceptErrorMessage(t, err));

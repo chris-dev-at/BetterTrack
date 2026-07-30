@@ -139,8 +139,10 @@ test('quiet hours: a non-urgent notification defers and releases once at window 
   const enable = page.getByRole('switch', { name: 'Enable quiet hours' });
   await enable.check();
   await expect(enable).toBeChecked();
-  const start = page.getByLabel('From');
-  const end = page.getByLabel('Until');
+  // Exact: `getByLabel` matches substrings, and the routing matrix on the same
+  // panel labels cells "… New from people you follow via …".
+  const start = page.getByLabel('From', { exact: true });
+  const end = page.getByLabel('Until', { exact: true });
   await start.fill('22:00');
   await expect(start).toHaveValue('22:00');
   await end.fill('07:00');

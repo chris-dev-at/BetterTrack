@@ -6,9 +6,11 @@ import {
   type HTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
+  type Ref,
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { NavLink, type NavLinkProps } from 'react-router-dom';
 
 import { useT } from '../../i18n';
@@ -30,6 +32,12 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: IconName;
   iconOnly?: boolean;
   loading?: boolean;
+  /**
+   * React 19 passes `ref` through props, so declaring it here is all a caller
+   * needs to keep the primitive instead of hand-rolling a `<button>` just to
+   * reach the DOM node (menu triggers need one for focus restoration).
+   */
+  ref?: Ref<HTMLButtonElement>;
 }
 
 export function Button({
@@ -392,6 +400,7 @@ export function ODialog({
   children,
   foot,
   wide = false,
+  size = 'default',
 }: {
   open: boolean;
   onClose: () => void;
@@ -399,6 +408,11 @@ export function ODialog({
   children: ReactNode;
   foot?: ReactNode;
   wide?: boolean;
+  /**
+   * `'wizard'` gives the panel the Control Center's geometry — a big centred
+   * popup with room for a stepper — instead of the default form-sized panel.
+   */
+  size?: 'default' | 'wizard';
 }) {
   const t = useT();
   const titleId = useId();
@@ -424,14 +438,19 @@ export function ODialog({
   }, [open, onClose]);
 
   if (!open) return null;
-  return (
-    <>
+  // Portalled to <body>: rendered in place, `position: fixed` resolves against
+  // the nearest ancestor that is a containing block for it, and the topbar's
+  // `backdrop-filter` makes the topbar one — so a dialog opened from the
+  // portfolio switcher laid itself out inside that 56px strip. The portal root
+  // carries `bt-app`, which is where the ink, type scale and focus ring live.
+  return createPortal(
+    <div className="bt-app bt-dialog-root">
       <button aria-label={t('common.close')} className="bt-scrim" onClick={onClose} type="button" />
       <div className="bt-dialog">
         <div
           aria-labelledby={titleId}
           aria-modal="true"
-          className="bt-dialog__panel"
+          className={cx('bt-dialog__panel', size === 'wizard' && 'bt-dialog__panel--wizard')}
           ref={panelRef}
           role="dialog"
           style={wide ? { width: 'min(760px, 100%)' } : undefined}
@@ -454,7 +473,8 @@ export function ODialog({
           {foot ? <div className="bt-dialog__foot">{foot}</div> : null}
         </div>
       </div>
-    </>
+    </div>,
+    document.body,
   );
 }
 

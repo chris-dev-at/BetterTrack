@@ -1,0 +1,60 @@
+name: Landing container verification
+
+on:
+  pull_request:
+    paths:
+      - 'apps/landing/**'
+      - '.github/workflows/landing-container.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Build and smoke test landing image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Build and serve the landing image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image='bettertrack-landing-smoke'
+          container='bettertrack-landing-smoke'
+          html="$RUNNER_TEMP/landing.html"
+          config="$RUNNER_TEMP/landing-env.js"
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              docker logs "$container" || true
+            fi
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          docker build --file apps/landing/Dockerfile --tag "$image" .
+          docker run --detach --name "$container" --publish 127.0.0.1:8082:80 \
+            --env BT_MODE=ports \
+            --env BT_DOMAIN=localhost \
+            --env BT_PORT_API=3000 \
+            --env BT_PORT_WEB=8080 \
+            "$image"
+
+          for attempt in {1..10}; do
+            if curl --fail --silent --show-error --output "$html" http://127.0.0.1:8082/; then
+              break
+            fi
+            if [ "$attempt" -eq 10 ]; then
+              exit 1
+            fi
+            sleep 1
+          done
+          grep --fixed-strings --quiet 'BetterTrack' "$html"
+
+          curl --fail --silent --show-error --output "$config" http://127.0.0.1:8082/env.js
+          grep --fixed-strings --quiet '"webOrigin":"http://localhost:8080"' "$config"
+          grep --fixed-strings --quiet '"apiOrigin":"http://localhost:3000"' "$config"

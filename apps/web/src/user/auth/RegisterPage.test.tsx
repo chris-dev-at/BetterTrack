@@ -32,6 +32,9 @@ const user: MeResponse = {
   baseCurrency: 'EUR',
   locale: 'en',
   lastLoginAt: null,
+  // A freshly created account has never been through setup — this null is what
+  // FirstRunGate diverts on, in every registration mode (§6.12).
+  firstRunCompletedAt: null,
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
@@ -85,7 +88,10 @@ test('open mode registers and signs the account straight in', async () => {
       locale: 'en',
     }),
   );
-  // The app opens once the session lands.
+  // A fresh account opens on first-run setup, not on Home (R2).
+  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  // …and "Do this later" is always there to hand the app straight over.
+  await u.click(screen.getByRole('button', { name: 'Do this later' }));
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
 });
 
@@ -229,6 +235,10 @@ test('the connected state locks the prefilled email, seeds the username, and sub
     }),
   );
   expect(api.register).not.toHaveBeenCalled();
+  // A first-time Google identity is routed through this same form, so it lands
+  // on first-run setup too.
+  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  await u.click(screen.getByRole('button', { name: 'Do this later' }));
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
 });
 
@@ -244,6 +254,30 @@ test('an expired Google ticket falls back to the plain form with a notice', asyn
   const email = (await screen.findByLabelText('Email')) as HTMLInputElement;
   expect(email).not.toBeDisabled();
 });
+
+test.each([0, 500])(
+  'a status %i Google-ticket outage stays retryable instead of reporting expiry',
+  async (status) => {
+    vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open', googleEnabled: true });
+    vi.mocked(api.getGoogleRegisterTicket)
+      .mockRejectedValueOnce(
+        new ApiError(status, status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN', 'unavailable'),
+      )
+      .mockResolvedValueOnce({ email: 'ada@gmail.com', name: 'Ada Lovelace' });
+    const user = userEvent.setup();
+    renderAt('/register?google=connected');
+
+    expect(
+      await screen.findByText(/can’t check your Google connection right now/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Google connection expired/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(/Connected to Google as ada@gmail.com/i)).toBeInTheDocument();
+    expect(api.getGoogleRegisterTicket).toHaveBeenCalledTimes(2);
+  },
+);
 
 test('the connected invite-token form keeps the token field fillable and sends it', async () => {
   vi.mocked(api.getRegistrationInfo).mockResolvedValue({

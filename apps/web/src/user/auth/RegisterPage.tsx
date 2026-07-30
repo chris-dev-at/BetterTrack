@@ -6,7 +6,7 @@ import { MIN_PASSWORD_LENGTH, type RegistrationMode } from '@bettertrack/contrac
 
 import { useI18n, useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
+import { ApiError, classifyApiError, isApiOutage } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { useAuth } from '../AuthContext';
 import { legalUrl } from '../legal';
@@ -44,12 +44,14 @@ type ModeState =
  * visit; `loading` — resolving the pending ticket after the OAuth round-trip;
  * `connected` — the ticket resolved, so the form shows the "Connected to Google"
  * state (email locked); `expired` — the ticket is gone, so the form falls back to
- * plain registration with a notice.
+ * plain registration with a notice; `unavailable` — the ticket could not be
+ * checked because the backend is unreachable, so the flow holds for a retry.
  */
 type GoogleConnectState =
   | { phase: 'off' }
   | { phase: 'loading' }
   | { phase: 'connected'; email: string; name: string | null }
+  | { phase: 'unavailable' }
   | { phase: 'expired' };
 
 /**
@@ -83,7 +85,7 @@ function registerErrorMessage(t: TranslateFn, err: unknown): string {
         return t('auth.register.google.ticketExpired');
       default:
         if (err.status === 429) return t('auth.register.rateLimited');
-        if (err.status >= 500) return t('common.genericError');
+        if (isApiOutage(err)) return t('common.genericError');
     }
   }
   return t('auth.register.failed');
@@ -121,6 +123,7 @@ export function RegisterPage() {
   const [google, setGoogle] = useState<GoogleConnectState>(() =>
     searchParams.get('google') === 'connected' ? { phase: 'loading' } : { phase: 'off' },
   );
+  const [googleTicketAttempt, setGoogleTicketAttempt] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -151,11 +154,21 @@ export function RegisterPage() {
         setGoogle({ phase: 'connected', email: ticket.email, name: ticket.name });
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        setGoogle({ phase: 'expired' });
+        setGoogle({
+          phase:
+            classifyApiError(err, ['GOOGLE_REGISTER_TICKET_INVALID']) === 'confirmed-domain-outcome'
+              ? 'expired'
+              : 'unavailable',
+        });
       }
     })();
     return () => controller.abort();
-  }, [searchParams]);
+  }, [searchParams, googleTicketAttempt]);
+
+  const retryGoogleTicket = () => {
+    setGoogle({ phase: 'loading' });
+    setGoogleTicketAttempt((attempt) => attempt + 1);
+  };
 
   if (state.phase === 'loading') {
     return (
@@ -216,6 +229,17 @@ export function RegisterPage() {
     );
   }
 
+  if (google.phase === 'unavailable') {
+    return (
+      <AuthCard subtitle={t('auth.register.subtitle')}>
+        <div className="flex flex-col gap-4">
+          <Alert tone="info">{t('auth.register.google.ticketUnavailable')}</Alert>
+          <Button onClick={retryGoogleTicket}>{t('common.retry')}</Button>
+        </div>
+      </AuthCard>
+    );
+  }
+
   const connected = google.phase === 'connected' ? google : null;
 
   async function onSubmit(e: FormEvent) {
@@ -246,6 +270,10 @@ export function RegisterPage() {
         setPending(true);
         return;
       }
+      // Land the app; `FirstRunGate` diverts a never-set-up account to /welcome.
+      // Deliberately NOT a direct navigate to /welcome: the trigger belongs in
+      // one place for every registration mode (§6.12) — an admin-created user or
+      // an approved applicant never passes through this form at all.
       navigate('/', { replace: true });
     } catch (err) {
       setError(registerErrorMessage(t, err));

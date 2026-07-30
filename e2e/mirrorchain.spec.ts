@@ -139,9 +139,19 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       // through the post-create picker — no direct lifecycle endpoint calls.
       await owner.page.goto('/portfolio');
       await owner.page.getByRole('button', { name: 'Switch portfolio' }).click();
+      // The group book is a branch of the add-portfolio wizard now: name → icon
+      // → "Shared with people", which hands off to the very same §11 create
+      // dialog (pre-filled with the name typed on step one).
       await owner.page
-        .getByRole('menuitem', { name: '+ New group portfolio', exact: true })
+        .getByRole('group', { name: 'Portfolios' })
+        .getByRole('button', { name: 'Add portfolio', exact: true })
         .click();
+      const wizard = owner.page.getByRole('dialog', { name: 'Add portfolio' });
+      await wizard.getByLabel('Portfolio name').fill(chainName);
+      await wizard.getByRole('button', { name: 'Continue' }).click();
+      await wizard.getByRole('button', { name: 'Continue' }).click();
+      await wizard.getByRole('radio', { name: /Shared with people/ }).click();
+      await wizard.getByRole('button', { name: 'Continue' }).click();
       const createDialog = owner.page.getByRole('dialog', { name: 'New group portfolio' });
       await createDialog.getByPlaceholder('Group portfolio name').fill(chainName);
       await createDialog.getByRole('button', { name: 'Create', exact: true }).click();

@@ -236,11 +236,7 @@ async function derive(
           converter,
         });
 
-  const linkedTransactionIds = new Set(
-    model.cashMovements
-      .map((movement) => movement.transactionId)
-      .filter((id): id is string => id !== null),
-  );
+  const linkedTransactionIds = cashSettledTransactionIds(model.cashMovements);
   const externalTransactionFlows =
     domainTransactions.length === 0
       ? []
@@ -591,6 +587,33 @@ function createFxInputLoader(market: MarketDataSource, signal?: AbortSignal): Fx
       return resolved;
     },
   };
+}
+
+/**
+ * The transactions whose money never crossed the portfolio boundary because they
+ * were settled against the cash ledger — a `buy` paid from cash or a `sell` whose
+ * proceeds were booked into cash. Their external flow was recorded when that cash
+ * moved, so counting the transaction again would double it (#125).
+ *
+ * **Only `buy` / `sell_proceeds` legs qualify.** A V3-P4 `tax_withholding` /
+ * `tax_refund` settlement also rides on its sell's `transactionId` (§16
+ * 2026-07-08) and says nothing about where the proceeds went. Keying on "has
+ * *any* linked movement" suppressed the outflow of a taxed sell that paid out
+ * instead of into cash while the holdings still left the value curve — a phantom
+ * loss. Mirrors `cashSettledTxnIds` in the server's snapshot engine; the two must
+ * stay identical or the paranoid client and the API report different returns.
+ */
+export function cashSettledTransactionIds(
+  cashMovements: readonly ClientPortfolioModel['cashMovements'][number][],
+): Set<string> {
+  const ids = new Set<string>();
+  for (const movement of cashMovements) {
+    if (movement.transactionId === null) continue;
+    if (movement.kind === 'buy' || movement.kind === 'sell_proceeds') {
+      ids.add(movement.transactionId);
+    }
+  }
+  return ids;
 }
 
 function splitCashBuyFlows(model: ClientPortfolioModel): Array<{ date: string; flowEur: number }> {
