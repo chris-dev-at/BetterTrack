@@ -44,8 +44,15 @@ jobs:
             --env BT_PORT_WEB=8080 \
             "$image"
 
-          curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 \
-            --output "$html" http://127.0.0.1:8082/
+          for attempt in {1..10}; do
+            if curl --fail --silent --show-error --output "$html" http://127.0.0.1:8082/; then
+              break
+            fi
+            if [ "$attempt" -eq 10 ]; then
+              exit 1
+            fi
+            sleep 1
+          done
           grep --fixed-strings --quiet 'BetterTrack' "$html"
 
           curl --fail --silent --show-error --output "$config" http://127.0.0.1:8082/env.js
