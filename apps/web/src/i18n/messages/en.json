@@ -3993,8 +3993,6 @@
       "placeBefore": "Place before {{title}}",
       "placeEnd": "Place at the end",
       "placeCancel": "Stop placing {{title}}",
-      "moveHere": "Move here",
-      "addHere": "Add here",
       "addBefore": "Add a widget before {{title}}",
       "addEnd": "Add a widget at the end",
       "variantLabel": "Display",

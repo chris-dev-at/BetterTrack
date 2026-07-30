@@ -235,7 +235,6 @@ export function HomePage() {
         : at === null
           ? t('home.builder.addEnd')
           : t('home.builder.addBefore', at),
-      pillText: moving ? t('home.builder.moveHere') : t('home.builder.addHere'),
       axis: axes[slot] ?? axisFallback,
       mode: moving ? ('move' as const) : ('add' as const),
       onSelect: () => (moving ? place(slot) : openDrawerAt(slot)),

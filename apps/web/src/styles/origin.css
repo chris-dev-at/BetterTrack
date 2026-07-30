@@ -2566,34 +2566,26 @@
    collapses to its icon — the button keeps its full accessible name either way. */
 
 .bt-home-place__pill {
+  /* `position: relative` + z-index so the pill sits ABOVE the line: the line is
+     a ::after pseudo, which paints after the element's children, and without
+     this it draws straight through the glyph. */
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  max-width: 100%;
-  padding: 3px 9px;
+  justify-content: center;
+  padding: 4px;
   border: 1px solid var(--bt-gold);
   border-radius: 999px;
   background: var(--bt-bg);
   color: var(--bt-gold);
-  font-size: 11.5px;
-  font-weight: 560;
-  line-height: 1.35;
-  white-space: nowrap;
-}
-
-.bt-home-place.is-v .bt-home-place__text {
-  display: none;
-}
-
-.bt-home-place.is-v .bt-home-place__pill {
-  gap: 0;
-  padding: 4px;
+  line-height: 1;
 }
 
 /* Idle ⊕ slots stay quiet so a board in edit mode is not a wall of gold; the
    move targets are the active question and read at full strength. */
 .bt-home-place.is-add {
-  opacity: 0.5;
+  opacity: 0.34;
 }
 
 .bt-home-place:hover,

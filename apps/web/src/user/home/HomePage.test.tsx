@@ -1436,7 +1436,7 @@ test('the header’s Add button still appends, ignoring any earlier ⊕', async 
   expect(persisted().widgets.at(-1)?.type).toBe('alerts');
 });
 
-test('picking a widget up swaps the ⊕ positions for Move here targets', async () => {
+test('picking a widget up swaps the ⊕ positions for move targets', async () => {
   const user = editMode();
   renderHome();
   await screen.findByRole('region', { name: 'Net worth' });
@@ -1445,8 +1445,14 @@ test('picking a widget up swaps the ⊕ positions for Move here targets', async 
 
   // The add affordance stands down while something is held…
   expect(screen.queryAllByRole('button', { name: /^Add a widget/ })).toHaveLength(0);
-  // …and every legal destination now says so, visibly.
+  // …and every legal destination becomes a move target. The slots are glyph-only
+  // (owner: the label broke the line it sat on), so the position lives in the
+  // accessible name and the arrow marks the mode.
   const targets = screen.getAllByRole('button', { name: /^Place / });
   expect(targets).toHaveLength(DEFAULT_LAYOUT.widgets.length - 1);
-  expect(screen.getAllByText('Move here')).toHaveLength(targets.length);
+  for (const target of targets) {
+    expect(target).toHaveClass('is-move');
+    expect(target.querySelector('svg[data-icon="arrow-right"]')).not.toBeNull();
+    expect(target.textContent).toBe('');
+  }
 });

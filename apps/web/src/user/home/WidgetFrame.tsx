@@ -44,12 +44,7 @@ export interface PlacementTarget {
    * widget at the end". Screen-reader users get the position they cannot see.
    */
   label: string;
-  /**
-   * The short text on the pill — "Move here" / "Add here". Sighted users already
-   * have the position from where the line is, so the pill carries the action
-   * instead of repeating it, and stays narrow enough to sit inside a gap.
-   */
-  pillText: string;
+  /** Which boundary this slot divides — decides how its line is drawn. */
   axis: PlacementAxis;
   mode: 'move' | 'add';
   onSelect: () => void;
@@ -205,7 +200,10 @@ export function WidgetFrame({
 }
 
 /**
- * One insertion position: a gold line with a labelled pill sitting on it.
+ * One insertion position: a gold line with a round glyph sitting on it — an
+ * arrow to move the picked-up widget here, a plus to add a new one here. Glyph
+ * only, no words (owner): the label was long enough to break the line it sat on,
+ * and two icons carry the difference on their own.
  *
  * Absolutely positioned into the grid's own gap (widened while editing, see the
  * stylesheet), so revealing the slots never reflows the board — the widgets hold
@@ -213,9 +211,9 @@ export function WidgetFrame({
  * than from the widget's declared size, so a line can never end up drawn across
  * the boundary it is not dividing.
  *
- * A real `<button>`: keyboard-reachable in visual order, and its accessible name
- * is the same text the pill shows. The pill is `aria-hidden` so the name is not
- * announced twice; the hit area is the whole gap, not just the pill.
+ * A real `<button>`: keyboard-reachable in visual order, named by `aria-label`
+ * (which still says *where* it lands, the thing a sighted user reads off the
+ * position); the glyph is `aria-hidden`, and the hit area is the whole gap.
  */
 function PlacementSlot({ target, where }: { target: PlacementTarget; where: 'before' | 'after' }) {
   return (
@@ -232,9 +230,6 @@ function PlacementSlot({ target, where }: { target: PlacementTarget; where: 'bef
     >
       <span aria-hidden="true" className="bt-home-place__pill">
         <Icon name={target.mode === 'move' ? 'arrow-right' : 'plus'} size={13} />
-        {/* Hidden by CSS on a vertical line, where a column gap has no room for
-            words — the button keeps its full accessible name either way. */}
-        <span className="bt-home-place__text">{target.pillText}</span>
       </span>
     </button>
   );
