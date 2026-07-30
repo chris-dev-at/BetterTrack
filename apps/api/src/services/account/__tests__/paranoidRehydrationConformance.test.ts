@@ -213,6 +213,14 @@ function strictDocument(entities: readonly StrictEntity[]) {
   } satisfies ParanoidDisableRehydrationRequest['document'];
 }
 
+function orderedMovements(
+  document: ParanoidDisableRehydrationRequest['document'],
+): StrictCashMovementEntity[] {
+  return document.entities
+    .filter((row): row is StrictCashMovementEntity => row.kind === 'cashMovement')
+    .sort((left, right) => left.data.executedAt.localeCompare(right.data.executedAt));
+}
+
 function nextUuidV7WriteId(id: string): string {
   const timestamp = id.slice(0, 8) + id.slice(9, 13);
   const nextTimestamp = (BigInt(`0x${timestamp}`) + 1n).toString(16).padStart(12, '0');
@@ -623,6 +631,86 @@ describe('paranoid rehydration solvency conformance', () => {
       code: 'INVALID_CASH_LEDGER',
       message:
         `cashMovement[${withdrawal.id}].amountEur=` + '"-1.000001" would overdraw its cash source',
+    });
+    expect(mutationTransaction).not.toHaveBeenCalled();
+    expect(await harness.db.select().from(portfolioCashMovements)).toEqual([]);
+    mutationTransaction.mockRestore();
+  });
+
+  it('quantizes sub-quantum cash drift the way PostgreSQL stores it, in both directions', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    await harness.ctx.portfolio.depositCash(user.id, portfolioId, {
+      amountEur: 2,
+      executedAt: '2026-07-23T10:00:00.000Z',
+    });
+    await harness.ctx.portfolio.withdrawCash(user.id, portfolioId, {
+      amountEur: 1,
+      executedAt: '2026-07-23T10:01:00.000Z',
+    });
+    await harness.ctx.portfolio.withdrawCash(user.id, portfolioId, {
+      amountEur: 1,
+      executedAt: '2026-07-23T10:02:00.000Z',
+    });
+    const document = await capturePortfolioDocument(harness, portfolioId);
+    // #918 routes cash through the same rounding as every money column. Drive
+    // every branch of it — toward zero, positive half up, negative half away
+    // from zero — and let PostgreSQL coerce the same raw strings on insert, so
+    // the restored rows are the oracle for what validation accumulated.
+    const drift = ['2.0000005', '-1.0000004', '-1.0000005'];
+    orderedMovements(document).forEach((movement, index) => {
+      movement.data.amountEur = drift[index]!;
+    });
+    await replaceNormalRowsWithServerVault(harness, user.id);
+
+    await rehydrate(harness, user.id, document);
+    const restored = await harness.db
+      .select()
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.portfolioId, portfolioId));
+    expect(
+      [...restored]
+        .sort((left, right) => left.executedAt.getTime() - right.executedAt.getTime())
+        .map((row) => row.amountEur),
+    ).toEqual(['2.000001', '-1.000000', '-1.000001']);
+  });
+
+  it('rejects a shortfall produced only by per-row cash rounding — still no envelope', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    await harness.ctx.portfolio.depositCash(user.id, portfolioId, {
+      amountEur: 1,
+      executedAt: '2026-07-23T10:00:00.000Z',
+    });
+    await harness.ctx.portfolio.depositCash(user.id, portfolioId, {
+      amountEur: 1,
+      executedAt: '2026-07-23T10:01:00.000Z',
+    });
+    await harness.ctx.portfolio.withdrawCash(user.id, portfolioId, {
+      amountEur: 2,
+      executedAt: '2026-07-23T10:02:00.000Z',
+    });
+    const document = await capturePortfolioDocument(harness, portfolioId);
+    // Two credits round down and their exact-sum debit rounds up, so the
+    // replay lands one scale-6 quantum short although the raw amounts balance.
+    // No writer produces this — client cash is floored to cents and captured
+    // server rows are already scale 6 — so it stays a fail-closed rejection
+    // rather than the per-row allowance quantities carry.
+    const drift = ['1.0000004', '1.0000004', '-2.0000008'];
+    const movements = orderedMovements(document);
+    movements.forEach((movement, index) => {
+      movement.data.amountEur = drift[index]!;
+    });
+    const withdrawal = movements[2]!;
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    const mutationTransaction = vi.spyOn(harness.db, 'transaction');
+
+    await expect(rehydrate(harness, user.id, document)).rejects.toMatchObject({
+      code: 'INVALID_CASH_LEDGER',
+      message:
+        `cashMovement[${withdrawal.id}].amountEur=` + '"-2.0000008" would overdraw its cash source',
     });
     expect(mutationTransaction).not.toHaveBeenCalled();
     expect(await harness.db.select().from(portfolioCashMovements)).toEqual([]);

@@ -3,7 +3,9 @@
 Operations reference for the self-hosted deploy. This document is the source of
 truth for the backup + restore procedure (PROJECTPLAN.md §10, §13.4 V4-P6).
 Deploy topology lives in `README.md`; app-level config lives in
-`infra/.env.production.example`.
+`infra/.env.production.example`. That annotated example is the single
+production variable reference (including secret and rotation guidance); keep
+operational procedures here instead of duplicating its key list.
 
 ## Container health and account exports
 
@@ -37,15 +39,71 @@ user. Ready exports still expire through the existing 24-hour cleanup job; the
 volume only makes their short lifetime survive process/container boundaries.
 As with every named volume, `docker compose down -v` deletes it.
 
-Validate the stock and overlaid production topology after editing Compose:
+Render both effective production topologies after editing Compose. The
+committed example supplies inert interpolation values; substitute `infra/.env`
+to validate one deployment's configured values:
 
 ```bash
-docker compose -f infra/docker-compose.yml config -q
-docker compose -f infra/docker-compose.yml \
+BT_MODE=subdomains docker compose --env-file infra/.env.production.example \
+  -f infra/docker-compose.yml \
   -f infra/docker-compose.subdomains.yml config -q
-docker compose -f infra/docker-compose.yml \
+BT_MODE=ports docker compose --env-file infra/.env.production.example \
+  -f infra/docker-compose.yml \
   -f infra/docker-compose.ports.yml config -q
 ```
+
+## Deployment-host log and image retention
+
+Every repository Compose service uses Docker's `local` log driver with an
+explicit `max-size: 10m` and `max-file: 3`. Docker therefore retains at most
+three 10 MiB log files per container instead of the unbounded default:
+
+| Compose file                    | Services                                                                                                                                      | Retention per container |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `docker-compose.yml`            | `web`, `landing`, `api`, `worker`, `db`, `redis`, `prometheus`, `grafana`, `node-exporter`, `cadvisor`, `postgres-exporter`, `redis-exporter` | 3 × 10 MiB              |
+| `docker-compose.ports.yml`      | `web` overlay                                                                                                                                 | 3 × 10 MiB              |
+| `docker-compose.subdomains.yml` | `web` overlay                                                                                                                                 | 3 × 10 MiB              |
+| `docker-compose.offsite.yml`    | `backup-offsite`                                                                                                                              | 3 × 10 MiB              |
+| `docker-compose.dev.yml`        | `db`, `redis`                                                                                                                                 | 3 × 10 MiB              |
+
+The live updater's separate host file,
+`$CONTROL/logs/updater.log`, rotates when it reaches 10 MiB. It keeps three
+archives (`updater.log.1` through `.3`), so a long-running updater cannot append
+to one file forever. Deploy-lifecycle notifications still go directly to the
+updater container's stdout and remain visible through `docker logs`.
+
+After each deploy tick, the updater checks
+`$CONTROL/logs/last-docker-reclaim`. At most once every 24 hours it asks Docker
+to remove only:
+
+- unused build cache older than seven days; and
+- dangling images older than seven days.
+
+The reclaim deliberately uses `docker builder prune` and `docker image prune`
+without `-a`. It never runs `docker system prune`, `docker volume prune`,
+container prune, or any command with `--volumes`. Docker excludes images
+referenced by a container, including the updater's own active image. Reclaim
+failure is logged as non-fatal and the deploy loop continues.
+
+The named data volumes are never cleanup targets:
+`pgdata`, `redisdata`, `exportdata`, `pgbackups`, `promdata`, and
+`grafanadata`. Do not replace the updater's narrow commands with a broader
+prune.
+
+Inspect current usage and the last reclaim attempt from the deploy host:
+
+```sh
+CONTROL=/absolute/path/to/live-control
+docker system df
+docker builder du
+ls -lh "$CONTROL"/logs/updater.log*
+cat "$CONTROL/logs/last-docker-reclaim" # UTC epoch seconds
+```
+
+To disable automatic reclaim, set `DOCKER_RECLAIM_ENABLED=0` on the `updater`
+service in the control directory's machine-local `compose.override.yml`, then
+recreate only that service with the same Compose file and env arguments used by
+the live stack. The log rotation remains active.
 
 ## Backup architecture
 
@@ -213,17 +271,16 @@ docker compose -f docker-compose.yml \
                run --rm backup-offsite
 ```
 
-## Environment reference
+## Internal backup sidecar paths
 
-| Variable                            | Layer      | Default    | Notes                                                                                                                                             |
-| ----------------------------------- | ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BACKUP_RETENTION_DAYS`             | local      | `14`       | Days of local `.sql.gz` dumps kept in the `pgbackups` volume                                                                                      |
-| `BT_BACKUP_AGE_RECIPIENT_HOST_FILE` | offsite    | (unset)    | Host path to age recipient file; bind-mounted into the sidecar. Unset ⇒ offsite skipped                                                           |
-| `BT_BACKUP_RCLONE_CONFIG_HOST_FILE` | offsite    | (unset)    | Host path to `rclone.conf` (Drive tokens); bind-mounted read-only                                                                                 |
-| `BT_BACKUP_RCLONE_REMOTE`           | offsite    | (unset)    | Rclone remote target, e.g. `gdrive:bettertrack-backups`. Unset ⇒ offsite skipped                                                                  |
-| `BT_BACKUP_REMOTE_RETENTION_DAYS`   | offsite    | `30`       | Days of encrypted artifacts kept on the remote; keep it at least `BACKUP_RETENTION_DAYS` to avoid re-uploading artifacts the remote prune removes |
-| `BT_BACKUP_AGE_RECIPIENT_FILE`      | (internal) | (fixed)    | In-container path — set by the compose override to `/etc/bettertrack/age-recipient`                                                               |
-| `BT_BACKUP_SOURCE_DIR`              | (internal) | `/backups` | In-container path to the shared `pgbackups` mount — do not change                                                                                 |
+Owner-supplied backup variables and their defaults are documented once in
+`infra/.env.production.example`. These two container-only paths are fixed by the
+offsite Compose overlay:
+
+| Variable                       | Default    | Notes                                                                                         |
+| ------------------------------ | ---------- | --------------------------------------------------------------------------------------------- |
+| `BT_BACKUP_AGE_RECIPIENT_FILE` | (fixed)    | Set by the Compose override to `/etc/bettertrack/age-recipient`; do not configure on the host |
+| `BT_BACKUP_SOURCE_DIR`         | `/backups` | Shared `pgbackups` mount inside the backup sidecar; do not configure on the host              |
 
 ### Retention contract
 

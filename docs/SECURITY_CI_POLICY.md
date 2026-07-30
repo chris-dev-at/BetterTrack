@@ -16,10 +16,12 @@ by `pnpm audit --prod`. Expiries are staggered by remediation family so their
 renewal work remains incremental rather than creating one repository-wide expiry
 cliff.
 
-The daily **Supply-chain security** workflow builds all three deployable images
-and uploads readable Trivy reports. Those scans are intentionally report-only so
-a new container finding does not block unrelated pull requests; it must instead
-be triaged and remediated through a reviewed dependency update or a tracked fix.
+The **Supply-chain security** workflow builds all three deployable images and
+uploads readable Trivy reports plus CycloneDX SBOMs. It runs on image-affecting
+pull requests, daily, and manually; fixable CRITICAL container findings gate the
+build, while HIGH findings remain in the nightly report for triage. The operator
+workflow and the narrow waiver path are documented in
+[`docs/supply-chain.md`](supply-chain.md).
 
 Dependabot owns GitHub Actions and npm updates. Renovate owns the deployable
 Dockerfiles via [`renovate.json`](../renovate.json): its Dockerfile manager
