@@ -39,10 +39,22 @@ export function Button({ variant = 'primary', className, type, ...rest }: Button
 interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   label: string;
   hint?: string;
+  error?: string;
 }
 
-export function TextField({ label, hint, id, className, ...rest }: TextFieldProps) {
+export function TextField({ label, hint, error, id, className, ...rest }: TextFieldProps) {
   const inputId = id ?? rest.name ?? label.toLowerCase().replace(/\s+/g, '-');
+  const hintId = `${inputId}-hint`;
+  const errorId = `${inputId}-error`;
+  const hasError = error !== undefined;
+  const describedBy = [
+    rest['aria-describedby'],
+    hint ? hintId : undefined,
+    hasError ? errorId : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' ');
+
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={inputId} className="text-sm font-medium text-neutral-300">
@@ -57,8 +69,19 @@ export function TextField({ label, hint, id, className, ...rest }: TextFieldProp
           className,
         )}
         {...rest}
+        aria-describedby={describedBy || undefined}
+        aria-invalid={hasError || undefined}
       />
-      {hint ? <p className="text-xs text-neutral-500">{hint}</p> : null}
+      {hint ? (
+        <p id={hintId} className="text-xs text-neutral-500">
+          {hint}
+        </p>
+      ) : null}
+      {hasError ? (
+        <p id={errorId} className="text-xs text-red-400" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

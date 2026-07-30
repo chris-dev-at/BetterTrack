@@ -90,6 +90,25 @@ beforeEach(() => {
   vi.mocked(listNotifications).mockResolvedValue({ items: [], nextCursor: null, unreadCount: 0 });
 });
 
+test('the user shell starts with a hidden skip link that focuses main content', async () => {
+  const user = userEvent.setup();
+  const { container } = renderAt('/portfolio');
+
+  const skipLink = await screen.findByRole('link', { name: 'Skip to main content' });
+  const main = screen.getByRole('main');
+  const firstFocusable = container.querySelector<HTMLElement>(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
+  );
+
+  expect(skipLink).toHaveAttribute('href', '#main-content');
+  expect(skipLink).toHaveClass('sr-only');
+  expect(main).toHaveAttribute('id', 'main-content');
+  expect(firstFocusable).toBe(skipLink);
+
+  await user.click(skipLink);
+  expect(main).toHaveFocus();
+});
+
 // ─── Suite rail (PRODUCT_BLUEPRINT §4) ────────────────────────────────────────
 
 test('the rail shows exactly the five suite destinations', async () => {

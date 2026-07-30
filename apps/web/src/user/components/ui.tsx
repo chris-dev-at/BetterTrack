@@ -41,6 +41,7 @@ export function Button({ variant = 'primary', className, type, ...rest }: Button
 interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   label: string;
   hint?: string;
+  error?: string;
 }
 
 /**
@@ -52,13 +53,39 @@ interface TextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
  * it. Sizing the field is what every caller actually wants — `sm:w-40` on the
  * wrapper produces exactly the width the input then fills.
  */
-export function TextField({ label, hint, id, className, ...rest }: TextFieldProps) {
+export function TextField({ label, hint, error, id, className, ...rest }: TextFieldProps) {
   const inputId = id ?? rest.name ?? label.toLowerCase().replace(/\s+/g, '-');
+  const hintId = `${inputId}-hint`;
+  const errorId = `${inputId}-error`;
+  const hasError = error !== undefined;
+  const describedBy = [
+    rest['aria-describedby'],
+    hint ? hintId : undefined,
+    hasError ? errorId : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' ');
+
   return (
     <div className={cx('bt-field', className)}>
       <label htmlFor={inputId}>{label}</label>
-      <input id={inputId} className="bt-input" {...rest} />
-      {hint ? <p className="bt-field__hint">{hint}</p> : null}
+      <input
+        id={inputId}
+        className="bt-input"
+        {...rest}
+        aria-describedby={describedBy || undefined}
+        aria-invalid={hasError || undefined}
+      />
+      {hint ? (
+        <p id={hintId} className="bt-field__hint">
+          {hint}
+        </p>
+      ) : null}
+      {hasError ? (
+        <p id={errorId} className="bt-field__error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -198,17 +225,17 @@ export function AuthCard({ subtitle, children }: { subtitle: string; children: R
         <Wordmark edition="Web" className="bt-gate__mark" />
         <p className="bt-gate__tagline">{TAGLINE}</p>
       </aside>
-      <div className="bt-gate__column">
+      <main className="bt-gate__column">
         <div className="bt-gate__card">
           <div className="bt-gate__brand text-center">
             <span className="bt-gate__brand-mark">
               <Wordmark edition="Web" />
             </span>
-            <p className="bt-meta mt-1 font-normal">{subtitle}</p>
+            <h1 className="bt-meta mt-1 font-normal">{subtitle}</h1>
           </div>
           {children}
         </div>
-      </div>
+      </main>
     </div>
   );
 }

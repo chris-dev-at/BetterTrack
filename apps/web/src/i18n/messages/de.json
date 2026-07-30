@@ -1,4 +1,7 @@
 {
+  "accessibility": {
+    "skipToContent": "Zum Hauptinhalt springen"
+  },
   "auth": {
     "common": {
       "checkingSession": "Sitzung wird überprüft…",
@@ -9,6 +12,9 @@
       "waitSecondsOne": " Bitte warte {{count}} Sekunde und versuche es erneut.",
       "waitSecondsOther": " Bitte warte {{count}} Sekunden und versuche es erneut.",
       "waitMoment": " Bitte warte einen Moment und versuche es erneut."
+    },
+    "adminLogin": {
+      "heading": "Admin-Anmeldung"
     },
     "login": {
       "subtitle": "Melde dich bei deinem Konto an",
