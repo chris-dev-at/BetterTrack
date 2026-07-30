@@ -526,6 +526,13 @@
       "when": 1785181402012,
       "tag": "0074_first_run_completion",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1785377115695,
+      "tag": "0075_cash_fusion",
+      "breakpoints": true
     }
   ]
 }

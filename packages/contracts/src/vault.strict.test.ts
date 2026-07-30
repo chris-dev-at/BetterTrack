@@ -20,6 +20,9 @@ const CASH_SOURCE_ID = uuid(4);
 const CATEGORY_ID = uuid(5);
 const ORDER_ID = uuid(6);
 const BUDGET_ID = uuid(7);
+const CASH_TAG_ID = uuid(30);
+const CASH_BUDGET_ID = uuid(32);
+const CASH_RULE_ID = uuid(34);
 const ORIGINAL_EXPENSE_HASH = 'a'.repeat(64);
 
 const meta = (id: string) => ({
@@ -122,6 +125,8 @@ const fixtures: VaultStrictEntity[] = [
       executedAt: AT,
       note: 'settlement',
       source: 'manual',
+      dedupHash: null,
+      originalCurrency: null,
       createdAt: '2026-07-22T08:00:00.000Z',
     },
   },
@@ -336,6 +341,73 @@ const fixtures: VaultStrictEntity[] = [
       budgetId: BUDGET_ID,
       periodKey: '2026-07',
       firedAt: AT,
+    },
+  },
+  // ── V5 cash fusion ──
+  {
+    ...meta(CASH_TAG_ID),
+    kind: 'cashTag',
+    data: {
+      userId: USER_ID,
+      name: 'Tax',
+      color: '#ef4444',
+      system: true,
+      systemKey: 'tax',
+      createdAt: AT,
+      updatedAt: AT,
+    },
+  },
+  {
+    ...meta(uuid(31)),
+    kind: 'cashMovementTag',
+    data: {
+      movementId: uuid(12),
+      tagId: CASH_TAG_ID,
+      createdAt: AT,
+    },
+  },
+  {
+    ...meta(CASH_BUDGET_ID),
+    kind: 'cashBudget',
+    data: {
+      portfolioId: PORTFOLIO_ID,
+      tagId: CASH_TAG_ID,
+      periodKey: '2026-07',
+      amount: '300.00',
+      currency: 'EUR',
+      createdAt: AT,
+      updatedAt: AT,
+    },
+  },
+  {
+    ...meta(uuid(33)),
+    kind: 'cashBudgetFire',
+    data: {
+      budgetId: CASH_BUDGET_ID,
+      periodKey: '2026-07',
+      firedAt: AT,
+    },
+  },
+  {
+    ...meta(CASH_RULE_ID),
+    kind: 'cashRule',
+    data: {
+      userId: USER_ID,
+      matchType: 'starts_with',
+      pattern: 'REWE',
+      priority: 5,
+      enabled: true,
+      createdAt: AT,
+      updatedAt: AT,
+    },
+  },
+  {
+    ...meta(uuid(35)),
+    kind: 'cashRuleTag',
+    data: {
+      ruleId: CASH_RULE_ID,
+      tagId: CASH_TAG_ID,
+      createdAt: AT,
     },
   },
 ];
