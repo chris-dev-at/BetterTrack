@@ -749,8 +749,30 @@ export interface AppConfig {
   };
 }
 
+/**
+ * An empty variable means UNSET, not "the empty value".
+ *
+ * Docker Compose renders every declared variable it knows about, so an optional
+ * setting nobody filled in arrives as `FOO=''` rather than as an absent key —
+ * `'${BT_PRODUCT_ORIGIN:-}'` in infra/docker-compose.yml is exactly that. Zod's
+ * `.optional()` accepts `undefined`, not `''`, so without this the container
+ * refuses to boot with "BT_PRODUCT_ORIGIN: Invalid url" for a setting that is
+ * legitimately not configured — a deployment with no product site, no mobile
+ * origin or no SMTP server, which every fresh box is.
+ *
+ * Required variables still fail, just with the honest message ("Required"
+ * instead of a format complaint about an empty string).
+ */
+function dropEmpty(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== '') out[key] = value;
+  }
+  return out;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  const parsed = envSchema.safeParse(env);
+  const parsed = envSchema.safeParse(dropEmpty(env));
   if (!parsed.success) {
     const issues = parsed.error.issues.map(
       (i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`,
