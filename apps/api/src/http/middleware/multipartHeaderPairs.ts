@@ -81,7 +81,10 @@ function multipartBoundary(contentType: string | undefined): MultipartBoundary {
           break;
         }
         const code = character.charCodeAt(0);
-        if (code !== 9 && (code < 32 || code === 127 || code > 255)) {
+        // Busboy encodes its boundary needle as UTF-8 while this raw-stream
+        // guard matches HTTP bytes. Keep quoted boundaries ASCII-only so both
+        // parsers necessarily search for the same delimiter bytes.
+        if (code > 0x7e || (code !== 9 && code < 0x20)) {
           return { kind: 'invalid' };
         }
         cursor += 1;

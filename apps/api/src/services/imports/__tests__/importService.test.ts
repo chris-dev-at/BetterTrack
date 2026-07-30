@@ -362,6 +362,32 @@ describe('POST /imports — staged preview', () => {
     });
   });
 
+  it('fails closed when a quoted non-ASCII boundary would diverge from Busboy', async () => {
+    const { agent, pid } = await setup();
+    const boundary = 'bettertrack-import-é';
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .set('Content-Type', `multipart/form-data; boundary="${boundary}"`)
+      .send(
+        rawMultipartUpload(
+          boundary,
+          {
+            name: 'portfolioId',
+            value: pid,
+            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT + 1,
+          },
+          FIXTURE,
+        ),
+      );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
   it('rejects a pathological unterminated boundary without backtracking', async () => {
     const { agent } = await setup();
     const startedAt = performance.now();
