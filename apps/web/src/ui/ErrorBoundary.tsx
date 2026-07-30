@@ -9,6 +9,13 @@ export interface ErrorBoundaryProps {
    * button is shown.
    */
   fallback?: ReactNode;
+  /**
+   * When this value changes while the boundary is showing an error, the error
+   * clears and children re-render. Unlike keying the boundary itself (the old
+   * shell pattern), a reset key never unmounts healthy children — route
+   * transitions keep long-lived subtrees (overlays, docks) mounted.
+   */
+  resetKey?: unknown;
 }
 
 type ErrorBoundaryState =
@@ -52,6 +59,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
     return { hasError: true, correlationId: correlationIdFor(error) };
+  }
+
+  override componentDidUpdate(prevProps: ErrorBoundaryProps): void {
+    if (this.state.hasError && prevProps.resetKey !== this.props.resetKey) this.reset();
   }
 
   reset = (): void => {

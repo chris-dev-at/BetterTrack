@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -138,6 +139,61 @@ describe('ErrorBoundary', () => {
 
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByText('recovered')).toBeInTheDocument();
+  });
+
+  test('a resetKey change clears a shown error without a remount', () => {
+    let shouldThrow = true;
+
+    function Bomb() {
+      if (shouldThrow) throw new Error('boom');
+      return <p>recovered</p>;
+    }
+
+    const { rerender } = render(
+      <ErrorBoundary resetKey="/a">
+        <Bomb />
+      </ErrorBoundary>,
+    );
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+
+    shouldThrow = false;
+    rerender(
+      <ErrorBoundary resetKey="/b">
+        <Bomb />
+      </ErrorBoundary>,
+    );
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByText('recovered')).toBeInTheDocument();
+  });
+
+  test('a resetKey change while healthy keeps children mounted (state survives)', async () => {
+    function Sticky() {
+      const [clicks, setClicks] = useState(0);
+      return (
+        <button onClick={() => setClicks((count) => count + 1)} type="button">
+          clicks:{clicks}
+        </button>
+      );
+    }
+
+    const { rerender } = render(
+      <ErrorBoundary resetKey="/a">
+        <Sticky />
+      </ErrorBoundary>,
+    );
+    await userEvent.setup().click(screen.getByRole('button'));
+    expect(screen.getByText('clicks:1')).toBeInTheDocument();
+
+    rerender(
+      <ErrorBoundary resetKey="/b">
+        <Sticky />
+      </ErrorBoundary>,
+    );
+
+    // A remount would reset the useState to 0 — surviving state proves the
+    // subtree lived through the key change (the point of resetKey over key).
+    expect(screen.getByText('clicks:1')).toBeInTheDocument();
   });
 
   test('uses a custom fallback when provided', () => {

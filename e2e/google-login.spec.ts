@@ -9,6 +9,7 @@ import {
 import { getRegistrationMode, loginAsAdmin, setRegistrationMode } from './support/adminApi';
 import { passwordSignIn as submitPasswordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL, FAKE_GOOGLE_URL } from './support/config';
+import { dismissFirstRun } from './support/flows';
 import { provisionUser } from './support/users';
 
 /**
@@ -82,11 +83,16 @@ test('google identity block lives under Settings → Connections and is gone fro
       timeout: 20_000,
     });
     await expect(page.getByRole('link', { name: 'Connect Google' })).toBeVisible();
-    await expect(page.getByText('Google Drive backup')).toBeVisible();
+    // The Drive surface on this panel is the real paranoid-vault section
+    // ("Google Drive app data"); the coming-soon "Google Drive backup" slot it
+    // replaced was dropped in ccd0cd2, so this assertion had gone stale.
+    await expect(page.getByRole('heading', { name: 'Google Drive app data' })).toBeVisible();
 
-    // The old home no longer shows it (only relocated, never duplicated).
+    // The old home no longer shows it (only relocated, never duplicated). The
+    // former Security page is the Sign-in panel now (credentials); devices and
+    // the app lock live on Sessions.
     await page.goto('/settings/security');
-    await expect(page.getByRole('heading', { name: 'Security' })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('heading', { name: 'Sign-in' })).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole('heading', { name: 'Google account' })).toHaveCount(0);
   } finally {
     await user.context.close();
@@ -181,7 +187,9 @@ test('google login: open mode registers a brand-new verified identity', async ({
     await page.getByLabel('Password').fill(ACCOUNT_PASSWORD);
     await page.getByRole('button', { name: 'Create account' }).click();
 
-    // Open mode signs the freshly-registered account straight in.
+    // Open mode signs the freshly-registered account straight in — a brand-new
+    // account, so it opens on first-run setup before the app.
+    await dismissFirstRun(page);
     await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({
       timeout: 30_000,
     });

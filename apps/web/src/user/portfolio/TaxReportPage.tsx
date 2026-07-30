@@ -1,34 +1,29 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 
 import type {
   PortfolioSummary,
-  PortfolioTaxSettingsResponse,
   TaxMode,
   TaxYearDeSummary,
   TaxYearPosition,
   TaxYearSell,
   TaxYearSummary,
-  UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
 
 import { useI18n, useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EM_DASH, formatDate, formatQuantity } from '../../lib/format';
 import {
-  clearPortfolioTaxOverride,
   getPortfolioTaxSettings,
   getTaxYearReport,
   getTaxYearReports,
   listPortfolios,
-  setPortfolioTaxOverride,
   taxYearReportCsvUrl,
 } from '../../lib/portfolioApi';
 import { Disclaimer, EmptyState, MoneyText } from '../../ui';
 import { Badge, Icon, PageHead, Panel, SkeletonBlock } from '../../ui/origin';
 import { Alert } from '../components/ui';
-import { TaxModePicker } from '../settings/taxModePicker';
 import { vaultMoneyErrorKey } from '../vault/engine/errorCopy';
 import { asMoneyFailure, type VaultMoneyFailure } from '../vault/engine/errors';
 import { clientTaxYears } from '../vault/engine/taxEngine';
@@ -41,11 +36,12 @@ import { deliverClientDownload, printClientDocument } from '../vault/export/deli
 import { createClientTaxCsv } from '../vault/export/taxCsv';
 import { createPrintableTaxReport } from '../vault/export/taxPrint';
 import { usePrivacyMode } from '../vault/usePrivacyMode';
-import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
-
-/** Query key for one portfolio's resolved tax treatment (issue #636). */
-const portfolioTaxSettingsKey = (portfolioId: string) =>
-  ['portfolio', 'taxSettings', portfolioId] as const;
+import { portfolioTaxSettingsKey, taxModeLabelKey } from './portfolioTax';
+import {
+  ACTIVE_PORTFOLIO_PARAM,
+  portfolioSearch,
+  resolveActivePortfolio,
+} from './PortfolioSwitcher';
 
 /** One sell inside a year's drill-down (#369 uncovered sells render their real basis). */
 function SellRow({ sell }: { sell: TaxYearSell }) {
@@ -353,106 +349,6 @@ function YearRow({
 }
 
 /**
- * Per-portfolio tax-treatment control (issue #636): resolves and edits ONE
- * portfolio's tax mode/country through the scoping cascade
- * (`effective = override ?? user default ?? system('none')`). Shows whether the
- * portfolio is inheriting the user's new-portfolio default or has its own
- * override, lets the user pick an override, and — when overridden — reset back
- * to the default. Always rendered while a portfolio is active so the user can
- * turn tax on for THIS portfolio even when the default is `none`.
- */
-function PortfolioTaxTreatment({
-  portfolioId,
-  portfolioName,
-}: {
-  portfolioId: string;
-  portfolioName: string;
-}) {
-  const t = useT();
-  const queryClient = useQueryClient();
-  const [error, setError] = useState(false);
-
-  const query = useQuery({
-    queryKey: portfolioTaxSettingsKey(portfolioId),
-    queryFn: ({ signal }) => getPortfolioTaxSettings(portfolioId, signal),
-    staleTime: 30_000,
-  });
-
-  const applyResult = (res: PortfolioTaxSettingsResponse) => {
-    queryClient.setQueryData(portfolioTaxSettingsKey(portfolioId), res);
-    // The effective mode gates the report + drives freezing of new rows.
-    void queryClient.invalidateQueries({ queryKey: ['portfolio', 'taxYears', portfolioId] });
-    setError(false);
-  };
-  const overrideMutation = useMutation({
-    mutationFn: (body: UpdateTaxSettingsRequest) => setPortfolioTaxOverride(portfolioId, body),
-    onSuccess: applyResult,
-    onError: () => setError(true),
-  });
-  const resetMutation = useMutation({
-    mutationFn: () => clearPortfolioTaxOverride(portfolioId),
-    onSuccess: applyResult,
-    onError: () => setError(true),
-  });
-  const busy = overrideMutation.isPending || resetMutation.isPending;
-
-  const overridden = query.data?.source === 'portfolio';
-
-  return (
-    <details className="bt-panel bt-band" open={overridden}>
-      <summary className="bt-band__row flex cursor-pointer flex-wrap items-center justify-between gap-2">
-        <span className="flex flex-col gap-0.5">
-          <span className="bt-row-title">
-            {t('portfolio.taxReport.treatment.title', { name: portfolioName })}
-          </span>
-          <span className="bt-row-sub">{t('portfolio.taxReport.treatment.description')}</span>
-        </span>
-        <Badge tone={overridden ? 'blue' : 'neutral'}>
-          {overridden
-            ? t('portfolio.taxReport.treatment.overridden')
-            : t('portfolio.taxReport.treatment.inheriting')}
-        </Badge>
-      </summary>
-      <div className="bt-band__row flex flex-col gap-3">
-        {query.isPending ? (
-          <SkeletonBlock height={64} />
-        ) : query.isError || !query.data ? (
-          <EmptyState
-            description={t('settings.retryHint')}
-            title={t('portfolio.taxReport.loadError.title')}
-          />
-        ) : (
-          <>
-            <TaxModePicker
-              ariaLabel={t('portfolio.taxReport.treatment.title', { name: portfolioName })}
-              busy={busy}
-              name={`portfolio-tax-${portfolioId}`}
-              onSelect={(body) => overrideMutation.mutate(body)}
-              value={query.data.effective}
-            />
-            {overridden ? (
-              <button
-                className="bt-link w-fit"
-                disabled={busy}
-                onClick={() => resetMutation.mutate()}
-                type="button"
-              >
-                {t('portfolio.taxReport.treatment.reset')}
-              </button>
-            ) : (
-              <Link className="bt-link w-fit" to="/settings/taxes">
-                {t('portfolio.taxReport.treatment.editDefault')}
-              </Link>
-            )}
-            {error ? <Alert tone="error">{t('settings.taxes.saveError')}</Alert> : null}
-          </>
-        )}
-      </div>
-    </details>
-  );
-}
-
-/**
  * Portfolio → Tax report (PROJECTPLAN.md §13.3 V3-P4). Per Europe/Vienna calendar
  * year (newest first): realized P/L, gross dividends, tax withheld, the same-year
  * loss-offset **refund** line, and the **net** tax the year holds — each year
@@ -460,9 +356,13 @@ function PortfolioTaxTreatment({
  * uncovered sell, #369, never fabricates gain on the portion you didn't hold).
  *
  * Portfolio-scoped: reads the active portfolio from the `?portfolio=` param like
- * the rest of the section. The active portfolio's tax treatment resolves per
- * portfolio (issue #636): the treatment control lets the user override/reset it,
- * and the report below is gated on that portfolio's EFFECTIVE mode.
+ * the rest of the section, and the report is gated on that portfolio's EFFECTIVE
+ * tax mode (issue #636).
+ *
+ * READ-ONLY about configuration. Choosing the mode lives on the Settings tab
+ * (`PortfolioTaxSection`) — this page only *names* the mode its numbers were
+ * computed under and links there, so a report that looks wrong can be diagnosed
+ * without hunting for the switch.
  */
 export function TaxReportPage() {
   const t = useT();
@@ -578,10 +478,29 @@ export function TaxReportPage() {
     <div>
       {header}
 
-      {/* Per-portfolio tax treatment (issue #636): inherit / override / reset. */}
-      <div className="bt-section">
-        <PortfolioTaxTreatment portfolioId={active.id} portfolioName={active.name} />
-      </div>
+      {/* Which mode these numbers were computed under — read-only (issue #636).
+          Configuration lives in the Settings tab; naming the mode here is what
+          makes a wrong-looking report diagnosable without hunting for it. */}
+      {settingsQuery.data ? (
+        <p className="bt-pftax-line">
+          <span>
+            {t('portfolio.taxReport.mode.line', {
+              mode: t(taxModeLabelKey(settingsQuery.data.effective)),
+            })}
+          </span>
+          <span className="bt-badge">
+            {settingsQuery.data.source === 'portfolio'
+              ? t('portfolio.settings.tax.overridden')
+              : t('portfolio.settings.tax.inheriting')}
+          </span>
+          <Link
+            className="bt-link"
+            to={{ pathname: '/portfolio/settings', search: portfolioSearch(active.id) }}
+          >
+            {t('portfolio.taxReport.mode.change')}
+          </Link>
+        </p>
+      ) : null}
 
       <div className="bt-section">
         {settingsQuery.isPending ? (
@@ -593,7 +512,7 @@ export function TaxReportPage() {
           />
         ) : !taxActive ? (
           // The report is only meaningful with a tax mode active for THIS
-          // portfolio; the treatment control above turns one on.
+          // portfolio; the Settings tab is where one gets turned on.
           <EmptyState
             description={t('portfolio.taxReport.disabled.description')}
             icon="🧾"

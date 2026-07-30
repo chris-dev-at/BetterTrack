@@ -1,28 +1,23 @@
 import { Outlet } from 'react-router-dom';
 
 import { useT } from '../../i18n';
-import { LocalNav, type LocalNavItem } from '../components/LocalNav';
+import { LocalNav } from '../components/LocalNav';
+import { SECTION_NAV, useSectionNavItems } from '../components/sectionNav';
 
 /**
  * People destination (PRODUCT_BLUEPRINT.md §4): who works with the data —
  * friends and follows, chat, shared items and the public profile; Teams and
  * Approvals are parked collaboration surfaces.
+ *
+ * Tab set: `components/sectionNav.ts` (shared with the rail's People group).
  */
 export function PeopleLayout() {
   const t = useT();
-
-  const items: LocalNavItem[] = [
-    { to: '/people', label: t('people.tabs.friends'), end: true },
-    { to: '/people/chat', label: t('people.tabs.chat') },
-    { to: '/people/shared', label: t('people.tabs.shared') },
-    { to: '/people/profile', label: t('people.tabs.profile') },
-    { to: '/people/teams', label: t('people.tabs.teams'), parked: true },
-    { to: '/people/approvals', label: t('people.tabs.approvals'), parked: true },
-  ];
+  const items = useSectionNavItems('people');
 
   return (
     <div>
-      <LocalNav ariaLabel={t('people.aria')} items={items} />
+      <LocalNav ariaLabel={t(SECTION_NAV.people.ariaLabelKey)} items={items} />
       <Outlet />
     </div>
   );

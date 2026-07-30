@@ -33,6 +33,7 @@ import {
 } from '../../lib/passkeys';
 import * as api from '../../lib/userApi';
 import { listWorkboard } from '../../lib/workboardApi';
+import { TAGLINE } from '../../ui/Disclaimer';
 import { UserApp } from '../UserApp';
 
 // A representative OAuth authorize URL, as RequireUser stashes it in state.from
@@ -203,6 +204,31 @@ test('an account without 2FA logs straight into the app', async () => {
 
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(screen.queryByText('Two-factor authentication')).not.toBeInTheDocument();
+});
+
+// ── The split auth gate (R2) ─────────────────────────────────────────────────
+
+test('the gate renders a decorative brand panel beside the form, leaving the fields untouched', async () => {
+  renderApp();
+  await screen.findByText('Sign in to your account');
+
+  const gate = document.querySelector('.bt-gate--split');
+  expect(gate).not.toBeNull();
+
+  // The panel carries the wordmark and the single tagline — and nothing else:
+  // no feature list, no marketing copy.
+  const panel = gate?.querySelector('.bt-gate__brandpanel');
+  expect(panel).toHaveTextContent(TAGLINE);
+  // It duplicates the card's wordmark, so it is hidden from assistive tech; the
+  // card's own mark stays the one announced at every width (it is only ever
+  // hidden VISUALLY on the split — see origin.css).
+  expect(panel).toHaveAttribute('aria-hidden', 'true');
+  expect(gate?.querySelector('.bt-gate__brand-mark')).not.toBeNull();
+
+  // Field labels/names are load-bearing: e2e signs in through these exact ones.
+  expect(screen.getByLabelText('Email or username')).toHaveAttribute('name', 'identifier');
+  expect(screen.getByLabelText('Password')).toHaveAttribute('name', 'password');
+  expect(screen.getByRole('button', { name: 'Sign in' })).toHaveAttribute('type', 'submit');
 });
 
 // ── Stay signed in + OAuth persistence rules (V4-P2b, §399 §A) ────────────────

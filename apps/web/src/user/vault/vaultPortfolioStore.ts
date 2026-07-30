@@ -688,6 +688,10 @@ async function createCashMovement(
         executedAt: parsedBody.executedAt ?? timestamp,
         note: parsedBody.note ?? null,
         source: 'manual',
+        // V5 cash fusion: NULL on every hand-entered movement, exactly like the
+        // server — no statement import to dedupe, and the amount is truly EUR.
+        dedupHash: null,
+        originalCurrency: null,
         createdAt: timestamp,
       }),
     );
@@ -836,6 +840,10 @@ async function materializeStandingOrderOccurrence(
           executedAt: timestamp,
           note: nullableStringField(order.data, 'label'),
           source: SOURCE_TAG_STANDING_ORDER,
+          // V5 cash fusion: NULL on every engine-posted movement, exactly like
+          // the server — no statement import to dedupe, amount is truly EUR.
+          dedupHash: null,
+          originalCurrency: null,
           createdAt: timestamp,
         }),
       );

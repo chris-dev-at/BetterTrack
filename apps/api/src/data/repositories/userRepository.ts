@@ -1,4 +1,4 @@
-import { and, count, eq, gte, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, count, eq, gte, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { users, type UserRow } from '../schema';
@@ -325,6 +325,23 @@ function createUserQueries(db: Database) {
         .update(users)
         .set({ lastLoginAt: when, updatedAt: new Date() })
         .where(eq(users.id, id));
+    },
+
+    /**
+     * Mark first-run setup as finished/dismissed (§6.12).
+     *
+     * **Idempotency key: the user id, set-once.** The `IS NULL` guard means a
+     * replayed request — a double-clicked "Do this later", a retried finish —
+     * cannot move an already-recorded timestamp. Returns the row either way, so
+     * the caller always answers with the caller's real current state.
+     */
+    async markFirstRunCompleted(id: string, when: Date): Promise<UserRow | undefined> {
+      await db
+        .update(users)
+        .set({ firstRunCompletedAt: when, updatedAt: new Date() })
+        .where(and(eq(users.id, id), isNull(users.firstRunCompletedAt)));
+      const [row] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+      return row;
     },
 
     async remove(id: string): Promise<void> {
