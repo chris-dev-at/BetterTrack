@@ -5,6 +5,7 @@ import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-do
 
 import { I18nProvider, useI18n, useT } from '../i18n';
 import { RealtimeProvider } from '../lib/realtime';
+import { NotFoundState } from '../ui';
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { RequireUser } from './RequireUser';
@@ -366,11 +367,12 @@ function UserShell() {
             <Route path="social/ideas" element={<LegacyRedirect to="/workbench/ideas" />} />
             <Route path="social/profile" element={<LegacyRedirect to="/people/profile" />} />
             <Route path="following" element={<LegacyRedirect to="/people" />} />
+            {/* This stays beneath the existing authenticated/onboarding gates,
+                so signed-out visitors still resolve through RequireUser. */}
+            <Route path="*" element={<NotFoundState homeTo="/" />} />
           </Route>
         </Route>
       </Route>
-      {/* Unknown paths fall back home (which the guard sends to /login if anon). */}
-      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }

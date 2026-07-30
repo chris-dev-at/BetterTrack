@@ -107,6 +107,15 @@ test('an unauthenticated visit to a user route redirects to /login', async () =>
   ).not.toBeInTheDocument();
 });
 
+test('an unauthenticated visit to an unknown route still redirects to /login', async () => {
+  anonymous();
+
+  renderAtWithLocation('/not-a-real-route');
+
+  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(screen.getByTestId('location')).toHaveTextContent('/login');
+});
+
 test('after signing in, the user returns to the originally requested route', async () => {
   anonymous();
   vi.mocked(api.login).mockResolvedValue(member);
@@ -384,21 +393,19 @@ test('invite accept: an invalid token is rejected with a clear message and no fo
   expect(screen.queryByLabelText('Username')).not.toBeInTheDocument();
 });
 
-test('an unknown path lands on the Home command center in one hop, without appending segments', async () => {
-  // The user catch-all already redirects to the absolute `/` (never a relative
-  // target), so it cannot loop the way the admin one did. This locks that in:
-  // an unknown deep path resolves straight to the home route, not /blabla/….
+test('an unknown authenticated user path renders a not-found state without navigating away', async () => {
   vi.mocked(api.getMe).mockResolvedValue(member);
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
 
   renderAtWithLocation('/blabla');
 
-  // Reached the authenticated shell (Home, the redesign's `/`), not a loop.
+  expect(await screen.findByText('Page not found')).toBeInTheDocument();
+  expect(screen.getByText('/blabla', { selector: 'code' })).toBeInTheDocument();
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Back to start' })).toHaveAttribute('href', '/');
+  expect(screen.getByRole('button', { name: 'Back to previous page' })).toBeInTheDocument();
 
-  // Settled exactly on the absolute home — no 'blabla', no duplicated segments.
-  await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/'));
+  await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/blabla'));
   const pathname = screen.getByTestId('location').textContent;
-  expect(pathname).toBe('/');
-  expect(pathname).not.toContain('blabla');
+  expect(pathname).toBe('/blabla');
 });
