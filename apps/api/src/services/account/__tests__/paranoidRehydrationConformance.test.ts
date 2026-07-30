@@ -138,6 +138,10 @@ function strictCashMovementEntity(
     createdAt: row.createdAt.toISOString(),
     note: row.note,
     source: row.source,
+    // V5 cash fusion columns — mirrored from the row like every other field, so
+    // the conformance fixture keeps matching what the repository actually reads.
+    dedupHash: row.dedupHash,
+    originalCurrency: row.originalCurrency,
   });
 }
 
