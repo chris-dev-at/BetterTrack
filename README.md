@@ -343,11 +343,13 @@ enrichment), and `notifications.dispatch` (friend request/accept/share email + n
 
 ### Backups & restore
 
-The `backup-scheduler` service takes a local dump immediately on first start,
-then follows `BT_BACKUP_CRON` (default `0 3 * * *`, UTC) inside the deployment.
-No host scheduler is required. Each run writes a verified, timestamped gzip to
-the shared `pgbackups` volume, updates `/backups/backup-status.env`, and deletes
-dumps older than `BACKUP_RETENTION_DAYS` (default 14).
+The `backup-scheduler` service takes a local dump and runs a safe restore drill
+immediately on first start. It then follows `BT_BACKUP_CRON` (default
+`0 3 * * *`, UTC) for dumps and `BT_BACKUP_RESTORE_CRON` (default
+`0 4 1 * *`, UTC) for monthly drills. No host scheduler is required. Each dump
+writes a verified, timestamped gzip to the shared `pgbackups` volume, updates
+`/status/backup-status.env` in a separate status volume, and deletes dumps older
+than `BACKUP_RETENTION_DAYS` (default 14).
 
 `docker compose ps` marks the scheduler unhealthy if the last successful dump
 is older than `BT_BACKUP_FRESHNESS_MAX_HOURS` (default 26), or the last passing
@@ -364,8 +366,12 @@ docker compose exec db ls -la /backups
 
 The drill restores only into a disposable `bettertrack_restore_drill` database,
 runs connectivity and schema probes, drops that database, appends evidence to
-`/backups/restore-attestations.jsonl`, and updates the status file. Run it at
-least monthly; it never targets `POSTGRES_DB`.
+`/backups/restore-attestations.jsonl`, and updates the status file. It runs
+automatically at least monthly and never targets `POSTGRES_DB`.
+
+Deployments upgrading from the former host-cron runbook should remove the old
+`docker compose exec -T db /backups/backup.sh` crontab entry. The script is no
+longer mounted into `db`; the in-stack scheduler replaces that local job.
 
 **Restore from a dump:**
 

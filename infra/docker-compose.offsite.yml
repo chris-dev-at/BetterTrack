@@ -38,14 +38,18 @@ services:
       BT_BACKUP_AGE_RECIPIENT_FILE: '/etc/bettertrack/age-recipient'
       BT_BACKUP_RCLONE_REMOTE: '${BT_BACKUP_RCLONE_REMOTE:-}'
       BT_BACKUP_UPLOAD_RCLONE_CONFIG: '/etc/bettertrack/upload-rclone.conf'
+      BT_BACKUP_STATUS_FILE: '/status/backup-status.env'
     volumes:
-      # Writable only so the upload outcome can join backup-status.env. Upload
-      # mode never prunes local or remote artifacts.
-      - pgbackups:/backups
+      # Plaintext dumps stay read-only; only the separate status volume is writable.
+      - pgbackups:/backups:ro
+      - backupstatus:/status
       - '${BT_BACKUP_AGE_RECIPIENT_HOST_FILE}:/etc/bettertrack/age-recipient:ro'
       - '${BT_BACKUP_RCLONE_CONFIG_HOST_FILE}:/etc/bettertrack/upload-rclone.conf:ro'
 
   backup-offsite-retention:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
     image: bettertrack-backup:local
     entrypoint: ['/bin/bash', '/opt/bettertrack/offsite.sh']
     restart: 'no'
@@ -57,11 +61,13 @@ services:
       BT_BACKUP_RETENTION_RCLONE_CONFIG: '/etc/bettertrack/retention-rclone.conf'
       BT_BACKUP_RETENTION_RCLONE_REMOTE: '${BT_BACKUP_RETENTION_RCLONE_REMOTE:-}'
       BT_BACKUP_REMOTE_RETENTION_DAYS: '${BT_BACKUP_REMOTE_RETENTION_DAYS:-30}'
+      BT_BACKUP_STATUS_FILE: '/status/backup-status.env'
     volumes:
-      - pgbackups:/backups
+      - backupstatus:/status
       # /dev/null keeps the disabled profile renderable without owner setup.
       # Enabling retention without an explicit file still fails safely.
       - '${BT_BACKUP_RETENTION_RCLONE_CONFIG_HOST_FILE:-/dev/null}:/etc/bettertrack/retention-rclone.conf:ro'
 
 volumes:
   pgbackups:
+  backupstatus:

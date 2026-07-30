@@ -114,6 +114,11 @@ case "\${1:-}" in
       cat "$RCLONE_LISTING"
     fi
     ;;
+  copy)
+    if [ "\${RCLONE_COPY_FAIL:-false}" = 'true' ]; then
+      exit 23
+    fi
+    ;;
 esac
 `,
   );
@@ -124,10 +129,12 @@ afterEach(() => {
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+// Behavioral script fixtures use GNU stat, sha256sum, and flock, matching CI and the utility image.
 describe('backup deployment topology', () => {
   const compose = read('infra/docker-compose.yml');
   const offsiteCompose = read('infra/docker-compose.offsite.yml');
   const dockerfile = read('infra/backup/Dockerfile');
+  const scheduler = read('infra/backup/scheduler.sh');
   const schedulerBlock = compose.slice(
     compose.indexOf('\n  backup-scheduler:'),
     compose.indexOf('\n  db:'),
@@ -146,10 +153,14 @@ describe('backup deployment topology', () => {
     expect(schedulerBlock).toContain("'/opt/bettertrack/scheduler.sh'");
     expect(schedulerBlock).toContain("test: ['CMD', '/opt/bettertrack/healthcheck.sh']");
     expect(schedulerBlock).toContain('BT_BACKUP_CRON');
+    expect(schedulerBlock).toContain('BT_BACKUP_RESTORE_CRON');
     expect(schedulerBlock).toContain('BT_BACKUP_FRESHNESS_MAX_HOURS');
     expect(schedulerBlock).toContain('BT_BACKUP_RESTORE_MAX_AGE_DAYS');
     expect(schedulerBlock).toContain('pgbackups:/backups');
+    expect(schedulerBlock).toContain('backupstatus:/status');
     expect(schedulerBlock).toContain('condition: service_healthy');
+    expect(scheduler).toContain('restore_schedule="${BT_BACKUP_RESTORE_CRON:-0 4 1 * *}"');
+    expect(scheduler.match(/\/opt\/bettertrack\/restore-drill\.sh/g)).toHaveLength(2);
   });
 
   it('builds every backup script on a digest-pinned utility image', () => {
@@ -176,8 +187,11 @@ describe('backup deployment topology', () => {
     expect(retentionBlock).toContain('BT_BACKUP_REMOTE_RETENTION_ENABLED');
     expect(retentionBlock).toContain('retention-rclone.conf');
     expect(retentionBlock).not.toContain('upload-rclone.conf');
-    expect(uploadBlock).toContain('pgbackups:/backups');
-    expect(retentionBlock).toContain('pgbackups:/backups');
+    expect(uploadBlock).toContain('pgbackups:/backups:ro');
+    expect(retentionBlock).not.toContain('pgbackups:/backups');
+    expect(uploadBlock).toContain('backupstatus:/status');
+    expect(retentionBlock).toContain('backupstatus:/status');
+    expect(retentionBlock).toContain('context: ./backup');
   });
 });
 
@@ -241,6 +255,29 @@ describe('local backup status and freshness', () => {
     expect(statusValues(target.status)).toMatchObject({
       health_outcome: 'stale',
       health_reason: 'backup_missing',
+    });
+  });
+
+  it('returns stale when a valid fresh dump has no automated restore evidence yet', () => {
+    const target = fixture();
+    const now = 2_000_000_000;
+    const artifact = 'bettertrack-20200101-000000.sql.gz';
+    writeFileSync(path.join(target.backups, artifact), 'x');
+    writeStatus(target.status, {
+      last_success_epoch: now,
+      last_artifact: artifact,
+      last_artifact_bytes: 1,
+      last_artifact_sha256: 'a'.repeat(64),
+    });
+
+    const health = run('healthcheck.sh', {
+      ...target.env,
+      BT_BACKUP_HEALTH_NOW_EPOCH: String(now),
+    });
+    expect(health.status).not.toBe(0);
+    expect(statusValues(target.status)).toMatchObject({
+      health_outcome: 'stale',
+      health_reason: 'restore_missing',
     });
   });
 
@@ -342,6 +379,33 @@ describe('offsite upload and retention credentials', () => {
     });
     expect(result.status).not.toBe(0);
     expect(statusValues(target.status).offsite_outcome).toBe('failed');
+  });
+
+  it('preserves a non-zero exit and failed status when rclone copy fails', () => {
+    const target = fixture();
+    const log = installOffsiteStubs(target);
+    const recipient = path.join(target.root, 'recipient');
+    const uploadConfig = path.join(target.root, 'upload-rclone.conf');
+    const artifact = path.join(target.backups, 'bettertrack-20260101-030000.sql.gz');
+    writeFileSync(recipient, 'age1test\n');
+    writeFileSync(uploadConfig, '[remote]\n');
+    writeFileSync(artifact, 'one');
+
+    const result = run('offsite.sh', {
+      ...target.env,
+      RCLONE_LOG: log,
+      RCLONE_COPY_FAIL: 'true',
+      BT_BACKUP_AGE_RECIPIENT_FILE: recipient,
+      BT_BACKUP_UPLOAD_RCLONE_CONFIG: uploadConfig,
+      BT_BACKUP_RCLONE_REMOTE: 'upload:bettertrack',
+    });
+
+    expect(result.status).toBe(6);
+    expect(readFileSync(artifact, 'utf8')).toBe('one');
+    expect(statusValues(target.status)).toMatchObject({
+      offsite_outcome: 'failed',
+      offsite_uploaded_count: '0',
+    });
   });
 
   it('does not invoke delete when the separate retention step is disabled', () => {

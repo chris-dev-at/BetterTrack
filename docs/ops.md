@@ -60,9 +60,9 @@ is off by default.
 
 ```
 backup-scheduler ── pg_dump + gzip ──▶ pgbackups volume
-       │                                  │
-       │ status-only healthcheck          ├─ backup-status.env
        │                                  └─ restore-attestations.jsonl
+       ├─ status-only healthcheck ───────▶ backupstatus volume
+       │                                  └─ backup-status.env
        │
        ├─ restore-drill.sh ──▶ disposable database (create → probe → drop)
        │
@@ -74,28 +74,33 @@ backup-scheduler ── pg_dump + gzip ──▶ pgbackups volume
 
 ### Local schedule, status, and health
 
-`backup-scheduler` starts with the production Compose stack, takes one dump
-immediately, and installs `BT_BACKUP_CRON` in its own cron daemon. The default is
-`0 3 * * *` in UTC, matching the former 03:00 schedule. No host scheduler or
-external account is needed.
+`backup-scheduler` starts with the production Compose stack, takes one dump and
+runs one safe restore drill immediately, then installs both schedules in its own
+cron daemon. Local dumps default to `0 3 * * *` in UTC, matching the former
+03:00 schedule; restore drills default to `0 4 1 * *` (04:00 UTC on the first of
+each month). No host scheduler or external account is needed.
 
-| Variable                         | Default     | Meaning                                                     |
-| -------------------------------- | ----------- | ----------------------------------------------------------- |
-| `BT_BACKUP_CRON`                 | `0 3 * * *` | Five-field numeric cron expression, evaluated in UTC        |
-| `BACKUP_RETENTION_DAYS`          | `14`        | Local dump retention                                        |
-| `BT_BACKUP_FRESHNESS_MAX_HOURS`  | `26`        | Maximum age of the newest successful local dump             |
-| `BT_BACKUP_RESTORE_MAX_AGE_DAYS` | `35`        | Maximum age of the newest successful restore-drill evidence |
+| Variable                         | Default     | Meaning                                                        |
+| -------------------------------- | ----------- | -------------------------------------------------------------- |
+| `BT_BACKUP_CRON`                 | `0 3 * * *` | Local-dump schedule; five-field numeric cron, evaluated in UTC |
+| `BT_BACKUP_RESTORE_CRON`         | `0 4 1 * *` | Restore-drill schedule; five-field numeric cron, in UTC        |
+| `BACKUP_RETENTION_DAYS`          | `14`        | Local dump retention                                           |
+| `BT_BACKUP_FRESHNESS_MAX_HOURS`  | `26`        | Maximum age of the newest successful local dump                |
+| `BT_BACKUP_RESTORE_MAX_AGE_DAYS` | `35`        | Maximum age of the newest successful restore-drill evidence    |
 
-Every attempt atomically updates `/backups/backup-status.env`. This
-schema-versioned key/value file is the only freshness source used by the Docker
-healthcheck. It records the last attempt and success, artifact name, byte size,
-SHA-256 checksum, offsite outcomes, restore evidence, and current health reason.
+Every attempt atomically updates `/status/backup-status.env`. This
+schema-versioned key/value file lives in the small `backupstatus` volume and is
+the only freshness source used by the Docker healthcheck. Keeping status
+separate lets the optional upload container mount plaintext dumps read-only
+while recording its outcome. The file records the last attempt and success,
+artifact name, byte size, SHA-256 checksum, offsite outcomes, restore evidence,
+and current health reason.
 
 ```bash
 cd /path/to/bettertrack/infra
 docker compose ps backup-scheduler
 docker compose exec -T backup-scheduler \
-    sh -c 'sed -n "1,120p" /backups/backup-status.env'
+    sh -c 'sed -n "1,120p" /status/backup-status.env'
 docker compose exec -T backup-scheduler /opt/bettertrack/backup.sh
 ```
 
@@ -103,10 +108,19 @@ Missing evidence, a missing or truncated recorded artifact, a dump older than
 26 hours, or a restore drill older than 35 days makes the scheduler unhealthy.
 It stays running so the next scheduled dump can recover backup freshness.
 
-### Automated local restore drill
+When upgrading a deployment that used the old runbook, remove its legacy host
+crontab entry containing
+`docker compose exec -T db /backups/backup.sh`. The script is intentionally no
+longer mounted into `db`, and leaving the old entry creates a silent failing
+duplicate. If that line also chained the optional offsite upload, preserve the
+upload cadence in the trusted offsite control plane; the in-stack scheduler
+replaces the local-dump and restore-drill portions.
 
-Run the drill at least monthly and after database-version, recipient, or backup
-script changes:
+### Scheduled and on-demand local restore drill
+
+The scheduler runs the drill on startup after its first successful dump and
+monthly thereafter. Run it additionally after database-version or backup-script
+changes:
 
 ```bash
 docker compose exec -T backup-scheduler /opt/bettertrack/restore-drill.sh
@@ -402,8 +416,8 @@ access are disabled. See `infra/.env.production.example` for every knob.
 ## Troubleshooting
 
 **`backup-scheduler` is unhealthy** — inspect
-`/backups/backup-status.env` inside that service. `health_reason` distinguishes
-a missing/stale dump, a missing/truncated artifact, and missing/stale restore
+`/status/backup-status.env` inside that service. `health_reason` distinguishes a
+missing/stale dump, a missing/truncated artifact, and missing/stale restore
 evidence. Run `backup.sh` for dump freshness or `restore-drill.sh` for restore
 evidence after resolving the underlying database error.
 

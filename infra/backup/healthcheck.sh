@@ -5,6 +5,7 @@ set -euo pipefail
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 BACKUP_MAX_HOURS="${BT_BACKUP_FRESHNESS_MAX_HOURS:-26}"
 RESTORE_MAX_DAYS="${BT_BACKUP_RESTORE_MAX_AGE_DAYS:-35}"
+# Test-only deterministic clock override; operators should leave this unset.
 NOW_EPOCH="${BT_BACKUP_HEALTH_NOW_EPOCH:-$(date -u +%s)}"
 
 # shellcheck source=infra/backup/status.sh

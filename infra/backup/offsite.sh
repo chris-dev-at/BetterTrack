@@ -124,8 +124,7 @@ fi
 
 work_dir="$(mktemp -d)"
 cleanup_and_record() {
-    local exit_code
-    exit_code=$?
+    local exit_code=$?
     rm -rf -- "${work_dir}"
     record_status "${exit_code}"
 }
