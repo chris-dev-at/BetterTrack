@@ -90,11 +90,16 @@ export function VaultUnlockGate({
             id="vault-recovery-kit"
             onChange={(event) => {
               const file = event.target.files?.[0];
-              if (file == null) {
-                setRecoveryKit(null);
-                return;
-              }
-              void file.arrayBuffer().then((buffer) => setRecoveryKit(new Uint8Array(buffer)));
+              setRecoveryKit(null);
+              if (file == null) return;
+              setErrorKey(null);
+              // A gate whose job is to fail closed must also fail legibly: an
+              // unreadable file (permission denied, removed medium) says so
+              // instead of leaving the form armed with no kit.
+              void file.arrayBuffer().then(
+                (buffer) => setRecoveryKit(new Uint8Array(buffer)),
+                () => setErrorKey('vault.unlock.errors.recoveryKitUnreadable'),
+              );
             }}
             type="file"
           />

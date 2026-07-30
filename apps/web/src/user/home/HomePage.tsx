@@ -102,6 +102,12 @@ function sameAxes(a: readonly PlacementAxis[], b: readonly PlacementAxis[]): boo
   return a.length === b.length && a.every((axis, index) => axis === b[index]);
 }
 
+/**
+ * The widget board, except on a paranoid account: its widgets read
+ * `portfolioApi` directly instead of the store seam, so they would mix server
+ * reads into an encrypted account. `/` then renders the portfolio page and the
+ * saved board comes back untouched on disable (§16 2026-07-30, issue #729).
+ */
 export function HomePage() {
   const privacyMode = useResolvedPrivacyMode();
   if (privacyMode === 'paranoid') return <PortfolioPage />;

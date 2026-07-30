@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { Suspense, lazy, useEffect, useLayoutEffect, useMemo } from 'react';
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 
@@ -443,8 +443,22 @@ function AccountModeRoot({ children }: { children: ReactNode }) {
     [moneySession],
   );
 
+  // Evict every plaintext money query the moment no decrypted session backs it.
+  // Scoped to vaults: a normal account sits at phase 'locked' for its whole
+  // life, so running this on every normal login would drop those queries just
+  // as their pages mount — refetch churn on a path that must stay
+  // byte-identical to today. `sawDecryptedSession` keeps the purge for the
+  // disable hand-off, where the mode may already read 'normal' by the time the
+  // runtime reports the lock.
+  const sawDecryptedSession = useRef(false);
   useLayoutEffect(() => {
+    if (runtime.phase === 'unlocked') {
+      sawDecryptedSession.current = true;
+      return;
+    }
     if (runtime.phase !== 'locked') return;
+    if (privacy.privacyMode !== 'paranoid' && !sawDecryptedSession.current) return;
+    sawDecryptedSession.current = false;
     cache.removeQueries({
       predicate: (query) => {
         const root = query.queryKey[0];

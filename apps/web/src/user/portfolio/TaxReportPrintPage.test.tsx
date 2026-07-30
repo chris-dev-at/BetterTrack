@@ -61,6 +61,8 @@ const AT_REPORT: TaxYearReportResponse = {
           realizedPnlEur: 350,
           taxMode: 'country_specific',
           taxAmountEur: 96.25,
+          taxCountry: 'AT',
+          taxParams: null,
         },
       ],
       dividends: [
@@ -70,6 +72,8 @@ const AT_REPORT: TaxYearReportResponse = {
           grossAmountEur: 40,
           taxMode: 'country_specific',
           taxAmountEur: 11,
+          taxCountry: 'AT',
+          taxParams: null,
         },
       ],
     },

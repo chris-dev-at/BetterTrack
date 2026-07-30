@@ -100,6 +100,7 @@ export function PrivacyPanel() {
           <VaultDestructiveActions
             accountId={user?.id ?? null}
             document={money?.sync.state.active?.document ?? null}
+            syncStatus={money?.sync.state.status ?? null}
             onDisabled={async () => {
               await runtime.cleanupAfterDisable();
               privacy.acceptNormal();
@@ -311,15 +312,26 @@ function VaultSecurityActions({
   );
 }
 
+/**
+ * Disable rehydrates the ACTIVE branch and the server then drops the blob and
+ * its history — so a split the user has not resolved would lose the other side
+ * for good. `synced` / `pending-offline` both have exactly one branch (the
+ * newest local write is the active one); every other status is either an
+ * unmerged split or an unreadable vault, and disable stays closed there.
+ */
+const DISABLEABLE_SYNC_STATUSES = new Set(['synced', 'pending-offline']);
+
 function VaultDestructiveActions({
   accountId,
   document,
+  syncStatus,
   onDisabled,
   onNotice,
   onStartFresh,
 }: {
   accountId: string | null;
   document: Parameters<typeof disableUnlockedVault>[0] | null;
+  syncStatus: string | null;
   onDisabled(): Promise<void>;
   onNotice(notice: Notice): void;
   onStartFresh(): Promise<void>;
@@ -328,6 +340,7 @@ function VaultDestructiveActions({
   const [freshConfirmed, setFreshConfirmed] = useState(false);
   const [disableConfirmed, setDisableConfirmed] = useState(false);
   const [working, setWorking] = useState(false);
+  const disableBlocked = syncStatus == null || !DISABLEABLE_SYNC_STATUSES.has(syncStatus);
 
   async function startFresh() {
     setWorking(true);
@@ -344,7 +357,7 @@ function VaultDestructiveActions({
   }
 
   async function disable() {
-    if (accountId == null || document == null) return;
+    if (accountId == null || document == null || disableBlocked) return;
     setWorking(true);
     onNotice(null);
     try {
@@ -385,6 +398,7 @@ function VaultDestructiveActions({
       <PanelFold summary={t('vault.settings.disable')}>
         <PanelForm>
           <PanelNote warn>{t('vault.settings.disableWarning')}</PanelNote>
+          {disableBlocked ? <PanelNote warn>{t('vault.settings.disableBlocked')}</PanelNote> : null}
           <label className="bt-soft flex items-start gap-2 text-sm">
             <input
               checked={disableConfirmed}
@@ -395,7 +409,13 @@ function VaultDestructiveActions({
             <span>{t('vault.settings.disableConfirm')}</span>
           </label>
           <Button
-            disabled={working || !disableConfirmed || document == null || accountId == null}
+            disabled={
+              working ||
+              !disableConfirmed ||
+              document == null ||
+              accountId == null ||
+              disableBlocked
+            }
             onClick={() => void disable()}
             size="sm"
             type="button"

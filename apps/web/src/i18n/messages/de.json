@@ -1706,7 +1706,8 @@
         "cost": "Einstand",
         "pnl": "G/V",
         "weight": "Gewicht",
-        "contribution": "Beitrag"
+        "contribution": "Beitrag",
+        "periodUnavailable": "Der Beitrag im Zeitraum wird für verschlüsselte Konten nicht angezeigt — dafür wäre ein Verlauf je Anlage nötig, den der Server nie sieht."
       },
       "ai": {
         "title": "KI-Einblicke",
@@ -3626,6 +3627,7 @@
       "errors": {
         "wrongPassphrase": "Diese Tresor-Passphrase ist falsch.",
         "recoveryKit": "Dieses Wiederherstellungspaket ist ungültig oder gehört zu einem anderen Tresor.",
+        "recoveryKitUnreadable": "Diese Datei konnte nicht gelesen werden. Wähle das Wiederherstellungspaket erneut.",
         "updateRequired": "Dieser Tresor benötigt eine neuere BetterTrack-Version. Aktualisiere die App und versuche es erneut.",
         "corrupt": "Die Integritätsprüfung des verschlüsselten Tresors ist fehlgeschlagen. Wähle eine bekannte intakte Kopie.",
         "custody": "Dieser Browser konnte den Tresor nicht sicher entsperrt halten. Entsperre ohne Gerätespeicherung oder verwende einen anderen Browser.",
@@ -3724,6 +3726,7 @@
       "disable": "Paranoiden Modus deaktivieren",
       "disableWarning": "BetterTrack stellt die entsperrten Daten als normales, serverlesbares Konto wieder her. Der Übergang schreibt alle Zeilen oder keine.",
       "disableConfirm": "Ich möchte diesen entsperrten Tresor wiederherstellen und den paranoiden Modus deaktivieren.",
+      "disableBlocked": "Dieser Tresor hat nicht abgeglichene Änderungen auf mehreren Geräten. Gleiche den Stand zuerst ab — eine Deaktivierung jetzt würde nur die auf diesem Gerät sichtbare Fassung behalten.",
       "disableAction": "Normalen Modus wiederherstellen",
       "disableError": "Der normale Modus konnte nicht vollständig wiederhergestellt werden. Das Konto bleibt paranoid; ein erneuter Versuch setzt dieselbe Wiederherstellung fort."
     }

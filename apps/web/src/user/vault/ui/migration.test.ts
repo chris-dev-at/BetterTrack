@@ -50,6 +50,80 @@ beforeEach(() => {
   vi.mocked(listExpenseBudgets).mockResolvedValue({ budgets: [], period: '2026-07' });
 });
 
+const ASSET = {
+  id: ASSET_ID,
+  symbol: 'ACME',
+  name: 'Acme',
+  exchange: 'XETRA',
+  currency: 'EUR',
+  type: 'stock' as const,
+  isCustom: false,
+  category: null,
+};
+
+function taxYear(year: number) {
+  return {
+    year,
+    realizedPnlEur: 100,
+    dividendsGrossEur: 0,
+    taxWithheldEur: 27.5,
+    taxRefundedEur: 0,
+    taxNetEur: 27.5,
+  };
+}
+
+/** One portfolio holding a single 2024 sell, under the given CURRENT tax settings. */
+function storeWithSell(current: {
+  mode: 'country_specific';
+  country: 'AT' | 'DE';
+}): PortfolioStore {
+  return {
+    ...apiPortfolioStore,
+    listPortfolios: vi.fn(async () => ({
+      portfolios: [
+        {
+          id: PORTFOLIO_ID,
+          name: 'Main',
+          visibility: 'private' as const,
+          sortOrder: 0,
+          isDefault: true,
+          defaultPayFromCash: false,
+          archivedAt: null,
+        },
+      ],
+    })),
+    listTransactions: vi.fn(async () => ({
+      items: [
+        {
+          id: TRANSACTION_ID,
+          assetId: ASSET_ID,
+          side: 'sell' as const,
+          quantity: 1,
+          price: 200,
+          fee: 0,
+          executedAt: '2024-05-02T09:00:00.000Z',
+          note: null,
+          allowUncovered: false,
+          uncoveredEntryPrice: null,
+          source: 'manual',
+          asset: ASSET,
+        },
+      ],
+      nextCursor: null,
+    })),
+    getCashMovements: vi.fn(async () => ({ balanceEur: 0, movements: [], sources: [] })),
+    getPortfolioTaxSettings: vi.fn(async () => ({
+      effective: current,
+      override: current,
+      userDefault: current,
+      source: 'portfolio' as const,
+    })),
+    getTaxSettings: vi.fn(async () => current),
+    listCustomAssets: vi.fn(async () => ({ assets: [] })),
+    listStandingOrders: vi.fn(async () => ({ orders: [] })),
+  };
+}
+
 describe('buildNormalVaultDocument', () => {
   it('collects the complete normal portfolio graph through the store before enable', async () => {
     const listPortfolios = vi.fn(async () => ({
@@ -187,6 +261,67 @@ describe('buildNormalVaultDocument', () => {
         ],
       },
     });
+  });
+
+  it('freezes each sell under the country it was RECORDED with, not the current settings', async () => {
+    // The account settled 2024 under AT and later switched the portfolio to DE
+    // (the V5-P4 migration). Enable is one-way and the server purges the
+    // cleartext rows afterwards, so stamping today's DE on a 2024 AT sell would
+    // be unrecoverable.
+    const store = storeWithSell({ mode: 'country_specific', country: 'DE' });
+    vi.mocked(getTaxYearReports).mockResolvedValue({ years: [taxYear(2024)] });
+    vi.mocked(getTaxYearReport).mockResolvedValue({
+      year: 2024,
+      summary: taxYear(2024),
+      positions: [
+        {
+          asset: ASSET,
+          realizedPnlEur: 100,
+          dividendsGrossEur: 0,
+          taxEur: 27.5,
+          sells: [
+            {
+              transactionId: TRANSACTION_ID,
+              executedAt: '2024-05-02T09:00:00.000Z',
+              quantity: 1,
+              proceedsEur: 200,
+              costBasisEur: 100,
+              realizedPnlEur: 100,
+              taxMode: 'country_specific',
+              taxAmountEur: 27.5,
+              taxCountry: 'AT',
+              taxParams: null,
+            },
+          ],
+          dividends: [],
+        },
+      ],
+    });
+
+    const document = await buildNormalVaultDocument({
+      userId: USER_ID,
+      deviceId: 'browser-a',
+      store,
+      now: () => NOW,
+    });
+
+    expect(document.entities.transaction?.[0]?.data).toMatchObject({
+      taxMode: 'country_specific',
+      taxCountry: 'AT',
+      taxAmountEur: '27.5',
+      taxParams: null,
+    });
+  });
+
+  it('refuses the migration when a sell has no provable frozen tax facts', async () => {
+    // The sell exists but no year report covers it: its recorded mode/country
+    // cannot be read, and guessing them would corrupt the tax history for good.
+    const store = storeWithSell({ mode: 'country_specific', country: 'AT' });
+    vi.mocked(getTaxYearReports).mockResolvedValue({ years: [] });
+
+    await expect(
+      buildNormalVaultDocument({ userId: USER_ID, deviceId: 'browser-a', store, now: () => NOW }),
+    ).rejects.toThrow(/cannot prove the frozen tax facts/);
   });
 
   it('re-reads a full expense page boundary so enable never silently truncates money rows', async () => {

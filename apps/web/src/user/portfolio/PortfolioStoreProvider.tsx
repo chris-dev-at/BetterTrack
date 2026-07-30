@@ -117,7 +117,21 @@ function portfolioResponse(
         retryable: false,
       });
     }
-    return { ...holding, asset };
+    // Projected field by field, never spread: the domain holding also carries
+    // `assetId`/`currency`, which the strict holding contract rejects.
+    return {
+      asset,
+      quantity: holding.quantity,
+      avgCost: holding.avgCost,
+      realizedPnl: holding.realizedPnl,
+      price: holding.price,
+      marketValueEur: holding.marketValueEur,
+      costBasisEur: holding.costBasisEur,
+      unrealizedPnlEur: holding.unrealizedPnlEur,
+      unrealizedPnlPct: holding.unrealizedPnlPct,
+      dayChangeEur: holding.dayChangeEur,
+      dayChangePct: holding.dayChangePct,
+    };
   });
   const investedEur = holdings.reduce((sum, holding) => sum + (holding.costBasisEur ?? 0), 0);
   const marketValueEur = derived.holdingsValueEur ?? 0;
@@ -125,8 +139,20 @@ function portfolioResponse(
     (sum, holding) => sum + (holding.unrealizedPnlEur ?? 0),
     0,
   );
-  const dayChangeEur = holdings.reduce((sum, holding) => sum + (holding.dayChangeEur ?? 0), 0);
-  const previousValueEur = marketValueEur - dayChangeEur;
+  // Day change mirrors the server's guarded accumulation
+  // (portfolioService.computeTotals): a holding enters BOTH sides of the ratio
+  // or neither. `dayChangeEur` is null for every asset without a previous close
+  // — i.e. every manual/off-market asset — so deriving the denominator from the
+  // whole market value would count a house against a stock's day move and
+  // understate the header percentage by orders of magnitude.
+  let dayChangeEur = 0;
+  let dayPrevValueEur = 0; // Σ (marketValue − dayChange) over assets with a known day move.
+  for (const holding of holdings) {
+    if (holding.dayChangeEur != null && holding.marketValueEur != null) {
+      dayChangeEur += holding.dayChangeEur;
+      dayPrevValueEur += holding.marketValueEur - holding.dayChangeEur;
+    }
+  }
 
   return portfolioResponseSchema.parse({
     baseCurrency: derived.baseCurrency,
@@ -135,9 +161,9 @@ function portfolioResponse(
       marketValueEur,
       investedEur,
       unrealizedPnlEur,
-      unrealizedPnlPct: investedEur === 0 ? null : (unrealizedPnlEur / investedEur) * 100,
+      unrealizedPnlPct: investedEur > 0 ? (unrealizedPnlEur / investedEur) * 100 : null,
       dayChangeEur,
-      dayChangePct: previousValueEur === 0 ? null : (dayChangeEur / previousValueEur) * 100,
+      dayChangePct: dayPrevValueEur > 0 ? (dayChangeEur / dayPrevValueEur) * 100 : null,
       cashEur: derived.cashBalanceEur,
       totalValueEur: derived.totalValueEur ?? marketValueEur + derived.cashBalanceEur,
     },

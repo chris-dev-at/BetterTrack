@@ -6,7 +6,8 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { ParanoidVaultMediaState, PrivacyMode } from '@bettertrack/contracts';
 
 const toggleDiscreetMode = vi.fn(async () => undefined);
-const auth = { user: { username: 'jane', discreetMode: false }, toggleDiscreetMode };
+const USER_ID = '018f0000-0000-7000-8000-000000000001';
+const auth = { user: { id: USER_ID, username: 'jane', discreetMode: false }, toggleDiscreetMode };
 const refetch = vi.fn(async () => undefined);
 const acceptEnabled = vi.fn();
 const acceptNormal = vi.fn();
@@ -26,8 +27,20 @@ vi.mock('../../vault/usePrivacyMode', () => ({
   }),
 }));
 vi.mock('../../vault/VaultRuntimeProvider', () => ({ useVaultRuntime: () => ({}) }));
+let syncStatus: string | null = null;
 vi.mock('../../vault/engine/VaultMoneyEngineProvider', () => ({
-  useVaultMoneySession: () => null,
+  useVaultMoneySession: () =>
+    syncStatus === null
+      ? null
+      : {
+          sync: {
+            state: {
+              status: syncStatus,
+              active: { document: { schemaVersion: 1, entities: {}, mergeLog: [] } },
+              pending: null,
+            },
+          },
+        },
 }));
 
 import { PrivacyPanel } from './PrivacyPanel';
@@ -44,13 +57,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   privacyMode = 'normal';
   mediaState = null;
-  auth.user = { username: 'jane', discreetMode: false };
+  syncStatus = null;
+  auth.user = { id: USER_ID, username: 'jane', discreetMode: false };
   toggleDiscreetMode.mockImplementation(async () => undefined);
 });
 
 describe('PrivacyPanel (§13.5 V5-P13)', () => {
   test('names itself once and reflects the stored discreet-mode state', () => {
-    auth.user = { username: 'jane', discreetMode: true };
+    auth.user = { id: USER_ID, username: 'jane', discreetMode: true };
     renderPanel();
 
     expect(screen.getByRole('heading', { name: 'Privacy modes' })).toBeInTheDocument();
@@ -116,5 +130,39 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     expect(screen.getByText('Start fresh')).toBeInTheDocument();
     expect(screen.getByText('Disable Paranoid mode')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
+  });
+
+  test('disable stays closed while the vault sync is split — the other branch would be lost', async () => {
+    privacyMode = 'paranoid';
+    mediaState = {
+      mediaSet: ['server'],
+      driveAttestedVersion: null,
+      server: { disposition: 'active', candidate: null, retired: null },
+    };
+    syncStatus = 'conflict';
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('checkbox', { name: /disable Paranoid mode/i }));
+
+    expect(screen.getByText(/unsynced changes on more than one device/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Restore normal mode' })).toBeDisabled();
+  });
+
+  test('disable is available once the vault has a single acknowledged branch', async () => {
+    privacyMode = 'paranoid';
+    mediaState = {
+      mediaSet: ['server'],
+      driveAttestedVersion: null,
+      server: { disposition: 'active', candidate: null, retired: null },
+    };
+    syncStatus = 'synced';
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('checkbox', { name: /disable Paranoid mode/i }));
+
+    expect(screen.queryByText(/unsynced changes on more than one device/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Restore normal mode' })).toBeEnabled();
   });
 });

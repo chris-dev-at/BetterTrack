@@ -1,9 +1,12 @@
 import {
   VAULT_DOCUMENT_V1_VERSION,
   VAULT_ENTITY_ROW_SCHEMAS,
-  type PortfolioAsset,
-  type PortfolioTaxSettingsResponse,
+  type CustomTaxParams,
+  type Dividend,
   type ExpenseTransaction,
+  type PortfolioAsset,
+  type TaxCountry,
+  type TaxMode,
   type TaxSettingsResponse,
   type Transaction,
   type VaultDocument,
@@ -102,11 +105,10 @@ export async function buildNormalVaultDocument(
       portfolio.archivedAt ?? now(),
     );
 
-    const recordedTax = transactionTaxFacts(fact.reports);
+    const recordedTax = frozenTaxFacts(fact.reports);
     for (const transaction of fact.transactions) {
       assets.set(transaction.asset.id, transaction.asset);
-      const taxFact = recordedTax.get(transaction.id);
-      const settings = taxSettingsForRecordedMode(taxFact?.taxMode ?? null, fact.tax);
+      const taxFact = frozenFactsForTransaction(transaction, recordedTax);
       append(
         'transaction',
         transaction.id,
@@ -119,10 +121,10 @@ export async function buildNormalVaultDocument(
           fee: decimal(transaction.fee),
           executedAt: transaction.executedAt,
           note: transaction.note,
-          taxMode: taxFact?.taxMode ?? null,
-          taxCountry: settings.country,
-          taxAmountEur: taxFact?.taxAmountEur == null ? null : decimal(taxFact.taxAmountEur),
-          taxParams: settings.custom,
+          taxMode: taxFact.taxMode,
+          taxCountry: taxFact.taxCountry,
+          taxAmountEur: taxFact.taxAmountEur == null ? null : decimal(taxFact.taxAmountEur),
+          taxParams: taxFact.taxParams,
           allowUncovered: transaction.allowUncovered,
           uncoveredEntryPrice:
             transaction.uncoveredEntryPrice == null
@@ -175,7 +177,7 @@ export async function buildNormalVaultDocument(
     }
     for (const dividend of fact.dividends.dividends) {
       assets.set(dividend.asset.id, dividend.asset);
-      const settings = taxSettingsForRecordedMode(dividend.taxMode, fact.tax);
+      const taxFact = frozenFactsForDividend(dividend, recordedTax);
       append(
         'dividend',
         dividend.id,
@@ -189,7 +191,7 @@ export async function buildNormalVaultDocument(
           taxMode: dividend.taxMode,
           taxCountry: dividend.taxCountry,
           taxAmountEur: dividend.taxAmountEur == null ? null : decimal(dividend.taxAmountEur),
-          taxParams: settings.custom,
+          taxParams: taxFact.taxParams,
           source: dividend.source,
           createdAt: dividend.createdAt,
         },
@@ -425,16 +427,50 @@ function previousIsoDay(day: string): string {
   return date.toISOString().slice(0, 10);
 }
 
-function transactionTaxFacts(
+/**
+ * Tax facts as FROZEN on the row at recording time. `taxMode`/`taxCountry`/
+ * `taxParams` are never rewritten by a later mode switch, so the portfolio's
+ * *current* settings say nothing about how a historical row was taxed — an
+ * account that settled 2024 under AT and later moved to DE must migrate its
+ * 2024 sells as AT. The year reports are the only endpoint that exposes them,
+ * and enable is one-way and destructive: what cannot be proven is refused, not
+ * guessed.
+ */
+interface FrozenTaxFacts {
+  taxMode: TaxMode | null;
+  taxCountry: TaxCountry | null;
+  taxParams: CustomTaxParams | null;
+  taxAmountEur: number | null;
+}
+
+const NO_TAX_FACTS: FrozenTaxFacts = {
+  taxMode: null,
+  taxCountry: null,
+  taxParams: null,
+  taxAmountEur: null,
+};
+
+/** Every sell and dividend in the reports, keyed by row id. */
+function frozenTaxFacts(
   reports: Awaited<ReturnType<typeof getTaxYearReport>>[],
-): Map<string, { taxMode: TransactionTaxMode; taxAmountEur: number | null }> {
-  const result = new Map<string, { taxMode: TransactionTaxMode; taxAmountEur: number | null }>();
+): Map<string, FrozenTaxFacts> {
+  const result = new Map<string, FrozenTaxFacts>();
   for (const report of reports) {
     for (const position of report.positions) {
       for (const sell of position.sells) {
         result.set(sell.transactionId, {
           taxMode: sell.taxMode,
+          taxCountry: sell.taxCountry,
+          taxParams: sell.taxParams,
           taxAmountEur: sell.taxAmountEur,
+        });
+      }
+      for (const dividend of position.dividends) {
+        result.set(dividend.dividendId, {
+          taxMode: dividend.taxMode,
+          taxCountry: dividend.taxCountry,
+          taxParams: dividend.taxParams,
+          taxAmountEur: dividend.taxAmountEur,
         });
       }
     }
@@ -442,17 +478,57 @@ function transactionTaxFacts(
   return result;
 }
 
-type TransactionTaxMode = TaxSettingsResponse['mode'] | null;
+function frozenFactsForTransaction(
+  transaction: Transaction,
+  recorded: Map<string, FrozenTaxFacts>,
+): FrozenTaxFacts {
+  // Buys carry no tax facts at all (the server rejects a rehydrated buy that
+  // does), so nothing has to be proven for them.
+  if (transaction.side !== 'sell') return NO_TAX_FACTS;
+  const facts = recorded.get(transaction.id);
+  if (facts === undefined) {
+    throw new Error(`Vault migration cannot prove the frozen tax facts of sell ${transaction.id}.`);
+  }
+  return assertProvenTaxFacts(facts, `sell ${transaction.id}`);
+}
 
-function taxSettingsForRecordedMode(
-  mode: TransactionTaxMode,
-  settings: PortfolioTaxSettingsResponse,
-): { country: TaxSettingsResponse['country']; custom: TaxSettingsResponse['custom'] | null } {
-  const source = settings.override ?? settings.effective;
-  return {
-    country: mode === 'country_specific' ? source.country : null,
-    custom: mode === 'custom' ? (source.custom ?? null) : null,
-  };
+function frozenFactsForDividend(
+  dividend: Dividend,
+  recorded: Map<string, FrozenTaxFacts>,
+): FrozenTaxFacts {
+  const facts = recorded.get(dividend.id);
+  if (facts === undefined) {
+    throw new Error(
+      `Vault migration cannot prove the frozen tax facts of dividend ${dividend.id}.`,
+    );
+  }
+  // The dividend list and the year report read the same frozen columns; a
+  // disagreement means one of the two reads is stale, so refuse rather than
+  // pick a side in a one-way migration.
+  if (facts.taxMode !== dividend.taxMode || facts.taxCountry !== dividend.taxCountry) {
+    throw new Error(`Vault migration found conflicting tax facts for dividend ${dividend.id}.`);
+  }
+  return assertProvenTaxFacts(facts, `dividend ${dividend.id}`);
+}
+
+/**
+ * The frozen-fact shape the server re-checks on rehydration
+ * (`paranoidRehydrationService.validFrozenTaxShape`): a country belongs to
+ * `country_specific` rows only, a parameter snapshot to `custom` rows only.
+ * Anything else would be written into the vault and then hard-purged server
+ * side, so it must stop the enable instead.
+ */
+function assertProvenTaxFacts(facts: FrozenTaxFacts, label: string): FrozenTaxFacts {
+  const valid =
+    facts.taxMode === 'country_specific'
+      ? facts.taxCountry !== null && facts.taxParams === null
+      : facts.taxMode === 'custom'
+        ? facts.taxCountry === null && facts.taxParams !== null
+        : facts.taxCountry === null && facts.taxParams === null;
+  if (!valid) {
+    throw new Error(`Vault migration read inconsistent frozen tax facts for ${label}.`);
+  }
+  return facts;
 }
 
 function taxSettingRow(userId: string, settings: TaxSettingsResponse, updatedAt: string) {

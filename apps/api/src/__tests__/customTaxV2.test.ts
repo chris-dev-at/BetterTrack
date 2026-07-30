@@ -7,8 +7,11 @@ import {
   cashMovementsResponseSchema,
   taxSettingsResponseSchema,
   taxYearListResponseSchema,
+  taxYearReportResponseSchema,
   type CashMovement,
   type CustomTaxParams,
+  type TaxYearReportResponse,
+  type TaxYearSell,
   type TaxYearSummary,
   type UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
@@ -130,6 +133,21 @@ async function yearSummaries(agent: Agent, pid: string): Promise<TaxYearSummary[
   expect(res.status).toBe(200);
   expect(taxYearListResponseSchema.safeParse(res.body).success).toBe(true);
   return res.body.years as TaxYearSummary[];
+}
+
+/** Every sell of a year report, keyed by transaction id. */
+async function reportedSells(
+  agent: Agent,
+  pid: string,
+  year: number,
+): Promise<Map<string, TaxYearSell>> {
+  const res = await agent.get(`/api/v1/portfolios/${pid}/reports/tax-years/${year}`);
+  expect(res.status).toBe(200);
+  expect(taxYearReportResponseSchema.safeParse(res.body).success).toBe(true);
+  const report = res.body as TaxYearReportResponse;
+  return new Map(
+    report.positions.flatMap((p) => p.sells).map((sell) => [sell.transactionId, sell]),
+  );
 }
 
 /** The frozen tax columns of one stored transaction row. */
@@ -519,6 +537,20 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
     expect(await frozenRow(loss.body.transactions[0].id as string)).toMatchObject({
       taxMode: 'custom',
       taxAmountEur: -20,
+      taxParams: RATE20,
+    });
+
+    // …and the year report exposes that same snapshot, which is the only place
+    // a client can read it from (the paranoid migration's source of truth).
+    const sells = await reportedSells(agent, pid, 2026);
+    expect(sells.get(first.body.transactions[0].id as string)).toMatchObject({
+      taxMode: 'custom',
+      taxCountry: null,
+      taxParams: RATE10,
+    });
+    expect(sells.get(loss.body.transactions[0].id as string)).toMatchObject({
+      taxMode: 'custom',
+      taxCountry: null,
       taxParams: RATE20,
     });
   });

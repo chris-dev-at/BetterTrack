@@ -1706,7 +1706,8 @@
         "cost": "Cost",
         "pnl": "P/L",
         "weight": "Weight",
-        "contribution": "Contribution"
+        "contribution": "Contribution",
+        "periodUnavailable": "Contribution over the period is not shown for encrypted accounts — measuring it needs per-asset history the server never sees."
       },
       "ai": {
         "title": "AI insights",
@@ -3626,6 +3627,7 @@
       "errors": {
         "wrongPassphrase": "That vault passphrase is incorrect.",
         "recoveryKit": "That recovery kit is invalid or belongs to another vault.",
+        "recoveryKitUnreadable": "That file could not be read. Choose the recovery kit again.",
         "updateRequired": "This vault needs a newer BetterTrack version. Update before trying again.",
         "corrupt": "The encrypted vault failed its integrity check. Choose a known-good copy to restore.",
         "custody": "This browser could not securely keep the vault unlocked. Unlock without device storage or try another browser.",
@@ -3724,6 +3726,7 @@
       "disable": "Disable Paranoid mode",
       "disableWarning": "BetterTrack will restore the unlocked data to a normal server-readable account. The transition commits all rows or none.",
       "disableConfirm": "I want to rehydrate this unlocked vault and disable Paranoid mode.",
+      "disableBlocked": "This vault has unsynced changes on more than one device. Resolve the sync state first — disabling now would keep only the copy this device shows.",
       "disableAction": "Restore normal mode",
       "disableError": "Normal mode could not be restored completely. The account remains paranoid; retry resumes the same rehydration."
     }

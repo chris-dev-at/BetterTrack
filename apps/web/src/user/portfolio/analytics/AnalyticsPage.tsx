@@ -84,6 +84,19 @@ function analyticsHistoryRange(preset: RangePreset): PortfolioHistoryRange {
   return 'MAX';
 }
 
+/**
+ * The paranoid substitute for the `analytics/.../series` endpoint, built from
+ * the two client-derived reads a decrypted vault can produce. It answers with
+ * the SAME quantities the server would or with nothing — never with a different
+ * metric under the server's label:
+ *
+ * - `perf` mode rebases the window's values exactly like the server's
+ *   `toPerformanceSeries` (value-normalized), NOT the TWR curve the history
+ *   response also carries; those are two different curves.
+ * - `contributionPct` is `null`: measuring an asset's share of the window's
+ *   change needs per-asset history, which the client engine does not derive.
+ *   The table drops the column instead (§16 2026-07-30).
+ */
 function clientAnalyticsResponse(
   portfolioId: string,
   label: string,
@@ -96,15 +109,6 @@ function clientAnalyticsResponse(
       (params.from == null || point.date >= params.from) &&
       (params.to == null || point.date <= params.to),
   );
-  const performance = new Map(
-    history.performance
-      .filter(
-        (point) =>
-          (params.from == null || point.date >= params.from) &&
-          (params.to == null || point.date <= params.to),
-      )
-      .map((point) => [point.date, point.pct]),
-  );
   const first = inWindow[0]?.valueEur ?? 0;
   const visible = portfolio.holdings.filter(
     (holding) =>
@@ -112,7 +116,6 @@ function clientAnalyticsResponse(
       !(params.hideGroups ?? []).includes(groupKeyOf(holding.asset)),
   );
   const totalValue = visible.reduce((sum, holding) => sum + (holding.marketValueEur ?? 0), 0);
-  const totalCost = visible.reduce((sum, holding) => sum + (holding.costBasisEur ?? 0), 0);
   const today = isoDay(new Date());
   const from = inWindow[0]?.date ?? params.from ?? today;
   const to = inWindow.at(-1)?.date ?? params.to ?? from;
@@ -132,7 +135,9 @@ function clientAnalyticsResponse(
         date: point.date,
         value:
           params.mode === 'perf'
-            ? (performance.get(point.date) ?? (first > 0 ? (point.valueEur / first - 1) * 100 : 0))
+            ? first > 0
+              ? (point.valueEur / first - 1) * 100
+              : 0
             : point.valueEur,
       })),
       stats: computeSeriesStats(
@@ -146,7 +151,7 @@ function clientAnalyticsResponse(
       cost: holding.costBasisEur ?? 0,
       pnl: holding.unrealizedPnlEur ?? 0,
       weight: totalValue === 0 ? 0 : (holding.marketValueEur ?? 0) / totalValue,
-      contributionPct: totalCost === 0 ? 0 : ((holding.unrealizedPnlEur ?? 0) / totalCost) * 100,
+      contributionPct: null,
     })),
   };
 }

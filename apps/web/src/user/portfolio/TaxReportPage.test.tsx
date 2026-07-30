@@ -275,6 +275,8 @@ describe('TaxReportPage', () => {
               realizedPnlEur: 0, // …so realized is 0, NEVER a phantom 500 gain
               taxMode: 'country_specific',
               taxAmountEur: 0,
+              taxCountry: 'AT',
+              taxParams: null,
             },
           ],
           dividends: [],
