@@ -3,10 +3,17 @@ name: bettertrack-dev
 # Dev dependencies only — Postgres + Redis. The apps (web/api/worker) run
 # locally via `pnpm dev` against these (PROJECTPLAN.md §11).
 
+x-bounded-logging: &bounded-logging
+  driver: local
+  options:
+    max-size: '10m'
+    max-file: '3'
+
 services:
   db:
     image: postgres:17
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       POSTGRES_USER: bt
       POSTGRES_PASSWORD: bt
@@ -24,6 +31,7 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
+    logging: *bounded-logging
     command: ['redis-server', '--appendonly', 'yes']
     ports:
       - '6379:6379'

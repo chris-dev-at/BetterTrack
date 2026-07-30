@@ -13,6 +13,12 @@ name: bettertrack
 # The API and BullMQ worker load the same envSchema and may both execute feature
 # code. Keep their complete production environment in this ONE anchor so a new
 # key cannot reach one process while silently disappearing from the other.
+x-bounded-logging: &bounded-logging
+  driver: local
+  options:
+    max-size: '10m'
+    max-file: '3'
+
 x-api-worker-environment: &api-worker-environment
   # Process invariants. These stay fixed because the proxy, healthcheck, and
   # durable export-volume target depend on the exact in-container values.
@@ -118,6 +124,7 @@ services:
         # No secret or Drive token is passed to the API/container runtime.
         VITE_GOOGLE_DRIVE_CLIENT_ID: '${VITE_GOOGLE_DRIVE_CLIENT_ID:-}'
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       # Topology (§11) — the same scheme the api derives its origins from.
       BT_MODE: '${BT_MODE:-subdomains}'
@@ -165,6 +172,7 @@ services:
       context: ..
       dockerfile: apps/landing/Dockerfile
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       # Keep runtime env.js on the exact topology used by the front proxy. The
       # explicit origin overrides win; otherwise the landing entrypoint derives
@@ -189,6 +197,7 @@ services:
         GIT_SHA: '${GIT_SHA:-unknown}'
         GIT_BUILD_TIME: '${GIT_BUILD_TIME:-unknown}'
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       # No API-only keys: both processes consume the complete shared contract.
       <<: *api-worker-environment
@@ -216,6 +225,7 @@ services:
       dockerfile: apps/api/Dockerfile
     command: ['node', 'dist/scripts/worker.js']
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       # No worker-only keys: both processes consume the complete shared contract.
       <<: *api-worker-environment
@@ -246,6 +256,7 @@ services:
     image: bettertrack-backup:local
     entrypoint: ['/bin/bash', '/opt/bettertrack/scheduler.sh']
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       POSTGRES_HOST: 'db'
       POSTGRES_PORT: '5432'
@@ -275,6 +286,7 @@ services:
   db:
     image: postgres:17
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       POSTGRES_USER: '${POSTGRES_USER:-bt}'
       POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}'
@@ -291,6 +303,7 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
+    logging: *bounded-logging
     command: ['redis-server', '--appendonly', 'yes']
     volumes:
       - redisdata:/data
@@ -311,6 +324,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.53.3
     restart: unless-stopped
+    logging: *bounded-logging
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -329,6 +343,7 @@ services:
   grafana:
     image: grafana/grafana-oss:11.3.1
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       # Local-admin bootstrap. Change the default before first boot; the owner
       # only ever reaches this over localhost/LAN, and sign-up is disabled.
@@ -375,6 +390,7 @@ services:
   node-exporter:
     image: prom/node-exporter:v1.8.2
     restart: unless-stopped
+    logging: *bounded-logging
     command:
       - '--path.procfs=/host/proc'
       - '--path.sysfs=/host/sys'
@@ -390,6 +406,7 @@ services:
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     restart: unless-stopped
+    logging: *bounded-logging
     privileged: true
     volumes:
       - /:/rootfs:ro
@@ -404,6 +421,7 @@ services:
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.16.0
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       DATA_SOURCE_NAME: 'postgresql://${POSTGRES_USER:-bt}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-bettertrack}?sslmode=disable'
     depends_on:
@@ -414,6 +432,7 @@ services:
   redis-exporter:
     image: oliver006/redis_exporter:v1.62.0
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       REDIS_ADDR: 'redis://redis:6379'
     depends_on:

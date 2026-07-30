@@ -23,6 +23,16 @@ name: bettertrack
 #   BT_BACKUP_RETENTION_RCLONE_CONFIG_HOST_FILE
 #   BT_BACKUP_RETENTION_RCLONE_REMOTE
 #   BT_BACKUP_REMOTE_RETENTION_DAYS   — default 30
+#
+# Upload host-path fallbacks are intentionally omitted: unset paths must fail
+# Compose so operators notice. The disabled retention profile alone uses
+# /dev/null so the optional overlay remains renderable without owner setup.
+x-bounded-logging: &bounded-logging
+  driver: local
+  options:
+    max-size: '10m'
+    max-file: '3'
+
 services:
   backup-offsite:
     build:
@@ -31,6 +41,7 @@ services:
     image: bettertrack-backup:local
     entrypoint: ['/bin/bash', '/opt/bettertrack/offsite.sh']
     restart: 'no'
+    logging: *bounded-logging
     profiles: ['offsite']
     environment:
       BT_BACKUP_OFFSITE_MODE: 'upload'
@@ -53,6 +64,7 @@ services:
     image: bettertrack-backup:local
     entrypoint: ['/bin/bash', '/opt/bettertrack/offsite.sh']
     restart: 'no'
+    logging: *bounded-logging
     profiles: ['offsite-retention']
     environment:
       BT_BACKUP_OFFSITE_MODE: 'retention'

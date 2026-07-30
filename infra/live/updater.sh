@@ -47,9 +47,41 @@ DEPLOYED_SHA="$CONTROL/logs/deployed.sha"
 FAILCOUNT_FILE="$CONTROL/logs/consecutive-deploy-failures"
 STUCK_MARKER="$CONTROL/logs/DEPLOY_STUCK"
 FAIL_ESCALATE_AT="${FAIL_ESCALATE_AT:-3}"
+UPDATER_LOG_MAX_BYTES=10485760
+UPDATER_LOG_KEEP_FILES=3
+DOCKER_RECLAIM_ENABLED="${DOCKER_RECLAIM_ENABLED:-1}"
+DOCKER_RECLAIM_INTERVAL_SECONDS=86400
+DOCKER_RECLAIM_MIN_AGE=168h
+DOCKER_RECLAIM_STAMP="$CONTROL/logs/last-docker-reclaim"
 
 mkdir -p "$CONTROL/logs"
-log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOG"; }
+
+rotate_log_if_needed() {
+  [ -f "$LOG" ] || return 0
+  _rotate_bytes="$(wc -c <"$LOG" 2>/dev/null || echo 0)"
+  _rotate_bytes="$(printf '%s' "$_rotate_bytes" | tr -d '[:space:]')"
+  case "$_rotate_bytes" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$_rotate_bytes" -lt "$UPDATER_LOG_MAX_BYTES" ] && return 0
+
+  _rotate_slot="$UPDATER_LOG_KEEP_FILES"
+  while [ "$_rotate_slot" -gt 1 ]; do
+    _rotate_previous=$((_rotate_slot - 1))
+    if [ -f "${LOG}.${_rotate_previous}" ]; then
+      mv -f "${LOG}.${_rotate_previous}" "${LOG}.${_rotate_slot}" 2>/dev/null || true
+    fi
+    _rotate_slot="$_rotate_previous"
+  done
+  if ! mv -f "$LOG" "${LOG}.1" 2>/dev/null; then
+    : >"$LOG" 2>/dev/null || true
+  fi
+}
+
+log() {
+  rotate_log_if_needed
+  printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOG"
+}
 
 # Event-level notifier (#632): tees a line to the container's stdout AS WELL AS
 # the log file, so `docker logs bettertrack-live-updater-1` (and Docker Desktop)
@@ -60,6 +92,7 @@ log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOG"; }
 # log() entirely, so the console stays clean.
 notify() {
   _now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  rotate_log_if_needed
   printf '%s %s\n' "$_now" "$*" >>"$LOG"
   printf '%s %s\n' "$_now" "$*"
 }
@@ -110,6 +143,46 @@ log_deploy_reason() {
 }
 
 dc() { docker compose -p "$PROJECT" -f "$BASE" -f "$OVR" --env-file "$ENVF" "$@"; }
+
+reclaim_docker_storage() {
+  [ "$DOCKER_RECLAIM_ENABLED" = "1" ] || return 0
+
+  _reclaim_now="$(date -u '+%s' 2>/dev/null || echo 0)"
+  _reclaim_last="$(cat "$DOCKER_RECLAIM_STAMP" 2>/dev/null || echo 0)"
+  case "$_reclaim_now" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  case "$_reclaim_last" in
+    ''|*[!0-9]*) _reclaim_last=0 ;;
+  esac
+  _reclaim_elapsed=$((_reclaim_now - _reclaim_last))
+  if [ "$_reclaim_last" -gt 0 ] && [ "$_reclaim_elapsed" -lt "$DOCKER_RECLAIM_INTERVAL_SECONDS" ]; then
+    return 0
+  fi
+
+  # Record the attempt before invoking Docker: even a failed daemon call is
+  # retried only on the bounded cadence, never on every five-minute deploy tick.
+  if ! printf '%s\n' "$_reclaim_now" >"$DOCKER_RECLAIM_STAMP"; then
+    log "docker reclaim: skipped — cannot update cadence stamp ${DOCKER_RECLAIM_STAMP}"
+    return 0
+  fi
+
+  log "docker reclaim: pruning unused build cache and dangling images older than ${DOCKER_RECLAIM_MIN_AGE}"
+  _reclaim_failed=0
+  if ! docker builder prune --force --filter "until=${DOCKER_RECLAIM_MIN_AGE}" >>"$LOG" 2>&1; then
+    _reclaim_failed=1
+  fi
+  if ! docker image prune --force --filter "until=${DOCKER_RECLAIM_MIN_AGE}" >>"$LOG" 2>&1; then
+    _reclaim_failed=1
+  fi
+
+  if [ "$_reclaim_failed" -eq 0 ]; then
+    log "docker reclaim: complete"
+  else
+    log "docker reclaim: FAILED (non-fatal; deploy loop continues)"
+  fi
+  return 0
+}
 
 # ── Post-deploy adoption steps (#460 follow-up) ──────────────────────────────
 # After every SUCCESSFUL deploy, the tick additionally adopts the non-secret
@@ -241,8 +314,8 @@ while true; do
         # && chain's success semantics are unchanged.
         #
         # Deploy the WHOLE app stack: every compose service that builds app code
-        # (web, api, worker, landing, backup-scheduler) must be in BOTH the `build` and the final
-        # `up -d` list. Each buildable service owns its own image tag
+        # (web, api, worker, landing, backup-scheduler) must be in BOTH the
+        # `build` and final `up -d` lists. Each buildable service owns its own image tag
         # (<project>-<service>), so building web+api alone leaves the worker's
         # image untouched, and `up -d` never recreates a service it doesn't
         # list. Historically only web+api deployed: the worker container stayed
@@ -291,6 +364,14 @@ while true; do
   else
     log "app clone missing at ${APP} — skipping"
   fi
+
+  # Volume safety is structural: builder prune accepts only unused build cache;
+  # image prune deliberately omits -a and therefore accepts only dangling images
+  # that no container references (including the updater's own active image).
+  # Neither command has a volume flag or names a Compose service. Never replace
+  # these with system/volume prune or --volumes: pgdata, redisdata, exportdata,
+  # pgbackups, backupstatus, promdata, and grafanadata are persistent data.
+  reclaim_docker_storage
   sleep "$INTERVAL"
 done
 
