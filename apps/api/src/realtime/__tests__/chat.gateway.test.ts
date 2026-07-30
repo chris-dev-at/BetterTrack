@@ -69,7 +69,7 @@ function connect(cookie: string): Promise<ClientSocket> {
     path: REALTIME_PATH,
     transports: ['websocket'],
     reconnection: false,
-    extraHeaders: { cookie },
+    extraHeaders: { Origin: harness.ctx.config.topology.webOrigin, cookie },
   });
   openSockets.push(socket);
   return new Promise<ClientSocket>((resolve, reject) => {
