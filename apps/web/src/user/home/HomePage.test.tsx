@@ -80,7 +80,7 @@ import { I18nProvider } from '../../i18n';
 import { listAlerts } from '../../lib/alertsApi';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { getExpenseTrends } from '../../lib/expensesApi';
-import { setDiscreetMode } from '../../lib/format';
+import { DISCREET_MASK, setDiscreetMode, setMoneyCurrency } from '../../lib/format';
 import { getNewsDigest, getPortfolioDividendCalendar } from '../../lib/marketIntelApi';
 import { listNotifications } from '../../lib/notificationsApi';
 import {
@@ -288,6 +288,7 @@ const QUOTE: QuoteResponse = {
 const ASSET_HISTORY: HistoryResponse = {
   range: '1M',
   interval: '1d',
+  currency: 'USD',
   points: [
     { time: '2026-07-01T00:00:00.000Z', close: 180 },
     { time: '2026-07-02T00:00:00.000Z', close: 190.5 },
@@ -299,6 +300,7 @@ const ASSET_HISTORY: HistoryResponse = {
 beforeEach(() => {
   localStorage.clear();
   setDiscreetMode(false);
+  setMoneyCurrency('EUR');
   // Call history, not implementations: several cases below assert *how often* an
   // endpoint was hit (cache sharing, the "asks before it fetches" guarantee), and
   // those claims are meaningless if the counts carry over from earlier tests.
@@ -1004,7 +1006,7 @@ test('a picked spotlight shows the asset’s price, day move and chart', async (
   expect(getAssetHistory).toHaveBeenCalledWith(APPLE.id, '1M', expect.anything());
 });
 
-test('a spotlight with history but no quote hides its data alternative in discreet mode', async () => {
+test('a spotlight keeps its history alternative masked when the quote is unavailable', async () => {
   setDiscreetMode(true);
   vi.mocked(getAssetQuote).mockRejectedValueOnce(new Error('quote unavailable'));
   storeBoard(['asset-spotlight', { assetId: APPLE.id, assetLabel: 'AAPL', range: '1M' }]);
@@ -1016,9 +1018,10 @@ test('a spotlight with history but no quote hides its data alternative in discre
   await vi.waitFor(() => {
     expect(getAssetHistory).toHaveBeenCalledWith(APPLE.id, '1M', expect.anything());
   });
-  expect(chart).not.toHaveAttribute('aria-describedby');
-  expect(within(widget).queryByRole('button', { name: 'Show chart data' })).not.toBeInTheDocument();
-  expect(within(widget).queryByText(/Start: 180/)).not.toBeInTheDocument();
+  const summary = document.getElementById(chart.getAttribute('aria-describedby')!);
+  expect(summary).toHaveTextContent(`Start: ${DISCREET_MASK}`);
+  expect(summary).not.toHaveTextContent('180');
+  expect(within(widget).getByRole('button', { name: 'Show chart data' })).toBeInTheDocument();
 });
 
 test('every widget in the catalog is offered in the drawer and renders when added', async () => {
@@ -1426,6 +1429,25 @@ test('the cash-flow widget defaults to the net form', async () => {
   expect(
     within(widget).queryByRole('img', { name: 'Money in and money out per month' }),
   ).not.toBeInTheDocument();
+});
+
+test('the cash-flow chart alternative uses the active base currency', async () => {
+  setMoneyCurrency('USD');
+  vi.mocked(getExpenseTrends).mockResolvedValue({
+    points: [
+      { month: '2026-06', income: 4_000, expense: 3_600 },
+      { month: '2026-07', income: 4_200, expense: 1_000 },
+    ],
+  });
+  storeBoard('cashflow-chart');
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Cash flow' });
+  const chart = await within(widget).findByRole('img', { name: 'Net cash flow by month' });
+  const summary = document.getElementById(chart.getAttribute('aria-describedby')!);
+
+  expect(summary).toHaveTextContent('Start: 400.00 US$. End: 3,200.00 US$.');
+  expect(summary).not.toHaveTextContent('€');
 });
 
 test('allocation as ranked bars prints the share and amount a donut only implies', async () => {

@@ -168,6 +168,7 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
           return {
             range,
             interval,
+            currency: row.currency,
             points: cached.value,
             stale: cached.stale,
             asOf: asOfIso(cached.asOf),

@@ -86,6 +86,7 @@ const BASE_QUOTE = {
 const BASE_HISTORY = {
   range: '1M' as const,
   interval: '1d' as const,
+  currency: 'USD' as const,
   points: [
     { time: '2024-05-01T00:00:00.000Z', close: 140.0 },
     { time: '2024-05-15T00:00:00.000Z', close: 145.0 },

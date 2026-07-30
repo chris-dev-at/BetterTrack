@@ -105,6 +105,7 @@ const baseDetail = {
 const baseHistory = {
   range: '1M' as const,
   interval: '30m' as const,
+  currency: 'EUR' as const,
   points: [
     { time: '2024-05-01T00:00:00.000Z', close: 27.0 },
     { time: '2024-06-01T00:00:00.000Z', close: 28.5 },
