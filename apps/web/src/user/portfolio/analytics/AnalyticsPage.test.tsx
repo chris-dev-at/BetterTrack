@@ -292,6 +292,7 @@ describe('AnalyticsPage — main graph, stats & contribution table', () => {
       screen.getByText(
         (content) =>
           content.includes(formatDate('2024-01-01')) && content.includes(formatDate('2024-06-30')),
+        { selector: '.bt-meta.bt-num' },
       ),
     ).toBeInTheDocument();
   });

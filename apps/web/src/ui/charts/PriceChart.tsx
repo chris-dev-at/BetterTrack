@@ -13,13 +13,22 @@ import {
   type ISeriesMarkersPluginApi,
   type Time,
 } from 'lightweight-charts';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 import { LOCALES, useI18n, useT } from '../../i18n';
 import * as palette from './palette';
 import { Spinner } from '../../user/components/ui';
 import { cx } from '../../lib/cx';
-import { DISCREET_MASK, formatPercent, isDiscreetMode } from '../../lib/format';
+import {
+  DISCREET_MASK,
+  EM_DASH,
+  formatDate,
+  formatDateTime,
+  formatMoney,
+  formatPercent,
+  formatSignedPercent,
+  isDiscreetMode,
+} from '../../lib/format';
 import {
   PRICE_RANGES,
   type BenchmarkSeries,
@@ -154,6 +163,78 @@ function timeToDate(time: Time): Date {
   if (typeof time === 'number') return new Date(time * 1000);
   if (typeof time === 'string') return new Date(time);
   return new Date(Date.UTC(time.year, time.month - 1, time.day));
+}
+
+/** Keep the accessible data alternative bounded on dense intraday ranges. */
+const ACCESSIBLE_TABLE_POINT_LIMIT = 120;
+
+interface AccessibleChartData {
+  start: ChartPoint;
+  end: ChartPoint;
+  minimum: ChartPoint;
+  maximum: ChartPoint;
+  tablePoints: readonly ChartPoint[];
+  sampled: boolean;
+  totalPoints: number;
+}
+
+/**
+ * Build the points used by the DOM alternative from the same finite data the
+ * canvas chart plots. A single point cannot describe a period or a change, so
+ * it intentionally has no summary/table rather than producing misleading data.
+ */
+function accessibleChartData(series: readonly ChartPoint[]): AccessibleChartData | null {
+  const plotted = series.filter((point) => Number.isFinite(point.value));
+  if (plotted.length < 2) return null;
+
+  let minimum = plotted[0]!;
+  let maximum = plotted[0]!;
+  for (const point of plotted.slice(1)) {
+    if (point.value < minimum.value) minimum = point;
+    if (point.value > maximum.value) maximum = point;
+  }
+
+  const sampled = plotted.length > ACCESSIBLE_TABLE_POINT_LIMIT;
+  const tablePoints = sampled
+    ? Array.from({ length: ACCESSIBLE_TABLE_POINT_LIMIT }, (_, index) => {
+        const position = (index * (plotted.length - 1)) / (ACCESSIBLE_TABLE_POINT_LIMIT - 1);
+        return plotted[Math.round(position)]!;
+      })
+    : plotted;
+
+  return {
+    start: plotted[0]!,
+    end: plotted.at(-1)!,
+    minimum,
+    maximum,
+    tablePoints,
+    sampled,
+    totalPoints: plotted.length,
+  };
+}
+
+/** Format each point through the shared date/date-time formatters. */
+function formatChartDate(time: Time): string {
+  const date = timeToDate(time);
+  if (Number.isNaN(date.getTime())) return EM_DASH;
+  const iso = date.toISOString();
+  return typeof time === 'number' ? formatDateTime(iso) : formatDate(iso);
+}
+
+function formatChartValue(value: number, percentValues: boolean): string {
+  return percentValues ? formatPercent(value) : formatMoney(value);
+}
+
+/** Mirror MoneyText's explicit positive sign while preserving discreet masking. */
+function formatSignedChartValue(value: number, percentValues: boolean, discreet: boolean): string {
+  if (percentValues) return formatSignedPercent(value);
+  const formatted = formatMoney(value);
+  return !discreet && value > 0 ? `+${formatted}` : formatted;
+}
+
+function chartPointKey(time: Time): string {
+  if (typeof time === 'string' || typeof time === 'number') return String(time);
+  return `${time.year}-${time.month}-${time.day}`;
 }
 
 /**
@@ -294,6 +375,8 @@ export function PriceChart({
   // Controlled when `range` is provided; otherwise track internally so the
   // toggle works standalone (and in tests with no parent).
   const [internalRange, setInternalRange] = useState<PriceRange>(range ?? defaultRange);
+  const [isDataTableOpen, setIsDataTableOpen] = useState(false);
+  const summaryId = useId();
   const activeRange = range ?? internalRange;
 
   function selectRange(next: PriceRange) {
@@ -323,6 +406,31 @@ export function PriceChart({
   // Snapshot the discreet flag at chart-create time so a toggle mid-life
   // rebuilds the chart with the correct axis formatter (§13.5 V5-P13 arc (a)).
   const discreet = isDiscreetMode();
+  const dataAlternative = accessibleChartData(series);
+  const summary = dataAlternative
+    ? t('common.charts.priceChartSummary', {
+        startDate: formatChartDate(dataAlternative.start.time),
+        endDate: formatChartDate(dataAlternative.end.time),
+        startValue: formatChartValue(dataAlternative.start.value, percentValues),
+        endValue: formatChartValue(dataAlternative.end.value, percentValues),
+        change: formatSignedChartValue(
+          dataAlternative.end.value - dataAlternative.start.value,
+          percentValues,
+          discreet,
+        ),
+        changePercent: formatSignedPercent(
+          dataAlternative.start.value === 0
+            ? null
+            : ((dataAlternative.end.value - dataAlternative.start.value) /
+                dataAlternative.start.value) *
+                100,
+        ),
+        minimum: formatChartValue(dataAlternative.minimum.value, percentValues),
+        minimumDate: formatChartDate(dataAlternative.minimum.time),
+        maximum: formatChartValue(dataAlternative.maximum.value, percentValues),
+        maximumDate: formatChartDate(dataAlternative.maximum.time),
+      })
+    : null;
 
   // Create / tear down the chart instance. Keyed on the *shape* (mode, presence
   // of a benchmark, height) rather than the data, so wiggling data is cheap.
@@ -616,13 +724,74 @@ export function PriceChart({
           {emptyMessage ?? t('common.charts.noPriceData')}
         </div>
       ) : (
-        <div
-          ref={containerRef}
-          role="img"
-          aria-label={ariaLabel ?? t('common.charts.priceChartAria')}
-          className="w-full"
-          style={{ height }}
-        />
+        <div>
+          {summary ? (
+            <p className="sr-only" id={summaryId}>
+              {summary}
+            </p>
+          ) : null}
+          <div
+            ref={containerRef}
+            role="img"
+            aria-describedby={summary ? summaryId : undefined}
+            aria-label={ariaLabel ?? t('common.charts.priceChartAria')}
+            className="w-full"
+            style={{ height }}
+          />
+          {dataAlternative ? (
+            <>
+              <button
+                aria-expanded={isDataTableOpen}
+                className="mt-1 text-xs bt-muted underline decoration-dotted underline-offset-2"
+                onClick={() => setIsDataTableOpen((open) => !open)}
+                type="button"
+              >
+                {t(
+                  isDataTableOpen
+                    ? 'common.charts.priceChartDataCollapse'
+                    : 'common.charts.priceChartDataExpand',
+                )}
+              </button>
+              {isDataTableOpen ? (
+                <div className="mt-2 overflow-x-auto">
+                  {dataAlternative.sampled ? (
+                    <p className="mb-2 text-xs bt-muted">
+                      {t('common.charts.priceChartDataSampled', {
+                        shown: dataAlternative.tablePoints.length,
+                        total: dataAlternative.totalPoints,
+                      })}
+                    </p>
+                  ) : null}
+                  <table className="w-full text-left text-xs">
+                    <caption className="sr-only">
+                      {t('common.charts.priceChartDataTableCaption')}
+                    </caption>
+                    <thead className="bt-muted">
+                      <tr>
+                        <th className="py-1 pr-3 font-medium" scope="col">
+                          {t('common.charts.priceChartDataDate')}
+                        </th>
+                        <th className="py-1 text-right font-medium" scope="col">
+                          {t('common.charts.priceChartDataValue')}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dataAlternative.tablePoints.map((point, index) => (
+                        <tr key={`${chartPointKey(point.time)}-${index}`}>
+                          <td className="py-1 pr-3">{formatChartDate(point.time)}</td>
+                          <td className="py-1 text-right tabular-nums">
+                            {formatChartValue(point.value, percentValues)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </div>
       )}
     </div>
   );

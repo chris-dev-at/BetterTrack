@@ -2,6 +2,9 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
+import { I18nProvider } from '../../i18n';
+import { setFormatLocale } from '../../lib/format';
+
 // Mock the canvas-backed charting lib: jsdom can't draw, and the wrapper's
 // contract is *how* it drives the lib (series type, setData, disposal).
 const mocks = vi.hoisted(() => {
@@ -67,6 +70,7 @@ import { sampleBenchmarkSeries, sampleOverlaySeries, samplePriceSeries } from '.
 
 beforeEach(() => {
   vi.clearAllMocks();
+  setFormatLocale('de-AT');
 });
 
 describe('PriceChart', () => {
@@ -180,6 +184,69 @@ describe('PriceChart', () => {
 
     expect(mocks.createChart).not.toHaveBeenCalled();
     expect(screen.getByText(/no price data/i)).toBeInTheDocument();
+  });
+
+  test('exposes a localized summary and a collapsed, keyboard-operable data table', async () => {
+    const user = userEvent.setup();
+    render(
+      <I18nProvider initialLocale="en">
+        <PriceChart series={samplePriceSeries} />
+      </I18nProvider>,
+    );
+
+    const chart = screen.getByRole('img', { name: 'Price chart' });
+    const summaryId = chart.getAttribute('aria-describedby');
+    expect(summaryId).toBeTruthy();
+    const expectedSummary =
+      'Period: 2 Jan 2026 to 15 Jan 2026. Start: 102.40 €. End: 110.80 €. Change: +8.40 € (+8.20%). Minimum: 101.70 € on 6 Jan 2026. Maximum: 110.80 € on 15 Jan 2026.';
+    expect(document.getElementById(summaryId!)).toHaveTextContent(expectedSummary);
+    expect(chart).toHaveAccessibleDescription(expectedSummary);
+
+    const disclosure = screen.getByRole('button', { name: 'Show chart data' });
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('table', { name: 'Chart data' })).not.toBeInTheDocument();
+
+    disclosure.focus();
+    await user.keyboard('{Enter}');
+
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Hide chart data' })).toBeInTheDocument();
+    const table = screen.getByRole('table', { name: 'Chart data' });
+    expect(screen.getByRole('columnheader', { name: 'Date' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Value' })).toBeInTheDocument();
+    expect(table).toHaveTextContent('2 Jan 2026');
+    expect(table).toHaveTextContent('110.80 €');
+  });
+
+  test('bounds a long chart-data table and discloses deterministic sampling', async () => {
+    const user = userEvent.setup();
+    const longSeries = Array.from({ length: 121 }, (_, index) => ({
+      time: (1_700_000_000 + index * 60) as never,
+      value: index,
+    }));
+    render(
+      <I18nProvider initialLocale="en">
+        <PriceChart series={longSeries} />
+      </I18nProvider>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Show chart data' }));
+
+    const table = screen.getByRole('table', { name: 'Chart data' });
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(120);
+    expect(screen.getByText('Showing 120 of 121 plotted points.')).toBeInTheDocument();
+  });
+
+  test('keeps the existing fallback when data is empty and omits the alternative for one point', () => {
+    const { rerender } = render(<PriceChart series={[]} />);
+    expect(screen.getByRole('status')).toHaveTextContent('No price data for this range yet.');
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show chart data' })).not.toBeInTheDocument();
+
+    rerender(<PriceChart series={[samplePriceSeries[0]!]} />);
+    expect(screen.getByRole('img')).not.toHaveAttribute('aria-describedby');
+    expect(screen.queryByRole('button', { name: 'Show chart data' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   test('loading renders a spinner without creating a chart', () => {

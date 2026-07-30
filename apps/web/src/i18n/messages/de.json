@@ -267,6 +267,13 @@
       "loadingChart": "Chart wird geladen…",
       "noPriceData": "Noch keine Kursdaten für diesen Zeitraum.",
       "priceChartAria": "Kurschart",
+      "priceChartSummary": "Zeitraum: {{startDate}} bis {{endDate}}. Start: {{startValue}}. Ende: {{endValue}}. Veränderung: {{change}} ({{changePercent}}). Tiefstwert: {{minimum}} am {{minimumDate}}. Höchstwert: {{maximum}} am {{maximumDate}}.",
+      "priceChartDataExpand": "Chartdaten anzeigen",
+      "priceChartDataCollapse": "Chartdaten ausblenden",
+      "priceChartDataTableCaption": "Chartdaten",
+      "priceChartDataDate": "Datum",
+      "priceChartDataValue": "Wert",
+      "priceChartDataSampled": "Es werden {{shown}} von {{total}} dargestellten Punkten angezeigt.",
       "allocationFallbackTitle": "Aufteilung im Überblick"
     },
     "marketState": {

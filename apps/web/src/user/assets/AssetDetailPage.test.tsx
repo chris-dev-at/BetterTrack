@@ -357,7 +357,7 @@ describe('AssetDetailPage — header rendering', () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
     // Price 28.50 EUR should be rendered via MoneyText — check the formatted value
-    expect(screen.getByText(/28/)).toBeInTheDocument();
+    expect(screen.getByText(/28/, { selector: '.text-3xl > span' })).toBeInTheDocument();
     expect(screen.getByText(/2,5/)).toBeInTheDocument(); // day change pct
   });
 
