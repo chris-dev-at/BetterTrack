@@ -3,7 +3,9 @@
 Operations reference for the self-hosted deploy. This document is the source of
 truth for the backup + restore procedure (PROJECTPLAN.md §10, §13.4 V4-P6).
 Deploy topology lives in `README.md`; app-level config lives in
-`infra/.env.production.example`.
+`infra/.env.production.example`. That annotated example is the single
+production variable reference (including secret and rotation guidance); keep
+operational procedures here instead of duplicating its key list.
 
 ## Container health and account exports
 
@@ -213,17 +215,16 @@ docker compose -f docker-compose.yml \
                run --rm backup-offsite
 ```
 
-## Environment reference
+## Internal backup sidecar paths
 
-| Variable                            | Layer      | Default    | Notes                                                                                                                                             |
-| ----------------------------------- | ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BACKUP_RETENTION_DAYS`             | local      | `14`       | Days of local `.sql.gz` dumps kept in the `pgbackups` volume                                                                                      |
-| `BT_BACKUP_AGE_RECIPIENT_HOST_FILE` | offsite    | (unset)    | Host path to age recipient file; bind-mounted into the sidecar. Unset ⇒ offsite skipped                                                           |
-| `BT_BACKUP_RCLONE_CONFIG_HOST_FILE` | offsite    | (unset)    | Host path to `rclone.conf` (Drive tokens); bind-mounted read-only                                                                                 |
-| `BT_BACKUP_RCLONE_REMOTE`           | offsite    | (unset)    | Rclone remote target, e.g. `gdrive:bettertrack-backups`. Unset ⇒ offsite skipped                                                                  |
-| `BT_BACKUP_REMOTE_RETENTION_DAYS`   | offsite    | `30`       | Days of encrypted artifacts kept on the remote; keep it at least `BACKUP_RETENTION_DAYS` to avoid re-uploading artifacts the remote prune removes |
-| `BT_BACKUP_AGE_RECIPIENT_FILE`      | (internal) | (fixed)    | In-container path — set by the compose override to `/etc/bettertrack/age-recipient`                                                               |
-| `BT_BACKUP_SOURCE_DIR`              | (internal) | `/backups` | In-container path to the shared `pgbackups` mount — do not change                                                                                 |
+Owner-supplied backup variables and their defaults are documented once in
+`infra/.env.production.example`. These two container-only paths are fixed by the
+offsite Compose overlay:
+
+| Variable                       | Default    | Notes                                                                                         |
+| ------------------------------ | ---------- | --------------------------------------------------------------------------------------------- |
+| `BT_BACKUP_AGE_RECIPIENT_FILE` | (fixed)    | Set by the Compose override to `/etc/bettertrack/age-recipient`; do not configure on the host |
+| `BT_BACKUP_SOURCE_DIR`         | `/backups` | Shared `pgbackups` mount inside the backup sidecar; do not configure on the host              |
 
 ### Retention contract
 

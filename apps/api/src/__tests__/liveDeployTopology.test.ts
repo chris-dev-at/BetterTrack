@@ -166,6 +166,10 @@ describe('worker job metrics are scraped (guard 4, #632)', () => {
   const workerEntry = read('apps/api/src/scripts/worker.ts');
   const prometheus = read('infra/prometheus/prometheus.yml');
   const compose = read('infra/docker-compose.yml');
+  const sharedEnvironmentBlock = compose.slice(
+    compose.indexOf('\nx-api-worker-environment:'),
+    compose.indexOf('\nservices:'),
+  );
 
   it('the worker entrypoint starts a metrics scrape listener', () => {
     expect(workerEntry).toContain('createMetricsServer(config, logger)');
@@ -177,18 +181,22 @@ describe('worker job metrics are scraped (guard 4, #632)', () => {
   });
 
   it('the worker compose service binds the metrics listener on 0.0.0.0 so the sidecar can reach it', () => {
-    // The api service sets BT_METRICS_HOST=0.0.0.0; the worker must too, or its
-    // listener falls back to the 127.0.0.1 schema default and prometheus (a
-    // separate container) can never scrape worker:9464.
+    // Both processes inherit BT_METRICS_HOST=0.0.0.0 from their one shared
+    // environment anchor. Without it the worker falls back to the 127.0.0.1
+    // schema default and prometheus cannot scrape worker:9464.
     const workerBlock = compose.slice(compose.indexOf('\n  worker:'), compose.indexOf('\n  db:'));
-    expect(workerBlock).toContain('BT_METRICS_HOST');
-    expect(workerBlock).toContain('0.0.0.0');
-    expect(workerBlock).toContain('BT_METRICS_ENABLED');
+    expect(workerBlock).toContain('<<: *api-worker-environment');
+    expect(sharedEnvironmentBlock).toContain("BT_METRICS_HOST: '${BT_METRICS_HOST:-0.0.0.0}'");
+    expect(sharedEnvironmentBlock).toContain('BT_METRICS_ENABLED');
   });
 });
 
 describe('compose readiness and cross-container exports (#939)', () => {
   const compose = read('infra/docker-compose.yml');
+  const sharedEnvironmentBlock = compose.slice(
+    compose.indexOf('\nx-api-worker-environment:'),
+    compose.indexOf('\nservices:'),
+  );
   const apiBlock = compose.slice(compose.indexOf('\n  api:'), compose.indexOf('\n  worker:'));
   const workerBlock = compose.slice(compose.indexOf('\n  worker:'), compose.indexOf('\n  db:'));
   const buildConfig = read('apps/api/tsup.config.ts');
@@ -207,8 +215,9 @@ describe('compose readiness and cross-container exports (#939)', () => {
   });
 
   it('mounts one writable export volume at the identical api and worker path', () => {
+    expect(sharedEnvironmentBlock).toContain(`BT_EXPORT_DIR: '${exportPath}'`);
     for (const serviceBlock of [apiBlock, workerBlock]) {
-      expect(serviceBlock).toContain(`BT_EXPORT_DIR: '${exportPath}'`);
+      expect(serviceBlock).toContain('<<: *api-worker-environment');
       expect(serviceBlock).toContain(`exportdata:${exportPath}`);
     }
     expect(compose.slice(compose.lastIndexOf('\nvolumes:'))).toContain('\n  exportdata:');
