@@ -1700,6 +1700,10 @@
     "taxReport": {
       "title": "Steuerbericht",
       "subtitle": "Realisierte Gewinne, Dividenden und Steuer pro Kalenderjahr (Zeitzone Wien).",
+      "mode": {
+        "line": "Berechnet mit Steuermodus: {{mode}}",
+        "change": "In den Portfolio-Einstellungen ändern →"
+      },
       "column": {
         "year": "Jahr",
         "realized": "Realisierter G/V",
@@ -1733,16 +1737,7 @@
       },
       "disabled": {
         "title": "Steuererfassung ist aus",
-        "description": "Aktiviere oben einen Steuermodus für dieses Portfolio, um realisierte Gewinne und Steuer nach Jahr zu sehen.",
-        "link": "Steuermodus in Einstellungen → Steuern wählen →"
-      },
-      "treatment": {
-        "title": "Steuerliche Behandlung · {{name}}",
-        "description": "Wie dieses Portfolio besteuert wird. Es übernimmt deinen Standard für neue Portfolios, bis du hier einen festlegst.",
-        "inheriting": "Übernimmt Standard",
-        "overridden": "Überschrieben",
-        "reset": "Auf Standard zurücksetzen",
-        "editDefault": "Standard in Einstellungen bearbeiten →"
+        "description": "Wähle in den Einstellungen dieses Portfolios einen Steuermodus, um realisierte Gewinne und Steuer nach Jahr zu sehen."
       },
       "de": {
         "title": "Deutschland (Abgeltungsteuer)",
@@ -2155,6 +2150,19 @@
       "iconLabel": "Symbol",
       "iconPickerAriaLabel": "Portfolio-Symbol",
       "iconHint": "Kennzeichnet dieses Portfolio mit einem farbigen Symbol in der Auswahl und in Listen. Nur auf diesem Gerät gespeichert.",
+      "taxHeading": "Steuern",
+      "tax": {
+        "modeLabel": "Steuermodus",
+        "inheriting": "Konto-Vorgabe",
+        "overridden": "Hier gesetzt",
+        "hint": "Dieses Portfolio folgt deiner Konto-Vorgabe, bis du hier einen Modus wählst. Änderungen gelten für neue Einträge; bereits erfasste behalten ihre Behandlung.",
+        "pickerAriaLabel": "Steuermodus für dieses Portfolio",
+        "inheritedHint": "Folgt deiner Konto-Vorgabe.",
+        "resetHint": "Dieses Portfolio hat einen eigenen Modus.",
+        "reset": "Konto-Vorgabe verwenden",
+        "editDefault": "Konto-Vorgabe bearbeiten →",
+        "loadError": "Der Steuermodus dieses Portfolios konnte nicht geladen werden."
+      },
       "groupHeading": "Gruppenportfolio",
       "groupHint": "Teile dieses Portfolio mit Freunden — ihr führt dasselbe Buch.",
       "groupActive": "{{name}} · {{count}} Mitglieder",
