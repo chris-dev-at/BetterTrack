@@ -52,6 +52,9 @@ export const AuditAction = {
   // Self-service data export (§13.4 V4-P6a, #494).
   AccountExportRequested: 'account.export_requested',
   AccountExportFail: 'account.export_fail',
+  /** Client-encrypted data-home transitions; metadata is media/version only. */
+  ParanoidEnabled: 'account.paranoid_enabled',
+  ParanoidDisabled: 'account.paranoid_disabled',
   UserPasswordReset: 'user.pw_reset',
   InviteCreated: 'invite.created',
   InviteUsed: 'invite.used',

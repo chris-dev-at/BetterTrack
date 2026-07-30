@@ -297,6 +297,53 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
     expect(entry!.meta).toMatchObject({ username: user.username, via: 'self' });
   });
 
+  it('cascades the current encrypted vault and every historical generation', async () => {
+    const user = await seedPerson('paranoid_delete');
+    const currentBlob = Buffer.from('current-ciphertext');
+    const historicalBlob = Buffer.from('historical-ciphertext');
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(schema.users.id, user.id));
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: user.id,
+      version: 2,
+      formatVersion: 1,
+      sizeBytes: currentBlob.byteLength,
+      blob: currentBlob,
+    });
+    await harness.db.insert(schema.paranoidVaultHistory).values({
+      userId: user.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: historicalBlob.byteLength,
+      blob: historicalBlob,
+    });
+
+    const response = await deleteAccount(user.agent, {
+      confirmUsername: user.username,
+      password: user.password,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    expect(
+      await harness.db
+        .select()
+        .from(schema.paranoidVaults)
+        .where(eq(schema.paranoidVaults.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db
+        .select()
+        .from(schema.paranoidVaultHistory)
+        .where(eq(schema.paranoidVaultHistory.userId, user.id)),
+    ).toEqual([]);
+  });
+
   it('a fresh TOTP code is valid re-auth on its own', async () => {
     const user = await seedPerson('totp_user');
     const enroll = await user.agent.post('/api/v1/auth/2fa/enroll').set(...XRW);

@@ -109,6 +109,43 @@ describe('liveModeService — one loop per hot asset (§5.3)', () => {
     });
   });
 
+  it('retires an asset only after its in-flight tick drains, then removes every retained frame', async () => {
+    let releasePoll!: () => void;
+    let markStarted!: () => void;
+    const pollStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const pollReleased = new Promise<void>((resolve) => {
+      releasePoll = resolve;
+    });
+    const stub = createStubMarketData({
+      poll: async () => {
+        markStarted();
+        await pollReleased;
+        return quoteResult(100);
+      },
+    });
+    const { service } = makeService(stub);
+    await redis.set(liveRingKey(ASSET_ID), 'retained-private-frame');
+    service.watch(ASSET_ID, REF);
+    await pollStarted;
+
+    let retired = false;
+    const retirement = service.retireAssets([ASSET_ID]).then(() => {
+      retired = true;
+    });
+    await Promise.resolve();
+    expect(retired).toBe(false);
+
+    releasePoll();
+    await retirement;
+    expect(service.watcherCount(ASSET_ID)).toBe(0);
+    expect(await redis.get(liveRingKey(ASSET_ID))).toBeNull();
+    const callsAfterRetirement = stub.calls.poll;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(stub.calls.poll).toBe(callsAfterRetirement);
+  });
+
   it('auto-stops when the last watcher leaves: upstream calls cease (§6.3)', async () => {
     const { service, stub } = makeService();
 

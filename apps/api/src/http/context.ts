@@ -70,7 +70,7 @@ import { createRealtimeGateway, type RealtimeGateway } from '../realtime';
 import { createHealthService, type HealthService } from '../services/health/healthService';
 import { createReadinessService, type ReadinessService } from '../services/health/readinessService';
 import { initObservability, type Observability } from '../services/observability/sentry';
-import { createMarketData } from '../providers';
+import { createMarketData, purgeManualAssetCaches } from '../providers';
 import type { MarketDataService } from '../providers';
 import {
   createAccountDeletionService,
@@ -116,7 +116,11 @@ import {
   type MarketIntelService,
   type PortfolioMarketIntelService,
 } from '../services/marketIntel';
-import { createBacktestService, type BacktestService } from '../services/backtest/backtestService';
+import {
+  createBacktestService,
+  purgeBacktestCaches,
+  type BacktestService,
+} from '../services/backtest/backtestService';
 import {
   createAnalyticsService,
   type AnalyticsService,
@@ -187,6 +191,11 @@ import {
   createParanoidVaultService,
   type ParanoidVaultService,
 } from '../services/account/paranoidVaultService';
+import { createParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
+import {
+  createParanoidTransitionService,
+  type ParanoidTransitionService,
+} from '../services/account/paranoidTransitionService';
 import {
   createParanoidModeGuard,
   guardRegisteredServices,
@@ -355,6 +364,8 @@ export interface AppContext {
    * a size cap and bounded ciphertext history. Never reads the payload.
    */
   paranoidVault: ParanoidVaultService;
+  /** Public account-locked paranoid enable/disable orchestrator (§7). */
+  paranoidTransitions: ParanoidTransitionService;
   /** Registry-backed account guard shared by HTTP, services, jobs, and webhooks. */
   paranoidGuard: ParanoidModeGuard;
   /** Outbound webhook subscriptions — CRUD + one-time signing secret + delivery log (§13.5 V5-P10). */
@@ -562,6 +573,8 @@ export interface BuildContextDeps {
    * synchronous build under test (BullMQ can't run on ioredis-mock).
    */
   exportEnqueue?: (jobId: string) => Promise<void>;
+  /** Test seam: pause an export build after collection under the transition lock. */
+  exportAfterCollect?: (userId: string) => void | Promise<void>;
   /**
    * Test seam (#437): the notification service's clock, so the auto-archive
    * sweep threshold is provable under a controlled clock. Defaults to the
@@ -1123,6 +1136,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Single conversion keystone (§5.4): spot FX sourced from cached Yahoo quotes.
   const currencySource = createMarketDataFxSource(marketData);
   const currency = createCurrencyService({ source: currencySource });
+  const paranoidRehydration = createParanoidRehydrationService({
+    db,
+    toCashEur: (amount, sourceCurrency, day) =>
+      currency.convert(amount, sourceCurrency, 'EUR', { date: day }),
+  });
 
   const assetRepo = createAssetRepository(db);
   const assets = createAssetService({
@@ -1589,6 +1607,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     notify,
     enqueueBuild: exportEnqueue,
+    withAccountTransitionLock: (userId, run) =>
+      withFreshLockedPrivacyModes(privacyLockDb, [userId], () => run()),
+    afterCollect: deps.exportAfterCollect,
     logger,
   });
   exportHolder.service = dataExport;
@@ -1780,6 +1801,37 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     presence,
   });
 
+  const paranoidTransitions = createParanoidTransitionService({
+    db,
+    // Admin metadata locks on the dedicated pool and reads on the main one, the
+    // same split every other privacy-lock call site uses.
+    lockDb: privacyLockDb,
+    rehydration: paranoidRehydration,
+    audit,
+    logger,
+    beforeEnableCommit: async (userId, plan) => {
+      // This runs while enable still owns the exclusive account lock. Any
+      // owner-scoped read that started first has completed; later work re-reads
+      // the committed paranoid mode and fails closed.
+      await realtime.invalidateOwnedLiveMode(userId);
+      await liveMode.retireAssets(plan.customAssetIds);
+      await marketData.settled();
+      await Promise.all([
+        purgeManualAssetCaches(redis, plan.customAssetIds),
+        purgeBacktestCaches(redis, userId),
+      ]);
+    },
+    runPostCommit: async (userId, plan) => {
+      if (!plan.invalidate.includes('portfolio')) return;
+      const restoredPortfolios = await portfolioRepo.listForUser(userId, {
+        includeArchived: true,
+      });
+      for (const restoredPortfolio of restoredPortfolios) {
+        await snapshots.recompute(restoredPortfolio.id);
+      }
+    },
+  });
+
   // Admin health snapshot (§13.4 V4-P5a): live DB/Redis/provider/queue/gateway
   // probe. Uses the same queue registry the durable dispatch path enqueues onto.
   const health = createHealthService({
@@ -1858,6 +1910,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     expenseImports: guarded.expenseImports,
     expenseBudgets: guarded.expenseBudgets,
     paranoidVault,
+    paranoidTransitions,
     paranoidGuard,
     webhooks,
     webhookBridge: guarded.webhookBridge,

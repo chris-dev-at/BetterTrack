@@ -7,6 +7,10 @@ import { getTableColumns } from 'drizzle-orm';
 
 import { assetIdentities } from '../../../data/schema';
 import {
+  PARANOID_PROBE_HANDLER_NAMES,
+  PARANOID_PURGE_HANDLER_NAMES,
+} from '../../../data/repositories/paranoidTransitionRepository';
+import {
   EXPORT_TABLE_CLASSIFICATION,
   PARANOID_REHYDRATION_POLICY,
   PARANOID_TABLE_CLASSIFICATION,
@@ -141,5 +145,10 @@ describe('paranoid table classification completeness', () => {
     // The vault set is a strict, non-empty subset (the server keeps identity etc).
     expect(PARANOID_VAULT_TABLE_NAMES.length).toBeGreaterThan(0);
     expect(PARANOID_VAULT_TABLE_NAMES.length).toBeLessThan(tables.length);
+  });
+
+  it('drives both destructive handlers and zero-cleartext probes from the full vault set', () => {
+    expect(PARANOID_PURGE_HANDLER_NAMES).toEqual([...PARANOID_VAULT_TABLE_NAMES]);
+    expect(PARANOID_PROBE_HANDLER_NAMES).toEqual([...PARANOID_VAULT_TABLE_NAMES]);
   });
 });

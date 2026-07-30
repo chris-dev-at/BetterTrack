@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { emailSchema, roleSchema, userStatusSchema, usernameSchema } from './auth';
 import { portfolioVisibilitySchema } from './portfolio';
 import { notificationChannelsConfigurableSchema, notificationMatrixSchema } from './settings';
+import { vaultMediaSetSchema } from './vault';
 
 /**
  * Global registration mode (PROJECTPLAN.md §4, §6.12, §13.4 V4-P4a). Governs how
@@ -161,18 +162,46 @@ export const updateAccountDefaultsRequestSchema = z
   );
 export type UpdateAccountDefaultsRequest = z.infer<typeof updateAccountDefaultsRequestSchema>;
 
-export const adminUserSchema = z.object({
-  id: z.string().uuid(),
-  email: z.string(),
-  username: z.string(),
-  role: roleSchema,
-  status: userStatusSchema,
-  mustChangePassword: z.boolean(),
-  /** Admin chat ban (§13.4 V4-P0d): while true the user cannot send DMs. */
-  chatBanned: z.boolean(),
-  lastLoginAt: z.string().datetime().nullable(),
-  createdAt: z.string().datetime(),
-});
+export const adminUserSchema = z
+  .object({
+    id: z.string().uuid(),
+    email: z.string(),
+    username: z.string(),
+    role: roleSchema,
+    status: userStatusSchema,
+    mustChangePassword: z.boolean(),
+    /** Admin chat ban (§13.4 V4-P0d): while true the user cannot send DMs. */
+    chatBanned: z.boolean(),
+    /**
+     * Additive only for paranoid accounts. Normal-account admin payloads predate
+     * this metadata and remain byte-for-byte unchanged.
+     */
+    privacyMode: z.literal('paranoid').optional(),
+    paranoid: z
+      .object({
+        mediaSet: vaultMediaSetSchema,
+        vault: z
+          .object({
+            version: z.number().int().positive(),
+            sizeBytes: z.number().int().nonnegative(),
+            updatedAt: z.string().datetime(),
+          })
+          .nullable(),
+        historyCount: z.number().int().nonnegative(),
+      })
+      .optional(),
+    lastLoginAt: z.string().datetime().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .superRefine((value, ctx) => {
+    if ((value.privacyMode === 'paranoid') !== (value.paranoid !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['paranoid'],
+        message: 'paranoid metadata and privacyMode must be present together',
+      });
+    }
+  });
 export type AdminUser = z.infer<typeof adminUserSchema>;
 
 export const adminUserListQuerySchema = z

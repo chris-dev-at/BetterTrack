@@ -39,7 +39,7 @@ export {
 } from './circuitBreaker';
 export { TimeoutError, withTimeout, retryOnce, DEFAULT_TIMEOUT_MS } from './resilience';
 export { rangeStartMs } from './historyWindow';
-export { cacheKey, createMarketCache, type MarketCache } from './cache';
+export { cacheKey, createMarketCache, purgeManualAssetCaches, type MarketCache } from './cache';
 export {
   QUOTE_TTL_SECONDS,
   META_TTL_SECONDS,

@@ -335,13 +335,53 @@ through the normal services in dependency order (portfolios → cash sources →
 transactions → dividends → movements → standing orders → expenses →
 per-portfolio settings), with server-side tax/snapshots re-deriving through
 the normal engines (the vault's derived rows are not trusted, the engines
-are). Only after rehydration commits does the mode flip back, the server blob
+are). In one account-locked database transaction the restore rows are written,
+the mode flips back, and the server blob + history are deleted; any failure
+rolls all three back together. Authoritative tax state is replayed through the
+normal engine inside that transaction without historical side effects; only
+after commit does the deterministic plan rebuild snapshots and invalidate
+derived account/portfolio/expense/order/tax consumers. The client then wipes
+its Drive file (best-effort) + local caches. Other devices notice the mode flip
+on next sync and drop their vaults. Disable is idempotent-resumable: a crashed
+rehydration can re-run (rows are re-created under fresh ids only after a full
+wipe of the partial batch — no half-hydrated ghosts).
 
-- history delete, and the client wipe its Drive file (best-effort) + local
-  caches. Other devices notice the mode flip on next sync and drop their
-  vaults. Disable is idempotent-resumable: a crashed rehydration can re-run
-  (rows are re-created under fresh ids only after a full wipe of the partial
-  batch — no half-hydrated ghosts).
+**Disable payload ceiling.** Disable is the only exit, so its request-body bound
+is sized from the PLAINTEXT it carries, not from `BT_VAULT_MAX_BYTES`: the
+envelope is deflate-compressed before encryption, so the restore JSON is always
+at least as large as the stored blob and usually several-fold larger. The route
+allows `BT_VAULT_MAX_BYTES × 8 + 64 KiB`
+(`PARANOID_RESTORE_PLAINTEXT_FACTOR`) — with the 16 MiB default, a practical
+plaintext ceiling of ~128 MiB. A document that both fits the storage bound
+compressed and exceeds that expanded would be un-disable-able, which is why the
+factor is deliberately generous rather than 1:1.
+
+Enable is likewise one account-locked database transaction: media and
+preconditions are re-read under the lock before sharing is revoked, every
+vault-classified row is purged, and the mode is committed. Broad inbound friend
+audiences use mode-dependent exclusion rows during revocation so an implicit
+`all_friends`/friend-side `public_link` grant cannot silently reappear after
+disable; a later deliberate owner audience edit clears that exclusion.
+
+**The idempotent enable retry never destroys gated state.** A repeat call whose
+media evidence matches the account's committed state is acknowledged with
+`idempotent: true` and re-runs only operations that are already true (the
+cleartext purge, revocation, derived-state retirement). It specifically does NOT
+clear `paranoid_vault_server_candidates`, `paranoid_vault_retired` or
+`paranoid_vault_retirements`, which a fresh `normal → paranoid` transition does
+clear because they cannot exist yet. On an established account those rows are
+the §5 retirement recovery set, destroyable only through the signed purge gate
+(matching retired version + Ed25519 retirement proof + the minimum retention
+window); a replayed enable satisfies none of those checks, and an account that
+retired the server medium passes the retry's "no server ciphertext" test
+precisely because the ciphertext lives there.
+
+Revocation of INBOUND shares is permanent and one-directional: the account's
+membership rows in other users' audiences and friend groups are deleted, and
+disable restores none of them — each owner re-adds the account deliberately.
+Keeping a restore list would mean holding the very social graph the mode exists
+to remove, server-side, for the whole paranoid period. Logged as a plan
+deviation in PROJECTPLAN.md §16 (2026-07-30), owner ack pending.
 
 ## 8. The feature-kill list (exact, binding)
 
@@ -551,10 +591,13 @@ issue).
    size cap + rate limit, the `PARANOID_TABLE_CLASSIFICATION` axis + its
    completeness test.
 3. **PD3 — Enable/disable pipeline + enforcement matrix** (`diff:hard`,
-   security): the §7 purge sweep + preconditions + rehydration, the §8
-   kill-registry guard (routes + services + scopes), share/comment revocation
-   at enable, admin fields, export/deletion interplay (§12). Probe test +
-   kill-matrix test land here.
+   security), delivered across one reviewed seam: **PD3a** defines the strict
+   restore document, media metadata, and transaction-bound rehydration
+   primitive; **PD3b** owns both public transition routes, the account-locked
+   purge orchestrator, the §8 registry enforcement, share/comment revocation,
+   admin fields, and export/deletion interplay (§12). The public enable route
+   does not ship without the complete disable route. Probe + kill-matrix tests
+   land with PD3b.
 4. **PD4 — Client crypto core + key custody** (`diff:max`, keystone):
    envelope encode/decode, AES-GCM + AAD, Argon2id KDF (WASM), VK
    wrap/unwrap + passphrase change + rotation, recovery kit, device key
