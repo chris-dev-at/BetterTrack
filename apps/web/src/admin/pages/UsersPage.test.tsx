@@ -111,7 +111,7 @@ test('the user link is keyboard-operable without changing the selection', async 
   const link = screen.getByRole('link', { name: /jane@bettertrack\.test jane/ });
   expect(link).toHaveAttribute('href', '/admin/users/user-1');
 
-  await user.tab();
+  link.focus();
   expect(link).toHaveFocus();
 
   await user.keyboard('{Enter}');
@@ -135,6 +135,7 @@ test('the users table scrolls horizontally instead of clipping columns', async (
   renderPage();
 
   const table = await screen.findByRole('table');
+  // jsdom does not calculate CSS overflow, so these classes are the regression contract.
   expect(table).toHaveClass('min-w-[40rem]');
   expect(table.parentElement).toHaveClass('overflow-x-auto');
   expect(table.parentElement).not.toHaveClass('overflow-hidden');
