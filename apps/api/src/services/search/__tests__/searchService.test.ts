@@ -49,4 +49,22 @@ describe('searchService — best-effort market badge (§13.5 V5-P1)', () => {
     expect(bySymbol.get('AAPL')).toBeUndefined();
     expect(bySymbol.get('IWDA')).toBeUndefined();
   });
+
+  it('supports a catalog-only pass without starting provider enrichment', async () => {
+    const assetRepo = {
+      searchCatalog: vi.fn(async () => []),
+      catalogWatermark: vi.fn(async () => null),
+    } as unknown as Parameters<typeof createSearchService>[0]['assetRepo'];
+    const enrichment: CatalogEnrichment = {
+      request: vi.fn(async () => true),
+      settled: vi.fn(async () => {}),
+    };
+    const service = createSearchService({ assetRepo, enrichment });
+
+    await expect(service.search(USER, 'missing', { allowEnrichment: false })).resolves.toEqual({
+      results: [],
+      enriching: false,
+    });
+    expect(enrichment.request).not.toHaveBeenCalled();
+  });
 });
