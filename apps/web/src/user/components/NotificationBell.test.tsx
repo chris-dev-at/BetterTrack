@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -100,6 +100,7 @@ describe('NotificationBell', () => {
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(trigger).not.toHaveAttribute('aria-haspopup');
+    expect(trigger).toHaveAttribute('aria-controls', 'bt-notifications-popover');
     expect(screen.getByRole('group', { name: 'Notifications' })).toBeInTheDocument();
     expect(screen.getByText('Unread item')).toBeInTheDocument();
     expect(screen.getByText('Read item')).toBeInTheDocument();
@@ -125,6 +126,15 @@ describe('NotificationBell', () => {
 
     await user.keyboard('{Escape}');
     await waitFor(() => expect(markAll).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    const reopenedMarkAll = screen.getByRole('button', { name: 'Mark all read' });
+    await user.tab();
+    expect(reopenedMarkAll).toHaveFocus();
+    fireEvent.mouseDown(document.body);
+
+    expect(screen.queryByRole('group', { name: 'Notifications' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
   });
 

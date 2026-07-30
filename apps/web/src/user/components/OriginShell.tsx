@@ -329,13 +329,15 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
   useEffect(() => {
     if (!open) return;
     function onPointerDown(event: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) closeMenu();
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        closeAndRestoreFocus();
+      }
     }
     document.addEventListener('mousedown', onPointerDown);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
     };
-  }, [closeMenu, open]);
+  }, [closeAndRestoreFocus, open]);
 
   return (
     <div className="relative" ref={rootRef}>
@@ -457,13 +459,15 @@ function CreateMenu() {
   useEffect(() => {
     if (!open) return;
     function onPointerDown(event: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) closeMenu();
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        closeAndRestoreFocus();
+      }
     }
     document.addEventListener('mousedown', onPointerDown);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
     };
-  }, [closeMenu, open]);
+  }, [closeAndRestoreFocus, open]);
 
   const items: ReadonlyArray<{ to: string; icon: IconName; labelKey: string }> = [
     { to: '/portfolio/activity?create=trade', icon: 'assets', labelKey: 'create.trade' },
@@ -564,12 +568,17 @@ export function OriginShell() {
     function handleKey(event: KeyboardEvent) {
       if (event.key === 'k' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
+        // A portalled modal makes this shell branch inert. Mounting the palette
+        // inside that inert branch would make its initial focus and controls
+        // unreachable, so only allow the shortcut to close an existing palette
+        // while any modal is active.
+        if (!paletteOpen && document.querySelector('[aria-modal="true"]') !== null) return;
         setPaletteOpen((open) => !open);
       }
     }
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
-  }, []);
+  }, [paletteOpen]);
 
   function toggleRail() {
     setCollapsed((value) => {

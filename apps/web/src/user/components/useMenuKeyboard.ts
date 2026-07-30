@@ -108,6 +108,10 @@ export function useMenuKeyboard<T extends HTMLElement = HTMLDivElement>({
   useOverlayEscape(open, closeAndRestoreFocus, menuRef);
 
   const onKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+      return;
+    }
+
     if (
       event.key !== 'ArrowDown' &&
       event.key !== 'ArrowUp' &&

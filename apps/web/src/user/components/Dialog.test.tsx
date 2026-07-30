@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
 import { Dialog } from './Dialog';
 
@@ -71,6 +71,25 @@ test('closes on Escape and restores focus to its trigger', async () => {
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   expect(opener).toHaveFocus();
   expect(opener.closest('[inert]')).toBeNull();
+});
+
+test('does not dismiss a guarded one-time-value dialog on Escape', async () => {
+  const onClose = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <Dialog dismissable={false} title="One-time secret" onClose={onClose}>
+      <button type="button">Acknowledge secret</button>
+    </Dialog>,
+  );
+
+  const dialog = screen.getByRole('dialog', { name: 'One-time secret' });
+  expect(screen.queryByRole('button', { name: 'Close dialog' })).not.toBeInTheDocument();
+
+  await user.keyboard('{Escape}');
+
+  expect(onClose).not.toHaveBeenCalled();
+  expect(dialog).toBeInTheDocument();
+  expect(dialog.contains(document.activeElement)).toBe(true);
 });
 
 /**

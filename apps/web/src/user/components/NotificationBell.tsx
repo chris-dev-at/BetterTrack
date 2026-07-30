@@ -221,13 +221,15 @@ export function NotificationBell() {
   useEffect(() => {
     if (!open) return;
     function onPointerDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        closeAndRestoreFocus();
+      }
     }
     document.addEventListener('mousedown', onPointerDown);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
     };
-  }, [open]);
+  }, [closeAndRestoreFocus, open]);
 
   const unreadCount = query.data?.unreadCount ?? 0;
   const items = query.data?.items ?? [];
@@ -239,6 +241,7 @@ export function NotificationBell() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
+        aria-controls={open ? 'bt-notifications-popover' : undefined}
         aria-label={
           unreadCount > 0
             ? t('settings.notifications.bellUnreadAria', { count: unreadCount })
@@ -278,6 +281,7 @@ export function NotificationBell() {
         <div
           aria-label={t('settings.notifications.title')}
           className="bt-popover w-80"
+          id="bt-notifications-popover"
           ref={panelRef}
           role="group"
           style={{ right: 0, top: 'calc(100% + 6px)', padding: 0 }}

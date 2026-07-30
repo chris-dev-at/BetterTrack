@@ -165,10 +165,13 @@ function renderSearchBox(props: Partial<React.ComponentProps<typeof AssetSearchB
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={['/']}>
-        <Routes>
-          <Route path="/" element={<AssetSearchBox {...props} />} />
-          <Route path="/assets/:id" element={<div>Asset detail page</div>} />
-        </Routes>
+        <main tabIndex={-1}>
+          <Routes>
+            <Route path="/" element={<AssetSearchBox {...props} />} />
+            <Route path="/assets/:id" element={<div>Asset detail page</div>} />
+            <Route path="/workbench/blueprints/new" element={<div>New blueprint page</div>} />
+          </Routes>
+        </main>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -500,6 +503,26 @@ describe('AssetSearchBox', () => {
         screen.queryByRole('menu', { name: 'Add NVDA to a blueprint' }),
       ).not.toBeInTheDocument();
       expect(trigger).toHaveFocus();
+    });
+
+    test('creating a blueprint restores focus to page chrome that survives navigation', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(conglomerateApi.listConglomerates).mockResolvedValue(conglomerateList());
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      const trigger = screen.getByRole('button', { name: /add nvda to a blueprint/i });
+      await user.click(trigger);
+      const create = await screen.findByRole('menuitem', { name: '+ Create new blueprint' });
+
+      await user.click(create);
+
+      expect(await screen.findByText('New blueprint page')).toBeInTheDocument();
+      expect(trigger).not.toBeInTheDocument();
+      expect(screen.getByRole('main')).toHaveFocus();
+      expect(document.body).not.toHaveFocus();
     });
 
     test('keeps focus on an activated blueprint while the add is pending', async () => {

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -12,12 +12,15 @@ vi.mock('../lib/portfolioApi');
 vi.mock('../lib/conglomerateApi');
 vi.mock('../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
+  WATCHLIST_SHARING_QUERY_KEY: ['workboard', 'sharing'],
   CONGLOMERATE_COMPARE_QUERY_KEY: ['workboard', 'compare'],
   listWorkboard: vi.fn(),
   addToWorkboard: vi.fn(),
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
   compareConglomerates: vi.fn(),
+  getWatchlistSharing: vi.fn(async () => ({ visibility: 'private' })),
+  updateWatchlistSharing: vi.fn(),
 }));
 vi.mock('../lib/notificationsApi', () => ({
   listNotifications: vi.fn(),
@@ -29,6 +32,7 @@ import { listNotifications } from '../lib/notificationsApi';
 import { listPortfolios } from '../lib/portfolioApi';
 import { listWorkboard } from '../lib/workboardApi';
 import { UserApp } from './UserApp';
+import { Dialog } from './components/Dialog';
 
 const member: MeResponse = {
   id: 'user-1',
@@ -449,6 +453,16 @@ test('the live account menu supports roving focus and restores its trigger on Es
 
   expect(screen.queryByRole('menu', { name: 'Account' })).not.toBeInTheDocument();
   expect(trigger).toHaveFocus();
+
+  await user.click(trigger);
+  const reopened = screen.getByRole('menu', { name: 'Account' });
+  await waitFor(() =>
+    expect(within(reopened).getByRole('menuitem', { name: 'My profile' })).toHaveFocus(),
+  );
+  fireEvent.mouseDown(document.body);
+
+  expect(screen.queryByRole('menu', { name: 'Account' })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
 });
 
 test('the live Create menu supports roving focus and restores its trigger on Escape', async () => {
@@ -475,6 +489,41 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
 
   expect(screen.queryByRole('menu', { name: 'Create' })).not.toBeInTheDocument();
   expect(trigger).toHaveFocus();
+
+  await user.click(trigger);
+  const reopened = screen.getByRole('menu', { name: 'Create' });
+  await waitFor(() =>
+    expect(within(reopened).getByRole('menuitem', { name: 'Buy or sell' })).toHaveFocus(),
+  );
+  fireEvent.mouseDown(document.body);
+
+  expect(screen.queryByRole('menu', { name: 'Create' })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+});
+
+test('the command shortcut cannot mount a palette inside an inert modal background', async () => {
+  render(
+    <MemoryRouter initialEntries={['/portfolio']}>
+      <Routes>
+        <Route path="/*" element={<UserApp />} />
+      </Routes>
+      <Dialog title="Blocking modal" onClose={() => undefined}>
+        <button type="button">Keep editing</button>
+      </Dialog>
+    </MemoryRouter>,
+  );
+
+  const modal = screen.getByRole('dialog', { name: 'Blocking modal' });
+  await waitFor(() => expect(document.querySelector('.bt-topbar')).not.toBeNull());
+  expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1);
+
+  fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
+  fireEvent.keyDown(document, { key: 'k', metaKey: true });
+
+  expect(document.querySelector('.bt-palette-overlay')).toBeNull();
+  expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1);
+  expect(modal).toBeInTheDocument();
+  expect(modal.contains(document.activeElement)).toBe(true);
 });
 
 // ─── Destinations & redirects ─────────────────────────────────────────────────

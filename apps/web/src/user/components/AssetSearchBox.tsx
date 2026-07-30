@@ -31,6 +31,7 @@ import {
 } from '../workboard/conglomerateBuilder';
 import { CapabilityTags } from '../assets/capabilityTags';
 import { TransactionDialog, type TransactionDialogAsset } from './TransactionDialog';
+import { restoreFocusTo } from './useFocusTrap';
 import { useMenuKeyboard } from './useMenuKeyboard';
 
 /** Reused by the lazily-fetched supporting queries below (watchlists, portfolios). */
@@ -408,6 +409,15 @@ function ResultRow({
   });
   usePopoverDismiss(conglomeratePickerOpen, closeAndRestoreFocus, conglomerateRef);
 
+  function createConglomerate() {
+    // The trigger is part of this route and disappears during navigation.
+    // Put focus on the shell's stable main region before navigating instead of
+    // briefly restoring the trigger and leaving focus on <body> when it unmounts.
+    onCloseConglomeratePicker();
+    restoreFocusTo([], { exclude: menuRef.current });
+    onCreateConglomerate();
+  }
+
   return (
     <li className="bt-panel bt-panel--soft group relative flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">
       <button
@@ -452,7 +462,7 @@ function ResultRow({
               addState={conglomerateAddState}
               onPick={onPickConglomerate}
               onClose={closeAndRestoreFocus}
-              onCreateNew={onCreateConglomerate}
+              onCreateNew={createConglomerate}
               menuRef={menuRef}
               onMenuKeyDown={onMenuKeyDown}
             />
@@ -701,10 +711,7 @@ function ConglomeratePicker({
       <button
         type="button"
         role="menuitem"
-        onClick={() => {
-          onClose();
-          onCreateNew();
-        }}
+        onClick={onCreateNew}
         className="mt-1 w-full rounded px-2 py-1.5 text-left text-xs bt-link"
       >
         {t('assets.searchBox.createNewConglomerate')}

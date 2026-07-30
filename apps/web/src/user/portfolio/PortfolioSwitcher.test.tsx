@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -214,6 +214,24 @@ describe('PortfolioSwitcher', () => {
     expect(trigger).toHaveFocus();
   });
 
+  test('outside mousedown closes the menu and restores its trigger', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    const user = userEvent.setup();
+    renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await user.click(trigger);
+    const menu = await screen.findByRole('menu', { name: 'Portfolios' });
+    await waitFor(() =>
+      expect(within(menu).getByRole('menuitemradio', { name: /Main/ })).toHaveFocus(),
+    );
+
+    fireEvent.mouseDown(document.body);
+
+    expect(screen.queryByRole('menu', { name: 'Portfolios' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
   test('switching a portfolio sets the routing param', async () => {
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
     renderSwitcher();
@@ -350,6 +368,9 @@ describe('PortfolioSwitcher', () => {
     await userEvent.type(search, 'trad');
     expect(await screen.findByRole('menuitemradio', { name: /Trading/ })).toBeInTheDocument();
     expect(screen.queryByRole('menuitemradio', { name: /Main/ })).not.toBeInTheDocument();
+
+    await userEvent.keyboard('{Home}');
+    expect(search).toHaveFocus();
   });
 
   test('a long list gets a focused search field that filters by name', async () => {

@@ -145,17 +145,6 @@ export function PortfolioSwitcher() {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const closeMenu = useCallback(() => setOpen(false), []);
 
-  useEffect(() => {
-    if (!open) return;
-    function onPointerDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener('mousedown', onPointerDown);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-    };
-  }, [open]);
-
   // Every open starts unfiltered — a filter left over from last time would hide
   // the portfolio the user came to pick.
   useEffect(() => {
@@ -196,6 +185,19 @@ export function PortfolioSwitcher() {
     // is re-normalized whenever the set of rendered options changes.
     focusVersion: `${active?.id ?? ''}:${visible.map((p) => p.id).join(',')}`,
   });
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        closeAndRestoreFocus();
+      }
+    }
+    document.addEventListener('mousedown', onPointerDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+    };
+  }, [closeAndRestoreFocus, open]);
 
   // Any explicit selection — a click here or a param'd deep link (⌘K, Home
   // shortcuts) — becomes the session's remembered portfolio, so coming back to
