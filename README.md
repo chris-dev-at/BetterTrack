@@ -395,6 +395,7 @@ end-to-end restore drill — lives in `docs/ops.md`.
 These are exactly what CI runs (`.github/workflows/ci.yml`):
 
 ```bash
+pnpm --filter @bettertrack/api check:production-compose  # render both deploy topologies
 pnpm typecheck            # tsc --noEmit across all packages
 pnpm lint                 # ESLint (flat config) across the repo
 pnpm format:check         # Prettier

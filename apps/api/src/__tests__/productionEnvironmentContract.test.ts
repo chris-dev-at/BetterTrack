@@ -38,39 +38,6 @@ function rootEnvironmentAnchor(source: string): Map<string, string> {
   return entries;
 }
 
-interface ServiceEnvironment {
-  mergeAliases: string[];
-  directEntries: Map<string, string>;
-}
-
-function serviceEnvironment(source: string, serviceName: string): ServiceEnvironment {
-  const lines = source.split('\n');
-  const serviceStart = lines.findIndex((line) => line === `  ${serviceName}:`);
-  if (serviceStart < 0) throw new Error(`Compose service ${serviceName} is missing`);
-
-  const serviceEnd = lines.findIndex(
-    (line, index) => index > serviceStart && (/^ {2}[a-z][\w-]*:$/.test(line) || /^\w/.test(line)),
-  );
-  const serviceLines = lines.slice(serviceStart, serviceEnd < 0 ? undefined : serviceEnd);
-  const environmentStart = serviceLines.indexOf('    environment:');
-  if (environmentStart < 0) throw new Error(`Compose service ${serviceName} has no environment`);
-
-  const environmentLines = serviceLines.slice(environmentStart + 1);
-  const mergeAliases: string[] = [];
-  const directEntries = new Map<string, string>();
-  for (const line of environmentLines) {
-    if (line !== '' && !line.startsWith('      ') && !line.startsWith('      #')) break;
-    const merge = /^ {6}<<: \*([\w-]+)$/.exec(line);
-    if (merge) {
-      mergeAliases.push(merge[1]!);
-      continue;
-    }
-    const entry = /^ {6}([A-Z][A-Z0-9_]*):(?: (.*))?$/.exec(line);
-    if (entry) directEntries.set(entry[1]!, entry[2] ?? '');
-  }
-  return { mergeAliases, directEntries };
-}
-
 interface ExampleEntry {
   key: string;
   value: string;
@@ -163,8 +130,6 @@ const REVIEW_MISSING_KEYS = [
 
 describe('production environment contract (#982)', () => {
   const sharedEnvironment = rootEnvironmentAnchor(composeSource);
-  const apiEnvironment = serviceEnvironment(composeSource, 'api');
-  const workerEnvironment = serviceEnvironment(composeSource, 'worker');
   const intentionalKeys = new Set(Object.keys(INTENTIONALLY_NOT_PROPAGATED_ENV_KEYS));
   const composeManagedKeys = new Set(Object.keys(COMPOSE_MANAGED_ENV_KEYS));
   const supportedKeys = new Set<string>(PRODUCTION_SUPPORTED_ENV_KEYS);
@@ -204,22 +169,12 @@ describe('production environment contract (#982)', () => {
     }
   });
 
-  it('gives API and worker identical effective environments with no hidden service keys', () => {
-    for (const environment of [apiEnvironment, workerEnvironment]) {
-      expect(environment.mergeAliases).toEqual(['api-worker-environment']);
-      expect(sorted(environment.directEntries.keys())).toEqual([]);
-    }
+  it('keeps the real rendered-topology verifier wired into CI', () => {
+    const apiPackage = readFileSync(resolve(repoRoot, 'apps/api/package.json'), 'utf8');
+    const ciWorkflow = readFileSync(resolve(repoRoot, '.github/workflows/ci.yml'), 'utf8');
 
-    const apiEffective = new Set([
-      ...sharedEnvironment.keys(),
-      ...apiEnvironment.directEntries.keys(),
-    ]);
-    const workerEffective = new Set([
-      ...sharedEnvironment.keys(),
-      ...workerEnvironment.directEntries.keys(),
-    ]);
-    expect(sorted(apiEffective)).toEqual(sorted(workerEffective));
-    expect(sorted(apiEffective)).toEqual(sorted(supportedKeys));
+    expect(apiPackage).toContain('"check:production-compose"');
+    expect(ciWorkflow).toContain('pnpm --filter @bettertrack/api check:production-compose');
   });
 });
 

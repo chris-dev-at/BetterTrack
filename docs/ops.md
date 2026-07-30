@@ -39,15 +39,63 @@ user. Ready exports still expire through the existing 24-hour cleanup job; the
 volume only makes their short lifetime survive process/container boundaries.
 As with every named volume, `docker compose down -v` deletes it.
 
-Validate the stock and overlaid production topology after editing Compose:
+Render both effective production topologies after editing Compose. The
+committed example supplies inert interpolation values; substitute `infra/.env`
+to validate one deployment's configured values:
 
 ```bash
-docker compose -f infra/docker-compose.yml config -q
-docker compose -f infra/docker-compose.yml \
+BT_MODE=subdomains docker compose --env-file infra/.env.production.example \
+  -f infra/docker-compose.yml \
   -f infra/docker-compose.subdomains.yml config -q
-docker compose -f infra/docker-compose.yml \
+BT_MODE=ports docker compose --env-file infra/.env.production.example \
+  -f infra/docker-compose.yml \
   -f infra/docker-compose.ports.yml config -q
 ```
+
+## Database credential rotation
+
+`POSTGRES_PASSWORD` initializes the configured PostgreSQL role only when the
+official image creates an empty data directory. On an existing `pgdata` volume,
+editing that variable and restarting `db` does not change the role password.
+Rotate the role first, then update the container configuration:
+
+1. Take and verify a database backup. Stop the application processes so they
+   cannot open new connections between the role change and the configuration
+   update:
+
+   ```bash
+   docker compose --env-file infra/.env -f infra/docker-compose.yml \
+     stop api worker postgres-exporter
+   ```
+
+2. Connect over the database container's local socket with the current
+   configured role:
+
+   ```bash
+   docker compose --env-file infra/.env -f infra/docker-compose.yml \
+     exec db sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"'
+   ```
+
+3. At the `psql` prompt, run `\password` and enter the new password twice.
+   `\password` performs the required `ALTER ROLE` without putting the new secret
+   in shell history. Use a URL-unreserved random value, such as the output of
+   `openssl rand -hex 32`, because Compose also interpolates the value into the
+   PostgreSQL exporter URI. Exit with `\q`.
+4. Update `POSTGRES_PASSWORD` and the password component of `DATABASE_URL`
+   together in `infra/.env` with that same value.
+5. Recreate the database container so its initialization environment reflects
+   the new value, then bring both dependents back against the already-rotated
+   role:
+
+   ```bash
+   docker compose --env-file infra/.env -f infra/docker-compose.yml \
+     up -d --force-recreate db api worker postgres-exporter
+   ```
+
+Confirm `api` and `worker` become healthy and `postgres-exporter` stays up. If
+the configuration update fails, repeat step 2 through the local socket and use
+`\password` to restore the old role password before restoring both old
+environment values.
 
 ## Backup architecture
 
